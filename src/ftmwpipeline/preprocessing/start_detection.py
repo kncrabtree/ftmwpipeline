@@ -78,6 +78,27 @@ class StartDetectionResult:
     declaration_used: bool = False
 
 
+@dataclass(frozen=True)
+class StartDetectionRecord:
+    """Persisted settings + sweep outcome from the last ``start run`` invocation.
+
+    Written by :func:`ftmwpipeline._internal.start_detection_impl.detect_start_time_impl`
+    whenever it stamps (``stage0_fid_data/recommended_start_detection``), and
+    read back by ``resolve_start_provenance`` so a report or visualization can
+    replay the exact sweep that produced the recommendation instead of
+    re-running it with guessed defaults -- the sweep arrays themselves are not
+    persisted (cheap and deterministic to regenerate from the raw FID plus
+    these settings).
+    """
+
+    settings: StartDetectionSettings
+    chirp_end_us: float
+    chirp_detected: bool
+    floor: float
+    plateau: float
+    band_mhz: Optional[Tuple[float, float]]
+
+
 def detect_start_time(
     fid: FID,
     *,
@@ -156,4 +177,4 @@ def detect_start_time(
     )
 
 
-__all__ = ["StartDetectionResult", "detect_start_time"]
+__all__ = ["StartDetectionResult", "StartDetectionRecord", "detect_start_time"]

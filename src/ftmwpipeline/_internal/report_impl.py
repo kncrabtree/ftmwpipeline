@@ -673,6 +673,14 @@ class _SummaryModel:
     products: Optional[FinalProducts] = None
 
     # --- enriched detail (all default-empty so a hand-built model is valid) --
+    # Stage 0: how start_us was selected -- "manual" | "declared" |
+    # "auto_detected" | "no_chirp_found" | "none". See
+    # _internal.start_detection_impl.StartProvenance.
+    start_source: str = "none"
+    chirp_end_us: Optional[float] = None
+    chirp_start_us: Optional[float] = None
+    guard_margin_us: Optional[float] = None
+    start_detection_params: Dict[str, Any] = field(default_factory=dict)
     # Stage 2
     noise_params: Dict[str, Any] = field(default_factory=dict)
     noise_fraction_overall: Optional[float] = None
@@ -847,11 +855,14 @@ def _assemble_summary(file_path: Union[Path, str]) -> _SummaryModel:
     """
     from collections import Counter
 
+    from ..core.settings import FT_PROCESSING_PATH
     from ..io.fid_serialization import load_fid_from_hdf5
     from ..io.fitting_serialization import load_spectrum_fit_from_hdf5
     from ..io.tau_calibration_serialization import load_tau_calibration_from_hdf5
     from ..io.timebase_serialization import load_timebase_calibration_from_hdf5
     from ..io.window_serialization import load_window_plan_from_hdf5
+    from .stage1_impl import _read_settings_layer
+    from .start_detection_impl import resolve_start_provenance
 
     path = str(file_path)
     review = load_stage6_review_from_file(path)
@@ -876,7 +887,6 @@ def _assemble_summary(file_path: Union[Path, str]) -> _SummaryModel:
 
         # --- Stage 0: FID / start time -------------------------------------
         fid = load_fid_from_hdf5(h5f["stage0_fid_data"])
-        proc = fid.processing
         sideband = (
             fid.sideband.value if hasattr(fid.sideband, "value") else str(fid.sideband)
         )
@@ -1021,6 +1031,34 @@ def _assemble_summary(file_path: Union[Path, str]) -> _SummaryModel:
             except (KeyError, ValueError):
                 pass
 
+    # --- Stage 0: how start_us was actually selected (resolved Stage 1 layer,
+    # not the raw Stage 0 recommendation -- a manual Stage 1 override must win).
+    start_prov = resolve_start_provenance(path)
+    end_us = None
+    ft_settings = _read_settings_layer(path, FT_PROCESSING_PATH)
+    if ft_settings is not None and ft_settings.end_us is not None:
+        end_us = float(ft_settings.end_us)
+    start_detection_params: Dict[str, Any] = {}
+    if start_prov.source == "declared":
+        start_detection_params = {
+            "chirp_end_us": start_prov.chirp_end_us,
+            "chirp_start_us": start_prov.chirp_start_us,
+            "guard_margin_us": start_prov.guard_margin_us,
+        }
+    elif start_prov.detection_settings is not None:
+        s = start_prov.detection_settings
+        band_lo_det, band_hi_det = s.band_min_mhz, s.band_max_mhz
+        start_detection_params = {
+            "guard_margin_us": s.guard_margin_us,
+            "floor_factor": s.floor_factor,
+            "floor_tail_us": s.floor_tail_us,
+            "sweep_max_us": s.sweep_max_us,
+            "step_us": s.step_us,
+            "min_chirp_drop_ratio": s.min_chirp_drop_ratio,
+            "band_min_mhz": band_lo_det,
+            "band_max_mhz": band_hi_det,
+        }
+
     # ---- Stage 3 derived: SNR percentiles + spectral density chunks ------
     promo = _opt_float(det.get("promotion_min_snr"))
     snr_pctiles = _percentiles(det_snrs)
@@ -1151,8 +1189,8 @@ def _assemble_summary(file_path: Union[Path, str]) -> _SummaryModel:
         source_format=source_format,
         probe_freq_mhz=float(fid.probe_freq_mhz),
         sideband=sideband,
-        start_us=None if proc.start_us is None else float(proc.start_us),
-        end_us=None if proc.end_us is None else float(proc.end_us),
+        start_us=start_prov.start_us,
+        end_us=end_us,
         duration_us=float(fid.duration_us),
         n_points=int(fid.n_points),
         shots=None if fid.shots is None else int(fid.shots),
@@ -1187,6 +1225,11 @@ def _assemble_summary(file_path: Union[Path, str]) -> _SummaryModel:
         n_rescue_rounds=len(fit.rescue_history),
         products=products,
         # enriched detail
+        start_source=start_prov.source,
+        chirp_end_us=start_prov.chirp_end_us,
+        chirp_start_us=start_prov.chirp_start_us,
+        guard_margin_us=start_prov.guard_margin_us,
+        start_detection_params=start_detection_params,
         noise_params=noise_params,
         noise_fraction_overall=None,  # filled below (needs the active-grid replay)
         noise_bands=[],
@@ -1320,10 +1363,13 @@ def assemble_summary_model(file_path: Union[Path, str]) -> _SummaryModel:
 
 _METHODS = {
     "stage0": (
-        "The free-induction decay is imported verbatim and the coherent signal "
-        "start time is detected data-driven (the chirp excitation and ring-down "
-        "are excluded), so every later stage works from the molecular-emission "
-        "portion of the record."
+        "The free-induction decay is imported verbatim. Analysis begins at a "
+        "start time chosen to clear any excitation chirp and switch-bounce "
+        "ring-down, so every later stage works from the molecular-emission "
+        "portion of the record. In order of precedence: a manual override, "
+        "an instrument-declared chirp window (or experimenter-set start), "
+        "or a data-driven Σ|FT|-vs-start sweep that locates the chirp-end "
+        "collapse and adds a guard margin for the ring-down."
     ),
     "stage1": (
         "The canonical Fourier transform is **unapodized, un-windowed, and "
@@ -1391,6 +1437,16 @@ _METHODS = {
     ),
 }
 
+# Human phrase for each ``_SummaryModel.start_source`` value (see
+# _internal.start_detection_impl.StartProvenance).
+_START_SOURCE_PHRASE = {
+    "manual": "manually set",
+    "declared": "instrument-declared",
+    "auto_detected": "auto-detected",
+    "no_chirp_found": "no chirp found -- full record used",
+    "none": "not set -- full record used",
+}
+
 _EQUATIONS = {
     "stage2": r"$$\mathrm{SNR}_k = \frac{|X_k|}{\sigma_{x,k}}, \qquad "
     r"\sigma_x = \sqrt{2}\,\sigma_c$$",
@@ -1409,6 +1465,34 @@ _EQUATIONS = {
 # Per-stage parameter specs: (param_key, display_label, meaning). Only keys
 # present (and non-None) in the stage's persisted params are rendered.
 _PARAM_SPECS: Dict[str, List[Tuple[str, str, str]]] = {
+    "stage0": [
+        ("chirp_end_us", "chirp_end_us", "Declared chirp end (µs)"),
+        ("chirp_start_us", "chirp_start_us", "Declared pre-chirp AWG delay (µs)"),
+        (
+            "guard_margin_us",
+            "guard_margin_us",
+            "Ring-down guard margin past the chirp end",
+        ),
+        (
+            "floor_factor",
+            "floor_factor",
+            "Chirp-end = first start below floor_factor x floor",
+        ),
+        (
+            "floor_tail_us",
+            "floor_tail_us",
+            "Deep-tail window used for the floor estimate",
+        ),
+        ("sweep_max_us", "sweep_max_us", "Upper bound of the start-time sweep"),
+        ("step_us", "step_us", "Sweep step"),
+        (
+            "min_chirp_drop_ratio",
+            "min_chirp_drop_ratio",
+            "Min plateau/floor ratio to count as a chirp",
+        ),
+        ("band_min_mhz", "band_min_mhz", "Integration band override (low)"),
+        ("band_max_mhz", "band_max_mhz", "Integration band override (high)"),
+    ],
     "stage2": [
         ("window_mhz", "window_mhz", "Local scatter-MAD window width"),
         ("pedestal_mhz", "pedestal_mhz", "Leakage-pedestal exclusion half-width"),
@@ -1728,6 +1812,34 @@ def _md_line_table(peaks: List[FinalPeak], unit_value: float, unit_name: str) ->
 # ---------------------------------------------------------------------------
 
 
+def _concerns_stage0(m: _SummaryModel) -> List[_Concern]:
+    out: List[_Concern] = []
+    if m.start_source == "no_chirp_found":
+        out.append(
+            _Concern(
+                "warning",
+                "Start-time detection ran but found no chirp collapse "
+                "(the plateau/floor ratio was below the configured "
+                "threshold); start_us could not be inferred from the data.",
+                "If this is chirped-pulse data, set start_us manually "
+                "(`ft process --start-us`) or check the FID for a genuine "
+                "excitation chirp; otherwise this is expected.",
+            )
+        )
+    elif m.start_source == "none":
+        out.append(
+            _Concern(
+                "note",
+                "No start time has been declared, detected, or manually set; "
+                "the record is used from t = 0.",
+                "If this is chirped-pulse data, run `start run` (or set "
+                "start_us manually) to exclude the excitation chirp and "
+                "switch ring-down before the Fourier transform.",
+            )
+        )
+    return out
+
+
 def _concerns_stage2(m: _SummaryModel) -> List[_Concern]:
     out: List[_Concern] = []
     if m.noise_fraction_overall is not None and m.noise_fraction_overall < 0.5:
@@ -2013,7 +2125,8 @@ def _render_markdown(
 
     # Top-level concern roll-up.
     all_concerns = (
-        _concerns_stage2(m)
+        _concerns_stage0(m)
+        + _concerns_stage2(m)
         + _concerns_stage2b(m)
         + _concerns_stage4(m)
         + _concerns_stage5(m)
@@ -2045,16 +2158,26 @@ def _render_markdown(
     L.append("## Methods and results")
     L.append("")
 
-    # Stage 0 (kept simple).
+    # Stage 0 (enriched: source of start_us + chirp/guard-margin detail).
+    source_phrase = _START_SOURCE_PHRASE.get(m.start_source, m.start_source)
+    start_results = [f"start = {_md_num(m.start_us, 4)} µs ({source_phrase})"]
+    if m.chirp_end_us is not None:
+        chirp_phrase = f"chirp end {_md_num(m.chirp_end_us, 4)} µs"
+        if m.guard_margin_us is not None:
+            chirp_phrase += f" + {_md_num(m.guard_margin_us, 3)} µs guard margin"
+        start_results.append(chirp_phrase)
+    start_results.append(
+        f"record {_md_num(m.duration_us, 4)} µs ({_md_int(m.n_points)} points)"
+    )
+    if m.shots is not None:
+        start_results.append(f"{m.shots:,} shots")
     _section(
         L,
         "Stage 0 -- start-time detection",
         _METHODS["stage0"],
-        results=[
-            f"start = {_md_num(m.start_us, 4)} µs",
-            f"record {_md_num(m.duration_us, 4)} µs ({_md_int(m.n_points)} points)",
-        ]
-        + ([f"{m.shots:,} shots"] if m.shots is not None else []),
+        params=_params_block(m.start_detection_params, _PARAM_SPECS["stage0"]),
+        results=start_results,
+        concerns=_concerns_stage0(m),
     )
 
     # Stage 1 (kept simple).
