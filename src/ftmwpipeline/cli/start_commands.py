@@ -18,22 +18,21 @@ from typing import Any, Dict, Optional
 
 from .._internal.start_detection_impl import detect_start_time_impl
 from ..core.start_detection_settings import StartDetectionSettings
+from ._argspec import add_start_detection_args, start_settings_from_namespace
 from .utils import add_stage_object, print_error, setup_logging
 
 logger = logging.getLogger(__name__)
 
 
 def _settings_from_args(args: argparse.Namespace) -> StartDetectionSettings:
-    """Build a settings bundle from the per-knob CLI flags."""
-    overrides: Dict[str, Any] = {}
-    if args.sweep_max_us is not None:
-        overrides["sweep_max_us"] = float(args.sweep_max_us)
-    if args.step_us is not None:
-        overrides["step_us"] = float(args.step_us)
-    if args.guard_margin_us is not None:
-        overrides["guard_margin_us"] = float(args.guard_margin_us)
-    if args.floor_factor is not None:
-        overrides["floor_factor"] = float(args.floor_factor)
+    """Build a settings bundle from the per-knob CLI flags.
+
+    Most fields route through the shared :func:`start_settings_from_namespace`
+    reader (the same one ``run``'s ``--start.*`` passthrough uses); ``--band``
+    is a paired convenience flag folded into ``band_min_mhz``/``band_max_mhz``
+    by hand since it is not a plain per-field float flag.
+    """
+    overrides: Dict[str, Any] = start_settings_from_namespace(args, prefix=None)
     if args.band is not None:
         overrides["band_min_mhz"] = float(args.band[0])
         overrides["band_max_mhz"] = float(args.band[1])
@@ -146,29 +145,19 @@ def _handle_figure_output(fig: Any, args: argparse.Namespace) -> int:
 
 
 def _add_detection_knobs(parser: argparse.ArgumentParser) -> None:
-    """Shared per-knob flags for both subcommands."""
-    parser.add_argument(
-        "--sweep-max-us",
-        type=float,
-        help="Upper bound of the start-time sweep (default 7.5; capped to FID)",
-    )
-    parser.add_argument(
-        "--step-us",
-        type=float,
-        help="Sweep step in us (default 0.02)",
-    )
-    parser.add_argument(
-        "--guard-margin-us",
-        type=float,
-        help=(
-            "Margin added past the chirp end for the switch-bounce ringdown "
-            "(default 0.67; instrument-specific)"
-        ),
-    )
-    parser.add_argument(
-        "--floor-factor",
-        type=float,
-        help="Chirp-end = first start where Σ|FT| < factor*floor (default 3.0)",
+    """Shared per-knob flags for both subcommands.
+
+    Per-field flags (``--sweep-max-us``, ``--step-us``, ``--guard-margin-us``,
+    ``--floor-factor``, plus the previously-unexposed ``--floor-tail-us`` and
+    ``--min-chirp-drop-ratio``) come from the shared
+    :func:`add_start_detection_args` generator, the same one ``run``'s
+    ``--start.*`` passthrough uses. ``band_min_mhz``/``band_max_mhz`` are
+    excluded from that generation in favor of the paired ``--band MIN MAX``
+    convenience flag below, and ``-v``/``--verbose`` is not a settings knob at
+    all.
+    """
+    add_start_detection_args(
+        parser, prefix=None, exclude={"band_min_mhz", "band_max_mhz"}
     )
     parser.add_argument(
         "--band",

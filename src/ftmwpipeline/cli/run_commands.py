@@ -9,10 +9,22 @@ real logic lives in :func:`run_pipeline_impl`.
 from __future__ import annotations
 
 import argparse
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from .._internal.run_impl import run_pipeline_impl
-from ..core.settings import _parse_trim
+from ..core.noise_settings import NoiseSettings
+from ..core.peak_detection_settings import PeakDetectionSettings
+from ..core.settings import FTSettings, _parse_trim
+from ..core.stage_fit_settings import StageFitSettings
+from ..core.start_detection_settings import StartDetectionSettings
+from ..core.tau_calibration_settings import TauCalibrationSettings
+from ..core.window_planning_settings import WindowPlanningSettings
+from ._argspec import (
+    add_settings_args,
+    add_start_detection_args,
+    settings_from_namespace,
+    start_settings_from_namespace,
+)
 
 
 def _parse_clocks(spec: Optional[str]) -> Optional[List[dict]]:
@@ -36,9 +48,46 @@ def _parse_clocks(spec: Optional[str]) -> Optional[List[dict]]:
     return out or None
 
 
+def _start_detection_params_from_namespace(
+    args: argparse.Namespace,
+) -> Optional[Dict[str, Any]]:
+    """Build ``start_detection_params`` from the parsed ``--start.*`` flags.
+
+    ``StartDetectionSettings`` is a frozen dataclass with concrete hard
+    defaults (not the ``Optional``-everywhere resolution-chain pattern the
+    other stages use), so only the user-specified fields are passed through;
+    the dataclass defaults fill the rest. ``None`` when no ``--start.*`` flag
+    was given, so behavior is unchanged from a bare ``run``.
+    """
+    overrides = start_settings_from_namespace(args, prefix="start")
+    if not overrides:
+        return None
+    return {"settings": StartDetectionSettings(**overrides)}
+
+
+def _stage_settings_params(
+    args: argparse.Namespace, cls: Any, prefix: str
+) -> Optional[Dict[str, Any]]:
+    """Reconstruct a stage's sparse settings from its ``--{prefix}.*`` flags.
+
+    Returns ``{"settings": <instance>}`` only when at least one namespaced
+    flag was given (``instance.is_empty()`` is False); ``None`` otherwise, so
+    a bare ``run`` with no namespaced knobs is unaffected.
+    """
+    inst = settings_from_namespace(args, cls, prefix=prefix)
+    return None if inst.is_empty() else {"settings": inst}
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     """Run the full pipeline on a raw source."""
     trim = args.trim  # already a (min, max) tuple from _parse_trim, or None
+
+    # FT is special-cased: compute_ft takes the FTSettings fields as flat
+    # kwargs (start_us / end_us / units_power), not a `settings=` bundle, so
+    # ft_params stays the flat-kwargs-dict shape `run_pipeline_impl` already
+    # expects (it setdefaults `trim` onto it).
+    ft_overrides = settings_from_namespace(args, FTSettings, prefix="ft").overrides()
+    ft_params = ft_overrides or None
 
     result = run_pipeline_impl(
         args.source,
@@ -55,6 +104,13 @@ def cmd_run(args: argparse.Namespace) -> int:
         report_output_dir=args.report_dir,
         preset=args.preset,
         progress=not args.quiet,
+        start_detection_params=_start_detection_params_from_namespace(args),
+        ft_params=ft_params,
+        noise_params=_stage_settings_params(args, NoiseSettings, "noise"),
+        tau_params=_stage_settings_params(args, TauCalibrationSettings, "tau"),
+        peak_params=_stage_settings_params(args, PeakDetectionSettings, "peaks"),
+        window_params=_stage_settings_params(args, WindowPlanningSettings, "windows"),
+        fit_params=_stage_settings_params(args, StageFitSettings, "fit"),
     )
 
     if result["status"] == "error":
@@ -105,11 +161,15 @@ def register_run_command(subparsers: Any) -> None:
     )
     p.add_argument(
         "--trim",
+        "--ft.trim",
         dest="trim",
         type=_parse_trim,
         required=True,
         metavar="MIN:MAX",
-        help="Active-band FT range in MHz, as MIN:MAX (required).",
+        help=(
+            "Active-band FT range in MHz, as MIN:MAX (required). "
+            "--ft.trim is an alias for this same flag."
+        ),
     )
     p.add_argument(
         "--sigma-floor",
@@ -193,4 +253,39 @@ def register_run_command(subparsers: Any) -> None:
         default=False,
         help="Suppress the live per-stage progress display.",
     )
+
+    # Namespaced per-knob passthrough: `--<stage>.<flag>`, generated from each
+    # stage's own settings dataclass (the same class its `*_commands.py`
+    # subcommand uses), so `run` never drifts from the per-stage CLI surface.
+    # These compose with the flags above (explicit --trim etc. still win their
+    # own lane) and route into the `*_params` override dicts `run_pipeline_impl`
+    # already accepts. Only start/ft/noise/tau/peaks/windows/fit have a knob
+    # surface today -- timebase/review/report have no settings-dataclass/CLI
+    # knob surface to mirror (see dev-docs/planning/pipeline-run.md).
+    grp_start = p.add_argument_group("stage knobs: start")
+    add_start_detection_args(grp_start, prefix="start")
+
+    # `trim` stays excluded from the generated `--ft.*` flags because
+    # `--ft.trim` is registered above as an explicit second option string on
+    # the canonical `--trim` flag (a true alias, same dest/value) rather than
+    # a separate namespaced flag; keeping the exclusion here is what avoids
+    # argparse raising a duplicate-option error over `--ft.trim`.
+    grp_ft = p.add_argument_group("stage knobs: ft")
+    add_settings_args(grp_ft, FTSettings, prefix="ft", exclude={"trim"})
+
+    grp_noise = p.add_argument_group("stage knobs: noise")
+    add_settings_args(grp_noise, NoiseSettings, prefix="noise")
+
+    grp_tau = p.add_argument_group("stage knobs: tau")
+    add_settings_args(grp_tau, TauCalibrationSettings, prefix="tau")
+
+    grp_peaks = p.add_argument_group("stage knobs: peaks")
+    add_settings_args(grp_peaks, PeakDetectionSettings, prefix="peaks")
+
+    grp_windows = p.add_argument_group("stage knobs: windows")
+    add_settings_args(grp_windows, WindowPlanningSettings, prefix="windows")
+
+    grp_fit = p.add_argument_group("stage knobs: fit")
+    add_settings_args(grp_fit, StageFitSettings, prefix="fit")
+
     p.set_defaults(func=cmd_run)

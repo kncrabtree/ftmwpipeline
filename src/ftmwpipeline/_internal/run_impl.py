@@ -60,6 +60,7 @@ def run_pipeline_impl(
     clocks: Optional[Any] = None,
     report: bool = False,
     report_output_dir: Optional[Union[str, Path]] = None,
+    start_detection_params: Optional[Dict[str, Any]] = None,
     ft_params: Optional[Dict[str, Any]] = None,
     noise_params: Optional[Dict[str, Any]] = None,
     tau_params: Optional[Dict[str, Any]] = None,
@@ -81,6 +82,9 @@ def run_pipeline_impl(
     active-band FT range, MHz) is required -- there is no active-band
     auto-detector. Each ``*_params`` dict is forwarded to the matching stage; an
     optional *preset* name is forwarded to the stages that accept one.
+    *start_detection_params* is forwarded to ``detect_start_time`` (e.g.
+    ``{"settings": StartDetectionSettings(guard_margin_us=1.0)}``) when
+    *detect_start* is True.
 
     Timebase calibration is non-fatal: it auto-resolves the instrument clock
     declaration (explicit *clocks* > persisted ``spur.clocks`` > the loader's
@@ -143,7 +147,7 @@ def run_pipeline_impl(
 
             if detect_start:
                 with reporter.stage("start detection"):
-                    pipe.detect_start_time()
+                    pipe.detect_start_time(**(start_detection_params or {}))
                 completed.append("start detection")
 
             with reporter.stage("FT"):

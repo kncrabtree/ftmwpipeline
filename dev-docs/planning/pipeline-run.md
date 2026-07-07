@@ -72,12 +72,69 @@ Required: the user must see processing status without the full INFO log firehose
 - **`Pipeline.build(source, *, trim, …)`** classmethod → delegates to it.
 - **`api.run_pipeline(source, …)`** — per-stage override dicts (`ft_params`,
   `noise_params`, `tau_params`, `peak_params`, `window_params`, `fit_params`,
-  `review_params`), the settings cascade applying underneath.
+  `review_params`) plus `start_detection_params`, the settings cascade applying
+  underneath.
 - **CLI `ftmwpipeline run <source> --trim LO HI`** (bare verb) — forwards a
-  `--preset` to the stages that accept it rather than exposing per-stage flags;
-  `--output`, `--sigma-floor`, `--report` / `--report-dir`, `--force`,
-  `--no-start-detect`, `--no-cal`, `--clocks`.
+  `--preset` to the stages that accept it; also exposes every stage's individual
+  knobs as namespaced flags (`--ft.start-us`, `--fit.tau.max-decay-factor`, …
+  see "Namespaced per-knob passthrough" below); `--output`, `--sigma-floor`,
+  `--report` / `--report-dir`, `--force`, `--no-start-detect`, `--no-cal`,
+  `--clocks`.
 - Supersedes the stages-0–2-only `workflows.process_experiment` (left in place).
+
+## Namespaced per-knob passthrough
+
+Beyond the always-on flags above, `run` also exposes every stage's individual
+knobs as **namespaced flags**, generated from the same settings dataclass each
+stage's own `*_commands.py` subcommand uses — `run` never carries a separate
+copy of a stage's CLI surface that could drift from it:
+
+```
+ftmwpipeline run raw.dat --trim 8000:18000 \
+  --start.guard-margin-us 1.0 \
+  --ft.start-us 2.5 \
+  --fit.tau.max-decay-factor 0.9
+```
+
+- **Mechanism**: `cli/_argspec.py`'s `add_settings_args` / `settings_from_namespace`
+  gained an optional `prefix` (e.g. `"ft"`, `"fit"`) that namespaces every
+  generated flag/dest under `"{prefix}."` (`--ft.start-us`, dest `"ft.start_us"`;
+  a sub-block field becomes `--fit.tau.max-decay-factor`, dest
+  `"fit.tau.max_decay_factor"`). The flag body is always derived deterministically
+  from the field path (ignoring any hand-picked `flag=` override), so two stages
+  can never collide once namespaced onto the shared `run` parser. `prefix=None`
+  (the default) reproduces the exact pre-existing per-stage subcommand behavior
+  byte-for-byte.
+- **Stage → settings class map** (mirrors each stage's own subcommand):
+  `ft` → `FTSettings` (`trim` excluded from the generated namespaced flags;
+  `--trim` is the canonical top-level flag, with `--ft.trim` accepted as an
+  alias of it on the same argument — keeping the exclusion is what lets the
+  alias register without an argparse duplicate-option clash),
+  `noise` → `NoiseSettings`, `tau` → `TauCalibrationSettings`,
+  `peaks` → `PeakDetectionSettings`, `windows` → `WindowPlanningSettings`,
+  `fit` → `StageFitSettings`.
+- **Stage 0 (`--start.*`)**: `StartDetectionSettings` is a flat frozen dataclass
+  with concrete hard defaults (not the `Optional`-everywhere resolution-chain
+  pattern), so it carries no `knob_field` metadata for `_argspec` to walk. A
+  dedicated `add_start_detection_args` / `start_settings_from_namespace` pair in
+  `cli/_argspec.py` builds one `--[prefix.]<field>` float flag per dataclass
+  field (from a shared help map) and reconstructs the sparse overrides from only
+  the user-specified fields. Both the standalone `start run` / `start show`
+  subcommands (prefix `None`) and `run` (prefix `"start"`) call this single
+  generator, so the two flag lists cannot drift; `start` additionally keeps a
+  `--band MIN MAX` convenience pair folded onto `band_min_mhz` / `band_max_mhz`.
+- **Routing**: each namespaced group reconstructs a sparse settings instance
+  and, only when at least one flag in that namespace was given
+  (`instance.is_empty()` is `False`), passes `{"settings": instance}` as that
+  stage's `*_params` override dict — unaffected when no namespaced flag is
+  used. **FT is special-cased**: `Pipeline.compute_ft` takes `start_us` /
+  `end_us` / `units_power` as flat kwargs (no `settings=` parameter), so `run`
+  passes `FTSettings(...).overrides()` (a flat dict) as `ft_params` instead of
+  a `{"settings": ...}` wrapper; `run_pipeline_impl` already `setdefault`s
+  `trim` onto that same dict.
+- **Skipped stages**: `timebase` / `review` / `report` have no
+  knob-metadata-bearing settings dataclass wired to a CLI subcommand, so they
+  get no namespaced group (a candidate follow-up if/when they grow one).
 
 ## Test plan
 

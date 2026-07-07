@@ -124,6 +124,49 @@ runs only as a cross-check, warning if the two disagree. A declared start is the
 dependable choice on very high signal-to-noise data, where the magnitude plateau
 and floor are less cleanly separated.
 
+.. _stage0-detector-settings:
+
+Tuning the detector
+-------------------
+
+The detector's knobs are ``StartDetectionSettings``. Each is reachable through
+``start run --<knob>`` and, through the whole-pipeline :doc:`run` command, as
+``run --start.<knob>``; the recommended start the sweep yields is what
+:doc:`Stage 1 <stage1_ft>` inherits as ``start_us`` (which ``run`` can also
+override outright with ``--ft.start-us``). Defaults are tuned on the Blackchirp
+2638-family instrument (LO 40960 MHz, lower sideband); the knobs are exposed for
+retuning on other instruments.
+
+``guard_margin_us``
+   Margin added to the detected chirp end to clear the switch-bounce ring-down;
+   the recommended start is ``chirp_end + guard_margin_us`` (default ``0.67``).
+   It is the most instrument-specific knob — the ring-down length varies by
+   switch — so it is the first to retune on a new instrument.
+``sweep_max_us``
+   Upper bound of the candidate-start sweep, capped to the FID duration
+   (default ``7.5``). It must clear the chirp end plus the post-chirp molecular
+   tail that the floor estimate uses.
+``step_us``
+   Sweep step (default ``0.02``). A finer step resolves the chirp-end corner
+   more precisely, at linear cost.
+``floor_factor``
+   The chirp end is the first candidate start where the integrated
+   Fourier-transform magnitude falls below ``floor_factor`` times the deep-tail
+   floor (default ``3.0``). The collapse spans two to three decades, so any
+   factor within a few times the floor lands on the same corner.
+``floor_tail_us``
+   Width of the deep-tail window at the end of the sweep used for the robust
+   floor estimate (default ``1.0``).
+``min_chirp_drop_ratio``
+   Minimum plateau-to-floor ratio for the collapse to be treated as present
+   (default ``10.0``). Below it the start time cannot be inferred from the data
+   — there is no excitation transient in the recorded FID — and the detector
+   declines to recommend one.
+``band_min_mhz`` / ``band_max_mhz``
+   Optional explicit integration band for the sweep. Unset, the detector uses
+   the canonical Stage 1 frequency trim, falling back to the full positive
+   spectrum.
+
 Running the stage
 -----------------
 

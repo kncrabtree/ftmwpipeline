@@ -3,11 +3,16 @@
 Fast unit tests drive the orchestrator against a fake Pipeline (no fixture fit
 needed) to pin the stage ordering, stop-at-first-failure, the non-fatal timebase
 skip, report gating, and the dual-interface delegation; plus direct tests of the
-``StageProgress`` display. One integration test runs a real narrow-band build.
+``StageProgress`` display. Also covers the namespaced per-knob passthrough
+(``--start.*`` / ``--ft.*`` / ``--noise.*`` / ... / ``--fit.*``) added on top of
+``run``: CLI parsing/reconstruction, CLI-vs-api parity, and one cheap real-data
+check that a namespaced knob has a genuine effect. One integration test runs a
+real narrow-band build end to end.
 """
 
 from __future__ import annotations
 
+import argparse
 import io
 import logging
 from pathlib import Path
@@ -17,6 +22,16 @@ import pytest
 import ftmwpipeline.api as ftmw
 from ftmwpipeline._internal.progress import ProgressHandler, StageProgress
 from ftmwpipeline._internal.run_impl import run_pipeline_impl
+from ftmwpipeline.cli._argspec import settings_from_namespace
+from ftmwpipeline.cli.main import main as run_cli
+from ftmwpipeline.cli.run_commands import (
+    _stage_settings_params,
+    _start_detection_params_from_namespace,
+    register_run_command,
+)
+from ftmwpipeline.core.settings import FTSettings
+from ftmwpipeline.core.stage_fit_settings import StageFitSettings, TauSubSettings
+from ftmwpipeline.core.start_detection_settings import StartDetectionSettings
 from ftmwpipeline.pipeline import Pipeline
 
 # ---------------------------------------------------------------------------
@@ -185,6 +200,213 @@ def test_cross_interface_delegation(patch_pipeline):
         via_impl["completed_stages"]
         == via_api["completed_stages"]
         == via_pipe["completed_stages"]
+    )
+
+
+# ---------------------------------------------------------------------------
+# Namespaced per-knob passthrough (--start.* / --ft.* / ... / --fit.*)
+# ---------------------------------------------------------------------------
+
+
+def _run_parser() -> argparse.ArgumentParser:
+    """Build the real ``run`` parser (mirrors the registered CLI surface)."""
+    parser = argparse.ArgumentParser(prog="ftmwpipeline")
+    sub = parser.add_subparsers()
+    register_run_command(sub)
+    return parser
+
+
+def _parse_run(extra: list) -> argparse.Namespace:
+    return _run_parser().parse_args(["run", "raw.dat", "--trim", "8000:18000"] + extra)
+
+
+class TestNamespacedKnobParsing:
+    """The ``run`` parser accepts namespaced per-stage flags and reconstructs
+    the correct sparse settings instance, leaving everything else unset."""
+
+    def test_accepts_start_ft_and_nested_fit_flags(self):
+        ns = _parse_run(
+            [
+                "--start.guard-margin-us",
+                "1.0",
+                "--ft.start-us",
+                "2.5",
+                "--fit.tau.max-decay-factor",
+                "0.9",
+            ]
+        )
+        assert getattr(ns, "start.guard_margin_us") == 1.0
+        assert getattr(ns, "ft.start_us") == 2.5
+        assert getattr(ns, "fit.tau.max_decay_factor") == 0.9
+        # Untouched knobs in the same namespaces stay unset.
+        assert getattr(ns, "start.sweep_max_us") is None
+        assert getattr(ns, "ft.end_us") is None
+        assert getattr(ns, "fit.tau.tau0_us") is None
+
+    def test_ft_trim_is_an_alias_for_trim(self):
+        """``--ft.trim`` is a second option string on the canonical ``--trim``
+        flag (same dest), not a separate namespaced flag -- so it is excluded
+        from the generated ``--ft.*`` group (that generation would otherwise
+        collide with this alias) and instead routes to the same ``args.trim``."""
+        ns_canonical = _run_parser().parse_args(
+            ["run", "raw.dat", "--trim", "8000:18000"]
+        )
+        ns_alias = _run_parser().parse_args(
+            ["run", "raw.dat", "--ft.trim", "8000:18000"]
+        )
+        assert ns_canonical.trim == (8000.0, 18000.0)
+        assert ns_alias.trim == ns_canonical.trim
+
+    def test_reconstructs_ft_settings(self):
+        ns = _parse_run(["--ft.start-us", "2.5"])
+        ft = settings_from_namespace(ns, FTSettings, prefix="ft")
+        assert ft.start_us == 2.5
+        assert ft.end_us is None
+        assert ft.units_power is None
+        assert ft.trim is None
+
+    def test_reconstructs_nested_fit_settings(self):
+        ns = _parse_run(["--fit.tau.max-decay-factor", "0.9"])
+        fit = settings_from_namespace(ns, StageFitSettings, prefix="fit")
+        assert fit.tau.max_decay_factor == 0.9
+        assert fit.tau.tau0_us is None  # sibling field in the same sub-block
+        assert fit.shape is None
+        assert fit.rescue.max_rounds is None  # untouched sub-block
+
+    def test_start_detection_params_from_namespace(self):
+        ns = _parse_run(["--start.guard-margin-us", "1.0"])
+        params = _start_detection_params_from_namespace(ns)
+        assert params == {"settings": StartDetectionSettings(guard_margin_us=1.0)}
+
+    def test_start_detection_params_none_when_unset(self):
+        ns = _parse_run([])
+        assert _start_detection_params_from_namespace(ns) is None
+
+    def test_stage_settings_params_none_when_unset(self):
+        ns = _parse_run([])
+        assert _stage_settings_params(ns, StageFitSettings, "fit") is None
+
+    def test_stage_settings_params_set_when_given(self):
+        ns = _parse_run(["--fit.tau.max-decay-factor", "0.9"])
+        params = _stage_settings_params(ns, StageFitSettings, "fit")
+        assert params == {
+            "settings": StageFitSettings(tau=TauSubSettings(max_decay_factor=0.9))
+        }
+
+
+class _CapturingPipe(_FakePipe):
+    """A :class:`_FakePipe` that also records the kwargs each stage received."""
+
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.received: dict = {}
+
+    def detect_start_time(self, **k):
+        self.received["start"] = k
+        super().detect_start_time(**k)
+
+    def compute_ft(self, **k):
+        self.received["ft"] = k
+        super().compute_ft(**k)
+
+    def fit_peaks(self, **k):
+        self.received["fit"] = k
+        super().fit_peaks(**k)
+
+
+def test_cli_namespaced_knobs_match_api_explicit_params(patch_pipeline):
+    """Driving ``run`` via argv with namespaced knobs reaches the same
+    stage-call kwargs as ``api.run_pipeline`` given the equivalent explicit
+    ``start_detection_params`` / ``ft_params`` / ``fit_params``."""
+    pipe_cli = patch_pipeline(_CapturingPipe())
+    argv = [
+        "run",
+        "src",
+        "--output",
+        "x.ftmw",
+        "--trim",
+        "1:2",
+        "--start.guard-margin-us",
+        "1.0",
+        "--ft.start-us",
+        "2.5",
+        "--fit.tau.max-decay-factor",
+        "0.9",
+        "--quiet",
+    ]
+    assert run_cli(argv) == 0
+
+    pipe_api = patch_pipeline(_CapturingPipe())
+    ftmw.run_pipeline(
+        "src",
+        output="x.ftmw",
+        trim=(1.0, 2.0),
+        progress=False,
+        start_detection_params={
+            "settings": StartDetectionSettings(guard_margin_us=1.0)
+        },
+        ft_params={"start_us": 2.5},
+        fit_params={
+            "settings": StageFitSettings(tau=TauSubSettings(max_decay_factor=0.9))
+        },
+    )
+
+    assert pipe_cli.received["start"] == pipe_api.received["start"]
+    assert pipe_cli.received["ft"] == pipe_api.received["ft"]
+    assert pipe_cli.received["fit"] == pipe_api.received["fit"]
+    # The other (un-namespaced) stages saw no override either way.
+    assert pipe_cli.received["ft"] == {"start_us": 2.5, "trim": (1.0, 2.0)}
+
+
+@pytest.mark.integration
+def test_start_guard_margin_knob_changes_recommended_start(tmp_path):
+    """A cheap, real-data check that ``--start.guard-margin-us`` (routed
+    through ``start_detection_params``) has a genuine effect: the stamped
+    Stage-0 recommended ``start_us`` moves by exactly the change in margin,
+    since both share the same detected chirp end. Only Stage 0 runs -- no
+    need to drive the full pipeline to exercise this knob.
+    """
+    data = Path("examples/blackchirp_data/1512")
+    if not data.exists():
+        pytest.skip("Experiment 1512 data not available")
+
+    default_file = tmp_path / "default.ftmw"
+    overridden_file = tmp_path / "overridden.ftmw"
+
+    pipe_default = Pipeline.create(default_file, source=data, force=True)
+    default_start = pipe_default.detect_start_time().start_us
+
+    pipe_override = Pipeline.create(overridden_file, source=data, force=True)
+    override_start = pipe_override.detect_start_time(
+        **_start_detection_params_from_namespace(
+            _parse_run(["--start.guard-margin-us", "5.0"])
+        )
+    ).start_us
+
+    assert override_start != default_start
+    assert override_start - default_start == pytest.approx(5.0 - 0.67, abs=1e-6)
+
+
+@pytest.mark.integration
+def test_ft_start_us_knob_overrides_ft(tmp_path):
+    """``--ft.start-us`` (routed through ``ft_params``) actually changes the
+    resulting FT relative to the default (no explicit start_us)."""
+    data = Path("examples/blackchirp_data/1512")
+    if not data.exists():
+        pytest.skip("Experiment 1512 data not available")
+
+    pipe = Pipeline.create(tmp_path / "ft.ftmw", source=data, force=True)
+    ft_default = pipe.compute_ft(trim=(26500, 40000))
+
+    ns = _parse_run(["--ft.start-us", "2.5"])
+    ft_overrides = settings_from_namespace(ns, FTSettings, prefix="ft").overrides()
+    assert ft_overrides == {"start_us": 2.5}
+    ft_overridden = pipe.compute_ft(trim=(26500, 40000), **ft_overrides)
+
+    import numpy as np
+
+    assert not np.allclose(
+        ft_default.magnitude_spectrum, ft_overridden.magnitude_spectrum
     )
 
 

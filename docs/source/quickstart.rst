@@ -35,7 +35,9 @@ progress. The active-band trim is required:
        --trim 26500:40000 \
        --output exp_2638.ftmw
 
-Add ``--report`` to also emit the line-list table and an HTML report.
+Add ``--report`` to also emit the line-list table and an HTML report. See
+:doc:`run` for the full option reference — the per-stage knob passthrough,
+controlling the Stage 0 start time, and worked ``--preset`` examples.
 
 The same end-to-end build from Python, through the class API:
 

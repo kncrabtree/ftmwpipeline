@@ -146,7 +146,8 @@ and stamps a recommended ``start_us`` (chirp end plus a guard margin) into the
 Stage 0 recommended layer, so a later ``ft run`` with no explicit ``--start-us``
 inherits it. ``--no-stamp`` reports without writing. ``start show`` draws the
 Σ\|FT\|-vs-``start_us`` sweep diagnostic. Knobs: ``--sweep-max-us``,
-``--step-us``, ``--guard-margin-us``, ``--floor-factor``, ``--band``.
+``--step-us``, ``--guard-margin-us``, ``--floor-factor``, ``--band``, plus the
+less commonly tuned ``--floor-tail-us`` and ``--min-chirp-drop-ratio``.
 
 ``ft`` — Fourier transform (Stage 1)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -316,7 +317,9 @@ by default; timebase calibration runs by default but is non-fatal and skippable
 with ``--no-cal``. ``--report`` also emits the Level-1 table and Level-3 HTML
 report. ``--preset`` forwards a settings preset to the stages that accept one,
 and ``--clocks`` declares the instrument clocks for the spur gate and timebase
-calibration. See :doc:`quickstart`.
+calibration. Every stage's individual knobs are also reachable as namespaced
+``--<stage>.<knob>`` flags. See :doc:`run` for the full reference, including
+Stage 0 start-time control and worked preset examples.
 
 Utility commands
 ----------------

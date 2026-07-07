@@ -9,6 +9,7 @@
    overview
    installation
    quickstart
+   run
 
 .. toctree::
    :hidden:
