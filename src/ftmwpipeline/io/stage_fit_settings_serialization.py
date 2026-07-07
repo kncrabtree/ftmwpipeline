@@ -47,6 +47,8 @@ from ..core.stage_fit_settings import (
 )
 from ..core.stage_fit_settings import from_attrs as stage_fit_from_attrs
 from ..core.stage_fit_settings import to_attrs as stage_fit_to_attrs
+from ..core.start_detection_settings import StartDetectionSettings
+from ..preprocessing.start_detection import StartDetectionRecord, StartDetectionResult
 from ._settings_serialization import (
     decode_attr,
     load_subblock_settings,
@@ -373,6 +375,121 @@ def read_recommended_chirp_window(
         return None
 
 
+# The start-detection settings + sweep outcome are stored as a JSON attr on the
+# Stage 0 FID group, alongside the chirp-window and clock-sources attrs. Unlike
+# those import-time declarations, this one is written by ``start run`` /
+# ``detect_start_time_impl`` (any time it is asked to stamp), whether or not a
+# chirp collapse was found and whether or not a chirp-window declaration
+# governs the final start_us -- it is the diagnostic record of what the sweep
+# detector was actually given and actually found, so a report can replay the
+# exact sweep instead of re-running it with guessed default knobs.
+_RECOMMENDED_START_DETECTION_ATTR = "recommended_start_detection"
+
+
+def write_recommended_start_detection(
+    file_path: str,
+    settings: StartDetectionSettings,
+    result: StartDetectionResult,
+) -> None:
+    """Persist the start-detection settings + sweep outcome actually used.
+
+    Stores a JSON-encoded record as an attr on ``stage0_fid_data``. No-op when
+    the Stage 0 group is absent. Re-running detection over the same file
+    overwrites the attr cleanly.
+    """
+    band = result.band_mhz
+    encoded = json.dumps(
+        {
+            "sweep_max_us": settings.sweep_max_us,
+            "step_us": settings.step_us,
+            "floor_factor": settings.floor_factor,
+            "floor_tail_us": settings.floor_tail_us,
+            "guard_margin_us": settings.guard_margin_us,
+            "min_chirp_drop_ratio": settings.min_chirp_drop_ratio,
+            "band_min_mhz": (
+                settings.band_min_mhz
+                if settings.band_min_mhz is not None
+                else _NONE_SENTINEL
+            ),
+            "band_max_mhz": (
+                settings.band_max_mhz
+                if settings.band_max_mhz is not None
+                else _NONE_SENTINEL
+            ),
+            "chirp_end_us": result.chirp_end_us,
+            "chirp_detected": result.chirp_detected,
+            "floor": result.floor,
+            "plateau": result.plateau,
+            "resolved_band_min_mhz": band[0] if band is not None else _NONE_SENTINEL,
+            "resolved_band_max_mhz": band[1] if band is not None else _NONE_SENTINEL,
+        }
+    )
+    try:
+        with h5py.File(file_path, "a") as h5f:
+            if _STAGE0_GROUP not in h5f:
+                return
+            h5f[_STAGE0_GROUP].attrs[_RECOMMENDED_START_DETECTION_ATTR] = encoded
+    except (OSError, KeyError):
+        logger.warning(
+            "Could not write recommended start-detection record to %s", file_path
+        )
+
+
+def read_recommended_start_detection(
+    file_path: str,
+) -> Optional[StartDetectionRecord]:
+    """Read the persisted start-detection settings + sweep outcome, or ``None``.
+
+    Returns ``None`` for: Stage 0 group absent, attr missing, or any parse
+    error -- i.e. start-time detection has never been explicitly run
+    (``start run`` / ``Pipeline.detect_start_time`` / ``api.detect_start_time``)
+    on this file.
+    """
+    try:
+        with h5py.File(file_path, "r") as h5f:
+            if _STAGE0_GROUP not in h5f:
+                return None
+            attr = h5f[_STAGE0_GROUP].attrs.get(_RECOMMENDED_START_DETECTION_ATTR)
+            if attr is None:
+                return None
+            decoded = decode_attr(attr)
+            d = json.loads(decoded)
+
+            def _opt(key: str) -> Optional[float]:
+                v = d.get(key)
+                return None if v is None or v == _NONE_SENTINEL else float(v)
+
+            band_lo, band_hi = _opt("resolved_band_min_mhz"), _opt(
+                "resolved_band_max_mhz"
+            )
+            band_mhz = (
+                (band_lo, band_hi)
+                if band_lo is not None and band_hi is not None
+                else None
+            )
+
+            settings = StartDetectionSettings(
+                sweep_max_us=float(d["sweep_max_us"]),
+                step_us=float(d["step_us"]),
+                floor_factor=float(d["floor_factor"]),
+                floor_tail_us=float(d["floor_tail_us"]),
+                guard_margin_us=float(d["guard_margin_us"]),
+                min_chirp_drop_ratio=float(d["min_chirp_drop_ratio"]),
+                band_min_mhz=_opt("band_min_mhz"),
+                band_max_mhz=_opt("band_max_mhz"),
+            )
+            return StartDetectionRecord(
+                settings=settings,
+                chirp_end_us=float(d["chirp_end_us"]),
+                chirp_detected=bool(d["chirp_detected"]),
+                floor=float(d["floor"]),
+                plateau=float(d["plateau"]),
+                band_mhz=band_mhz,
+            )
+    except (OSError, KeyError, ValueError, json.JSONDecodeError):
+        return None
+
+
 __all__ = [
     "STAGE_FIT_PATH",
     "save_stage_fit_settings_to_h5",
@@ -385,4 +502,6 @@ __all__ = [
     "read_recommended_clock_sources",
     "write_recommended_chirp_window",
     "read_recommended_chirp_window",
+    "write_recommended_start_detection",
+    "read_recommended_start_detection",
 ]

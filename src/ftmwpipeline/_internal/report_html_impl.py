@@ -1001,12 +1001,13 @@ def _methods_stage_figures(
     stage's section). Every figure is gated -- a stage that was not run, or whose
     renderer raises, is silently skipped. Reuses the per-stage ``visualize_*``
     renderers so the report inherits the same grids the CLI draws."""
-    from ..visualization.fid_visualization import plot_fid_overview
+    from ..visualization.start_detection_visualization import (
+        plot_stage0_overview_from_file,
+    )
     from ..visualization.tau_calibration_visualization import (
         plot_tau_distribution_from_file,
         plot_tau_heatmap_from_file,
     )
-    from .stage0_impl import load_fid_from_pipeline_impl
     from .stage2_impl import visualize_noise_impl
     from .stage3_impl import (
         visualize_peaks_impl,
@@ -1025,8 +1026,12 @@ def _methods_stage_figures(
             [
                 (
                     "stage0_fid",
-                    "Raw FID -- full trace, early-time zoom, and voltage histogram.",
-                    lambda: plot_fid_overview(load_fid_from_pipeline_impl(path)),
+                    "Stage 0 start-time selection -- the raw FID (time domain) "
+                    "and, when start-time detection has been run, the Σ|FT|-vs-"
+                    "start sweep that located the chirp-end collapse, aligned "
+                    "on the same time axis and marked with the chirp end, the "
+                    "effective start, and the ring-down guard margin.",
+                    lambda: plot_stage0_overview_from_file(path, title=""),
                 )
             ],
         ),
