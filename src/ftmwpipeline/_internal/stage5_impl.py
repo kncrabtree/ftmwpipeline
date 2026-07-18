@@ -2625,28 +2625,37 @@ def _padded_active_display_ft(
 def compute_display_ft_impl(
     file_path: str, pad_factor: int = _DETAIL_PAD_FACTOR
 ) -> ComplexFT:
-    """Compute the zero-padded active-region DISPLAY FT (Stage 5 report /
-    'fit show' magnitude panels), the same spectrum ``_resolve_detail_bundle``
-    exposes as ``freq_padded`` / ``spec_padded`` -- without requiring a
-    persisted Stage 5 fit. Depends on Stage 1 (the FID plus canonical FT
-    settings) only, via :func:`_build_active_ft_inputs`.
+    """Compute the zero-padded, canonical-band DISPLAY FT (Stage 5 report /
+    'fit show' magnitude panels), without requiring a persisted Stage 5 fit.
+    Depends on Stage 1 (the FID plus canonical FT settings, including any
+    trim) only, via :func:`_build_active_ft_inputs`.
 
-    Contrast with the canonical :func:`ftmwpipeline.api.compute_ft`: that FT is
-    unpadded and native-length -- the one everything downstream fits and
+    Contrast with the canonical :func:`ftmwpipeline.api.compute_ft`: that FT
+    is unpadded and native-length -- the one everything downstream fits and
     scores on. This FT zero-fills the active-region FID slice by
     ``pad_factor`` (display default ``2``, the information limit for a
     magnitude spectrum) purely to interpolate the magnitude curve between the
     native bins; it is display-only and never feeds fitting, noise, or
-    chi-squared. Display magnitude is ``abs(spectrum) * amplitude_scale``;
-    ``units_label`` names the persisted display units (e.g. ``"µV"``).
+    chi-squared. The padded grid is then trimmed to ``compute_ft(file_path,
+    from_saved_params=True)``'s own frequency band, so this FT differs from
+    the canonical FT only in bin density (``pad_factor``x), never extent --
+    a consumer deriving a frequency window from this accessor (e.g. a
+    catalog/prediction range) sees exactly the band Stage 1 kept, not the
+    full FID active region. (The internal, unpadded-and-untrimmed variant
+    ``_resolve_detail_bundle`` builds via :func:`_padded_active_display_ft`
+    directly is unaffected -- its report/'fit show' consumers mask per-window
+    at render time regardless of the shared bundle's extent.) Display
+    magnitude is ``abs(spectrum) * amplitude_scale``; ``units_label`` names
+    the persisted display units (e.g. ``"µV"``).
 
     Returns
     -------
     ComplexFT
-        ``freq_array`` sorted ascending in molecular frequency,
-        ``complex_spectrum`` aligned to it. ``metadata`` carries
-        ``amplitude_scale`` (float), ``units_label`` (str), and
-        ``pad_factor`` (int).
+        ``freq_array`` sorted ascending in molecular frequency, trimmed to
+        ``compute_ft(file_path, from_saved_params=True)``'s band at
+        ``pad_factor``x its density. ``complex_spectrum`` aligned to it.
+        ``metadata`` carries ``amplitude_scale`` (float), ``units_label``
+        (str), and ``pad_factor`` (int).
     """
     (
         fid_samples,
@@ -2657,7 +2666,7 @@ def compute_display_ft_impl(
         sideband,
         _n_padded,
         _acquisition_us,
-        _user_ft,
+        user_ft,
         _trim_range,
     ) = _build_active_ft_inputs(file_path)
 
@@ -2670,6 +2679,19 @@ def compute_display_ft_impl(
         sideband=sideband,
         pad_factor=pad_factor,
     )
+
+    # Trim to compute_ft's own band (user_ft is already the canonical,
+    # trim_range-applied ComplexFT from _build_active_ft_inputs). A tolerance
+    # of a quarter padded-bin guards the boundary bins against the two
+    # independent FFT paths (FID.preprocess()+compute_fft() here vs.
+    # _padded_active_display_ft's inline rfft) landing a ULP apart, without
+    # ever admitting a whole extra bin.
+    fmin = float(np.min(user_ft.freq_array))
+    fmax = float(np.max(user_ft.freq_array))
+    tol = float(freq[1] - freq[0]) / 4.0 if freq.size > 1 else 0.0
+    band = (freq >= fmin - tol) & (freq <= fmax + tol)
+    freq = np.ascontiguousarray(freq[band])
+    spectrum = np.ascontiguousarray(spectrum[band])
 
     amplitude_scale, units_label, _trim_mhz = _load_display_style(file_path)
 

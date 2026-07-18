@@ -474,7 +474,7 @@ def compute_display_ft(
     pad_factor: int = _DETAIL_PAD_FACTOR,
 ) -> ComplexFT:
     """
-    Compute the zero-padded active-region DISPLAY FT, equivalent to
+    Compute the zero-padded, canonical-band DISPLAY FT, equivalent to
     :meth:`Pipeline.compute_display_ft`.
 
     This is the same 2x-zero-padded magnitude spectrum the Stage 5 report and
@@ -483,12 +483,14 @@ def compute_display_ft(
     downstream actually fits and scores on. This FT zero-fills the
     active-region FID slice by ``pad_factor`` (display default ``2``, the
     information limit for a magnitude spectrum) purely to interpolate the
-    magnitude curve between the native bins; it is display-only and never
-    feeds fitting, noise, or chi-squared. Display magnitude is
-    ``abs(spectrum) * amplitude_scale``.
+    magnitude curve between the native bins, then trims to
+    :func:`compute_ft`'s own frequency band (``from_saved_params=True``) --
+    it is display-only, differs from the canonical FT only in bin density,
+    never extent, and never feeds fitting, noise, or chi-squared. Display
+    magnitude is ``abs(spectrum) * amplitude_scale``.
 
-    Depends on Stage 1 (the FID plus canonical FT settings) only -- does not
-    require a persisted Stage 5 fit.
+    Depends on Stage 1 (the FID plus canonical FT settings, including any
+    trim) only -- does not require a persisted Stage 5 fit.
 
     Parameters
     ----------
@@ -501,7 +503,8 @@ def compute_display_ft(
     Returns
     -------
     ComplexFT
-        ``freq_array`` sorted ascending in molecular frequency,
+        ``freq_array`` sorted ascending in molecular frequency, trimmed to
+        :func:`compute_ft`'s band at ``pad_factor``x its density.
         ``complex_spectrum`` aligned to it. ``metadata`` carries
         ``amplitude_scale`` (float), ``units_label`` (str), and
         ``pad_factor`` (int).
