@@ -36,6 +36,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union, cast
 
+from ._internal.stage5_impl import _DETAIL_PAD_FACTOR
 from ._internal.stage6_impl import (
     DEFAULT_ATTENTION_CANDIDATE_EVIDENCE,
     DEFAULT_DISPLAY_BAR,
@@ -465,6 +466,70 @@ def compute_ft(
         )
     except Exception as e:
         logger.error(f"Failed to compute FT for {file_path}: {e}")
+        raise
+
+
+def compute_display_ft(
+    file_path: Union[str, Path],
+    pad_factor: int = _DETAIL_PAD_FACTOR,
+) -> ComplexFT:
+    """
+    Compute the zero-padded active-region DISPLAY FT, equivalent to
+    :meth:`Pipeline.compute_display_ft`.
+
+    This is the same 2x-zero-padded magnitude spectrum the Stage 5 report and
+    'fit show' detail panels render -- contrast with :func:`compute_ft`, the
+    canonical FT, which is unpadded and native-length and is what everything
+    downstream actually fits and scores on. This FT zero-fills the
+    active-region FID slice by ``pad_factor`` (display default ``2``, the
+    information limit for a magnitude spectrum) purely to interpolate the
+    magnitude curve between the native bins; it is display-only and never
+    feeds fitting, noise, or chi-squared. Display magnitude is
+    ``abs(spectrum) * amplitude_scale``.
+
+    Depends on Stage 1 (the FID plus canonical FT settings) only -- does not
+    require a persisted Stage 5 fit.
+
+    Parameters
+    ----------
+    file_path : str or Path
+        Path to .ftmw pipeline file containing FID data and canonical FT
+        settings (Stage 0 + 1 complete).
+    pad_factor : int, default 2
+        Zero-fill factor applied to the active-region FID slice.
+
+    Returns
+    -------
+    ComplexFT
+        ``freq_array`` sorted ascending in molecular frequency,
+        ``complex_spectrum`` aligned to it. ``metadata`` carries
+        ``amplitude_scale`` (float), ``units_label`` (str), and
+        ``pad_factor`` (int).
+
+    Raises
+    ------
+    FileNotFoundError
+        If pipeline file does not exist.
+    StageDependencyError
+        If required dependencies (FID data / canonical FT settings) are not
+        available.
+    RuntimeError
+        If FT computation fails.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import ftmwpipeline.api as ftmw
+    >>> display_ft = ftmw.compute_display_ft("experiment.ftmw")
+    >>> magnitude = np.abs(display_ft.complex_spectrum) * (
+    ...     display_ft.metadata["amplitude_scale"]
+    ... )
+    """
+    try:
+        pipeline = Pipeline.open(file_path)
+        return pipeline.compute_display_ft(pad_factor=pad_factor)
+    except Exception as e:
+        logger.error(f"Failed to compute display FT for {file_path}: {e}")
         raise
 
 

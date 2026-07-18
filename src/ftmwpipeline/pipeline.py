@@ -56,6 +56,8 @@ from ._internal.stage4_impl import (
     visualize_windows_impl,
 )
 from ._internal.stage5_impl import (
+    _DETAIL_PAD_FACTOR,
+    compute_display_ft_impl,
     fit_peaks_impl,
     fit_show_impl,
     load_fit_impl,
@@ -456,6 +458,47 @@ class Pipeline:
             return complex_ft
         except Exception as e:
             raise RuntimeError(f"Failed to compute FT: {e}") from e
+
+    def compute_display_ft(self, pad_factor: int = _DETAIL_PAD_FACTOR) -> ComplexFT:
+        """Compute the zero-padded active-region DISPLAY FT (Stage 5 report /
+        'fit show' magnitude panels).
+
+        Contrast with :meth:`compute_ft`: that FT is unpadded and
+        native-length -- the one everything downstream fits and scores on.
+        This FT zero-fills the active-region FID slice by ``pad_factor``
+        (display default ``2``, the information limit for a magnitude
+        spectrum) purely to interpolate the magnitude curve between the
+        native bins; it is display-only and never feeds fitting, noise, or
+        chi-squared. Display magnitude is
+        ``abs(spectrum) * amplitude_scale``.
+
+        Depends on Stage 1 (the FID plus canonical FT settings) only -- does
+        not require a persisted Stage 5 fit.
+
+        Parameters
+        ----------
+        pad_factor : int, default 2
+            Zero-fill factor applied to the active-region FID slice.
+
+        Returns
+        -------
+        ComplexFT
+            ``freq_array`` sorted ascending in molecular frequency,
+            ``complex_spectrum`` aligned to it. ``metadata`` carries
+            ``amplitude_scale`` (float), ``units_label`` (str), and
+            ``pad_factor`` (int).
+
+        Raises
+        ------
+        StageDependencyError
+            If Stage 0/1 (FID data / canonical FT settings) is not available.
+        RuntimeError
+            If FT computation fails.
+        """
+        try:
+            return compute_display_ft_impl(str(self.filepath), pad_factor=pad_factor)
+        except Exception as e:
+            raise RuntimeError(f"Failed to compute display FT: {e}") from e
 
     def visualize_ft(
         self,

@@ -2622,6 +2622,68 @@ def _padded_active_display_ft(
     )
 
 
+def compute_display_ft_impl(
+    file_path: str, pad_factor: int = _DETAIL_PAD_FACTOR
+) -> ComplexFT:
+    """Compute the zero-padded active-region DISPLAY FT (Stage 5 report /
+    'fit show' magnitude panels), the same spectrum ``_resolve_detail_bundle``
+    exposes as ``freq_padded`` / ``spec_padded`` -- without requiring a
+    persisted Stage 5 fit. Depends on Stage 1 (the FID plus canonical FT
+    settings) only, via :func:`_build_active_ft_inputs`.
+
+    Contrast with the canonical :func:`ftmwpipeline.api.compute_ft`: that FT is
+    unpadded and native-length -- the one everything downstream fits and
+    scores on. This FT zero-fills the active-region FID slice by
+    ``pad_factor`` (display default ``2``, the information limit for a
+    magnitude spectrum) purely to interpolate the magnitude curve between the
+    native bins; it is display-only and never feeds fitting, noise, or
+    chi-squared. Display magnitude is ``abs(spectrum) * amplitude_scale``;
+    ``units_label`` names the persisted display units (e.g. ``"µV"``).
+
+    Returns
+    -------
+    ComplexFT
+        ``freq_array`` sorted ascending in molecular frequency,
+        ``complex_spectrum`` aligned to it. ``metadata`` carries
+        ``amplitude_scale`` (float), ``units_label`` (str), and
+        ``pad_factor`` (int).
+    """
+    (
+        fid_samples,
+        sample_dt_us,
+        start_us,
+        end_us,
+        probe_freq_mhz,
+        sideband,
+        _n_padded,
+        _acquisition_us,
+        _user_ft,
+        _trim_range,
+    ) = _build_active_ft_inputs(file_path)
+
+    freq, spectrum = _padded_active_display_ft(
+        fid_samples,
+        sample_dt_us,
+        start_us=start_us,
+        end_us=end_us,
+        probe_freq_mhz=probe_freq_mhz,
+        sideband=sideband,
+        pad_factor=pad_factor,
+    )
+
+    amplitude_scale, units_label, _trim_mhz = _load_display_style(file_path)
+
+    return ComplexFT.from_spectrum(
+        complex_spectrum=spectrum,
+        freq_array=freq,
+        metadata={
+            "amplitude_scale": amplitude_scale,
+            "units_label": units_label,
+            "pad_factor": int(pad_factor),
+        },
+    )
+
+
 def _resolve_detail_bundle(file_path: str) -> _DetailBundle:
     """Resolve the shared per-file detail inputs (see :class:`_DetailBundle`)."""
     fit = load_fit_impl(file_path)["fit"]
