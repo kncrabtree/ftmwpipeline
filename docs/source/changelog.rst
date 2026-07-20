@@ -8,6 +8,26 @@ Changelog
 Notable changes to ``ftmwpipeline``, newest first. Versions follow
 `semantic versioning <https://semver.org/>`_.
 
+Version 0.1.0b2 (2026-07-20)
+----------------------------
+
+A refinement beta over 0.1.0b1. As a pre-release it still installs only when
+explicitly requested: ``pip install --pre ftmwpipeline``.
+
+* **Zero-padded display spectrum (Stage 1).** ``compute_display_ft`` renders a
+  smoothly interpolated view of the canonical spectrum for display, trimmed to
+  the same analysis band as the canonical transform so the two stay aligned. The
+  canonical, native-length spectrum that every downstream stage binds to is
+  unchanged.
+* **Per-stage knobs on ``run``.** The single-command ``run`` pipeline exposes
+  each stage's tuning knobs as namespaced command-line flags, so a full run can
+  be steered from the command line without a settings file, with accompanying
+  ``run`` documentation.
+* **Richer provenance reporting.** The Stage 0 import report is reorganized
+  around chirp-end and start-time provenance, and the frequency-calibration
+  report gains a reproducibility grid.
+* Documentation: a Read the Docs badge and link, plus minor edits.
+
 Version 0.1.0b1 (2026-06-28)
 ----------------------------
 
