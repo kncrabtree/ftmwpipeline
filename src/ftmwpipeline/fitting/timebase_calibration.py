@@ -1,10 +1,10 @@
 """Scope-timebase self-calibration from Rb-locked clock spur tones.
 
-The digitizer (scope) clock is the one instrument source not referenced to
+The digitizer (scope) clock might not be referenced to
 the Rb frequency standard. It carries a stable fractional scale error ``eps``:
 every measured frequency reads ``f_true * (1 + eps)``. The Rb-locked clock
 tree predicts exact CW tones at every multiple of ``g = gcd(locked clock
-fundamentals)`` baseband MHz (``g = 320`` on the home instrument). A detected
+fundamentals)`` baseband MHz (``g = 320`` on the UCD Ka-band instrument). A detected
 lattice tone at nominal baseband ``k * g`` is measured at an offset
 ``df = eps * f_bb``, so each tone gives one estimate ``eps = df / f_bb`` and a
 joint weighted fit over the lattice yields ``eps`` with parts-in-10^7 formal
@@ -31,8 +31,7 @@ Correction semantics (consumed elsewhere, *not* applied here): with the
 measured ``eps``, ``f_true = f_measured / (1 + eps)``. For a lower-sideband
 instrument ``f_mol = probe - f_bb``, so the molecular-frame correction is
 ``f_mol_true = probe - (probe - f_mol_meas) / (1 + eps)``. This module only
-*measures and persists* ``eps``; applying it to the frequency axis is
-deliberately out of scope.
+*measures and persists* ``eps``.
 
 Per-fixture measured eps differs by acquisition epoch (the scope clock drifts
 between sessions), so eps is a per-file quantity, never a package constant.
