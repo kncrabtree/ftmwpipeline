@@ -29,7 +29,7 @@ from .registry import KnobSpec
 # Persisted settings group per stage prefix. A sweep clears the knob's stage
 # block before each per-value run so the swept value (which enters the resolver
 # at the preset layer) is not shadowed by the previous value's persisted
-# settings: under the canonical precedence ``persisted > preset``, re-running a
+# settings: under the precedence ``persisted > preset``, re-running a
 # stage on a working copy that already carries a persisted block would otherwise
 # pin every value to the first run's settings. Stages 0/1 are exempt -- start
 # detection runs with ``stamp=False`` and the FT resolver has no preset layer.

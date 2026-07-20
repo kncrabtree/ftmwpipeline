@@ -19,8 +19,6 @@ functional API, enabling consistent file operations across interfaces.
 import hashlib
 import json
 import logging
-import os
-import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, Union
@@ -196,7 +194,7 @@ class PipelineStageTracker:
         "stage2_noise_result": ["stage1_complex_ft"],  # Stage 2 requires Stage 1
         # Stage 2b runs the data-driven sliding-active-window STFT tau
         # calibration on the raw FID. It needs Stage 1 settings (start_us,
-        # end_us, trim) to slice the FID and Stage 2 noise as the canonical
+        # end_us, trim) to slice the FID and Stage 2 noise as the persisted
         # σ reference so the calibration matches the user spectrum.
         "stage2b_tau_calibration": [
             "stage0_fid_data",
@@ -215,7 +213,7 @@ class PipelineStageTracker:
         # Scope-timebase self-calibration: measures the fractional scale error
         # eps of the free-running digitizer clock from the Rb-locked spur
         # lattice on the raw FID. Depends only on Stage 0 (the raw FID); the
-        # canonical Stage 1 active-region bounds are read opportunistically.
+        # persisted Stage 1 active-region bounds are read opportunistically.
         # Independent of the tau calibrations; persists only eps and does not
         # feed downstream stages (a reports feature consumes it).
         "timebase_calibration": ["stage0_fid_data"],
@@ -229,9 +227,9 @@ class PipelineStageTracker:
         "stage4_windows": ["stage3_peaks"],
         # Stage 5 (per-window fitting) consumes the Stage 4 plan AND the raw
         # FID -- the active-portion FT the fit runs on is computed on demand
-        # from stage0_fid_data plus the canonical Stage 1 settings, so a
+        # from stage0_fid_data plus the persisted Stage 1 settings, so a
         # change to Stage 1 settings or a re-import invalidates Stage 5
-        # through the existing canonical-settings/Stage 0 path. Stage 5 also
+        # through the existing persisted-settings/Stage 0 path. Stage 5 also
         # reads the Stage 2b calibration when present (the bidirectional
         # tau-anchoring penalty and rescue τ); same recommended-but-not-
         # required policy as Stage 3.
@@ -421,9 +419,9 @@ _LEGACY_FT_APODIZATION_KEYS = ("zpf", "expf_us", "window_function", "winf")
 def _warn_legacy_ft_apodization_keys(filepath: Path, h5f: "h5py.File") -> None:
     """Warn when a legacy file carries the retired FT apodization keys.
 
-    The canonical FT is unconditionally unapodized and native-length, so any
+    The FT is unconditionally unapodized and native-length, so any
     persisted ``zpf`` / ``expf_us`` / ``window_function`` / ``winf`` is ignored
-    and the canonical FT is recomputed unapodized on demand. The keys are left
+    and the FT is recomputed unapodized on demand. The keys are left
     in place (the file is opened read-only here); they simply no longer affect
     the result.
     """
@@ -438,7 +436,7 @@ def _warn_legacy_ft_apodization_keys(filepath: Path, h5f: "h5py.File") -> None:
         if present:
             logger.warning(
                 "%s carries retired FT apodization key(s) %s in %s; these are "
-                "ignored and the canonical FT is recomputed unapodized / "
+                "ignored and the FT is recomputed unapodized / "
                 "native-length.",
                 filepath.name,
                 ", ".join(present),
@@ -776,8 +774,6 @@ def update_processing_parameters(
     ...     'end_us': 12.0
     ... })
     """
-    import json
-
     filepath = Path(filepath)
 
     if not filepath.exists():

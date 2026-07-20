@@ -18,6 +18,9 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple, Union, cast
 
+import numpy as np
+import scipy.fft as sfft
+
 # ---------------------------------------------------------------------------
 # Chirp-window declaration
 # ---------------------------------------------------------------------------
@@ -44,10 +47,6 @@ class ChirpWindow:
     chirp_end_us: float
     chirp_start_us: Optional[float] = None
     start_margin_us: Optional[float] = None
-
-
-import numpy as np
-import scipy.fft as sfft
 
 
 class PeakClassification(Enum):
@@ -97,7 +96,7 @@ class FIDProcessingParameters:
     """
     Processing parameters for FID-to-FT conversion.
 
-    The canonical FT is unconditionally unapodized, un-windowed, and
+    The FT is unconditionally unapodized, un-windowed, and
     native-length, so the only parameters are data selection (``start_us`` /
     ``end_us``) and the display amplitude scale. DC removal (subtracting the
     active-region mean) is unconditional and has no parameter.
@@ -126,7 +125,7 @@ class PreprocessedFID:
     Preprocessed FID data ready for FFT calculation.
 
     Contains time-domain FID data after active-region selection and
-    unconditional DC removal. The canonical transform is unapodized and
+    unconditional DC removal. The transform is unapodized and
     native-length, so no windowing, zero-padding, or filtering is applied;
     this type separates that selection step from the FFT calculation.
     """
@@ -341,7 +340,7 @@ class FID:
         Apply preprocessing to FID data, return new PreprocessedFID object.
 
         Stage 1 of FT processing: preprocessing only, no FFT computation. The
-        canonical FT is unconditionally unapodized, un-windowed, and
+        FT is unconditionally unapodized, un-windowed, and
         native-length, so preprocessing is just active-region selection plus
         DC removal:
 
@@ -395,7 +394,7 @@ class FID:
             dc_offset = np.mean(active_data)
             windowed_data[start_idx:end_idx] -= dc_offset
 
-        # The canonical FT runs at native length -- no zero-padding.
+        # The FT runs at native length -- no zero-padding.
         return PreprocessedFID(
             data=windowed_data,
             spacing=self.spacing,

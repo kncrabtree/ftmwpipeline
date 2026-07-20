@@ -167,7 +167,7 @@ Blends: detectable, but easy to mis-initialize
 ----------------------------------------------
 
 The hardest discovery a prior-free fitter faces is a blend: two lines closer than
-a linewidth. Fitting the unwindowed spectrum (the reason the :doc:`canonical FT
+a linewidth. Fitting the unwindowed spectrum (the reason the :doc:`standard FT
 <../stage1_ft>` is left unapodized) is what makes it possible at all, but it raises
 two questions with very different answers — *can* a close blend be recovered, and
 *will* the sequential loop find it.

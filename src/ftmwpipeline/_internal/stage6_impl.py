@@ -635,7 +635,7 @@ def _rank_metric_value(
     auto_merged_ids: set,
 ) -> Optional[float]:
     """Compute one ranking metric for one window, or ``None`` to exclude it."""
-    from .stage5_impl import amplitude_vif
+    from ..fitting.validation import amplitude_vif
 
     peaks = wf.fitted_peaks
     chi2r = float(getattr(wf, "reduced_chi2", float("nan")))

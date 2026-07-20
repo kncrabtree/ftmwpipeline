@@ -145,7 +145,7 @@ def _build_2638(
 ) -> Tuple[TimebaseCalibrationResult, str]:
     """Build 2638 far enough to calibrate the timebase; return result + path.
 
-    Calibration needs only the raw FID and the canonical active-region bounds,
+    Calibration needs only the raw FID and the persisted active-region bounds,
     so the fixture is taken through start detection and the FT, not the full
     fit. The Blackchirp loader populates the clock declaration at import.
     """

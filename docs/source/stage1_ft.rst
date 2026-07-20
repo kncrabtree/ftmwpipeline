@@ -1,6 +1,6 @@
 .. index::
    single: Fourier transform
-   single: canonical FT
+   single: persisted FT settings
    single: active region
    single: frequency trim
    single: molecular frequency
@@ -13,12 +13,17 @@ Overview
 --------
 
 Stage 1 transforms the raw free-induction decay into the frequency-domain spectrum
-that every later stage works from. It selects the active region of the record,
+and fixes the settings that define it. It selects the active region of the record,
 removes its DC offset, computes the discrete Fourier transform, maps the result
 onto molecular frequency, and restricts it to the analysis band. The settings that
-govern this transform are the experiment's *canonical* FT settings: once stored,
-they bind the spectrum that noise estimation, peak detection, window assignment,
-and fitting all reproduce.
+govern this transform -- the active region, the analysis band (``trim``), and the
+display scale -- are the experiment's *persisted* FT settings: once stored, they are
+the agreed active region and analysis band every later stage builds from. Noise
+estimation, peak detection, window assignment, and fitting do not measure on this
+zero-substituted spectrum directly; each rebuilds the **active FT** (see
+:doc:`stage2_noise`) -- the transform of just the active region, unpadded -- from
+the persisted FID and these same settings, so they all work from one consistent
+recipe even though the array they measure on differs from the one shown here.
 
 The transform yields a complex spectrum on a molecular-frequency axis in MHz. The
 spectrum is not stored in the ``.ftmw`` file; instead, Stage 1 persists the
@@ -71,7 +76,7 @@ laboratory units.
 Running the stage
 -----------------
 
-The command computes the FT and stores the resolved settings as canonical:
+The command computes the FT and persists the resolved settings:
 
 .. code-block:: console
 
@@ -125,15 +130,16 @@ Committing and re-running the transform
 
 When the transform is run as a user action (the CLI ``ft run``, or
 :func:`~ftmwpipeline.api.compute_ft` with explicit settings), the resolved settings
-(including the frequency ``trim``) are written as the experiment's canonical FT
-settings, and Stage 1 is marked complete. Every stage built on the spectrum reads
-back exactly these settings, so the noise estimate, the peak list, the window plan,
-and the fit are all defined against one spectrum.
+(including the frequency ``trim``) are written as the experiment's persisted FT
+settings, and Stage 1 is marked complete. Every later stage reads back exactly
+these settings and rebuilds its own working spectrum (the active FT) from them, so
+the noise estimate, the peak list, the window plan, and the fit are all defined
+against one consistent set of settings.
 
 Changing these settings therefore invalidates that downstream work. If
 ``ft run`` is repeated with settings that differ from the stored ones, the results
 that depend on the FT (Stage 2 noise and everything after it) are removed and a
-warning is logged, so they are recomputed against the new spectrum rather than
+warning is logged, so they are recomputed against the new settings rather than
 silently mixed with stale results. Repeating the transform with identical settings
 changes nothing, which keeps re-running an import-and-FT cell in a notebook safe.
 
@@ -151,7 +157,7 @@ is the tool for trying parameters before committing them with ``ft run``:
 
 The view is interactive by default; ``--no-interactive --output <path>`` writes a
 static image instead. Visualization never persists settings — once a choice looks
-right, re-run ``ft run`` with it to make it canonical.
+right, re-run ``ft run`` with it to persist it.
 
 .. figure:: figures/stage1_canonical_ft.png
    :width: 90%
@@ -163,5 +169,5 @@ right, re-run ``ft run`` with it to make it canonical.
    native-length, so the line shapes and per-bin amplitudes are faithful to the
    data.
 
-The resolved spectrum is the input to :doc:`Stage 2 <stage2_noise>`, which measures
-the per-bin noise on the active FT.
+The persisted settings are the input to :doc:`Stage 2 <stage2_noise>`, which
+rebuilds the active FT and measures the per-bin noise on it.

@@ -1,7 +1,7 @@
 """
 Persistence for :class:`~ftmwpipeline.core.window_planning_settings.WindowPlanningSettings`.
 
-The canonical record for a Stage 4 run's resolved knobs lives under
+The persisted record for a Stage 4 run's resolved knobs lives under
 ``processing_parameters/stage4_windows``. The layout uses one HDF5
 subgroup per sub-dataclass so each block is independently inspectable
 with ``h5dump -p``:

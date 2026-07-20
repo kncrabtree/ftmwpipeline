@@ -249,7 +249,7 @@ def register_settings_commands(subparsers: Any) -> None:
         description=(
             "Persist KNOB = VALUE into the experiment's settings. The affected "
             "stage and every downstream stage are invalidated so the file stays "
-            "self-consistent; re-run them to refresh. The canonical FT is "
+            "self-consistent; re-run them to refresh. The FT is "
             "unapodized and native-length -- there are no FT apodization knobs."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,

@@ -1,5 +1,5 @@
 """
-Canonical Stage 2b τ calibration settings.
+Standard Stage 2b τ calibration settings.
 
 ``TauCalibrationSettings`` is the single source of truth for the Stage 2b
 parameters across every surface:
@@ -10,7 +10,7 @@ parameters across every surface:
 * the CLI ``--preset`` flag plus the existing per-knob flags,
 * the resolution chain ``explicit > persisted > preset > recommended >
   hard default``,
-* the persisted canonical record in ``processing_parameters/stage2b_tau``,
+* the persisted record in ``processing_parameters/stage2b_tau``,
 * the YAML preset interchange format.
 
 The dataclass mirrors the Stage 5 :class:`~ftmwpipeline.core.stage_fit_settings.StageFitSettings`
@@ -334,7 +334,7 @@ _SUB_NAMES = (
 # Hard defaults per sub-dataclass. These mirror the ``DEFAULT_*`` constants
 # in ``fitting/tau_calibration.py``. Kept as inline literals (rather than
 # imported from ``fitting/``) to keep ``core`` dependency-free from
-# ``fitting``; the fitting module's constants are the readable canonical
+# ``fitting``; the fitting module's constants are the readable standard
 # source and these must track them.
 _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
     "stft": {

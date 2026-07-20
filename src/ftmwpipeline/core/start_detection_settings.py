@@ -51,7 +51,7 @@ class StartDetectionSettings:
         (no excitation transient in the recorded FID).
     band_min_mhz, band_max_mhz :
         Optional explicit integration band override. When unset, the impl
-        resolves the band from the canonical Stage 1 frequency trim, falling
+        resolves the band from the persisted Stage 1 frequency trim, falling
         back to the full positive spectrum.
     """
 

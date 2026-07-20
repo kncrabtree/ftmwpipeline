@@ -1,5 +1,5 @@
 """
-Canonical Stage 5 fit settings.
+Standard Stage 5 fit settings.
 
 ``StageFitSettings`` is the single source of truth for the Stage 5 fitting
 parameters across every surface:
@@ -8,7 +8,7 @@ parameters across every surface:
 * the CLI ``--preset`` flag plus the existing per-knob flags,
 * the resolution chain ``explicit > persisted > preset > recommended >
   hard default``,
-* the persisted canonical record in ``processing_parameters/stage5_fit``,
+* the persisted record in ``processing_parameters/stage5_fit``,
 * the YAML preset interchange format.
 
 Every field is ``Optional`` with ``None`` meaning *unset* (fall through the
@@ -588,7 +588,7 @@ class DoubletAlternativeSubSettings:
     records statistics (Δχ², ΔAICc, orthogonal-evidence score). The pass
     never changes any fitted peak. ``DEFAULT_DOUBLET_K_RES`` and
     ``DEFAULT_DOUBLET_R_MIN`` in
-    :mod:`ftmwpipeline.fitting.doublet_alternative` are the canonical source
+    :mod:`ftmwpipeline.fitting.doublet_alternative` are the standard source
     for the default values mirrored in :data:`_HARD_DEFAULTS`.
     """
 
@@ -757,7 +757,7 @@ _SUB_NAMES = (
 # ``fitting/plan_execution.py``, ``fitting/validation.py`` and
 # ``_internal/stage5_impl.py``. Kept as inline literals (rather than imported
 # from fitting/) to keep ``core`` dependency-free from ``fitting``; the
-# fitting modules' constants are the readable canonical source and these
+# fitting modules' constants are the readable standard source and these
 # must track them.
 _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
     "shape": {"kind": PeakShape.LORENTZIAN},

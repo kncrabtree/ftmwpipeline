@@ -123,7 +123,7 @@ full-record spectrum would cancel on genuine leakage and collapse the statistic 
 the null.
 
 The statistic must therefore be referenced to the active-region turn-on, which the
-pipeline gets for free: it is scored on the canonical **active FT** — the
+pipeline gets for free: it is scored on the **active FT** — the
 transform of just the active region :math:`[t_0,\,t_0+T]` — which begins at the
 turn-on, so the spectrum is already in the line's own :math:`[0, T]` frame and
 carries no ramp. The coherent sum is taken directly. The corollary is that the

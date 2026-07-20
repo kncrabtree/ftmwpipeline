@@ -2034,7 +2034,7 @@ def execute_plan(
     active_ft : ActiveFTResult
         Active-portion FT of the experiment, computed by
         :func:`~ftmwpipeline.fitting.active_ft.compute_active_ft` from the
-        FID + canonical Stage 1 settings. Carries the molecular frequency
+        FID + persisted Stage 1 settings. Carries the molecular frequency
         grid, complex spectrum, and ``alpha = N_active/N_padded``.
     rms_noise : np.ndarray
         Per-bin complex noise RMS on the **active-FT** grid, same shape as

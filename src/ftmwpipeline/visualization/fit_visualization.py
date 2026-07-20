@@ -101,7 +101,7 @@ def _window_model_on_persisted_grid(
     ``model_amplitude_scale`` converts amplitudes from the fit-time active-FT
     amplitude units (``dt_us * rfft(active)``) to the persisted-FT units
     (``rfft(padded) / original_length * 10**units_power``). The scale is
-    ``10**units_power / (original_length * dt_us)`` for the canonical Stage
+    ``10**units_power / (original_length * dt_us)`` for the standard Stage
     1 pipeline; the visualization caller computes it from the FID and
     persisted-FT metadata.
 
@@ -195,7 +195,7 @@ def _plot_overview(
         color="0.35",
         lw=0.7,
         ls="--",
-        label="canonical sigma",
+        label="persisted sigma",
     )
     _shade_windows(ax_bot, fit)
     ax_bot.set_xlabel("frequency (MHz)")
@@ -628,7 +628,7 @@ def plot_spectrum_fit(
     complex_spectrum : np.ndarray
         Complex FT of the user spectrum.
     rms_noise : np.ndarray
-        Per-bin canonical noise (Stage 2) on the user grid.
+        Per-bin persisted noise (Stage 2) on the user grid.
     fit : SpectrumFit
         The persistent fit aggregate (loaded from ``/stage5_fitting``).
     sideband : Sideband or str

@@ -6,7 +6,7 @@ into the committed ``docs/source/figures`` directory:
 
 * ``stage0_start_detection.png`` -- the Σ|FT|-vs-start sweep that locates the
   chirp end and the recommended active-region start;
-* ``stage1_canonical_ft.png`` -- the canonical unapodized FT over the active
+* ``stage1_canonical_ft.png`` -- the standard unapodized FT over the active
   band (magnitude plus real/imaginary parts);
 * ``stage2_noise.png`` -- the per-bin scatter noise estimate overlaid on the
   active spectrum with the 3x/5x reference levels;
@@ -28,7 +28,7 @@ into the committed ``docs/source/figures`` directory:
   carries no material cross-window skirt, so it has no contributors to show.
 * ``stage5_fitting.png`` -- the Stage 5 fit overview: the fitted model overlaid
   on the active spectrum with the windows shaded, and the magnitude residual
-  against the canonical noise in a lower panel.
+  against the persisted noise in a lower panel.
 * ``stage5_fit_detail.png`` -- the per-window fit detail for a representative
   window (a resolved close blend beside a third line, with a masked clock spur):
   the real/imaginary/magnitude data with the model and residuals, the residual

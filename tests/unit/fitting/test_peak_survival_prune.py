@@ -133,23 +133,23 @@ def _window_with_range(
 
 class TestAmplitudeVif:
     def test_basic_value(self):
-        from ftmwpipeline._internal.stage5_impl import amplitude_vif
+        from ftmwpipeline.fitting.validation import amplitude_vif
 
         p = _cpeak(1000.0, amplitude=2.0, amplitude_error=1.0, snr=10.0)
         assert amplitude_vif(p) == pytest.approx(5.0)  # (1/2)*10
 
     def test_none_when_error_missing(self):
-        from ftmwpipeline._internal.stage5_impl import amplitude_vif
+        from ftmwpipeline.fitting.validation import amplitude_vif
 
         assert amplitude_vif(_cpeak(1.0, amplitude=1.0, snr=10.0)) is None
 
     def test_none_when_snr_missing(self):
-        from ftmwpipeline._internal.stage5_impl import amplitude_vif
+        from ftmwpipeline.fitting.validation import amplitude_vif
 
         assert amplitude_vif(_cpeak(1.0, amplitude=1.0, amplitude_error=1.0)) is None
 
     def test_none_on_zero_amplitude(self):
-        from ftmwpipeline._internal.stage5_impl import amplitude_vif
+        from ftmwpipeline.fitting.validation import amplitude_vif
 
         p = _cpeak(1.0, amplitude=0.0, amplitude_error=1.0, snr=10.0)
         assert amplitude_vif(p) is None

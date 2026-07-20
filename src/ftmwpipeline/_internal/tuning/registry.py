@@ -204,9 +204,9 @@ def _run_ft_end() -> RunFn:
 
 def _run_ft_trim(edge: str) -> RunFn:
     """Sweep one edge of the FT frequency trim, holding the other at the file's
-    canonical value. ``edge`` is ``"min"`` or ``"max"``.
+    persisted value. ``edge`` is ``"min"`` or ``"max"``.
 
-    The canonical trim edges are read once from the persisted FT (its
+    The trim edges are read once from the persisted FT (its
     ``freq_array`` spans the active band; the array is sideband-ordered, so the
     edges are its min/max, not its endpoints) and memoized for the sweep.
     """
@@ -804,7 +804,7 @@ _register(
 )
 
 # FT frequency trim + window end. The trim default grids are MHz-absolute and
-# 2638-shaped; pass --grid for another instrument's band. The canonical FT is
+# 2638-shaped; pass --grid for another instrument's band. The FT is
 # unconditionally unapodized and native-length, so there are no apodization /
 # zero-pad knobs to expose; units_power is a display-scale choice surfaced by
 # the resolved-settings view.
@@ -852,7 +852,7 @@ _register(
     )
 )
 
-# Stage 2 noise — scatter estimator (the canonical default). Requires Stage 1.
+# Stage 2 noise — scatter estimator (the default). Requires Stage 1.
 # The descriptors (help / tier / inst_sensitivity / grid) are read from the
 # NoiseSettings field metadata — the single knob declaration site — so the
 # registry carries only the sweep behavior (run / metric / plot). All knobs

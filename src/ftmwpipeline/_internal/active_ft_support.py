@@ -1,13 +1,13 @@
-"""Shared construction of the canonical active-portion FT.
+"""Shared construction of the standard active-portion FT.
 
 The active FT -- the ``dt_us * rfft`` of just the ``[start_us, end_us]`` active
 samples, unpadded -- is the single domain in which all real processing
-(Stages 2/3/5) measures noise, scores, and fits. The front-zeroed, full-length
+(Stages 2/3/4/5) measures noise, scores, and fits. The front-zeroed, full-length
 persisted Stage 1 spectrum exists only for the Stage 0/1 start-time comparison
 view; it is never the substrate for noise, detection, or fitting.
 
 This module owns the file-bound construction of that active FT from the
-persisted FID plus the canonical Stage 1 settings, so Stage 2 (noise authority),
+persisted FID plus the persisted Stage 1 settings, so Stage 2 (noise authority),
 Stage 3 (detection snap/score grid), and Stage 5 (fit) all build the *same*
 spectrum from one place. The pure array math lives in
 :func:`ftmwpipeline.fitting.active_ft.compute_active_ft`; the per-bin noise
@@ -50,16 +50,16 @@ def default_tau0_us(acquisition_us: float) -> float:
     return acquisition_us / 3.0
 
 
-def compute_canonical_active_ft(
+def compute_persisted_active_ft(
     file_path: str,
 ) -> ActiveFTResult:
-    """Build the canonical active FT for a pipeline file.
+    """Build the persisted active FT for a pipeline file.
 
-    Loads the persisted FID and the canonical Stage 1 processing parameters,
+    Loads the persisted FID and the persisted Stage 1 processing parameters,
     then rffts just the ``[start_us, end_us]`` active region (unapodized, no
     zero-padding) via :func:`compute_active_ft` -- the authority domain.
 
-    Requires Stage 1 (canonical FT settings) to be present.
+    Requires Stage 1 (persisted FT settings) to be present.
     """
     fid = load_fid_from_pipeline_impl(file_path)
     stage1 = compute_ft_impl(file_path=file_path)
@@ -76,11 +76,11 @@ def compute_canonical_active_ft(
     )
     if acquisition_us <= 0:
         raise ValueError(
-            f"Stage 1 canonical settings produce a non-positive active "
+            f"Stage 1 persisted settings produce a non-positive active "
             f"acquisition length ({acquisition_us} us)"
         )
 
-    # n_padded: the canonical full-record FT input length (the native FID
+    # n_padded: the persisted Stage 1 full-record FT input length (the native FID
     # length -- the persisted FT is unpadded). Recorded on the result as
     # ``alpha`` for diagnostics only; the active FT itself is unpadded.
     n_padded = int(np.asarray(fid.data).size)
@@ -96,18 +96,18 @@ def compute_canonical_active_ft(
     )
 
 
-def estimate_canonical_active_ft_noise(
+def estimate_persisted_active_ft_noise(
     file_path: str,
     **scatter_kwargs: Any,
 ) -> Tuple[NoiseResult, ActiveFTResult]:
-    """Build the canonical unapodized active FT and estimate its per-bin σ.
+    """Build the persisted unapodized active FT and estimate its per-bin σ.
 
     The Stage 2 noise authority: returns the scatter-estimated
     :class:`NoiseResult` on the active-FT bin order together with the
     :class:`ActiveFTResult` it was measured on (so the caller can persist the
     σ against the same grid it lives on).
     """
-    active_ft = compute_canonical_active_ft(file_path)
+    active_ft = compute_persisted_active_ft(file_path)
     noise = estimate_active_ft_noise(
         active_ft.freq_mhz, active_ft.complex_spectrum, **scatter_kwargs
     )
@@ -145,14 +145,14 @@ def build_trimmed_active_ft(
     file_path: str,
     trim_range: Optional[Tuple[float, float]] = None,
 ) -> ComplexFT:
-    """Build the canonical unapodized active FT as a (trimmed) :class:`ComplexFT`.
+    """Build the persisted unapodized active FT as a (trimmed) :class:`ComplexFT`.
 
     The single active-grid surface every later stage scores, plans, fits, and
     estimates noise on: the ``dt_us*rfft`` of the active region, wrapped as a
     ComplexFT (so it carries the ``freq_array`` / ``magnitude_spectrum``
     interface), trimmed to the analysis band when ``trim_range`` is given.
     """
-    active = compute_canonical_active_ft(file_path)
+    active = compute_persisted_active_ft(file_path)
     cft = ComplexFT.from_spectrum(active.complex_spectrum, active.freq_mhz)
     if trim_range is not None:
         cft = cft.trim_to_range(trim_range[0], trim_range[1])
@@ -163,12 +163,12 @@ def build_active_grid_with_noise(
     file_path: str,
     trim_range: Optional[Tuple[float, float]] = None,
 ) -> Tuple[ComplexFT, np.ndarray]:
-    """Build the canonical active FT (trimmed) and its per-bin authority σ.
+    """Build the persisted active FT (trimmed) and its per-bin authority σ.
 
     The single active-grid scoring/planning surface for Stages 3, 4, and 5:
     the unapodized active FT plus the scatter-estimated per-bin σ_x on that
     same grid, measured with the persisted Stage 2 scatter knobs so it matches
-    the canonical noise estimator. σ aligns with ``cft`` element-for-element.
+    the standard noise estimator. σ aligns with ``cft`` element-for-element.
 
     ``trim_range`` restricts both to the analysis band (mirroring the
     persisted FT's trim), so the authority σ is measured region-aware over the
@@ -183,12 +183,12 @@ def build_active_grid_with_noise(
     return cft, np.asarray(noise.rms_noise, dtype=float)
 
 
-def load_canonical_active_noise(
+def load_persisted_active_noise(
     file_path: str,
 ) -> Tuple[ActiveFTResult, np.ndarray]:
-    """Load the persisted Stage 2 σ on the canonical active-FT grid.
+    """Load the persisted Stage 2 σ on the active-FT grid.
 
-    Rebuilds the canonical unapodized active FT (the grid Stage 2 measured and
+    Rebuilds the persisted unapodized active FT (the grid Stage 2 measured and
     persisted on) and reads the stored σ back element-for-element. Returns the
     active FT and its per-bin σ_x. This is the single read path every
     σ-consuming stage (3 snap/score, 5 fit weighting) goes through, so they all
@@ -199,12 +199,12 @@ def load_canonical_active_noise(
     ValueError
         If Stage 2 (noise estimation) has not been completed.
     """
-    active_ft = compute_canonical_active_ft(file_path)
+    active_ft = compute_persisted_active_ft(file_path)
     with h5py.File(file_path, "r") as h5f:
         if "stage2_noise_result" not in h5f:
             raise ValueError(
                 "Stage 2 (noise estimation) must be completed before the "
-                "canonical noise can be loaded. Run estimate_noise() first."
+                "persisted noise can be loaded. Run estimate_noise() first."
             )
         noise = load_noise_result_from_hdf5(
             h5f["stage2_noise_result"],

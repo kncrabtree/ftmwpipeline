@@ -1,6 +1,6 @@
 """FID apodization and windowing utilities.
 
-The canonical FT the main pipeline persists is unconditionally unapodized,
+The FT the main pipeline persists is unconditionally unapodized,
 un-windowed, and native-length -- apodization trades resolution and biases the
 line shape, and zero-padding interpolates the bins and corrupts the per-bin
 noise/χ² statistics the later stages depend on. These helpers keep the

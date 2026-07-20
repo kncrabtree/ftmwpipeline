@@ -1,5 +1,5 @@
 """
-Canonical Stage 2 noise-estimation settings.
+Standard Stage 2 noise-estimation settings.
 
 ``NoiseSettings`` is the single source of truth for the Stage 2 parameters
 across every surface:
@@ -9,7 +9,7 @@ across every surface:
 * the CLI ``--preset`` flag plus the existing per-knob flags,
 * the resolution chain ``explicit > persisted > preset > recommended >
   hard default``,
-* the persisted canonical record in ``processing_parameters/stage2_noise``,
+* the persisted record in ``processing_parameters/stage2_noise``,
 * the YAML preset interchange format.
 
 Every field is ``Optional`` with ``None`` meaning *unset* (fall through the
@@ -31,7 +31,7 @@ T_active-driven smoothing-window suggestion) can land without API churn.
 
 The ``_HARD_DEFAULTS`` dict mirrors the ``estimate_noise_scatter`` kernel's
 signature defaults in :mod:`ftmwpipeline.preprocessing.noise_estimation`; those
-defaults are the readable canonical source and these must track them.
+defaults are the readable standard source and these must track them.
 
 This module is dependency-free within the package (stdlib + PyYAML for
 preset interchange) so it can be imported from ``core`` without cycles.
@@ -129,7 +129,7 @@ class NoiseSettings:
 # Hard defaults. These mirror the ``estimate_noise_scatter`` kernel's signature
 # defaults in ``preprocessing/noise_estimation.py``. Kept as inline literals
 # (rather than imported from ``preprocessing/``) to keep ``core`` dependency-free
-# from ``preprocessing``; the kernel defaults are the readable canonical source
+# from ``preprocessing``; the kernel defaults are the readable standard source
 # and these must track them.
 _HARD_DEFAULTS: Dict[str, Any] = {
     "window_mhz": 80.0,

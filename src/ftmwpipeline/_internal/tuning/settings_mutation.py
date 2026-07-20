@@ -11,7 +11,7 @@ Two mutating companions to the read-only :mod:`settings_inspection` view:
   ``.yml`` preset block, the portable form a sibling experiment loads via
   ``--preset``.
 
-Stage 1 is special. The canonical FT is unapodized and native-length (there are
+Stage 1 is special. The FT is unapodized and native-length (there are
 no apodization knobs) and DC removal is unconditional (no ``rdc`` knob). Its
 data-selection knobs (``start_us`` / ``end_us`` / ``trim`` / ``units_power``)
 are settable but, since the FT is recomputed on demand from these settings,
@@ -22,7 +22,7 @@ so it is excluded from :func:`export_settings`.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, is_dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import (
@@ -238,7 +238,7 @@ def set_setting(file_path: Union[str, Path], knob: str, raw_value: str) -> SetRe
 
     ``knob`` is a dotted settings path (``stage2.window_mhz`` /
     ``stage2b.gaussian.snr_min`` / ``stage5.shape``). The value is coerced to the
-    field's declared type. The canonical FT is unapodized and native-length, so
+    field's declared type. The FT is unapodized and native-length, so
     there are no FT apodization knobs to set.
     """
     path = str(file_path)
@@ -272,7 +272,7 @@ def set_setting(file_path: Union[str, Path], knob: str, raw_value: str) -> SetRe
 def _set_stage1(path: str, knob: str, field: str, raw_value: str) -> SetResult:
     """Persist a Stage 1 windowing knob into ``ft_processing`` and invalidate
     every downstream stage (the FT is recomputed on demand from these settings)."""
-    from ..stage1_impl import _persist_canonical_settings, _resolve_settings
+    from ..stage1_impl import _persist_ft_settings, _resolve_settings
 
     try:
         field_type = _owner_and_field_type(ft_mod.FTSettings, None, field)
@@ -284,10 +284,10 @@ def _set_stage1(path: str, knob: str, field: str, raw_value: str) -> SetResult:
 
     resolved = _resolve_settings(path, None)
     setattr(resolved, field, value)
-    # _persist_canonical_settings rewrites ft_processing and invalidates every
+    # _persist_ft_settings rewrites ft_processing and invalidates every
     # FT-dependent stage when the record changes.
     completed_before = _completed_stages(path)
-    _persist_canonical_settings(path, resolved)
+    _persist_ft_settings(path, resolved)
     invalidated = tuple(sorted(completed_before - _completed_stages(path)))
     return SetResult(path=knob, value=value, invalidated=invalidated)
 

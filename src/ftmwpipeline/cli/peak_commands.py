@@ -27,7 +27,7 @@ def cmd_detect_peaks(args: argparse.Namespace) -> int:
     list; a shape-aware matched-filter gap pass then recovers weak lines the
     apodization suppressed. Both passes raise their detection floor continuously
     by the local coherent-leakage amplitude (no hard mask), and every peak is
-    scored on the canonical active FT. Peaks are classified by SNR
+    scored on the active FT. Peaks are classified by SNR
     (weak/medium/strong) and persisted to the file for hand-curation before
     Stage 4.
 
@@ -166,9 +166,9 @@ def register_peak_commands(subparsers: Any) -> None:
         help="Detect and classify peaks (Stage 3, two-pass)",
         description=(
             "Stage 3 two-pass peak detection with SNR classification.\n\n"
-            "Detection operates on the Stage 1 persisted canonical spectrum\n"
-            "(including its frequency trim range).  Run 'ft run' with the\n"
-            "desired --trim to set the canonical analysis band first."
+            "Detection scores on the active FT, built from the persisted\n"
+            "Stage 1 settings (including its frequency trim range).  Run\n"
+            "'ft run' with the desired --trim to set the analysis band first."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

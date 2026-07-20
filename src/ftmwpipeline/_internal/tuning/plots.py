@@ -1398,14 +1398,14 @@ def _window_center(result: Any, window_id: int) -> Any:
 
 
 def _band_spectrum(ctx: Any) -> Any:
-    """``(freqs_mhz, |FT|)`` (frequency-sorted) of the canonical persisted FT, or
+    """``(freqs_mhz, |FT|)`` (frequency-sorted) of the persisted FT, or
     ``None``. The band-overlay panels draw this once as a backdrop for the
     per-value rescue / spur / thaw provenance.
 
     Deliberately the *persisted* Stage 1 FT (loaded via ``ctx.ftmw_path``), not
     the Stage 5 ``active_ft``: the active FT is an rfft of the truncated FID, so
     it spans the full 0→Nyquist RF band (the trim is applied only downstream to
-    the windows / peaks). The persisted FT is the canonical analysis spectrum —
+    the windows / peaks). The persisted FT is the standard analysis spectrum —
     the truncated FID *and* the trimmed analysis band — which is what these
     overlays should show. Markers (window centers, spur centers, candidates) are
     absolute MHz, so they register on it regardless. Mirrors ``plot_noise_sweep``.
@@ -1611,7 +1611,6 @@ def plot_spur(spec: Any, rows: List[Any], ctx: Any) -> Any:
     leaf = spec.path.split(".")[-1]
     n = len(rows)
     labels = _sweep_labels(rows)
-    colors = _value_colors(n)
 
     def _params(r: Any) -> Any:
         return r.result["fit"].parameters

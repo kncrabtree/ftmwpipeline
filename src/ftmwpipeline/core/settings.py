@@ -1,5 +1,5 @@
 """
-Canonical FT processing settings.
+Standard FT processing settings.
 
 ``FTSettings`` is the single source of truth for the Stage 1 FT processing
 parameters across every surface:
@@ -9,7 +9,7 @@ parameters across every surface:
   :mod:`ftmwpipeline.cli._argspec`),
 * the resolution chain ``explicit override > persisted user settings >
   import-time recommended``,
-* the persisted canonical record in ``processing_parameters/ft_processing``.
+* the persisted record in ``processing_parameters/ft_processing``.
 
 Every field is ``Optional`` with ``None`` meaning *unset* (fall through the
 resolution chain). A *resolved* instance (produced by :func:`resolve`) has the
@@ -17,7 +17,7 @@ run-critical ``units_power`` field filled with a hard default if no layer
 supplied it; ``start_us`` / ``end_us`` / ``trim`` may legitimately stay ``None``
 (meaning no windowing / no trim).
 
-The canonical FT is unconditionally unapodized, un-windowed, and native-length:
+The FT is unconditionally unapodized, un-windowed, and native-length:
 there are no ``expf_us`` / ``window_function`` / ``zpf`` knobs. Apodization
 trades resolution and biases the line shape, and zero-padding interpolates bins
 and corrupts the Stage 2/5 noise and chi-squared statistics; the robust
@@ -45,7 +45,7 @@ _HARD_DEFAULTS: Dict[str, Any] = {
     "units_power": 6,
 }
 
-# Canonical HDF5 location of the persisted (user-chosen) settings.
+# Standard HDF5 location of the persisted (user-chosen) settings.
 FT_PROCESSING_PATH = "processing_parameters/ft_processing"
 # Import-time recommendations written by Stage 0.
 RECOMMENDED_PATH = "stage0_fid_data/recommended_processing"
@@ -110,7 +110,7 @@ def cli_field(
 class FTSettings:
     """Stage 1 FT processing settings (see module docstring).
 
-    ``trim`` is the canonical frequency analysis range (MHz) and is persisted
+    ``trim`` is the standard frequency analysis range (MHz) and is persisted
     alongside the other FT settings (D7 decision: trim lives inside
     ``ft_processing``).
     """
@@ -132,7 +132,7 @@ class FTSettings:
         argtype=_parse_trim,
         metavar="MIN:MAX",
         help="Frequency analysis range to keep as 'min:max' in MHz "
-        "(e.g. 26500:40000); persisted as canonical and binding downstream",
+        "(e.g. 26500:40000); persisted and binding downstream",
     )
 
     # -- introspection -------------------------------------------------------
@@ -163,7 +163,7 @@ class FTSettings:
             "units_power": self.units_power,
         }
 
-    # -- HDF5 (de)serialization for the canonical ft_processing record ------
+    # -- HDF5 (de)serialization for the persisted ft_processing record ------
 
     def to_attrs(self) -> Dict[str, Any]:
         """Flat attribute dict for ``processing_parameters/ft_processing``.
@@ -194,7 +194,7 @@ class FTSettings:
         Legacy records may carry the retired apodization keys (``zpf`` /
         ``expf_us`` / ``window_function`` / ``winf``) or the retired ``rdc``
         toggle; they are silently ignored here. Callers that recompute the
-        canonical FT from a legacy file warn about the dropped keys at open time.
+        FT from a legacy file warn about the dropped keys at open time.
         """
 
         def _opt(key: str) -> Any:

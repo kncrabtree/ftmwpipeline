@@ -1,7 +1,7 @@
 """
 Persistence for :class:`~ftmwpipeline.core.tau_calibration_settings.TauCalibrationSettings`.
 
-The canonical record for a Stage 2b run's resolved knobs lives under
+The persisted record for a Stage 2b run's resolved knobs lives under
 ``processing_parameters/stage2b_tau``. The layout uses one HDF5 subgroup
 per sub-dataclass so each block is independently inspectable with
 ``h5dump -p``:

@@ -16,7 +16,7 @@ Example data
 ``examples/blackchirp_data/2638/`` is a real Blackchirp experiment provided for
 testing and exploration: a 15 µs FID of 750,000 points, probe frequency
 40.96 GHz, lower sideband. Its active spectral band is 26500–40000 MHz, so the
-canonical Fourier transform is trimmed to that range. The transform itself is
+Fourier transform is trimmed to that range. The transform itself is
 unapodized and native-length.
 
 The commands below write a new ``exp_2638.ftmw`` file in the current directory.

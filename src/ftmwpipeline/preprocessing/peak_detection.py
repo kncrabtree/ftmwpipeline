@@ -331,7 +331,7 @@ def detect_peaks(
     classification are then measured on the ``gap_*`` reference spectrum, giving
     one consistent SNR scale across both passes. (In the Stage 3 pipeline these
     intermediate scores are themselves superseded by a snap-back onto the
-    canonical active FT; here ``gap_*`` is simply the common reference.)
+    active FT; here ``gap_*`` is simply the common reference.)
 
     * **Pass 1 (primary)** runs :func:`locate_peaks` on the *apodized*,
       leakage-suppressed spectrum (robust, few sidelobe false positives).

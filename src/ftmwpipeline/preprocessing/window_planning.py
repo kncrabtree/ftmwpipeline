@@ -536,8 +536,8 @@ def build_window_plan(
         ``properties['promoted']`` truthy are planned; ``free_peak_indices`` and
         fixed-contributor references index back into *this* list.
     freqs, complex_spectrum, rms_noise : np.ndarray
-        The persisted user spectrum: frequency axis (MHz), complex FT, and the
-        canonical Stage 2 per-point RMS noise. Equal length, 1D.
+        The active-FT surface: frequency axis (MHz), complex FT, and the
+        persisted Stage 2 per-point RMS noise. Equal length, 1D.
     acquisition_us : float
         Active FID acquisition ``T`` (µs) for the analytic leakage reach.
     tau_us : float, optional

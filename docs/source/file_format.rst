@@ -27,9 +27,9 @@ contains some prefix of:
   spacing, probe frequency, sideband, shot count, point count, duration),
   stored losslessly, together with any source-format *recommended* processing
   parameters.
-* **The canonical FT settings** — the data-selection and display parameters
-  that define the spectrum every later stage works on (see
-  :ref:`persisted-vs-reconstructed` below).
+* **The persisted FT settings** — the data-selection and display parameters
+  that define the active region and analysis band every later stage rebuilds
+  its working spectrum from (see :ref:`persisted-vs-reconstructed` below).
 * **The noise estimate** — the per-bin noise from :doc:`Stage 2 <stage2_noise>`.
 * **The decay-time calibrations** — the exponential and Gaussian τ twins and the
   recommended line shape from :doc:`Stage 2b <stage2b_tau>`, and the optional
@@ -88,7 +88,7 @@ only on the raw FID and feeds the report's frequency uncertainty rather than any
 fit.
 
 Re-running a stage with new parameters is safe. Re-running an *earlier* stage
-(or changing the canonical FT settings, or re-importing the source) invalidates
+(or changing the persisted FT settings, or re-importing the source) invalidates
 the downstream results that depended on it, so the file is never left in a
 silently inconsistent state: the invalidated stages must be re-run.
 
@@ -99,18 +99,19 @@ What is persisted, and what is recomputed
 
 The file stores the expensive, hard-to-reproduce products and recomputes the
 cheap ones on demand. The most visible case is the spectrum itself: **the
-canonical FT is not stored**. Only the processing parameters that define it are
+FT is not stored**. Only the processing parameters that define it are
 persisted, and the frequency-domain spectrum is recomputed from the raw FID plus
 those parameters whenever a stage needs it. A completed Stage 1 is therefore
 proven by the presence of its persisted parameters, not by a stored spectrum
 array.
 
-The canonical FT is unconditionally unapodized, un-windowed, and native-length.
+The FT is unconditionally unapodized, un-windowed, and native-length.
 The persisted Stage 1 parameters are the data selection (start time, end time,
 and the frequency trim range) plus display scaling; there are no apodization or
 zero-padding settings (apodization trades resolution and biases the line shape,
 and zero-padding corrupts the noise and χ² statistics that later stages depend
-on). Every later stage operates on the single spectrum these parameters define.
+on). Every later stage rebuilds its own working spectrum (the active FT) from
+these same parameters, rather than consuming a stored one.
 How those parameters are resolved across explicit overrides, presets, and the
 persisted values is described in :doc:`settings_and_presets`.
 

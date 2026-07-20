@@ -20,8 +20,9 @@ zero-padding. The result has
   bin spacing ``1/T_active`` instead of ``1/T_total``.
 
 This module owns the construction (:func:`compute_active_ft`). The active-FT
-is internal to Stage 5: computed on demand from ``stage0_fid_data`` and the
-canonical Stage 1 settings, not persisted in the ``.ftmw`` file.
+is the working measurement domain for Stages 2, 4, and 5 (and Stage 3's
+re-scoring pass): computed on demand from ``stage0_fid_data`` and the
+persisted Stage 1 settings, not itself persisted in the ``.ftmw`` file.
 
 Amplitude convention
 --------------------
@@ -110,13 +111,13 @@ class ActiveFTResult:
     alpha : float
         ``N_active / N_padded`` -- the persisted bin-correlation factor. Equal
         to 1 only when the FFT input is exactly the active region (test
-        fixtures); for the canonical full-record persisted FT this is the
+        fixtures); for the persisted full-record FT this is the
         active-sample fraction that links persisted-FT noise to active-FT
         noise.
     n_active : int
         Number of FID samples in ``[t0, t0+T]`` -- the FFT input length.
     n_padded : int
-        Length of the canonical Stage 1 full-record FT input (informational).
+        Length of the persisted Stage 1 full-record FT input (informational).
         Tracked so callers can compute ``alpha`` exactly without re-deriving
         it from the FID.
     """
@@ -142,7 +143,7 @@ def compute_active_ft(
     """Compute the active-portion FT of an FID for Stage 5 fitting.
 
     Extracts the ``[start_us, end_us]`` active region from the FID, removes
-    the DC component (matching the canonical Stage 1 step, which is
+    the DC component (matching the persisted Stage 1 step, which is
     unconditional), then rfft's just the active region -- no apodization, no
     zero-padding. The
     result is in the ``[0, T]`` reference frame ``h_T`` models, so the fit
@@ -170,12 +171,12 @@ def compute_active_ft(
     sideband : Sideband or str
         Sideband configuration (``"lower"`` / ``"upper"`` or the enum).
     n_padded : int
-        Length of the canonical Stage 1 full-record FT input. Used only to
+        Length of the persisted Stage 1 full-record FT input. Used only to
         record ``alpha = N_active / N_padded`` on the result. Pass
         ``N_active`` (so ``alpha = 1``) for synthetic tests where there is no
         persisted record to compare against.
     rdc : bool, default True
-        Subtract the mean of the active region (matches the canonical Stage 1
+        Subtract the mean of the active region (matches the persisted Stage 1
         DC-removal step, which is unconditional).
 
     Returns

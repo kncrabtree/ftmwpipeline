@@ -3,7 +3,7 @@ Shared implementation for Stage 3: Peak detection.
 
 Orchestration only -- the detection algorithm lives in
 ``ftmwpipeline.preprocessing.peak_detection``. Stage 3 does **not** own any FT
-settings: the spectrum the user chose (Stage 1 canonical ``ft_processing``,
+settings: the spectrum the user chose (Stage 1 persisted ``ft_processing``,
 incl. ``trim``) is authoritative. Detection runs on two recomputed spectra --
 an apodized primary at the internal ``zpf=1`` grid (robust position finding)
 and a shape-aware matched-filter gap spectrum (weak-line recovery): the active
@@ -18,13 +18,14 @@ seeds the gap pass's leakage mask -- is not itself polluted by sidelobes; see
 primary apodization is independent of the user's Stage 1 settings and affects
 only *which positions* are found, never any reported amplitude or SNR. Every
 detected peak is then snapped
-back onto the user's persisted spectrum by physical frequency: its amplitude
-is re-measured on the user-settings ``ComplexFT`` and its SNR scored as the
+back onto the active FT by physical frequency: its amplitude
+is re-measured on the active-FT grid and its SNR scored as the
 excess over the local coherent-leakage pedestal,
-``(|X| - pedestal) / sigma``, against the canonical Stage 2 noise -- so a
+``(|X| - pedestal) / sigma``, against the persisted Stage 2 noise (measured on
+the active FT) -- so a
 leakage pedestal (the Rician limit) cannot float pedestal noise above the
-promotion cutoff. The stored/returned result is expressed entirely on the user
-grid. The internal-grid values and the subtracted pedestal are kept under
+promotion cutoff. The stored/returned result is expressed entirely on the
+active grid. The internal-grid values and the subtracted pedestal are kept under
 ``properties`` for diagnostics. Wrapped identically by the CLI, Pipeline class,
 and functional API.
 """
@@ -194,7 +195,7 @@ def _active_window_indices(fid: Any, base_pp: Any) -> Tuple[int, int, float]:
 
     Mirrors :func:`ftmwpipeline.fitting.active_ft.compute_active_ft`'s active-
     region convention so every Stage 3 detection spectrum spans the same samples
-    as the canonical active FT.
+    as the active FT.
     """
     sample_dt_us = fid.spacing * 1e6
     start_idx = int(round((base_pp.start_us or 0.0) / sample_dt_us))
@@ -218,7 +219,7 @@ def _active_windowed_spectrum(
     """``dt·rfft`` of the active region times ``window``, zero-padded + trimmed.
 
     The single builder for both Stage 3 detection spectra: it extracts the
-    ``[start_us, end_us]`` active region (the same samples as the canonical
+    ``[start_us, end_us]`` active region (the same samples as the
     active FT), multiplies by ``window`` (length ``N_active``), mean-removes
     (matching Stage 1's unconditional DC removal), zero-pads by ``zpf_active``
     so the feature lands in
@@ -300,7 +301,7 @@ def _primary_active_spectrum(
     so the primary's strong-line list -- which seeds the gap pass's exclusions
     and leakage mask -- is clean. Built on the shared
     :func:`_active_windowed_spectrum`, so the primary lives in the same
-    active-region ``dt·rfft`` frame as the gap pass and the canonical active FT
+    active-region ``dt·rfft`` frame as the gap pass and the active FT
     (no full-record front-zeroing, no phase ramp). The apodization is a Stage 3
     position-finding choice, independent of the user's Stage 1 ``winf``.
     """
@@ -363,7 +364,7 @@ def _snap_to_active_grid(
     medium_strong_snr: float,
     promotion_min_snr: float,
 ) -> List[Peak]:
-    """Re-express internal-grid detections on the canonical active FT.
+    """Re-express internal-grid detections on the active FT.
 
     For each detection: snap by physical frequency to the nearest active-FT
     grid point, re-measure amplitude on the active FT and SNR against the
@@ -450,9 +451,10 @@ def detect_peaks_impl(
 ) -> Dict[str, Any]:
     """Run Stage 3 two-pass peak detection and persist the result.
 
-    Requires Stage 1 (canonical FT settings) and Stage 2 (noise) completed.
-    Detection operates on the user's persisted spectrum: there is no Stage 3
-    ``trim``/``zpf`` -- those come from the Stage 1 canonical record.
+    Requires Stage 1 (persisted FT settings) and Stage 2 (noise) completed.
+    Detection scores on the active FT (built from the persisted Stage 1
+    settings): there is no Stage 3 ``trim``/``zpf`` -- those come from the
+    Stage 1 persisted record.
 
     The promotion cutoff (``promotion.min_snr``) is the **user-grid SNR** at
     which a peak moves on to Stage 4 -- not the detection floor. Detection
@@ -565,7 +567,6 @@ def detect_peaks_impl(
         "run_gap_pass": run_gap_v,
         "detection_zpf": detection_zpf_v,
         "gap_active_zpf": gap_active_zpf_v,
-        "settings_source": "stage1_canonical",
     }
 
     with h5py.File(file_path, "r") as h5f:
@@ -583,9 +584,9 @@ def detect_peaks_impl(
                 "detection. Run estimate_noise()/'noise run' first."
             )
 
-    # The canonical active FT is the single grid on which detections are
+    # The active FT is the single grid on which detections are
     # scored and reported. The full-record persisted FT is rebuilt only for
-    # its canonical processing params / trim (a display artifact otherwise).
+    # its persisted processing params / trim (a display artifact otherwise).
     stage1 = compute_ft_impl(file_path=file_path)
     user_ft: ComplexFT = stage1["complex_ft"]
     base_pp = user_ft.metadata["processing_params"]
@@ -605,7 +606,7 @@ def detect_peaks_impl(
     )
 
     # Both detection spectra are built on the same active-region dt·rfft frame as
-    # the canonical active FT. The primary applies a strong leakage-suppressing
+    # the active FT. The primary applies a strong leakage-suppressing
     # window (Blackman-Harris) for a clean strong-line list; the gap pass applies
     # the shape-aware matched filter. Both are zero-padded so the feature lands
     # in SavGol's operating range.
@@ -768,7 +769,7 @@ def detect_peaks_impl(
     # ``processing_parameters/stage3_peaks``. The legacy JSON-encoded
     # ``processing_parameters/peak_detection`` block is kept by
     # ``save_peak_parameters_impl`` above as a back-compat shim; the new
-    # canonical record below is what the resolver's persisted layer reads.
+    # persisted record below is what the resolver's persisted layer reads.
     save_peak_detection_settings_to_h5(
         file_path,
         resolved,
@@ -812,7 +813,7 @@ def primary_detection_spectrum_impl(
     """Replay the Stage 3 primary-pass (apodized) detection spectrum.
 
     Re-applies the persisted Stage 3 ``primary_window`` / ``detection_zpf`` to the
-    canonical Stage 1 active region and returns ``(freq_mhz, magnitude)`` of the
+    persisted Stage 1 active region and returns ``(freq_mhz, magnitude)`` of the
     Blackman-Harris primary spectrum -- the leakage-suppressed surface the primary
     pass localizes on, where the truncation pedestal is flattened. The spectrum
     itself is not persisted; like the active-FT overview it is a deterministic
@@ -894,7 +895,7 @@ def visualize_peaks_impl(
     interactive: bool = True,
     show_snr_histogram: bool = False,
 ) -> Any:
-    """Overlay the persisted classified peaks on the canonical active FT.
+    """Overlay the persisted classified peaks on the active FT.
 
     Peaks are scored and stored on the active FT (frequency + re-measured
     amplitude), so the overlay is the active FT with the active-FT authority

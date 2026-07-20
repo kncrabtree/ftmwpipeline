@@ -164,7 +164,7 @@ retuning on other instruments.
    declines to recommend one.
 ``band_min_mhz`` / ``band_max_mhz``
    Optional explicit integration band for the sweep. Unset, the detector uses
-   the canonical Stage 1 frequency trim, falling back to the full positive
+   the persisted Stage 1 frequency trim, falling back to the full positive
    spectrum.
 
 Running the stage

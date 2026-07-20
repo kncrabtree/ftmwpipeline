@@ -1,5 +1,5 @@
 """
-Canonical Stage 4 window-planning settings.
+Standard Stage 4 window-planning settings.
 
 ``WindowPlanningSettings`` is the single source of truth for the Stage 4
 parameters across every surface:
@@ -9,7 +9,7 @@ parameters across every surface:
 * the CLI ``--preset`` flag plus the existing per-knob flags,
 * the resolution chain ``explicit > persisted > preset > recommended >
   hard default``,
-* the persisted canonical record in ``processing_parameters/stage4_windows``,
+* the persisted record in ``processing_parameters/stage4_windows``,
 * the YAML preset interchange format.
 
 The dataclass mirrors the architectural template established by Stages 5,
@@ -284,7 +284,7 @@ _SUB_NAMES = ("coherence", "clustering", "contributor", "leakage")
 # in ``preprocessing/window_planning.py`` and
 # ``preprocessing/edge_coherence.py``. Kept as inline literals (rather than
 # imported from ``preprocessing/``) to keep ``core`` dependency-free from
-# ``preprocessing``; the kernel module's constants are the readable canonical
+# ``preprocessing``; the kernel module's constants are the readable standard
 # source and these must track them.
 _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
     "coherence": {

@@ -287,7 +287,7 @@ def load_fid_from_hdf5(h5_group: h5py.Group) -> FID:
         if proc_group is not None:
             # Legacy files may carry retired keys (the apodization knobs winf /
             # zpf / expf_us and the rdc toggle) in this group; they are ignored
-            # -- the canonical FT is unconditionally unapodized, native-length,
+            # -- the FT is unconditionally unapodized, native-length,
             # and DC-removed.
             processing = FIDProcessingParameters(
                 start_us=_deserialize_optional_float(proc_group.attrs["start_us"]),
@@ -646,7 +646,7 @@ def update_fid_processing_defaults(
 
             # Update attributes with new parameters. The retired knobs (the
             # apodization knobs window_function / winf / zpf / expf_us and the
-            # rdc toggle) are not accepted -- the canonical FT is unconditionally
+            # rdc toggle) are not accepted -- the FT is unconditionally
             # unapodized, native-length, and DC-removed.
             for param_name, param_value in new_params.items():
                 if param_name in ("start_us", "end_us"):

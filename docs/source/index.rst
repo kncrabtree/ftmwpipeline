@@ -91,7 +91,7 @@ Where to start
 The pipeline stages, in the order an experiment moves through them:
 
 * :doc:`stage0_import` — load a raw FID from an instrument format.
-* :doc:`stage1_ft` — compute the canonical frequency-domain spectrum.
+* :doc:`stage1_ft` — compute the standard frequency-domain spectrum.
 * :doc:`stage2_noise` — estimate the per-bin noise.
 * :doc:`stage2b_tau` — calibrate the molecular decay time and recommend a line
   shape.

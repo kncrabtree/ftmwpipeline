@@ -2,7 +2,7 @@
 
 Wraps :func:`~ftmwpipeline.fitting.tau_calibration.compute_shape_recommendation`
 so the three user-facing interfaces (CLI, Pipeline class, functional API)
-share one orchestration layer. Reads the raw FID + canonical Stage 1
+share one orchestration layer. Reads the raw FID + persisted Stage 1
 settings from a ``.ftmw`` file, runs the 3-way per-bin AICc vote across
 exp / gauss / voigt models, writes the verdict to the
 ``recommended_shape`` attr on every persisted Stage 2b group, and
@@ -57,8 +57,8 @@ logger = logging.getLogger(__name__)
 STAGE_NAME = "shape_recommendation"
 
 
-def _read_canonical_ft_settings(file_path: str) -> FTSettings:
-    """Resolve the canonical Stage 1 FT settings the calibration consumes."""
+def _read_persisted_ft_settings(file_path: str) -> FTSettings:
+    """Resolve the persisted Stage 1 FT settings the calibration consumes."""
     settings = _read_settings_layer(file_path, FT_PROCESSING_PATH)
     if settings is None:
         raise StageDependencyError(
@@ -116,7 +116,7 @@ def recommend_shape_impl(
         preset=preset,
     )
 
-    ft_settings = _read_canonical_ft_settings(file_path)
+    ft_settings = _read_persisted_ft_settings(file_path)
     fid = load_fid_from_pipeline_impl(file_path)
     sample_dt_us = float(fid.spacing * 1e6)
 
@@ -128,7 +128,7 @@ def recommend_shape_impl(
     )
     if ft_settings.trim is None:
         raise ValueError(
-            "Stage 1 canonical FT settings have no frequency trim; the "
+            "Stage 1 persisted FT settings have no frequency trim; the "
             "shape recommendation uses the persisted trim range to match "
             "the user spectrum. Set trim on compute_ft() first."
         )
@@ -203,7 +203,7 @@ def recommend_shape_impl(
             file_path_obj,
         )
 
-    # Persist the resolved Stage 2b settings as the canonical record
+    # Persist the resolved Stage 2b settings as the persisted record
     # for this run -- recommend_shape is one of three consumers that
     # share the same settings block.
     save_tau_calibration_settings_to_h5(

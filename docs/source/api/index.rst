@@ -26,7 +26,7 @@ core.
 Stage parameters resolve through the layered chain described in
 :doc:`../settings_and_presets` (explicit argument > value persisted in the file
 > preset > recommended default). Passing an explicit override to a stage method
-persists it as the file's new canonical state and invalidates the downstream
+persists it as the file's new state and invalidates the downstream
 stages that depended on the old value.
 
 .. contents:: On this page

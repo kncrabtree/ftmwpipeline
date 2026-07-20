@@ -1,7 +1,7 @@
 """
 Persistence for :class:`~ftmwpipeline.core.stage_fit_settings.StageFitSettings`.
 
-The canonical record for a fit's resolved knobs lives under
+The persisted record for a fit's resolved knobs lives under
 ``processing_parameters/stage5_fit`` (mirroring
 ``processing_parameters/ft_processing`` for Stage 1). The layout uses one
 HDF5 subgroup per sub-dataclass so each block is independently inspectable

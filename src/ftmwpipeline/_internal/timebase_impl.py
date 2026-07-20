@@ -6,7 +6,7 @@ calibration runs on the raw FID, reads its active region from the persisted
 Stage 1 settings, resolves the instrument clock declaration, and persists the
 measured timebase scale error ``eps`` to ``/timebase_calibration``.
 
-The calibration depends only on Stage 0 (the raw FID) plus the canonical
+The calibration depends only on Stage 0 (the raw FID) plus the persisted
 Stage 1 active-region bounds. It measures and persists ``eps`` only; applying
 the correction to the frequency axis is out of scope here.
 
@@ -53,8 +53,8 @@ logger = logging.getLogger(__name__)
 STAGE_NAME = "timebase_calibration"
 
 
-def _read_canonical_ft_settings(file_path: str) -> FTSettings:
-    """Resolve the canonical Stage 1 FT settings the calibration consumes."""
+def _read_persisted_ft_settings(file_path: str) -> FTSettings:
+    """Resolve the persisted Stage 1 FT settings the calibration consumes."""
     settings = _read_settings_layer(file_path, FT_PROCESSING_PATH)
     if settings is None:
         raise StageDependencyError(
@@ -119,7 +119,7 @@ def calibrate_timebase_impl(
 ) -> Dict[str, Any]:
     """Run scope-timebase self-calibration and persist the result.
 
-    Requires Stage 0 (the raw FID); the canonical Stage 1 settings supply the
+    Requires Stage 0 (the raw FID); the persisted Stage 1 settings supply the
     active-region bounds. Resolves the instrument clock declaration via
     :func:`_resolve_clock_sources` (explicit ``clocks`` > persisted
     ``spur.clocks``); raises ``ValueError`` if neither yields a non-empty
@@ -149,7 +149,7 @@ def calibrate_timebase_impl(
             "(ClockSource(..., locked=True)) to build the spur lattice."
         )
 
-    ft_settings = _read_canonical_ft_settings(file_path)
+    ft_settings = _read_persisted_ft_settings(file_path)
     fid = load_fid_from_pipeline_impl(file_path)
     sample_dt_us = float(fid.spacing * 1e6)
 

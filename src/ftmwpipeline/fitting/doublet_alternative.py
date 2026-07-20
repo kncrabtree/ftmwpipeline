@@ -235,7 +235,7 @@ def adjudicate_close_pairs(
         Complex window data on ``offset_grid_mhz`` **minus** the frozen
         background — the same ``z`` the production free-peak fit was run on.
     rms_noise : np.ndarray
-        Per-bin complex noise RMS ``sigma`` (canonical Stage 2 noise).
+        Per-bin complex noise RMS ``sigma`` (persisted Stage 2 noise).
     fit : WindowFitResult
         The production free-peak fit result for this window.
     acquisition_us : float

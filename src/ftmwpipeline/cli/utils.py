@@ -176,7 +176,7 @@ def elide_path(path: str, prev: Optional[str]) -> str:
 def print_processing_params(trim_range: Optional[Tuple[float, float]]) -> None:
     """Print processing parameters for user confirmation."""
     print("Processing parameters:")
-    print("  Canonical FT: unapodized, native-length")
+    print("  Standard FT: unapodized, native-length")
     if trim_range:
         print(f"  Frequency range: {trim_range[0]:.1f}-{trim_range[1]:.1f} MHz")
     else:

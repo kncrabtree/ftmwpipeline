@@ -131,7 +131,7 @@ def rolling_coherence(
         Complex spectrum (1D). Must be the complex FT, not magnitude — the test
         is a phase-coherence test.
     rms_noise : np.ndarray
-        Per-point noise RMS, same length as ``complex_spectrum`` (the canonical
+        Per-point noise RMS, same length as ``complex_spectrum`` (the persisted
         Stage 2 ``rms_noise`` array).
     band_m : int, default 64
         Band width M.
@@ -188,10 +188,10 @@ def active_edge_coherence(
     *,
     band_m: int = DEFAULT_EDGE_M,
 ) -> np.ndarray:
-    """Rolling ``S_coh`` on the canonical active FT -- the single edge-coherence
+    """Rolling ``S_coh`` on the active FT -- the single edge-coherence
     entry point shared by Stages 3 and 4.
 
-    The canonical active FT is the ``dt_us * rfft`` of just the
+    The active FT is the ``dt_us * rfft`` of just the
     ``[start_us, end_us]`` active region, so it is already in the ``[0, T]``
     reference frame: the active signal begins at the transform's own time
     origin. The turn-on phase ramp ``exp(-i 2pi f t0)`` a *full-record* rfft

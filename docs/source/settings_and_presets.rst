@@ -162,7 +162,7 @@ instrument-specific recipe.
 pipeline knob written at its package-wide default value, and nothing else.
 Applying it is a no-op — ``--preset defaults`` reproduces exactly what the
 pipeline does with no preset at all — so its purpose is documentation. It is
-the canonical, copy-and-edit starting point: open it, delete the blocks you
+the standard, copy-and-edit starting point: open it, delete the blocks you
 do not care about, and change the few values you want to pin.
 
 Use it by bare name (mostly to read it; as a recipe you would copy and edit
@@ -337,7 +337,7 @@ Persistence and auto-inheritance
 --------------------------------
 
 Every time a stage runs, its resolved settings are stamped into the
-``.ftmw`` file under the canonical record for that stage (see the
+``.ftmw`` file under the persisted record for that stage (see the
 *Persisted at* column in the table above). The next call to the same
 stage on that file inherits those settings unless you override them, so
 a sequence like:
@@ -472,7 +472,7 @@ Cross-stage recommendations
 
 The *recommended* layer of the resolution chain is where one stage
 hands a hint to a later stage. The Stage 2b → Stage 5 path is the
-canonical example: Stage 2b's τ calibration writes a
+standard example: Stage 2b's τ calibration writes a
 ``recommended_shape`` attribute on its output group (``lorentzian``,
 ``gaussian``, or ``voigt``), and Stage 5's resolver reads it as the
 *recommended* layer of the shape field. The attribute carries the

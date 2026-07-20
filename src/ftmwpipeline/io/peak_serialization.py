@@ -13,7 +13,7 @@ HDF5 layout (under the caller-provided group, e.g. ``/stage3_peaks``)::
     intensity          [f8]  magnitude, re-measured on the user spectrum
     index              [i8]  index into the user-grid spectrum
     snr                [f8]  excess-over-leakage SNR, (|X|-pedestal)/sigma,
-                             vs the canonical Stage 2 noise (user grid)
+                             vs the persisted Stage 2 noise (user grid)
     noise_std_local    [f8]
     classification     [str] "weak" | "medium" | "strong" | ""
     detection_pass     [str] "primary" | "gap" | ""

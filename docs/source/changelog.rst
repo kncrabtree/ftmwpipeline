@@ -15,10 +15,10 @@ A refinement beta over 0.1.0b1. As a pre-release it still installs only when
 explicitly requested: ``pip install --pre ftmwpipeline``.
 
 * **Zero-padded display spectrum (Stage 1).** ``compute_display_ft`` renders a
-  smoothly interpolated view of the canonical spectrum for display, trimmed to
-  the same analysis band as the canonical transform so the two stay aligned. The
-  canonical, native-length spectrum that every downstream stage binds to is
-  unchanged.
+  smoothly interpolated view of the standard spectrum for display, trimmed to
+  the same analysis band as the standard transform so the two stay aligned. The
+  standard, native-length spectrum that every downstream stage's settings
+  derive from is unchanged.
 * **Per-stage knobs on ``run``.** The single-command ``run`` pipeline exposes
   each stage's tuning knobs as namespaced command-line flags, so a full run can
   be steered from the command line without a settings file, with accompanying
@@ -49,7 +49,7 @@ Pipeline stages
   columns, and segmented Keysight ``.mat`` scope records, with a metadata
   sidecar for no-code generic input. Start-time detection stamps a recommended
   FID window from the chirp-end collapse.
-* **Fourier transform (Stage 1).** The canonical spectrum is unconditionally
+* **Fourier transform (Stage 1).** The standard spectrum is unconditionally
   unapodized and native-length; the user controls only data selection (the
   active FID window and the analysis band) and display scaling. The persisted
   trim binds every downstream stage.
@@ -63,7 +63,7 @@ Pipeline stages
   fitter uses.
 * **Peak detection (Stage 3).** A two-pass detector — a robust primary pass for
   strong-line positions plus a shape-aware matched-filter gap pass for weak-line
-  recovery — classifies peaks by SNR on the canonical spectrum. SNR is the
+  recovery — classifies peaks by SNR on the active FT. SNR is the
   magnitude's excess over the local coherent-leakage pedestal, so a dense leakage
   pedestal cannot float pedestal noise above the promotion cutoff and flood the
   later stages.

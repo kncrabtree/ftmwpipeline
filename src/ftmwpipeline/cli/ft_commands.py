@@ -6,7 +6,6 @@ for basic FTMW data processing and visualization.
 """
 
 import argparse
-import sys
 from pathlib import Path
 
 # Import shared implementations
@@ -121,7 +120,7 @@ def cmd_ft_visualize(args: argparse.Namespace) -> int:
     where users want to try different processing parameters and see immediate
     visual feedback. Creates multi-panel plots showing the complete processing
     workflow from raw FID to final spectrum. Visualization never persists; to
-    store settings as canonical, use 'ft run'.
+    store settings, use 'ft run'.
 
     Visualization panels:
     - Raw FID panel with windowing bounds (start_us/end_us vertical lines)
@@ -252,7 +251,7 @@ Purpose: Validate and store user-provided processing settings
 Intended for: Power users and automated pipeline processes
 
 Examples:
-  # Compute the canonical (unapodized) FT
+  # Compute the standard (unapodized) FT
   ftmwpipeline ft run exp_2638.ftmw
 
   # Restrict to the analysis band
@@ -304,7 +303,7 @@ Examples:
   ftmwpipeline ft show exp_2638.ftmw --start-us 2.0 --end-us 12.0 \\
       --no-interactive --output enhanced_spectrum.png
 
-Note: 'ft show' never persists settings. To store FT settings as canonical,
+Note: 'ft show' never persists settings. To store FT settings persistently,
 use 'ft run'.
 
 Workflow:

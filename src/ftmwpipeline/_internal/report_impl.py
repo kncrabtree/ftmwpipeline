@@ -768,7 +768,7 @@ def _noise_band_table(
 ) -> Tuple[Optional[float], List[_NoiseBand]]:
     """Per-band median sigma_x and noise fraction over the trimmed active grid.
 
-    Replays the canonical trimmed active FT (a deterministic rfft of the
+    Replays the trimmed active FT (a deterministic rfft of the
     persisted active record) and reads the persisted Stage 2 sigma back
     element-for-element -- the sanctioned noise read path, not a recompute of
     the estimate. Returns ``(overall_noise_fraction, bands)``; ``(None, [])``
@@ -1371,7 +1371,7 @@ _METHODS = {
         "collapse and adds a guard margin for the ring-down."
     ),
     "stage1": (
-        "The canonical Fourier transform is **unapodized, un-windowed, and "
+        "The Fourier transform is **unapodized, un-windowed, and "
         "native-length**: no exponential apodization, FID window, or zero-padding "
         "is applied. Apodization would trade resolution and bias the line shape, "
         "and zero-padding would interpolate the bins and corrupt the noise and "
@@ -1380,7 +1380,7 @@ _METHODS = {
         "emits into. The bin spacing is therefore 1 / T_record."
     ),
     "stage2": (
-        "Noise is estimated on the canonical active FT with a high-pass, "
+        "Noise is estimated on the active FT with a high-pass, "
         "region-aware, Rician-corrected scatter MAD, broadly lower-envelope "
         "smoothed. This is immune to the leakage-pedestal σ inflation that "
         "afflicts level-based estimators on high-SNR, line-dense spectra. It "

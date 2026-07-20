@@ -335,7 +335,7 @@ def detect_start_time(
     gives the recommended ``start_us``. When ``stamp=True`` (default) the value
     is written to the Stage 0 ``recommended_processing`` layer so a later
     :func:`compute_ft` with no explicit ``start_us`` inherits it. Requires only
-    Stage 0 (FID); the band is resolved from the canonical Stage 1 trim when
+    Stage 0 (FID); the band is resolved from the persisted Stage 1 trim when
     present, else the full positive spectrum.
 
     Parameters
@@ -413,7 +413,7 @@ def compute_ft(
 
     This function performs FT computation on FID data stored in a .ftmw pipeline
     file, equivalent to Pipeline.compute_ft(). Can be called multiple times
-    safely. The canonical FT is unconditionally unapodized, un-windowed, and
+    safely. The FT is unconditionally unapodized, un-windowed, and
     native-length.
 
     Parameters
@@ -449,7 +449,7 @@ def compute_ft(
     Examples
     --------
     >>> import ftmwpipeline.api as ftmw
-    >>> # Compute with specific parameters (persisted as canonical)
+    >>> # Compute with specific parameters (persisted to the file)
     >>> complex_ft = ftmw.compute_ft("experiment.ftmw", trim=(26500, 40000))
     >>>
     >>> # Use saved/recommended settings only
@@ -474,28 +474,28 @@ def compute_display_ft(
     pad_factor: int = _DETAIL_PAD_FACTOR,
 ) -> ComplexFT:
     """
-    Compute the zero-padded, canonical-band DISPLAY FT, equivalent to
+    Compute the zero-padded, analysis-band DISPLAY FT, equivalent to
     :meth:`Pipeline.compute_display_ft`.
 
     This is the same 2x-zero-padded magnitude spectrum the Stage 5 report and
     'fit show' detail panels render -- contrast with :func:`compute_ft`, the
-    canonical FT, which is unpadded and native-length and is what everything
+    standard FT, which is unpadded and native-length and is what everything
     downstream actually fits and scores on. This FT zero-fills the
     active-region FID slice by ``pad_factor`` (display default ``2``, the
     information limit for a magnitude spectrum) purely to interpolate the
     magnitude curve between the native bins, then trims to
     :func:`compute_ft`'s own frequency band (``from_saved_params=True``) --
-    it is display-only, differs from the canonical FT only in bin density,
+    it is display-only, differs from the standard FT only in bin density,
     never extent, and never feeds fitting, noise, or chi-squared. Display
     magnitude is ``abs(spectrum) * amplitude_scale``.
 
-    Depends on Stage 1 (the FID plus canonical FT settings, including any
+    Depends on Stage 1 (the FID plus persisted FT settings, including any
     trim) only -- does not require a persisted Stage 5 fit.
 
     Parameters
     ----------
     file_path : str or Path
-        Path to .ftmw pipeline file containing FID data and canonical FT
+        Path to .ftmw pipeline file containing FID data and persisted FT
         settings (Stage 0 + 1 complete).
     pad_factor : int, default 2
         Zero-fill factor applied to the active-region FID slice.
@@ -514,7 +514,7 @@ def compute_display_ft(
     FileNotFoundError
         If pipeline file does not exist.
     StageDependencyError
-        If required dependencies (FID data / canonical FT settings) are not
+        If required dependencies (FID data / persisted FT settings) are not
         available.
     RuntimeError
         If FT computation fails.
@@ -552,7 +552,7 @@ def visualize_ft(
 
     This function creates comprehensive FT visualization showing the complete
     FID-to-spectrum processing workflow, equivalent to Pipeline.visualize_ft().
-    The canonical FT is unconditionally unapodized, un-windowed, and
+    The FT is unconditionally unapodized, un-windowed, and
     native-length.
 
     Parameters
@@ -996,10 +996,11 @@ def detect_peaks(
 ) -> List[Peak]:
     """Detect and classify peaks (Stage 3), equivalent to Pipeline.detect_peaks().
 
-    Requires Stage 1 (FT) and Stage 2 (noise). Two-pass detection operates on
-    the Stage 1 persisted canonical spectrum (including its frequency trim
-    range); peaks are reported on that user grid with SNR measured against the
-    canonical Stage 2 noise.  There is no per-Stage-3 trim or zpf.
+    Requires Stage 1 (FT) and Stage 2 (noise). Two-pass detection scores on
+    the active FT (built from the persisted Stage 1 settings, including its
+    frequency trim range); peaks are reported on that active grid with SNR
+    measured against the persisted Stage 2 noise.  There is no per-Stage-3
+    trim or zpf.
 
     Settings resolve through the chain (``settings`` / ``preset`` > persisted >
     hard default); pass ``settings=`` to drive detection from a
@@ -1259,7 +1260,7 @@ def fit_peaks(
     loop over each window with the shared per-window decay ``tau`` and the
     frozen-contributor model, then the residual edge-coherence handshake (local
     thaw + structural replan). The fit runs on the active-portion FT (computed
-    on demand from the FID + canonical Stage 1 settings), so per-bin statistics
+    on demand from the FID + persisted Stage 1 settings), so per-bin statistics
     are independent and reduced chi-squared / F-test / AIC are calibrated as
     written. The persistent :class:`SpectrumFit` -- per-window
     :class:`FittingResult` s, the merged global fitted-peak list, the thaw /
@@ -2311,7 +2312,7 @@ def settings_set(file_path: Union[str, Path], knob: str, value: str) -> Any:
     layer, and invalidates the affected stage plus every downstream stage so the
     file never carries results inconsistent with its settings. The retired
     apodization knobs (``zpf`` / ``expf_us`` / ``window_function``) no longer
-    exist -- the canonical FT is unconditionally unapodized and native-length.
+    exist -- the FT is unconditionally unapodized and native-length.
 
     Parameters
     ----------

@@ -1,5 +1,5 @@
 """
-Canonical Stage 3 peak-detection settings.
+Standard Stage 3 peak-detection settings.
 
 ``PeakDetectionSettings`` is the single source of truth for the Stage 3
 parameters across every surface:
@@ -9,7 +9,7 @@ parameters across every surface:
 * the CLI ``--preset`` flag plus the existing per-knob flags,
 * the resolution chain ``explicit > persisted > preset > recommended >
   hard default``,
-* the persisted canonical record in ``processing_parameters/stage3_peaks``,
+* the persisted record in ``processing_parameters/stage3_peaks``,
 * the YAML preset interchange format.
 
 The dataclass mirrors :class:`~ftmwpipeline.core.stage_fit_settings.StageFitSettings`,
@@ -147,7 +147,7 @@ class PrimaryPassSubSettings:
     """Primary-pass apodization + zpf knobs.
 
     The primary pass runs on the active-region ``dt·rfft`` frame (the same frame
-    as the gap pass and the canonical active FT), zero-padded by
+    as the gap pass and the active FT), zero-padded by
     ``detection_zpf``, on a strongly-windowed spectrum (``primary_window``) to
     suppress truncation sidelobes;
     ``min_exclusion_mhz`` is the half-width around every primary detection
@@ -303,7 +303,7 @@ _SUB_NAMES = ("promotion", "savgol", "primary_pass", "gap_pass")
 # in ``preprocessing/peak_detection.py`` and ``_internal/stage3_impl.py``.
 # Kept as inline literals (rather than imported from those modules) to
 # keep ``core`` dependency-free from ``preprocessing`` / ``_internal``;
-# the kernel modules' constants are the readable canonical source and
+# the kernel modules' constants are the readable standard source and
 # these must track them.
 _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
     "promotion": {

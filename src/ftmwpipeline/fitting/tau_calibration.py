@@ -494,7 +494,8 @@ class TauCalibrationResult:
         Analysis frequency range (molecular, MHz). Bins outside are not
         considered for tau extraction.
     sigma_x_full : float
-        ``|X|``-RMS noise floor on the full-record FT (per-bin, scalar).
+        ``|X|``-RMS noise floor on the active-region FT (per-bin, scalar;
+        the whole-STFT-input floor, before the per-frame scale-down).
     sigma_frame : float
         Per-frame noise floor (= ``sigma_x_full / sqrt(n_seg)``).
     snr_weighted : bool
@@ -1422,8 +1423,9 @@ def stft_calibration(
         log-linear weighted regression does not minimize linear-space RSS so
         its prediction error scales with the signal level, not the noise level.
     sigma_x_full : float, optional
-        Override for the per-bin full-record FT noise floor (in ``dt * rfft``
-        units). When supplied, replaces the analytic
+        Override for the per-bin active-region FT noise floor (in ``dt * rfft``
+        units) -- the whole-STFT-input floor, before the per-frame
+        ``sigma_frame`` scale-down. When supplied, replaces the analytic
         ``sigma_t * dt * sqrt(N/2)`` derivation. Pass this when an
         independent spectral noise estimate (e.g. Stage 2's per-bin
         ``rms_noise`` median) is more accurate than the FID-tail
@@ -1464,7 +1466,7 @@ def stft_calibration(
 
     mag, a_centers_us, freq_bb_mhz = sliding_stft(fid_arr, sample_dt_us, n_seg)
 
-    # Per-bin full-record FT noise floor, then per-frame. The override beats
+    # Per-bin active-region FT noise floor, then per-frame. The override beats
     # the analytic ``sigma_t * dt * sqrt(N/2)`` derivation; pass the override
     # when an independent (e.g. Stage 2) spectral noise estimate is more
     # accurate than the FID-tail sigma_t.
@@ -2059,7 +2061,7 @@ def extract_tau_majority(
         biases ``tau_maj`` low. Left as an opt-in for forensic/case-1
         comparison; default off for production multi-line spectra.
     sigma_x_full : float, optional
-        Override for the per-bin full-record FT noise floor (in
+        Override for the per-bin active-region FT noise floor (in
         ``dt * rfft`` amplitude units). When supplied, beats the FID-tail
         ``sigma_t`` derivation. **For tau extraction, prefer the FID-tail
         derivation (leave this None).** The tail carries residual decaying

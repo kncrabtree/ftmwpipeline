@@ -9,9 +9,9 @@ and the local thaw + structural-replan dispatchers live in
 list (the persistent :class:`~ftmwpipeline.core.data_structures.SpectrumFit`).
 
 Stage 5 owns no FT settings: the active-portion FT it fits on is computed
-on demand from the persisted FID plus the canonical Stage 1 settings (the
+on demand from the persisted FID plus the persisted Stage 1 settings (the
 same ``start_us`` / ``end_us`` the user picked for the persisted spectrum; the
-canonical FT is unapodized, native-length, and unconditionally DC-removed).
+FT is unapodized, native-length, and unconditionally DC-removed).
 Per-bin noise on the active-FT is measured fresh by
 running the Stage 2 adaptive estimator on the active-FT magnitude spectrum,
 rather than rescaled from the persisted Stage 1/2 noise.
@@ -23,18 +23,16 @@ from __future__ import annotations
 
 import copy
 import logging
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     Any,
-    Callable,
     Dict,
     List,
     Mapping,
     Optional,
     Tuple,
-    Union,
     cast,
 )
 
@@ -58,35 +56,24 @@ from ..core.stage_fit_settings import (
 )
 from ..core.stage_fit_settings import resolve as resolve_stage_fit_settings
 from ..file_manager import invalidate_downstream_stages
-from ..fitting.active_ft import compute_active_ft
-from ..fitting.clock_lattice import ClockLattice, build_clock_lattice
+from ..fitting.clock_lattice import ClockLattice
 from ..fitting.peak_model import PeakShape
 from ..fitting.plan_execution import (
     FinalizeNode,
     ReplanContext,
     WindowOutcome,
     execute_plan,
-    parallel_window_refit_map,
     refit_outcome,
 )
 from ..fitting.result_conversion import (
     plan_fit_outcome_to_spectrum_fit,
     sort_fitting_result_by_frequency,
 )
-from ..fitting.spur_detection import (
-    SpurSet,
-    build_spur_set,
-    make_band_power_probe,
-    make_chirp_response_probe,
-    make_decay_probe,
-)
 from ..fitting.tau_calibration import (
     BandMajority,
     TauCalibrationResult,
     band_majority_for_frequency,
 )
-from ..fitting.validation import amplitude_vif
-from ..io.fid_serialization import load_acquisition_segments_from_hdf5
 from ..io.fitting_serialization import (
     load_spectrum_fit_from_hdf5,
     save_spectrum_fit_to_hdf5,
@@ -97,10 +84,8 @@ from ..io.stage_fit_settings_serialization import (
     read_stage2b_recommended_shape,
     save_stage_fit_settings_to_h5,
 )
-from ..preprocessing.noise_estimation import estimate_active_ft_noise
 from ..preprocessing.peak_detection import DEFAULT_MIN_SNR as DEFAULT_PROMOTION_MIN_SNR
 from .active_ft_support import (
-    _persisted_scatter_knobs,
     build_active_grid_with_noise,
     default_tau0_us,
 )
@@ -267,8 +252,8 @@ def _build_active_ft_inputs(
     """Gather the Stage 0/1 inputs the active-FT and the replan context need.
 
     Reads the persisted FID, recomputes the user ComplexFT via the shared
-    Stage 1 path (so canonical settings drive what Stage 5 fits on), and
-    returns the canonical trim range so the active-grid replan/visualization
+    Stage 1 path (so persisted settings drive what Stage 5 fits on), and
+    returns the persisted trim range so the active-grid replan/visualization
     can be rebuilt on the analysis band.
     """
     fid = load_fid_from_pipeline_impl(file_path)
@@ -285,12 +270,12 @@ def _build_active_ft_inputs(
     )
     if acquisition_us <= 0:
         raise ValueError(
-            f"Stage 1 canonical settings produce a non-positive active "
+            f"Stage 1 persisted settings produce a non-positive active "
             f"acquisition length ({acquisition_us} us)"
         )
     sideband = Sideband.coerce(fid.sideband)
 
-    # n_padded: the canonical full-record FT input length (the native FID
+    # n_padded: the persisted Stage 1 full-record FT input length (the native FID
     # length -- the persisted FT is unpadded). The active-FT records alpha for
     # diagnostic only; the fit itself is independent of n_padded.
     n_padded = int(np.asarray(fid.data).size)
@@ -1185,7 +1170,7 @@ class Stage5FitContext:
     # Trim range (lo, hi) in MHz, or None when the full active-FT is the band.
     trim_range: Optional[Tuple[float, float]]
 
-    # The persisted ComplexFT (the user's canonical Stage 1 FT, used to
+    # The persisted ComplexFT (the user's persisted Stage 1 FT, used to
     # derive the analysis-band extent for the spur sweep).
     user_ft: Any  # ComplexFT
 
@@ -1233,7 +1218,6 @@ def build_stage5_fit_context(
     from ..fitting.active_ft import compute_active_ft
     from ..fitting.clock_lattice import build_clock_lattice
     from ..fitting.spur_detection import (
-        SpurSet,
         build_spur_set,
         make_band_power_probe,
         make_chirp_response_probe,
@@ -1545,7 +1529,7 @@ def _fit_peaks_impl(
 
     Requires Stage 4 (window assignment) completed (which transitively
     requires Stages 1-3). The fit operates on the active-portion FT
-    computed on demand from the persisted FID and the canonical Stage 1
+    computed on demand from the persisted FID and the persisted Stage 1
     settings; per-bin noise is measured on the active-FT directly.
 
     Settings resolve through the chain (``settings`` / ``preset`` > persisted >
@@ -1852,7 +1836,6 @@ def _fit_peaks_impl(
     # ``resolved`` are resolved above before this call and forwarded verbatim.
     fit_ctx = build_stage5_fit_context(file_path, resolved, persisted_cal, shape_enum)
     active_ft = fit_ctx.active_ft
-    active_rms = fit_ctx.active_rms
     rms_for_fit = fit_ctx.rms_for_fit
     sideband = fit_ctx.sideband
     acquisition_us = fit_ctx.acquisition_us
@@ -1978,7 +1961,7 @@ def _fit_peaks_impl(
         # ``sigma_tau_us`` drive the bidirectional Gaussian-prior penalty and
         # the calibrated bounds (``tau_maj +- N*sigma_tau`` intersected with
         # the factor-k cap). Absent Stage 2b, tau is bounded by the factor-k
-        # cap alone (there is no apodization anchor -- the canonical FT is
+        # cap alone (there is no apodization anchor -- the FT is
         # unapodized).
         "tau_apodization_us": None,
         "tau_maj_us": tau_maj_us,
@@ -2375,7 +2358,7 @@ def _fit_peaks_impl(
     from .stage6_impl import clear_stage5_baseline
 
     clear_stage5_baseline(file_path)
-    # Stamp the resolved settings as the canonical record for this fit so
+    # Stamp the resolved settings as the persisted record for this fit so
     # a follow-up call with no explicit args inherits exactly the same
     # knobs (the persisted layer of the resolution chain).
     save_stage_fit_settings_to_h5(file_path, resolved, preset_name=preset_name)
@@ -2477,7 +2460,7 @@ def visualize_fit_impl(
 ) -> Any:
     """Overlay the persisted Stage 5 fit on the active FT it was fit on.
 
-    Re-evaluates the fitted model on the canonical active FT (the grid the
+    Re-evaluates the fitted model on the active FT (the grid the
     fit lives on), so the overlay and the model share one amplitude
     convention -- no rescale. The full-record persisted spectrum is not a
     display domain here. Requires Stage 5 completed.
@@ -2565,7 +2548,7 @@ def _load_display_style(
     file_path: str,
 ) -> Tuple[float, str, Optional[Tuple[float, float]]]:
     """Display transforms (amplitude scale, units label, overview trim) from
-    the persisted canonical FTSettings. Falls back to (1.0, "", None)."""
+    the persisted FTSettings. Falls back to (1.0, "", None)."""
     from .stage1_impl import _read_settings_layer
 
     settings = _read_settings_layer(file_path, "/processing_parameters/ft_processing")
@@ -2591,7 +2574,7 @@ def _padded_active_display_ft(
     pad_factor: int = _DETAIL_PAD_FACTOR,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Display-only active FT zero-filled by ``pad_factor`` for the magnitude
-    panels. Mirrors the canonical (unapodized) active-region extraction and mean
+    panels. Mirrors the standard (unapodized) active-region extraction and mean
     removal so the padded curve passes through the native spectrum at the
     measured bins; the extra bins are the single-zero-fill magnitude
     interpolation. Returns ``(freq_mhz, complex_spectrum)`` sorted by ascending
@@ -2607,7 +2590,7 @@ def _padded_active_display_ft(
     start_idx, end_idx = active_region_bounds(fid.size, sample_dt_us, start_us, end_us)
     active = fid[start_idx:end_idx].astype(float, copy=True)
     n_active = active.size
-    active -= active.mean()  # match canonical (unconditional) DC removal
+    active -= active.mean()  # match the standard (unconditional) DC removal
     n_pad = int(pad_factor) * n_active
     padded = np.zeros(n_pad, dtype=float)
     padded[:n_active] = active
@@ -2624,12 +2607,12 @@ def _padded_active_display_ft(
 def compute_display_ft_impl(
     file_path: str, pad_factor: int = _DETAIL_PAD_FACTOR
 ) -> ComplexFT:
-    """Compute the zero-padded, canonical-band DISPLAY FT (Stage 5 report /
+    """Compute the zero-padded, analysis-band DISPLAY FT (Stage 5 report /
     'fit show' magnitude panels), without requiring a persisted Stage 5 fit.
-    Depends on Stage 1 (the FID plus canonical FT settings, including any
+    Depends on Stage 1 (the FID plus persisted FT settings, including any
     trim) only, via :func:`_build_active_ft_inputs`.
 
-    Contrast with the canonical :func:`ftmwpipeline.api.compute_ft`: that FT
+    Contrast with the standard :func:`ftmwpipeline.api.compute_ft`: that FT
     is unpadded and native-length -- the one everything downstream fits and
     scores on. This FT zero-fills the active-region FID slice by
     ``pad_factor`` (display default ``2``, the information limit for a
@@ -2637,7 +2620,7 @@ def compute_display_ft_impl(
     native bins; it is display-only and never feeds fitting, noise, or
     chi-squared. The padded grid is then trimmed to ``compute_ft(file_path,
     from_saved_params=True)``'s own frequency band, so this FT differs from
-    the canonical FT only in bin density (``pad_factor``x), never extent --
+    the standard FT only in bin density (``pad_factor``x), never extent --
     a consumer deriving a frequency window from this accessor (e.g. a
     catalog/prediction range) sees exactly the band Stage 1 kept, not the
     full FID active region. (The internal, unpadded-and-untrimmed variant
@@ -2679,7 +2662,7 @@ def compute_display_ft_impl(
         pad_factor=pad_factor,
     )
 
-    # Trim to compute_ft's own band (user_ft is already the canonical,
+    # Trim to compute_ft's own band (user_ft is already the standard,
     # trim_range-applied ComplexFT from _build_active_ft_inputs). A tolerance
     # of a quarter padded-bin guards the boundary bins against the two
     # independent FFT paths (FID.preprocess()+compute_fft() here vs.
@@ -2727,7 +2710,7 @@ def _resolve_detail_bundle(file_path: str) -> _DetailBundle:
     spec_sorted = np.ascontiguousarray(np.asarray(active_ft.complex_spectrum)[order])
     rms_sorted = np.ascontiguousarray(np.asarray(active_rms, dtype=float)[order])
 
-    # The canonical active grid (build_active_grid_with_noise) is unapodized,
+    # The active grid (build_active_grid_with_noise) is unapodized,
     # so the display FT is too.
     freq_padded, spec_padded = _padded_active_display_ft(
         fid_samples,
@@ -3171,7 +3154,7 @@ def render_windowed_view_impl(
     shape = str(getattr(wf, "shape", "lorentzian"))
     peaks_bb = _window_peaks_baseband(wf, sideband, probe_freq_mhz)
 
-    # Synthesize on the raw active region with the fitted tau. The canonical FT
+    # Synthesize on the raw active region with the fitted tau. The FT
     # is unapodized, so the fitted tau is the intrinsic decay and the boxcar
     # model sits on the data with no correction.
     model_fid = synthesize_fid(t_us, peaks_bb, tau_us, shape=shape)

@@ -18,7 +18,7 @@ Persist / recompute split (resolves O5-8 against
   things a hand-edit can touch.
 * **Recomputed on load (not persisted):** the per-window
   :class:`SpectralWindow` (the active-FT slice -- regenerable from the FID
-  plus the canonical Stage 1 settings plus the fit window's freq_range),
+  plus the persisted Stage 1 settings plus the fit window's freq_range),
   the fitted complex spectrum, and the complex residual. Re-evaluating
   ``model_spectrum`` from the persisted parameters reproduces them
   bit-for-bit, and they are large arrays -- the SERIALIZATION spec's

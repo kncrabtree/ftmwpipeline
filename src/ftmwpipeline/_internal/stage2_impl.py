@@ -10,7 +10,7 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional
 
 import h5py
 import numpy as np
@@ -143,7 +143,7 @@ def _compute_noise_scatter(
 ) -> Dict[str, Any]:
     """Run the scatter (high-pass) Stage 2 estimator and persist its result.
 
-    Measures noise on the canonical **unapodized active FT** (trimmed to the
+    Measures noise on the **unapodized active FT** (trimmed to the
     analysis band) -- the single grid every later stage scores, plans, and
     fits on -- and stores the NoiseResult in ``stage2_noise_result`` on that
     grid. Persists the resolved :class:`NoiseSettings` to ``stage2_noise`` and
@@ -179,7 +179,7 @@ def _compute_noise_scatter(
     for param, value in processing_params.items():
         logger.info(f"  {param}: {value}")
 
-    # Measure on the canonical unapodized active FT (trimmed to the analysis
+    # Measure on the unapodized active FT (trimmed to the analysis
     # band) -- the single grid every later stage consumes.
     active_ft = build_trimmed_active_ft(file_path, trim_range)
 
@@ -302,7 +302,7 @@ def visualize_noise_impl(
                     "Run compute_ft() or 'ft run' command first."
                 )
 
-        # Rebuild the canonical trimmed active FT -- the grid the noise was
+        # Rebuild the trimmed active FT -- the grid the noise was
         # measured on -- and overlay sigma there (the noise diagnostic shows
         # the same active spectrum every later stage scores/fits on).
         from .stage1_impl import compute_ft_impl
@@ -400,7 +400,7 @@ def save_noise_result_impl(
     frequencies, magnitudes : np.ndarray
         The active-FT grid the noise was measured on (bin order). The σ array
         is stored verbatim against this grid; the loader rebuilds the identical
-        canonical active FT to reconstruct on the same grid.
+        active FT to reconstruct on the same grid.
     parameters_used : dict
         Parameters used for noise estimation
     """
@@ -463,7 +463,7 @@ def load_noise_result_impl(file_path: str) -> Dict[str, Any]:
                     "Stage 1 parameters missing - cannot compute ComplexFT for NoiseResult loading"
                 )
 
-        # Rebuild the canonical trimmed active FT on-demand: the sigma was
+        # Rebuild the trimmed active FT on-demand: the sigma was
         # measured and stored on this grid, so reconstruction reads it back
         # element-for-element. (The full-record FT is display-only.)
         from .stage1_impl import compute_ft_impl

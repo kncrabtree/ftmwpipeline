@@ -10,7 +10,7 @@ the model's own resolution scale.
 
 Noise convention
 ----------------
-The canonical Stage 2 ``rms_noise`` is a per-bin *complex* RMS ``sigma``: the
+The persisted Stage 2 ``rms_noise`` is a per-bin *complex* RMS ``sigma``: the
 real and imaginary parts each carry variance ``sigma**2 / 2``. The
 noise-weighted chi-squared therefore divides every stacked Re/Im residual
 element by ``sigma / sqrt(2)`` (D-8); with a genuine complex per-bin sigma the
@@ -447,7 +447,7 @@ def calculate_noise_weighted_chi2(
     """Noise-weighted chi-squared of a model against complex window data.
 
     ``chi-squared = sum_k |r_k / (sigma_k / sqrt(2))|**2`` over the stacked
-    Re/Im residual, so a good fit with the canonical Stage 2 noise gives a
+    Re/Im residual, so a good fit with the persisted Stage 2 noise gives a
     reduced chi-squared near 1 (D-8).
 
     Parameters

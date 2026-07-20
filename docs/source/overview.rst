@@ -50,9 +50,10 @@ Re-running a stage with new parameters is safe and cheap, and re-running an
 upstream stage invalidates the downstream results that depended on it, so the
 file is never left in a silently inconsistent state.
 
-**Unbiased spectrum, valid statistics.** The canonical spectrum that every later
-stage measures is computed without apodization, time-domain windowing, or
-zero-padding, so its per-bin noise and reduced χ² stay valid. Those operations
+**Unbiased spectrum, valid statistics.** The Fourier transform is computed
+without apodization, time-domain windowing, or zero-padding, and every later
+stage's working spectrum inherits that, so its per-bin noise and reduced χ²
+stay valid. Those operations
 would trade frequency resolution, bias the line shape, or interpolate bins and
 break the noise model that detection thresholds and fitted uncertainties rest on.
 The intended way to trade variance for robustness is the per-window fit, never a
@@ -131,7 +132,7 @@ output.
      - Load a raw FID from an instrument format and record its provenance.
    * - 1
      - :doc:`Fourier transform <stage1_ft>`
-     - Compute the canonical, unapodized, native-length spectrum over the
+     - Compute the standard, unapodized, native-length spectrum over the
        active band.
    * - 2
      - :doc:`Noise estimation <stage2_noise>`

@@ -1,7 +1,7 @@
 """
 Persistence for :class:`~ftmwpipeline.core.noise_settings.NoiseSettings`.
 
-The canonical record for a Stage 2 run's resolved knobs lives under
+The persisted record for a Stage 2 run's resolved knobs lives under
 ``processing_parameters/stage2_noise``. Stage 2 has a single estimator, so the
 fields are stored as attrs directly on the group (no sub-block layer),
 inspectable with ``h5dump -p``:

@@ -32,11 +32,11 @@ def plot_window_plan(
     Parameters
     ----------
     frequencies : np.ndarray
-        Frequency axis (MHz) of the persisted user spectrum.
+        Frequency axis (MHz) of the active-FT surface.
     complex_spectrum : np.ndarray
-        Complex FT of the user spectrum.
+        Complex FT of the active-FT surface.
     rms_noise : np.ndarray
-        Canonical Stage 2 per-point RMS noise.
+        Persisted Stage 2 per-point RMS noise.
     peaks : list of Peak
         The full Stage 3 peak list (``free_peak_indices`` index into it).
     plan : WindowPlan

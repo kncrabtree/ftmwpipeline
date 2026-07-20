@@ -6,7 +6,6 @@ handling FID data extraction from Blackchirp directory structures with
 proper metadata preservation.
 """
 
-from math import gcd
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Type, Union
 
@@ -577,7 +576,7 @@ class BlackChirpLoader(BaseLoader):
 
         These values do not drive the pipeline FT (the resolved ``FTSettings``
         do); they are retained only for display/serialization. The instrument's
-        apodization / zero-pad cells are deliberately ignored -- the canonical
+        apodization / zero-pad cells are deliberately ignored -- the
         FT is unconditionally unapodized and native-length.
         """
         _, FIDProcessingParameters, _ = _get_fid_classes()
@@ -592,7 +591,7 @@ class BlackChirpLoader(BaseLoader):
                 return default
 
         end_us = _f("FidEndUs", 0.0)
-        # DC removal is unconditional in the canonical FT, so the instrument's
+        # DC removal is unconditional in the FT, so the instrument's
         # FidRemoveDC flag is not carried through.
         return FIDProcessingParameters(
             start_us=_f("FidStartUs", 0.0),

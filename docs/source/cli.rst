@@ -42,7 +42,7 @@ Conventions
   in :doc:`settings_and_presets`; the same knobs are reachable by dotted path
   through ``settings set`` and ``scan``.
 * **run persists, show does not.** ``run`` writes its result and parameters into
-  the file (invalidating downstream stages when canonical settings change);
+  the file (invalidating downstream stages when persisted settings change);
   ``show`` only renders and never persists.
 * **Visualization output.** ``show`` verbs display interactively by default and
   write an image file when given ``--output`` / ``-o`` (often with
@@ -68,7 +68,7 @@ Command summary
      - Detect and stamp the FID ``start_us``
    * - ``ft`` (``stage1``)
      - ``run``, ``show``
-     - Compute the canonical Fourier transform
+     - Compute the standard Fourier transform
    * - ``noise`` (``stage2``)
      - ``run``, ``show``
      - Estimate per-bin noise
@@ -152,11 +152,12 @@ less commonly tuned ``--floor-tail-us`` and ``--min-chirp-drop-ratio``.
 ``ft`` — Fourier transform (Stage 1)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``ft run`` computes and persists the canonical spectrum. The canonical FT is
+``ft run`` computes and persists the standard spectrum. The FT is
 unconditionally unapodized and native-length; the only settings are data
 selection — ``--start-us`` / ``--end-us`` (the active FID window) and ``--trim
 MIN:MAX`` (the analysis band in MHz) — plus ``--units-power`` scaling. ``--trim``
-is persisted as canonical and binds every downstream stage. ``ft show`` renders
+is persisted and binds every downstream stage (each rebuilds its own active FT
+from these settings). ``ft show`` renders
 the FID-to-spectrum panels for parameter exploration and never persists. See
 :doc:`stage1_ft`.
 
@@ -195,7 +196,7 @@ Stage 5 ``spur.clocks`` settings (declare it first via ``clocks`` or a preset).
 ``peaks`` — peak detection (Stage 3)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``peaks run`` runs the two-pass detector on the canonical spectrum and
+``peaks run`` runs the two-pass detector, scoring on the active FT, and
 classifies peaks by SNR. Knobs: the promotion / classification SNR boundaries
 (``--min-snr``, ``--weak-medium-snr``, ``--medium-strong-snr``), the
 Savitzky-Golay locator (``--sg-window``, ``--sg-order``), and the matched-filter

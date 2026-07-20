@@ -104,7 +104,7 @@ def _ft_recommended(file_path: str) -> Optional[Any]:
 
 
 def _ft_persisted(file_path: str) -> Optional[Any]:
-    """Stage 1 persisted layer: the canonical ``ft_processing`` record."""
+    """Stage 1 persisted layer: the ``ft_processing`` record."""
     return _read_settings_layer(file_path, ft_mod.FT_PROCESSING_PATH)
 
 

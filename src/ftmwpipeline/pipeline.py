@@ -34,7 +34,7 @@ from ._internal.report_html_impl import report_run_impl
 from ._internal.report_impl import report_table_impl
 from ._internal.run_impl import run_pipeline_impl
 from ._internal.shape_recommendation_impl import recommend_shape_impl
-from ._internal.stage0_impl import import_data_impl, load_fid_from_pipeline_impl
+from ._internal.stage0_impl import load_fid_from_pipeline_impl
 from ._internal.stage1_impl import (
     compute_ft_impl,
     save_ft_parameters_impl,
@@ -114,15 +114,11 @@ from .core.start_detection_settings import StartDetectionSettings
 from .core.tau_calibration_settings import TauCalibrationSettings
 from .core.window_planning_settings import WindowPlanningSettings
 from .file_manager import (
-    PipelineCorruptionError,
-    PipelineExistsError,
-    PipelineFileError,
     PipelineStageTracker,
     SourceMetadata,
     StageDependencyError,
     create_pipeline_file,
     open_pipeline_file,
-    update_processing_parameters,
     validate_pipeline_file,
 )
 from .fitting.tau_calibration import ShapeRecommendation, TauCalibrationResult
@@ -155,7 +151,7 @@ class Pipeline:
         # Open existing pipeline for analysis
         pipe = Pipeline.open("exp_2638.ftmw")
 
-        # Stage 1: FT Processing (canonical FT is unapodized, native-length)
+        # Stage 1: FT Processing (FT is unapodized, native-length)
         pipe.compute_ft(trim=(26500, 40000))
         pipe.visualize_ft(save_params=True)
 
@@ -406,8 +402,8 @@ class Pipeline:
         """Compute Fourier Transform (Stage 1, user-driven).
 
         Resolves settings through ``explicit > persisted > recommended`` and
-        persists the resolved canonical settings to the ``.ftmw`` file.  Can be
-        called multiple times safely. The canonical FT is unconditionally
+        persists the resolved settings to the ``.ftmw`` file.  Can be
+        called multiple times safely. The FT is unconditionally
         unapodized, un-windowed, and native-length.
 
         Parameters
@@ -460,7 +456,7 @@ class Pipeline:
             raise RuntimeError(f"Failed to compute FT: {e}") from e
 
     def compute_display_ft(self, pad_factor: int = _DETAIL_PAD_FACTOR) -> ComplexFT:
-        """Compute the zero-padded, canonical-band DISPLAY FT (Stage 5 report /
+        """Compute the zero-padded, analysis-band DISPLAY FT (Stage 5 report /
         'fit show' magnitude panels).
 
         Contrast with :meth:`compute_ft`: that FT is unpadded and
@@ -470,11 +466,11 @@ class Pipeline:
         spectrum) purely to interpolate the magnitude curve between the
         native bins, then trims to :meth:`compute_ft`'s own frequency band
         (``from_saved_params=True``) -- it is display-only, differs from the
-        canonical FT only in bin density, never extent, and never feeds
+        standard FT only in bin density, never extent, and never feeds
         fitting, noise, or chi-squared. Display magnitude is
         ``abs(spectrum) * amplitude_scale``.
 
-        Depends on Stage 1 (the FID plus canonical FT settings, including any
+        Depends on Stage 1 (the FID plus persisted FT settings, including any
         trim) only -- does not require a persisted Stage 5 fit.
 
         Parameters
@@ -494,7 +490,7 @@ class Pipeline:
         Raises
         ------
         StageDependencyError
-            If Stage 0/1 (FID data / canonical FT settings) is not available.
+            If Stage 0/1 (FID data / persisted FT settings) is not available.
         RuntimeError
             If FT computation fails.
         """
@@ -518,8 +514,8 @@ class Pipeline:
 
         Equivalent to the CLI ``ft show`` command.  Never persists
         settings; exploration only.  Pass ``save_params=True`` to write the
-        explicitly provided kwargs to the canonical ``ft_processing`` record.
-        The canonical FT is unconditionally unapodized, un-windowed, and
+        explicitly provided kwargs to the persisted ``ft_processing`` record.
+        The FT is unconditionally unapodized, un-windowed, and
         native-length.
 
         Parameters
@@ -811,7 +807,7 @@ class Pipeline:
     ) -> TimebaseCalibrationResult:
         """Measure the scope-timebase scale error ``eps`` from Rb-locked tones.
 
-        Requires Stage 0 (the raw FID); the canonical Stage 1 active-region
+        Requires Stage 0 (the raw FID); the persisted Stage 1 active-region
         bounds are read opportunistically. Resolves the instrument clock
         declaration from the explicit ``clocks`` argument, else the persisted
         Stage 5 ``spur.clocks``; raises ``ValueError`` if neither yields a
@@ -1028,7 +1024,7 @@ class Pipeline:
         When ``stamp=True`` (default) the recommended ``start_us`` is written to
         the Stage 0 ``recommended_processing`` layer, so a later ``compute_ft``
         with no explicit ``start_us`` inherits it. Requires Stage 0 (FID) only;
-        the integration band is resolved from the canonical Stage 1 trim when
+        the integration band is resolved from the persisted Stage 1 trim when
         present, else the full positive spectrum. Equivalent to the CLI
         ``start run`` command and ``ftmwpipeline.api.detect_start_time``.
 
@@ -1110,15 +1106,15 @@ class Pipeline:
         shape-aware matched-filter gap pass that recovers weak lines the
         apodization smears; both raise their detection floor continuously by the
         local coherent-leakage amplitude rather than a hard mask. Every peak is
-        then scored (amplitude + SNR) on the canonical unapodized active FT,
+        then scored (amplitude + SNR) on the unapodized active FT,
         classified by SNR, and ALL detected peaks are persisted to the .ftmw
         file. Equivalent to the CLI ``peaks run`` command and
         ``ftmwpipeline.api.detect_peaks``.
 
-        Detection operates on the Stage 1 persisted canonical spectrum,
-        including its frequency trim range.  Peaks are reported on that user
-        grid with amplitude and SNR measured against the canonical Stage 2
-        noise.  There is no per-Stage-3 trim or zpf.
+        Detection scores on the active FT (built from the persisted Stage 1
+        settings), including its frequency trim range.  Peaks are reported on
+        that active grid with amplitude and SNR measured against the
+        persisted Stage 2 noise.  There is no per-Stage-3 trim or zpf.
 
         Settings resolve through the chain (``settings`` / ``preset`` >
         persisted > hard default); pass ``settings=`` to drive detection from a
@@ -1252,14 +1248,14 @@ class Pipeline:
         """Assign analysis windows (Stage 4), turning promoted peaks into a fit plan.
 
         Requires Stage 3 (peak detection) completed. Builds a set of disjoint
-        fit windows over the persisted user spectrum, each annotated with the
+        fit windows over the active FT, each annotated with the
         peaks to fit freely, the strong out-of-band lines whose leakage is
         carried frozen, and a fit dependency order. Stage 4 is purely
         structural -- it makes no fits. Equivalent to the CLI ``windows run``
         command and ``ftmwpipeline.api.assign_windows``.
 
-        Consumes only the peaks flagged ``promoted`` by Stage 3, on the Stage 1
-        canonical spectrum with the canonical Stage 2 noise. The result is
+        Consumes only the peaks flagged ``promoted`` by Stage 3, on the active
+        FT with its persisted Stage 2 noise. The result is
         persisted to ``/stage4_windows`` and the stage marked complete.
 
         Settings resolve through the chain (``settings`` / ``preset`` >
@@ -1395,7 +1391,7 @@ class Pipeline:
         to the CLI ``fit run`` command and ``ftmwpipeline.api.fit_peaks``.
 
         The fit runs on the active-portion FT (computed on demand from the
-        FID + canonical Stage 1 settings), so per-bin statistics are
+        FID + persisted Stage 1 settings), so per-bin statistics are
         independent and reduced chi-squared / F-test / AIC are calibrated as
         written. The persistent :class:`SpectrumFit` -- per-window
         :class:`FittingResult` s, the merged global fitted-peak list, the

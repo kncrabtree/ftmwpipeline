@@ -16,7 +16,7 @@ The calibration has two shape variants, selected by the ``shape`` argument:
   ``shape='gaussian'`` fit.
 
 Both variants are the same algorithm under a different bin classifier and
-contributor-eligibility gate; they share one canonical settings record and can
+contributor-eligibility gate; they share one persisted settings record and can
 coexist on the same ``.ftmw`` file. The serialized payload reuses
 :class:`TauCalibrationResult` (same struct, different group path); every ``tau``
 field carries ``tau_G`` when loaded from the Gaussian group, disambiguated by
@@ -100,8 +100,8 @@ def _stage_name_for_shape(shape: str) -> str:
     return GAUSSIAN_STAGE_NAME if shape == "gaussian" else LORENTZIAN_STAGE_NAME
 
 
-def _read_canonical_ft_settings(file_path: str, stage_name: str) -> FTSettings:
-    """Resolve the canonical Stage 1 FT settings the calibration consumes."""
+def _read_persisted_ft_settings(file_path: str, stage_name: str) -> FTSettings:
+    """Resolve the persisted Stage 1 FT settings the calibration consumes."""
     settings = _read_settings_layer(file_path, FT_PROCESSING_PATH)
     if settings is None:
         raise StageDependencyError(
@@ -194,7 +194,7 @@ def calibrate_tau_impl(
         preset=preset,
     )
 
-    ft_settings = _read_canonical_ft_settings(file_path, stage_name)
+    ft_settings = _read_persisted_ft_settings(file_path, stage_name)
     fid = load_fid_from_pipeline_impl(file_path)
     sample_dt_us = float(fid.spacing * 1e6)
 
@@ -206,7 +206,7 @@ def calibrate_tau_impl(
     )
     if ft_settings.trim is None:
         raise ValueError(
-            "Stage 1 canonical FT settings have no frequency trim; tau "
+            "Stage 1 persisted FT settings have no frequency trim; tau "
             "calibration uses the persisted trim range to match the user "
             "spectrum. Set trim on compute_ft() first."
         )

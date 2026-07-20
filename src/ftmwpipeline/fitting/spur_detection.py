@@ -442,7 +442,7 @@ def detect_active_ft_spurs(
     freqs_sorted_mhz, complex_spectrum_sorted, sigma_c_sorted
         Active-FT molecular frequency grid (ascending), its complex
         spectrum, and the per-bin *complex* noise RMS ``sigma_c`` -- all
-        sorted by frequency. ``sigma_c`` is the canonical Stage 2 noise
+        sorted by frequency. ``sigma_c`` is the persisted Stage 2 noise
         (the SNR floor uses ``sigma_c`` directly, matching the prototype).
     band
         ``(lo, hi)`` molecular-frequency analysis range (MHz).

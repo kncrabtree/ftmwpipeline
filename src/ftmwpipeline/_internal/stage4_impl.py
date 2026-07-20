@@ -9,10 +9,10 @@ a set of disjoint fit windows, each annotated with the peaks to fit freely, the
 strong out-of-band lines whose leakage is carried frozen, and a fit dependency
 DAG. It is purely structural -- it makes no fits and changes no spectrum.
 
-Stage 4 owns no FT settings: it operates on the Stage 1 persisted canonical
-spectrum (incl. trim) and the canonical Stage 2 noise, exactly the surface the
-Stage 3 peaks were scored on. Wrapped identically by the CLI, Pipeline class,
-and functional API.
+Stage 4 owns no FT settings: it operates on the active FT (built from the
+persisted Stage 1 settings, incl. trim) and its persisted Stage 2 noise,
+exactly the surface the Stage 3 peaks were scored on. Wrapped identically by
+the CLI, Pipeline class, and functional API.
 """
 
 import json
@@ -67,8 +67,8 @@ def assign_windows_impl(
 ) -> Dict[str, Any]:
     """Build the Stage 4 window plan from the promoted Stage 3 peaks and persist it.
 
-    Requires Stage 3 (peak detection) completed. Operates on the Stage 1
-    canonical spectrum and the canonical Stage 2 noise; consumes only the
+    Requires Stage 3 (peak detection) completed. Operates on the active FT
+    and its persisted Stage 2 noise; consumes only the
     peaks flagged ``properties['promoted']``.
 
     Settings resolve through the chain (``settings`` / ``preset`` > persisted >
@@ -214,7 +214,7 @@ def assign_windows_impl(
     # ``processing_parameters/stage4_windows``. The legacy JSON-encoded
     # ``processing_parameters/window_assignment`` block is kept by
     # ``save_window_parameters_impl`` above as a back-compat shim; the new
-    # canonical record below is what the resolver's persisted layer reads.
+    # persisted record below is what the resolver's persisted layer reads.
     save_window_planning_settings_to_h5(
         file_path,
         resolved,

@@ -1,7 +1,7 @@
 """
 Persistence for :class:`~ftmwpipeline.core.peak_detection_settings.PeakDetectionSettings`.
 
-The canonical record for a Stage 3 run's resolved knobs lives under
+The persisted record for a Stage 3 run's resolved knobs lives under
 ``processing_parameters/stage3_peaks``. The layout uses one HDF5 subgroup
 per sub-dataclass so each block is independently inspectable with
 ``h5dump -p``:

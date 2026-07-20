@@ -10,7 +10,7 @@ Noise estimation at high signal-to-noise
 The noise estimate from :doc:`Stage 2 <../stage2_noise>` is the statistical
 reference for everything downstream: the per-bin :math:`\sigma(f)` sets every
 detection threshold, every reduced :math:`\chi^2`, and every fitted uncertainty.
-It is measured on the canonical unapodized spectrum, whose bins carry
+It is measured on the active FT, whose bins carry
 independent noise (apodization or zero-padding would correlate them).
 
 On a sparse or low signal-to-noise spectrum :math:`\sigma` can be read straight

@@ -28,7 +28,7 @@ The residual and its weighting
 ------------------------------
 The residual is in the complex-FT domain: model versus active-FT window data,
 identical point counts, real and imaginary parts stacked into one real vector.
-The canonical Stage 2 ``rms_noise`` is a per-bin *complex* RMS ``sigma``; the
+The persisted Stage 2 ``rms_noise`` is a per-bin *complex* RMS ``sigma``; the
 real and imaginary parts each carry variance ``sigma**2 / 2``, so every stacked
 element is weighted by ``sigma / sqrt(2)`` to be unit-variance. Then the cost
 is a proper chi-squared (reduced chi-squared ~ 1) and the F-test is calibrated
@@ -199,7 +199,7 @@ DEFAULT_MIN_PAIR_SEPARATION_RESOLUTION_FACTOR = 1.0
 # blend-split trial is rejected outright (never held tentative, never counted
 # against patience) so loop termination matches the legacy skip.
 DEFAULT_BLEND_SPLIT_MIN_SNR = 4.0
-# Tau policy: the canonical apodization (``expf_us``) sets a hard upper bound
+# Tau policy: the apodization (``expf_us``) sets a hard upper bound
 # on ``tau`` -- the data cannot decay slower than the apodization itself.
 # Decreasing ``tau`` below the apodization broadens the line, so the LSQ
 # can buy chi^2 by under-fitting amplitude and over-broadening to absorb
@@ -632,7 +632,7 @@ class WindowFitResult:
     def reduced_chi2(self) -> float:
         """Reduced chi-squared ``chi-squared / (n_data - n_params)``.
 
-        Close to 1 for a good fit with the canonical Stage 2 noise and the
+        Close to 1 for a good fit with the persisted Stage 2 noise and the
         ``sigma / sqrt(2)`` weighting. ``inf`` when there are no degrees of
         freedom.
         """
@@ -1113,7 +1113,7 @@ def fit_window(
     complex_spectrum : np.ndarray
         Complex active-FT window data on ``offset_grid_mhz``, same shape.
     rms_noise : float or np.ndarray
-        Per-bin *complex* noise RMS ``sigma`` (canonical Stage 2 noise). A
+        Per-bin *complex* noise RMS ``sigma`` (persisted Stage 2 noise). A
         scalar is broadcast across the window; an array must match the grid.
     initial_peaks : sequence of ModelPeak
         Starting lines, in fit-frame coordinates. An empty sequence yields a

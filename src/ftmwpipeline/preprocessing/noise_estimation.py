@@ -1,7 +1,7 @@
 """
 Noise estimation for FTMW spectroscopy data.
 
-Frequency-dependent noise estimator. The canonical FT is raw and unapodized,
+Frequency-dependent noise estimator. The FT is raw and unapodized,
 so on high-SNR, line-dense spectra the far-wings of strong lines form a smooth
 leakage *pedestal* that a level-based estimator would mistake for noise. The
 :func:`estimate_noise_scatter` estimator high-passes the magnitude (subtracting
@@ -18,7 +18,7 @@ reference at ``dev-docs/research/noise-snr-scaling/legacy_adaptive.py``.)
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple, Union, cast
+from typing import Any, Dict, Union, cast
 
 import numpy as np
 import scipy.signal as spsig
@@ -48,7 +48,7 @@ class NoiseResult:
 # ---------------------------------------------------------------------------
 # Scatter (high-pass), region-aware noise estimator — the Stage 2 estimator.
 #
-# The canonical FT is raw and un-apodized (boxcar), so on high-SNR, line-dense
+# The FT is raw and un-apodized (boxcar), so on high-SNR, line-dense
 # spectra the summed far-wings of strong lines form a smooth leakage *pedestal*
 # that fills every quiet bin. A level-based estimator measures that pedestal,
 # not the random noise, and over-reports σ by up to ~6×
@@ -287,7 +287,7 @@ _SCATTER_C_TAB = np.array(
     ]
 )
 
-# C(R) recovers the per-quadrature σ_c; the canonical Stage 2 ``rms_noise`` is the
+# C(R) recovers the per-quadrature σ_c; the persisted Stage 2 ``rms_noise`` is the
 # complex RMS σ_x = σ_c·√2 (real/imag each carry σ_x²/2 — see
 # ``fitting/validation.py``). The estimator scales its σ_c output to σ_x, the
 # convention the downstream χ² weighting consumes.

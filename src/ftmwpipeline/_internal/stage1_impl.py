@@ -1,7 +1,7 @@
 """
 Shared implementation for Stage 1: FT Processing and Spectrum Operations.
 
-Stage 1 owns the *canonical* FT processing settings. The settings actually
+Stage 1 owns the *persisted* FT processing settings. The settings actually
 used are resolved through ``explicit override > persisted user settings >
 import-time recommended`` (see :mod:`ftmwpipeline.core.settings`) and, when
 this is a user-driven Stage 1 invocation (``persist=True``), the resolved
@@ -69,7 +69,7 @@ def compute_ft_impl(
     validate_only: bool = False,
     persist: bool = False,
 ) -> Dict[str, Any]:
-    """Compute the FT for a ``.ftmw`` file using the resolved canonical settings.
+    """Compute the FT for a ``.ftmw`` file using the resolved settings.
 
     Parameters
     ----------
@@ -83,7 +83,7 @@ def compute_ft_impl(
         If True, return validation info without constructing the ``ComplexFT``.
     persist:
         If True (a user-driven Stage 1 invocation), write the *resolved*
-        settings to ``processing_parameters/ft_processing`` as canonical and
+        settings to ``processing_parameters/ft_processing`` and
         mark Stage 1 complete. Internal recomputes pass ``False``.
 
     Returns
@@ -145,7 +145,7 @@ def compute_ft_impl(
             result["trimmed_points"] = int(np.sum(mask))
             result["trim_range"] = trim_range
         if persist:
-            _persist_canonical_settings(file_path, resolved)
+            _persist_ft_settings(file_path, resolved)
         return result
 
     try:
@@ -193,10 +193,10 @@ def compute_ft_impl(
 
     if persist:
         try:
-            _persist_canonical_settings(file_path, resolved)
-            logger.info("Canonical FT settings + Stage 1 completion persisted")
+            _persist_ft_settings(file_path, resolved)
+            logger.info("FT settings + Stage 1 completion persisted")
         except Exception as e:
-            logger.warning(f"Failed to persist canonical FT settings: {e}")
+            logger.warning(f"Failed to persist FT settings: {e}")
 
     return result
 
@@ -253,7 +253,7 @@ def _dependents_of(stage: str, deps: Dict[str, Any]) -> set:
     """Transitive set of stages that depend (directly/indirectly) on ``stage``.
 
     Excludes ``stage`` itself. Used to invalidate everything built on the FT
-    when the canonical FT settings change.
+    when the persisted FT settings change.
     """
     result: set = set()
     changed = True
@@ -268,12 +268,12 @@ def _dependents_of(stage: str, deps: Dict[str, Any]) -> set:
     return result
 
 
-def _persist_canonical_settings(file_path: str, resolved: FTSettings) -> None:
+def _persist_ft_settings(file_path: str, resolved: FTSettings) -> None:
     """Write resolved settings to ``ft_processing`` and mark Stage 1 complete.
 
     No ``ComplexFT`` is stored -- the lightweight ``.ftmw`` model recomputes it
     on demand from the FID + these settings. If the resolved settings *differ*
-    from a previously persisted canonical record, every stage built on the FT
+    from a previously persisted record, every stage built on the FT
     (Stage 2 noise, Stage 3 peaks, ...) is invalidated: its stored result is
     removed, it is dropped from the completed set, and a loud warning is
     logged. An identical re-persist (idempotent Jupyter re-run) changes
@@ -293,7 +293,7 @@ def _persist_canonical_settings(file_path: str, resolved: FTSettings) -> None:
         ft_group = proc.create_group("ft_processing")
         for name, value in new_attrs.items():
             ft_group.attrs[name] = value
-        # Human/debug mirror of the canonical record.
+        # Human/debug mirror of the persisted record.
         ft_group.attrs["parameters"] = json.dumps(new_attrs, default=str)
         ft_group.attrs["last_updated"] = datetime.now().isoformat()
 
@@ -313,7 +313,7 @@ def _persist_canonical_settings(file_path: str, resolved: FTSettings) -> None:
                     invalidated.append(st)
             if invalidated:
                 logger.warning(
-                    "Canonical FT settings changed (%s -> %s); invalidated "
+                    "FT settings changed (%s -> %s); invalidated "
                     "downstream stage(s) %s -- re-run them on the new "
                     "spectrum.",
                     old_attrs,
@@ -329,10 +329,10 @@ def _persist_canonical_settings(file_path: str, resolved: FTSettings) -> None:
 
 
 def save_ft_parameters_impl(file_path: str, parameters: Dict[str, Any]) -> None:
-    """Persist an explicit settings dict as canonical (used by --save flows)."""
+    """Persist an explicit settings dict (used by --save flows)."""
     settings = FTSettings.from_attrs(parameters)
     resolved = _resolve_settings(file_path, settings)
-    _persist_canonical_settings(file_path, resolved)
+    _persist_ft_settings(file_path, resolved)
     logger.info("Processing parameters saved successfully")
 
 

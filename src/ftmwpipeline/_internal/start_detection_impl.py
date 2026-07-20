@@ -1,7 +1,7 @@
 """File-bound orchestration for data-driven start-time detection.
 
 Runs on the raw Stage 0 FID (no Stage 1 dependency -- detection *informs* the
-Stage 1 ``start_us``). Resolves the integration band from the canonical Stage 1
+Stage 1 ``start_us``). Resolves the integration band from the persisted Stage 1
 frequency trim when available, runs
 :func:`ftmwpipeline.preprocessing.start_detection.detect_start_time`, and
 (optionally) stamps the recommended ``start_us`` into the Stage 0
