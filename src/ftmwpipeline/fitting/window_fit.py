@@ -1,9 +1,7 @@
 """
 Per-window least-squares core for Stage 5 fitting.
 
-This module recreates the contract of the lost ``fit_time_domain_peaks``
-engine, inferred from its surviving call sites
-(``dev-docs/planning/stage5-fitting.md``, "Reuse map"):
+This module implements the contract:
 
     (complex window, initial peaks, shared decay, bounds)
         -> success, fitted complex spectrum, per-peak {frequency, amplitude,
@@ -75,7 +73,6 @@ from .spur_detection import SpurMaskSpec
 from .validation import (
     DEFAULT_N_EFF_KIND,
     calculate_aic,
-    calculate_aicc,
     calculate_chi_squared_improvement,
     calculate_noise_weighted_chi2,
     effective_sample_size,
@@ -100,11 +97,10 @@ __all__ = [
 
 NoiseLike = Union[float, np.ndarray]
 
-# Default solver evaluation cap. Originally 400 (ported from the bcfitting
-# reference shell), bumped to 2000 after the residual-rescue work surfaced
-# partial-capture cases where LSQ converges (chi-squared stops moving) but
-# scipy still flags ``success=False`` because it hit the iteration cap --
-# which then trips the early-exit guards in
+# Default solver evaluation cap: high enough that scipy's iteration limit
+# does not fire on a partial-capture case where LSQ has actually converged
+# (chi-squared stops moving) but ``success=False`` gets flagged anyway because
+# the iteration cap was hit -- which would trip the early-exit guards in
 # :func:`_blend_aware_seed` / :func:`conservative_fit` (both bail on
 # ``not fit.success``). 2000 covers every case seen in the 2638 fixture;
 # the cap exists only as a runaway-safety, not a quality criterion.
@@ -649,8 +645,7 @@ class WindowFitResult:
     def aic(self) -> float:
         """Akaike information criterion ``2k + n * ln(chi-squared / n)``.
 
-        The form ported from the bcfitting reference shell; used by the
-        conservative add-one-peak loop to compare nested models.
+        Used by the conservative add-one-peak loop to compare nested models.
         ``inf`` for a degenerate (non-positive ``chi-squared``) fit.
         """
         return calculate_aic(self.chi_squared, self.n_params, self.n_data)
@@ -1137,7 +1132,7 @@ def fit_window(
         Explicit ``(lo, hi)`` bounds for ``tau``; overrides ``max_decay_factor``.
     offset_bounds : tuple of float, optional
         ``(lo, hi)`` bounds for every line offset; defaults to the grid span.
-    max_nfev : int, default 400
+    max_nfev : int, default 2000
         Solver residual-evaluation cap.
     amp_max : float, optional
         Hard upper bound on every peak amplitude (replaces the default
@@ -1157,7 +1152,7 @@ def fit_window(
     phase_penalty_cutoff_fwhm : float, default 2.0
         Pair-separation cutoff for the phase penalty, in FWHM units. The
         penalty linearly ramps from 0 at this separation to its full
-        ``sqrt(lambda) * |sin(d_phase/2)|`` at zero separation.
+        ``sqrt(lambda) * weight * cos(d_phase)`` at zero separation.
     tau_penalty_lambda : float, default 0.0
         Weight of the lower-side tau penalty. ``0`` disables it.
     tau_penalty_reference : float, optional
@@ -1556,7 +1551,8 @@ class AddStep:
     f_statistic, p_value : float
         Diagnostic nested-model F-test of the chi-squared improvement.
         Kept as a familiar statistic; the accept gate is
-        AICc-with-``n_eff`` (see ``n_eff`` / ``aicc_delta``).
+        :func:`~ftmwpipeline.fitting.validation.gate_aicc_pair` evaluated at
+        the shared ``n_eff`` (see ``n_eff`` / ``aicc_delta``).
     aic_before, aic_after : float
         Diagnostic AIC at the raw ``n_data``.
     separation_ok : bool
@@ -1571,20 +1567,23 @@ class AddStep:
     reason : str
         Free-text note on the decision.
     n_eff : float
-        Effective sample size shared by the K-vs-(K+1) AICc evaluation;
+        Effective sample size shared by the K-vs-(K+1) gate evaluation;
         computed once from the K+1 (trial) model magnitude (kind set by
         ``n_eff_kind`` on :func:`conservative_fit`). ``nan`` on steps
         that do not run the gate (the K=1 seed and separation-rejected
         candidates).
     aicc_delta : float
-        ``AICc(K+1) - AICc(K)`` at the shared ``n_eff``; negative values
-        mean the gate accepted (the K+1 model is preferred). The
-        REJECT-on-tie convention reads ``aicc_delta >= 0`` as "no
-        evidence for the more-complex model -- preserve K"; this is
-        opposite to the merge/knockout gates' REJECT-on-tie because the
-        comparison runs in the other direction (those test K-vs-(K-1)
-        and prefer the more-complex K). ``nan`` on the same steps as
-        ``n_eff``.
+        ``Score(K+1) - Score(K)`` at the shared ``n_eff``, from
+        :func:`~ftmwpipeline.fitting.validation.gate_aicc_pair`. Despite the
+        name this is a penalized-score difference (the sigma_eff-penalized
+        score by default), not a literal AICc delta -- the accept/reject sign
+        convention is unaffected. Negative values mean the gate accepted (the
+        K+1 model is preferred). The REJECT-on-tie convention reads
+        ``aicc_delta >= 0`` as "no evidence for the more-complex model --
+        preserve K"; this is opposite to the merge/knockout gates'
+        REJECT-on-tie because the comparison runs in the other direction
+        (those test K-vs-(K-1) and prefer the more-complex K). ``nan`` on the
+        same steps as ``n_eff``.
     """
 
     n_peaks_before: int
@@ -1629,24 +1628,29 @@ class KnockoutResult:
         Diagnostic: the line's own noise-weighted energy -- the increase a
         real line should produce under the freeze-others convention.
     supported : bool
-        Whether the AICc-with-n_eff gate prefers the K-peak fit
+        Whether the :func:`~ftmwpipeline.fitting.validation.gate_aicc_pair`
+        gate (evaluated at the shared ``n_eff``) prefers the K-peak fit
         (``aicc_delta >= 0``; REJECT-on-tie matches the merge-cleanup
         convention). A peak whose removal-and-refit produces a strictly
-        better AICc has ``supported = False``.
+        better score has ``supported = False``.
     p_value : float
         Diagnostic F-test p-value of the K-peak fit vs the (K-1)-peak
         refit (not freeze-others); kept as a familiar statistic but no
         longer the decision rule. ``nan`` for an empty fit or when the
         refit failed to converge.
     n_eff : float
-        Effective sample size used by the AICc gate; computed once from
-        the K-fit model magnitude (kind set by ``n_eff_kind``) and shared
+        Effective sample size used by the gate; computed once from the
+        K-fit model magnitude (kind set by ``n_eff_kind``) and shared
         across all peak comparisons in this sweep.
     aicc_delta : float
-        ``AICc(K-1 refit) - AICc(K)`` at the shared ``n_eff``. Negative
-        values say the simpler model is preferred (peak is redundant);
-        ``supported = aicc_delta < 0`` reads "the more complex model is
-        not preferred". ``nan`` when the refit failed to converge.
+        ``Score(K-1 refit) - Score(K)`` at the shared ``n_eff``, from
+        :func:`~ftmwpipeline.fitting.validation.gate_aicc_pair`. Despite the
+        name this is a penalized-score difference (the sigma_eff-penalized
+        score by default), not a literal AICc delta -- the accept/reject sign
+        convention is unaffected. Negative values say the simpler model is
+        preferred (peak is redundant); ``supported = aicc_delta < 0`` reads
+        "the more complex model is not preferred". ``nan`` when the refit
+        failed to converge.
     """
 
     peak_index: int
@@ -1731,8 +1735,7 @@ def knockout_test(
     delta_chi2 that flags A as supported -- and symmetrically for C.
     With the refit, C re-converges to full amplitude when A is removed
     and the (K-1) chi-squared matches the K chi-squared, so AICc prefers
-    K-1 and both duplicates flip to ``supported = False``. See
-    `dev-docs/planning/stage5-residual-rescue.md`.
+    K-1 and both duplicates flip to ``supported = False``.
 
     Tau is locked (``fit_tau=False``) in the (K-1) refit because tau is
     effectively a dataset-shared parameter (transit time x natural

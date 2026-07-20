@@ -261,7 +261,7 @@ def register_run_command(subparsers: Any) -> None:
     # own lane) and route into the `*_params` override dicts `run_pipeline_impl`
     # already accepts. Only start/ft/noise/tau/peaks/windows/fit have a knob
     # surface today -- timebase/review/report have no settings-dataclass/CLI
-    # knob surface to mirror (see dev-docs/planning/pipeline-run.md).
+    # knob surface to mirror.
     grp_start = p.add_argument_group("stage knobs: start")
     add_start_detection_args(grp_start, prefix="start")
 

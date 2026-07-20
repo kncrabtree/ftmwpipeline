@@ -18,8 +18,7 @@ guarded formatters, so a degenerate fit (e.g. an amplitude-collapsed phantom
 with a runaway uncertainty) never dumps a hundred-digit number into the table.
 Amplitudes are reported in a dynamically chosen SI unit (V/mV/uV/nV/...) so the
 magnitudes read sensibly, and amplitude/phase/SNR carry their uncertainties.
-LaTeX uses concise value(uncertainty) notation. See
-``dev-docs/planning/stage6-reports.md`` §C.
+LaTeX uses concise value(uncertainty) notation.
 """
 
 from __future__ import annotations

@@ -1,9 +1,9 @@
 """Stage 5 cross-fixture validation (``fit check``).
 
 Read-only assessment of an already-persisted Stage 5 fit against the
-cross-fixture acceptance framework (``dev-docs/planning/stage5-cross-fixture-
-validation.md``). Consumes ``/stage5_fitting`` via the same validated loader the
-functional API uses (:func:`load_fit_impl`) and emits three tiers:
+cross-fixture acceptance framework. Consumes ``/stage5_fitting`` via the same
+validated loader the functional API uses (:func:`load_fit_impl`) and emits
+three tiers:
 
 * **Tier 1 -- SNR-aware distribution health.** Per window, the gate
   ``chi2r <= F + (kappa * SNR_max)**2`` with the fractional model deficit

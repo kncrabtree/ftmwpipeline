@@ -44,8 +44,6 @@ from .residual_screening import (
 from .spur_detection import SpurMaskSpec
 from .validation import (
     DEFAULT_N_EFF_KIND,
-    calculate_aicc,
-    calculate_chi_squared_improvement,
     calculate_noise_weighted_chi2,
     effective_sample_size,
     feature_fwhm,
@@ -62,7 +60,6 @@ from .window_fit import (
     KnockoutResult,
     WindowFitResult,
     _effective_min_pair_separation,
-    _seed_peak,
     conservative_fit,
     derive_window_fit_constraints,
     evaluate_baseline,
@@ -87,7 +84,6 @@ __all__ = [
     "attempt_residual_rescue",
     "iterative_aicc_cleanup",
     "merge_close_peaks_cleanup",
-    "remove_and_refit_cleanup",
     "rescue_and_consolidate",
 ]
 
@@ -100,9 +96,12 @@ __all__ = [
 # pathologies (w198: ~5 lines) converge in 2-3 rounds.
 DEFAULT_RESCUE_MAX_ROUNDS = 5
 # The detector should nominate generously -- downstream F-test / AIC gating
-# decides which candidates survive. 2.5*sigma_c (~1% false alarm under
+# decides which candidates survive. 2.5*sigma_c (~4.4% false alarm under
 # Rayleigh noise) catches borderline cases the conservative loop's seeded
-# K=1 fit may have missed.
+# K=1 fit may have missed. Note find_residual_peaks() applies this threshold
+# against the window's *median* sigma_c (the find_peaks height/prominence
+# cut), while each surviving candidate's reported SNR is scored against its
+# own *per-bin* sigma_c -- the two are not the same denominator.
 DEFAULT_RESCUE_SNR_THRESHOLD = 2.5
 DEFAULT_RESCUE_PROMINENCE_THRESHOLD = 2.0
 # Post-rescue cleanup runs a remove-and-refit knockout: each peak is
@@ -556,127 +555,6 @@ def merge_close_peaks_cleanup(
             continue
         break
     return current, n_merged
-
-
-def remove_and_refit_cleanup(
-    offset_grid_mhz: np.ndarray,
-    complex_spectrum: np.ndarray,
-    rms_noise: np.ndarray,
-    fit: WindowFitResult,
-    tau0_us: float,
-    acquisition_us: float,
-    *,
-    fit_kwargs_inner: dict[str, Any],
-    significance: float = DEFAULT_CLEANUP_SIGNIFICANCE,
-    spur_mask: Optional[SpurMaskSpec] = None,
-    protected_offsets: Optional[Sequence[float]] = None,
-    protected_tol_mhz: float = 0.0,
-) -> Tuple[WindowFitResult, int]:
-    """Iteratively drop redundant peaks (K → K-1 refit, keep if improvement
-    still significant); return ``(updated_fit, n_dropped)``.
-
-    For each peak in the current fit, simulate "remove peak i, refit the
-    remaining K-1". If the K-peak vs (K-1)-peak F-test fails to clear
-    ``significance``, peak i is redundant -- the remaining peaks can absorb
-    its contribution. Drop the worst offender (largest p-value) and repeat
-    until every remaining peak is supported. This is the cleanup
-    :func:`knockout_test` cannot do, since freezing other peaks during a
-    knockout makes each duplicate "look supported" individually.
-
-    The cleanup re-uses the same ``fit_kwargs_inner`` the rescue's trial
-    fits used -- tau bounds, amp bounds, penalty weights -- so the refit
-    converges on the same physical landscape (no surprise solutions that
-    only show up because the constraints differ).
-    """
-    u, z, sigma, _order, _extras = sort_window_arrays(
-        offset_grid_mhz, complex_spectrum, rms_noise
-    )
-
-    _is_protected_rar = make_protected_matcher(protected_offsets, protected_tol_mhz)
-
-    current = fit
-    n_dropped = 0
-    refit_kwargs = dict(fit_kwargs_inner)
-    refit_kwargs.setdefault("shape", fit.shape)
-    refit_kwargs["spur_mask"] = spur_mask
-    keep = (
-        ~spur_mask.bin_mask(u) if spur_mask is not None else np.ones(u.size, dtype=bool)
-    )
-    if not keep.any():
-        keep = np.ones(u.size, dtype=bool)
-    while current.n_peaks > 0:
-        worst_p_value = -1.0
-        worst_idx = -1
-        worst_refit: Optional[WindowFitResult] = None
-        for i in range(current.n_peaks):
-            # User-added peaks must never be dropped by the automatic cleanup.
-            if _is_protected_rar(current.peaks[i].offset_mhz):
-                continue
-            reduced_init = [pk for j, pk in enumerate(current.peaks) if j != i]
-            if not reduced_init:
-                # Compare K=1 fit to K=0 (null model): use the null chi-squared
-                # directly rather than calling fit_window with an empty list.
-                # Spur bins are excluded to match the masked K-peak chi^2.
-                null_chi2 = float(
-                    np.sum(np.abs((z / (sigma / np.sqrt(2.0)))[keep]) ** 2)
-                )
-                # F-test convention: ``calculate_chi_squared_improvement``
-                # takes ``(simpler, complex)`` chi-squared. ``current`` is the
-                # complex (K-peak) model; the reduced model is the K=0 null.
-                p_value, _, _ = calculate_chi_squared_improvement(
-                    null_chi2,
-                    current.chi_squared,
-                    3,
-                    current.n_data,
-                    current.n_params,
-                )
-                if p_value > worst_p_value:
-                    worst_p_value = p_value
-                    worst_idx = i
-                    worst_refit = None  # special: drop to empty fit
-                continue
-            refit = fit_window(
-                u,
-                z,
-                sigma,
-                reduced_init,
-                tau0_us,
-                acquisition_us,
-                **refit_kwargs,
-            )
-            if not refit.success:
-                continue
-            # Simpler (K-1) chi-squared first, then complex (K).
-            p_value, _, _ = calculate_chi_squared_improvement(
-                refit.chi_squared,
-                current.chi_squared,
-                3,
-                current.n_data,
-                current.n_params,
-            )
-            if p_value > worst_p_value:
-                worst_p_value = p_value
-                worst_idx = i
-                worst_refit = refit
-        if worst_idx < 0 or worst_p_value < significance:
-            # Every remaining peak is supported (worst-case removal still
-            # passes the F-test); stop.
-            break
-        n_dropped += 1
-        if worst_refit is None:
-            # Dropped the last peak -- produce an empty fit.
-            current = fit_window(
-                u,
-                z,
-                sigma,
-                [],
-                tau0_us,
-                acquisition_us,
-                **refit_kwargs,
-            )
-        else:
-            current = worst_refit
-    return current, n_dropped
 
 
 def iterative_aicc_cleanup(

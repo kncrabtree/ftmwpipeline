@@ -5,8 +5,7 @@ engine needs: how to set the knob and re-run the affected stage (``run``), how
 to reduce that stage's result to one or more named metric columns (``metric``),
 an optional plot adapter, and an optional recommender (or a simple
 ``direction`` for the built-in best-value pick). Knobs are addressed by a
-dotted settings path (e.g. ``stage2.window_mhz``) that mirrors the
-table in ``dev-docs/planning/instrument-tunable-knobs.md``.
+dotted settings path (e.g. ``stage2.window_mhz``).
 
 ``run`` callables import :mod:`ftmwpipeline.api` lazily so this module carries
 no import-time dependency on the API/Pipeline layer (which depends back on the

@@ -48,8 +48,7 @@ fixes both error directions the frequency-domain gate alone carries:
   flag alone is not trusted in either direction (measured false positives
   on decaying lines and false negatives on real tones).
 
-See ``dev-docs/planning/stage5-spur-masking.md`` and
-``dev-docs/research/stage5-gaussian-audit/report.md`` §§ "Spur-detection
+See ``dev-docs/research/stage5-gaussian-audit/report.md`` §§ "Spur-detection
 prototype", "Flatness-exposure measurement".
 """
 
@@ -1319,9 +1318,9 @@ def gate_spurs(
         #                                       pre-record at a near-CW ratio) ->
         #                                       keep but flag ``flat_decay`` for
         #                                       human review.
-        # The chirp gate-confirm no longer independently removes a non-flat
-        # cluster (that was the bug); it only decides when the probe is
-        # inconclusive (NaN / sub-threshold SNR).
+        # The chirp gate-confirm only decides when the probe is inconclusive
+        # (NaN / sub-threshold SNR); it never independently removes a
+        # non-flat cluster.
         if decay_probe is not None:
             decay_ratio, amp_snr = decay_probe(center)
             if np.isfinite(decay_ratio):

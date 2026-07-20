@@ -23,8 +23,10 @@ field carries ``tau_G`` when loaded from the Gaussian group, disambiguated by
 the path.
 
 Stage 2b sits between Stage 2 (noise estimation) and Stage 3 (peak detection):
-Stage 3's gap pass and Stage 5's tau anchor both consume ``tau_maj``. Re-running
-Stage 2b invalidates Stages 3-5 downstream.
+Stage 3's gap pass consumes the band-wide ``tau_maj``, and Stage 5's per-window
+tau anchor resolves through :func:`~ftmwpipeline._internal.stage5_impl.resolve_window_tau_anchor`
+(``tau_maj`` is only its degenerate single-band fallback). Re-running Stage 2b
+invalidates Stages 3-5 downstream.
 
 Knob configuration follows the four-layer resolver pattern shared with Stage 5:
 the optional ``settings=`` / ``preset=`` layer composes against the persisted
@@ -234,6 +236,9 @@ def calibrate_tau_impl(
     spur_mult_v = _required_float(
         aggr.spur_cluster_multiplier, "aggregation.spur_cluster_multiplier"
     )
+    sigma_tau_floor_v = _required_float(
+        aggr.sigma_tau_floor_us, "aggregation.sigma_tau_floor_us"
+    )
     compute_bands_v = _required_bool(
         band.compute_band_majorities, "band.compute_band_majorities"
     )
@@ -254,6 +259,7 @@ def calibrate_tau_impl(
         compute_band_majorities_flag=compute_bands_v,
         band_edges_mhz=band.band_edges_mhz,
         min_contributors_per_band=min_per_band_v,
+        sigma_tau_floor_us=sigma_tau_floor_v,
     )
     if band.band_labels is not None:
         kernel_kwargs["band_labels"] = band.band_labels
@@ -272,6 +278,7 @@ def calibrate_tau_impl(
         "trim_hi_mhz": float(trim_hi_mhz),
         "sigma_tau_fraction_max": sigma_tau_frac_v,
         "bimodality_dominant_fraction": bimod_frac_v,
+        "sigma_tau_floor_us": sigma_tau_floor_v,
         "compute_band_majorities": compute_bands_v,
         "min_contributors_per_band": min_per_band_v,
         "band_edges_mhz": (

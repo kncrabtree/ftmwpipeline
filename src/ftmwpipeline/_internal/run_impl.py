@@ -7,7 +7,7 @@ methods. It adds no analysis -- each stage's logic stays in its own
 ``_internal/stage*_impl``. The orchestrator owns the stage ordering, the
 non-fatal timebase handling, the structured result, and the live per-stage
 progress display (with a Stage-5 percentage bridged from the existing
-``plan_execution`` per-window logs). See ``dev-docs/planning/pipeline-run.md``.
+``plan_execution`` per-window logs).
 """
 
 from __future__ import annotations

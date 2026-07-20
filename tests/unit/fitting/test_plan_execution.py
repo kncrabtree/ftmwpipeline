@@ -36,6 +36,7 @@ from ftmwpipeline.fitting.peak_model import (
     effective_tau,
     h_T,
     model_spectrum,
+    sideband_sign,
 )
 from ftmwpipeline.fitting.plan_execution import (
     DEFAULT_RESIDUAL_EDGE_THRESHOLD,
@@ -46,7 +47,6 @@ from ftmwpipeline.fitting.plan_execution import (
     WindowOutcome,
     attempt_thaw_round,
     evaluate_edge_free_contributors,
-    evaluate_fixed_contributor,
     execute_plan,
     fit_window_with_fixed_contributors,
     local_thaw_cofit,
@@ -123,89 +123,6 @@ def _make_active_ft(
         n_active=n_active,
         n_padded=n_padded,
     )
-
-
-# ---------------------------------------------------------------------------
-# evaluate_fixed_contributor
-# ---------------------------------------------------------------------------
-class TestEvaluateFixedContributor:
-    def test_frame_remap_into_dependent_window(self):
-        """A FixedContributor's offset is remapped between the two window frames.
-
-        Primary window is centered at 36100 MHz; the line lies at 36100.5 MHz.
-        In the primary's frame ``delta_primary = s*(f - f_c_primary) = -0.5``
-        (lower sideband). Dependent window is centered at 36120 MHz; the line's
-        offset in the dependent frame should be ``s*(f - f_c_dep) = -(-19.5) =
-        ... let s be -1 -> delta_dep = -1*(36100.5 - 36120) = 19.5``.
-        """
-        # A primary outcome with one fitted peak in the primary frame.
-        primary_center = 36100.0
-        line_freq = 36100.5
-        s = -1.0
-        primary_peak = ModelPeak(
-            amplitude=1.0, offset_mhz=s * (line_freq - primary_center), phase=0.0
-        )
-
-        primary_outcome = _toy_outcome(
-            window_id=0, center_mhz=primary_center, fit_peaks=[primary_peak]
-        )
-        contributor = FixedContributor(
-            peak_index=7,
-            primary_window_id=0,
-            frequency_mhz=line_freq,
-            freeze_eligible=True,
-        )
-        dep_center = 36120.0
-
-        frozen = evaluate_fixed_contributor(
-            contributor,
-            primary_outcome,
-            dependent_center_mhz=dep_center,
-            sideband=SIDEBAND,
-        )
-
-        expected_offset = s * (line_freq - dep_center)
-        assert frozen.model_peak.offset_mhz == pytest.approx(expected_offset)
-        assert frozen.model_peak.amplitude == primary_peak.amplitude
-        assert frozen.model_peak.phase == primary_peak.phase
-        assert frozen.peak_index == 7
-        assert frozen.primary_window_id == 0
-        assert frozen.frequency_mhz == line_freq
-        assert frozen.freeze_eligible is True
-
-    def test_nearest_match_picks_correct_peak(self):
-        """When the primary has multiple fitted lines, the nearest one wins."""
-        primary_center = 36100.0
-        s = -1.0
-        # Two lines in the primary; the contributor is the one at 36099.7.
-        line_a = ModelPeak(1.0, s * (36099.7 - primary_center), 0.1)
-        line_b = ModelPeak(2.0, s * (36100.6 - primary_center), 0.4)
-        primary_outcome = _toy_outcome(0, primary_center, [line_a, line_b])
-        contributor = FixedContributor(
-            peak_index=3, primary_window_id=0, frequency_mhz=36099.7
-        )
-        frozen = evaluate_fixed_contributor(
-            contributor,
-            primary_outcome,
-            dependent_center_mhz=36130.0,
-            sideband=SIDEBAND,
-        )
-        # The amplitude/phase reveal which primary peak was matched.
-        assert frozen.model_peak.amplitude == line_a.amplitude
-        assert frozen.model_peak.phase == line_a.phase
-
-    def test_raises_when_primary_has_no_peaks(self):
-        primary_outcome = _toy_outcome(0, 36100.0, [])
-        contributor = FixedContributor(
-            peak_index=1, primary_window_id=0, frequency_mhz=36100.5
-        )
-        with pytest.raises(ValueError, match="no fitted peaks"):
-            evaluate_fixed_contributor(
-                contributor,
-                primary_outcome,
-                dependent_center_mhz=36120.0,
-                sideband=SIDEBAND,
-            )
 
 
 # ---------------------------------------------------------------------------
@@ -783,11 +700,23 @@ class TestLocalThaw:
         # execute_plan would have done if it had re-visited the dependent.
         dep = outcome.window_outcomes[1]
         dep_center_mhz = 0.5 * (weak_freq - 0.3 + weak_freq + 0.3)
-        corrupted_frozen = evaluate_fixed_contributor(
-            FixedContributor(0, 0, strong_freq, True),
-            primary,
-            dependent_center_mhz=dep_center_mhz,
-            sideband=SIDEBAND,
+        # Inline the single-peak remap that ``evaluate_fixed_contributor`` used
+        # to do: win_a has exactly one fitted peak, so it is trivially the
+        # "nearest match" to the contributor's persisted frequency.
+        s = sideband_sign(SIDEBAND)
+        primary_center_mhz = 0.5 * (win_a.freq_range[0] + win_a.freq_range[1])
+        nearest_peak = primary.fit.peaks[0]
+        fitted_freq_mhz = primary_center_mhz + s * nearest_peak.offset_mhz
+        corrupted_frozen = FrozenPeak(
+            peak_index=0,
+            primary_window_id=0,
+            model_peak=ModelPeak(
+                amplitude=nearest_peak.amplitude,
+                offset_mhz=s * (fitted_freq_mhz - dep_center_mhz),
+                phase=nearest_peak.phase,
+            ),
+            frequency_mhz=fitted_freq_mhz,
+            freeze_eligible=True,
         )
         dep.fixed_peaks = [corrupted_frozen]
         dep.background = model_spectrum(
@@ -1013,63 +942,6 @@ class TestLocalThawCofit:
         # The thawed index points to the primary peak nearest the contributor.
         assert idx.shape == (1,)
         assert 0 <= int(idx[0]) < primary.fit.n_peaks
-
-
-# ---------------------------------------------------------------------------
-# Helpers used by the tests
-# ---------------------------------------------------------------------------
-def _toy_outcome(
-    window_id: int, center_mhz: float, fit_peaks: list[ModelPeak]
-) -> WindowOutcome:
-    """Minimal WindowOutcome with the molecular-center attribute set.
-
-    Used by the standalone evaluate_fixed_contributor tests where we want to
-    skip the full plan executor and inject a pre-cooked primary outcome.
-    """
-    # An almost-empty WindowOutcome; we only need .fit.peaks and the center
-    # for evaluate_fixed_contributor / the thaw helpers.
-    grid = np.array([0.0])
-    data = np.zeros(1, dtype=np.complex128)
-    rms = np.array([1.0])
-    bg = np.zeros(1, dtype=np.complex128)
-
-    # We need a ConservativeFitResult shell with .peaks; the easiest is to use
-    # conservative_fit on a trivial input -- but cheaper to build a fake fit
-    # with just the peaks list set.
-    from ftmwpipeline.fitting.window_fit import (
-        ConservativeFitResult,
-        WindowFitResult,
-    )
-
-    inner = WindowFitResult(
-        success=True,
-        peaks=list(fit_peaks),
-        peak_errors=[],
-        tau_us=TAU_US,
-        tau_error=None,
-        fit_tau=False,
-        cost=0.0,
-        chi_squared=0.0,
-        n_data=2,
-        n_params=3 * len(fit_peaks),
-        n_function_evals=0,
-        fitted_spectrum=np.zeros(1, dtype=np.complex128),
-        residual=np.zeros(1, dtype=np.complex128),
-    )
-    fit_result = ConservativeFitResult(inner, [], [])
-    outcome = WindowOutcome(
-        window_id=window_id,
-        fit=fit_result,
-        fixed_peaks=[],
-        offset_grid_mhz=grid,
-        complex_spectrum=data,
-        rms_noise=rms,
-        background=bg,
-        full_fitted_spectrum=np.zeros(1, dtype=np.complex128),
-        full_residual=np.zeros(1, dtype=np.complex128),
-    )
-    outcome._center_mhz = center_mhz  # type: ignore[attr-defined]
-    return outcome
 
 
 # ---------------------------------------------------------------------------

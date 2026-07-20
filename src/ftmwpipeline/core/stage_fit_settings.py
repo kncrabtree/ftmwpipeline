@@ -61,8 +61,7 @@ class ClockSource:
     referenced to the instrument's frequency standard (Rb): the locked
     fundamentals span the exact intermod lattice (multiples of their GCD),
     while *unlocked* sources (a free-running digitizer clock) predict a
-    drifting tone family. See
-    ``dev-docs/planning/instrument-clock-declaration.md``.
+    drifting tone family.
     """
 
     freq_mhz: float
@@ -470,7 +469,7 @@ class BaselineSubSettings:
     explains the residual above ``smooth_threshold`` chi-squared per added dof (a
     smooth in-band leakage pedestal); fit jointly with the free lines and a
     re-freed ``tau`` so the flexibility is priced into the per-line
-    uncertainties. See ``dev-docs/planning/stage5-leakage-wing-baseline.md``.
+    uncertainties.
     """
 
     enabled: Optional[bool] = knob_field(
@@ -509,7 +508,7 @@ class SpurSubSettings:
     finite-T line shape can represent. The gate is
     ``integer-MHz ∧ (frequency-domain narrow ∨ Stage 2b flat/saturated)``;
     detected spurs are dropped from peak nomination and excluded from the
-    residual / chi-squared. See ``dev-docs/planning/stage5-spur-masking.md``.
+    residual / chi-squared.
 
     ``clocks`` is the declarative instrument clock tree
     (:class:`ClockSource` entries). When non-empty it replaces the
@@ -518,7 +517,6 @@ class SpurSubSettings:
     molecular and baseband frames), flips the on-lattice evidence burden
     (``lattice_decay_ratio``), and adds a drifting-tone lane for unlocked
     clocks (``drift_*`` knobs). Empty/unset = legacy integer-MHz behavior.
-    See ``dev-docs/planning/instrument-clock-declaration.md``.
     """
 
     enabled: Optional[bool] = knob_field(
@@ -691,8 +689,7 @@ class PeakSurvivalSubSettings:
     0.15, ``collapse_frac_unc_max_separation_res`` 0.5,
     ``collapse_max_separation_res`` 1.0, ``sidelobe_prune_max_separation_res`` 2.5
     (0.0 disables), ``degenerate_trial_frac`` 0.5 (0.0 disables),
-    ``degenerate_trial_chi2r_rel_tol`` 0.5. See
-    ``dev-docs/planning/stage6-peak-survival.md``.
+    ``degenerate_trial_chi2r_rel_tol`` 0.5.
     """
 
     enabled: Optional[bool] = None
@@ -1151,8 +1148,7 @@ def load_preset(name_or_path: Union[str, Path]) -> StageFitSettings:
     data = sf.read_preset_root(name_or_path)
     # Per-stage top-level blocks are the current convention; ``fit:`` is
     # the legacy spelling kept as a back-compat shim for presets written
-    # before the per-stage wrapper landed (see
-    # ``dev-docs/planning/settings-backfill.md`` § "Back-compat shims").
+    # before the per-stage wrapper landed.
     has_fit = "fit" in data and isinstance(data["fit"], dict)
     has_stage5 = "stage5" in data and isinstance(data["stage5"], dict)
     if has_fit and has_stage5:

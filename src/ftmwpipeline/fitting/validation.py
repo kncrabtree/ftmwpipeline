@@ -4,20 +4,17 @@ Statistical-test and linewidth-physics helpers for Stage 5 fitting.
 These are the small, pure helpers the conservative add-one-peak loop
 (:mod:`ftmwpipeline.fitting.window_fit`) leans on -- the nested-model F-test,
 the AIC, the noise-weighted chi-squared, the peak-separation constraint, and
-the apodization / finite-T linewidth. Most are ported from the surviving
-bcfitting reference shell (``dev-docs/planning/stage5-fitting.md``, "Reuse
-map"); :func:`feature_fwhm` is new -- the exact ``h_T`` linewidth, used in
-preference to the analytic apodization estimate for the model's own
-resolution scale.
+the apodization / finite-T linewidth. :func:`feature_fwhm` is the exact
+``h_T`` linewidth, used in preference to the analytic apodization estimate for
+the model's own resolution scale.
 
 Noise convention
 ----------------
 The canonical Stage 2 ``rms_noise`` is a per-bin *complex* RMS ``sigma``: the
 real and imaginary parts each carry variance ``sigma**2 / 2``. The
 noise-weighted chi-squared therefore divides every stacked Re/Im residual
-element by ``sigma / sqrt(2)`` (D-8). The bcfitting reference applied a 1.53
-magnitude-to-complex factor for the same reason; with a genuine complex per-bin
-sigma the correct factor is exactly ``sqrt(2)`` and nothing else.
+element by ``sigma / sqrt(2)`` (D-8); with a genuine complex per-bin sigma the
+correct factor is exactly ``sqrt(2)`` and nothing else.
 """
 
 from __future__ import annotations
@@ -80,7 +77,6 @@ __all__ = [
     "DEFAULT_CHI2R_NOISE_FLOOR",
     "calculate_hwhm_from_apodization",
     "feature_fwhm",
-    "calculate_rms_residuals",
     "calculate_noise_weighted_chi2",
     "calculate_aic",
     "calculate_aicc",
@@ -90,7 +86,6 @@ __all__ = [
     "gate_information_weights",
     "information_weighted_chi2",
     "gate_aicc_pair",
-    "passes_significance_test",
     "validate_peak_separation",
     "shape_error_fraction",
     "snr_aware_chi2_pass",
@@ -442,35 +437,6 @@ def feature_fwhm(
     mag = np.abs(h_T_shape(shape, grid, tau_us, acquisition_us))
     above = np.where(mag >= 0.5 * mag.max())[0]
     return float(grid[above[-1]] - grid[above[0]])
-
-
-# ---------------------------------------------------------------------------
-# Residual statistics
-# ---------------------------------------------------------------------------
-def calculate_rms_residuals(
-    complex_spectrum: np.ndarray,
-    fitted_spectrum: Union[np.ndarray, None] = None,
-) -> float:
-    """RMS of the stacked real+imaginary residuals (unweighted).
-
-    Parameters
-    ----------
-    complex_spectrum : np.ndarray
-        Complex window data.
-    fitted_spectrum : np.ndarray, optional
-        Fitted complex model; ``None`` means the zero model (the residual is
-        the data itself).
-
-    Returns
-    -------
-    float
-        RMS over the concatenated Re/Im residual.
-    """
-    residual = complex_spectrum
-    if fitted_spectrum is not None:
-        residual = complex_spectrum - fitted_spectrum
-    stacked = np.concatenate([np.real(residual), np.imag(residual)])
-    return float(np.sqrt(np.mean(stacked**2)))
 
 
 def calculate_noise_weighted_chi2(
@@ -1487,44 +1453,6 @@ def calculate_chi_squared_improvement(
     f_statistic = (chi2_diff / dof_change) / (new_chi2 / df_residual)
     p_value = float(1.0 - f_distribution.cdf(f_statistic, dof_change, df_residual))
     return p_value, float(f_statistic), chi2_diff
-
-
-def passes_significance_test(
-    old_chi2: float,
-    new_chi2: float,
-    dof_change: int,
-    n_data: int,
-    n_params_new: int,
-    significance: float = 0.05,
-) -> bool:
-    """Whether a chi-squared improvement clears the F-test significance level.
-
-    Thin wrapper over :func:`calculate_chi_squared_improvement`: ``True`` when
-    the F-test p-value is below ``significance``. (Unlike the bcfitting
-    reference, this takes the real ``dof_change`` rather than assuming 2.)
-
-    Parameters
-    ----------
-    old_chi2, new_chi2 : float
-        Chi-squared of the simpler and the more complex model.
-    dof_change : int
-        Parameters added by the complex model.
-    n_data : int
-        Number of (real) data points.
-    n_params_new : int
-        Parameter count of the complex model.
-    significance : float, default 0.05
-        P-value threshold.
-
-    Returns
-    -------
-    bool
-        ``True`` if the improvement is statistically significant.
-    """
-    p_value, _, _ = calculate_chi_squared_improvement(
-        old_chi2, new_chi2, dof_change, n_data, n_params_new
-    )
-    return p_value < significance
 
 
 # ---------------------------------------------------------------------------

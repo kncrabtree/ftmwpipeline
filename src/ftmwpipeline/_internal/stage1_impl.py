@@ -38,8 +38,8 @@ def _read_settings_layer(file_path: str, group_path: str) -> Optional[FTSettings
     """Read one resolution layer (persisted or recommended) as ``FTSettings``.
 
     Tolerant of older ``ft_processing`` records that stored only a JSON
-    ``parameters`` blob (the pre-D7 partial record): its keys are folded in so
-    those files still resolve sensibly.
+    ``parameters`` blob: its keys are folded in so those files still resolve
+    sensibly.
     """
     with h5py.File(file_path, "r") as h5f:
         if group_path not in h5f:

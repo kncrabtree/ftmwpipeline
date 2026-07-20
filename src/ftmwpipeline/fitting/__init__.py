@@ -35,7 +35,6 @@ from .plan_execution import (
     ThawEvent,
     WindowOutcome,
     attempt_thaw_round,
-    evaluate_fixed_contributor,
     execute_plan,
     fit_window_with_fixed_contributors,
     local_thaw_cofit,
@@ -67,10 +66,8 @@ from .validation import (
     calculate_chi_squared_improvement,
     calculate_hwhm_from_apodization,
     calculate_noise_weighted_chi2,
-    calculate_rms_residuals,
     effective_sample_size,
     feature_fwhm,
-    passes_significance_test,
     validate_peak_separation,
 )
 from .window_fit import (
@@ -108,10 +105,8 @@ __all__ = [
     "calculate_chi_squared_improvement",
     "calculate_hwhm_from_apodization",
     "calculate_noise_weighted_chi2",
-    "calculate_rms_residuals",
     "effective_sample_size",
     "feature_fwhm",
-    "passes_significance_test",
     "validate_peak_separation",
     # residual_rescue
     "DEFAULT_RESCUE_MAX_ROUNDS",
@@ -143,7 +138,6 @@ __all__ = [
     "ThawEvent",
     "WindowOutcome",
     "attempt_thaw_round",
-    "evaluate_fixed_contributor",
     "execute_plan",
     "fit_window_with_fixed_contributors",
     "local_thaw_cofit",

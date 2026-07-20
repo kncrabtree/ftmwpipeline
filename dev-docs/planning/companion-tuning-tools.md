@@ -31,16 +31,44 @@ places:
 - **Tracked** `dev-docs/research/*/`: per-stage `probe_<knob>.py` knob sweeps,
   `harness.py` fixture builders, `prototype.py` algorithm studies, and
   `stage5-cross-fixture/stage5_cross_fixture.py`.
-- **Tracked** `scripts/development/`: the generalized
-  `stage5-validation/generate_validation.py` (per-window fit visualizer that
-  already reads shape/probe/trim/units from any `.ftmw`) and the
-  `stage3-coherence-study/` survey scripts.
+- **Tracked** `scripts/development/`: see the rot audit below — most of this
+  directory is obsolete, and the `stage5-validation/generate_validation.py`
+  this doc previously held up as the keeper no longer imports.
 - **Gitignored** `scratch/`: a large body of throwaway per-stage tuners and
   visualizers whose *intent* (not the scripts themselves) was worth preserving.
 
 The goal is a single, discoverable, fixture-agnostic surface that subsumes their
 intent, follows the repo's dual-interface rule, and feeds the existing settings
 resolver + preset system.
+
+### `scripts/development/` rot audit (2026-07-20)
+
+Audited during the stage-implementation review follow-ups. **Every break below
+is pre-existing at commit `a7248fe`** — none was caused by that pass's
+deletions. Import resolution was checked by walking each script's AST and
+attempting the import.
+
+| Script | State |
+| --- | --- |
+| `build_fixture.py` | imports resolve |
+| `catalog_recall.py` | imports resolve |
+| `stage5-validation/build_shape_comparison_index.py` | imports resolve |
+| `stage5-validation/generate_validation.py` | **broken** — `_resolve_sideband`, `WindowDifficulty` |
+| `stage5-validation/compare_shapes_per_window.py` | **broken** — `estimate_noise_adaptive` |
+| `stage5-validation/survey_round_caps.py` | **broken** — `estimate_noise_adaptive` |
+| `test_noise_simple.py` | **deleted** — imported `estimate_noise_adaptive` and `save_pipeline_cache`; the whole `io/result_serialization.py` module is gone |
+| `stage3-coherence-study/` (4 scripts) | **deleted** with `preprocessing/coherence_screen.py` (screen considered and rejected — see `methods/matched_filter_detection.rst`) |
+
+**Why they rotted:** the `stage5-validation/` scripts were the pre-Stage-6 way to
+eyeball a fit per window. Stage 6's HTML report supersedes them — validation is
+now easier and more complete from the report — so they stopped being run and
+their imports drifted out from under them unnoticed.
+
+**Implication for the planned tuning surface:** this doc's original premise —
+that `generate_validation.py` was the generalized, fixture-agnostic keeper worth
+building on — no longer holds. It does not import. Treat the whole
+`stage5-validation/` directory as a removal candidate rather than a foundation,
+and take the *intent* from the Stage 6 report instead.
 
 ## Coverage backbone
 

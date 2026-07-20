@@ -38,9 +38,6 @@ predictions on top of real molecular bands (measured: a spurious
 ``6250x5 (rf)`` point at 31250 lands on the 363 fixture's K=6 molecular
 anchor band). Locked synthesizer clocks keep both frames (their harmonics
 both enter the digitizer after the LO mix *and* radiate at RF).
-
-See ``dev-docs/planning/instrument-clock-declaration.md`` for the design
-and the cross-fixture verification of the identities.
 """
 
 from __future__ import annotations

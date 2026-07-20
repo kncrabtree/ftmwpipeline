@@ -12,7 +12,7 @@ DAG. It is purely structural -- it makes no fits and changes no spectrum.
 Stage 4 owns no FT settings: it operates on the Stage 1 persisted canonical
 spectrum (incl. trim) and the canonical Stage 2 noise, exactly the surface the
 Stage 3 peaks were scored on. Wrapped identically by the CLI, Pipeline class,
-and functional API. See ``dev-docs/planning/stage4-window-assignment.md``.
+and functional API.
 """
 
 import json

@@ -210,14 +210,14 @@ class PreprocessedFID:
         # Convert to molecular frequencies
         mol_freqs = self.apply_molecular_frequency(scope_freqs)
 
-        # Apply normalization (divide by original FID length, not padded length)
+        # Apply normalization (divide by the original FID length)
         ft_data /= self.original_length
 
         # Apply scaling
         scale_factor = 10**self.processing_params.units_power
         ft_data *= scale_factor
 
-        # Note: autoscale_MHz feature has been removed - use 'trim' for frequency range selection
+        # Frequency range selection uses 'trim'; there is no autoscale_MHz option.
 
         return ft_data, mol_freqs
 
@@ -1252,7 +1252,7 @@ class FTMWData:
 # and a fit dependency DAG. The plain ``SpectralWindow``
 # above is the data-bearing window used downstream; the structures here are the
 # *planning* substrate (no spectrum arrays — only references into the Stage 3
-# peak list). See ``dev-docs/planning/stage4-window-assignment.md``.
+# peak list).
 
 
 @dataclass
@@ -1904,8 +1904,7 @@ class FinalPeak:
     frequency corrected for the digitizer timebase scale error and the
     three-term frequency-uncertainty budget broken out into its components.
     Computed by Stage 6 (``review run``) from the raw fitted peak, the
-    persisted timebase calibration, and the user-declared accuracy floor; see
-    ``dev-docs/planning/stage6-reports.md`` for the budget derivation.
+    persisted timebase calibration, and the user-declared accuracy floor.
 
     Attributes
     ----------
@@ -2027,7 +2026,7 @@ class FrequencyCalibration:
     reproducible from the record alone and never depends on a transient CLI
     flag. The calibration *state* is not stored here -- it is derived at
     consolidation time from the clock declaration and whether the timebase was
-    self-calibrated (see ``dev-docs/planning/stage6-reports.md``).
+    self-calibrated.
 
     Attributes
     ----------

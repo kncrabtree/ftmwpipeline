@@ -107,7 +107,6 @@ from .window_fit import (
     DEFAULT_MIN_PAIR_SEPARATION_FACTOR,
     DEFAULT_MIN_PAIR_SEPARATION_RESOLUTION_FACTOR,
     ConservativeFitResult,
-    WindowFitConstraints,
     WindowFitResult,
     _effective_min_pair_separation,
     _seed_peak,
@@ -134,7 +133,6 @@ __all__ = [
     "DEFAULT_BASELINE_ENABLED",
     "DEFAULT_BASELINE_ORDER",
     "DEFAULT_BASELINE_EDGE_THRESHOLD",
-    "evaluate_fixed_contributor",
     "evaluate_edge_free_contributors",
     "subtract_frozen_background",
     "fit_window_with_fixed_contributors",
@@ -601,95 +599,6 @@ class PlanFitOutcome:
     # no per-node cleanup callback was injected. The end-of-walk aggregation
     # rolls these into the ``peak_survival`` / ``vif_collapse`` diagnostics.
     cleanup_history: list[dict[str, Any]] = field(default_factory=list)
-
-
-# ---------------------------------------------------------------------------
-# Fixed-contributor evaluation
-# ---------------------------------------------------------------------------
-def evaluate_fixed_contributor(
-    contributor: FixedContributor,
-    primary_outcome: WindowOutcome,
-    *,
-    dependent_center_mhz: float,
-    sideband: SidebandLike,
-) -> FrozenPeak:
-    """Materialize a :class:`FixedContributor` in a dependent window's fit frame.
-
-    Looks up the contributor's fitted :class:`ModelPeak` in
-    ``primary_outcome.fit.peaks`` by the nearest-frequency match (the
-    contributor's persisted ``frequency_mhz`` is the Stage 3 detection; the
-    primary fit's free peak is its refined location), then remaps that line's
-    signed baseband offset from the *primary* window's coordinate to the
-    *dependent* window's coordinate. Because both windows share the same
-    sideband and probe, the remap is the affine ``delta_dep = s*(f_c_primary -
-    f_c_dependent) + delta_primary``; ``amplitude``/``phase``/``tau`` are
-    physical and unchanged.
-
-    Both windows are sliced from the same active-FT (already in the
-    ``[0, T]`` form), so the relabel is a pure grid shift -- no extra phase
-    term enters here.
-
-    Parameters
-    ----------
-    contributor : FixedContributor
-        The plan-level record naming the line.
-    primary_outcome : WindowOutcome
-        Converged outcome of the contributor's primary window.
-    dependent_center_mhz : float
-        Reference (molecular) frequency of the dependent window.
-    sideband : Sideband or str
-        Sideband configuration (must match both windows).
-
-    Returns
-    -------
-    FrozenPeak
-        The frozen model term, in the dependent window's offset frame.
-
-    Raises
-    ------
-    ValueError
-        If the primary outcome has no fitted peaks (the contributor cannot be
-        evaluated without a converged primary fit).
-    """
-    if not primary_outcome.fit.peaks:
-        raise ValueError(
-            f"primary window {contributor.primary_window_id} has no fitted "
-            f"peaks; cannot evaluate fixed contributor "
-            f"(peak {contributor.peak_index} at {contributor.frequency_mhz} MHz)"
-        )
-
-    s = sideband_sign(sideband)
-
-    # Pick the primary fit's peak nearest the persisted contributor frequency.
-    # The primary window's offset is signed-baseband from its own center, so we
-    # compare in primary-offset space by mapping the contributor frequency the
-    # same way.
-    primary_center = _window_center_mhz(primary_outcome)
-    contributor_delta_primary = s * (contributor.frequency_mhz - primary_center)
-    nearest = min(
-        primary_outcome.fit.peaks,
-        key=lambda pk: abs(pk.offset_mhz - contributor_delta_primary),
-    )
-
-    # Use the *refined* fit frequency, not the Stage 3 detection: the primary's
-    # converged offset is the best estimate of where the line actually sits, and
-    # the frozen skirt must be evaluated there (a few-kHz Stage 3 vs fit
-    # disagreement otherwise places the skirt at the wrong location in the
-    # dependent frame).
-    fitted_freq_mhz = primary_center + s * nearest.offset_mhz
-    delta_dep = s * (fitted_freq_mhz - dependent_center_mhz)
-
-    return FrozenPeak(
-        peak_index=contributor.peak_index,
-        primary_window_id=contributor.primary_window_id,
-        model_peak=ModelPeak(
-            amplitude=nearest.amplitude,
-            offset_mhz=float(delta_dep),
-            phase=nearest.phase,
-        ),
-        frequency_mhz=fitted_freq_mhz,
-        freeze_eligible=contributor.freeze_eligible,
-    )
 
 
 def evaluate_ancestor_leakage(
@@ -3105,7 +3014,7 @@ def _levelize(
 
     The fit-ordering dependency of a window is authoritative in its
     ``fixed_contributors``: a contributor that is **not** ``edge_free`` reads its
-    ``primary_window_id``'s fitted outcome (:func:`evaluate_fixed_contributor`),
+    ``primary_window_id``'s fitted outcome (:func:`evaluate_ancestor_leakage`),
     so that primary must be fit first; an ``edge_free`` contributor is
     materialized self-contained from the shared active FT and imposes no ordering.
     ``dependency_edges`` (``(child, parent)`` pairs) is folded in as a belt-and-

@@ -13,9 +13,8 @@ on demand from the persisted FID plus the canonical Stage 1 settings (the
 same ``start_us`` / ``end_us`` the user picked for the persisted spectrum; the
 canonical FT is unapodized, native-length, and unconditionally DC-removed).
 Per-bin noise on the active-FT is measured fresh by
-running the Stage 2 adaptive estimator on the active-FT magnitude spectrum
-(see ``dev-docs/planning/stage5-fitting.md`` § "Spectral domain for the fit"
-for why we measure rather than rescale).
+running the Stage 2 adaptive estimator on the active-FT magnitude spectrum,
+rather than rescaled from the persisted Stage 1/2 noise.
 
 Wrapped identically by the CLI, Pipeline class, and functional API.
 """

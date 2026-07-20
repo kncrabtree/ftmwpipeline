@@ -11,8 +11,7 @@ parameter-specific lives as data in the registry
 This package is the single implementation behind the CLI ``scan`` meta-object
 and the ``Pipeline`` / functional-API ``scan_run`` / ``scan_list`` wrappers, per
 the repo's dual-interface rule. It also backs the ``settings`` meta-object
-(:mod:`settings_inspection`, :mod:`settings_mutation`). See
-``dev-docs/planning/companion-tuning-tools.md``.
+(:mod:`settings_inspection`, :mod:`settings_mutation`).
 """
 
 from .engine import BatchItem, SweepResult, SweepRow, run_scan, run_scan_batch

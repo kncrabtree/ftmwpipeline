@@ -85,8 +85,7 @@ _DETECTION_ZPF = 2
 # zero-padded grid that lands the Lorentzian FWHM in SavGol's sweet spot
 # (≈ 3 bins). Active-region zpf chosen so FWHM_bins from the Stage 1
 # apodization is ≥ ~3 — see dev-docs/research/matched-filter-detection §10
-# (revised) and the reassessment script under
-# scratch/matched-filter-detection/.
+# (revised).
 _GAP_ACTIVE_ZPF = 2
 
 # Grid-aware Savitzky-Golay window: cover ~4 line-FWHM in frequency, with

@@ -37,9 +37,9 @@ from ftmwpipeline.core.data_structures import (
 from ftmwpipeline.fitting.peak_model import ModelPeak, molecular_frequency
 from ftmwpipeline.fitting.plan_execution import (
     DEFAULT_RESIDUAL_EDGE_THRESHOLD,
+    FrozenPeak,
     ReplanContext,
     attempt_thaw_round,
-    evaluate_fixed_contributor,
     execute_plan,
     residual_edge_coherence,
 )
@@ -439,13 +439,25 @@ class TestThawEventPartition:
         primary.fit.peaks[0].amplitude = primary.fit.peaks[0].amplitude * 1.25
         dep = plan_outcome.window_outcomes[1]
         dep_center = 0.5 * (weak_freq - 0.6 + weak_freq + 0.6)
-        from ftmwpipeline.fitting.peak_model import model_spectrum
+        from ftmwpipeline.fitting.peak_model import model_spectrum, sideband_sign
 
-        corrupted_frozen = evaluate_fixed_contributor(
-            FixedContributor(0, 0, strong_freq, True),
-            primary,
-            dependent_center_mhz=dep_center,
-            sideband=SIDEBAND,
+        # Inline the single-peak remap that ``evaluate_fixed_contributor`` used
+        # to do: win_a has exactly one fitted peak, so it is trivially the
+        # "nearest match" to the contributor's persisted frequency.
+        s = sideband_sign(SIDEBAND)
+        primary_center_mhz = 0.5 * (win_a.freq_range[0] + win_a.freq_range[1])
+        nearest_peak = primary.fit.peaks[0]
+        fitted_freq_mhz = primary_center_mhz + s * nearest_peak.offset_mhz
+        corrupted_frozen = FrozenPeak(
+            peak_index=0,
+            primary_window_id=0,
+            model_peak=ModelPeak(
+                amplitude=nearest_peak.amplitude,
+                offset_mhz=s * (fitted_freq_mhz - dep_center),
+                phase=nearest_peak.phase,
+            ),
+            frequency_mhz=fitted_freq_mhz,
+            freeze_eligible=True,
         )
         dep.fixed_peaks = [corrupted_frozen]
         dep.background = model_spectrum(

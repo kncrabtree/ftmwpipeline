@@ -95,6 +95,21 @@ DEFAULT_TAU_G_SEEDS: Tuple[float, ...] = (100.0, 50.0, 20.0, 10.0, 5.0, 3.0)
 # actually pass on a typical fixture.
 DEFAULT_TAU_G_MIN_CONTRIBUTORS = 50
 
+# Operating points for the 3-way L/G/V per-bin shape-recommendation test.
+# The verdict aggregator picks the dominant *pure* shape (exp ⇒
+# Lorentzian, gauss ⇒ Gaussian) when one beats the other by at least
+# ``DEFAULT_SHAPE_RECOMMENDATION_PURE_MARGIN`` of the SNR-weighted total
+# vote mass; Voigt votes are tabulated but never become the recommendation
+# (the production Stage 5 line-shape selector supports L and G only, with
+# Voigt reserved for future per-window unification). If neither pure
+# shape clears the margin, the recommendation is ``None`` and the Stage 5
+# resolver's *recommended* layer falls through to the next layer.
+DEFAULT_SHAPE_RECOMMENDATION_PURE_MARGIN = 0.10
+
+# Arithmetic-third edges (low / mid / high), default partition for
+# ``compute_band_majorities`` when no caller-supplied edges are passed.
+DEFAULT_BAND_LABELS = ("low", "mid", "high")
+
 
 __all__ = [
     "TauCalibrationResult",
@@ -164,8 +179,8 @@ class SpurCluster:
         (``spur_by_aicc``), which also fires on erratic beat / blend bins
         that are *not* spurs. The Stage 5 spur-masking gate keys its
         persistence half on this flag rather than the raw ``cls == 1``
-        membership; see ``dev-docs/planning/stage5-spur-masking.md``.
-        Defaults to ``False`` on legacy catalogs that predate the flag.
+        membership. Defaults to ``False`` on legacy catalogs that predate
+        the flag.
     """
 
     center_freq_mhz: float
@@ -250,18 +265,6 @@ class BandMajority:
     sigma_tau_us: float
 
 
-# Operating points for the 3-way L/G/V per-bin shape-recommendation test.
-# The verdict aggregator picks the dominant *pure* shape (exp ⇒
-# Lorentzian, gauss ⇒ Gaussian) when one beats the other by at least
-# ``DEFAULT_SHAPE_RECOMMENDATION_PURE_MARGIN`` of the SNR-weighted total
-# vote mass; Voigt votes are tabulated but never become the recommendation
-# (the production Stage 5 line-shape selector supports L and G only, with
-# Voigt reserved for future per-window unification). If neither pure
-# shape clears the margin, the recommendation is ``None`` and the Stage 5
-# resolver's *recommended* layer falls through to the next layer.
-DEFAULT_SHAPE_RECOMMENDATION_PURE_MARGIN = 0.10
-
-
 @dataclass(frozen=True)
 class ShapeRecommendation:
     """3-way per-bin model preference verdict for the Stage 5 shape selector.
@@ -306,11 +309,6 @@ class ShapeRecommendation:
     notes: Tuple[str, ...]
 
 
-# Arithmetic-third edges (low / mid / high), default partition for
-# ``compute_band_majorities`` when no caller-supplied edges are passed.
-DEFAULT_BAND_LABELS = ("low", "mid", "high")
-
-
 def compute_band_majorities(
     contributor_freqs_mhz: np.ndarray,
     contributor_taus_us: np.ndarray,
@@ -321,7 +319,7 @@ def compute_band_majorities(
     band_edges_mhz: Optional[Tuple[float, ...]] = None,
     band_labels: Tuple[str, ...] = DEFAULT_BAND_LABELS,
     min_contributors_per_band: int = 50,
-    sigma_floor_us: float = 0.5,
+    sigma_floor_us: float = DEFAULT_SIGMA_TAU_FLOOR_US,
 ) -> Tuple[BandMajority, ...]:
     """SNR-weighted majority tau on each band of an arithmetic partition.
 
@@ -1811,6 +1809,7 @@ def _finalize_tau_result(
     band_edges_mhz: Optional[Tuple[float, ...]],
     band_labels: Tuple[str, ...],
     min_contributors_per_band: int,
+    sigma_tau_floor_us: float,
     tau_max_field: float,
     contributor_noun: str,
     tau_label: str,
@@ -1914,6 +1913,7 @@ def _finalize_tau_result(
             band_edges_mhz=band_edges_mhz,
             band_labels=band_labels,
             min_contributors_per_band=int(min_contributors_per_band),
+            sigma_floor_us=sigma_tau_floor_us,
         )
     else:
         bands = tuple()
@@ -1984,6 +1984,7 @@ def extract_tau_majority(
     band_edges_mhz: Optional[Tuple[float, ...]] = None,
     band_labels: Tuple[str, ...] = DEFAULT_BAND_LABELS,
     min_contributors_per_band: int = 50,
+    sigma_tau_floor_us: float = DEFAULT_SIGMA_TAU_FLOOR_US,
 ) -> TauCalibrationResult:
     """End-to-end STFT tau calibration: FID -> ``TauCalibrationResult``.
 
@@ -2073,6 +2074,10 @@ def extract_tau_majority(
         high band. Pass an explicit override only for forensic comparison.
         When the polish noise-debias kicks in (sigma_frame derivation), a
         too-large sigma over-subtracts and biases tau low.
+    sigma_tau_floor_us : float, default :data:`DEFAULT_SIGMA_TAU_FLOOR_US`
+        Floor applied to each band-local ``sigma_tau_us`` in
+        :func:`compute_band_majorities` (only relevant when
+        ``compute_band_majorities_flag`` is set).
 
     Notes
     -----
@@ -2202,6 +2207,7 @@ def extract_tau_majority(
         band_edges_mhz=band_edges_mhz,
         band_labels=band_labels,
         min_contributors_per_band=min_contributors_per_band,
+        sigma_tau_floor_us=sigma_tau_floor_us,
         tau_max_field=cal.tau_max_us,
         contributor_noun="contributors",
         tau_label="tau_maj",
@@ -2399,6 +2405,7 @@ def extract_tau_G_majority(
     band_edges_mhz: Optional[Tuple[float, ...]] = None,
     band_labels: Tuple[str, ...] = DEFAULT_BAND_LABELS,
     min_contributors_per_band: int = 10,
+    sigma_tau_floor_us: float = DEFAULT_SIGMA_TAU_FLOOR_US,
 ) -> TauCalibrationResult:
     """End-to-end STFT τ_G calibration for the Gaussian-shape Stage 5 fit.
 
@@ -2470,6 +2477,10 @@ def extract_tau_G_majority(
         Per-band SNR-weighted majority τ_G control. Default ``True`` so
         the Gaussian Stage 5 path can pick up per-band anchors out of the
         box.
+    sigma_tau_floor_us : float, default :data:`DEFAULT_SIGMA_TAU_FLOOR_US`
+        Floor applied to each band-local ``sigma_tau_us`` in
+        :func:`compute_band_majorities` (only relevant when
+        ``compute_band_majorities_flag`` is set).
 
     Raises
     ------
@@ -2618,6 +2629,7 @@ def extract_tau_G_majority(
         band_edges_mhz=band_edges_mhz,
         band_labels=band_labels,
         min_contributors_per_band=min_contributors_per_band,
+        sigma_tau_floor_us=sigma_tau_floor_us,
         tau_max_field=tau_G_bound_hi,
         contributor_noun="eligible bins",
         tau_label="tau_G",

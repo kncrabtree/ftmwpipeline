@@ -36,10 +36,7 @@ instrument ``f_mol = probe - f_bb``, so the molecular-frame correction is
 Per-fixture measured eps differs by acquisition epoch (the scope clock drifts
 between sessions), so eps is a per-file quantity, never a package constant.
 Accuracy is systematics-limited at ~0.1-0.2 ppm (tone-to-tone scatter); the
-catalog-truth cross-check agrees within ~0.2-0.3 ppm. The estimator and its
-operating points are ported from the validated prototypes
-``scratch/stage5-skirt/timebase_selfcal{4,5,6}.py``; see
-``dev-docs/planning/instrument-clock-declaration.md`` for the design rationale.
+catalog-truth cross-check agrees within ~0.2-0.3 ppm.
 """
 
 from __future__ import annotations
@@ -69,8 +66,7 @@ __all__ = [
     "DEFAULT_N_NOISE_PROBES",
 ]
 
-# Operating points ported from the validated prototypes
-# (scratch/stage5-skirt/timebase_selfcal{4,5,6}.py).
+# Calibrated operating points.
 DEFAULT_KAPPA_SYS = 0.2e-6  # systematic per-tone fractional floor (sigma_tot)
 DEFAULT_SNR_MIN = 8.0  # peak/noise gate for a tone to count as detected
 DEFAULT_N_BLOCKS = 4096  # block-average count before the ML fine scan

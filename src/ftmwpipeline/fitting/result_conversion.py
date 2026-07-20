@@ -80,7 +80,6 @@ __all__ = [
     "plan_fit_outcome_to_spectrum_fit",
     "FittedLineView",
     "outcome_line_views",
-    "result_line_views",
 ]
 
 SidebandLike = Union[Sideband, str]
@@ -182,43 +181,6 @@ def outcome_line_views(
                 phase=float(peak.phase),
                 snr=snr,
                 origin="auto",
-                index=i,
-            )
-        )
-    return views
-
-
-def result_line_views(
-    wf: FittingResult,
-    *,
-    sideband: SidebandLike,
-) -> List[FittedLineView]:
-    """Fitted-line views for a persisted :class:`FittingResult` (the post-fit
-    user-edit path). Reads the already-computed per-peak fields straight off
-    each :class:`~ftmwpipeline.core.data_structures.FittedPeak`."""
-    center_mhz = None
-    if wf.window is not None and wf.window.freq_range is not None:
-        lo, hi = wf.window.freq_range
-        center_mhz = 0.5 * (lo + hi)
-    s = sideband_sign(sideband)
-    views: List[FittedLineView] = []
-    for i, p in enumerate(wf.fitted_peaks):
-        offset = (
-            float(s * (float(p.frequency_mhz) - center_mhz))
-            if center_mhz is not None
-            else float("nan")
-        )
-        views.append(
-            FittedLineView(
-                frequency_mhz=float(p.frequency_mhz),
-                offset_mhz=offset,
-                amplitude=float(p.amplitude),
-                amplitude_error=(
-                    float(p.amplitude_error) if p.amplitude_error is not None else None
-                ),
-                phase=float(p.phase) if p.phase is not None else 0.0,
-                snr=float(p.snr) if p.snr is not None else None,
-                origin=getattr(p, "origin", "auto"),
                 index=i,
             )
         )

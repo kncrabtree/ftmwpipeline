@@ -42,7 +42,6 @@ from ..core.data_structures import (
     FittingResult,
     FrequencyCalibration,
     LedgerCandidate,
-    RescueCandidateInfo,
     RescueRoundInfo,
     Sideband,
     SpectrumFit,
@@ -877,7 +876,7 @@ def _reconstruct_frozen_peaks(
 
     The offset in the dependent window's baseband frame is derived from the
     molecular frequency and the window center (same convention as
-    :func:`~ftmwpipeline.fitting.plan_execution.evaluate_fixed_contributor`).
+    :func:`~ftmwpipeline.fitting.plan_execution.evaluate_ancestor_leakage`).
     """
     from ..fitting.plan_execution import FrozenPeak
 
@@ -1008,7 +1007,7 @@ def refit_window_core(
     # --- Reconstruct frozen background from persisted fixed_parameters -----
     frozen_peaks = _reconstruct_frozen_peaks(wf.fixed_parameters, center_mhz, sideband)
     # The frozen background uses the window's persisted tau as the dependent
-    # tau (exactly the convention in evaluate_fixed_contributor).
+    # tau (exactly the convention in evaluate_ancestor_leakage).
     from .active_ft_support import default_tau0_us
 
     tau_persisted = float(

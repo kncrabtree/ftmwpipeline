@@ -5,8 +5,7 @@ This module turns the promoted Stage 3 peak list into a :class:`WindowPlan` --
 an ordered set of disjoint analysis windows, each carrying the peaks to fit
 freely, the strong out-of-band lines whose leakage must be carried frozen, a
 fit dependency DAG. It is *purely structural*: it makes
-no fits and changes no spectrum (see
-``dev-docs/planning/stage4-window-assignment.md``).
+no fits and changes no spectrum.
 
 The algorithm is pure (peaks + arrays in, ``WindowPlan`` out) so it stays
 unit-testable; file orchestration/persistence lives in
@@ -861,8 +860,7 @@ def _finalize_plan(
     # contribute to w's grid and attach s as a FixedContributor of w when
     # that prediction crosses ``magnitude_attachment_threshold * sigma_c(w)``.
     # Replaces the previous "touched-region overlap" gate, which missed the
-    # long-tail cumulative-skirt bias diagnosed in scratch/stage5-validation/
-    # (see dev-docs/planning/stage5-fitting.md O5-10).
+    # long-tail cumulative-skirt bias (O5-10).
     for w in windows:
         w.fixed_contributors = []
 

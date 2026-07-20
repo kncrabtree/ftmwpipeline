@@ -16,6 +16,17 @@ Any item tagged **byte-sensitive** must pass `scratch/cleanup-golden/golden.py
 check` (the gitignored 2638 end-to-end fit snapshot) before and after — behavior
 must not change unless the item is a deliberate behavior change.
 
+> **Golden-harness note (2026-07-20).** `scratch/cleanup-golden/` was absent from
+> the working copy and the `ftmwpipeline-dev` conda env did not exist, so the
+> harness was **rebuilt from scratch** this session rather than restored. The
+> current reference (`fit_2638.golden.txt`, 262 windows / 510 peaks) is a valid
+> before/after gate for changes made from this point on, but it is **not** the
+> same reference the earlier cleanup pass used (that one recorded "512 per-peak
+> rows"), and today's tree was never verified against that historical baseline.
+> The harness records the recipe: `trim=(26500, 40000)`,
+> `guard_margin_us=0.67`, `FTMW_MAX_WORKERS` pinned (the default
+> `cpu_count()-2` OOMs a fit worker on a 30 GB box).
+
 ## Checklist
 
 Correctness (silent wrong numbers / real defects):
@@ -23,7 +34,7 @@ Correctness (silent wrong numbers / real defects):
 - [ ] **C1 (HIGH, latent).** Thaw path discards fresh fit statistics —
   `_install_cofit_outcome` overwrites peaks but keeps stale `peak_errors`,
   `covariance`, `chi_squared`, `n_params`, `n_data`, `tau_error`.
-- [ ] **C2 (MED-HIGH).** `sigma_tau_floor` knob + `DEFAULT_SIGMA_TAU_FLOOR_US`
+- [x] **C2 (MED-HIGH).** `sigma_tau_floor` knob + `DEFAULT_SIGMA_TAU_FLOOR_US`
   are unwired no-ops — wire through or delete (subsumes `review #6`/`#7`).
 - [ ] **C3 (MED, review #14).** Spur detection is not eps-aware and uses a fixed
   MHz tolerance instead of bin-width units; share machinery with the timebase
@@ -40,27 +51,27 @@ whether code or spec is authoritative, then fix the other):
   window when a calibration exists — the opposite of what the method doc says.
 - [ ] **D3 (MED).** Frozen-contributor skirt is drawn at the dependent window's
   τ, not the contributor's own `τ_c` as the spec requires.
-- [ ] **D4 (MED).** `leakage_touched_intervals` has zero callers, yet ROADMAP D8
+- [x] **D4 (MED).** `leakage_touched_intervals` has zero callers, yet ROADMAP D8
   and the `leakage.py` module docstring present it as the live Stage 3/4 leakage
   map. Wire it or retire it + correct D8.
 
 Dead / vestigial code:
 
-- [ ] **DC1 (review #15).** `coherence_screen.py` — confirmed dead in `src/`
+- [x] **DC1 (review #15).** `coherence_screen.py` — confirmed dead in `src/`
   (intentional, documented). Curation decision: delete or keep as research helper.
-- [ ] **DC2 (MED).** `leakage.py` module docstring is wrong (see D4); the
+- [x] **DC2 (MED).** `leakage.py` module docstring is wrong (see D4); the
   `deramp_to_active_start` helper it names is NOT dead (refutes `review #16`).
-- [ ] **DC3.** Dead fitting exports: `result_line_views`,
+- [x] **DC3.** Dead fitting exports: `result_line_views`,
   `remove_and_refit_cleanup`, `evaluate_fixed_contributor`,
   `passes_significance_test`, `calculate_rms_residuals`, unused `calculate_aicc`
   import.
-- [ ] **DC4 (review #11).** `peak_model.py` deramp narrative is largely accurate
+- [x] **DC4 (review #11).** `peak_model.py` deramp narrative is largely accurate
   (helper is live for Stage 4 display) — trim only the confusing "de-ramped
   [0,T]" phrasing.
 
 Constant / structure hygiene:
 
-- [ ] **H1 (review #6).** Move `DEFAULT_SHAPE_RECOMMENDATION_PURE_MARGIN`
+- [x] **H1 (review #6).** Move `DEFAULT_SHAPE_RECOMMENDATION_PURE_MARGIN`
   (tau_calibration.py:262) and `DEFAULT_BAND_LABELS` (:311) into the top constant
   block (both are used).
 
@@ -69,21 +80,22 @@ Terminology & comments (cleanup):
 - [ ] **T1 (review #4).** Assess the term "canonical" — 31 doc uses + user-facing
   CLI/plot strings; likely a holdover. Reconcile "canonical spectrum" vs "active
   FT", especially in user-facing strings.
-- [ ] **T2 (review #8).** `tau_maj` retirement — already tracked as an
+- [x] **T2 (review #8).** `tau_maj` retirement — already tracked as an
   architectural backlog item in `cleanup-pass.md`. Verified correct today
   (per-band routing sound; `tau_maj` load-bearing → versioned rename). Update
   stale comments now; do the rename with the golden gate.
-- [ ] **T3 (review #1).** Remove source-evolution comments.
+- [x] **T3 (review #1).** Remove source-evolution comments.
 - [ ] **T4 (review #2).** Remove backward-compatibility code (`_internal`,
   out of primary scope — noted for the cleanup pass).
-- [ ] **T5 (review #3).** Remove progress/dev markers ("pre-D7", etc.;
+- [x] **T5 (review #3).** Remove progress/dev markers ("pre-D7", etc.;
   `_internal`).
-- [ ] **T6 (review #9).** Remove "reference implementation"/`bcfitting`
+- [~] **T6 (review #9).** Remove "reference implementation"/`bcfitting`
   provenance framing; scrutinize the ported algorithms (see the peak-detection
-  padding seam under T6 detail).
-- [ ] **T7 (review #10).** Remove `dev-docs/planning/` and `scratch/` pointers in
+  padding seam under T6 detail). *Framing removal done; the peak-detection
+  edge-padding code fix is still open (byte-sensitive).*
+- [x] **T7 (review #10).** Remove `dev-docs/planning/` and `scratch/` pointers in
   source comments; keep only specific-claim citations.
-- [ ] **T8 (review #12).** ASCII scientific notation in comments (`1e6`, not
+- [x] **T8 (review #12).** ASCII scientific notation in comments (`1e6`, not
   `10⁶`).
 
 Robustness (assess; not confirmed bugs):
@@ -91,10 +103,10 @@ Robustness (assess; not confirmed bugs):
 - [ ] **R1 (review #13).** Timebase local noise reference is fragile but
   self-protecting — optional hardening (more probes / scatter estimator), not a
   required fix.
-- [ ] **R2.** Misleading diagnostics that do not change any number but can
+- [x] **R2.** Misleading diagnostics that do not change any number but can
   mislead a maintainer (mislabeled `aicc_delta`, wrong phase-penalty/`max_nfev`
   docstrings, Rayleigh false-alarm comment).
-- [ ] **R3.** Informational: Stage 1 amplitude normalization divides by full
+- [x] **R3.** Informational: Stage 1 amplitude normalization divides by full
   record length (uniform scalar, no statistical impact); the "not padded length"
   comment is vestigial.
 
@@ -369,3 +381,30 @@ independent automated review of `preprocessing/`, `fitting/`, `core/` against th
 `docs/source/` stage and methods pages. The Active-FT data-flow audit traced into
 the `_internal` stage impls to settle `review #5`. No files were edited during the
 review.
+
+## Corrections found during implementation (2026-07-20)
+
+Recorded so later readers do not re-trust the original framing:
+
+- **DC1's "zero callers" was scoped to `src/` and `tests/` only.** Three scripts
+  under `scripts/development/stage3-coherence-study/` imported
+  `project_candidates`; they were removed along with the module. Treat every
+  other "zero callers" claim in this doc as `src/`+`tests/`-scoped until
+  re-verified against `scripts/` too.
+- **T1 is far larger than "31 doc uses".** "canonical" occurs ~232 times across
+  ~60 `src/` files plus ~42 in `docs/`. It is in no HDF5 key and no CLI flag
+  name, so the rename is non-breaking — but many occurrences are generic English
+  ("the canonical `--trim` flag") unrelated to FT settings. Scoped to the
+  FT/spectrum sense, preferring "standard" in user-facing prose.
+- **`"settings_source": "stage1_canonical"`** (`stage3_impl.py`) has zero readers
+  anywhere in `src/`, `tests/`, or `docs/` — vestigial, removed rather than
+  renamed.
+- **The `_internal` "out of primary scope" line does not hold in practice.** C2,
+  T2, T5 and R2 all necessarily edit `_internal/` because the dual-interface
+  architecture puts the real logic there.
+- **T5 was nearly empty.** Exactly one true progress marker ("pre-D7") existed;
+  the `O5-*`/`D-*` tags are resolved-decision citations, not in-flight markers.
+- **C1 is not the mechanical fix described.** `_install_cofit_outcome` never
+  *receives* the co-fit statistics (only `new_peaks` and `tau_us`), so mirroring
+  `_apply_baseline_to_outcome` requires a signature change plus a decision on
+  attributing a *joint* `chi_squared`/`n_data`/`n_params` across two windows.

@@ -25,8 +25,7 @@ class PeakShape(str, Enum):
     on 2638 (per-window joint ``(τ_L, τ_G)`` LSQ degenerated to Gaussian-
     dominant with ``τ_L`` pinning at the upper bound), shipping as an
     alternative when the data is supersonic-beam-geometry-shaped rather
-    than collisional-Lorentzian-shaped. See
-    ``dev-docs/planning/stage5-gaussian-shape.md``.
+    than collisional-Lorentzian-shaped.
 
     A future ``VOIGT`` member is anticipated by the settings layer
     (``ShapeSpec`` discriminator); shipping Voigt gates on longer-T fixture

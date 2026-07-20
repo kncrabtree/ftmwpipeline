@@ -10,17 +10,14 @@ is parameterized in.
 It is a pure algorithm module (arrays in, arrays out, no file or pipeline
 state), unit-tested in isolation. Orchestration lives in
 :mod:`ftmwpipeline._internal.stage5_impl` and the per-window least-squares
-solver in :mod:`ftmwpipeline.fitting.window_fit`. The model
-and its conventions were established by the Stage 5 research prototype
-(``dev-docs/research/stage5-fitting/``); the plan is
-``dev-docs/planning/stage5-fitting.md``.
+solver in :mod:`ftmwpipeline.fitting.window_fit`.
 
 The model
 ---------
 A molecular line is an exponentially damped cosine excited at the
 active-region turn-on and observed over the finite acquisition ``[t0, t0+T]``.
 In *baseband* frequency offset ``Δf`` (MHz) from line center its complex-FT
-response, in the de-ramped ``[0, T]`` frame, is
+response, in the native ``[0, T]`` frame, is
 
     X(Δf) ≈ ½ A e^{iφ} · h_T(Δf; τ)
     h_T(Δf; τ) = [1 - exp(-(1/τ + i2π Δf) T)] / (1/τ + i2π Δf)
@@ -35,7 +32,7 @@ Units
 -----
 Everything is in **microseconds and MHz**. A frequency in MHz times a time in
 µs is dimensionless, so ``h_T`` carries units of µs and ``h_T(0)`` is ``τ_eff``
-in µs. Mixing in SI (Hz, s) silently rescales the on-line response by 10⁶.
+in µs. Mixing in SI (Hz, s) silently rescales the on-line response by 1e6.
 
 The sideband mapping
 --------------------
@@ -145,7 +142,7 @@ def h_T(
     """Closed-form complex FFT of a finite-T damped cosine.
 
     Evaluates ``h_T(Δf; τ)`` on a baseband frequency-offset grid -- the exact
-    rfft-domain line shape, in the de-ramped ``[0, T]`` frame. At center
+    rfft-domain line shape, in the native ``[0, T]`` frame. At center
     ``h_T(0) = τ_eff`` (see :func:`effective_tau`); far from center the
     magnitude decays as the ``1/|Δf|`` truncation-leakage skirt with the
     coherent phase that lets a fitted line's skirt be subtracted exactly.
@@ -198,7 +195,7 @@ def h_T_jacobian(
         dh/d(τ)     = dh/dz · (-1/τ²)       since dz/d(τ)  = -1/τ²
 
     The Stage 5 prototype verified this against central finite differences to
-    a relative error of ~3×10⁻¹⁰, so the production fit uses the analytic
+    a relative error of ~3e-10, so the production fit uses the analytic
     Jacobian from the start (no finite-difference phase).
 
     Parameters

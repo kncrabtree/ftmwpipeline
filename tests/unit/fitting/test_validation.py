@@ -2,8 +2,8 @@
 Unit tests for the Stage 5 statistical-test and linewidth-physics helpers.
 
 Covers :mod:`ftmwpipeline.fitting.validation`: the apodization / finite-T
-linewidths, the noise-weighted chi-squared and RMS residual, the AIC, the
-nested-model F-test, and the peak-separation constraint.
+linewidths, the noise-weighted chi-squared, the AIC, the nested-model F-test,
+and the peak-separation constraint.
 """
 
 import numpy as np
@@ -18,10 +18,8 @@ from ftmwpipeline.fitting.validation import (
     calculate_chi_squared_improvement,
     calculate_hwhm_from_apodization,
     calculate_noise_weighted_chi2,
-    calculate_rms_residuals,
     effective_sample_size,
     feature_fwhm,
-    passes_significance_test,
     shape_error_fraction,
     snr_aware_chi2_pass,
     validate_peak_separation,
@@ -91,15 +89,6 @@ class TestFeatureFWHM:
 # Residual statistics
 # ---------------------------------------------------------------------------
 class TestResidualStatistics:
-    def test_rms_zero_model_is_data_rms(self):
-        z = np.array([3.0 + 4.0j])
-        # Stacked [3, 4] -> RMS = sqrt((9 + 16) / 2).
-        assert calculate_rms_residuals(z) == pytest.approx(np.sqrt(12.5))
-
-    def test_rms_with_model_is_residual_rms(self):
-        z = np.array([3.0 + 4.0j, 1.0 - 2.0j])
-        assert calculate_rms_residuals(z, z) == pytest.approx(0.0)
-
     def test_noise_weighted_chi2_zero_model(self):
         """The zero-model chi-squared is the sigma/sqrt(2)-weighted data norm."""
         z = np.array([2.0 + 1.0j, -1.0 + 3.0j])
@@ -248,10 +237,6 @@ class TestFTest:
         assert diff == pytest.approx(200.0)
         assert f > 0.0
         assert p < 0.01
-
-    def test_passes_significance_test(self):
-        assert passes_significance_test(1000.0, 800.0, 3, 800, 10)
-        assert not passes_significance_test(1000.0, 1000.0, 3, 800, 10)
 
     def test_chi2_matches_fit_window(self):
         """noise_weighted_chi2 reproduces a WindowFitResult's chi_squared."""

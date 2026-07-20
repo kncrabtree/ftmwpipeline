@@ -45,7 +45,6 @@ choices cancel by construction.
 
 References
 ----------
-* ``dev-docs/planning/stage5-fitting.md`` § "Spectral domain for the fit"
 * ``dev-docs/ROADMAP.md`` divergence D9
 * ``dev-docs/research/stage5-fitting/report.md`` § 3 "Calibration scope"
 """

@@ -10,11 +10,15 @@ smoke checks.
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import pytest
 
+from ftmwpipeline.fitting import tau_calibration as tau_calibration_module
 from ftmwpipeline.fitting.tau_calibration import (
     DEFAULT_N_SEG,
+    DEFAULT_SIGMA_TAU_FLOOR_US,
     DEFAULT_T_SIGMA,
     DEFAULT_TAU_G_BOUND_HI,
     BandMajority,
@@ -471,6 +475,59 @@ class TestExtractTauMajority:
                 sigma_time=1.0,
             )
 
+    def test_sigma_tau_floor_us_reaches_compute_band_majorities(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``sigma_tau_floor_us`` must reach ``compute_band_majorities``.
+
+        Regression guard for a previously silent no-op: ``extract_tau_
+        majority`` had no ``sigma_tau_floor_us`` parameter at all, so
+        ``_finalize_tau_result`` could never forward a caller's choice --
+        ``compute_band_majorities`` always floored at a hardcoded 0.5.
+        Spy on ``compute_band_majorities`` and check the exact kwarg it
+        receives, both when the caller passes an explicit floor and when
+        it relies on the default (which must equal
+        ``DEFAULT_SIGMA_TAU_FLOOR_US``, not just happen to match it).
+        """
+        captured: dict[str, list[Any]] = {"sigma_floor_us": []}
+        real = tau_calibration_module.compute_band_majorities
+
+        def _spy(*args: Any, **kwargs: Any) -> Any:
+            captured["sigma_floor_us"].append(kwargs.get("sigma_floor_us"))
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(tau_calibration_module, "compute_band_majorities", _spy)
+
+        rng = np.random.default_rng(20260525 + 400)
+        N = int(round(T_FULL_US / SAMPLE_DT_US))
+        N = (N // DEFAULT_N_SEG) * DEFAULT_N_SEG
+        line_bins = list(range(N // 8, 5 * N // 8, N // 16))[:8]
+        fid, sigma_t = _synth_fid(
+            rng=rng,
+            n_samples=N,
+            line_bins=line_bins,
+            line_taus_us=[6.0] * len(line_bins),
+            line_snrs=[200.0] * len(line_bins),
+        )
+        common: dict[str, Any] = dict(
+            start_us=0.0,
+            end_us=N * SAMPLE_DT_US,
+            probe_freq_mhz=PROBE_MHZ,
+            sideband="lower",
+            trim_lo_mhz=TRIM_LO_MHZ,
+            trim_hi_mhz=TRIM_HI_MHZ,
+            sigma_time=sigma_t,
+            min_contributors=20,
+            compute_band_majorities_flag=True,
+        )
+
+        # Default: not passed by the caller -> forwards the named constant.
+        extract_tau_majority(fid, SAMPLE_DT_US, **common)
+        # Explicit: a distinct caller-chosen floor must reach the kernel.
+        extract_tau_majority(fid, SAMPLE_DT_US, sigma_tau_floor_us=2.75, **common)
+
+        assert captured["sigma_floor_us"] == [DEFAULT_SIGMA_TAU_FLOOR_US, 2.75]
+
 
 # ---------------------------------------------------------------------------
 # Gaussian-twin extractor: extract_tau_G_majority
@@ -604,6 +661,55 @@ class TestExtractTauGMajority:
                 tau_G_bound_lo=10.0,
                 tau_G_bound_hi=5.0,
             )
+
+    def test_sigma_tau_floor_us_reaches_compute_band_majorities_gaussian(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Twin of the same guard on :func:`extract_tau_majority`.
+
+        ``extract_tau_G_majority`` shares ``_finalize_tau_result`` with the
+        pure-exp extractor; this confirms the Gaussian entry point also
+        forwards its ``sigma_tau_floor_us`` all the way to
+        ``compute_band_majorities`` (default ``compute_band_majorities_
+        flag=True`` here, so no need to set it explicitly).
+        """
+        captured: dict[str, list[Any]] = {"sigma_floor_us": []}
+        real = tau_calibration_module.compute_band_majorities
+
+        def _spy(*args: Any, **kwargs: Any) -> Any:
+            captured["sigma_floor_us"].append(kwargs.get("sigma_floor_us"))
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(tau_calibration_module, "compute_band_majorities", _spy)
+
+        rng = np.random.default_rng(20260525 + 411)
+        N = int(round(T_FULL_US / SAMPLE_DT_US))
+        N = (N // DEFAULT_N_SEG) * DEFAULT_N_SEG
+        line_bins = list(range(N // 8, 5 * N // 8, N // 16))[:8]
+        fid, sigma_t = _synth_gaussian_fid(
+            rng=rng,
+            n_samples=N,
+            line_bins=line_bins,
+            line_taus_G_us=[6.0] * len(line_bins),
+            line_snrs=[200.0] * len(line_bins),
+        )
+        common: dict[str, Any] = dict(
+            start_us=0.0,
+            end_us=N * SAMPLE_DT_US,
+            probe_freq_mhz=PROBE_MHZ,
+            sideband="lower",
+            trim_lo_mhz=TRIM_LO_MHZ,
+            trim_hi_mhz=TRIM_HI_MHZ,
+            sigma_time=sigma_t,
+            snr_min=10.0,
+            min_contributors=2,
+            min_contributors_per_band=2,
+        )
+
+        extract_tau_G_majority(fid, SAMPLE_DT_US, **common)
+        extract_tau_G_majority(fid, SAMPLE_DT_US, sigma_tau_floor_us=1.4, **common)
+
+        assert captured["sigma_floor_us"] == [DEFAULT_SIGMA_TAU_FLOOR_US, 1.4]
 
 
 # ---------------------------------------------------------------------------
@@ -934,3 +1040,73 @@ class TestBandMajorities:
         # Outside every band -> None (caller falls back to band-wide).
         assert band_majority_for_frequency(bands, 10000.0) is None
         assert band_majority_for_frequency((), 28000.0) is None
+
+
+# ---------------------------------------------------------------------------
+# aggregation.sigma_tau_floor_us knob and plumbing tests
+# ---------------------------------------------------------------------------
+# Before this knob was wired up, ``compute_band_majorities`` floored every
+# band-local ``sigma_tau_us`` at a hardcoded literal ``0.5`` -- callers of
+# :func:`extract_tau_majority` / :func:`extract_tau_G_majority` had no way to
+# change it despite ``aggregation.sigma_tau_floor_us`` being fully declared,
+# persisted, and even exported as ``DEFAULT_SIGMA_TAU_FLOOR_US``. These tests
+# prove the knob now actually reaches the floor and changes it.
+class TestComputeBandMajoritiesSigmaFloor:
+    def test_default_sigma_floor_matches_constant(self) -> None:
+        """The unset ``sigma_floor_us`` default is the exported constant.
+
+        Guards against the default silently drifting back to a bare
+        literal: it must track ``DEFAULT_SIGMA_TAU_FLOOR_US`` (currently
+        0.5) so a default call is behavior-identical to before this knob
+        was wired up.
+        """
+        assert DEFAULT_SIGMA_TAU_FLOOR_US == 0.5
+
+        freqs = np.linspace(27000.0, 30000.0, 20)
+        taus = np.full(20, 8.0)  # identical taus -> near-zero raw sigma
+        snrs = np.full(20, 50.0)
+        (band,) = compute_band_majorities(
+            freqs,
+            taus,
+            snrs,
+            trim_lo_mhz=26500.0,
+            trim_hi_mhz=30000.0,
+            band_labels=("only",),
+            min_contributors_per_band=5,
+        )
+        assert band.sigma_tau_us == pytest.approx(DEFAULT_SIGMA_TAU_FLOOR_US, abs=1e-9)
+
+    def test_sigma_floor_us_is_caller_configurable(self) -> None:
+        """A non-default ``sigma_floor_us`` actually changes the applied floor.
+
+        Before this knob was wired up, ``compute_band_majorities`` floored
+        at a bare literal 0.5 no matter what a caller passed. Same
+        near-zero-scatter setup as the default test above, but with an
+        explicit floor well above the default -- the reported sigma must
+        track the caller's value, not 0.5.
+        """
+        freqs = np.linspace(27000.0, 30000.0, 20)
+        taus = np.full(20, 8.0)
+        snrs = np.full(20, 50.0)
+        (band_default,) = compute_band_majorities(
+            freqs,
+            taus,
+            snrs,
+            trim_lo_mhz=26500.0,
+            trim_hi_mhz=30000.0,
+            band_labels=("only",),
+            min_contributors_per_band=5,
+        )
+        (band_custom,) = compute_band_majorities(
+            freqs,
+            taus,
+            snrs,
+            trim_lo_mhz=26500.0,
+            trim_hi_mhz=30000.0,
+            band_labels=("only",),
+            min_contributors_per_band=5,
+            sigma_floor_us=3.0,
+        )
+        assert band_default.sigma_tau_us == pytest.approx(0.5, abs=1e-9)
+        assert band_custom.sigma_tau_us == pytest.approx(3.0, abs=1e-9)
+        assert band_custom.sigma_tau_us > band_default.sigma_tau_us

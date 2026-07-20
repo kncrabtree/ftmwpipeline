@@ -228,8 +228,14 @@ A **leakage-wing baseline**, a low-order complex polynomial added only on an F-t
 edge-coherence trigger, carries the smooth pedestal that hundreds of distant lines'
 summed leakage leaves under a window and that the discrete contributor set cannot model.
 
-A sub-resolution pair the fit split into two lines is then adjudicated by the amplitude
-**variance-inflation factor** :math:`\text{VIF} = (\sigma_A/A)\cdot\text{SNR}`, the
+Amplitude VIF collapse
+-----------------------
+
+A sub-resolution pair the fit split into two lines is adjudicated after the fit
+(and after rescue, when it ran) by the amplitude
+**variance-inflation factor** :math:`\text{VIF} = (\sigma_A/A)\cdot\text{SNR}`
+(``amplitude_vif``, gated in
+:mod:`ftmwpipeline._internal.stage5_impl`, not the rescue module), the
 diagnostic that separates a resolved doublet from a least-squares over-split. When two
 components sit within a resolution element their amplitudes trade against one another: the
 covariance inflates and a member's VIF climbs. A genuinely resolved doublet keeps its

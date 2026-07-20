@@ -52,7 +52,7 @@ class NoiseResult:
 # spectra the summed far-wings of strong lines form a smooth leakage *pedestal*
 # that fills every quiet bin. A level-based estimator measures that pedestal,
 # not the random noise, and over-reports σ by up to ~6×
-# at SNR ~10⁵–10⁶. The pedestal is constant in shot count N while the noise
+# at SNR ~1e5-1e6. The pedestal is constant in shot count N while the noise
 # averages down as 1/√N, so the error is a pure SNR-scaling failure.
 #
 # The fix is a high-pass along the frequency axis: the noise is the white,
@@ -82,11 +82,9 @@ class NoiseResult:
 #
 # The full derivation, the 1/√N validation, and the region-aware C(R) calibration
 # against frame-difference truth across the multi-frame fixtures are documented in
-# ``dev-docs/research/noise-snr-scaling/report.md`` (§4.1, §9). The estimator's
-# instrument-family-dependent knobs are tracked in
-# ``dev-docs/planning/instrument-tunable-knobs.md``.
+# ``dev-docs/research/noise-snr-scaling/report.md`` (§4.1, §9).
 
-# Default knobs (instrument-family-dependent; see the planning doc above).
+# Default knobs (instrument-family-dependent).
 SCATTER_WINDOW_MHZ = 80.0  # full width of the per-region scatter-MAD window
 SCATTER_PEDESTAL_MHZ = 20.0  # running-median width isolating the leakage pedestal
 SCATTER_LINE_K = 8.0  # robust-σ multiple above which a bin is flagged a line

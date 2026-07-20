@@ -129,6 +129,12 @@ CALIBRATE_TAU_FIELDS: list[tuple[str, Callable[..., None], str, Any]] = [
         2.0,
     ),
     (
+        "aggregation.sigma_tau_floor_us",
+        _sub_set("aggregation", "sigma_tau_floor_us", 1.25),
+        "sigma_tau_floor_us",
+        1.25,
+    ),
+    (
         "band.compute_band_majorities",
         _sub_set("band", "compute_band_majorities", False),
         "compute_band_majorities_flag",
@@ -229,6 +235,12 @@ CALIBRATE_TAU_G_FIELDS: list[tuple[str, Callable[..., None], str, Any]] = [
         _sub_set("aggregation", "spur_cluster_multiplier", 1.5),
         "spur_cluster_multiplier",
         1.5,
+    ),
+    (
+        "aggregation.sigma_tau_floor_us",
+        _sub_set("aggregation", "sigma_tau_floor_us", 0.9),
+        "sigma_tau_floor_us",
+        0.9,
     ),
     (
         "band.compute_band_majorities",

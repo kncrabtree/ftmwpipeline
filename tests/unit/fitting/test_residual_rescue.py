@@ -28,7 +28,6 @@ from ftmwpipeline.fitting.residual_rescue import (
     ConsolidatedRescueOutcome,
     attempt_residual_rescue,
     merge_close_peaks_cleanup,
-    remove_and_refit_cleanup,
     rescue_and_consolidate,
 )
 from ftmwpipeline.fitting.validation import feature_fwhm
@@ -765,69 +764,6 @@ class TestMergeCleanupProtectedOffsets:
             protected_tol_mhz=DF_MHZ,
         )
         assert n_merged == 1  # still collapses without protection
-
-
-class TestRemoveAndRefitProtectedOffsets:
-    """Protected peaks must never be dropped by remove_and_refit_cleanup."""
-
-    def _constraints_kwargs(self, u, z, sigma):
-        c = derive_window_fit_constraints(z, sigma, TAU_US, T_US)
-        return c.fit_kwargs_inner
-
-    def test_protected_peak_not_dropped(self):
-        """When a peak is protected, it is excluded from the drop-candidate set.
-
-        Build a noiseless K=2 fit where one peak is a very weak absorber
-        (amplitude close to 0) so the F-test reliably flags it as redundant
-        in the unprotected case.  With protection it must survive.
-        """
-        # Noiseless single-peak window -- gives a deterministic F-test result.
-        true = [ModelPeak(_amp_for_snr(200.0, sigma=1.0), 0.0, 0.5)]
-        u = _offset_grid(1.5)
-        z = model_spectrum(u, true, TAU_US, T_US)  # noiseless
-        sigma = np.full(u.size, 1.0)
-        fit_kwargs = self._constraints_kwargs(u, z, sigma)
-
-        # Ghost peak at 2× FWHM, initialized to near-zero amplitude.
-        ghost_offset = 2.0 * FWHM
-        epsilon_amp = _amp_for_snr(0.01, sigma=1.0)  # negligible amplitude
-        k2_init = [
-            ModelPeak(_amp_for_snr(200.0, sigma=1.0), 0.0, 0.5),
-            ModelPeak(epsilon_amp, ghost_offset, 0.0),
-        ]
-        k2_fit = fit_window(u, z, sigma, k2_init, TAU_US, T_US, **fit_kwargs)
-        assert k2_fit.n_peaks == 2
-
-        # Unprotected: the ghost must be dropped (it is redundant by F-test).
-        cleaned, n_dropped = remove_and_refit_cleanup(
-            u, z, sigma, k2_fit, TAU_US, T_US, fit_kwargs_inner=fit_kwargs
-        )
-        assert n_dropped >= 1, (
-            "Ghost peak should be flagged as redundant by the F-test; "
-            "n_dropped=%d, ghost amp=%.4f, peaks=%s"
-            % (
-                n_dropped,
-                k2_fit.peaks[1].amplitude,
-                [(round(p.offset_mhz, 3), round(p.amplitude, 4)) for p in k2_fit.peaks],
-            )
-        )
-
-        # Protected: the ghost must survive even though it is F-test-redundant.
-        cleaned_prot, n_dropped_prot = remove_and_refit_cleanup(
-            u,
-            z,
-            sigma,
-            k2_fit,
-            TAU_US,
-            T_US,
-            fit_kwargs_inner=fit_kwargs,
-            protected_offsets=[k2_fit.peaks[1].offset_mhz],
-            protected_tol_mhz=DF_MHZ,
-        )
-        assert n_dropped_prot < n_dropped, (
-            "Protected peak should suppress at least one drop; "
-            "n_dropped_prot=%d n_dropped=%d" % (n_dropped_prot, n_dropped)
-        )
 
 
 class TestRescueForbiddenOffsets:

@@ -3,9 +3,7 @@ Peak detection for FTMW spectroscopy (Stage 3).
 
 This module contains the Stage 3 detection algorithm:
 
-* ``locate_peaks`` -- the low-level peak locator, a cleaned, type-annotated
-  port of the surviving reference (``bcfitting.ftmwfitting``); numeric
-  behavior preserved exactly.
+* ``locate_peaks`` -- the low-level peak locator.
 * ``classify_by_snr`` -- SNR-only weak/medium/strong binning.
 * ``detect_peaks`` -- the two-pass driver: a primary pass on the apodized
   leakage-suppressed spectrum for the robust coarse list, then a gap pass on a
