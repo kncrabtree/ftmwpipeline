@@ -92,6 +92,7 @@ Per-feature implementation plans. Lifecycle and conventions:
 | Document | Status |
 |---|---|
 | [`planning/stage5-cross-fixture-validation.md`](planning/stage5-cross-fixture-validation.md) | Planning — per-dataset shape-error ε calibration framework; cross-fixture acceptance metrics; covers the lineshape-deficit physics discovery from Phase 1 validation on 2638 |
+| [`planning/stage-impl-review-followups.md`](planning/stage-impl-review-followups.md) | Follow-ups — correctness review of `preprocessing`/`fitting`/`core`; checklist of confirmed defects (thaw-stats propagation, unwired `sigma_tau_floor`, eps-unaware spur tolerance), code-vs-doc divergences (Active-FT wording, rescue τ-seeding, frozen-contributor τ_c, dead `leakage_touched_intervals`), dead exports, and comment/terminology cleanup |
 
 ## Code vs spec divergences
 
