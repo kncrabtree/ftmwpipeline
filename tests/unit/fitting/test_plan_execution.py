@@ -764,6 +764,187 @@ class TestLocalThaw:
         # thawed strong line).
         assert dep.fit.fit.n_peaks == 2
 
+    def test_accepted_thaw_installs_cofit_statistics(self):
+        """An accepted thaw must install the fresh co-fit's own statistics
+        (C1): ``peak_errors``, ``covariance``, ``chi_squared``, ``cost``,
+        ``n_params``, ``n_data``, and ``tau_error`` all have to come from the
+        joint co-fit, not survive as stale carry-over from the pre-thaw
+        independent fit. Same corrupted-primary/coherent-edge scenario as
+        ``test_thaw_triggers_when_frozen_contributor_is_wrong``, but this test
+        asserts on the *installed statistics* rather than just the peak/edge
+        bookkeeping.
+        """
+        rng = np.random.default_rng(SEED + 30)
+        sigma = 1.0
+        strong_freq = 36100.0
+        weak_freq = 36104.0
+        strong_amp = _amp_for_snr(800.0, sigma)
+        weak_amp = _amp_for_snr(100.0, sigma)
+        freq_array = np.arange(strong_freq - 5.0, weak_freq + 5.0, DF_MHZ)
+        spectrum = _synth_spectrum(
+            freq_array,
+            [(strong_freq, strong_amp, 0.3), (weak_freq, weak_amp, 1.7)],
+        )
+        spectrum = spectrum + _complex_noise(freq_array.size, sigma, rng)
+        rms_noise = np.full(freq_array.size, sigma)
+
+        win_a = FitWindow(
+            window_id=0,
+            freq_range=(strong_freq - 0.6, strong_freq + 0.6),
+            free_peak_indices=[0],
+            batch=0,
+        )
+        win_b = FitWindow(
+            window_id=1,
+            freq_range=(weak_freq - 0.6, weak_freq + 0.6),
+            free_peak_indices=[1],
+            fixed_contributors=[
+                FixedContributor(0, 0, strong_freq, freeze_eligible=True)
+            ],
+            batch=1,
+        )
+        plan = WindowPlan(
+            windows=[win_a, win_b],
+            dependency_edges=[(1, 0)],
+            topological_order=[0, 1],
+        )
+
+        outcome = execute_plan(
+            plan,
+            _make_active_ft(freq_array, spectrum),
+            rms_noise,
+            [strong_freq, weak_freq],
+            sideband=SIDEBAND,
+            acquisition_us=T_US,
+            tau0_us=TAU_US,
+        )
+        assert outcome.thaw_history == []
+
+        # Corrupt the primary's fitted amplitude, exactly as in
+        # test_thaw_triggers_when_frozen_contributor_is_wrong.
+        primary = outcome.window_outcomes[0]
+        original_amp = primary.fit.peaks[0].amplitude
+        primary.fit.peaks[0].amplitude = original_amp * 1.25
+
+        dep = outcome.window_outcomes[1]
+        dep_center_mhz = 0.5 * (weak_freq - 0.3 + weak_freq + 0.3)
+        s = sideband_sign(SIDEBAND)
+        primary_center_mhz = 0.5 * (win_a.freq_range[0] + win_a.freq_range[1])
+        nearest_peak = primary.fit.peaks[0]
+        fitted_freq_mhz = primary_center_mhz + s * nearest_peak.offset_mhz
+        corrupted_frozen = FrozenPeak(
+            peak_index=0,
+            primary_window_id=0,
+            model_peak=ModelPeak(
+                amplitude=nearest_peak.amplitude,
+                offset_mhz=s * (fitted_freq_mhz - dep_center_mhz),
+                phase=nearest_peak.phase,
+            ),
+            frequency_mhz=fitted_freq_mhz,
+            freeze_eligible=True,
+        )
+        dep.fixed_peaks = [corrupted_frozen]
+        dep.background = model_spectrum(
+            dep.offset_grid_mhz,
+            [corrupted_frozen.model_peak],
+            dep.fit.fit.tau_us,
+            T_US,
+        )
+        dep.full_fitted_spectrum = dep.fit.fit.fitted_spectrum + dep.background
+        dep.full_residual = dep.complex_spectrum - dep.full_fitted_spectrum
+        low_before, high_before = residual_edge_coherence(
+            dep.full_residual, dep.rms_noise
+        )
+        dep.edge_coherence_low = low_before
+        dep.edge_coherence_high = high_before
+        assert max(low_before, high_before) > DEFAULT_RESIDUAL_EDGE_THRESHOLD
+
+        # Snapshot the PRE-thaw (stale, independent-fit) statistics on both
+        # windows before the renegotiation mutates them in place.
+        stale_dep_chi2 = dep.fit.fit.chi_squared
+        stale_dep_n_params = dep.fit.fit.n_params
+        stale_dep_errors = [
+            (e.amplitude, e.offset_mhz, e.phase) for e in dep.fit.fit.peak_errors
+        ]
+        stale_primary_chi2 = primary.fit.fit.chi_squared
+        stale_primary_errors = [
+            (e.amplitude, e.offset_mhz, e.phase) for e in primary.fit.fit.peak_errors
+        ]
+        assert len(stale_dep_errors) == 1  # only the weak line was free so far
+
+        events = attempt_thaw_round(
+            win_b,
+            dep,
+            outcomes=outcome.window_outcomes,
+            sideband=SIDEBAND,
+            acquisition_us=T_US,
+            tau0_us=TAU_US,
+        )
+        accepted = [e for e in events if e.accepted]
+        assert accepted, "expected the co-fit to clear the flagged edge"
+
+        # -- Dependent window: gained the thawed line as a free peak (K=2).
+        inner = dep.fit.fit
+        assert inner.n_peaks == 2
+        new_dep_errors = [
+            (e.amplitude, e.offset_mhz, e.phase) for e in inner.peak_errors
+        ]
+        assert len(new_dep_errors) == 2
+        assert all(np.isfinite(v) for e in new_dep_errors for v in e)
+        # The weak line's own error must come from the fresh joint fit, not
+        # the stale pre-thaw independent one.
+        assert new_dep_errors[0] != stale_dep_errors[0]
+
+        # n_params/n_data/chi_squared must reflect THIS window's own
+        # two-peak, tau-free co-fit -- not the stale one-peak fit's.
+        assert inner.n_params == 3 * 2 + 1  # 2 peaks * 3 + the shared tau
+        assert inner.n_params != stale_dep_n_params
+        assert inner.n_data == 2 * dep.offset_grid_mhz.size
+        assert inner.chi_squared != pytest.approx(stale_dep_chi2)
+        assert inner.cost == pytest.approx(0.5 * inner.chi_squared)
+        dof = inner.n_data - inner.n_params
+        assert dof > 0
+        assert inner.reduced_chi2 == pytest.approx(inner.chi_squared / dof)
+        # A believable co-fit on a correctly-modeled synthetic spectrum should
+        # land near reduced_chi2 ~ 1, not blow up the way the stale-error
+        # bug's uncorrected pre-thaw chi2 would suggest.
+        assert inner.reduced_chi2 < 10.0
+
+        assert inner.tau_error is not None
+        assert np.isfinite(inner.tau_error)
+        assert inner.covariance is not None
+        assert inner.covariance.shape == (7, 7)
+        # Per-line errors must match the covariance diagonal they were
+        # derived from: peak-major (amplitude, offset, phase) blocks in
+        # peak order, then the shared tau in the tail.
+        diag = np.sqrt(np.diag(inner.covariance))
+        assert inner.peak_errors[0].amplitude == pytest.approx(diag[0])
+        assert inner.peak_errors[0].offset_mhz == pytest.approx(diag[1])
+        assert inner.peak_errors[0].phase == pytest.approx(diag[2])
+        assert inner.peak_errors[1].amplitude == pytest.approx(diag[3])
+        assert inner.peak_errors[1].offset_mhz == pytest.approx(diag[4])
+        assert inner.peak_errors[1].phase == pytest.approx(diag[5])
+
+        # -- Primary window: same peak count (K=1) but a fresh joint refit,
+        # so its stats must move too -- not stay pinned at the pre-thaw
+        # (corrupted-amplitude) fit's values.
+        p_inner = primary.fit.fit
+        assert p_inner.n_peaks == 1
+        assert p_inner.n_params == 3 * 1 + 1
+        assert p_inner.tau_error is not None
+        assert p_inner.covariance is not None
+        assert p_inner.covariance.shape == (4, 4)
+        new_primary_errors = [
+            (e.amplitude, e.offset_mhz, e.phase) for e in p_inner.peak_errors
+        ]
+        assert new_primary_errors != stale_primary_errors
+        assert p_inner.chi_squared != pytest.approx(stale_primary_chi2)
+
+        # tau is one physically shared parameter: both windows must report
+        # the identical joint tau and tau error, not independent values.
+        assert dep.fit.fit.tau_us == pytest.approx(primary.fit.fit.tau_us)
+        assert dep.fit.fit.tau_error == pytest.approx(primary.fit.fit.tau_error)
+
     def test_no_thaw_for_a_clean_fit(self):
         """When the primary fits correctly, no thaw event is generated."""
         rng = np.random.default_rng(SEED + 11)

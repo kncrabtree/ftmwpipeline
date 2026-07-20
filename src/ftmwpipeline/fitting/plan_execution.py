@@ -107,6 +107,7 @@ from .window_fit import (
     DEFAULT_MIN_PAIR_SEPARATION_FACTOR,
     DEFAULT_MIN_PAIR_SEPARATION_RESOLUTION_FACTOR,
     ConservativeFitResult,
+    ParameterErrors,
     WindowFitResult,
     _effective_min_pair_separation,
     _seed_peak,
@@ -818,7 +819,7 @@ def evaluate_edge_free_contributors(
                     d = _design([f0 + dd for f0, dd in zip(line_freqs, deltas)])
                     g_trial, *_ = np.linalg.lstsq(d, z_core, rcond=None)
                     r = np.asarray(z_core - d @ g_trial)
-                    return cast(np.ndarray, np.concatenate([r.real, r.imag]))
+                    return np.concatenate([r.real, r.imag])
 
                 try:
                     from scipy.optimize import least_squares
@@ -4240,6 +4241,8 @@ def _perform_thaw(
         tau_us=joint.tau_us,
         acquisition_us=acquisition_us,
         residual_edge_m=residual_edge_m,
+        joint=joint,
+        own_peak_indices=list(range(n_primary_peaks)),
         cofit_was_tau_free=bool(joint.tau_was_fit),
     )
     _install_cofit_outcome(
@@ -4248,6 +4251,9 @@ def _perform_thaw(
         tau_us=joint.tau_us,
         acquisition_us=acquisition_us,
         residual_edge_m=residual_edge_m,
+        joint=joint,
+        own_peak_indices=list(range(n_primary_peaks, n_primary_peaks + n_dep_peaks))
+        + [thawed_idx],
         drop_contributor=thawed,
         cofit_was_tau_free=bool(joint.tau_was_fit),
     )
@@ -4293,6 +4299,8 @@ def _install_cofit_outcome(
     tau_us: float,
     acquisition_us: float,
     residual_edge_m: int,
+    joint: WindowFitResult,
+    own_peak_indices: Sequence[int],
     drop_contributor: Optional[FrozenPeak] = None,
     cofit_was_tau_free: bool = False,
 ) -> None:
@@ -4307,6 +4315,24 @@ def _install_cofit_outcome(
     When the co-fit ran with tau free (``cofit_was_tau_free=True``), the
     persisted tau came from a tau-free LSQ -- promote ``tau_was_fit`` so
     downstream consumers see this window's tau as data-determined.
+
+    ``joint`` is the two-window co-fit result and ``own_peak_indices`` locates
+    this window's peaks within ``joint.peaks`` / ``joint.peak_errors``, in the
+    same order as ``new_peaks``. Per-line uncertainties and their covariance
+    genuinely come from the joint fit (that is the point of co-fitting), so
+    ``peak_errors`` / ``covariance`` are sliced from it: each peak's own
+    ``(amplitude, offset, phase)`` block, plus the shared ``tau`` row/column
+    when ``joint.fit_tau``. ``chi_squared`` / ``cost`` / ``n_data`` /
+    ``n_params`` are instead *recomputed from this window's own data* against
+    the freshly rebuilt ``full_residual`` -- the joint chi-squared sums both
+    windows' data and would make ``reduced_chi2`` describe the pair rather
+    than this window, defeating the per-window chi2r routing (Stage 6
+    attention, ``fit check`` grading) that consumes it. ``n_params`` charges
+    the shared ``tau`` degree of freedom to this window too (mirroring how a
+    standalone single-window fit counts it), so the recomputed ``reduced_chi2``
+    stays on the same footing as an ordinary (non-thaw) window's. ``tau_error``
+    is installed as-is from the joint fit since ``tau`` is one physically
+    shared parameter, not a per-window quantity.
     """
     if drop_contributor is not None:
         outcome.fixed_peaks = [
@@ -4321,6 +4347,7 @@ def _install_cofit_outcome(
     new_peak_list = [ModelPeak(p.amplitude, p.offset_mhz, p.phase) for p in new_peaks]
     outcome.fit.fit.peaks = new_peak_list
     outcome.fit.fit.tau_us = tau_us
+    outcome.fit.fit.tau_error = joint.tau_error
     if cofit_was_tau_free:
         outcome.fit.fit.tau_was_fit = True
     # The thaw co-fit carries no baseline term; clear any prior baseline so
@@ -4356,6 +4383,55 @@ def _install_cofit_outcome(
     )
     outcome.edge_coherence_low = low
     outcome.edge_coherence_high = high
+
+    # Per-line errors and their covariance are sliced straight from the joint
+    # fit: peak-major (amplitude, offset, phase) blocks in this window's own
+    # peak order, then the shared tau row/column -- the exact layout
+    # ``fitting.result_conversion`` already expects (peak blocks move as a
+    # unit, tau/baseline stay in the tail).
+    own_peak_errors: list[ParameterErrors] = [
+        joint.peak_errors[i] for i in own_peak_indices
+    ]
+    outcome.fit.fit.peak_errors = own_peak_errors
+    if joint.covariance is not None:
+        rows: list[int] = []
+        for i in own_peak_indices:
+            rows.extend((3 * i, 3 * i + 1, 3 * i + 2))
+        if joint.fit_tau:
+            rows.append(3 * len(joint.peaks))
+        outcome.fit.fit.covariance = joint.covariance[np.ix_(rows, rows)]
+    else:
+        outcome.fit.fit.covariance = None
+
+    # chi-squared / dof are recomputed from this window's own (freshly
+    # rebuilt) full residual rather than sliced from the joint fit's: the
+    # joint residual was weighed against the *other* frozen contributors
+    # subtracted at ``tau0_us`` (see ``local_thaw_cofit``), while the
+    # installed background above is re-evaluated at the new ``tau_us`` --
+    # so this window's own ``full_residual`` is the authoritative one
+    # (it is also what the edge-coherence check above just used).
+    sigma = np.asarray(outcome.rms_noise, dtype=float)
+    if sigma.ndim == 0:
+        sigma = np.full(outcome.offset_grid_mhz.shape, float(sigma))
+    spur_mask = getattr(outcome, "_spur_mask", None)
+    if spur_mask is not None:
+        keep = ~spur_mask.bin_mask(outcome.offset_grid_mhz)
+        # Mirror ``fit_window``: a mask that would drop every bin leaves no
+        # data to score, so fall back to the full grid rather than emit
+        # ``n_data == 0`` (which makes ``reduced_chi2`` negative-dof garbage).
+        if not keep.any():
+            keep = np.ones(outcome.offset_grid_mhz.shape, dtype=bool)
+    else:
+        keep = np.ones(outcome.offset_grid_mhz.shape, dtype=bool)
+    sig_ri = sigma / np.sqrt(2.0)
+    weighted_resid = (outcome.full_residual / sig_ri)[keep]
+    chi_squared = float(np.sum(weighted_resid.real**2 + weighted_resid.imag**2))
+    n_data = int(2 * np.count_nonzero(keep))
+    n_params = 3 * len(new_peak_list) + (1 if joint.fit_tau else 0)
+    outcome.fit.fit.chi_squared = chi_squared
+    outcome.fit.fit.cost = 0.5 * chi_squared
+    outcome.fit.fit.n_data = n_data
+    outcome.fit.fit.n_params = n_params
 
 
 def _apply_rescue_to_outcome(

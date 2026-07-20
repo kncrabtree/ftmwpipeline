@@ -23,7 +23,7 @@ import itertools
 import math
 import os
 from pathlib import Path
-from typing import Any, Callable, List, Optional, Sequence, Tuple, Union, cast
+from typing import Any, Callable, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 from scipy.stats import f as f_distribution
@@ -867,7 +867,11 @@ def blend_pair_escape(
 
 
 _fringe_dump_counter = itertools.count()
-_fringe_window_ctx: Optional[dict[str, float]] = None
+# Debug-only scratch context (FTMW_DEBUG_FRINGE_DIR): callers stash whatever
+# they have on hand -- floats, but also the offset grid / background arrays
+# (see plan_execution.py's FTMW_DEBUG_FRINGE_DIR blocks) -- so the value type
+# is intentionally ``Any``.
+_fringe_window_ctx: Optional[dict[str, Any]] = None
 
 
 def debug_fringe_dump(site: str, **arrays: Any) -> None:
@@ -891,7 +895,11 @@ def debug_fringe_dump(site: str, **arrays: Any) -> None:
     if _fringe_window_ctx is not None:
         for k, v in _fringe_window_ctx.items():
             payload[f"ctx_{k}"] = np.asarray(v)
-    np.savez(path / f"{site}_{n:05d}.npz", **payload)
+    # mypy cannot confirm the unpacked ``payload`` keys avoid ``allow_pickle``
+    # (a ``bool``-typed keyword also accepted by ``savez``), so it checks the
+    # ``ArrayLike`` **kwds type against ``bool`` too and fails; the keys are
+    # all ``ctx_*`` / caller-supplied array names, never ``allow_pickle``.
+    np.savez(path / f"{site}_{n:05d}.npz", **payload)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -975,16 +983,14 @@ def gate_information_weights(
     if n_data == 0:
         return np.zeros(0, dtype=float)
     if kind == "kish_mag_sq":
-        return cast(np.ndarray, np.asarray(mag**2, dtype=float))
+        return np.asarray(mag**2, dtype=float)
     if kind == "kish_mag":
-        return cast(np.ndarray, np.asarray(mag, dtype=float))
+        return np.asarray(mag, dtype=float)
     if kind == "hard_radius":
         max_mag = float(mag.max())
         if max_mag <= 0.0:
             return np.zeros(n_data, dtype=float)
-        return cast(
-            np.ndarray, np.asarray(mag > cutoff_fraction * max_mag, dtype=float)
-        )
+        return np.asarray(mag > cutoff_fraction * max_mag, dtype=float)
     if kind == "perplexity_log1p_snr":
         if sigma is None:
             raise ValueError(
@@ -995,7 +1001,7 @@ def gate_information_weights(
         if sig.ndim == 0:
             sig = np.full(n_data, float(sig))
         snr = mag / np.maximum(sig, 1e-30)
-        return cast(np.ndarray, np.asarray(np.log1p(snr), dtype=float))
+        return np.asarray(np.log1p(snr), dtype=float)
     raise ValueError(f"unknown kind {kind!r}")
 
 
