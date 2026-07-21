@@ -3059,12 +3059,14 @@ def _fit_window_worker(
 
     BLAS runs single-threaded per process (the per-window solve is
     single-threaded; this avoids N-workers x M-BLAS-threads oversubscription).
-    The thread count is pinned via the environment at package import
-    (``ftmwpipeline/__init__.py`` sets ``OPENBLAS_NUM_THREADS=1`` etc. before the
-    native runtimes initialize) -- the only fork-safe mechanism. Calling
-    :func:`threadpoolctl.threadpool_limits` inside a forked worker instead aborts
-    (SIGABRT): its ``dlopen`` library scan is not fork-safe in a fork child of a
-    multithreaded parent. Works on a shallow copy of the inherited
+    The thread count is pinned once in the *parent* by
+    :func:`~ftmwpipeline._internal.stage5_impl.fit_peaks_impl`
+    (``threadpool_limits(1)`` wraps the whole call), so OpenBLAS is at one thread
+    when this pool forks and every worker inherits that on fork -- no per-worker
+    pinning needed. This worker must NOT call
+    :func:`threadpoolctl.threadpool_limits` itself: its ``dlopen`` library scan
+    is not fork-safe in a fork child of a multithreaded parent and aborts
+    (SIGABRT). Works on a shallow copy of the inherited
     ``outcomes`` so concurrent tasks reused on the same worker process never see
     each other's writes -- within a level the windows are an antichain, so the
     copy only needs the earlier-level primaries (present in the inherited dict).
@@ -3078,10 +3080,10 @@ def _fit_window_worker(
     thaw_local: list[ThawEvent] = []
     rescue_local: list[RescueEvent] = []
     cleanup_local: list[dict[str, Any]] = []
-    # BLAS is pinned to one thread per process via the import-time environment
-    # (ftmwpipeline/__init__.py). Do NOT call threadpoolctl here: its dlopen
-    # library scan is not fork-safe in a fork child of a multithreaded parent
-    # and aborts (SIGABRT).
+    # BLAS is at one thread here: the parent (fit_peaks_impl) pinned it via
+    # threadpool_limits(1) before this pool forked, and the child inherited that.
+    # Do NOT call threadpoolctl here: its dlopen library scan is not fork-safe in
+    # a fork child of a multithreaded parent and aborts (SIGABRT).
     _process_one_window(
         ctx["by_id"][wid],
         n_done=n_done,
@@ -3112,8 +3114,9 @@ def _fit_window_worker_dag(
     outcomes in ``task[2]`` -- exactly the ``primary_window_id`` outcomes the
     window's fixed contributors read. The heavy shared ``active_ft`` / ``noise``
     still ride the initial fork in :data:`_WORKER_FIT_CTX`. BLAS runs
-    single-threaded per process (pinned via the import-time environment, see
-    :func:`_fit_window_worker`; a threadpoolctl call here would abort under fork).
+    single-threaded per process (inherited on fork from the parent's
+    ``threadpool_limits(1)``, see :func:`_fit_window_worker`; a threadpoolctl call
+    here would abort under fork).
     """
     ctx = _WORKER_FIT_CTX
     assert ctx is not None  # set in the parent before the pool forks
@@ -3122,8 +3125,9 @@ def _fit_window_worker_dag(
     thaw_local: list[ThawEvent] = []
     rescue_local: list[RescueEvent] = []
     cleanup_local: list[dict[str, Any]] = []
-    # BLAS pinned via the import-time environment (see __init__.py); threadpoolctl
-    # here would abort -- not fork-safe in a fork child of a multithreaded parent.
+    # BLAS at one thread: inherited on fork from the parent's threadpool_limits(1)
+    # (fit_peaks_impl). Do NOT call threadpoolctl here -- not fork-safe in a fork
+    # child of a multithreaded parent (SIGABRT).
     _process_one_window(
         ctx["by_id"][wid],
         n_done=n_done,
@@ -3149,15 +3153,15 @@ def _refit_map_worker(index: int) -> Any:
 
     BLAS runs single-threaded per process (the per-window refit solve is
     single-threaded; this avoids N-workers x M-BLAS-threads oversubscription,
-    matching :func:`_fit_window_worker`), pinned via the import-time environment
-    rather than a fork-unsafe threadpoolctl call. The ``work`` callable and item
-    list ride the fork in :data:`_WORKER_REFIT_CTX`; only the integer ``index``
-    is pickled per task.
+    matching :func:`_fit_window_worker`), inherited on fork from the parent's
+    ``threadpool_limits(1)`` rather than a fork-unsafe per-worker threadpoolctl
+    call. The ``work`` callable and item list ride the fork in
+    :data:`_WORKER_REFIT_CTX`; only the integer ``index`` is pickled per task.
     """
     ctx = _WORKER_REFIT_CTX
     assert ctx is not None  # set in the parent before the pool forks
-    # BLAS pinned via the import-time environment (see __init__.py); threadpoolctl
-    # here would abort -- not fork-safe in a fork child of a multithreaded parent.
+    # BLAS at one thread: inherited on fork from the parent's threadpool_limits(1)
+    # (fit_peaks_impl). Do NOT call threadpoolctl here -- not fork-safe under fork.
     return ctx["work"](ctx["items"][index])
 
 

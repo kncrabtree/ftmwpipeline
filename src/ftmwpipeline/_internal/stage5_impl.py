@@ -1516,16 +1516,18 @@ def fit_peaks_impl(
     BLAS threads -- so multithreaded BLAS buys nothing and, left unpinned, has a
     single process spread one solve across every core.
 
-    The primary pin is the import-time environment (``OPENBLAS_NUM_THREADS=1``
-    etc. set in :mod:`ftmwpipeline` before the native BLAS/OpenMP runtimes
-    initialize) -- the only fork-safe mechanism, and the one the forked workers
-    rely on (a threadpoolctl call inside a fork child aborts). This wrapping
-    :func:`threadpoolctl.threadpool_limits` is a fork-safe belt-and-suspenders in
-    the *main* process only: it also pins the main-process NLS that runs outside
-    the fork pool -- the in-process (width-1) walk levels and the post-fit
-    survival prune, VIF collapse, and doublet-adjudication refits -- should a
-    caller have overridden the environment default. See :func:`_fit_peaks_impl`
-    for the parameters and return value.
+    Wrapping the whole call in :func:`threadpoolctl.threadpool_limits` (in this,
+    the *parent*, process) is the single BLAS pin, and it is deliberately scoped
+    to the fit: the limit is applied here and restored on return, so a caller's
+    own BLAS work in the same interpreter keeps its normal thread count. Because
+    it is active when :func:`~ftmwpipeline.fitting.plan_execution` forks the
+    window pool, every worker **inherits** one-thread BLAS on fork -- no
+    per-worker pinning (a ``threadpoolctl`` call inside a fork child of a
+    multithreaded parent aborts, SIGABRT). It also covers the main-process NLS
+    that runs outside the pool -- the in-process (width-1) walk levels and the
+    post-fit survival prune, VIF collapse, and doublet-adjudication refits. This
+    call runs in the main process before any fork, so it is itself fork-safe. See
+    :func:`_fit_peaks_impl` for the parameters and return value.
     """
     with threadpool_limits(limits=1):
         return _fit_peaks_impl(

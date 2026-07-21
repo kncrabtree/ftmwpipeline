@@ -9,30 +9,14 @@ and advanced fitting algorithms.
 __version__ = "0.1.0b2"
 __author__ = "Kyle N. Crabtree"
 
-# --- BLAS / OpenMP thread pinning (MUST precede the numpy/scipy imports below) -
-# Stage 5 fits fan windows across a ``fork()`` process pool: parallelism here is
-# process-level, so every process runs single-threaded BLAS. The only fork-safe
-# way to pin the thread count is via the environment *at import time*, before the
-# native BLAS/OpenMP runtimes initialize. This (a) stops the parent from ever
-# spawning a multi-threaded OpenBLAS pool -- whose lingering worker threads make
-# a later ``fork()`` unsafe (locked malloc/linker mutexes -> SIGABRT in the
-# child) -- and (b) removes N-workers x M-BLAS-threads oversubscription.
-#
-# Pinning at fit time is too late (the runtime is already initialized), and
-# pinning inside a forked worker via ``threadpoolctl.threadpool_limits`` aborts:
-# its ``dlopen`` library scan is not fork-safe in a fork child of a
-# multithreaded parent. ``setdefault`` so an explicit user override still wins.
-import os as _os
-
-for _v in (
-    "OPENBLAS_NUM_THREADS",
-    "OMP_NUM_THREADS",
-    "MKL_NUM_THREADS",
-    "NUMEXPR_NUM_THREADS",
-    "VECLIB_MAXIMUM_THREADS",
-):
-    _os.environ.setdefault(_v, "1")
-del _os, _v
+# Note: BLAS/OpenMP thread pinning for the Stage 5 fork pool is deliberately NOT
+# done here (a process-wide env var would throttle a caller's own BLAS work in
+# the same interpreter). It is scoped to the fit instead: ``fit_peaks_impl``
+# wraps the whole Stage 5 call in ``threadpoolctl.threadpool_limits(1)`` in the
+# *parent* process, so OpenBLAS is at one thread when the window pool forks and
+# the children inherit that (no oversubscription, and no fork-unsafe threadpoolctl
+# call in the children); the limit is restored when the fit returns. See
+# ``_internal/stage5_impl.py`` and ``fitting/plan_execution.py``.
 
 # Functional API - can be imported as "import ftmwpipeline.api as ftmw"
 from ftmwpipeline import api
