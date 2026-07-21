@@ -209,12 +209,9 @@ def assign_windows_impl(
     )
 
     save_window_plan_impl(file_path, plan)
-    save_window_parameters_impl(file_path, plan.parameters)
     # Persist the resolved WindowPlanningSettings to
-    # ``processing_parameters/stage4_windows``. The legacy JSON-encoded
-    # ``processing_parameters/window_assignment`` block is kept by
-    # ``save_window_parameters_impl`` above as a back-compat shim; the new
-    # persisted record below is what the resolver's persisted layer reads.
+    # ``processing_parameters/stage4_windows``; this is what the resolver's
+    # persisted layer reads.
     save_window_planning_settings_to_h5(
         file_path,
         resolved,

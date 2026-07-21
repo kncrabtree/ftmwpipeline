@@ -764,12 +764,14 @@ def detect_peaks_impl(
 
     full_params = {**params, "acquisition_us": acquisition_us}
     save_peaks_impl(file_path, peaks, parameters=full_params)
+    # ``save_peak_parameters_impl`` writes the JSON-encoded
+    # ``processing_parameters/peak_detection`` block, which the report reads for
+    # its Stage 3 parameter panel (``report_impl.py``) -- a live consumer, not a
+    # back-compat shim. The resolved PeakDetectionSettings below persist to
+    # ``processing_parameters/stage3_peaks``, which is what the settings
+    # resolver's persisted layer reads. Both blocks are live, for different
+    # consumers.
     save_peak_parameters_impl(file_path, full_params)
-    # Persist the resolved PeakDetectionSettings to
-    # ``processing_parameters/stage3_peaks``. The legacy JSON-encoded
-    # ``processing_parameters/peak_detection`` block is kept by
-    # ``save_peak_parameters_impl`` above as a back-compat shim; the new
-    # persisted record below is what the resolver's persisted layer reads.
     save_peak_detection_settings_to_h5(
         file_path,
         resolved,

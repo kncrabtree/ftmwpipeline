@@ -108,8 +108,16 @@ Terminology & comments (cleanup):
   (per-band routing sound; `tau_maj` load-bearing → versioned rename). Update
   stale comments now; do the rename with the golden gate.
 - [x] **T3 (review #1).** Remove source-evolution comments.
-- [ ] **T4 (review #2).** Remove backward-compatibility code (`_internal`,
-  out of primary scope — noted for the cleanup pass).
+- [x] **T4 (review #2).** Remove backward-compatibility code (`_internal`).
+  *(Done. `_internal` had almost no dead back-compat: only the Stage 4
+  `processing_parameters/window_assignment` JSON write was truly dead (no
+  reader) and was removed. The Stage 3 `peak_detection` block its comment called
+  a "back-compat shim" is actually the report's live data source — kept, comment
+  corrected. The remaining `legacy`-tagged branches (stage5/stage6/
+  start_detection promotion/τ/acquisition fallbacks) are live older-file readers
+  and were kept. Golden byte-identical. Retiring the write-only public-API
+  `save_peak_parameters`/`save_window_parameters` writers is an api.py + spec
+  change, left as a follow-up.)*
 - [x] **T5 (review #3).** Remove progress/dev markers ("pre-D7", etc.;
   `_internal`).
 - [x] **T6 (review #9).** Remove "reference implementation"/`bcfitting`
