@@ -37,9 +37,16 @@ Correctness (silent wrong numbers / real defects):
   *(Done, commit 9c62d50; golden byte-identical.)*
 - [x] **C2 (MED-HIGH).** `sigma_tau_floor` knob + `DEFAULT_SIGMA_TAU_FLOOR_US`
   are unwired no-ops — wire through or delete (subsumes `review #6`/`#7`).
-- [ ] **C3 (MED, review #14).** Spur detection is not eps-aware and uses a fixed
+- [~] **C3 (MED, review #14).** Spur detection is not eps-aware and uses a fixed
   MHz tolerance instead of bin-width units; share machinery with the timebase
-  calibrator.
+  calibrator. *(Scoped + deferred. The eps-awareness is blocked by stage
+  ordering — `eps` is measured by the timebase stage, which runs after fitting —
+  so C3 is coupled to a timebase re-positioning: run timebase right after Stage 1
+  (its true dependency; currently under-declared as Stage 0 only) so Stage 5 can
+  read `eps`. Maintainer chose the after-Stage-1 placement and deferred
+  implementation to a clean boundary; the eps-benefit needs the multi-fixture
+  spur set to validate. Full design in
+  [[timebase-early-eps-aware-spurs]] — `planning/timebase-early-eps-aware-spurs.md`.)*
 
 Code-vs-doc divergences (reconcile per ROADMAP divergence discipline — decide
 whether code or spec is authoritative, then fix the other):
@@ -192,6 +199,20 @@ match window and go undetected, leaving a CW tone in the residual to inflate a
 window's χ². Rework in bin-width units, make it eps-aware, and share machinery
 with `timebase_calibration.py` (which already measures ε) — the maintainer note
 that spur detection was done first and more ad hoc is correct.
+
+**Scoped + deferred (2026-07-21).** eps-awareness is blocked by stage ordering:
+`timebase_calibration` (which measures ε) is registered as running only after
+Stage 5, so no ε is available to the spur sweep. Its true dependency is Stage 0 +
+Stage 1 (`timebase_impl.py:152-172` reads `start_us`/`end_us` from persisted
+Stage 1 settings; the registered dep `file_manager.py:219` under-declares this as
+Stage 0 only). The fix is to run timebase right after Stage 1 (byte-preserving
+for the ε measurement — same bounds) so Stage 5 can consume ε, then do the three
+spur sub-parts (bin-width tolerance, per-point `LatticePoint.window_mhz`,
+ε-widening). Maintainer chose the after-Stage-1 placement (not pure Stage 0 — the
+active bounds are canonically a Stage 1 product) and deferred implementation to a
+clean boundary; the ε benefit needs the 7-fixture spur set to validate (2638
+gates byte-identity only). Full design:
+`planning/timebase-early-eps-aware-spurs.md`.
 
 ### D1 — Active-FT invariant: code correct, docs stale (review #5)
 
