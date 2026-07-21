@@ -133,9 +133,16 @@ Terminology & comments (cleanup):
 
 Robustness (assess; not confirmed bugs):
 
-- [ ] **R1 (review #13).** Timebase local noise reference is fragile but
-  self-protecting — optional hardening (more probes / scatter estimator), not a
-  required fix.
+- [x] **R1 (review #13).** Timebase local noise reference is fragile but
+  self-protecting — optional hardening (more probes / scatter estimator).
+  *(Done via more probes: `DEFAULT_N_NOISE_PROBES` 8 → 32, stabilizing the
+  25th-percentile noise floor without changing its upper-outlier
+  (line-contamination) robustness. Across the 7 fixtures eps moves toward the
+  lower-variance estimate where the 8-probe floor was noisy (2638 +2.7%, 1512
+  −6.5%, others ≤0.7%); the gated spur set, line counts, and χ²ᵣ are identical on
+  all 7 (eps accuracy is second-order for spurs) and the 2638 golden is
+  byte-identical. The Rayleigh-scatter estimator (option B) is left as a possible
+  future refinement.)*
 - [x] **R2.** Misleading diagnostics that do not change any number but can
   mislead a maintainer (mislabeled `aicc_delta`, wrong phase-penalty/`max_nfev`
   docstrings, Rayleigh false-alarm comment).

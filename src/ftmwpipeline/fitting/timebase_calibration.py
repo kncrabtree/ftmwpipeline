@@ -76,7 +76,10 @@ DEFAULT_NYQUIST_FRACTION = 0.98  # highest lattice index sits below this * Nyqui
 DEFAULT_MAX_REJECT_ITERS = 10  # iterative consistency-rejection cap
 DEFAULT_REJECT_SIGMA = 4.0  # |df - eps*f| > this * sigma_tot => reject
 DEFAULT_EDGE_PIN_STEPS = 1.5  # maxima within this many steps of an edge are pins
-DEFAULT_N_NOISE_PROBES = 8  # off-lattice scans for the noise reference
+DEFAULT_N_NOISE_PROBES = 32  # off-lattice scans for the noise reference (R1: was
+# 8 -- too few for a stable 25th-percentile floor, which could under-estimate the
+# noise and inflate SNRs; 32 stabilizes the percentile while keeping its
+# upper-outlier (line-contamination) robustness)
 
 
 @dataclass(frozen=True)
