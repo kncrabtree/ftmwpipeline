@@ -96,7 +96,9 @@ class ClockLattice:
     Built by :func:`build_clock_lattice`. ``nomination_points`` enumerates
     the in-band lattice frequencies (the Stage 5 nomination anchor that
     replaces the integer-MHz sweep); ``match`` is the cheap modular
-    membership test used to annotate an arbitrary frequency.
+    membership test used to annotate an arbitrary frequency;
+    ``baseband_mhz`` exposes a molecular-frame tone's baseband frequency
+    (used to size the eps-aware spur match window).
     """
 
     g_mhz: int
@@ -114,6 +116,16 @@ class ClockLattice:
         # f_bb = s * (f_mol - probe) per the sideband convention; the
         # digitizer sees |f_bb|.
         return abs(self.sideband_sign * (f_mol - self.probe_freq_mhz))
+
+    def baseband_mhz(self, f_mol_mhz: float) -> float:
+        """Baseband frequency (>= 0) of a molecular-frame tone.
+
+        Public wrapper over :meth:`_f_bb`: the displacement a clock scale
+        error ``eps`` imparts to a tone is ``eps * f_bb``, so the eps-aware
+        spur match window (Stage 5) needs each lattice point's baseband
+        frequency.
+        """
+        return self._f_bb(float(f_mol_mhz))
 
     def _f_mol_from_bb(self, f_bb: float) -> float:
         """Molecular frequency of a baseband tone (inverse of ``_f_bb``)."""

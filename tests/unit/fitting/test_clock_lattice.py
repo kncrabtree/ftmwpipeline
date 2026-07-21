@@ -319,3 +319,25 @@ class TestAnnotateLatticeMatches:
         global_peak = sf.fitted_peaks[0]
         assert wf_peak.clock_lattice == global_peak.clock_lattice
         assert wf_peak.clock_lattice is not None
+
+
+def test_baseband_mhz_matches_f_bb_and_round_trips():
+    """``baseband_mhz`` exposes the private ``_f_bb`` and round-trips.
+
+    For every nomination point the public baseband frequency must equal the
+    sideband-signed offset from the probe (>= 0), match the private ``_f_bb``,
+    and -- for a baseband-frame identity -- land on a multiple of the lattice
+    GCD. The probe frequency itself maps to baseband 0.
+    """
+    lat = _lattice()
+    assert lat is not None
+    assert lat.baseband_mhz(PROBE) == 0.0
+    for p in lat.nomination_points():
+        bb = lat.baseband_mhz(p.freq_mhz)
+        assert bb >= 0.0
+        assert bb == abs(lat.sideband_sign * (p.freq_mhz - PROBE))
+        assert bb == lat._f_bb(p.freq_mhz)
+        if "(bb)" in p.identity:
+            # A baseband-frame point sits on a multiple of the GCD.
+            r = bb % lat.g_mhz
+            assert min(r, lat.g_mhz - r) < 1e-6

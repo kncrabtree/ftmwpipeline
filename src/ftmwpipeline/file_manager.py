@@ -232,7 +232,11 @@ class PipelineStageTracker:
         # through the existing persisted-settings/Stage 0 path. Stage 5 also
         # reads the Stage 2b calibration when present (the bidirectional
         # tau-anchoring penalty and rescue τ); same recommended-but-not-
-        # required policy as Stage 3.
+        # required policy as Stage 3. Stage 5 additionally reads the persisted
+        # timebase_calibration eps when a clock declaration is present (the
+        # eps-aware spur match window; recommended, not required -- it degrades
+        # to the bin-width match window when the calibration is absent), so
+        # timebase_calibration is deliberately NOT in this hard list.
         "stage5_fitting": ["stage0_fid_data", "stage4_windows"],
         # Stage 6 (user curation / review) operates on the Stage 5 fitted
         # line list.  The implementation is not yet present; registering the

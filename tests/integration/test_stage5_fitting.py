@@ -98,6 +98,52 @@ def test_cross_interface_consistency(baseline_2638_stage4_small, temp_ftmw_dir):
     _assert_fits_equivalent(fit_pipe, fit_cli)
 
 
+def test_eps_aware_spur_cross_interface_consistency(
+    baseline_2638_stage4_small, temp_ftmw_dir
+):
+    """CLI == Pipeline == functional API for a fit that reads the eps window.
+
+    2638 carries a clock declaration (its recommended clocks resolve into the
+    Stage 5 lattice path), so with a persisted timebase calibration present
+    all three interfaces read the same eps and widen the spur match window
+    identically. This gates the C3 Part 2 eps read: whatever eps-aware masking
+    it produces, the three thin wrappers over the same ``_internal`` path must
+    land on a bit-identical Stage 5 fit.
+    """
+    from ftmwpipeline.core.stage_fit_settings import ClockSource
+
+    clocks = [
+        ClockSource(freq_mhz=5760.0, locked=True, label="upconv"),
+        ClockSource(freq_mhz=5120.0, locked=True, label="downconv"),
+        ClockSource(freq_mhz=16000.0, locked=True, label="awg"),
+    ]
+
+    pfile = temp_ftmw_dir / "p_eps.ftmw"
+    ffile = temp_ftmw_dir / "f_eps.ftmw"
+    cfile = temp_ftmw_dir / "c_eps.ftmw"
+    for fp in (pfile, ffile, cfile):
+        shutil.copy(baseline_2638_stage4_small, fp)
+        # Persist the same eps on all three copies so the Stage 5 fit reads an
+        # identical eps-aware match window on every interface.
+        ftmw.calibrate_timebase(str(fp), clocks=clocks)
+        tb = ftmw.load_timebase_calibration(str(fp))
+        assert math.isfinite(tb.epsilon), "timebase eps must be persisted + finite"
+
+    fit_pipe = Pipeline(pfile).fit_peaks()
+    fit_func = ftmw.fit_peaks(ffile)
+    res = subprocess.run(
+        ["ftmwpipeline", "fit", "run", str(cfile)],
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    assert res.returncode == 0, f"CLI failed: {res.stdout}\n{res.stderr}"
+    fit_cli = ftmw.load_fit(cfile)
+
+    _assert_fits_equivalent(fit_pipe, fit_func)
+    _assert_fits_equivalent(fit_pipe, fit_cli)
+
+
 def test_validate_stage5_shape_error_cross_interface(
     baseline_2638_stage4_small, temp_ftmw_dir, tmp_path
 ):

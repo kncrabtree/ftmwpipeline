@@ -1476,3 +1476,186 @@ def test_off_comb_freq_unaffected_by_exclusion():
         f"Off-comb CW tone ratio {ratio:.3f} unexpectedly low (exclusion should "
         "not suppress this frequency)"
     )
+
+
+# ---------------------------------------------------------------------------
+# C3 Part 2: bin-width-correct + eps-aware match window
+# ---------------------------------------------------------------------------
+def test_bin_width_match_tolerance_admits_short_record_tone():
+    """2a: the bin-width floor admits a tone the fixed 0.04 MHz window misses.
+
+    On a short record the active-FT bin spacing is large, so the fixed
+    ``DEFAULT_INTEGER_TOL_MHZ = 0.04`` (~half a bin only at ``T_active ~ 13
+    us``) is far tighter than half a bin. A narrow integer-MHz tone whose
+    nearest grid bin lands 0.08 MHz from the integer (> 0.04 but < 0.5*Delta_f
+    = 0.1) must now be matched via the bin-width term, and must NOT be matched
+    when the bin-width term is removed (``bin_fraction=0`` -> the old fixed
+    0.04 floor).
+    """
+    spacing = 0.2  # short record: 0.5*spacing = 0.10 MHz > the 0.04 floor
+    # Bins offset so the nearest bin to integer 30000 sits 0.08 MHz away.
+    freqs = np.arange(29995.08, 30005.0, spacing)
+    j = int(np.argmin(np.abs(freqs - 30000.08)))
+    assert abs(freqs[j] - 30000.08) < 1e-9  # a bin sits exactly at 30000.08
+    # Nearest bin to the integer target is that 0.08-MHz-offset bin.
+    k = int(np.argmin(np.abs(freqs - 30000.0)))
+    assert abs(freqs[k] - 30000.0) == pytest.approx(0.08, abs=1e-9)
+    spec = np.zeros(freqs.size, dtype=np.complex128)
+    spec[j] = 100.0  # narrow single-bin spike, SNR 100
+    sig_c = np.full(freqs.size, 1.0)
+    band = (29996.0, 30004.0)
+
+    # Default bin_fraction=0.5 -> tol = max(0.04, 0.10) = 0.10 >= 0.08 -> match.
+    detected = detect_active_ft_spurs(freqs, spec, sig_c, band=band, snr_threshold=5.0)
+    assert any(
+        abs(s.center_mhz - 30000.08) < 1e-6 for s in detected
+    ), "the bin-width floor should admit the 0.08-MHz-offset short-record tone"
+    # bin_fraction=0 -> tol = max(0.04, 0) = 0.04 < 0.08 -> the fixed floor misses it.
+    missed = detect_active_ft_spurs(
+        freqs, spec, sig_c, band=band, snr_threshold=5.0, bin_fraction=0.0
+    )
+    assert not any(
+        abs(s.center_mhz - 30000.08) < 1e-6 for s in missed
+    ), "with only the fixed 0.04 floor the offset tone must NOT be matched"
+
+
+def _dense_grid_with_tones(targets_tones, *, spacing=SPACING, hole=0.075, peak=100.0):
+    """Dense grid with a local hole around each target and a tone bin inside it.
+
+    ``targets_tones`` is a list of ``(target_mhz, tone_mhz)``. Bins within
+    ``hole`` of each target are removed and a single bin is inserted at each
+    ``tone_mhz``, so that ``tone_mhz`` (which must be < ``hole`` from its
+    target) becomes the strict nearest bin to the target while the grid's
+    *median* spacing stays dense (small bin-width floor).
+    """
+    lo = min(min(t, o) for t, o in targets_tones) - 10.0
+    hi = max(max(t, o) for t, o in targets_tones) + 10.0
+    freqs = np.arange(lo, hi, spacing)
+    for target, _ in targets_tones:
+        freqs = freqs[np.abs(freqs - target) >= hole]
+    freqs = np.sort(np.concatenate([freqs, [o for _, o in targets_tones]]))
+    spec = np.zeros(freqs.size, dtype=np.complex128)
+    for _, tone in targets_tones:
+        spec[int(np.argmin(np.abs(freqs - tone)))] = peak
+    sig_c = np.full(freqs.size, 1.0)
+    return freqs, spec, sig_c
+
+
+def test_per_point_window_governs_lattice_match():
+    """2b: each LatticePoint.window_mhz governs its own nearest-bin match.
+
+    Two lattice points with different windows; a tone sits 0.12 MHz from each
+    point's frequency (as the strict nearest bin, via a local grid hole). The
+    dense median keeps the bin-width floor small (~0.04), so the per-point
+    window dominates: the wide-window (0.20) point matches its tone, the
+    narrow-window (0.05) point does not.
+    """
+    from ftmwpipeline.fitting.clock_lattice import LatticePoint
+
+    target_wide, target_narrow = 30000.0, 31000.0
+    tone_wide, tone_narrow = 30000.12, 31000.12
+    # hole must exceed the 0.12 tone offset so no empty survivor bin sits
+    # closer to the target than the tone (argmin picks the strict nearest).
+    freqs, spec, sig_c = _dense_grid_with_tones(
+        [(target_wide, tone_wide), (target_narrow, tone_narrow)], hole=0.13
+    )
+    wide = LatticePoint(
+        freq_mhz=target_wide, identity="wide", drift=False, window_mhz=0.20
+    )
+    narrow = LatticePoint(
+        freq_mhz=target_narrow, identity="narrow", drift=False, window_mhz=0.05
+    )
+    detected = detect_active_ft_spurs(
+        freqs,
+        spec,
+        sig_c,
+        band=(29985.0, 31015.0),
+        lattice_points=[wide, narrow],
+        snr_threshold=5.0,
+    )
+    centers = [s.center_mhz for s in detected]
+    assert any(
+        abs(c - tone_wide) < 1e-6 for c in centers
+    ), "the wide-window point should match its 0.12-MHz-displaced tone"
+    assert not any(
+        abs(c - tone_narrow) < 1e-6 for c in centers
+    ), "the narrow-window point must NOT match a tone outside its 0.05 window"
+    # Sanity: a big bin_fraction lifts the floor above 0.12 and the narrow
+    # point then matches too -- confirming the window (not the floor) is what
+    # rejected it above.
+    detected_floor = detect_active_ft_spurs(
+        freqs,
+        spec,
+        sig_c,
+        band=(29985.0, 31015.0),
+        lattice_points=[wide, narrow],
+        snr_threshold=5.0,
+        bin_fraction=2.0,
+    )
+    assert any(
+        abs(s.center_mhz - tone_narrow) < 1e-6 for s in detected_floor
+    ), "a large bin-width floor should override the narrow per-point window"
+
+
+def test_eps_relocation_gates_spur_displaced_to_a_different_bin():
+    """2c: eps relocation catches a spur displaced into a *different* bin.
+
+    On a real (ungapped) active-FT the nearest-bin detector inspects the single
+    bin nearest the *predicted* lattice frequency. A clock scale error ``eps``
+    moves the measured tone to ``f_true*(1+eps)``; when that displacement
+    exceeds half a bin the tone lands in a different bin, so the predicted bin
+    the detector inspects is empty and a wider tolerance alone never reaches the
+    tone. The eps-aware path shifts the search anchor by ``s*eps*f_bb`` onto the
+    measured position -- so it is the *relocation*, not a window widening, that
+    rescues the spur. (A plain dense grid, no carved hole: this is the regime
+    where eps-awareness actually matters.)
+    """
+    from ftmwpipeline.core.data_structures import Sideband
+    from ftmwpipeline.core.stage_fit_settings import ClockSource
+    from ftmwpipeline.fitting.clock_lattice import build_clock_lattice
+
+    probe = 40960.0  # lower sideband; locked g=640 -> bb point k=20 at 28160
+    point_mol = 28160.0  # = probe - 20*640; f_bb = 12800
+    spacing = 0.079  # realistic active-FT spacing (~1/12.7 us)
+    eps = 5e-6
+    f_bb = probe - point_mol
+    disp = eps * f_bb  # 0.064 MHz ~ 0.8 bin (> half a bin)
+    # Lower sideband: a positive eps raises f_bb, lowering f_mol -> tone below.
+    tone = point_mol - disp
+    band = (28150.0, 28170.0)
+    freqs = np.arange(band[0], band[1], spacing)
+    spec = np.zeros(freqs.size, dtype=np.complex128)
+    k_tone = int(np.argmin(np.abs(freqs - tone)))
+    spec[k_tone] = 100.0
+    sig_c = np.ones(freqs.size)
+    tone_bin = float(freqs[k_tone])
+
+    # Preconditions: the displacement crosses a bin boundary and the predicted
+    # bin the un-shifted detector would inspect is empty (the tone moved away).
+    assert abs(disp) > 0.5 * spacing
+    k_pred = int(np.argmin(np.abs(freqs - point_mol)))
+    assert k_pred != k_tone and spec[k_pred] == 0.0
+
+    lat = build_clock_lattice(
+        (ClockSource(freq_mhz=640.0, locked=True),),
+        probe_freq_mhz=probe,
+        sideband=Sideband.LOWER,
+        band=band,
+        tol_mhz=0.04,
+        drift_window_mhz=0.3,
+    )
+    assert lat is not None
+    assert any(abs(p.freq_mhz - point_mol) < 1e-6 for p in lat.nomination_points())
+    assert lat.baseband_mhz(point_mol) == pytest.approx(12800.0, abs=1e-6)
+
+    gated_eps = build_spur_set(
+        freqs, spec, sig_c, band=band, lattice=lat, timebase_epsilon=eps
+    )
+    assert any(
+        abs(s.center_mhz - tone_bin) < 1e-9 for s in gated_eps.spurs
+    ), "eps relocation should gate the spur displaced into a different bin"
+    # No eps -> the detector inspects the empty predicted bin and misses it.
+    gated_noeps = build_spur_set(freqs, spec, sig_c, band=band, lattice=lat)
+    assert not any(
+        abs(s.center_mhz - tone_bin) < 1e-9 for s in gated_noeps.spurs
+    ), "without eps the displaced tone is in a bin the detector never inspects"

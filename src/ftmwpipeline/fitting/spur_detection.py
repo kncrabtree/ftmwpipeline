@@ -55,7 +55,7 @@ prototype", "Flatness-exposure measurement".
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable, List, Optional, Sequence, Tuple, cast
 
 import numpy as np
@@ -70,6 +70,8 @@ __all__ = [
     "SpurMaskSpec",
     "SpurSet",
     "DEFAULT_INTEGER_TOL_MHZ",
+    "DEFAULT_MATCH_BIN_FRACTION",
+    "DEFAULT_EPS_WIDEN_N_SIGMA",
     "DEFAULT_NARROWNESS_RATIO",
     "DEFAULT_SNR_THRESHOLD",
     "DEFAULT_MASK_HALF_WIDTH_BINS",
@@ -95,6 +97,18 @@ __all__ = [
 # Detection thresholds (validated on the 2638 fixture; instrument-tunable
 # via the Stage 5 ``spur`` settings sub-block).
 DEFAULT_INTEGER_TOL_MHZ = 0.04  # ~half a bin (active-FT spacing ~79 kHz)
+# Nearest-bin match window as a fraction of the active-FT bin spacing
+# ``Delta_f = 1/T_active``. 0.5 == half a bin: correct at any active length,
+# whereas the fixed ``DEFAULT_INTEGER_TOL_MHZ`` (0.04) is only ~half a bin at
+# the reference ``T_active ~ 13 us``. The match tolerance is the larger of the
+# two (0.04 is an absolute floor), so long/reference records are byte-neutral
+# and short records get a correctly-sized window.
+DEFAULT_MATCH_BIN_FRACTION = 0.5
+# Clock scale-error (eps) match-window widening: a scale error displaces a
+# measured tone by ``eps * f_bb`` (baseband frequency), so the eps-aware match
+# window is widened by ``(|eps| + N * |sigma_eps|) * f_bb``. N is the sigma
+# multiplier for the eps uncertainty term.
+DEFAULT_EPS_WIDEN_N_SIGMA = 3.0
 DEFAULT_NARROWNESS_RATIO = 0.30  # max(neighbor)/peak below this => narrow
 DEFAULT_SNR_THRESHOLD = 5.0  # peak-bin magnitude / local sigma_c floor
 DEFAULT_MASK_HALF_WIDTH_BINS = 2  # residual-mask half-width in active-FT bins
@@ -431,6 +445,7 @@ def detect_active_ft_spurs(
     *,
     band: Tuple[float, float],
     integer_tol_mhz: float = DEFAULT_INTEGER_TOL_MHZ,
+    bin_fraction: float = DEFAULT_MATCH_BIN_FRACTION,
     narrowness_ratio: float = DEFAULT_NARROWNESS_RATIO,
     snr_threshold: float = DEFAULT_SNR_THRESHOLD,
     lattice_points: Optional[Sequence[LatticePoint]] = None,
@@ -447,35 +462,73 @@ def detect_active_ft_spurs(
     band
         ``(lo, hi)`` molecular-frequency analysis range (MHz).
     integer_tol_mhz, narrowness_ratio, snr_threshold
-        Gate thresholds (see module-level defaults).
+        Gate thresholds (see module-level defaults). ``integer_tol_mhz`` is
+        an absolute *floor* on the nearest-bin match window (see
+        ``bin_fraction``), not the window itself.
+    bin_fraction
+        Nearest-bin match window as a fraction of the active-FT bin spacing
+        ``Delta_f = median(|diff(freqs)|)``. In integer mode the match
+        tolerance is ``max(integer_tol_mhz, bin_fraction * Delta_f)`` -- the
+        bin-width term makes the window correct at any active length
+        (``DEFAULT_INTEGER_TOL_MHZ`` alone is ~half a bin only at the
+        reference ``T_active ~ 13 us``), while the floor keeps long/reference
+        records byte-neutral. When ``freqs`` has fewer than two samples the
+        spacing is unknown and the tolerance falls back to ``integer_tol_mhz``.
     lattice_points
         When ``None`` (the default) the frequency anchor is the legacy
-        integer-MHz sweep. When a clock declaration is present, pass its
+        integer-MHz sweep and every entry uses the bin-width-derived default
+        tolerance above. When a clock declaration is present, pass its
         **non-drift** :class:`~ftmwpipeline.fitting.clock_lattice.LatticePoint`
         nominations and the sweep runs over those frequencies instead
         (same nearest-bin lookup, narrow + pair tests); each produced
-        :class:`Spur` is stamped with ``lattice=point.identity``. The
-        ``integer_mhz`` field keeps ``int(round(center))`` semantics.
+        :class:`Spur` is stamped with ``lattice=point.identity``. In lattice
+        mode each point's match window is ``max(point.window_mhz,
+        bin_fraction * Delta_f)`` -- the point's own window (which may already
+        carry the upstream eps widening) floored by the bin width, rather than
+        the scalar tolerance. The ``integer_mhz`` field keeps
+        ``int(round(center))`` semantics.
     """
     freqs = np.asarray(freqs_sorted_mhz, dtype=float)
     mag = np.abs(np.asarray(complex_spectrum_sorted))
     sig = np.asarray(sigma_c_sorted, dtype=float)
     lo, hi = band
-    # Sweep entries: (target frequency, identity-or-None). The integer sweep
-    # uses ``None`` (legacy: integer_mhz = the swept integer); the lattice
-    # sweep stamps the lattice identity (integer_mhz = round(center)).
-    sweep: List[Tuple[float, Optional[str]]]
+    bin_spacing = float(np.median(np.abs(np.diff(freqs)))) if freqs.size >= 2 else 0.0
+    # The bin-width-derived default: the fixed ``integer_tol_mhz`` is an
+    # absolute floor, plus a half-bin (bin_fraction) term so short records get
+    # a correctly-sized window (byte-neutral where 0.5*Delta_f <= 0.04).
+    default_tol = (
+        max(integer_tol_mhz, bin_fraction * bin_spacing)
+        if bin_spacing > 0
+        else integer_tol_mhz
+    )
+    # Sweep entries: (target frequency, identity-or-None, match_tol). The
+    # integer sweep uses ``None`` + ``default_tol`` (legacy: integer_mhz = the
+    # swept integer); the lattice sweep stamps the lattice identity
+    # (integer_mhz = round(center)) and each point's own bin-width-floored
+    # match window.
+    sweep: List[Tuple[float, Optional[str], float]]
     if lattice_points is None:
         sweep = [
-            (float(f_int), None)
+            (float(f_int), None, default_tol)
             for f_int in range(int(math.ceil(lo)), int(math.floor(hi)) + 1)
         ]
     else:
-        sweep = [(float(p.freq_mhz), p.identity) for p in lattice_points]
+        sweep = [
+            (
+                float(p.freq_mhz),
+                p.identity,
+                (
+                    max(p.window_mhz, bin_fraction * bin_spacing)
+                    if bin_spacing > 0
+                    else p.window_mhz
+                ),
+            )
+            for p in lattice_points
+        ]
     spurs: List[Spur] = []
-    for f_target, identity in sweep:
+    for f_target, identity, match_tol in sweep:
         k = int(np.argmin(np.abs(freqs - f_target)))
-        if abs(float(freqs[k]) - f_target) > integer_tol_mhz:
+        if abs(float(freqs[k]) - f_target) > match_tol:
             continue
         peak = float(mag[k])
         sigma = float(sig[k]) if sig[k] > 0 else float("nan")
@@ -1380,6 +1433,9 @@ def build_spur_set(
     use_stft_catalog: bool = True,
     decay_probe: Optional[Callable[[float], Tuple[float, float]]] = None,
     lattice: Optional[ClockLattice] = None,
+    timebase_epsilon: Optional[float] = None,
+    timebase_sigma_epsilon: float = 0.0,
+    eps_widen_n_sigma: float = DEFAULT_EPS_WIDEN_N_SIGMA,
     lattice_decay_ratio: float = DEFAULT_LATTICE_DECAY_RATIO,
     band_power_probe: Optional[Callable[[float], Tuple[float, float]]] = None,
     drift_band_ratio: float = DEFAULT_DRIFT_BAND_RATIO,
@@ -1423,6 +1479,21 @@ def build_spur_set(
     When ``None`` the legacy integer-MHz behavior applies and every lattice knob
     is inert.
 
+    ``timebase_epsilon`` / ``timebase_sigma_epsilon`` are the persisted
+    scope-timebase clock scale error and its uncertainty. When ``lattice`` is
+    given and ``timebase_epsilon`` is not ``None``, each lattice point's search
+    frequency is **shifted** to the measured position ``f_true*(1+eps)`` (a
+    displacement of ``s * eps * f_bb`` in the molecular frame, ``s`` the
+    sideband sign) and its match window is widened only by the eps *uncertainty*
+    term ``eps_widen_n_sigma * |sigma_eps| * f_bb``. The shift is essential, not
+    a mere widening: :func:`detect_active_ft_spurs` inspects the single bin
+    nearest the *predicted* lattice frequency, so once a scale error pushes a
+    tone past ~half a bin it lands in a *different* bin and a wider tolerance
+    alone never reaches it -- only moving the search anchor onto the measured
+    position does (verified empirically; see the C3 planning doc). When
+    ``timebase_epsilon is None`` (no eps available) the points are untouched --
+    byte-identical to the pre-eps path.
+
     ``mask_target_residual_snr`` (> 0) enables the SNR-scaled residual mask:
     a gated tone of SNR ``snr`` gets a per-spur mask half-width
     ``clamp(ceil(snr / (pi * target)), mask_half_width_bins,
@@ -1436,6 +1507,38 @@ def build_spur_set(
     """
     freqs = np.asarray(freqs_sorted_mhz, dtype=float)
     lattice_points = lattice.nomination_points() if lattice is not None else None
+    if (
+        lattice is not None
+        and lattice_points is not None
+        and timebase_epsilon is not None
+    ):
+        # Eps-aware relocation. A clock scale error displaces a measured tone
+        # to ``f_measured = f_true*(1+eps)`` in baseband, i.e. by
+        # ``s * eps * f_bb`` in the molecular frame (s = sideband sign). The
+        # nearest-bin detector (:func:`detect_active_ft_spurs`) picks the single
+        # bin nearest the *predicted* lattice frequency, so widening the match
+        # tolerance alone cannot find a tone that has moved to a different bin --
+        # the search anchor itself must move. Shift each point's search
+        # frequency onto the measured position, and widen its window only by the
+        # eps *uncertainty* term ``N * |sigma_eps| * f_bb`` (the deterministic
+        # displacement is absorbed by the shift, not the window). Applied to ALL
+        # points (locked + drift); the drift lane already searches a wide window
+        # so the shift is harmless there. When ``timebase_epsilon is None`` the
+        # points are untouched (byte-identical to the pre-eps path).
+        eps = float(timebase_epsilon)
+        sigma_term = eps_widen_n_sigma * abs(float(timebase_sigma_epsilon))
+        s_bb = lattice.sideband_sign
+        shifted: List[LatticePoint] = []
+        for point in lattice_points:
+            f_bb = lattice.baseband_mhz(point.freq_mhz)
+            shifted.append(
+                replace(
+                    point,
+                    freq_mhz=point.freq_mhz + s_bb * eps * f_bb,
+                    window_mhz=point.window_mhz + sigma_term * f_bb,
+                )
+            )
+        lattice_points = shifted
     if lattice_points is None:
         # No declaration: the legacy integer-MHz nomination anchor.
         active_spurs = detect_active_ft_spurs(

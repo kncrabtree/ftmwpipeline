@@ -37,15 +37,20 @@ Correctness (silent wrong numbers / real defects):
   *(Done, commit 9c62d50; golden byte-identical.)*
 - [x] **C2 (MED-HIGH).** `sigma_tau_floor` knob + `DEFAULT_SIGMA_TAU_FLOOR_US`
   are unwired no-ops — wire through or delete (subsumes `review #6`/`#7`).
-- [~] **C3 (MED, review #14).** Spur detection is not eps-aware and uses a fixed
+- [x] **C3 (MED, review #14).** Spur detection is not eps-aware and uses a fixed
   MHz tolerance instead of bin-width units; share machinery with the timebase
-  calibrator. *(Scoped + deferred. The eps-awareness is blocked by stage
-  ordering — `eps` is measured by the timebase stage, which runs after fitting —
-  so C3 is coupled to a timebase re-positioning: run timebase right after Stage 1
-  (its true dependency; currently under-declared as Stage 0 only) so Stage 5 can
-  read `eps`. Maintainer chose the after-Stage-1 placement and deferred
-  implementation to a clean boundary; the eps-benefit needs the multi-fixture
-  spur set to validate. Full design in
+  calibrator. *(Resolved. Part 1: timebase now runs right after Stage 1 (its true
+  Stage 0 + Stage 1 dependency, previously under-declared as Stage 0 only), so its
+  measured `eps` is available to Stage 5 — byte-neutral for the eps measurement.
+  Part 2: the nearest-bin match window is now bin-width-derived
+  (`max(integer_tol, 0.5·Δf)`), honors each `LatticePoint.window_mhz`, and is
+  eps-aware — a scale error is corrected by **shifting** each lattice point's
+  search anchor to the measured position `f·(1+eps)` (widening the tolerance
+  alone cannot help: the detector inspects the single nearest bin to the
+  prediction, so a tone displaced past ~half a bin lands in a different bin the
+  widened window never reaches). 2638 golden byte-identical; the 7-fixture set
+  shows 4 fixtures gain genuine on-lattice clock spurs with χ²ᵣ health preserved,
+  no regression. Full design + implementation notes in
   [[timebase-early-eps-aware-spurs]] — `planning/timebase-early-eps-aware-spurs.md`.)*
 
 Code-vs-doc divergences (reconcile per ROADMAP divergence discipline — decide
@@ -213,6 +218,17 @@ active bounds are canonically a Stage 1 product) and deferred implementation to 
 clean boundary; the ε benefit needs the 7-fixture spur set to validate (2638
 gates byte-identity only). Full design:
 `planning/timebase-early-eps-aware-spurs.md`.
+
+**Resolved.** Both parts landed. One design correction surfaced during
+implementation: ε-awareness is a **search-anchor shift**, not a window widening.
+`detect_active_ft_spurs` inspects the single active-FT bin nearest each lattice
+point's *predicted* frequency, so once a scale error displaces a tone past ~half
+a bin it lands in a different bin and a wider match tolerance never reaches it
+(verified empirically). The fix shifts each lattice point's search frequency to
+the measured position `f·(1+eps)` (`s·ε·f_bb` in the molecular frame) and widens
+the window only by the ε *uncertainty* term `N·σ_ε·f_bb`. 2638 golden
+byte-identical; 4 of the 7 fixtures gain genuine on-lattice clock spurs (line
+counts drop only by the masked tones, χ²ᵣ medians hold/improve).
 
 ### D1 — Active-FT invariant: code correct, docs stale (review #5)
 

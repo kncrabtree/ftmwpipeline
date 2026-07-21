@@ -84,6 +84,8 @@ from ..io.stage_fit_settings_serialization import (
     read_stage2b_recommended_shape,
     save_stage_fit_settings_to_h5,
 )
+from ..io.timebase_serialization import GROUP_PATH as TIMEBASE_GROUP_PATH
+from ..io.timebase_serialization import load_timebase_calibration_from_hdf5
 from ..preprocessing.peak_detection import DEFAULT_MIN_SNR as DEFAULT_PROMOTION_MIN_SNR
 from .active_ft_support import (
     build_active_grid_with_noise,
@@ -1375,6 +1377,13 @@ def build_stage5_fit_context(
         )
         band_power_probe = None
         lattice_kwargs: Dict[str, Any] = {}
+        # Eps-aware spur match window (recommended-but-not-required): only the
+        # clock-lattice path can use eps, so the persisted timebase calibration
+        # is read only under ``spur_cfg.clocks`` -- the no-declaration path never
+        # touches it and stays byte-identical. Absent eps -> ``None`` -> no
+        # widening in build_spur_set.
+        tb_epsilon: Optional[float] = None
+        tb_sigma_epsilon: float = 0.0
         if spur_cfg.clocks:
             drift_window_v = _required_float(
                 spur_cfg.drift_window_mhz, "spur.drift_window_mhz"
@@ -1387,6 +1396,18 @@ def build_stage5_fit_context(
                 tol_mhz=integer_tol_v,
                 drift_window_mhz=drift_window_v,
             )
+            with h5py.File(file_path, "r") as h5f:
+                if TIMEBASE_GROUP_PATH in h5f:
+                    tb = load_timebase_calibration_from_hdf5(h5f[TIMEBASE_GROUP_PATH])
+                    tb_epsilon = float(tb.epsilon)
+                    tb_sigma_epsilon = float(tb.sigma_epsilon)
+                    logger.info(
+                        "Stage 5 spur masking: eps-aware match window "
+                        "(eps=%.3e, sigma_eps=%.3e) from persisted timebase "
+                        "calibration",
+                        tb_epsilon,
+                        tb_sigma_epsilon,
+                    )
             band_power_probe = make_band_power_probe(
                 fid_samples,
                 sample_dt_us,
@@ -1442,6 +1463,8 @@ def build_stage5_fit_context(
                 spur_cfg.mask_max_half_width_bins,
                 "spur.mask_max_half_width_bins",
             ),
+            timebase_epsilon=tb_epsilon,
+            timebase_sigma_epsilon=tb_sigma_epsilon,
             **lattice_kwargs,
         )
         if spur_set:
@@ -1491,17 +1514,18 @@ def fit_peaks_impl(
     Every per-window solve in Stage 5 is single-threaded -- the cross-window
     fork pool gets its parallelism from separate worker *processes*, not from
     BLAS threads -- so multithreaded BLAS buys nothing and, left unpinned, has a
-    single process spread one solve across every core. The fork-pool walk pins
-    its workers, but the main-process work outside that walk does not: the
-    in-process (width-1) levels of the walk, and especially the post-fit
-    survival prune, VIF collapse, and doublet-adjudication refits, all run NLS
-    in this process. On a dense fixture those passes refit hundreds of windows
-    and thrash the machine. Pinning the whole call to one BLAS thread covers
-    every path -- the forked children inherit the limit -- and is the
-    runtime equivalent of an ``OPENBLAS_NUM_THREADS=1`` environment variable
-    (which cannot be set here, the backend having initialized at import).
-    :func:`threadpoolctl.threadpool_limits` reconfigures the loaded backend at
-    call time. See :func:`_fit_peaks_impl` for the parameters and return value.
+    single process spread one solve across every core.
+
+    The primary pin is the import-time environment (``OPENBLAS_NUM_THREADS=1``
+    etc. set in :mod:`ftmwpipeline` before the native BLAS/OpenMP runtimes
+    initialize) -- the only fork-safe mechanism, and the one the forked workers
+    rely on (a threadpoolctl call inside a fork child aborts). This wrapping
+    :func:`threadpoolctl.threadpool_limits` is a fork-safe belt-and-suspenders in
+    the *main* process only: it also pins the main-process NLS that runs outside
+    the fork pool -- the in-process (width-1) walk levels and the post-fit
+    survival prune, VIF collapse, and doublet-adjudication refits -- should a
+    caller have overridden the environment default. See :func:`_fit_peaks_impl`
+    for the parameters and return value.
     """
     with threadpool_limits(limits=1):
         return _fit_peaks_impl(
