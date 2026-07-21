@@ -55,8 +55,11 @@ whether code or spec is authoritative, then fix the other):
   seed is the per-band anchor, not a single global `tau_maj` (routed via
   `resolve_window_tau_anchor`, `plan_execution.py:2660-2665`). Spec corrected;
   ROADMAP D17. Doc-only, non-byte-sensitive.)*
-- [ ] **D3 (MED).** Frozen-contributor skirt is drawn at the dependent window's
+- [x] **D3 (MED).** Frozen-contributor skirt is drawn at the dependent window's
   τ, not the contributor's own `τ_c` as the spec requires.
+  *(Resolved doc-side per maintainer: code authoritative — the shared-τ skirt is
+  a deliberate, documented far-wing approximation. Spec model eq + prose amended
+  to `h_T(u−δ_c; τ)`; ROADMAP D18. Doc-only, non-byte-sensitive.)*
 - [x] **D4 (MED).** `leakage_touched_intervals` has zero callers, yet ROADMAP D8
   and the `leakage.py` module docstring present it as the live Stage 3/4 leakage
   map. Wire it or retire it + correct D8.
@@ -265,6 +268,18 @@ Doc-only change, non-byte-sensitive.
 contributor's own `τ_c`. Impact is usually small (the far wing `~1/(i2πΔf)` is
 τ-independent), but code and spec literally disagree for cross-band contributor
 pairs; reconcile per divergence discipline.
+
+**Resolution (2026-07-21): code authoritative, spec amended (maintainer call).**
+The shared-τ skirt is a deliberate, documented modeling choice (FrozenPeak +
+`subtract_frozen_background` docstrings: "`h_T` carries one `tau` per window"),
+not an oversight, and the numeric difference is negligible where frozen
+contributors actually contribute (their center is out-of-window, so only the
+τ-independent far wing enters). The correct spec citation is
+`docs/source/stage5_fitting.rst` (the stage page, model eq ~:126 and prose
+~:133-135), not the methods note; those were changed from `τ_c` to the shared `τ`
+with the far-wing justification added. ROADMAP D18. Doc-only, non-byte-sensitive.
+(The current spec no longer front-zeros; the review's `:125,134-135` line numbers
+predate the D15 rewrite.)
 
 ### D4 / DC2 — `leakage_touched_intervals` is dead but documented as live (MED)
 

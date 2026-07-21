@@ -123,16 +123,21 @@ grid :math:`u` (MHz from the window reference) is
         h_T(u - \delta_j;\, \tau)}_{\text{free peaks (fitted)}}
      \;+\;
      \underbrace{\sum_{c\,\in\,\text{fixed}} \tfrac{1}{2} A_c\, e^{i\varphi_c}\,
-        h_T(u - \delta_c;\, \tau_c)}_{\text{fixed contributors (frozen)}}
+        h_T(u - \delta_c;\, \tau)}_{\text{fixed contributors (frozen)}}
      \;+\;
      \underbrace{B(u)}_{\text{baseline}}.
 
 Each **free peak** contributes three fitted parameters (amplitude :math:`A_j`,
 offset :math:`\delta_j`, and phase :math:`\varphi_j`), and all free peaks share the
 single decay time :math:`\tau` (fitted or held, per `Shared decay time`_). Each
-**fixed contributor** :math:`c` is frozen at the parameters from its own window's fit
-(amplitude, offset, phase, and its own decay time :math:`\tau_c`) and only adds its
-leakage skirt here, never a free line. :math:`B(u)` is a low-order **complex baseline
+**fixed contributor** :math:`c` is frozen at the amplitude, offset, and phase from
+its own window's fit and only adds its leakage skirt here, never a free line. That
+skirt is drawn at the *dependent* window's shared :math:`\tau`, not the
+contributor's own decay time: :math:`h_T` carries one :math:`\tau` per window, and
+the approximation is benign because a fixed contributor's center :math:`\delta_c`
+lies outside this window — only its far wing, which falls off as
+:math:`\sim 1/(i2\pi\,\Delta f)` independent of :math:`\tau`, reaches the fitted
+band. :math:`B(u)` is a low-order **complex baseline
 polynomial**, present only when the leakage-wing trigger fires
 (`Leakage coupling between windows`_). The same form holds for the Gaussian envelope,
 with :math:`h_T` the Gaussian response and :math:`\tau_G` in place of :math:`\tau`.
