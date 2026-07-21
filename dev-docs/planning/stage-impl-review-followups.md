@@ -100,10 +100,12 @@ Terminology & comments (cleanup):
   out of primary scope — noted for the cleanup pass).
 - [x] **T5 (review #3).** Remove progress/dev markers ("pre-D7", etc.;
   `_internal`).
-- [~] **T6 (review #9).** Remove "reference implementation"/`bcfitting`
+- [x] **T6 (review #9).** Remove "reference implementation"/`bcfitting`
   provenance framing; scrutinize the ported algorithms (see the peak-detection
-  padding seam under T6 detail). *Framing removal done; the peak-detection
-  edge-padding code fix is still open (byte-sensitive).*
+  padding seam under T6 detail). *Framing removal done; edge-padding fixed to a
+  true edge-value hold (`np.pad(mode="edge")`) — golden byte-identical (no 2638
+  peak sits within `half` bins of a band edge), so it is a latent-correctness
+  improvement with no numeric change here.*
 - [x] **T7 (review #10).** Remove `dev-docs/planning/` and `scratch/` pointers in
   source comments; keep only specific-claim citations.
 - [x] **T8 (review #12).** ASCII scientific notation in comments (`1e6`, not

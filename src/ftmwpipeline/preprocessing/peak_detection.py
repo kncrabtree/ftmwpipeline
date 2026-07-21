@@ -156,12 +156,13 @@ def locate_peaks(
 
     half = window // 2
 
-    # Edge padding: replicate the first/last `half` samples so the
-    # Savitzky-Golay convolution is well defined at the boundaries. (Faithful
-    # to the reference: this is sample replication, not reflection.)
-    y_pre = y[0:half]
-    y_post = y[-half:]
-    y_pad = np.concatenate([y_pre, y, y_post])
+    # Edge padding: hold the boundary value (replicate ``y[0]`` / ``y[-1]``) so
+    # the Savitzky-Golay convolution is well defined at the boundaries without
+    # seaming a discontinuity into the 2nd derivative. Block-copying the first/
+    # last ``half`` samples instead (``y[0:half]`` / ``y[-half:]``) would jump
+    # from ``y[half-1]`` back to ``y[0]`` at the seam, biasing the concave-down
+    # test within ~``half`` bins of the band edge; a flat edge hold does not.
+    y_pad = np.pad(y, half, mode="edge")
 
     delta = x[1] - x[0]
     coeffs_d2 = spsig.savgol_coeffs(window, order, deriv=2, delta=delta)
