@@ -121,14 +121,13 @@ class TestPipelineStageTracker:
         assert error.stage_name == "stage2_noise_result"
         assert "stage1_complex_ft" in error.missing_dependencies
 
-        # Test next available stages (timebase calibration depends only on
-        # stage 0, so it is available alongside the main chain)
+        # Test next available stages: timebase calibration requires Stage 0
+        # and Stage 1, so with only Stage 0 complete just Stage 1 is available.
         assert set(tracker.get_next_available_stages()) == {
             "stage1_complex_ft",
-            "timebase_calibration",
         }
 
-        # After completing stage1
+        # After completing stage1, timebase becomes available alongside stage2.
         tracker.mark_completed("stage1_complex_ft")
         assert set(tracker.get_next_available_stages()) == {
             "stage2_noise_result",

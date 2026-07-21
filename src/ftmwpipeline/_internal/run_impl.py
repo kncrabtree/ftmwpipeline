@@ -1,7 +1,7 @@
 """End-to-end pipeline orchestration for the ``run`` command.
 
-Drives a raw source through every stage in sequence (import -> FT -> noise ->
-tau -> peaks -> windows -> fit -> timebase -> review, then optionally the
+Drives a raw source through every stage in sequence (import -> FT -> timebase
+-> noise -> tau -> peaks -> windows -> fit -> review, then optionally the
 report) by calling the existing :class:`~ftmwpipeline.pipeline.Pipeline` stage
 methods. It adds no analysis -- each stage's logic stays in its own
 ``_internal/stage*_impl``. The orchestrator owns the stage ordering, the
@@ -76,7 +76,7 @@ def run_pipeline_impl(
 ) -> Dict[str, Any]:
     """Drive *source* through every pipeline stage and return a structured result.
 
-    Runs import -> FT -> noise -> tau -> peaks -> windows -> fit -> timebase ->
+    Runs import -> FT -> timebase -> noise -> tau -> peaks -> windows -> fit ->
     review (and, with ``report=True``, the report) in order, by calling the
     existing :class:`~ftmwpipeline.pipeline.Pipeline` stage methods. *trim* (the
     active-band FT range, MHz) is required -- there is no active-band
@@ -111,9 +111,10 @@ def run_pipeline_impl(
     stages = ["import"]
     if detect_start:
         stages.append("start detection")
-    stages += ["FT", "noise", "calibrate tau", "peaks", "windows", "fit"]
+    stages.append("FT")
     if calibrate:
         stages.append("timebase")
+    stages += ["noise", "calibrate tau", "peaks", "windows", "fit"]
     stages.append("review")
     if report:
         stages.append("report")
@@ -156,6 +157,22 @@ def run_pipeline_impl(
                 pipe.compute_ft(**ftp)
             completed.append("FT")
 
+            if calibrate:
+                with reporter.stage("timebase"):
+                    try:
+                        pipe.calibrate_timebase(
+                            clocks=clocks, **(timebase_params or {})
+                        )
+                        result["timebase"] = "calibrated"
+                        completed.append("timebase")
+                    except Exception as exc:  # non-fatal: warn + skip
+                        result["timebase"] = "skipped"
+                        reporter.note(
+                            f"  warning: timebase calibration skipped — {exc} "
+                            "Frequencies are reported as precision-only "
+                            "(uncalibrated state)."
+                        )
+
             with reporter.stage("noise"):
                 _call(pipe.estimate_noise, noise_params, preset)
             completed.append("noise")
@@ -175,22 +192,6 @@ def run_pipeline_impl(
             with reporter.stage("fit"):
                 _call(pipe.fit_peaks, fit_params, preset)
             completed.append("fit")
-
-            if calibrate:
-                with reporter.stage("timebase"):
-                    try:
-                        pipe.calibrate_timebase(
-                            clocks=clocks, **(timebase_params or {})
-                        )
-                        result["timebase"] = "calibrated"
-                        completed.append("timebase")
-                    except Exception as exc:  # non-fatal: warn + skip
-                        result["timebase"] = "skipped"
-                        reporter.note(
-                            f"  warning: timebase calibration skipped — {exc} "
-                            "Frequencies are reported as precision-only "
-                            "(uncalibrated state)."
-                        )
 
             with reporter.stage("review"):
                 rp = dict(review_params or {})

@@ -110,17 +110,26 @@ def test_run_full_sequence_in_order(patch_pipeline):
     assert pipe.calls == [
         "start",
         "ft",
+        "timebase",
         "noise",
         "tau",
         "peaks",
         "windows",
         "fit",
-        "timebase",
         "review",
     ]
     assert res["completed_stages"][0] == "import"
     assert res["completed_stages"][-1] == "review"
     assert res["timebase"] == "calibrated"
+
+
+def test_timebase_runs_before_noise(patch_pipeline):
+    """Timebase self-calibration runs right after FT, before noise (C3 Part 1)."""
+    patch_pipeline(_FakePipe())
+    res = run_pipeline_impl("src", output="x.ftmw", trim=(26500, 40000), progress=False)
+    stages = res["completed_stages"]
+    assert "timebase" in stages and "noise" in stages
+    assert stages.index("timebase") < stages.index("noise")
 
 
 def test_run_requires_trim(patch_pipeline):
