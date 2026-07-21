@@ -31,9 +31,10 @@ must not change unless the item is a deliberate behavior change.
 
 Correctness (silent wrong numbers / real defects):
 
-- [ ] **C1 (HIGH, latent).** Thaw path discards fresh fit statistics —
+- [x] **C1 (HIGH, latent).** Thaw path discards fresh fit statistics —
   `_install_cofit_outcome` overwrites peaks but keeps stale `peak_errors`,
   `covariance`, `chi_squared`, `n_params`, `n_data`, `tau_error`.
+  *(Done, commit 9c62d50; golden byte-identical.)*
 - [x] **C2 (MED-HIGH).** `sigma_tau_floor` knob + `DEFAULT_SIGMA_TAU_FLOOR_US`
   are unwired no-ops — wire through or delete (subsumes `review #6`/`#7`).
 - [ ] **C3 (MED, review #14).** Spur detection is not eps-aware and uses a fixed
@@ -43,10 +44,11 @@ Correctness (silent wrong numbers / real defects):
 Code-vs-doc divergences (reconcile per ROADMAP divergence discipline — decide
 whether code or spec is authoritative, then fix the other):
 
-- [ ] **D1 (review #5).** Active-FT invariant HOLDS in code; the defect is stale
+- [x] **D1 (review #5).** Active-FT invariant HOLDS in code; the defect is stale
   docs/comments that say later stages use the zero-substituted Stage 1 FT. Fix
   every misleading string; decide whether Stage 1 should display the Active
-  FID/FT.
+  FID/FT. *(Docs scrubbed in 8d741c4; Stage 1 now displays the Active FID/FT in
+  d0d8073. Both golden byte-identical / display-only.)*
 - [ ] **D2 (MED).** Rescue τ-seeding seeds from global `tau_maj` for every
   window when a calibration exists — the opposite of what the method doc says.
 - [ ] **D3 (MED).** Frozen-contributor skirt is drawn at the dependent window's
@@ -77,9 +79,11 @@ Constant / structure hygiene:
 
 Terminology & comments (cleanup):
 
-- [ ] **T1 (review #4).** Assess the term "canonical" — 31 doc uses + user-facing
+- [x] **T1 (review #4).** Assess the term "canonical" — 31 doc uses + user-facing
   CLI/plot strings; likely a holdover. Reconcile "canonical spectrum" vs "active
-  FT", especially in user-facing strings.
+  FT", especially in user-facing strings. *(Done in 8d741c4: scrubbed the FT/
+  spectrum sense across src + docs, preferring "standard" in user-facing prose;
+  generic-English uses left alone. Golden byte-identical.)*
 - [x] **T2 (review #8).** `tau_maj` retirement — already tracked as an
   architectural backlog item in `cleanup-pass.md`. Verified correct today
   (per-band routing sound; `tau_maj` load-bearing → versioned rename). Update
