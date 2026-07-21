@@ -11,7 +11,7 @@ import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
 import numpy as np
 
-from ..core.data_structures import FID, ComplexFT, PreprocessedFID, SpectralWindow
+from ..core.data_structures import FID, ComplexFT, SpectralWindow
 from .report_style import (
     AGGIE_BLUE,
     CABERNET,
@@ -31,7 +31,8 @@ def plot_complex_ft(
     interactive: bool = True,
     figsize: Tuple[float, float] = (16, 9),
     fid: Optional[FID] = None,
-    preprocessed_fid: Optional[PreprocessedFID] = None,
+    active_fid_time_us: Optional[np.ndarray] = None,
+    active_fid_data: Optional[np.ndarray] = None,
     show_fid_panels: bool = True,
     **kwargs: Any,
 ) -> Any:
@@ -42,15 +43,24 @@ def plot_complex_ft(
 
     1. Raw FID data with the active-region bounds (if ``fid`` is provided and
        ``show_fid_panels=True``).
-    2. Preprocessed FID data (if ``preprocessed_fid`` is provided and
-       ``show_fid_panels=True``).
+    2. Active FID data -- just the active-region slice (start_us to end_us),
+       DC-removed (if ``active_fid_time_us``/``active_fid_data`` are provided
+       and ``show_fid_panels=True``).
     3. The ComplexFT magnitude spectrum and its real/imaginary components
-       (always shown).
+       (always shown). ``complex_ft`` is expected to be the zero-padded,
+       active-band DISPLAY FT (e.g. from ``compute_display_ft``), not the
+       full-record, zero-substituted Stage 1 FT -- this is a display surface
+       only and must never be treated as the fitted spectrum. If
+       ``complex_ft.metadata`` carries ``amplitude_scale`` / ``units_label``
+       (as the display FT does), the magnitude and real/imaginary panels are
+       scaled and labeled accordingly, matching the Stage 5 report/``fit
+       show`` convention.
 
     Parameters
     ----------
     complex_ft : ComplexFT
-        ComplexFT object to plot
+        ComplexFT object to plot (typically the padded active-band display
+        FT; see above).
     freq_range : tuple of float, optional
         (min_freq, max_freq) in MHz to display. If None, uses full range.
     title : str, optional
@@ -63,8 +73,12 @@ def plot_complex_ft(
         Figure size in inches (width, height). Default: (16, 9)
     fid : FID, optional
         Original FID data for the raw FID panel with active-region bounds
-    preprocessed_fid : PreprocessedFID, optional
-        Preprocessed FID data for the preprocessed FID panel
+    active_fid_time_us : np.ndarray, optional
+        Time axis (μs) of the active-region FID slice, for the Active FID
+        panel. Must be paired with ``active_fid_data``.
+    active_fid_data : np.ndarray, optional
+        DC-removed voltage data of the active-region FID slice, for the
+        Active FID panel. Must be paired with ``active_fid_time_us``.
     show_fid_panels : bool, optional
         Whether to show FID panels when FID data is provided (default: True)
     **kwargs
@@ -78,9 +92,11 @@ def plot_complex_ft(
 
     # Extract data
     freq = complex_ft.freq_array
-    magnitude = complex_ft.magnitude_spectrum
-    real_part = complex_ft.real_spectrum
-    imag_part = complex_ft.imag_spectrum
+    amp = float(complex_ft.metadata.get("amplitude_scale", 1.0))
+    units_label = str(complex_ft.metadata.get("units_label", ""))
+    magnitude = complex_ft.magnitude_spectrum * amp
+    real_part = complex_ft.real_spectrum * amp
+    imag_part = complex_ft.imag_spectrum * amp
 
     # Apply frequency range filter if specified
     if freq_range is not None:
@@ -98,20 +114,26 @@ def plot_complex_ft(
 
     # Determine which panels to show
     show_raw_fid = show_fid_panels and fid is not None
-    show_preprocessed_fid = show_fid_panels and preprocessed_fid is not None
+    show_active_fid = (
+        show_fid_panels
+        and active_fid_time_us is not None
+        and active_fid_data is not None
+    )
 
     return _plot_complex_ft_matplotlib(
         freq,
         magnitude,
         real_part,
         imag_part,
+        units_label,
         title,
         figsize,
         interactive,
         fid,
-        preprocessed_fid,
+        active_fid_time_us,
+        active_fid_data,
         show_raw_fid,
-        show_preprocessed_fid,
+        show_active_fid,
         **kwargs,
     )
 
@@ -121,26 +143,30 @@ def _plot_complex_ft_matplotlib(
     magnitude: np.ndarray,
     real_part: np.ndarray,
     imag_part: np.ndarray,
+    units_label: str,
     title: str,
     figsize: Tuple[float, float],
     interactive: bool,
     fid: Optional[FID],
-    preprocessed_fid: Optional[PreprocessedFID],
+    active_fid_time_us: Optional[np.ndarray],
+    active_fid_data: Optional[np.ndarray],
     show_raw_fid: bool,
-    show_preprocessed_fid: bool,
+    show_active_fid: bool,
     **kwargs: Any,
 ) -> Any:
     """Create the matplotlib ComplexFT figure with optional FID panels."""
 
     # Check if we need FID panels
-    need_fid_panels = show_raw_fid or show_preprocessed_fid
+    need_fid_panels = show_raw_fid or show_active_fid
+
+    amp_suffix = f" ({units_label})" if units_label else ""
 
     # Constrained layout handles the spanning magnitude/real-imag rows without
     # the spanning-axes warning that tight_layout raises here.
     fig = plt.figure(figsize=figsize, constrained_layout=True)
 
     if need_fid_panels:
-        # Row 1: 2 columns (Raw FID | Preprocessed FID)
+        # Row 1: 2 columns (Raw FID | Active FID)
         # Row 2: Magnitude spectrum (spans both columns)
         # Row 3: Real/Imaginary (spans both columns)
         gs = gridspec.GridSpec(3, 2, figure=fig)
@@ -182,25 +208,24 @@ def _plot_complex_ft_matplotlib(
             apply_bare_style(ax_raw)
             ax_raw.legend()
 
-        # Preprocessed FID panel (right column)
-        if show_preprocessed_fid:
-            assert preprocessed_fid is not None
-            ax_preproc = fig.add_subplot(gs[0, 1])
-            time_us = (
-                np.arange(len(preprocessed_fid.data)) * preprocessed_fid.spacing * 1e6
-            )
-            ax_preproc.plot(
-                time_us,
-                preprocessed_fid.data,
+        # Active FID panel (right column) -- the active-region slice only,
+        # DC-removed, not the full zero-substituted record.
+        if show_active_fid:
+            assert active_fid_time_us is not None
+            assert active_fid_data is not None
+            ax_active = fig.add_subplot(gs[0, 1])
+            ax_active.plot(
+                active_fid_time_us,
+                active_fid_data,
                 color=PINOT,
                 linewidth=1,
-                label="Preprocessed FID",
+                label="Active FID",
             )
-            ax_preproc.set_ylabel("Voltage")
-            ax_preproc.set_xlabel("Time (μs)")
-            ax_preproc.set_title("Preprocessed FID Data")
-            apply_bare_style(ax_preproc)
-            ax_preproc.legend()
+            ax_active.set_ylabel("Voltage")
+            ax_active.set_xlabel("Time (μs)")
+            ax_active.set_title("Active FID")
+            apply_bare_style(ax_active)
+            ax_active.legend()
 
         ax_mag = fig.add_subplot(gs[1, :])
         ax_complex = fig.add_subplot(gs[2, :])
@@ -210,7 +235,7 @@ def _plot_complex_ft_matplotlib(
 
     # Magnitude spectrum
     ax_mag.plot(freq, magnitude, color=CABERNET, linewidth=1, label="Magnitude")
-    ax_mag.set_ylabel("Magnitude")
+    ax_mag.set_ylabel(f"Magnitude{amp_suffix}")
     ax_mag.set_title("Magnitude Spectrum")
     apply_bare_style(ax_mag)
     ax_mag.legend()
@@ -219,7 +244,7 @@ def _plot_complex_ft_matplotlib(
     ax_complex.plot(freq, real_part, color=DOUBLE_DECKER, linewidth=1, label="Real")
     ax_complex.plot(freq, imag_part, color=GUNROCK, linewidth=1, label="Imaginary")
     ax_complex.set_xlabel("Frequency (MHz)")
-    ax_complex.set_ylabel("Amplitude")
+    ax_complex.set_ylabel(f"Amplitude{amp_suffix}")
     ax_complex.set_title("Real and Imaginary Components")
     apply_bare_style(ax_complex)
     ax_complex.legend()

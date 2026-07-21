@@ -147,9 +147,15 @@ Inspecting the transform
 ------------------------
 
 ``ft show`` renders the complete FID-to-spectrum workflow (the raw FID with the
-active-region bounds marked, the preprocessed FID, and the magnitude and
-real/imaginary spectrum panels) for a set of parameters, without storing them. It
-is the tool for trying parameters before committing them with ``ft run``:
+active-region bounds marked, the active FID -- just the active-region slice,
+DC-removed -- and the magnitude and real/imaginary spectrum panels) for a set of
+parameters, without storing them. The spectrum panels render the zero-padded,
+active-band **display** FT (the same surface :doc:`Stage 5 <stage5_fitting>`'s
+report and ``fit show`` use to interpolate the magnitude curve between native
+bins); it is a display convenience only -- Stage 2's noise estimate and the
+Stage 5 fit still measure on the unpadded, native-length active FT described
+above. This is the tool for trying parameters before committing them with
+``ft run``:
 
 .. code-block:: console
 
@@ -163,11 +169,12 @@ right, re-run ``ft run`` with it to persist it.
    :width: 90%
    :align: center
 
-   The active FT of the example experiment over the ``26500:40000`` MHz active
-   band. *Top:* the magnitude spectrum. *Bottom:* the real and imaginary components
-   on the same molecular-frequency axis. The transform is unapodized and
-   native-length, so the line shapes and per-bin amplitudes are faithful to the
-   data.
+   The zero-padded, active-band display FT of the example experiment over the
+   ``26500:40000`` MHz active band. *Top:* the magnitude spectrum. *Bottom:* the
+   real and imaginary components on the same molecular-frequency axis. Display
+   only: the extra zero-fill bins interpolate the magnitude curve between the
+   native bins and are never scored on -- Stage 2's noise estimate and the
+   Stage 5 fit both measure on the unpadded, native-length active FT instead.
 
 The persisted settings are the input to :doc:`Stage 2 <stage2_noise>`, which
 rebuilds the active FT and measures the per-bin noise on it.

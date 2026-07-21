@@ -18,11 +18,12 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import h5py
+import numpy as np
 
-from ..core.data_structures import ComplexFT
+from ..core.data_structures import FID, ComplexFT
 from ..core.settings import (
     FT_PROCESSING_PATH,
     RECOMMENDED_PATH,
@@ -217,8 +218,8 @@ def visualize_ft_impl(
         file_path=file_path, settings=settings, validate_only=False
     )
     complex_ft = ft_result["complex_ft"]
-    preprocessed_fid = ft_result["preprocessed_fid"]
     original_fid = ft_result["original_fid"]
+    resolved_settings = ft_result["resolved_settings"]
     trim_range = ft_result.get("trim_range")
 
     try:
@@ -233,13 +234,18 @@ def visualize_ft_impl(
         if trim_range is not None:
             title += f" ({trim_range[0]:.0f}-{trim_range[1]:.0f} MHz)"
 
+    display_ft, active_time_us, active_data = _build_display_and_active_fid(
+        original_fid, resolved_settings, complex_ft, show_fid_panels
+    )
+
     try:
         fig = plot_complex_ft(
-            complex_ft=complex_ft,
+            complex_ft=display_ft,
             title=title,
             interactive=interactive,
             fid=original_fid if show_fid_panels else None,
-            preprocessed_fid=preprocessed_fid if show_fid_panels else None,
+            active_fid_time_us=active_time_us,
+            active_fid_data=active_data,
             show_fid_panels=show_fid_panels,
             **plot_kwargs,
         )
@@ -247,6 +253,87 @@ def visualize_ft_impl(
         return fig
     except Exception as e:
         raise RuntimeError(f"Failed to create FT visualization: {e}")
+
+
+def _build_display_and_active_fid(
+    original_fid: FID,
+    resolved_settings: FTSettings,
+    complex_ft: ComplexFT,
+    show_fid_panels: bool,
+) -> Tuple[ComplexFT, Optional[np.ndarray], Optional[np.ndarray]]:
+    """Build the zero-padded active-band display FT plus the active-region
+    FID slice (time axis + DC-removed data) for :func:`visualize_ft_impl`.
+
+    Reuses the same padded-display-FT construction Stage 5's report / ``fit
+    show`` use (:func:`stage5_impl._padded_active_display_ft`), driven by
+    ``resolved_settings`` -- the settings actually in effect for *this*
+    visualization call (persisted, or the caller's explicit overrides) --
+    rather than only the persisted Stage 1 record, so ``ft show --start-us
+    ... --end-us ...`` still changes what is plotted. It is display-only:
+    computes no statistics and feeds nothing downstream.
+    """
+    from ..fitting.active_ft import active_region_bounds
+    from .stage5_impl import UNITS_LABEL_BY_POWER, _padded_active_display_ft
+
+    fid_samples = np.asarray(original_fid.data, dtype=float)
+    sample_dt_us = original_fid.spacing * 1e6
+    start_us = (
+        float(resolved_settings.start_us)
+        if resolved_settings.start_us is not None
+        else 0.0
+    )
+    end_us = (
+        float(resolved_settings.end_us)
+        if resolved_settings.end_us is not None
+        else float(original_fid.duration_us)
+    )
+
+    freq, spectrum = _padded_active_display_ft(
+        fid_samples,
+        sample_dt_us,
+        start_us=start_us,
+        end_us=end_us,
+        probe_freq_mhz=original_fid.probe_freq_mhz,
+        sideband=original_fid.sideband,
+    )
+
+    # Trim to the resolved (possibly trim_range-limited) complex_ft's own
+    # band, same tolerance convention as compute_display_ft_impl.
+    fmin = float(np.min(complex_ft.freq_array))
+    fmax = float(np.max(complex_ft.freq_array))
+    tol = float(freq[1] - freq[0]) / 4.0 if freq.size > 1 else 0.0
+    band = (freq >= fmin - tol) & (freq <= fmax + tol)
+    freq = np.ascontiguousarray(freq[band])
+    spectrum = np.ascontiguousarray(spectrum[band])
+
+    units_power = resolved_settings.units_power
+    if units_power is None:
+        amplitude_scale, units_label = 1.0, ""
+    else:
+        amplitude_scale = 10.0 ** int(units_power)
+        units_label = UNITS_LABEL_BY_POWER.get(int(units_power), f"·10^{units_power} V")
+
+    display_ft = ComplexFT.from_spectrum(
+        complex_spectrum=spectrum,
+        freq_array=freq,
+        metadata={
+            "amplitude_scale": amplitude_scale,
+            "units_label": units_label,
+        },
+    )
+
+    if not show_fid_panels:
+        return display_ft, None, None
+
+    start_idx, end_idx = active_region_bounds(
+        fid_samples.size, sample_dt_us, start_us, end_us
+    )
+    active_data = fid_samples[start_idx:end_idx].copy()
+    if active_data.size:
+        active_data -= active_data.mean()
+    active_time_us = original_fid.time_array_us()[start_idx:end_idx]
+
+    return display_ft, active_time_us, active_data
 
 
 def _dependents_of(stage: str, deps: Dict[str, Any]) -> set:

@@ -6,8 +6,10 @@ into the committed ``docs/source/figures`` directory:
 
 * ``stage0_start_detection.png`` -- the Σ|FT|-vs-start sweep that locates the
   chirp end and the recommended active-region start;
-* ``stage1_canonical_ft.png`` -- the standard unapodized FT over the active
-  band (magnitude plus real/imaginary parts);
+* ``stage1_canonical_ft.png`` -- the zero-padded, active-band DISPLAY FT
+  (magnitude plus real/imaginary parts; same surface as the Stage 5 report /
+  ``fit show`` magnitude panels) -- display-only, not the native FT fitting
+  and noise are scored on;
 * ``stage2_noise.png`` -- the per-bin scatter noise estimate overlaid on the
   active spectrum with the 3x/5x reference levels;
 * ``stage2b_tau_distribution.png`` -- the Stage 2b decay-time distribution panel
