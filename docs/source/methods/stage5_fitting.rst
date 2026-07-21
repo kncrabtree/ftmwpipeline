@@ -219,10 +219,15 @@ the residual of the initial fit would propagate that fit's errors (its wrong dec
 its wrong amplitudes) forward as structure the rescue then chases. The rescue
 nominates generously from residual prominence, folds the candidates into the joint
 fit, gates each through the same penalized gate the main loop uses, and drops any
-line the refit no longer supports. It seeds from the converged decay time, except
-when the initial fit pinned the decay at its bound — the signature of a broken fit
-absorbing unmodeled residual — in which case it falls back to the calibrated
-:doc:`Stage 2b <../stage2b_tau>` value.
+line the refit no longer supports. When a :doc:`Stage 2b <../stage2b_tau>`
+calibration is present — the production case — it seeds from the calibrated
+(per-band) decay time for every window, not the initial fit's converged
+:math:`\tau`: the calibration is the trusted global line shape, whereas a broken
+initial fit that absorbed unmodeled residual can converge to a pathological
+:math:`\tau` that would distort the rescue basis. Only when no calibration is
+plumbed does it seed from the converged decay time, falling back to the
+apodization :math:`\tau` when the initial fit pinned the decay at its lower bound —
+the signature of that broken fit.
 
 A **leakage-wing baseline**, a low-order complex polynomial added only on an F-test or
 edge-coherence trigger, carries the smooth pedestal that hundreds of distant lines'

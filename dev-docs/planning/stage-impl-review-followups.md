@@ -49,8 +49,12 @@ whether code or spec is authoritative, then fix the other):
   every misleading string; decide whether Stage 1 should display the Active
   FID/FT. *(Docs scrubbed in 8d741c4; Stage 1 now displays the Active FID/FT in
   d0d8073. Both golden byte-identical / display-only.)*
-- [ ] **D2 (MED).** Rescue τ-seeding seeds from global `tau_maj` for every
+- [x] **D2 (MED).** Rescue τ-seeding seeds from global `tau_maj` for every
   window when a calibration exists — the opposite of what the method doc says.
+  *(Resolved doc-side: code is authoritative + validated — in production the
+  seed is the per-band anchor, not a single global `tau_maj` (routed via
+  `resolve_window_tau_anchor`, `plan_execution.py:2660-2665`). Spec corrected;
+  ROADMAP D17. Doc-only, non-byte-sensitive.)*
 - [ ] **D3 (MED).** Frozen-contributor skirt is drawn at the dependent window's
   τ, not the contributor's own `τ_c` as the spec requires.
 - [x] **D4 (MED).** `leakage_touched_intervals` has zero callers, yet ROADMAP D8
@@ -239,6 +243,18 @@ except when pinned. Code is self-consistent; the doc (or the code) must be picke
 as authoritative. Real numeric consequence when a window's true τ diverges from
 the band `tau_maj` (wrong FWHM for the detector separation/shape). Intersects the
 `tau_maj` retirement (T2).
+
+**Resolution (2026-07-21): code authoritative, spec amended.** The seed is
+*not* the global `tau_maj` in production: Stage 5 routes the per-band anchor into
+`ck_for_window["tau_maj_us"]` per window (`plan_execution.py:2660-2665`, via
+`resolve_window_tau_anchor`), and the rescue reads that key
+(`residual_rescue.py:1084-1086`), so a window's rescue basis already uses its own
+band's τ, not a single global value. Seeding from the calibration rather than the
+converged per-window LSQ τ is a deliberate, cross-fixture-validated choice (the
+"broken-initial-fit pathology" closed by the code comment at
+`residual_rescue.py:1074-1082`). The spec (`stage5_fitting.rst` §"Residual
+rescue") was corrected to describe the calibration-anchored seeding; ROADMAP D17.
+Doc-only change, non-byte-sensitive.
 
 ### D3 — Frozen-contributor skirt drawn at the wrong τ (MED)
 
