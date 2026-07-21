@@ -9,6 +9,31 @@ and advanced fitting algorithms.
 __version__ = "0.1.0b2"
 __author__ = "Kyle N. Crabtree"
 
+# --- BLAS / OpenMP thread pinning (MUST precede the numpy/scipy imports below) -
+# Stage 5 fits fan windows across a ``fork()`` process pool: parallelism here is
+# process-level, so every process runs single-threaded BLAS. The only fork-safe
+# way to pin the thread count is via the environment *at import time*, before the
+# native BLAS/OpenMP runtimes initialize. This (a) stops the parent from ever
+# spawning a multi-threaded OpenBLAS pool -- whose lingering worker threads make
+# a later ``fork()`` unsafe (locked malloc/linker mutexes -> SIGABRT in the
+# child) -- and (b) removes N-workers x M-BLAS-threads oversubscription.
+#
+# Pinning at fit time is too late (the runtime is already initialized), and
+# pinning inside a forked worker via ``threadpoolctl.threadpool_limits`` aborts:
+# its ``dlopen`` library scan is not fork-safe in a fork child of a
+# multithreaded parent. ``setdefault`` so an explicit user override still wins.
+import os as _os
+
+for _v in (
+    "OPENBLAS_NUM_THREADS",
+    "OMP_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS",
+):
+    _os.environ.setdefault(_v, "1")
+del _os, _v
+
 # Functional API - can be imported as "import ftmwpipeline.api as ftmw"
 from ftmwpipeline import api
 

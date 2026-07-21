@@ -63,7 +63,6 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Callable, List, Optional, Tuple, Union, cast
 
 import numpy as np
-from threadpoolctl import threadpool_limits
 
 from ftmwpipeline.core.data_structures import (
     FitWindow,
@@ -3058,13 +3057,14 @@ def _fit_window_worker(
 ]:
     """Process-pool entry point: fit one window from the fork-inherited context.
 
-    Pins BLAS to a single thread for the solve (the per-window solve is
+    BLAS runs single-threaded per process (the per-window solve is
     single-threaded; this avoids N-workers x M-BLAS-threads oversubscription).
-    The limit is applied with :func:`threadpoolctl.threadpool_limits`, which
-    re-configures the *already-loaded* BLAS/OpenMP runtime (OpenBLAS, MKL, BLIS,
-    Accelerate) at call time -- a ``*_NUM_THREADS`` environment variable cannot,
-    because the backend reads it only at initialization, which already happened
-    in the parent before the fork. Works on a shallow copy of the inherited
+    The thread count is pinned via the environment at package import
+    (``ftmwpipeline/__init__.py`` sets ``OPENBLAS_NUM_THREADS=1`` etc. before the
+    native runtimes initialize) -- the only fork-safe mechanism. Calling
+    :func:`threadpoolctl.threadpool_limits` inside a forked worker instead aborts
+    (SIGABRT): its ``dlopen`` library scan is not fork-safe in a fork child of a
+    multithreaded parent. Works on a shallow copy of the inherited
     ``outcomes`` so concurrent tasks reused on the same worker process never see
     each other's writes -- within a level the windows are an antichain, so the
     copy only needs the earlier-level primaries (present in the inherited dict).
@@ -3078,17 +3078,20 @@ def _fit_window_worker(
     thaw_local: list[ThawEvent] = []
     rescue_local: list[RescueEvent] = []
     cleanup_local: list[dict[str, Any]] = []
-    with threadpool_limits(limits=1):
-        _process_one_window(
-            ctx["by_id"][wid],
-            n_done=n_done,
-            n_total=ctx["n_total"],
-            outcomes=local_outcomes,
-            thaw_history=thaw_local,
-            rescue_history=rescue_local,
-            cleanup_history=cleanup_local,
-            **ctx["shared"],
-        )
+    # BLAS is pinned to one thread per process via the import-time environment
+    # (ftmwpipeline/__init__.py). Do NOT call threadpoolctl here: its dlopen
+    # library scan is not fork-safe in a fork child of a multithreaded parent
+    # and aborts (SIGABRT).
+    _process_one_window(
+        ctx["by_id"][wid],
+        n_done=n_done,
+        n_total=ctx["n_total"],
+        outcomes=local_outcomes,
+        thaw_history=thaw_local,
+        rescue_history=rescue_local,
+        cleanup_history=cleanup_local,
+        **ctx["shared"],
+    )
     return wid, local_outcomes.get(wid), thaw_local, rescue_local, cleanup_local
 
 
@@ -3108,8 +3111,9 @@ def _fit_window_worker_dag(
     up front with no outcomes, so each task is **handed** its predecessors'
     outcomes in ``task[2]`` -- exactly the ``primary_window_id`` outcomes the
     window's fixed contributors read. The heavy shared ``active_ft`` / ``noise``
-    still ride the initial fork in :data:`_WORKER_FIT_CTX`. BLAS is pinned to one
-    thread (single-threaded per-window solve; avoids oversubscription).
+    still ride the initial fork in :data:`_WORKER_FIT_CTX`. BLAS runs
+    single-threaded per process (pinned via the import-time environment, see
+    :func:`_fit_window_worker`; a threadpoolctl call here would abort under fork).
     """
     ctx = _WORKER_FIT_CTX
     assert ctx is not None  # set in the parent before the pool forks
@@ -3118,17 +3122,18 @@ def _fit_window_worker_dag(
     thaw_local: list[ThawEvent] = []
     rescue_local: list[RescueEvent] = []
     cleanup_local: list[dict[str, Any]] = []
-    with threadpool_limits(limits=1):
-        _process_one_window(
-            ctx["by_id"][wid],
-            n_done=n_done,
-            n_total=ctx["n_total"],
-            outcomes=local_outcomes,
-            thaw_history=thaw_local,
-            rescue_history=rescue_local,
-            cleanup_history=cleanup_local,
-            **ctx["shared"],
-        )
+    # BLAS pinned via the import-time environment (see __init__.py); threadpoolctl
+    # here would abort -- not fork-safe in a fork child of a multithreaded parent.
+    _process_one_window(
+        ctx["by_id"][wid],
+        n_done=n_done,
+        n_total=ctx["n_total"],
+        outcomes=local_outcomes,
+        thaw_history=thaw_local,
+        rescue_history=rescue_local,
+        cleanup_history=cleanup_local,
+        **ctx["shared"],
+    )
     return wid, local_outcomes.get(wid), thaw_local, rescue_local, cleanup_local
 
 
@@ -3142,16 +3147,18 @@ _WORKER_REFIT_CTX: Optional[dict[str, Any]] = None
 def _refit_map_worker(index: int) -> Any:
     """Process-pool entry: run one item of the fork-inherited per-window work.
 
-    Pins BLAS to a single thread (the per-window refit solve is single-threaded;
-    this avoids N-workers x M-BLAS-threads oversubscription, matching
-    :func:`_fit_window_worker`). The ``work`` callable and item list ride the
-    fork in :data:`_WORKER_REFIT_CTX`; only the integer ``index`` is pickled per
-    task.
+    BLAS runs single-threaded per process (the per-window refit solve is
+    single-threaded; this avoids N-workers x M-BLAS-threads oversubscription,
+    matching :func:`_fit_window_worker`), pinned via the import-time environment
+    rather than a fork-unsafe threadpoolctl call. The ``work`` callable and item
+    list ride the fork in :data:`_WORKER_REFIT_CTX`; only the integer ``index``
+    is pickled per task.
     """
     ctx = _WORKER_REFIT_CTX
     assert ctx is not None  # set in the parent before the pool forks
-    with threadpool_limits(limits=1):
-        return ctx["work"](ctx["items"][index])
+    # BLAS pinned via the import-time environment (see __init__.py); threadpoolctl
+    # here would abort -- not fork-safe in a fork child of a multithreaded parent.
+    return ctx["work"](ctx["items"][index])
 
 
 def parallel_window_refit_map(
