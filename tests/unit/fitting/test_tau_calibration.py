@@ -2,9 +2,8 @@
 
 Validates the algorithmic kernels (sliding STFT, per-bin classification,
 SNR-weighted majority, GMM bimodality, spur clustering) on controlled
-synthetic FIDs. The research prototype in
-``dev-docs/research/stage5-tau-calibration/prototype.py`` is the
-broader synthetic acceptance gate; these tests are the fast in-tree
+synthetic FIDs. The method and its synthetic acceptance gate are documented
+in ``docs/source/stage2b_tau.rst``; these tests are the fast in-tree
 smoke checks.
 """
 

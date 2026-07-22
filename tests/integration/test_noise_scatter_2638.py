@@ -1,7 +1,7 @@
 """2638 no-regression acceptance test for the scatter noise estimator.
 
-The §9(b) acceptance check from
-``dev-docs/research/noise-snr-scaling/report.md``: on the 2638 calibration
+The acceptance check from
+``docs/source/methods/noise_snr_scaling.rst``: on the 2638 calibration
 fixture the region-aware scatter estimator reads ~1.0× the frame-difference
 truth, versus the old estimator's ~1.4× (the gap on 2638 is the √2 complex-RMS
 convention plus a negligible pedestal — 2638 sits at SNR ~700, far below where
@@ -10,8 +10,8 @@ the adaptive σ here — the precondition for Stage 3/4/5 outputs holding when t
 estimator is eventually made the default.
 
 The full Stage 3/4/5 output confirmation is a deliberate manual gate before the
-default is flipped (see the report §9 and the project lead's sign-off note); this
-test guards the noise-level precondition that makes that flip safe.
+default is flipped; this test guards the noise-level precondition that makes that
+flip safe.
 """
 
 import shutil
@@ -34,7 +34,7 @@ class TestScatterNoRegression2638:
         estimator should report a smooth, mostly-noise floor here. The
         level-agreement against the frame-difference truth (and the contrast
         with the retired level-based estimator) is documented in
-        ``dev-docs/research/noise-snr-scaling/report.md`` §9.
+        ``docs/source/methods/noise_snr_scaling.rst``.
         """
         fp = tmp_path / "scatter_2638.ftmw"
         shutil.copy(baseline_2638_stage1_raw, fp)

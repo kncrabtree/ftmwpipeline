@@ -10,10 +10,9 @@ MAD of the residual over self-masked non-line bins, recovering the true σ(f)
 floor. It emits the per-bin complex-RMS σ_x every later stage consumes.
 
 The derivation, the 1/√N validation, and the region-aware C(R) calibration are
-documented in ``dev-docs/research/noise-snr-scaling/report.md``. (That report
-also contrasts the high-pass estimator against the retired level-based
-"adaptive" estimator, whose minimal form survives only as a comparison
-reference at ``dev-docs/research/noise-snr-scaling/legacy_adaptive.py``.)
+documented in ``docs/source/methods/noise_snr_scaling.rst``. The high-pass
+estimator replaced a retired level-based "adaptive" estimator that over-estimated
+σ on high-SNR, line-dense spectra.
 """
 
 import logging
@@ -82,7 +81,7 @@ class NoiseResult:
 #
 # The full derivation, the 1/√N validation, and the region-aware C(R) calibration
 # against frame-difference truth across the multi-frame fixtures are documented in
-# ``dev-docs/research/noise-snr-scaling/report.md`` (§4.1, §9).
+# ``docs/source/methods/noise_snr_scaling.rst``.
 
 # Default knobs (instrument-family-dependent).
 SCATTER_WINDOW_MHZ = 80.0  # full width of the per-region scatter-MAD window
@@ -349,7 +348,7 @@ def estimate_noise_scatter(
 
     The Stage 2 noise estimator. Immune to the
     leakage-pedestal over-estimation on high-SNR, line-dense spectra (see the
-    module-level note and ``dev-docs/research/noise-snr-scaling/report.md``).
+    module-level note and ``docs/source/methods/noise_snr_scaling.rst``).
 
     Algorithm:
 

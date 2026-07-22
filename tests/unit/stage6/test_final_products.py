@@ -6,7 +6,7 @@ the file-level frequency-calibration provenance + final-products serialization
 round-trips, and an end-to-end review_run consolidation with cross-interface
 consistency on the small 2638 fixture.
 
-See ``dev-docs/planning/stage6-reports.md``.
+See ``docs/source/stage6_review.rst``.
 """
 
 from __future__ import annotations

@@ -73,7 +73,7 @@ TRIM = (26500.0, 40000.0)
 FIXTURES = ["2638", "1019", "1231", "1512", "360", "363", "655"]
 # The one checked-in ground-truth catalog (the resolved vinyl-cyanide species'
 # in-band union). 1512 and 655 are both vinyl cyanide and match against it.
-CATALOG = Path("dev-docs/fixtures/1512-vinyl-cyanide-truth/combined_lines.csv")
+CATALOG = Path("examples/blackchirp_data/vinyl-cyanide-reference/combined_lines.csv")
 CATALOG_FIXTURES = ("1512", "655")
 
 # Reference acquisition / line geometry (the 2638-class fixture scale).

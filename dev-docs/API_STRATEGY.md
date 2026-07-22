@@ -1,8 +1,7 @@
 # Specification: Python API
 
 Status of this document: **normative specification**. It states requirements,
-not current implementation state. Where the code diverges, see the divergence
-log in [`ROADMAP.md`](ROADMAP.md).
+not current implementation state.
 
 ## Scope
 

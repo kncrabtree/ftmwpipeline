@@ -20,10 +20,6 @@ Where the detailed truth lives — consult these rather than trusting any summar
 - **`dev-docs/SCIENCE_STRATEGY.md`** and the other **`dev-docs/*_STRATEGY.md`**
   specs — normative, timeless requirements (science, API, CLI, serialization,
   testing). The authority on *what must be true*.
-- **`dev-docs/ROADMAP.md`** — coordination doc and the code-vs-spec divergence
-  log.
-- **`dev-docs/planning/`** — per-stage plans (see `planning/README.md` for the
-  lifecycle); read the relevant one before changing a stage's behavior.
 
 ## Commands
 
@@ -78,9 +74,8 @@ the contracts are normative in `dev-docs/API_STRATEGY.md` and
 ## Divergence discipline
 
 The known code-vs-spec divergences are resolved — code and specs currently
-agree. If you find a *new* mismatch, do not silently paper over it: log it in
-`dev-docs/ROADMAP.md` and resolve it deliberately, either amending the spec or
-changing the code.
+agree. If you find a *new* mismatch, do not silently paper over it: resolve it
+deliberately, either amending the spec or changing the code.
 
 ## Extending the pipeline (new stage)
 
@@ -89,6 +84,5 @@ Follow the established pattern, in order: add the algorithm/data structure → a
 the stage name + dependencies with the stage tracker → add serialization under
 `io/` → expose it identically through `pipeline.py`, `api.py`, and a
 `cli/` subcommand → add unit tests *and* a cross-interface consistency test.
-Before starting, create the stage's planning doc in `dev-docs/planning/` and
-register it in `dev-docs/ROADMAP.md`. The normative requirements for each piece
-are in the `dev-docs/*_STRATEGY.md` specs.
+The normative requirements for each piece are in the `dev-docs/*_STRATEGY.md`
+specs.

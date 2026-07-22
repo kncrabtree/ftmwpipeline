@@ -6,7 +6,7 @@ a literal numerical FFT, its analytic Jacobian against finite differences, the
 demodulation / sideband mapping on synthetic lines of *both* sidebands (a
 wrong sign must be caught -- it is a silent 100s-of-kHz frequency bias), and
 the de-ramp round trip. Conventions and tolerances follow the Stage 5
-prototype (``dev-docs/research/stage5-fitting/``).
+method doc (``docs/source/methods/stage5_fitting.rst``).
 """
 
 import numpy as np

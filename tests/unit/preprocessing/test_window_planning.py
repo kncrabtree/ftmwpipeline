@@ -205,7 +205,7 @@ class TestMagnitudeAttachment:
     exceeds ``magnitude_attachment_threshold * sigma_c(w)``. The previous
     rule (a strong line's rolling-coherence-touched run had to reach the
     window) missed the cumulative tail of many far-line skirts -- the bias
-    mechanism diagnosed in scratch/stage5-validation/.
+    mechanism this attachment rule fixes.
     """
 
     def test_strong_far_skirt_attached_and_gate_kept(self):

@@ -1165,8 +1165,7 @@ def load_preset(name_or_path: Union[str, Path]) -> StageFitSettings:
         _warnings.warn(
             f"preset {name_or_path!r}: top-level 'fit:' wrapper is "
             "deprecated; rename it to 'stage5:' (per-stage block "
-            "convention -- see dev-docs/planning/settings-backfill.md "
-            "back-compat shim #1)",
+            "convention)",
             DeprecationWarning,
             stacklevel=2,
         )

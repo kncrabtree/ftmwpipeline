@@ -385,7 +385,7 @@ def derive_window_fit_constraints(
         mega-windows the Stage 4 window peak-count cap eliminates. The knobs
         and tests are kept for a possible future genuine-blend use case; absent
         one, the settings/orchestrator/dual-interface wiring is omitted.
-        See ``dev-docs/research/stage5-cross-fixture/report.md``.
+        See ``docs/source/methods/stage5_fitting.rst``.
     """
     shape_resolved = PeakShape.coerce(shape)
     z = np.asarray(complex_spectrum, dtype=np.complex128)

@@ -48,8 +48,7 @@ from ..core.data_structures import Peak, PeakClassification
 # cutoffs generalize where percentile-based ones would not. Only the
 # medium/strong boundary has a downstream consumer (Stage 4 marks a window HARD
 # when it holds a STRONG line); the weak/medium boundary is curation labeling.
-# Configurable per instrument. See dev-docs/research/stage3-snr-corner/report.md
-# section 8.
+# Configurable per instrument. See docs/source/stage3_peaks.rst.
 DEFAULT_WEAK_MEDIUM_SNR = 10.0
 DEFAULT_MEDIUM_STRONG_SNR = 50.0
 # Default user-facing *promotion* cutoff: which peaks (by user-grid SNR) move

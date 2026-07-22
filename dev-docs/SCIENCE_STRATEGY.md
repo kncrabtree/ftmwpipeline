@@ -8,8 +8,7 @@ invariants the pipeline must uphold, independent of how an analysis is exposed
 [`SERIALIZATION_STRATEGY.md`](SERIALIZATION_STRATEGY.md),
 [`TESTING_STRATEGY.md`](TESTING_STRATEGY.md)) reference this document for the
 *why* behind their requirements and must not restate or weaken these
-invariants. Where the code diverges, see the divergence log in
-[`ROADMAP.md`](ROADMAP.md).
+invariants.
 
 ## Scope
 

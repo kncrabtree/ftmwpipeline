@@ -17,7 +17,7 @@ bound on false positives, since the spectrum may hold other un-cataloged species
 
 Usage:
     python scripts/development/catalog_recall.py FIT.ftmw \\
-        --catalog dev-docs/fixtures/1512-vinyl-cyanide-truth/combined_lines.csv \\
+        --catalog examples/blackchirp_data/vinyl-cyanide-reference/combined_lines.csv \\
         --main-tag 53515
 
 The VyCN fixtures 1512 and 655 share that catalog. For a possible future

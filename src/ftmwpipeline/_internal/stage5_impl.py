@@ -227,8 +227,8 @@ def resolve_window_tau_anchor(
     refit -- must resolve its anchor through this one helper so they reproduce
     the tau the originating fit used. Reaching for the persisted band-wide
     ``tau_maj`` directly is the recurring bug this function exists to prevent.
-    See the ROADMAP cleanup note on retiring ``tau_maj`` (it is exactly a
-    single-band tau, so per-band majorities should be the only representation).
+    ``tau_maj`` is exactly a single-band tau, so per-band majorities should be
+    the only representation.
     """
     if band_majorities:
         band = band_majority_for_frequency(band_majorities, center_mhz)

@@ -46,8 +46,7 @@ choices cancel by construction.
 
 References
 ----------
-* ``dev-docs/ROADMAP.md`` divergence D9
-* ``dev-docs/research/stage5-fitting/report.md`` § 3 "Calibration scope"
+* ``docs/source/methods/stage5_fitting.rst`` (calibration scope)
 """
 
 from __future__ import annotations

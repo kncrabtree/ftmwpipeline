@@ -14,7 +14,7 @@ primary pass applies a strong
 window function (default Blackman-Harris) chosen purely to suppress
 truncation-leakage sidelobes so the strong-line list it produces -- which
 seeds the gap pass's leakage mask -- is not itself polluted by sidelobes; see
-``dev-docs/research/peak-detection/report.md`` for the calibration. The
+``docs/source/stage3_peaks.rst`` for the calibration. The
 primary apodization is independent of the user's Stage 1 settings and affects
 only *which positions* are found, never any reported amplitude or SNR. Every
 detected peak is then snapped
@@ -85,8 +85,7 @@ _DETECTION_ZPF = 2
 # Gap-pass detector: matched-filter (exp-apodized active-region FFT) on a
 # zero-padded grid that lands the Lorentzian FWHM in SavGol's sweet spot
 # (≈ 3 bins). Active-region zpf chosen so FWHM_bins from the Stage 1
-# apodization is ≥ ~3 — see dev-docs/research/matched-filter-detection §10
-# (revised).
+# apodization is ≥ ~3 — see docs/source/methods/matched_filter_detection.rst.
 _GAP_ACTIVE_ZPF = 2
 
 # Grid-aware Savitzky-Golay window: cover ~4 line-FWHM in frequency, with
@@ -102,7 +101,7 @@ _SG_MIN_WINDOW = 5
 # leakage mask) is clean. Blackman-Harris is the calibrated default -- on the
 # 2638 fixture it removes ~5x the sidelobe-suspect detections that the mild
 # Stage-1 exponential filter leaves behind. See
-# dev-docs/research/peak-detection/report.md sections 3 and 6.
+# docs/source/stage3_peaks.rst.
 DEFAULT_PRIMARY_WINDOW = "blackmanharris"
 
 # Continuous leakage-aware detection floor (both passes). Neither pass uses a
@@ -136,7 +135,7 @@ DEFAULT_PRIMARY_WINDOW = "blackmanharris"
 #
 # This continuous floor replaces the former hard gap-mask ``S_coh`` cutoff,
 # which over-killed real lines sitting on strong wings (recall improves). See
-# dev-docs/research/stage3-snr-corner/report.md.
+# docs/source/stage3_peaks.rst.
 PRIMARY_LEAKAGE_FLOOR_K = 1.0
 GAP_LEAKAGE_FLOOR_K = 3.0
 _LEAKAGE_M = DEFAULT_EDGE_M
@@ -278,7 +277,7 @@ def _mf_gap_spectrum(
     for a Gaussian one (the same ``exp(-(t/τ_G)²)`` envelope convention the
     production fit uses). The exact time-domain matched filter for that shape,
     built on the shared :func:`_active_windowed_spectrum`. See
-    dev-docs/research/matched-filter-detection/report.md §10 (revised) for the
+    docs/source/methods/matched_filter_detection.rst for the
     zpf calibration.
     """
     start_idx, end_idx, sample_dt_us = _active_window_indices(fid, base_pp)

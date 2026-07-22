@@ -2,8 +2,7 @@
 
 Status of this document: **normative specification**. It states requirements,
 not current implementation state. Command names below are the intended
-contract; where the code currently differs, see the divergence log in
-[`ROADMAP.md`](ROADMAP.md).
+contract.
 
 ## Scope
 

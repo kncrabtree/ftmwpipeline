@@ -49,9 +49,7 @@ explicit override  >  persisted (.ftmw)  >  preset (.yml)  >  recommended  >  ha
 
 - **explicit override** — a value passed by the caller for this invocation. A
   deliberate, per-run act: it recomputes the stage, persists the new intent, and
-  invalidates the results of any stage downstream of it, which must be re-run
-  (see
-  [`planning/processing-settings-persistence.md`](planning/processing-settings-persistence.md)).
+  invalidates the results of any stage downstream of it, which must be re-run.
 - **persisted (.ftmw)** — the value stamped into the file when the stage was
   last run. **Authoritative over any external artifact.**
 - **preset (.yml)** — an instrument preset the runner opted into for this

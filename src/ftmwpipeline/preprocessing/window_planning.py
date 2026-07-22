@@ -364,8 +364,8 @@ for its own line, so it is carried as a physical contributor rather than left to
 the polynomial. The hard default mirrored by
 ``WindowPlanningSettings.contributor.skirt_level_keep``.
 
-Calibrated on the 7-fixture A/B (dev-docs/planning/stage6-cascade-refit.md "Step B
-refit"): 150 vs 50 halves the contributor load on the dense 655 (1982 -> 971),
+Calibrated on the 7-fixture A/B cascade refit: 150 vs 50 halves the contributor
+load on the dense 655 (1982 -> 971),
 shallows the cascade (6 -> 4 tiers), cuts fit time (656s -> 493s), and *reduces*
 over-subtraction (655 peaks 1794 -> 1846) by pruning the long tail of weak-source
 edges, while the budget-critical giant skirts (e.g. 655 w1010) survive at any bar."""

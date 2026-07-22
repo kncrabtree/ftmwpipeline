@@ -48,8 +48,7 @@ fixes both error directions the frequency-domain gate alone carries:
   flag alone is not trusted in either direction (measured false positives
   on decaying lines and false negatives on real tones).
 
-See ``dev-docs/research/stage5-gaussian-audit/report.md`` §§ "Spur-detection
-prototype", "Flatness-exposure measurement".
+See ``docs/source/stage5_fitting.rst`` (spur masking).
 """
 
 from __future__ import annotations

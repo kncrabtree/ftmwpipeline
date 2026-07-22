@@ -184,6 +184,15 @@ Two refinements run on top:
   step per contributor removes it. The polish is applied only to contributors
   below a signal-to-noise cap (``polish_snr_cap``), because the bias concentrates
   at modest signal-to-noise and the same step over-corrects the strongest bins.
+  The cap sits at a modest value (default nine) rather than far out near the
+  brightest lines because the brightest on-line bins never reach the polish at
+  all: a real molecular line is not a pure single exponential, so its per-bin
+  residual exceeds the bad-fit gate and the bin is excluded before aggregation.
+  The polish therefore only ever sees intermediate-signal-to-noise contributors,
+  and the cap trims the upper tail of *that* population. A cap is used rather
+  than simply loosening the bad-fit gate because that gate is a global
+  classifier — widening it would perturb spur classification and the acceptance
+  counts on every recording, whereas the cap is a single, localized knob.
 - **Per-band majorities.** The same weighted majority is computed on contributor
   subsets inside each frequency band. A band with too few contributors falls
   back to the band-wide value, so a sparse band never introduces a worse local
@@ -414,7 +423,10 @@ What the later stages consume
   as the center of a bidirectional prior that resists both over-broadening and
   over-narrowing of the fitted lines, and consumes the spur catalog to mask
   instrumental tones. The :math:`\sigma_\tau` that sets the prior width is
-  floored so a very tight histogram cannot make the prior over-confident.
+  floored so a very tight histogram cannot make the prior over-confident. The
+  upper-side penalty is not decorative: with no anchor an occasional window lets
+  its fitted :math:`\tau` run to the upper bound, and the prior pulls those
+  runaway windows back into the :math:`\tau_{maj}` basin.
 
 Limitations
 -----------

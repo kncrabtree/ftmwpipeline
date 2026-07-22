@@ -720,8 +720,7 @@ def evaluate_edge_free_contributors(
     ``(amplitude, phase)``. Solving the co-located lines together makes the read
     robust to the leakage pedestal -- the global *single-bin phasor* read was
     NEGATIVE on the dense 655 spectrum (each core bin carries ~300 other lines'
-    summed skirts; see ``dev-docs/research/stage5-cross-fixture/report.md``
-    §1).
+    summed skirts; see ``docs/source/methods/stage5_fitting.rst``).
 
     The read uses the dependent window's ``tau_us`` -- the same decay the frozen
     skirt is later drawn with by :func:`subtract_frozen_background` -- so the

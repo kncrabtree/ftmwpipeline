@@ -1,7 +1,7 @@
 """Acceptance tests for the scatter (high-pass) Stage 2 noise estimator.
 
-The decisive invariants from ``dev-docs/research/noise-snr-scaling/report.md``
-(§9 acceptance plan):
+The decisive invariants from ``docs/source/methods/noise_snr_scaling.rst``
+(acceptance plan):
 
 * **1/√N slope ≈ −0.5.** True thermal noise averages down as 1/√N while the
   leakage pedestal is constant in shot count. A level-based estimator plateaus

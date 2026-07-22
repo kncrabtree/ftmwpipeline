@@ -1,8 +1,8 @@
 """
 Unit tests for the Stage 4 complex-edge coherence statistic.
 
-Regression tests against the research-report calibration
-(``dev-docs/research/complex-edge-coherence/report.md``): on clean complex-
+Regression tests against the calibration documented in
+``docs/source/methods/edge_coherence.rst``: on clean complex-
 Gaussian noise ``S_coh`` has mean ~0.886 and is M-independent; a coherent band
 fires above the T_edge = 3 threshold.
 """

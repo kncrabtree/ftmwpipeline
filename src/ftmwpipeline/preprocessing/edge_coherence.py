@@ -20,11 +20,9 @@ Under the null (band carries only noise) ``S_coh`` has mean ``sqrt(pi/4) ~=
 amplitude ``L`` it grows like ``(L/sigma) * sqrt(M)``. The threshold ``T_edge``
 therefore corresponds to a per-bin leakage of ``L/sigma = T_edge/sqrt(M)``: the
 default ``T_edge = 8`` at ``M = 64`` flags coherent leakage that is at least
-~1σ per bin (the D8 recalibration -- see
-``dev-docs/planning/leakage-detection-rework.md``). The research report's
-original ``3`` is still safe on the null (< 1% per-band false positives) but
-flags sub-noise leakage. The statistic's derivation and calibration are in
-``dev-docs/research/complex-edge-coherence/report.md``.
+~1σ per bin (the D8 recalibration). The original ``3`` is still safe on the null
+(< 1% per-band false positives) but flags sub-noise leakage. The statistic's
+derivation and calibration are in ``docs/source/methods/edge_coherence.rst``.
 
 The functions here are pure (arrays in, arrays out) so they stay unit-testable;
 file orchestration lives in :mod:`ftmwpipeline._internal.stage4_impl`.

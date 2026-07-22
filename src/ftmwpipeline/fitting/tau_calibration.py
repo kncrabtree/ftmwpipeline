@@ -22,11 +22,10 @@ so sliding ``a`` traces a pure exponential decay whose rate is ``1/tau_mol``
 directly -- single-parameter fit, no LSQ ambiguity.
 
 The operating points (``n_seg = 10``, ``T_sigma = 5``, SNR-weighted majority,
-hybrid bad-fit gate, GMM threshold ``delta_aicc > 2``) match the research
-prototype in ``dev-docs/research/stage5-tau-calibration/prototype.py``.
-``dev-docs/research/stage5-tau-calibration/report.md`` consolidates the
-method, synthetic validation, 2638 application, LSQ cross-validation, and
-polish design (including the ``polish_snr_cap=9`` calibration).
+hybrid bad-fit gate, GMM threshold ``delta_aicc > 2``) are documented in
+``docs/source/stage2b_tau.rst``, which consolidates the method, synthetic
+validation, 2638 application, LSQ cross-validation, and polish design
+(including the ``polish_snr_cap=9`` calibration).
 """
 
 from __future__ import annotations
@@ -61,8 +60,7 @@ DEFAULT_SPUR_CLUSTER_MULTIPLIER = 1.0  # cluster gap in units of n_seg full-reco
 # there over-corrects per-band. On 2638 the cap range [8, 12] yields
 # per-band SNR-weighted majority τ within ±5 % of the LSQ reference
 # across low/mid/high arithmetic thirds; 9 lands worst-case 3.2 %. See
-# `dev-docs/research/stage5-tau-calibration/polish_snr_cap_validation.py`
-# and `report.md` § "Polish design" for the sweep.
+# ``docs/source/stage2b_tau.rst`` § "Polish design" for the sweep.
 DEFAULT_POLISH_SNR_CAP = 9.0
 
 # Gaussian-twin operating points (see ``extract_tau_G_majority``). Per-bin
@@ -324,9 +322,8 @@ def compute_band_majorities(
     """SNR-weighted majority tau on each band of an arithmetic partition.
 
     Default partition is the three-band arithmetic split of
-    ``[trim_lo_mhz, trim_hi_mhz)`` (the same split used by
-    [`dev-docs/research/stage5-tau-calibration/lsq_comparison.py`](../../dev-docs/research/stage5-tau-calibration/lsq_comparison.py)
-    for the LSQ comparison). Caller can pass explicit interior
+    ``[trim_lo_mhz, trim_hi_mhz)`` (the same split used for the LSQ comparison
+    in ``docs/source/stage2b_tau.rst``). Caller can pass explicit interior
     edges via ``band_edges_mhz`` (a 1-D sequence of strictly-increasing
     interior boundaries; outer edges are taken from ``trim_lo_mhz`` /
     ``trim_hi_mhz``).
@@ -2045,10 +2042,8 @@ def extract_tau_majority(
         :data:`DEFAULT_POLISH_SNR_CAP`, calibrated against the
         LSQ-fit-and-histogram per-band reference on 2638 to land per-band
         SNR-weighted majority τ within ±5 % of the LSQ low/mid/high
-        thirds. See
-        ``dev-docs/research/stage5-tau-calibration/polish_snr_cap_validation.py``
-        for the sweep and ``report.md`` § "Polish design" for the
-        underlying rationale.
+        thirds. See ``docs/source/stage2b_tau.rst`` § "Polish design" for the
+        sweep and the underlying rationale.
     polish_noise_debias : bool, default False
         Replace ``|S_n|`` with the Rician-unbiased magnitude
         ``sqrt(|S_n|^2 - 2 sigma^2)`` in the polish step. Theoretically

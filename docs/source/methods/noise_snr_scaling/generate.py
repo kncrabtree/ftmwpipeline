@@ -42,7 +42,7 @@ from ftmwpipeline.io.data_loaders import load_fid
 from ftmwpipeline.preprocessing.noise_estimation import estimate_noise_scatter
 
 # --------------------------------------------------------------------------
-# Fixtures (all from one spectrometer; see dev-docs/fixtures/README.md). The
+# Fixtures (all from one spectrometer; see examples/blackchirp_data/README.md). The
 # recommended active-region start per fixture; the active region runs to the end
 # of the 15 us record and the analysis band is the standard 26500-40000 MHz.
 # --------------------------------------------------------------------------
