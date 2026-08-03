@@ -66,7 +66,7 @@ from .stage0_impl import load_fid_from_pipeline_impl
 from .stage2_impl import _update_stage_completion
 
 if TYPE_CHECKING:  # annotation-only imports (PEP 563 lazy)
-    from ..core.data_structures import FitWindow
+    from ..core.data_structures import FitWindow, WindowPlan
     from ..core.stage_fit_settings import StageFitSettings
     from ..fitting.peak_model import PeakShape
     from .stage5_impl import Stage5FitContext
@@ -907,6 +907,67 @@ def _reconstruct_frozen_peaks(
     return frozen
 
 
+def effective_window_plan(file_path: Union[Path, str]) -> "WindowPlan":
+    """The Stage 4 plan overlaid with any Stage-6-created / widened windows.
+
+    Stage 6 can install a window for a line the automatic detection missed (see
+    :func:`create_window_impl`). Those windows live in the Stage 6 review state,
+    not in ``/stage4_windows``, so Stage 4's persisted product stays a function
+    of Stage 4's own inputs and re-running Stage 4 (which invalidates Stage 6
+    anyway) never has to reconcile them. Every Stage 6 code path that resolves a
+    ``window_id`` to its geometry goes through here so the base plan and the
+    overlay are never read apart.
+
+    An overlay entry whose ``window_id`` matches a base window **replaces** it
+    (the narrow-gap widening case); a fresh id is appended. The result is sorted
+    by ascending frequency, matching the plan's own ordering, and carries the
+    overlay's inbound dependency edges.
+    """
+    from .stage4_impl import load_windows_impl
+
+    plan: "WindowPlan" = load_windows_impl(str(file_path))["plan"]
+    review = load_stage6_review_from_file(str(file_path))
+    if not review.created_windows:
+        return plan
+
+    overlay = {int(w.window_id): w for w in review.created_windows}
+    windows = [overlay.get(int(w.window_id), w) for w in plan.windows]
+    known = {int(w.window_id) for w in windows}
+    windows.extend(w for wid, w in sorted(overlay.items()) if wid not in known)
+    windows.sort(key=lambda w: min(w.freq_range))
+    plan.windows = windows
+
+    # A created window is a leaf: it reads its neighbours' frozen leakage and
+    # nothing reads it, so its edges are purely additive and cannot introduce a
+    # cycle. Splice them in and put the new ids last in the fit order.
+    edges = list(plan.dependency_edges)
+    topo = list(plan.topological_order)
+    for wid, w in sorted(overlay.items()):
+        for fc in w.fixed_contributors:
+            edge = (wid, int(fc.primary_window_id))
+            if edge not in edges:
+                edges.append(edge)
+        if wid not in topo:
+            topo.append(wid)
+    plan.dependency_edges = sorted(set(edges))
+    plan.topological_order = topo
+    return plan
+
+
+def _next_decision_index(path: str) -> int:
+    """``order_index`` the next recorded decision will take.
+
+    ``_record_decision`` appends at ``len(decision_log)``, so an edit can know
+    the id of the decision it is about to record *before* running the fit -- the
+    hook the per-peak derivation tag hangs on.
+    """
+    with h5py.File(path, "r") as h5f:
+        if "stage6_review" not in h5f:
+            return 0
+        review = load_stage6_review_from_hdf5(h5f["stage6_review"])
+    return len(review.decision_log)
+
+
 def refit_window_core(
     fit_ctx: "Stage5FitContext",
     fit_win: "FitWindow",
@@ -922,6 +983,7 @@ def refit_window_core(
     remove: Sequence[float] = (),
     add_seeds: Optional[List[ModelPeak]] = None,
     add_origin: str = "user",
+    add_derivations: Optional[Sequence[Optional[int]]] = None,
     snap_tol_mhz: float = _REFIT_SNAP_TOL_MHZ,
     freeze_inherited: bool = False,
 ) -> FittingResult:
@@ -948,6 +1010,19 @@ def refit_window_core(
     the origin of added peaks: ``"user"`` for a user edit (the default, immune
     to later auto-prune/cleanup), ``"auto"`` for an automatic add such as the
     VIF-collapse merged line (a normal fitted peak, not a human decision).
+    ``add_derivations`` (index-aligned with ``add``) stamps
+    :attr:`FittedPeak.derivation` -- the decision-log ``order_index`` that
+    created each added peak -- so a consumer reads which peaks the edit created
+    rather than pairing peak sets across it. Inherited peaks keep whatever
+    derivation they already carried; a peak that merely re-converged is
+    identity-preserved and its tag is untouched.
+
+    Every ``add`` frequency must fall inside ``fit_win.freq_range`` *after*
+    snapping. A window's fit sees only its own band, so seeding outside it would
+    fit against data the window does not cover -- the optimizer would simply pin
+    the peak at the nearest edge. That is rejected rather than silently
+    accepted (see :func:`create_window_impl` for the frequency-has-no-window
+    case).
 
     The co-fit leakage-wing baseline is warm-started from the persisted
     converged coefficients (see ``initial_baseline_coeffs`` below) so an
@@ -1141,7 +1216,9 @@ def refit_window_core(
     # must add it back explicitly.
     thawed_held_peaks: List[FittedPeak] = []  # verbatim re-append after NLS
 
-    seed_peaks_with_origin: List[Tuple[ModelPeak, str]] = []
+    # (seed, origin, derivation) triples, kept together so the "remove" pop and
+    # the by-position origin/derivation stamping below cannot fall out of step.
+    seed_peaks_with_origin: List[Tuple[ModelPeak, str, Optional[int]]] = []
     for fp in wf.fitted_peaks:
         freq_mhz = float(fp.frequency_mhz)
         offset = float(s * (freq_mhz - center_mhz))
@@ -1172,7 +1249,7 @@ def refit_window_core(
                 offset_mhz=offset,
                 phase=float(fp.phase) if fp.phase is not None else 0.0,
             )
-            seed_peaks_with_origin.append((mp, fp.origin))
+            seed_peaks_with_origin.append((mp, fp.origin, fp.derivation))
 
     # Apply "remove" edits: drop seeds closest to remove frequencies.
     # A "remove" on a thawed line drops it entirely (not frozen): the user
@@ -1272,6 +1349,19 @@ def refit_window_core(
     center_for_ledger = center_mhz
     wf_sideband = Sideband.coerce(sideband)
 
+    win_lo, win_hi = fit_win.freq_range
+    if win_lo > win_hi:
+        win_lo, win_hi = win_hi, win_lo
+    # Bin-width slack on the range test: ``freq_range`` names the first and last
+    # *grid points* the window covers, so a frequency a hair outside it still
+    # lands on an in-window bin. Reject only what is genuinely off the window's
+    # data, not what rounds onto its edge bin.
+    grid_slack = (
+        0.5 * float(np.min(np.abs(np.diff(offset_grid))))
+        if offset_grid.size > 1
+        else 0.0
+    )
+
     for i, add_freq in enumerate(add):
         add_offset = float(s * (float(add_freq) - center_mhz))
         if explicit_seeds:
@@ -1317,12 +1407,33 @@ def refit_window_core(
                     offset_mhz=add_offset,
                     phase=float(np.angle(data_minus_bg[nearest_bin])),
                 )
-        seed_peaks_with_origin.append((mp, add_origin))
+        # Range check on the POST-snap seed: the snap (or an explicit
+        # ``add_seeds`` entry) is what the NLS actually starts from, so it is
+        # what has to lie on this window's data. Rejecting here is consistent
+        # with how an unsnappable ``remove`` is already handled, and turns the
+        # "resolved the click to the wrong window" case into an error instead of
+        # a fit against data the window does not cover.
+        seed_freq_mhz = float(center_mhz + s * mp.offset_mhz)
+        if not (win_lo - grid_slack <= seed_freq_mhz <= win_hi + grid_slack):
+            raise ValueError(
+                f"add={float(add_freq):.4f} MHz resolves to {seed_freq_mhz:.4f} "
+                f"MHz, outside window {window_id}'s range "
+                f"[{win_lo:.4f}, {win_hi:.4f}] MHz. Name the window that covers "
+                f"the frequency, or -- if no window does -- create one with "
+                f"'review create' first."
+            )
+        add_derivation = (
+            add_derivations[i]
+            if add_derivations is not None and i < len(add_derivations)
+            else None
+        )
+        seed_peaks_with_origin.append((mp, add_origin, add_derivation))
         protected_offsets.append(mp.offset_mhz)
 
     # Extract final seed list in offset order.
-    final_seeds = [mp for mp, _ in seed_peaks_with_origin]
-    origin_flags = [orig for _, orig in seed_peaks_with_origin]
+    final_seeds = [mp for mp, _, _ in seed_peaks_with_origin]
+    origin_flags = [orig for _, orig, _ in seed_peaks_with_origin]
+    derivation_flags = [deriv for _, _, deriv in seed_peaks_with_origin]
 
     # "Freeze inherited" mode for the VIF-collapse sequential merge: fit ONLY
     # the added (merged) seeds, holding every inherited peak frozen at its
@@ -1338,6 +1449,7 @@ def refit_window_core(
         inherited_seeds = final_seeds[:-n_added]
         added_seeds = final_seeds[-n_added:]
         added_origins = origin_flags[-n_added:]
+        added_derivations = derivation_flags[-n_added:]
         used_src: set[int] = set()
         for mp in inherited_seeds:
             freq = center_mhz + s * mp.offset_mhz
@@ -1368,6 +1480,7 @@ def refit_window_core(
             thawed_held_peaks.append(src_fp)
         final_seeds = list(added_seeds)
         origin_flags = list(added_origins)
+        derivation_flags = list(added_derivations)
         background, data_minus_bg = subtract_frozen_background(
             offset_grid,
             z_slice,
@@ -1414,28 +1527,38 @@ def refit_window_core(
         acquisition_us=acquisition_us,
     )
 
-    # Stamp user-origin on peaks the caller added (and on merge / split
-    # products, which seed through the same path).  A refit is NLS-only -- it
-    # neither adds nor drops peaks -- and ``window_outcome_to_fitting_result``
-    # preserves the fit's peak order, so the i-th output peak is the i-th seed:
-    # assign origin by POSITION.  Matching by frequency is unsafe here because a
-    # merge / split product can converge well beyond ``snap_tol_mhz`` from its
-    # seed.  Fall back to nearest-frequency matching only if the counts ever
-    # diverge (they should not on the NLS-only path).
+    # Stamp user-origin (and the Stage 6 derivation tag) on peaks the caller
+    # added, and on merge / split products, which seed through the same path.
+    # A refit is NLS-only -- it neither adds nor drops peaks -- and
+    # ``window_outcome_to_fitting_result`` preserves the fit's peak order, so
+    # the i-th output peak is the i-th seed: assign by POSITION.  Matching by
+    # frequency is unsafe here because a merge / split product can converge well
+    # beyond ``snap_tol_mhz`` from its seed.  Fall back to nearest-frequency
+    # matching only if the counts ever diverge (they should not on the NLS-only
+    # path).
+    #
+    # An inherited seed carries its own prior ``derivation`` forward: the refit
+    # re-converged it but did not change its identity, so the tag still names
+    # the decision that last did.
     if len(new_wf.fitted_peaks) == len(origin_flags):
-        for fp, orig in zip(new_wf.fitted_peaks, origin_flags):
+        for fp, orig, deriv in zip(new_wf.fitted_peaks, origin_flags, derivation_flags):
             if orig == "user":
                 fp.origin = "user"
+            if deriv is not None:
+                fp.derivation = int(deriv)
     else:
-        user_freq_mhz = [
-            float(center_mhz + s * mp.offset_mhz)
-            for mp, orig in zip(final_seeds, origin_flags)
-            if orig == "user"
+        user_seeds = [
+            (float(center_mhz + s * mp.offset_mhz), orig, deriv)
+            for mp, orig, deriv in zip(final_seeds, origin_flags, derivation_flags)
+            if orig == "user" or deriv is not None
         ]
         for fp in new_wf.fitted_peaks:
-            for uf in user_freq_mhz:
+            for uf, orig, deriv in user_seeds:
                 if abs(float(fp.frequency_mhz) - uf) <= snap_tol_mhz:
-                    fp.origin = "user"
+                    if orig == "user":
+                        fp.origin = "user"
+                    if deriv is not None:
+                        fp.derivation = int(deriv)
                     break
 
     # --- Re-insert thawed lines verbatim ------------------------------------
@@ -1775,6 +1898,7 @@ def refit_window_impl(
     add_seeds: Optional[List[ModelPeak]] = None,
     snap_tol_mhz: float = _REFIT_SNAP_TOL_MHZ,
     _skip_decision_recording: bool = False,
+    _decision_index: Optional[int] = None,
 ) -> RefitWindowResult:
     """User-directed single-window refit for Stage 6 review decisions.
 
@@ -1808,7 +1932,12 @@ def refit_window_impl(
         Molecular frequencies (MHz) of peaks to add.  Each is snapped to the
         nearest ledger candidate within ``snap_tol_mhz`` (to reuse the
         recorded seed offset/amplitude) or seeded fresh at the given
-        frequency.  User-added peaks carry ``origin="user"``.
+        frequency.  User-added peaks carry ``origin="user"`` and are stamped
+        with the ``order_index`` of the decision that added them
+        (:attr:`~ftmwpipeline.core.data_structures.FittedPeak.derivation`).
+        The post-snap frequency must lie inside the window's own
+        ``freq_range``; a frequency no window covers needs
+        :func:`create_window_impl` first.
     remove :
         Molecular frequencies (MHz) of fitted peaks to remove.  Each is
         matched to the nearest fitted peak within ``snap_tol_mhz`` and dropped
@@ -1832,8 +1961,9 @@ def refit_window_impl(
     ------
     ValueError
         When Stage 5 has not been run, the ``window_id`` is not found,
-        ``len(add_seeds) != len(add)``, or any ``remove`` frequency does not
-        match a fitted peak within ``snap_tol_mhz``.
+        ``len(add_seeds) != len(add)``, any ``remove`` frequency does not
+        match a fitted peak within ``snap_tol_mhz``, or any ``add`` frequency
+        falls outside the named window's ``freq_range`` after snapping.
     """
     from ..core.stage_fit_settings import ShapeSpec, StageFitSettings
     from ..core.stage_fit_settings import resolve as resolve_stage_fit_settings
@@ -1849,7 +1979,6 @@ def refit_window_impl(
     )
     from .stage2b_impl import load_tau_calibration_impl, tau_calibration_present
     from .stage3_impl import load_peaks_impl
-    from .stage4_impl import load_windows_impl
     from .stage5_impl import (
         Stage5FitContext,
         _resolve_tau_calibration_for_fit,
@@ -1867,6 +1996,22 @@ def refit_window_impl(
     # 'review undo' can restore it and replay the surviving decisions.
     _snapshot_stage5_baseline(path)
 
+    # Decision ids for the peaks this edit creates. ``_record_decision`` appends
+    # at ``len(decision_log)`` and this function records one entry per ``add``
+    # (in order) below, so the i-th added peak's decision id is known up front --
+    # which is what lets the derivation tag be stamped during the fit rather than
+    # patched onto the persisted peaks afterwards. A composing verb (merge /
+    # split) records one coarser entry itself and passes its index in.
+    if _decision_index is not None:
+        add_derivations: Optional[List[Optional[int]]] = [
+            int(_decision_index) for _ in add
+        ]
+    elif _skip_decision_recording or not add:
+        add_derivations = None
+    else:
+        _base_index = _next_decision_index(path)
+        add_derivations = [_base_index + i for i in range(len(add))]
+
     # --- Load persisted Stage 5 fit ----------------------------------------
     with h5py.File(path, "r") as h5f:
         if "stage5_fitting" not in h5f:
@@ -1881,9 +2026,10 @@ def refit_window_impl(
     chi2r_before = float(wf.reduced_chi2)
     n_peaks_before = len(wf.fitted_peaks)
 
-    # --- Load Stage 4 WindowPlan and locate the FitWindow ------------------
-    plan_result = load_windows_impl(path)
-    plan = plan_result["plan"]
+    # --- Load the effective WindowPlan and locate the FitWindow ------------
+    # Effective = Stage 4's plan plus any Stage-6-created / widened windows, so
+    # a window the curator created is editable exactly like a planned one.
+    plan = effective_window_plan(path)
     fit_window_map = {w.window_id: w for w in plan.windows}
     if window_id not in fit_window_map:
         raise KeyError(
@@ -1980,6 +2126,7 @@ def refit_window_impl(
         add=add,
         remove=remove,
         add_seeds=add_seeds,
+        add_derivations=add_derivations,
         snap_tol_mhz=snap_tol_mhz,
     )
 
@@ -2120,7 +2267,10 @@ def merge_peaks_impl(
     A thin composition over :func:`refit_window_impl`: removes the named peaks
     and adds one replacement seeded at their SNR-weighted centroid (or
     amplitude-weighted centroid when SNR is unavailable).  All products carry
-    ``origin="user"``.
+    ``origin="user"`` and the ``order_index`` of the single ``"merge"``
+    decision this records (:attr:`FittedPeak.derivation`) -- a merge replaces
+    identities rather than remeasuring them, which is exactly what the tag
+    tells a downstream consumer.
 
     **Doublet-alternative snap.** When the removed set matches a persisted
     ``DoubletAlternativeInfo`` pair (i.e. exactly two frequencies that
@@ -2284,6 +2434,7 @@ def merge_peaks_impl(
         add_seeds=add_seeds,
         snap_tol_mhz=snap_tol_mhz,
         _skip_decision_recording=True,
+        _decision_index=_next_decision_index(path),
     )
 
     # Record one "merge" decision entry anchored at the replacement frequency.
@@ -2323,7 +2474,11 @@ def split_peak_impl(
     A thin composition over :func:`refit_window_impl`: removes the named peak
     and adds ``into`` replacements spread symmetrically about it by ±½ of one
     Fourier resolution element (``1 / acquisition_us`` MHz).  All products
-    carry ``origin="user"``.
+    carry ``origin="user"`` and the ``order_index`` of the single ``"split"``
+    decision this records (:attr:`FittedPeak.derivation`), so a consumer reads
+    the products as replacements rather than pairing them to the original.
+    Seeds are clamped into the window's own range, so splitting a peak that
+    sits within half a resolution element of an edge still works.
 
     The resolution element is taken from the fit context's ``acquisition_us``
     (the active-FT window length used during the original Stage 5 fit),
@@ -2418,7 +2573,15 @@ def split_peak_impl(
     center_mhz: Optional[float] = None
     if wf.window is not None and wf.window.freq_range is not None:
         lo, hi = wf.window.freq_range
+        if lo > hi:
+            lo, hi = hi, lo
         center_mhz = (lo + hi) / 2.0
+        # A peak sitting within half a resolution element of the window edge
+        # would otherwise place a split seed just off the window's data, which
+        # the refit rejects. The seeds are a starting guess for a joint NLS
+        # bounded to the window anyway, so clamp rather than refuse: the split
+        # is a legitimate request and the optimizer resolves the placement.
+        add_freqs = [min(max(af, lo), hi) for af in add_freqs]
 
     add_seeds: Optional[List] = None
     if center_mhz is not None:
@@ -2441,6 +2604,7 @@ def split_peak_impl(
         add_seeds=add_seeds,
         snap_tol_mhz=snap_tol_mhz,
         _skip_decision_recording=True,
+        _decision_index=_next_decision_index(path),
     )
 
     # Record one "split" decision entry anchored at the original peak frequency.
@@ -2578,6 +2742,7 @@ def _record_decision(
         window_statuses=new_statuses,
         decision_log=new_log,
         final_products=final_products,
+        created_windows=list(existing_review.created_windows),
     )
 
     with h5py.File(path, "a") as h5f:
@@ -2695,6 +2860,7 @@ def review_accept_impl(
         window_statuses=new_statuses,
         decision_log=new_log,
         final_products=existing_review.final_products,
+        created_windows=list(existing_review.created_windows),
     )
 
     with h5py.File(path, "a") as h5f:
@@ -2707,6 +2873,466 @@ def review_accept_impl(
 
 
 # ---------------------------------------------------------------------------
+# create_window_impl: install a fit window for a line the detector missed
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class CreateWindowResult:
+    """Outcome of :func:`create_window_impl`.
+
+    Attributes
+    ----------
+    window_id : int
+        The window now covering the anchor -- a fresh id for ``mode="created"``,
+        an existing one for ``mode="widened"``.
+    mode : str
+        ``"created"`` (a new window was built in a gap) or ``"widened"`` (the gap
+        was too narrow, so the adjacent window absorbed the anchor).
+    anchor_mhz : float
+        The requested molecular frequency (MHz).
+    freq_range : tuple of float
+        The installed window's ``(min_mhz, max_mhz)`` extent.
+    n_points : int
+        Grid points the window covers.
+    n_contributors : int
+        Frozen leakage contributors attached to it.
+    depends_on : list of int
+        Window ids it reads frozen leakage from.
+    n_peaks : int
+        Fitted peaks in the window after the create (``0`` for a fresh window --
+        creating a window installs *structure*; adding the line is a separate
+        ``review edit --add`` decision).
+    """
+
+    window_id: int
+    mode: str
+    anchor_mhz: float
+    freq_range: Tuple[float, float]
+    n_points: int
+    n_contributors: int
+    depends_on: List[int]
+    n_peaks: int
+
+
+def _frozen_parameters_from_sources(
+    depends_on: Sequence[int],
+    fit_map: Dict[int, FittingResult],
+    min_freeze_snr: float,
+) -> Dict[str, Dict]:
+    """``fixed_parameters`` for a new window, read off its sources' current fits.
+
+    Same window-level resolution the cascade uses (``_refresh_frozen_window_level``):
+    every source-window line clearing ``min_freeze_snr``, at its *fitted*
+    parameters. Reading the fit rather than the Stage 3 detections is what keeps
+    a source whose fit collapsed several detections into one line from being
+    frozen more than once.
+    """
+    frozen: List[Dict] = []
+    for primary in sorted(set(int(p) for p in depends_on)):
+        pwf = fit_map.get(primary)
+        if pwf is None:
+            continue
+        for pk in sorted(pwf.fitted_peaks, key=lambda q: float(q.frequency_mhz)):
+            if float(pk.snr or 0.0) < min_freeze_snr:
+                continue
+            frozen.append(
+                {
+                    "peak_index": -1,
+                    "primary_window_id": primary,
+                    "frequency_mhz": float(pk.frequency_mhz),
+                    "amplitude": float(pk.amplitude),
+                    "phase": float(pk.phase) if pk.phase is not None else 0.0,
+                    "freeze_eligible": True,
+                }
+            )
+    return {f"frozen_peak_{i}": e for i, e in enumerate(frozen)}
+
+
+def create_window_impl(
+    file_path: Union[Path, str],
+    anchor_mhz: float,
+    *,
+    snap_tol_mhz: float = _REFIT_SNAP_TOL_MHZ,
+    _replay_window_id: Optional[int] = None,
+) -> CreateWindowResult:
+    """Install a Stage 6 fit window covering ``anchor_mhz`` (``review create``).
+
+    "Add the weak line over there that the detector missed" is a routine
+    request, but until a window covers that frequency there is nothing to edit:
+    Stage 4 builds windows around *promoted* Stage 3 detections, and re-running
+    detection at a lower threshold invalidates Stages 5 and 6, destroying the
+    entire curated edit set. This verb creates the missing structure instead,
+    leaving every existing decision standing.
+
+    It is a **structural** decision and nothing more: the window is installed
+    and fit with an empty peak set (a null fit that reports the window's data
+    χ²). Putting a line in it is a separate ``review edit --add`` decision. The
+    two are kept apart deliberately -- creating structure and changing a
+    window's peak set are different operations, and a log that spelled both
+    ``add`` could not be replayed or diffed without re-deriving window
+    membership against the base plan. A client is free to offer both as one
+    gesture; the log still records two decisions.
+
+    Geometry, contributors, and the narrow-gap widening fallback are decided by
+    :func:`~ftmwpipeline.preprocessing.window_planning.plan_stage6_window`,
+    which is a pure function of the anchor and the *base* plan -- never of the
+    current curated state -- so replaying an edit set in ``order_index`` order
+    reproduces the same window. Ids are only ever appended: an existing window
+    is never renumbered, so a consumer partitioning peaks on ``window_id`` sees
+    exactly the windows the edit touched.
+
+    **No cascade, in either direction.** The new window reads its neighbours'
+    frozen leakage skirts inward; it contributes no outward dependency edge and
+    no neighbour is re-fit or thawed. A window created for a line the automatic
+    pass missed holds, by construction, a line below the freeze bar, whose own
+    leakage into its neighbours is negligible -- which is what makes the whole
+    operation purely additive in the stage DAG.
+
+    Parameters
+    ----------
+    file_path :
+        Path to the ``.ftmw`` pipeline file (read-write).
+    anchor_mhz :
+        Molecular frequency (MHz) the new window must cover.
+    snap_tol_mhz :
+        Frequency-snapping tolerance forwarded to the fit core (unused by the
+        empty-peak-set fit; kept for signature parity with the other verbs).
+    _replay_window_id :
+        Internal. The id this create produced the first time round, supplied
+        when the decision log is replayed so the window keeps its identity even
+        if an earlier create was dropped from the edit set. The *geometry* is
+        still re-derived; only the label is replayed, and a structural change
+        that makes the label wrong raises before anything is written.
+
+    Returns
+    -------
+    CreateWindowResult
+
+    Raises
+    ------
+    ValueError
+        When Stage 5 has not been run, the anchor is outside the analysis band,
+        or the anchor already falls inside an existing window (that case is an
+        ordinary ``review edit --add`` on that window).
+    """
+    from ..core.stage_fit_settings import ShapeSpec, StageFitSettings
+    from ..core.stage_fit_settings import resolve as resolve_stage_fit_settings
+    from ..fitting.peak_model import PeakShape
+    from ..io.fitting_serialization import (
+        load_spectrum_fit_from_hdf5,
+        save_spectrum_fit_to_hdf5,
+    )
+    from ..io.stage_fit_settings_serialization import (
+        load_stage_fit_settings_from_h5,
+        read_recommended_clock_sources,
+        read_stage2b_recommended_shape,
+    )
+    from ..preprocessing.window_planning import (
+        DEFAULT_MIN_FREEZE_SNR,
+        plan_stage6_window,
+    )
+    from .stage2b_impl import load_tau_calibration_impl, tau_calibration_present
+    from .stage3_impl import load_peaks_impl
+    from .stage5_impl import (
+        Stage5FitContext,
+        _resolve_tau_calibration_for_fit,
+        build_stage5_fit_context,
+    )
+
+    path = str(file_path)
+    anchor = float(anchor_mhz)
+
+    # Snapshot the automatic fit before the first edit mutates it in place: a
+    # created window is a fit-mutating decision like any other, so 'review undo'
+    # has to be able to restore the baseline and replay from it.
+    _snapshot_stage5_baseline(path)
+
+    with h5py.File(path, "r") as h5f:
+        if "stage5_fitting" not in h5f:
+            raise ValueError("No Stage 5 fit found in this file. Run 'fit run' first.")
+        spectrum_fit: SpectrumFit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+
+    # --- Propose the window against the BASE plan --------------------------
+    # Deliberately the base plan, not the effective one: geometry must be a
+    # function of the anchor and Stage 4's output alone, so replaying the edit
+    # set reproduces it. The overlay is consulted only to reject an anchor that
+    # an earlier create already covered.
+    plan = effective_window_plan(path)
+    peaks_loaded = load_peaks_impl(path)
+    peaks = peaks_loaded["peaks"]
+    peak_frequencies_mhz = [float(p.frequency) for p in peaks]
+
+    # --- Resolve settings / calibration exactly as the refit does ----------
+    persisted_settings = load_stage_fit_settings_from_h5(path)
+    recommended_shape_str = read_stage2b_recommended_shape(path)
+    recommended_clocks = read_recommended_clock_sources(path)
+    recommended_settings: Optional[StageFitSettings] = None
+    if recommended_shape_str is not None or recommended_clocks is not None:
+        from ..core.stage_fit_settings import SpurSubSettings
+
+        recommended_settings = StageFitSettings(
+            shape=(
+                ShapeSpec.coerce(recommended_shape_str)
+                if recommended_shape_str is not None
+                else None
+            ),
+            spur=SpurSubSettings(clocks=recommended_clocks),
+        )
+    resolved = resolve_stage_fit_settings(
+        explicit=StageFitSettings(),
+        preset=None,
+        persisted=persisted_settings,
+        recommended=recommended_settings,
+    )
+    assert resolved.shape is not None
+    shape_enum = resolved.shape.kind
+
+    persisted_cal = None
+    if shape_enum is PeakShape.GAUSSIAN:
+        if tau_calibration_present(path, shape="gaussian"):
+            persisted_cal = load_tau_calibration_impl(path, shape="gaussian")[
+                "tau_calibration"
+            ]
+    else:
+        if tau_calibration_present(path):
+            persisted_cal = load_tau_calibration_impl(path)["tau_calibration"]
+    tau_maj_global, sigma_tau_global, _tau_source = _resolve_tau_calibration_for_fit(
+        persisted_cal,
+        resolved.tau.tau_maj_override_us,
+        resolved.tau.sigma_tau_override_us,
+    )
+
+    fit_ctx: Stage5FitContext = build_stage5_fit_context(
+        path,
+        resolved,
+        persisted_cal,
+        shape_enum,
+        replay_spur_catalog=spectrum_fit.parameters,
+    )
+
+    fit_map: Dict[int, FittingResult] = {
+        int(wf.window_id): wf
+        for wf in spectrum_fit.window_fits
+        if wf.window_id is not None
+    }
+
+    # Refuse an anchor outside the configured analysis band. The active FT
+    # spans more than the trim, but Stage 3 never looked outside the trim and
+    # Stage 2's noise there is not the authority the window's statistics
+    # assume -- a window built out there would report numbers nothing else in
+    # the file backs.
+    if fit_ctx.trim_range is not None:
+        t_lo, t_hi = (min(fit_ctx.trim_range), max(fit_ctx.trim_range))
+        if not (t_lo <= anchor <= t_hi):
+            raise ValueError(
+                f"anchor {anchor:.4f} MHz is outside the analysis band "
+                f"[{t_lo:.4f}, {t_hi:.4f}] MHz. Re-run 'ft run' with a trim "
+                f"that covers it (which rebuilds the fit) if the line is real."
+            )
+
+    params = plan.parameters
+    proposal = plan_stage6_window(
+        plan,
+        peaks,
+        fit_ctx.active_ft.freq_mhz,
+        fit_ctx.active_ft.complex_spectrum,
+        fit_ctx.rms_for_fit,
+        anchor,
+        acquisition_us=float(fit_ctx.acquisition_us),
+        tau_us=params.get("tau_us"),
+        min_window_half_width_mhz=float(params.get("min_window_half_width_mhz", 2.0)),
+        min_window_half_width_points=int(
+            params.get("min_window_half_width_points", 32)
+        ),
+        min_freeze_snr=float(params.get("min_freeze_snr", DEFAULT_MIN_FREEZE_SNR)),
+        magnitude_attachment_threshold=float(
+            params.get("magnitude_attachment_threshold", 0.1)
+        ),
+        # Stage 5 drops a window whose peaks all fail their gates. Such a window
+        # covers no fit, so it neither blocks an anchor in its range nor is a
+        # candidate to absorb one.
+        live_window_ids=sorted(fit_map),
+    )
+    fit_win = proposal.window
+    new_wid = int(fit_win.window_id)
+
+    # Replay mints the id the original create produced rather than a fresh one.
+    # Ids are assigned as "one past the highest", so replaying an edit set with
+    # an earlier create dropped would otherwise slide every later created
+    # window down one -- silently changing the identity of a window whose peaks
+    # a consumer has state bound to, which is exactly what "never renumber"
+    # exists to prevent. A gap in the numbering is harmless; a shifted id is not.
+    if _replay_window_id is not None and int(_replay_window_id) != new_wid:
+        want = int(_replay_window_id)
+        # Only the *label* is replayed; the geometry is still re-derived. If the
+        # anchor now resolves to a structurally different answer, say so before
+        # touching the file rather than persisting a mislabeled window.
+        if proposal.mode == "widened":
+            raise ValueError(
+                f"replaying the window created at {anchor:.4f} MHz now widens "
+                f"window {new_wid} instead of creating window {want}; the base "
+                f"plan or the surviving edit set has changed"
+            )
+        taken = {int(w.window_id) for w in plan.windows}
+        if want in taken:
+            raise ValueError(
+                f"replaying the window created at {anchor:.4f} MHz wants id "
+                f"{want}, which is already in use; the base plan or the "
+                f"surviving edit set has changed"
+            )
+        fit_win.window_id = want
+        new_wid = want
+    min_freeze_snr = float(params.get("min_freeze_snr", DEFAULT_MIN_FREEZE_SNR))
+
+    # --- Seed the window's FittingResult and fit it ------------------------
+    if proposal.mode == "created":
+        # A brand-new window has no persisted fit to replay, so synthesize the
+        # minimum ``refit_window_core`` reads: the frozen background evaluated
+        # from its sources' current fits, and a starting tau. There are no peaks
+        # and no baseline -- the NLS runs its null model and reports the
+        # window's data chi-squared, which is the honest description of an
+        # empty window.
+        tau_maj_us, sigma_tau_us = _resolve_refit_window_tau(
+            fit_win,
+            resolved,
+            persisted_cal,
+            tau_maj_global,
+            sigma_tau_global,
+            _tau_source,
+        )
+        from .active_ft_support import default_tau0_us
+
+        tau0 = (
+            float(tau_maj_us)
+            if tau_maj_us is not None and tau_maj_us > 0.0
+            else default_tau0_us(float(fit_ctx.acquisition_us))
+        )
+        seed_wf = FittingResult(window_id=new_wid, shape=shape_enum.value)
+        seed_wf.fixed_parameters = _frozen_parameters_from_sources(
+            proposal.depends_on, fit_map, min_freeze_snr
+        )
+        seed_wf.shared_parameters = {"tau_us": {"value": tau0, "fitted": False}}
+    else:
+        # Widening: the window already has a fit. Re-fit its existing peak set
+        # over the grown extent -- the peaks are unchanged, but the data the
+        # residual is scored over is not, so the persisted chi-squared and the
+        # per-peak errors would otherwise describe the old span.
+        existing_wf = fit_map.get(new_wid)
+        if existing_wf is None:
+            raise ValueError(
+                f"window {new_wid} has no Stage 5 fit to widen; "
+                "re-run 'fit run' before creating windows"
+            )
+        seed_wf = existing_wf
+        tau_maj_us, sigma_tau_us = _resolve_refit_window_tau(
+            fit_win,
+            resolved,
+            persisted_cal,
+            tau_maj_global,
+            sigma_tau_global,
+            _tau_source,
+        )
+
+    new_wf: FittingResult = refit_window_core(
+        fit_ctx,
+        fit_win,
+        seed_wf,
+        resolved=resolved,
+        shape_enum=shape_enum,
+        tau_maj_us=tau_maj_us,
+        sigma_tau_us=sigma_tau_us,
+        peak_frequencies_mhz=peak_frequencies_mhz,
+        snap_tol_mhz=snap_tol_mhz,
+    )
+    from ..fitting.result_conversion import sort_fitting_result_by_frequency
+
+    sort_fitting_result_by_frequency(new_wf)
+
+    # --- Splice into the persisted SpectrumFit -----------------------------
+    other_fits = [wf for wf in spectrum_fit.window_fits if wf.window_id != new_wid]
+    spectrum_fit.window_fits = sorted(
+        other_fits + [new_wf],
+        key=lambda wf: int(wf.window_id) if wf.window_id is not None else -1,
+    )
+    new_global_peaks = [
+        p for p in spectrum_fit.fitted_peaks if p.window_id != new_wid
+    ] + list(new_wf.fitted_peaks)
+    new_global_peaks.sort(key=lambda p: float(p.frequency_mhz))
+    spectrum_fit.fitted_peaks = new_global_peaks
+
+    shape_attr = str(spectrum_fit.parameters.get("shape", "lorentzian"))
+    with h5py.File(path, "a") as h5f:
+        if "stage5_fitting" in h5f:
+            del h5f["stage5_fitting"]
+        grp = h5f.create_group("stage5_fitting")
+        save_spectrum_fit_to_hdf5(spectrum_fit, grp)
+        grp.attrs["shape"] = shape_attr
+
+    # --- Persist the plan overlay, then record the decision ----------------
+    # Overlay first: ``_record_decision`` rewrites the whole review group and
+    # carries the overlay forward, so writing it first keeps the two in one
+    # consistent state without a second read-modify-write of the same group.
+    with h5py.File(path, "r") as h5f:
+        review = (
+            load_stage6_review_from_hdf5(h5f["stage6_review"])
+            if "stage6_review" in h5f
+            else Stage6Review()
+        )
+    overlay = [w for w in review.created_windows if int(w.window_id) != new_wid]
+    overlay.append(fit_win)
+    review.created_windows = overlay
+    with h5py.File(path, "a") as h5f:
+        if "stage6_review" in h5f:
+            del h5f["stage6_review"]
+        grp = h5f.create_group("stage6_review")
+        save_stage6_review_to_hdf5(review, grp)
+
+    lo, hi = fit_win.freq_range
+    lo, hi = min(lo, hi), max(lo, hi)
+    grid_span = fit_win.diagnostics.get("grid_span", [0, -1])
+    n_points = int(grid_span[1]) - int(grid_span[0]) + 1
+
+    _record_decision(
+        path,
+        window_id=new_wid,
+        frequency_mhz=anchor,
+        kind="create_window",
+        evidence={
+            "mode": proposal.mode,
+            "freq_min_mhz": lo,
+            "freq_max_mhz": hi,
+            "n_points": n_points,
+            "n_contributors": len(fit_win.fixed_contributors),
+            "depends_on": [int(d) for d in proposal.depends_on],
+        },
+    )
+
+    logger.info(
+        "Stage 6 %s window %d for anchor %.4f MHz: [%.4f, %.4f] MHz "
+        "(%d points, %d contributors)",
+        proposal.mode,
+        new_wid,
+        anchor,
+        lo,
+        hi,
+        n_points,
+        len(fit_win.fixed_contributors),
+    )
+
+    return CreateWindowResult(
+        window_id=new_wid,
+        mode=proposal.mode,
+        anchor_mhz=anchor,
+        freq_range=(lo, hi),
+        n_points=n_points,
+        n_contributors=len(fit_win.fixed_contributors),
+        depends_on=[int(d) for d in proposal.depends_on],
+        n_peaks=len(new_wf.fitted_peaks),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Curation files: a human-editable batch language for the review edits.
 #
 # A curation file (CSV) records an ordered sequence of Stage 6 edits, one per
@@ -2715,8 +3341,17 @@ def review_accept_impl(
 # hand-editable, and independent of the report that may have authored it.
 # ---------------------------------------------------------------------------
 
-_CURATION_ACTIONS = ("add", "remove", "merge", "split", "accept")
+_CURATION_ACTIONS = ("add", "remove", "merge", "split", "accept", "create")
 _CURATION_HEADER = ("action", "window", "freqs", "params")
+
+# ``create`` is the one action whose window id is normally an *output*, not an
+# input: it installs the window the anchor needs. A hand-authored file writes one
+# of these tokens in the window column to say "whichever id this turns out to
+# be". A named id instead *pins* the id the create takes -- which is what a file
+# generated from the decision log writes, so the window keeps its identity
+# across a replay even if an earlier create was dropped from the edit set.
+_CURATION_NEW_WINDOW_TOKENS = ("new", "auto", "-", "")
+_NEW_WINDOW_SENTINEL = -1
 
 
 @dataclass
@@ -2762,6 +3397,10 @@ class PlannedAction:
     peak: Optional[float] = None
     into: int = 2
     candidate: Optional[float] = None
+    anchor: Optional[float] = None
+    """``create`` only: the molecular frequency (MHz) the new window must cover.
+    Its ``window_id`` is :data:`_NEW_WINDOW_SENTINEL` when the source did not
+    name one, and otherwise the id the action is expected to produce."""
 
 
 @dataclass
@@ -2827,14 +3466,21 @@ def parse_curation_file(curation_path: Union[Path, str]) -> List[CurationOp]:
                 f"curation line {line_no}: unknown action {fields[0]!r}; "
                 f"choose one of {_CURATION_ACTIONS}"
             )
-        if len(fields) < 2 or not fields[1]:
+        raw_window = fields[1] if len(fields) > 1 else ""
+        if action == "create" and raw_window.strip().lower() in (
+            _CURATION_NEW_WINDOW_TOKENS
+        ):
+            window_id = _NEW_WINDOW_SENTINEL
+        elif len(fields) < 2 or not fields[1]:
             raise ValueError(f"curation line {line_no}: missing window id")
-        try:
-            window_id = int(fields[1])
-        except ValueError:
-            raise ValueError(
-                f"curation line {line_no}: window id {fields[1]!r} is not an integer"
-            ) from None
+        else:
+            try:
+                window_id = int(fields[1])
+            except ValueError:
+                raise ValueError(
+                    f"curation line {line_no}: window id {fields[1]!r} is not an "
+                    f"integer"
+                ) from None
         freqs_raw = fields[2] if len(fields) > 2 else ""
         params_raw = fields[3] if len(fields) > 3 else ""
         try:
@@ -2875,6 +3521,14 @@ def parse_curation_file(curation_path: Union[Path, str]) -> List[CurationOp]:
                     ) from None
                 if into < 2:
                     raise ValueError(f"curation line {line_no}: into must be >= 2")
+        elif action == "create":
+            if len(freqs) != 1:
+                raise ValueError(
+                    f"curation line {line_no}: create needs exactly one frequency "
+                    f"(the anchor the new window must cover)"
+                )
+            if params:
+                raise ValueError(f"curation line {line_no}: create takes no parameters")
         elif action == "accept":
             if freqs:
                 raise ValueError(
@@ -2910,6 +3564,9 @@ def _resolve_curation_plan(ops: Sequence[CurationOp]) -> List[PlannedAction]:
     / ``accept`` on that window is a barrier that flushes the window's pending
     edit first (it changes the peak set with its own seeding). Windows are
     independent, so an edit on another window does not flush a pending group.
+
+    ``create`` never coalesces: it installs structure the rows after it name, so
+    it stands alone and in order.
     """
     plan: List[PlannedAction] = []
     pending: Dict[int, PlannedAction] = {}
@@ -2924,6 +3581,9 @@ def _resolve_curation_plan(ops: Sequence[CurationOp]) -> List[PlannedAction]:
 
     for op in ops:
         wid = op.window_id
+        if op.action == "create":
+            plan.append(PlannedAction(kind="create", window_id=wid, anchor=op.freqs[0]))
+            continue
         if op.action in ("add", "remove"):
             pa = pending.get(wid)
             if pa is None:
@@ -2967,6 +3627,9 @@ def _resolve_curation_plan(ops: Sequence[CurationOp]) -> List[PlannedAction]:
 def describe_planned_action(action: PlannedAction) -> str:
     """Render one :class:`PlannedAction` as a one-line human-readable summary."""
     wid = action.window_id
+    if action.kind == "create":
+        target = "a new window" if wid == _NEW_WINDOW_SENTINEL else f"window {wid}"
+        return f"create {target}: anchor {float(action.anchor or 0.0):.4f}"
     if action.kind == "edit":
         parts = []
         if action.add:
@@ -3059,7 +3722,11 @@ def _curation_ambiguity_warnings(
 # snapshot (``clear_stage5_baseline``) so the next edit re-snapshots.
 
 STAGE5_BASELINE_GROUP = "stage5_fitting_baseline"
-_FIT_EDIT_KINDS = ("add", "remove", "merge", "split")
+# Decision kinds that mutate ``/stage5_fitting`` and therefore need the
+# automatic-fit baseline to be undoable. ``create_window`` belongs here: it
+# splices a window fit into the persisted SpectrumFit (and, on the widening
+# path, re-fits an existing window over a grown extent).
+_FIT_EDIT_KINDS = ("add", "remove", "merge", "split", "create_window")
 
 
 def _snapshot_stage5_baseline(path: str) -> None:
@@ -3093,6 +3760,21 @@ def _restore_stage5_baseline(path: str) -> None:
 
 def _execute_planned_action(path: str, action: PlannedAction) -> None:
     """Dispatch one resolved action to its edit impl (shared by apply + undo)."""
+    if action.kind == "create":
+        if action.anchor is None:
+            raise ValueError("create action requires an anchor frequency")
+        # A named window id is the id the create takes, not merely a value to
+        # check afterwards: every following row -- and every peak's
+        # ``window_id`` -- is keyed on it, so it has to survive the replay
+        # intact even when an earlier create was dropped from the edit set.
+        create_window_impl(
+            path,
+            action.anchor,
+            _replay_window_id=(
+                None if action.window_id == _NEW_WINDOW_SENTINEL else action.window_id
+            ),
+        )
+        return
     if action.kind == "edit":
         refit_window_impl(path, action.window_id, add=action.add, remove=action.remove)
     elif action.kind == "merge":
@@ -3192,6 +3874,12 @@ def _decision_to_op(entry: DecisionLogEntry) -> CurationOp:
     kind = entry.kind
     if kind in ("add", "remove"):
         return CurationOp(kind, wid, [float(entry.frequency_mhz)], {}, 0)
+    if kind == "create_window":
+        # Carry the id the original create produced: replay re-derives the
+        # geometry from the anchor and the base plan but pins the label, so the
+        # rows keyed on that id (and any peaks a consumer bound to it) still
+        # refer to the same window.
+        return CurationOp("create", wid, [float(entry.frequency_mhz)], {}, 0)
     if kind == "merge":
         merged_from = entry.evidence.get("merged_from")
         if not merged_from or len(merged_from) < 2:
@@ -3249,6 +3937,22 @@ def review_undo_impl(
 
     removed = [e for e in log if e.order_index in undo_set]
     surviving = [e for e in log if e.order_index not in undo_set]
+
+    # Undoing a window creation orphans every decision made against that window:
+    # replaying them would fail partway through, leaving the file half-rolled-back.
+    # Refuse up front and name the ids the caller has to undo along with it.
+    dropped_windows = {
+        int(e.window_id) for e in removed if e.kind == "create_window"
+    } - {int(e.window_id) for e in surviving if e.kind == "create_window"}
+    orphaned = sorted(
+        e.order_index for e in surviving if int(e.window_id) in dropped_windows
+    )
+    if orphaned:
+        raise ValueError(
+            f"cannot undo: decision(s) {orphaned} act on window(s) "
+            f"{sorted(dropped_windows)}, which the undone 'create_window' "
+            f"decision(s) installed. Undo them together."
+        )
 
     has_fit_edits = any(e.kind in _FIT_EDIT_KINDS for e in log)
     baseline = _has_stage5_baseline(path)
@@ -3696,6 +4400,7 @@ def _build_final_products(
                 phase_error=None if pk.phase_error is None else float(pk.phase_error),
                 snr_error=snr_err,
                 clock_lattice=pk.clock_lattice,
+                derivation=pk.derivation,
             )
         )
 
@@ -3847,6 +4552,7 @@ def review_run_impl(
         window_statuses=new_statuses,
         decision_log=list(existing_review.decision_log),
         final_products=final_products,
+        created_windows=list(existing_review.created_windows),
     )
 
     # Persist: write stage6_review group and mark tracker stage complete.

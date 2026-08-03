@@ -79,6 +79,12 @@ HDF5 layout (under the caller-provided group, e.g. ``/stage5_fitting``)::
                 origin                           [str]   ("auto" or "user";
                                                           absent in older files
                                                           -> default "auto")
+                derivation                       [i8]    (Stage-6 decision id
+                                                          that created/altered
+                                                          the peak; -1 or an
+                                                          absent column -> None,
+                                                          "carried through
+                                                          unchanged")
         window_0001/ ...
 
 Round-trip contract: ``save`` -> hand-edit -> ``load`` returns the edited
@@ -562,6 +568,7 @@ def _save_peak_columns(peaks: List[FittedPeak], peaks_group: h5py.Group) -> None
     clock_lattice_col: np.ndarray = np.empty(n, dtype=object)
     origin_col: np.ndarray = np.empty(n, dtype=object)
     flat_decay_col: np.ndarray = np.empty(n, dtype="i1")
+    derivation_col: np.ndarray = np.empty(n, dtype="i8")
     for i, p in enumerate(peaks):
         columns["peak_id"][i] = _peak_id_to_int(p.peak_id)
         columns["frequency_mhz"][i] = float(p.frequency_mhz)
@@ -597,12 +604,16 @@ def _save_peak_columns(peaks: List[FittedPeak], peaks_group: h5py.Group) -> None
         origin_col[i] = p.origin
         # flat_decay: review hint, 0 for every peak unless the spur gate flagged it.
         flat_decay_col[i] = 1 if p.flat_decay else 0
+        # derivation: Stage-6 decision id that created/altered the peak; -1
+        # encodes None ("carried through the refit unchanged").
+        derivation_col[i] = -1 if p.derivation is None else int(p.derivation)
     for name, data in columns.items():
         peaks_group.create_dataset(name, data=data)
     # String columns stored as variable-length UTF-8 datasets.
     peaks_group.create_dataset("clock_lattice", data=clock_lattice_col, dtype=_vlen_str)
     peaks_group.create_dataset("origin", data=origin_col, dtype=_vlen_str)
     peaks_group.create_dataset("flat_decay", data=flat_decay_col)
+    peaks_group.create_dataset("derivation", data=derivation_col)
 
 
 # ---------------------------------------------------------------------------
@@ -869,6 +880,16 @@ def _load_peak_columns(peaks_group: h5py.Group, *, where: str) -> List[FittedPea
         flat_decay_vals = [bool(int(v)) for v in peaks_group["flat_decay"][:]]
     else:
         flat_decay_vals = [False] * n
+    # Optional numeric column: absent in files written before the Stage-6
+    # derivation tag. -1 (and an absent column) decode to None -- "carried
+    # through unchanged", which is the correct reading for every peak in a file
+    # that predates curation.
+    if "derivation" in peaks_group:
+        derivation_vals: List[Optional[int]] = [
+            (None if int(v) < 0 else int(v)) for v in peaks_group["derivation"][:]
+        ]
+    else:
+        derivation_vals = [None] * n
     peaks: List[FittedPeak] = []
     for i in range(n):
         ko_supported_raw = int(cols["knockout_supported"][i])
@@ -903,6 +924,7 @@ def _load_peak_columns(peaks_group: h5py.Group, *, where: str) -> List[FittedPea
                 clock_lattice=clock_lattice_vals[i],
                 origin=origin_vals[i],
                 flat_decay=flat_decay_vals[i],
+                derivation=derivation_vals[i],
             )
         )
     return peaks

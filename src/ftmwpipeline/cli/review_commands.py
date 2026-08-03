@@ -1,8 +1,8 @@
 """
 Stage 6 review commands.
 
-Implements the ``review run``/``show``/``rank``/``edit``/``merge``/``split``/
-``accept``/``apply``/``log``/``undo`` subcommands.  Thin wrappers over
+Implements the ``review run``/``show``/``rank``/``edit``/``create``/``merge``/
+``split``/``accept``/``apply``/``log``/``undo`` subcommands.  Thin wrappers over
 :mod:`ftmwpipeline._internal.stage6_impl` -- identical behavior to
 :class:`~ftmwpipeline.Pipeline` and the functional API.
 """
@@ -20,6 +20,7 @@ from .._internal.stage6_impl import (
     ReviewRunResult,
     _normalize_metric,
     apply_curation_impl,
+    create_window_impl,
     describe_planned_action,
     get_candidate_ledger_impl,
     get_final_products_impl,
@@ -436,6 +437,46 @@ def cmd_review_edit(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_review_create(args: argparse.Namespace) -> int:
+    """Install a fit window covering a frequency no window covers.
+
+    Prints the installed window's id, whether it was created or an adjacent
+    window was widened, its extent, and the next command to run.
+    """
+    setup_logging(getattr(args, "verbose", False))
+    file_path = _ensure_ftmw(args.file_path)
+    anchor: float = args.anchor
+
+    try:
+        result = create_window_impl(file_path, anchor)
+    except (ValueError, KeyError) as exc:
+        print(f"Error: {exc}")
+        return 1
+
+    lo, hi = result.freq_range
+    print(
+        f"review create  window={result.window_id}  {result.mode}  "
+        f"anchor {result.anchor_mhz:.4f} MHz"
+    )
+    print(
+        f"  Range: [{_fmt_mhz(lo)}, {_fmt_mhz(hi)}] MHz  "
+        f"({result.n_points} points, {result.n_contributors} frozen contributor(s))"
+    )
+    if result.depends_on:
+        print(f"  Reads leakage from window(s): {result.depends_on}")
+    if result.mode == "widened":
+        print(
+            "  The gap was too narrow for a fittable window, so this existing "
+            "window was widened to cover the anchor."
+        )
+    print(f"  Fitted peaks in the window: {result.n_peaks}")
+    print(
+        f"  Next: ftmwpipeline review edit {args.file_path} "
+        f"--window {result.window_id} --add {anchor:.4f}"
+    )
+    return 0
+
+
 def cmd_review_merge(args: argparse.Namespace) -> int:
     """Collapse ≥2 fitted peaks in a window into one.
 
@@ -633,11 +674,14 @@ def cmd_review_log(args: argparse.Namespace) -> int:
     if not entries:
         print("  (no recorded decisions)")
         return 0
-    print(f"  {'id':>4}  {'action':>7}  {'window':>6}  {'freq (MHz)':>12}")
-    print("  " + "-" * 36)
+    # Size the action column to the widest kind present ("create_window" is
+    # longer than the others), so the table stays aligned as the vocabulary grows.
+    kw = max(7, max(len(e.kind) for e in entries))
+    print(f"  {'id':>4}  {'action':>{kw}}  {'window':>6}  {'freq (MHz)':>12}")
+    print("  " + "-" * (kw + 29))
     for e in entries:
         print(
-            f"  {e.order_index:>4}  {e.kind:>7}  {e.window_id:>6}  "
+            f"  {e.order_index:>4}  {e.kind:>{kw}}  {e.window_id:>6}  "
             f"{e.frequency_mhz:>12.4f}"
         )
     return 0
@@ -727,8 +771,9 @@ def register_review_commands(subparsers: Any) -> None:
             "Inspect the automatic fit, view per-window summaries, explore\n"
             "the candidate ledger, and apply user-directed edits (add, remove,\n"
             "merge, split peaks) -- one at a time or batched from a curation file,\n"
-            "and undo them by id.\n\n"
-            "Verbs: run, show, rank, edit, merge, split, accept, apply, log, undo"
+            "and undo them by id.  Create a window for a line no window covers.\n\n"
+            "Verbs: run, show, rank, edit, create, merge, split, accept, apply,\n"
+            "log, undo"
         ),
     )
 
@@ -838,13 +883,19 @@ def register_review_commands(subparsers: Any) -> None:
             "Replay a curation file (CSV) of batched edits through the same\n"
             "impls the interactive verbs use.\n\n"
             "Columns: action,window,freqs,params -- where action is one of\n"
-            "add/remove/merge/split/accept, freqs is a ';'-separated list of\n"
-            "molecular MHz, and params is ';'-separated key=value (into=K for\n"
+            "add/remove/merge/split/accept/create, freqs is a ';'-separated list\n"
+            "of molecular MHz, and params is ';'-separated key=value (into=K for\n"
             "split, candidate=F for accept). Blank lines and '#' comments are\n"
             "ignored; an optional header row is skipped.\n\n"
+            "A 'create' row takes the anchor frequency in freqs and either a\n"
+            "window id or 'new' in the window column; 'new' means 'whichever id\n"
+            "this produces', while a named id pins the id the created window\n"
+            "takes -- which is how a file generated from the decision log keeps\n"
+            "each created window's identity stable across a replay.\n\n"
             "A run of add/remove rows on one window coalesces into a single\n"
-            "refit; merge/split/accept stand alone. With --dry-run the resolved\n"
-            "plan and any frequency-resolution warnings print without writing."
+            "refit; merge/split/accept/create stand alone. With --dry-run the\n"
+            "resolved plan and any frequency-resolution warnings print without\n"
+            "writing."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1114,6 +1165,45 @@ def register_review_commands(subparsers: Any) -> None:
         help="Enable verbose logging.",
     )
     p_edit.set_defaults(func=cmd_review_edit)
+
+    # ---- review create -------------------------------------------------------
+    p_create = verbs.add_parser(
+        "create",
+        help="Install a fit window for a line no window covers",
+        description=(
+            "Create a fit window covering a frequency the automatic pass left\n"
+            "uncovered -- the line the detector missed.\n\n"
+            "Purely structural and purely additive: no existing window is\n"
+            "renumbered, re-fit, or thawed, and the whole curated edit set\n"
+            "stands (re-running detection to reach the line would drop Stages\n"
+            "5 and 6 and destroy it).\n\n"
+            "This installs the window only.  Put the line in it with a separate\n"
+            "'review edit --window N --add F', so the decision log records the\n"
+            "two operations distinctly.\n\n"
+            "If the gap is too narrow to hold a fittable window, the adjacent\n"
+            "window is widened instead; the output says which happened."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_create.add_argument(
+        "file_path", help="Path to .ftmw pipeline file (.ftmw auto-added)"
+    )
+    p_create.add_argument(
+        "--at",
+        dest="anchor",
+        type=float,
+        required=True,
+        metavar="F",
+        help="Molecular MHz frequency the new window must cover.",
+    )
+    p_create.add_argument(
+        "--verbose",
+        dest="verbose",
+        action="store_true",
+        default=False,
+        help="Enable verbose logging.",
+    )
+    p_create.set_defaults(func=cmd_review_create)
 
     # ---- review merge --------------------------------------------------------
     p_merge = verbs.add_parser(

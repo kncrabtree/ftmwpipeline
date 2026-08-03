@@ -757,6 +757,23 @@ class FittedPeak:
     origin: str = "auto"
     """Per-peak provenance for Stage 6 curation (``"auto"`` or ``"user"``)."""
 
+    # Stage 6 derivation: which curation decision created or altered this peak's
+    # *identity*. ``None`` means the peak carried through the edit unchanged --
+    # the same line remeasured, not a replacement. See the field docstring.
+    derivation: Optional[int] = None
+    """``DecisionLogEntry.order_index`` of the Stage 6 decision that created or
+    altered this peak, or ``None`` when the peak was carried through unchanged.
+
+    A consumer that binds external state (line assignments, say) to individual
+    peaks has to decide, across an edit, which curated peaks are the *same line
+    remeasured* and which are *replaced*. This field answers that directly: a
+    peak whose ``derivation`` is unset survived the refit with its identity
+    intact; a peak tagged with a decision id was created or reshaped by that
+    decision (added, or a merge / split product) and must not silently inherit
+    the old binding. Ids are ``order_index`` values into the persisted decision
+    log, so the tag is renumbered together with the log whenever ``review undo``
+    replays from the automatic baseline."""
+
     # Spur-review hint: set when the peak's frequency was a Stage-2b flat-cluster
     # nominee whose coherent decay was ambiguous (the ``flat_decay`` band, where
     # a real line and a CW tone are indistinguishable). The line was fit, not
@@ -1937,6 +1954,13 @@ class FinalPeak:
         Fitted signal-to-noise ratio, or ``None`` when unavailable.
     origin : str
         Per-peak provenance, ``"auto"`` or ``"user"`` (Stage 6 curation).
+    derivation : int or None
+        ``DecisionLogEntry.order_index`` of the Stage 6 decision that created or
+        altered this peak, carried through from the Stage 5
+        :class:`FittedPeak`. ``None`` means the peak was carried through the
+        refit unchanged, i.e. the same line remeasured -- which is what lets a
+        consumer read the derivation instead of reconstructing it by pairing
+        peak sets across the edit.
     window_id : int or None
         Originating Stage 4 fit window id.
     amplitude_error : float or None
@@ -1970,6 +1994,7 @@ class FinalPeak:
     phase_error: Optional[float] = None
     snr_error: Optional[float] = None
     clock_lattice: Optional[str] = None
+    derivation: Optional[int] = None
 
 
 @dataclass
@@ -2080,8 +2105,18 @@ class Stage6Review:
     final_products : FinalProducts or None
         The consolidated, calibrated final-products table (the finalized record
         reports render). ``None`` until ``review run`` builds it.
+    created_windows : list of FitWindow
+        Windows a Stage 6 ``"create_window"`` decision installed on top of the
+        Stage 4 :class:`WindowPlan` -- either a brand-new window (fresh id) for a
+        line the detector missed, or a widened replacement for an existing one
+        when the gap was too narrow to hold a new window. They live here, not in
+        the Stage 4 plan, because Stage 4's product must stay a function of
+        Stage 4's inputs; the effective plan a Stage 6 edit fits against is the
+        base plan overlaid with this list, and ``review undo`` drops the overlay
+        and replays it from the decision log along with everything else.
     """
 
     window_statuses: Dict[int, "WindowReviewStatus"] = field(default_factory=dict)
     decision_log: List["DecisionLogEntry"] = field(default_factory=list)
     final_products: Optional["FinalProducts"] = None
+    created_windows: List["FitWindow"] = field(default_factory=list)

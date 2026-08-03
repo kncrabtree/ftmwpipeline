@@ -238,6 +238,11 @@ _CSV_COLUMNS = [
     "origin",
     "window_id",
     "clock_lattice",
+    # Stage 6 derivation: the decision-log index of the edit that created or
+    # altered this line; empty means it came through unchanged. Exported so a
+    # consumer reads the identity change instead of pairing peak sets across
+    # edits.
+    "derivation",
 ]
 
 
@@ -274,6 +279,7 @@ def _csv_row(p: FinalPeak, unit_value: float) -> List[str]:
         p.origin,
         "" if p.window_id is None else str(p.window_id),
         p.clock_lattice or "",
+        "" if p.derivation is None else str(p.derivation),
     ]
 
 
@@ -347,6 +353,7 @@ def _peak_json(
         "origin": p.origin,
         "window_id": p.window_id,
         "clock_lattice": p.clock_lattice,
+        "derivation": p.derivation,
     }
     if with_catalog:
         payload["catalog"] = _catalog_json(match)

@@ -47,7 +47,7 @@ Outline (the plan's eight steps):
 
 import math
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
 
@@ -135,6 +135,20 @@ was wrongly credited with preventing was the unbounded strong-cluster force-merg
 governed by the width cap. A positive value restores an explicit cap (power users /
 diagnostics); it tracks the Stage 5 ``conservative.max_peaks`` and both should be
 set together."""
+
+DEFAULT_STAGE6_MIN_WINDOW_HALF_WIDTH_POINTS = 8
+"""Floor on the noise margin each side of a **Stage-6-created** window's anchor.
+
+Stage 6 can create a window for a line the detector missed (see
+:func:`plan_stage6_window`). Such a window is built in whatever gap the base
+plan left, so unlike a Stage 4 window it cannot always get the full
+``min_window_half_width_points`` margin. This is the point below which shrinking
+it further stops being worth doing: 8 points a side is 17 bins, i.e. 34 real
+residual elements against the ~4 free parameters of a single line plus tau --
+enough for the per-window sigma and the residual edge statistic to mean
+something. Below it, absorbing the anchor into the adjacent window is the better
+answer: that window brings an already-fit statistical context instead of a
+starved new one."""
 
 DEFAULT_MAGNITUDE_ATTACHMENT_THRESHOLD = 0.1
 """Tier-1 attachment threshold (in units of σ_c on the target window) for the
@@ -1270,4 +1284,470 @@ def replan(
         acquisition_us=acquisition_us,
         tau_us=tau_us,
         plan_revision=plan.plan_revision + 1,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Stage 6: create a window for a line the detector missed.
+#
+# A curator who spots a real line in a region the base plan left uncovered has
+# no window to edit -- Stage 4 built windows around *promoted* detections, and
+# lowering the detection threshold to reach the line drops Stages 5 and 6 and
+# destroys the whole curated edit set. The planner below builds one window for
+# such an anchor, deliberately as a **purely additive** structural change:
+#
+# * it never renumbers an existing window (a consumer partitions peaks on
+#   window_id to decide what an edit touched; renumbering would flag every peak
+#   in the spectrum on every window addition),
+# * its extent is a function of the anchor and the base plan alone -- never of
+#   the current curated state -- so replaying an edit set in order reproduces
+#   the same geometry, and
+# * it carries only *inbound* dependency edges: the base plan's strong lines
+#   leak into it, it leaks into nothing. That is what keeps it a leaf in the
+#   fit DAG and lets it be added without re-fitting anything already fit.
+#
+# The one case where "additive" is not achievable is a gap too narrow to hold a
+# fittable window at all. Rather than create a starved one, the adjacent window
+# is widened to absorb the anchor -- reported honestly as ``mode="widened"`` so
+# the caller (and the decision log) records that an existing window changed.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class Stage6WindowProposal:
+    """One proposed Stage-6 structural change, ready to persist and fit.
+
+    Attributes
+    ----------
+    window : FitWindow
+        The window to install. For ``mode="created"`` this carries a **fresh**
+        ``window_id`` (one past the plan's highest); for ``mode="widened"`` it
+        is the existing window's id with a grown ``freq_range``.
+    mode : str
+        ``"created"`` when a new window was built in a gap, ``"widened"`` when
+        the gap was too narrow and an existing window absorbed the anchor.
+    depends_on : list of int
+        ``window_id`` values this window reads frozen leakage from -- the
+        inbound half of the dependency edges ``(window.window_id, primary)``.
+        Empty for ``mode="widened"`` (its edges are unchanged).
+    diagnostics : dict
+        Why the proposal came out the way it did: the anchor, the gap it landed
+        in, the realized half-widths, and the margin floor that was applied.
+    """
+
+    window: FitWindow
+    mode: str
+    depends_on: List[int]
+    diagnostics: Dict[str, Any]
+
+
+def _grid_span_of(
+    ordered_freqs: np.ndarray, freq_range: Tuple[float, float]
+) -> Tuple[int, int]:
+    """Inclusive ascending-grid index span covered by a window's ``freq_range``.
+
+    Derived from the frequencies rather than read from ``diagnostics`` so it is
+    correct for a hand-edited plan and for a window this module itself created.
+    """
+    lo_mhz, hi_mhz = float(freq_range[0]), float(freq_range[1])
+    if lo_mhz > hi_mhz:
+        lo_mhz, hi_mhz = hi_mhz, lo_mhz
+    lo = int(np.searchsorted(ordered_freqs, lo_mhz, side="left"))
+    hi = int(np.searchsorted(ordered_freqs, hi_mhz, side="right")) - 1
+    n = int(ordered_freqs.size)
+    lo = min(max(lo, 0), n - 1)
+    hi = min(max(hi, 0), n - 1)
+    if hi < lo:
+        hi = lo
+    return lo, hi
+
+
+def plan_stage6_window(
+    plan: WindowPlan,
+    peaks: List[Peak],
+    freqs: np.ndarray,
+    complex_spectrum: np.ndarray,
+    rms_noise: np.ndarray,
+    anchor_mhz: float,
+    *,
+    acquisition_us: float,
+    tau_us: Optional[float] = None,
+    min_window_half_width_mhz: float = DEFAULT_MIN_WINDOW_HALF_WIDTH_MHZ,
+    min_window_half_width_points: int = DEFAULT_MIN_WINDOW_HALF_WIDTH_POINTS,
+    min_freeze_snr: float = DEFAULT_MIN_FREEZE_SNR,
+    magnitude_attachment_threshold: float = DEFAULT_MAGNITUDE_ATTACHMENT_THRESHOLD,
+    stage6_min_half_width_points: int = DEFAULT_STAGE6_MIN_WINDOW_HALF_WIDTH_POINTS,
+    live_window_ids: Optional[Sequence[int]] = None,
+) -> Stage6WindowProposal:
+    """Propose a fit window covering ``anchor_mhz`` without disturbing the plan.
+
+    Pure and deterministic: given the same base ``plan``, spectrum and anchor it
+    always returns the same proposal, which is what lets a Stage 6 edit set be
+    replayed. It does not mutate ``plan``.
+
+    Geometry
+    --------
+    The anchor is placed on the active-FT grid and the **gap** it falls in --
+    the run of grid points between the two nearest existing windows -- is the
+    only room available, because Stage 4's hard invariant is that windows are
+    disjoint. Inside that gap the window takes the plan's own margin
+    (``min_window_half_width_points``, else the MHz form) on each side of the
+    anchor. If the gap cannot hold that symmetrically the window is **shifted**,
+    not shrunk, so a line near one end of a roomy gap still gets a full-size
+    window (off-center). Only when the gap itself is too small does the window
+    shrink, and only down to ``stage6_min_half_width_points`` a side.
+
+    Below that floor the proposal switches to ``mode="widened"``: the nearer
+    adjacent window grows to absorb the anchor plus the floor margin, bounded by
+    the far neighbour so disjointness still holds. Its contributor set and
+    dependency edges are carried over untouched -- the widening adds grid points,
+    it does not re-derive the plan.
+
+    Contributors
+    ------------
+    A created window is attached to the base plan's strong lines by the same
+    Tier-1 magnitude rule Stage 4 uses (predicted mean |skirt| at least
+    ``magnitude_attachment_threshold * sigma_c`` on this window's grid), reading
+    the primaries straight off ``plan``. Every attachment is edge-bearing and
+    inbound; the new window is a leaf, so no existing window acquires a
+    dependency on it and none needs re-fitting. That is deliberate: a window
+    created for a detection the automatic pass missed holds, by construction, a
+    line too weak to clear the freeze bar, whose own leakage into its neighbours
+    is negligible.
+
+    Parameters
+    ----------
+    plan :
+        The base :class:`WindowPlan` (not mutated).
+    peaks :
+        The full persisted Stage 3 peak list; ``free_peak_indices`` and
+        contributor references index into it, exactly as in
+        :func:`build_window_plan`.
+    freqs, complex_spectrum, rms_noise :
+        The active-FT surface, as for :func:`build_window_plan`.
+    anchor_mhz :
+        Molecular frequency (MHz) the window must cover.
+    acquisition_us, tau_us :
+        Active acquisition ``T`` (µs) and assumed decay constant, for the
+        analytic leakage envelope.
+    min_window_half_width_mhz, min_window_half_width_points :
+        The plan's window margin (points form wins when positive), i.e. the
+        extent a created window aims for on each side of the anchor.
+    min_freeze_snr :
+        Freeze-eligibility SNR cutoff stamped on each attached contributor.
+    magnitude_attachment_threshold :
+        Tier-1 contributor-attachment threshold in units of σ_c.
+    stage6_min_half_width_points :
+        The floor below which a created window is not worth having; see
+        :data:`DEFAULT_STAGE6_MIN_WINDOW_HALF_WIDTH_POINTS`.
+    live_window_ids :
+        The plan windows that actually carry a Stage 5 fit. Stage 5 drops a
+        window whose peaks all fail their gates, and a dropped window is not
+        occupying its range in any meaningful sense: nothing is fit there, so a
+        line there genuinely has no window and it is not a widening target
+        either. Passing the ids keeps both decisions honest. ``None`` (the
+        default) treats every plan window as live, which is the right reading
+        for a caller reasoning about the plan alone.
+
+    Returns
+    -------
+    Stage6WindowProposal
+
+    Raises
+    ------
+    ValueError
+        If the spectrum arrays differ in length, ``acquisition_us <= 0``, the
+        anchor lies outside the spectrum, the anchor already falls inside an
+        existing window (that frequency is an ordinary ``review edit --add``),
+        or the plan has no windows to position against.
+    """
+    if not (len(freqs) == len(complex_spectrum) == len(rms_noise)):
+        raise ValueError("freqs, complex_spectrum and rms_noise must be equal length")
+    if acquisition_us <= 0:
+        raise ValueError("acquisition_us must be positive")
+
+    ofreqs, _ospec, orms, _order = _ordered_grid(
+        np.asarray(freqs, dtype=float),
+        np.asarray(complex_spectrum, dtype=complex),
+        np.asarray(rms_noise, dtype=float),
+    )
+    n = int(ofreqs.size)
+    if n == 0:
+        raise ValueError("the active-FT spectrum is empty")
+
+    anchor = float(anchor_mhz)
+    if anchor < float(ofreqs[0]) or anchor > float(ofreqs[-1]):
+        raise ValueError(
+            f"anchor {anchor:.4f} MHz is outside the analysis band "
+            f"[{float(ofreqs[0]):.4f}, {float(ofreqs[-1]):.4f}] MHz"
+        )
+    gi = _nearest_grid_index(ofreqs, anchor)
+
+    if not plan.windows:
+        raise ValueError(
+            "the window plan has no windows; re-run Stage 4 rather than "
+            "creating a window against an empty plan"
+        )
+
+    # --- Locate the anchor against the existing (disjoint) window spans -----
+    # Only *live* windows count: a window Stage 5 dropped covers no fit, so it
+    # neither blocks an anchor nor can absorb one.
+    live: Optional[Set[int]] = (
+        None if live_window_ids is None else {int(w) for w in live_window_ids}
+    )
+    candidates = [w for w in plan.windows if live is None or int(w.window_id) in live]
+    spans: List[Tuple[int, int, int]] = sorted(
+        ((*_grid_span_of(ofreqs, w.freq_range), int(w.window_id)) for w in candidates),
+        key=lambda t: (t[0], t[1]),
+    )
+    for lo, hi, wid in spans:
+        if lo <= gi <= hi:
+            wlo, whi = plan.window(wid).freq_range
+            raise ValueError(
+                f"anchor {anchor:.4f} MHz already falls inside window {wid} "
+                f"([{min(wlo, whi):.4f}, {max(wlo, whi):.4f}] MHz). Add the peak "
+                f"to that window with 'review edit --window {wid} --add "
+                f"{anchor:.4f}' instead; window creation is for a frequency no "
+                f"window covers."
+            )
+
+    below = [(lo, hi, wid) for lo, hi, wid in spans if hi < gi]
+    above = [(lo, hi, wid) for lo, hi, wid in spans if lo > gi]
+    gap_lo = (max(hi for _lo, hi, _w in below) + 1) if below else 0
+    gap_hi = (min(lo for lo, _hi, _w in above) - 1) if above else n - 1
+
+    # --- Desired extent: the plan's own margin, shifted to fit the gap ------
+    step_mhz = abs(float(np.mean(np.diff(ofreqs)))) if n > 1 else 1.0
+    step_mhz = step_mhz or 1.0
+    if min_window_half_width_points > 0:
+        margin = int(min_window_half_width_points)
+    else:
+        margin = max(int(round(min_window_half_width_mhz / step_mhz)), 1)
+    floor = max(int(stage6_min_half_width_points), 1)
+
+    lo, hi = gi - margin, gi + margin
+    if hi > gap_hi:
+        lo -= hi - gap_hi
+        hi = gap_hi
+    if lo < gap_lo:
+        hi = min(gap_hi, hi + (gap_lo - lo))
+        lo = gap_lo
+
+    diagnostics: Dict[str, Any] = {
+        "stage6_anchor_mhz": anchor,
+        "stage6_anchor_grid_index": int(gi),
+        "stage6_gap_grid_span": [int(gap_lo), int(gap_hi)],
+        "stage6_margin_points": int(margin),
+        "stage6_min_half_width_points": int(floor),
+    }
+
+    if (gi - lo) < floor or (hi - gi) < floor:
+        return _widen_for_stage6_anchor(
+            candidates,
+            peaks,
+            ofreqs,
+            gi=gi,
+            gap_lo=gap_lo,
+            gap_hi=gap_hi,
+            below=below,
+            above=above,
+            floor=floor,
+            diagnostics=diagnostics,
+        )
+
+    # --- Build the new window ----------------------------------------------
+    new_wid = max(int(w.window_id) for w in plan.windows) + 1
+    promoted = _promoted_ppeaks(peaks, ofreqs, n)
+    members = [pk for pk in promoted if lo <= pk.grid_index <= hi]
+
+    window = FitWindow(
+        window_id=new_wid,
+        freq_range=(float(ofreqs[lo]), float(ofreqs[hi])),
+        free_peak_indices=[pk.list_index for pk in members],
+        batch=0,
+        diagnostics={
+            "grid_span": [int(lo), int(hi)],
+            "n_strong_in_band": sum(1 for pk in members if pk.is_strong),
+            "trimmed_width_mhz": abs(float(ofreqs[hi]) - float(ofreqs[lo])),
+            "stage6_created": True,
+            **diagnostics,
+        },
+    )
+
+    depends_on = _attach_stage6_contributors(
+        window,
+        candidates,
+        promoted,
+        ofreqs,
+        orms,
+        lo,
+        hi,
+        acquisition_us=acquisition_us,
+        tau_us=tau_us,
+        min_freeze_snr=min_freeze_snr,
+        magnitude_attachment_threshold=magnitude_attachment_threshold,
+    )
+    # A leaf's batch only has to follow the windows it reads.
+    by_wid = {int(w.window_id): w for w in candidates}
+    dep_batches = [by_wid[p].batch for p in depends_on if p in by_wid]
+    window.batch = (max(dep_batches) + 1) if dep_batches else 0
+
+    return Stage6WindowProposal(
+        window=window,
+        mode="created",
+        depends_on=depends_on,
+        diagnostics=window.diagnostics,
+    )
+
+
+def _promoted_ppeaks(peaks: List[Peak], ofreqs: np.ndarray, n: int) -> List[_PPeak]:
+    """The promoted Stage 3 peaks resolved onto the ascending grid."""
+    promoted: List[_PPeak] = []
+    for li, p in enumerate(peaks):
+        if not p.properties.get("promoted"):
+            continue
+        promoted.append(
+            _PPeak(
+                list_index=li,
+                grid_index=_nearest_grid_index(ofreqs, p.frequency) if n else 0,
+                frequency=float(p.frequency),
+                snr=float(p.snr) if p.snr is not None else 0.0,
+                intensity=float(p.intensity),
+                is_strong=(p.classification == PeakClassification.STRONG),
+            )
+        )
+    return promoted
+
+
+def _attach_stage6_contributors(
+    window: FitWindow,
+    source_windows: List[FitWindow],
+    promoted: List[_PPeak],
+    ofreqs: np.ndarray,
+    orms: np.ndarray,
+    lo: int,
+    hi: int,
+    *,
+    acquisition_us: float,
+    tau_us: Optional[float],
+    min_freeze_snr: float,
+    magnitude_attachment_threshold: float,
+) -> List[int]:
+    """Attach the base plan's strong lines that materially leak into ``window``.
+
+    The same Tier-1 magnitude rule Step 4 of :func:`_finalize_plan` applies, run
+    for one window against the plan's existing primaries. Returns the sorted
+    primary window ids -- the window's inbound dependencies.
+    """
+    by_list_index = {pk.list_index: pk for pk in promoted}
+    primary_of_strong: Dict[int, int] = {}
+    for w in source_windows:
+        for li in w.free_peak_indices:
+            pk = by_list_index.get(li)
+            if pk is not None and pk.is_strong:
+                primary_of_strong[li] = int(w.window_id)
+
+    w_center_mhz = 0.5 * (float(ofreqs[lo]) + float(ofreqs[hi]))
+    w_rms_mean = float(np.mean(orms[lo : hi + 1]))
+    sigma_c_w = w_rms_mean / math.sqrt(2.0) if w_rms_mean > 0 else 0.0
+    threshold = magnitude_attachment_threshold * sigma_c_w
+
+    contributors: List[FixedContributor] = []
+    for li, primary_wid in sorted(primary_of_strong.items()):
+        s_pk = by_list_index[li]
+        df_mhz = abs(s_pk.frequency - w_center_mhz)
+        if df_mhz <= 0.0:
+            continue
+        predicted_skirt = s_pk.intensity * _leakage_envelope_fraction(
+            df_mhz * 1e6, acquisition_us, tau_us
+        )
+        if predicted_skirt < threshold:
+            continue
+        contributors.append(
+            FixedContributor(
+                peak_index=li,
+                primary_window_id=primary_wid,
+                frequency_mhz=s_pk.frequency,
+                freeze_eligible=s_pk.snr >= min_freeze_snr,
+            )
+        )
+    window.fixed_contributors = contributors
+    return sorted({fc.primary_window_id for fc in contributors})
+
+
+def _widen_for_stage6_anchor(
+    source_windows: List[FitWindow],
+    peaks: List[Peak],
+    ofreqs: np.ndarray,
+    *,
+    gi: int,
+    gap_lo: int,
+    gap_hi: int,
+    below: List[Tuple[int, int, int]],
+    above: List[Tuple[int, int, int]],
+    floor: int,
+    diagnostics: Dict[str, Any],
+) -> Stage6WindowProposal:
+    """Absorb ``gi`` into the nearer adjacent window (the narrow-gap fallback).
+
+    Reached only when the gap cannot hold a window with ``floor`` grid points of
+    margin each side of the anchor -- a line sitting in a narrow crack between
+    two windows. Widening beats creating a starved window: the neighbour already
+    has a converged fit and a contributor set covering this region.
+
+    The target is the window whose edge is nearest the anchor (lower
+    ``window_id`` breaks a tie, so the choice is deterministic). Its span grows
+    to reach ``floor`` points past the anchor, bounded by the *other* neighbour,
+    so the plan stays disjoint. Contributors and dependency edges are carried
+    over verbatim: this adds grid points to an existing window, it does not
+    re-derive the plan.
+    """
+    n = int(ofreqs.size)
+    dist_below = (gi - (gap_lo - 1)) if below else None
+    dist_above = ((gap_hi + 1) - gi) if above else None
+
+    if dist_below is None and dist_above is None:  # pragma: no cover - guarded above
+        raise ValueError("no adjacent window to widen")
+    if dist_above is None:
+        pick_below = True
+    elif dist_below is None:
+        pick_below = False
+    elif dist_below != dist_above:
+        pick_below = dist_below < dist_above
+    else:
+        pick_below = below[-1][2] <= above[0][2]
+
+    if pick_below:
+        src_lo, src_hi, wid = below[-1]
+        new_lo, new_hi = src_lo, min(gap_hi, max(gi + floor, gi))
+    else:
+        src_lo, src_hi, wid = above[0]
+        new_lo, new_hi = max(gap_lo, min(gi - floor, gi)), src_hi
+    new_lo = max(0, min(new_lo, n - 1))
+    new_hi = max(0, min(new_hi, n - 1))
+
+    src = next(w for w in source_windows if int(w.window_id) == int(wid))
+    promoted = _promoted_ppeaks(peaks, ofreqs, n)
+    members = [pk for pk in promoted if new_lo <= pk.grid_index <= new_hi]
+
+    widened = FitWindow(
+        window_id=int(wid),
+        freq_range=(float(ofreqs[new_lo]), float(ofreqs[new_hi])),
+        free_peak_indices=[pk.list_index for pk in members],
+        fixed_contributors=list(src.fixed_contributors),
+        batch=src.batch,
+        diagnostics={
+            **dict(src.diagnostics),
+            "grid_span": [int(new_lo), int(new_hi)],
+            "trimmed_width_mhz": abs(float(ofreqs[new_hi]) - float(ofreqs[new_lo])),
+            "stage6_widened": True,
+            "stage6_widened_from_grid_span": [int(src_lo), int(src_hi)],
+            **diagnostics,
+        },
+    )
+    return Stage6WindowProposal(
+        window=widened,
+        mode="widened",
+        depends_on=[],
+        diagnostics=widened.diagnostics,
     )

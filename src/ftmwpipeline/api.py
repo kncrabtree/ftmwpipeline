@@ -40,6 +40,7 @@ from ._internal.stage5_impl import _DETAIL_PAD_FACTOR
 from ._internal.stage6_impl import (
     DEFAULT_ATTENTION_CANDIDATE_EVIDENCE,
     DEFAULT_DISPLAY_BAR,
+    CreateWindowResult,
     CurationApplyResult,
     DecisionLogEntry,
     RankedWindow,
@@ -1412,6 +1413,40 @@ def review_edit(
     return Pipeline.open(file_path).review_edit(
         window_id, add=add, remove=remove, snap_tol_mhz=snap_tol_mhz
     )
+
+
+def review_create(
+    file_path: Union[str, Path],
+    anchor_mhz: float,
+    *,
+    snap_tol_mhz: float = 0.05,
+) -> CreateWindowResult:
+    """Install a fit window covering ``anchor_mhz`` (Stage 6 ``review create``).
+
+    For a line the automatic pass left with no window at all.  Purely
+    structural and purely additive: no existing window is renumbered, re-fit,
+    or thawed, and adding the line to the new window is a separate
+    :func:`review_edit` decision.  Equivalent to
+    :meth:`Pipeline.review_create`.
+
+    Parameters
+    ----------
+    file_path :
+        Path to the ``.ftmw`` pipeline file (read-write).
+    anchor_mhz :
+        Molecular frequency (MHz) the window must cover.
+    snap_tol_mhz :
+        Snap tolerance forwarded to the fit core (MHz; default 0.05).
+
+    Returns
+    -------
+    CreateWindowResult
+        The installed window's id, mode (``"created"`` / ``"widened"``),
+        extent, and contributor count.
+
+    Requires Stage 5 completed.
+    """
+    return Pipeline.open(file_path).review_create(anchor_mhz, snap_tol_mhz=snap_tol_mhz)
 
 
 def review_merge(

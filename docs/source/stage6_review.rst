@@ -44,6 +44,8 @@ distinction is worth fixing early, because it is easy to conflate:
 - **``review edit`` / ``merge`` / ``split``**, ``accept --candidate``, and
   **``review apply``** are what *refit*: each applies a decision and re-runs the
   window's least-squares fit in place.
+- **``review create``** is neither: it adds a *window* where the automatic pass
+  left none, installing structure without touching any peak.
 
 Method
 ------
@@ -169,6 +171,49 @@ worklist and products but refits nothing.)
 ``merge`` and ``split`` are physics-aware-reseed sugar over add-plus-remove. All edits
 carry ``user`` provenance.
 
+``review edit --add`` requires that the frequency lie inside the named window. A
+frequency **no window covers** is a different situation, and it has its own verb.
+
+Creating a window
+~~~~~~~~~~~~~~~~~
+
+- ``review create --at F`` — install a fit window covering ``F``.
+
+Windows come from Stage 4, which builds them around the lines Stage 3 *promoted*.
+A real line the detector missed therefore has no window to edit, and reaching it by
+lowering the detection threshold re-runs Stage 3 — which invalidates Stages 5 and 6
+and discards the entire curated edit set. ``review create`` supplies the missing
+structure instead, so nothing already decided is lost.
+
+It is deliberately **structural only**: the window is installed and fit with an empty
+peak set. Putting the line in it is a separate ``review edit --window N --add F``, and
+the log records the two operations as two decisions. Creating structure and changing a
+window's peak set are different acts, and a log that spelled both ``add`` could not be
+replayed or diffed without re-deriving window membership from scratch. A client is free
+to offer both as one gesture; the log still shows two.
+
+Three properties make the operation safe to build on:
+
+- **Additive.** The new window reads its neighbours' frozen leakage skirts inward and
+  contributes no outward dependency edge, so no existing window is re-fit or thawed —
+  a window created for a line the automatic pass missed holds, by construction, a line
+  below the freeze bar, whose own leakage into its neighbours is negligible.
+- **Ids are only appended.** No existing window is ever renumbered, so a consumer that
+  partitions peaks on ``window_id`` sees exactly the windows an edit touched rather
+  than the whole spectrum.
+- **Deterministic extent.** The window's bounds are a function of the anchor and the
+  *base* Stage 4 plan — never of the current curated state — so replaying an edit set
+  in order reproduces the same window. The window takes the plan's own margin each
+  side of the anchor, shifted (not shrunk) when the gap cannot centre it.
+
+Two boundary cases resolve rather than fail. An anchor that already falls inside a
+window is refused with a message pointing at ``review edit --add`` on that window —
+that frequency has a home. And when the gap is too narrow to hold a fittable window,
+the adjacent window is **widened** to absorb the anchor and re-fit over its new extent;
+the result reports ``mode="widened"`` and the decision log records it, so the change to
+an existing window is never silent. Windows Stage 5 dropped (all their peaks failed
+their gates) are not treated as occupying their range: nothing is fit there.
+
 **A user edit bypasses the accept gate but not the optimizer.** The analyst is the
 gate: a user-added line is kept without the F-test the automatic loop applies. It still
 faces the fit honestly, though — if the optimizer drives it to zero amplitude or
@@ -208,6 +253,16 @@ frequencies, the amplitude, phase, and signal-to-noise with their uncertainties,
 three-term frequency budget, the originating window, the ``origin`` provenance, and any
 clock-lattice flag. The exact columns are listed under
 :ref:`the table output <stage6-table>` below.
+
+Each row also carries a **derivation** tag: the decision-log index of the edit that
+created or altered that line, or empty when the line came through unchanged. Because
+one edit regenerates the whole curated peak set, a consumer that binds external state
+to individual lines (a line assignment, say) has to decide across an edit which lines
+are the *same line remeasured* and which are *replaced*. The tag answers that
+directly — an untagged line survived the refit with its identity intact, while a
+tagged one was added, or is a merge or split product, and must not silently inherit
+the old binding. ``review undo`` renumbers the tags together with the log, so a tag
+always indexes a decision that is actually in it.
 
 The frequency uncertainty is composed as three independent terms in quadrature:
 
@@ -355,7 +410,8 @@ order, are ``frequency_mhz`` (calibrated), ``sigma_f_khz`` (the total budget), i
 three components ``sigma_stat_khz`` / ``sigma_eps_khz`` / ``sigma_floor_khz``,
 ``frequency_raw_mhz`` (uncalibrated) and ``f_baseband_mhz``, ``amplitude`` /
 ``amplitude_err`` (in a header-declared unit), ``phase_rad`` / ``phase_err_rad``,
-``snr`` / ``snr_err``, ``origin``, ``window_id``, and ``clock_lattice``. With
+``snr`` / ``snr_err``, ``origin``, ``window_id``, ``clock_lattice``, and
+``derivation``. With
 ``--catalog`` four columns append: ``catalog_label``, ``catalog_freq_mhz``,
 ``catalog_delta_khz``, and ``catalog_pull``. A representative excerpt:
 
@@ -369,9 +425,9 @@ three components ``sigma_stat_khz`` / ``sigma_eps_khz`` / ``sigma_floor_khz``,
    # sideband: upper
    # amplitude_unit: uV
    # n_peaks: 638
-   frequency_mhz,sigma_f_khz,sigma_stat_khz,sigma_eps_khz,sigma_floor_khz,frequency_raw_mhz,f_baseband_mhz,amplitude,amplitude_err,phase_rad,phase_err_rad,snr,snr_err,origin,window_id,clock_lattice
-   36350.112100,0.42,0.42,0.000,0.000,36350.112100,10350.112100,18.3,0.37,0.31,0.02,210.4,4.2,auto,217,
-   36389.044700,0.55,0.55,0.000,0.000,36389.044700,10389.044700,9.1,0.41,-1.12,0.05,71.6,3.2,auto,218,
+   frequency_mhz,sigma_f_khz,sigma_stat_khz,sigma_eps_khz,sigma_floor_khz,frequency_raw_mhz,f_baseband_mhz,amplitude,amplitude_err,phase_rad,phase_err_rad,snr,snr_err,origin,window_id,clock_lattice,derivation
+   36350.112100,0.42,0.42,0.000,0.000,36350.112100,10350.112100,18.3,0.37,0.31,0.02,210.4,4.2,auto,217,,
+   36389.044700,0.55,0.55,0.000,0.000,36389.044700,10389.044700,9.1,0.41,-1.12,0.05,71.6,3.2,auto,218,,
 
 ``report run`` is the default deliverable: it writes that table (``<stem>_lines.csv`` by
 default) and a **self-contained HTML report** (``<stem>_report.html``), one portable

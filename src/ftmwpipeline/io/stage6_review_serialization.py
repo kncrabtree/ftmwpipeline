@@ -18,6 +18,9 @@ HDF5 layout (under the caller-supplied group)::
     final_products/ (present once consolidated; absent otherwise)
         .attrs:
             data  (JSON string)
+    created_windows/ (absent in files predating Stage-6 window creation)
+        .attrs:
+            data  (JSON string)
 
 The window-status data is a JSON list of dicts with keys
 ``window_id``, ``provenance``, ``attention_reasons``, ``invalidated``.
@@ -26,7 +29,10 @@ Each element of ``attention_reasons`` is a dict with keys
 
 The decision log is a JSON list (a window carries entries once a `review` edit
 records a decision against it). The final-products subgroup holds the
-consolidated, frequency-calibrated line list `review run` builds.
+consolidated, frequency-calibrated line list `review run` builds. The
+created-windows subgroup holds the Stage-6 overlay on the Stage 4 window plan
+(new or widened windows a `create_window` decision installed) as a JSON list of
+serialized ``FitWindow`` objects.
 
 Reading a group that does not exist returns an empty :class:`Stage6Review`
 (legacy-safe).
@@ -45,6 +51,8 @@ from ..core.data_structures import (
     DecisionLogEntry,
     FinalPeak,
     FinalProducts,
+    FitWindow,
+    FixedContributor,
     Stage6Review,
     WindowReviewStatus,
 )
@@ -132,6 +140,7 @@ def _final_peak_to_dict(p: FinalPeak) -> Dict[str, Any]:
         "phase_error": p.phase_error,
         "snr_error": p.snr_error,
         "clock_lattice": p.clock_lattice,
+        "derivation": p.derivation,
     }
 
 
@@ -155,6 +164,9 @@ def _final_peak_from_dict(d: Dict[str, Any]) -> FinalPeak:
         clock_lattice=(
             None if d.get("clock_lattice") is None else str(d["clock_lattice"])
         ),
+        # Absent in tables written before the derivation tag; None reads as
+        # "carried through unchanged", correct for a pre-curation table.
+        derivation=(None if d.get("derivation") is None else int(d["derivation"])),
     )
 
 
@@ -182,6 +194,47 @@ def _final_products_from_dict(d: Dict[str, Any]) -> FinalProducts:
     )
 
 
+def _fit_window_to_dict(w: FitWindow) -> Dict[str, Any]:
+    return {
+        "window_id": int(w.window_id),
+        "freq_range": [float(w.freq_range[0]), float(w.freq_range[1])],
+        "free_peak_indices": [int(i) for i in w.free_peak_indices],
+        "batch": int(w.batch),
+        "fixed_contributors": [
+            {
+                "peak_index": int(fc.peak_index),
+                "primary_window_id": int(fc.primary_window_id),
+                "frequency_mhz": float(fc.frequency_mhz),
+                "freeze_eligible": bool(fc.freeze_eligible),
+                "edge_free": bool(fc.edge_free),
+            }
+            for fc in w.fixed_contributors
+        ],
+        "diagnostics": w.diagnostics,
+    }
+
+
+def _fit_window_from_dict(d: Dict[str, Any]) -> FitWindow:
+    fr = d["freq_range"]
+    return FitWindow(
+        window_id=int(d["window_id"]),
+        freq_range=(float(fr[0]), float(fr[1])),
+        free_peak_indices=[int(i) for i in d.get("free_peak_indices", [])],
+        fixed_contributors=[
+            FixedContributor(
+                peak_index=int(fc["peak_index"]),
+                primary_window_id=int(fc["primary_window_id"]),
+                frequency_mhz=float(fc["frequency_mhz"]),
+                freeze_eligible=bool(fc.get("freeze_eligible", True)),
+                edge_free=bool(fc.get("edge_free", False)),
+            )
+            for fc in d.get("fixed_contributors", [])
+        ],
+        batch=int(d.get("batch", 0)),
+        diagnostics=dict(d.get("diagnostics", {})),
+    )
+
+
 def save_stage6_review_to_hdf5(review: Stage6Review, group: h5py.Group) -> None:
     """Persist *review* into the HDF5 *group* (must already exist)."""
     group.attrs["creation_time"] = datetime.now().isoformat()
@@ -200,6 +253,11 @@ def save_stage6_review_to_hdf5(review: Stage6Review, group: h5py.Group) -> None:
         fp_grp.attrs["data"] = json.dumps(
             _final_products_to_dict(review.final_products)
         )
+
+    cw_grp = group.require_group("created_windows")
+    cw_grp.attrs["data"] = json.dumps(
+        [_fit_window_to_dict(w) for w in review.created_windows], default=str
+    )
 
 
 def load_stage6_review_from_hdf5(group: h5py.Group) -> Stage6Review:
@@ -226,10 +284,20 @@ def load_stage6_review_from_hdf5(group: h5py.Group) -> Stage6Review:
         if raw is not None:
             final_products = _final_products_from_dict(json.loads(str(raw)))
 
+    # Absent in files written before Stage-6 window creation: an empty overlay
+    # means "the effective plan is the Stage 4 plan", which is correct for them.
+    cw_grp = group.get("created_windows")
+    created_windows: List[FitWindow] = []
+    if cw_grp is not None:
+        raw = cw_grp.attrs.get("data", "[]")
+        for d in json.loads(str(raw)):
+            created_windows.append(_fit_window_from_dict(d))
+
     return Stage6Review(
         window_statuses=window_statuses,
         decision_log=decision_log,
         final_products=final_products,
+        created_windows=created_windows,
     )
 
 

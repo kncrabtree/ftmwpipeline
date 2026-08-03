@@ -67,6 +67,7 @@ from ._internal.stage5_validation_impl import validate_stage5_shape_error_impl
 from ._internal.stage6_impl import (
     DEFAULT_ATTENTION_CANDIDATE_EVIDENCE,
     DEFAULT_DISPLAY_BAR,
+    CreateWindowResult,
     CurationApplyResult,
     DecisionLogEntry,
     RankedWindow,
@@ -74,6 +75,7 @@ from ._internal.stage6_impl import (
     ReviewRunResult,
     UndoResult,
     apply_curation_impl,
+    create_window_impl,
     get_candidate_ledger_impl,
     get_final_products_impl,
     get_review_status_impl,
@@ -1560,6 +1562,46 @@ class Pipeline:
             window_id,
             add=add,
             remove=remove,
+            snap_tol_mhz=snap_tol_mhz,
+        )
+
+    def review_create(
+        self,
+        anchor_mhz: float,
+        *,
+        snap_tol_mhz: float = 0.05,
+    ) -> CreateWindowResult:
+        """Install a fit window covering ``anchor_mhz`` (Stage 6 ``review create``).
+
+        For a line in a region the automatic pass left with no window at all --
+        reachable otherwise only by re-running detection, which invalidates
+        Stages 5 and 6 and destroys the curated edit set.  Creating the window
+        is purely structural and purely additive: no existing window is
+        renumbered, re-fit, or thawed.
+
+        Putting a line in the new window is a separate
+        :meth:`review_edit` ``add`` decision, so the log records the two
+        operations distinctly.  If the gap is too narrow to hold a fittable
+        window, the adjacent window is widened instead and the result reports
+        ``mode="widened"``.
+
+        Parameters
+        ----------
+        anchor_mhz :
+            Molecular frequency (MHz) the window must cover.
+        snap_tol_mhz :
+            Snap tolerance forwarded to the fit core (MHz; default 0.05).
+
+        Returns
+        -------
+        CreateWindowResult
+            The installed window's id, mode, extent, and contributor count.
+
+        Requires Stage 5 completed.
+        """
+        return create_window_impl(
+            self.filepath,
+            anchor_mhz,
             snap_tol_mhz=snap_tol_mhz,
         )
 

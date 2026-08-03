@@ -598,6 +598,78 @@ class TestAddPeak:
 
 
 # ---------------------------------------------------------------------------
+# An `add` outside the named window's range is a caller error, not a fit
+# against data the window does not cover (issue #40). `remove` was already
+# validated against the window's contents; `add` is now validated against its
+# extent.
+# ---------------------------------------------------------------------------
+
+
+class TestAddOutsideWindowRange:
+    @pytest.fixture(autouse=True)
+    def _setup(self, stage5_small_file, tmp_path):
+        self.path = tmp_path / "working.ftmw"
+        shutil.copy(stage5_small_file, self.path)
+        self.sf = _load_spectrum_fit(self.path)
+        self.wf = next(
+            (
+                w
+                for w in self.sf.window_fits
+                if w.window_id is not None
+                and w.window is not None
+                and w.window.freq_range is not None
+            ),
+            None,
+        )
+        if self.wf is None:
+            pytest.skip("No window with a freq_range in the fixture")
+        lo, hi = self.wf.window.freq_range
+        self.lo, self.hi = min(lo, hi), max(lo, hi)
+
+    def test_add_above_range_raises(self):
+        # A full window-width beyond the top edge: unambiguously off the window.
+        target = self.hi + (self.hi - self.lo)
+        with pytest.raises(ValueError, match="outside window"):
+            refit_window_impl(str(self.path), self.wf.window_id, add=[target])
+
+    def test_add_below_range_raises(self):
+        target = self.lo - (self.hi - self.lo)
+        with pytest.raises(ValueError, match="outside window"):
+            refit_window_impl(str(self.path), self.wf.window_id, add=[target])
+
+    def test_error_names_the_window_range_and_the_remedy(self):
+        target = self.hi + (self.hi - self.lo)
+        with pytest.raises(ValueError) as exc:
+            refit_window_impl(str(self.path), self.wf.window_id, add=[target])
+        msg = str(exc.value)
+        assert f"{self.lo:.4f}" in msg and f"{self.hi:.4f}" in msg
+        assert "review create" in msg
+
+    def test_out_of_range_add_leaves_the_fit_untouched(self):
+        """The validation must fire before anything is persisted."""
+        before = [(p.window_id, p.frequency_mhz) for p in self.sf.fitted_peaks]
+        target = self.hi + (self.hi - self.lo)
+        with pytest.raises(ValueError):
+            refit_window_impl(str(self.path), self.wf.window_id, add=[target])
+        after_sf = _load_spectrum_fit(self.path)
+        after = [(p.window_id, p.frequency_mhz) for p in after_sf.fitted_peaks]
+        assert before == after
+
+    def test_out_of_range_add_records_no_decision(self):
+        from ftmwpipeline._internal.stage6_impl import review_log_impl
+
+        target = self.hi + (self.hi - self.lo)
+        with pytest.raises(ValueError):
+            refit_window_impl(str(self.path), self.wf.window_id, add=[target])
+        assert review_log_impl(str(self.path)) == []
+
+    def test_edge_of_range_is_accepted(self):
+        """A frequency ON the boundary is in-window -- only beyond it is not."""
+        result = refit_window_impl(str(self.path), self.wf.window_id, add=[self.hi])
+        assert isinstance(result, RefitWindowResult)
+
+
+# ---------------------------------------------------------------------------
 # Spur-catalog replay: the refit must reproduce the Stage 5 residual mask
 # from the persisted gated catalog, never re-derive it (detection is a
 # Stage 5 product; a detector change between fit and refit must not re-mask).
