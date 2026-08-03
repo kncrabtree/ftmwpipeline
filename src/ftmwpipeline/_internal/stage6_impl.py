@@ -67,6 +67,7 @@ from .stage2_impl import _update_stage_completion
 
 if TYPE_CHECKING:  # annotation-only imports (PEP 563 lazy)
     from ..core.data_structures import FitWindow, WindowPlan
+    from ..core.environment import EnvironmentRecord
     from ..core.stage_fit_settings import StageFitSettings
     from ..fitting.peak_model import PeakShape
     from .stage5_impl import Stage5FitContext
@@ -905,6 +906,152 @@ def _reconstruct_frozen_peaks(
             )
         )
     return frozen
+
+
+def require_splice_compatible_environment(path: str) -> None:
+    """Refuse to splice a newly-computed fit into an artifact from another epoch.
+
+    Stage 6's edit verbs are the one place the pipeline writes a *partial*
+    result into a finished one: ``refit_window_impl`` re-fits a single window
+    and writes it back into a :class:`SpectrumFit` whose other windows were fit
+    earlier, and the cascade then re-fits the dependents. If the fitting code
+    changed in between, the result is two different models inside one product --
+    a state no per-file version stamp can express and no report can caveat
+    honestly, because the mixture is *within* the artifact.
+
+    That is why this is the one operation class the environment policy blocks.
+    Extending a file forward is fine (a new stage is self-consistently produced
+    by the current environment, and only warns); reading is never gated.
+
+    The gate is on :data:`~ftmwpipeline.core.environment.ANALYSIS_EPOCH` alone.
+    An unknown epoch on either side -- a Stage 5 fit written before environment
+    recording existed -- is treated as compatible: refusing to curate a legacy
+    file would punish the user for an upgrade they did not choose.
+
+    The override is a persisted acknowledgement
+    (:func:`acknowledge_environment_impl`), not a per-call flag, so a file
+    curated across an epoch boundary carries that fact in its own record and
+    its reports say so.
+
+    Raises
+    ------
+    ValueError
+        When the persisted Stage 5 fit was produced under a different
+        ``ANALYSIS_EPOCH`` and no acknowledgement is recorded.
+    """
+    from ..core.environment import (
+        EnvironmentRecord,
+        capture_environment,
+        gating_fields_differ,
+    )
+    from ..io.environment_serialization import (
+        load_environment_ack,
+        load_stage_environments,
+    )
+
+    try:
+        with h5py.File(path, "r") as h5f:
+            envs = load_stage_environments(h5f)
+            ack = load_environment_ack(h5f)
+    except OSError:  # pragma: no cover - the caller's own open reports this
+        return
+
+    fit_env = envs.get("stage5_fitting")
+    if fit_env is None:
+        return
+    current = capture_environment()
+    if not gating_fields_differ(current, fit_env):
+        return
+
+    if ack is not None:
+        acked = EnvironmentRecord.from_dict(ack.get("acknowledged_environment", {}))
+        if not gating_fields_differ(current, acked):
+            logger.warning(
+                "Editing a Stage 5 fit produced under analysis epoch %s with "
+                "epoch %s; proceeding on the acknowledgement recorded in the "
+                "file. The curated fit mixes two analysis environments.",
+                fit_env.analysis_epoch,
+                current.analysis_epoch,
+            )
+            return
+
+    raise ValueError(
+        f"This file's Stage 5 fit was produced under analysis epoch "
+        f"{fit_env.analysis_epoch} ({fit_env.summary()}), but this is epoch "
+        f"{current.analysis_epoch} ({current.summary()}). A Stage 6 edit "
+        f"re-fits one window and splices it into that fit, which would leave "
+        f"two different fitting models inside one result.\n\n"
+        f"Either re-run 'fit run' so the whole fit comes from this "
+        f"environment, or -- if you accept the mixture -- record that decision "
+        f"in the file with 'ftmwpipeline review acknowledge-environment' and "
+        f"retry. The acknowledgement is persisted, so the reports will say the "
+        f"curation crossed an epoch boundary."
+    )
+
+
+@dataclass
+class EnvironmentAckResult:
+    """Outcome of :func:`acknowledge_environment_impl`.
+
+    Attributes
+    ----------
+    acknowledged_environment : EnvironmentRecord
+        The environment the acknowledgement was given under. A later epoch
+        change re-raises the gate rather than inheriting this acceptance.
+    fit_environment : EnvironmentRecord or None
+        The environment that produced the persisted Stage 5 fit, or ``None``
+        when the file predates environment recording (or has no fit).
+    mismatch : bool
+        Whether an epoch mismatch actually existed. ``False`` means the
+        acknowledgement was unnecessary -- worth saying rather than implying
+        a block was lifted that was never in place.
+    reason : str
+        The free-text note stored with the acknowledgement.
+    """
+
+    acknowledged_environment: "EnvironmentRecord"
+    fit_environment: Optional["EnvironmentRecord"]
+    mismatch: bool
+    reason: str = ""
+
+
+def acknowledge_environment_impl(
+    file_path: Union[Path, str], *, reason: str = ""
+) -> EnvironmentAckResult:
+    """Record acceptance of an analysis-epoch mismatch for Stage 6 editing.
+
+    Unblocks the Stage 6 edit verbs on a file whose Stage 5 fit came from a
+    different :data:`~ftmwpipeline.core.environment.ANALYSIS_EPOCH`. The
+    acknowledgement names the environment it was given under, so it does not
+    silently carry over to a *third* epoch: upgrading again re-raises the gate.
+    """
+    from ..core.environment import capture_environment, gating_fields_differ
+    from ..io.environment_serialization import (
+        load_stage_environments,
+        save_environment_ack,
+    )
+
+    path = str(file_path)
+    current = capture_environment()
+    with h5py.File(path, "r") as h5f:
+        envs = load_stage_environments(h5f)
+    fit_env = envs.get("stage5_fitting")
+    mismatch = gating_fields_differ(current, fit_env)
+
+    with h5py.File(path, "a") as h5f:
+        save_environment_ack(h5f, current, reason=reason)
+
+    logger.info(
+        "Recorded an analysis-environment acknowledgement for %s (epoch %s)",
+        path,
+        current.analysis_epoch,
+    )
+    return EnvironmentAckResult(
+        acknowledged_environment=current,
+        fit_environment=fit_env,
+        mismatch=bool(mismatch),
+        reason=reason,
+    )
 
 
 def effective_window_plan(file_path: Union[Path, str]) -> "WindowPlan":
@@ -1992,6 +2139,11 @@ def refit_window_impl(
             f"len(add_seeds)={len(add_seeds)} must equal len(add)={len(add)}"
         )
 
+    # Splicing a freshly-computed window into an existing fit is the one
+    # operation that can mix two analysis models inside one artifact. Check
+    # before the baseline snapshot so a refused edit leaves the file untouched.
+    require_splice_compatible_environment(path)
+
     # Snapshot the automatic fit before the first edit mutates it in place, so
     # 'review undo' can restore it and replay the surviving decisions.
     _snapshot_stage5_baseline(path)
@@ -3043,6 +3195,11 @@ def create_window_impl(
     path = str(file_path)
     anchor = float(anchor_mhz)
 
+    # A created window is fit now and spliced into a SpectrumFit whose other
+    # windows were fit earlier, so it is subject to the same epoch gate as an
+    # edit. Checked before the snapshot so a refusal leaves the file untouched.
+    require_splice_compatible_environment(path)
+
     # Snapshot the automatic fit before the first edit mutates it in place: a
     # created window is a fit-mutating decision like any other, so 'review undo'
     # has to be able to restore the baseline and replay from it.
@@ -3811,6 +3968,12 @@ def apply_curation_impl(
     plan = _resolve_curation_plan(ops)
     warnings = _curation_ambiguity_warnings(path, plan)
 
+    # Check the epoch gate up front rather than letting the first fit-mutating
+    # action raise: this applies a *sequence* of edits, so a refusal partway
+    # through would leave the file holding some of them.
+    if not dry_run and any(a.kind != "accept" for a in plan):
+        require_splice_compatible_environment(path)
+
     if dry_run:
         return CurationApplyResult(
             plan=plan, warnings=warnings, applied=0, dry_run=True
@@ -3964,6 +4127,13 @@ def review_undo_impl(
 
     ops = [_decision_to_op(e) for e in surviving]
     plan = _resolve_curation_plan(ops)
+
+    # Undo is restore-then-replay, so the restore happens before any replayed
+    # edit could hit the epoch gate. Check first: otherwise a refusal partway
+    # through would leave the file rolled all the way back to the automatic
+    # fit, discarding the surviving decisions the caller asked to keep.
+    if not dry_run and any(e.kind in _FIT_EDIT_KINDS for e in surviving):
+        require_splice_compatible_environment(path)
 
     if dry_run:
         return UndoResult(

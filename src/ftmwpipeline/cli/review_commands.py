@@ -19,6 +19,7 @@ from .._internal.stage6_impl import (
     RefitWindowResult,
     ReviewRunResult,
     _normalize_metric,
+    acknowledge_environment_impl,
     apply_curation_impl,
     create_window_impl,
     describe_planned_action,
@@ -434,6 +435,39 @@ def cmd_review_edit(args: argparse.Namespace) -> int:
                 f"  {_fmt_mhz(p.frequency_mhz):>14}  "
                 f"{p.amplitude:>10.3e}  {snr_str:>8}  {p.origin:>6}"
             )
+    return 0
+
+
+def cmd_review_acknowledge_environment(args: argparse.Namespace) -> int:
+    """Record acceptance of an analysis-epoch mismatch for Stage 6 editing."""
+    setup_logging(getattr(args, "verbose", False))
+    file_path = _ensure_ftmw(args.file_path)
+    reason: str = getattr(args, "reason", "") or ""
+
+    try:
+        info = acknowledge_environment_impl(file_path, reason=reason)
+    except (ValueError, KeyError, OSError) as exc:
+        print(f"Error: {exc}")
+        return 1
+
+    current = info.acknowledged_environment
+    fit_env = info.fit_environment
+    print("review acknowledge-environment")
+    print(f"  Acknowledged: {current.summary()}")
+    if fit_env is not None:
+        print(f"  Stage 5 fit:  {fit_env.summary()}")
+    if not info.mismatch:
+        print(
+            "  Note: no analysis-epoch mismatch was present; the edit verbs "
+            "were not blocked. The acknowledgement is recorded anyway."
+        )
+    else:
+        print(
+            "  Stage 6 edits may now proceed. The curated fit will mix two "
+            "analysis environments, and the reports will say so."
+        )
+    if reason:
+        print(f"  Reason: {reason}")
     return 0
 
 
@@ -1204,6 +1238,44 @@ def register_review_commands(subparsers: Any) -> None:
         help="Enable verbose logging.",
     )
     p_create.set_defaults(func=cmd_review_create)
+
+    # ---- review acknowledge-environment --------------------------------------
+    p_ack = verbs.add_parser(
+        "acknowledge-environment",
+        help="Accept an analysis-epoch mismatch so Stage 6 editing can proceed",
+        description=(
+            "Record acceptance of an analysis-environment mismatch.\n\n"
+            "A Stage 6 edit re-fits one window and splices it into a fit whose\n"
+            "other windows came from an earlier run. When that fit was produced\n"
+            "under a different analysis epoch, the edit verbs refuse, because\n"
+            "the result would hold two different fitting models.\n\n"
+            "The cleaner fix is usually to re-run 'fit run' so the whole fit\n"
+            "comes from one environment. Use this when you accept the mixture.\n\n"
+            "The acknowledgement is stored in the .ftmw, not passed per command,\n"
+            "so the curated result carries the fact in its own record and the\n"
+            "reports say the curation crossed an epoch boundary. It names the\n"
+            "environment it was given under, so a later upgrade asks again."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_ack.add_argument(
+        "file_path", help="Path to .ftmw pipeline file (.ftmw auto-added)"
+    )
+    p_ack.add_argument(
+        "--reason",
+        dest="reason",
+        default="",
+        metavar="TEXT",
+        help="Optional note stored alongside the acknowledgement.",
+    )
+    p_ack.add_argument(
+        "--verbose",
+        dest="verbose",
+        action="store_true",
+        default=False,
+        help="Enable verbose logging.",
+    )
+    p_ack.set_defaults(func=cmd_review_acknowledge_environment)
 
     # ---- review merge --------------------------------------------------------
     p_merge = verbs.add_parser(

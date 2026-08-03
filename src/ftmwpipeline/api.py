@@ -43,6 +43,7 @@ from ._internal.stage6_impl import (
     CreateWindowResult,
     CurationApplyResult,
     DecisionLogEntry,
+    EnvironmentAckResult,
     RankedWindow,
     RefitWindowResult,
     ReviewRunResult,
@@ -1413,6 +1414,31 @@ def review_edit(
     return Pipeline.open(file_path).review_edit(
         window_id, add=add, remove=remove, snap_tol_mhz=snap_tol_mhz
     )
+
+
+def review_acknowledge_environment(
+    file_path: Union[str, Path], *, reason: str = ""
+) -> EnvironmentAckResult:
+    """Accept an analysis-epoch mismatch so Stage 6 editing can proceed.
+
+    Equivalent to :meth:`Pipeline.review_acknowledge_environment`.  The
+    acknowledgement is persisted in the file, so a curated result carries the
+    fact that its curation crossed an epoch boundary.
+
+    Parameters
+    ----------
+    file_path :
+        Path to the ``.ftmw`` pipeline file (read-write).
+    reason :
+        Optional free-text note stored alongside the acknowledgement.
+
+    Returns
+    -------
+    dict
+        The acknowledged environment, the fit's environment, and whether a
+        mismatch actually existed.
+    """
+    return Pipeline.open(file_path).review_acknowledge_environment(reason=reason)
 
 
 def review_create(

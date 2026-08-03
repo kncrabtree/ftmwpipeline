@@ -536,5 +536,47 @@ def _update_stage_completion(file_path: str, stage_name: str) -> None:
             )
             stages_group.attrs["last_updated"] = datetime.now().isoformat()
 
+            # Stamp the environment that produced THIS stage, and warn if the
+            # file now holds artifacts from more than one. This is the single
+            # place every persisted analysis stage passes through, so the
+            # record stays complete as stages are added -- and the comparison
+            # is naturally the useful one: not "your environment differs from
+            # the file's creation" but "this file's stages no longer agree".
+            _stamp_stage_environment(h5f, stage_name)
+
     except Exception as e:
         raise RuntimeError(f"Failed to update stage completion: {e}")
+
+
+def _stamp_stage_environment(h5f: "h5py.File", stage_name: str) -> None:
+    """Record the current environment for *stage_name* and report any drift.
+
+    Advisory: describing the environment must never fail the stage write it
+    describes, so every failure here is logged and swallowed.
+    """
+    try:
+        from ..core.environment import capture_environment, describe_environment_drift
+        from ..io.environment_serialization import (
+            load_stage_environments,
+            save_stage_environment,
+        )
+
+        current = capture_environment()
+        previous = load_stage_environments(h5f)
+        save_stage_environment(h5f, stage_name, current)
+
+        # Compare against what was already on the file, excluding this stage's
+        # own prior entry (re-running a stage legitimately replaces it).
+        others = {k: v for k, v in previous.items() if k != stage_name}
+        drift = describe_environment_drift(others, current)
+        if drift:
+            logger.warning(
+                "%s was written by a different environment than this file's "
+                "other stages; the file now mixes analysis environments. "
+                "Differences: %s. Run 'ftmwpipeline info' for the full "
+                "per-stage record.",
+                stage_name,
+                "; ".join(drift),
+            )
+    except Exception as exc:  # pragma: no cover - provenance is never fatal
+        logger.debug("Could not stamp the environment for %s: %s", stage_name, exc)

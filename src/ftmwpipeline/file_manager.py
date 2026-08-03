@@ -396,6 +396,15 @@ def create_pipeline_file(
             stages_group.attrs["created"] = datetime.now().isoformat()
             stages_group.attrs["last_updated"] = datetime.now().isoformat()
 
+            # Stamp the environment that produced Stage 0. Every later stage
+            # stamps itself on completion, so the file carries a per-artifact
+            # record rather than a single creation-time snapshot that goes
+            # stale the moment the user upgrades mid-analysis.
+            from .core.environment import capture_environment
+            from .io.environment_serialization import save_stage_environment
+
+            save_stage_environment(h5f, "stage0_fid_data", capture_environment())
+
             # Store Stage 0 data (FID)
             stage0_group = h5f.create_group("stage0_fid_data")
             save_fid_to_hdf5(fid, stage0_group)
@@ -587,10 +596,37 @@ def validate_pipeline_file(filepath: Union[str, Path]) -> Dict[str, Any]:
                 f"Original source file no longer exists: {source_metadata.source_path}"
             )
 
-        # Read the format/writer version stamps (absent on legacy files).
+        # Read the format/writer version stamps (absent on legacy files) and
+        # the per-stage analysis-environment record.
+        from .core.environment import describe_environment_drift
+        from .io.environment_serialization import (
+            load_environment_ack,
+            load_last_written_with,
+            load_stage_environments,
+        )
+
         with h5py.File(filepath, "r") as h5f:
             file_format_version = h5f.attrs.get("ftmw_format_version")
             created_with = h5f.attrs.get("created_with_ftmwpipeline")
+            stage_envs = load_stage_environments(h5f)
+            last_written = load_last_written_with(h5f)
+            env_ack = load_environment_ack(h5f)
+
+        # A file whose stages were produced by different environments is not
+        # invalid -- it is a legitimate and common outcome of upgrading
+        # mid-analysis -- but it is the fact a reader most needs to know, since
+        # no single version stamp can express it.
+        env_drift = describe_environment_drift(stage_envs)
+        if env_drift:
+            warnings.append(
+                "This file's stages were written by different analysis "
+                "environments: " + "; ".join(env_drift)
+            )
+        if env_ack is not None:
+            warnings.append(
+                "An analysis-epoch mismatch was acknowledged on this file, so "
+                "Stage 6 curation was applied across an epoch boundary."
+            )
 
         # Validate stage data. Each completed stage must have its persisted
         # data present at its known HDF5 location (which is not always a group
@@ -621,6 +657,12 @@ def validate_pipeline_file(filepath: Union[str, Path]) -> Dict[str, Any]:
                 str(file_format_version) if file_format_version is not None else None
             ),
             "created_with": (str(created_with) if created_with is not None else None),
+            "stage_environments": {k: v.to_dict() for k, v in stage_envs.items()},
+            "last_written_with": (
+                last_written.to_dict() if last_written is not None else None
+            ),
+            "environment_drift": env_drift,
+            "environment_acknowledged": env_ack is not None,
         }
 
     except Exception as e:

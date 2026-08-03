@@ -70,10 +70,12 @@ from ._internal.stage6_impl import (
     CreateWindowResult,
     CurationApplyResult,
     DecisionLogEntry,
+    EnvironmentAckResult,
     RankedWindow,
     RefitWindowResult,
     ReviewRunResult,
     UndoResult,
+    acknowledge_environment_impl,
     apply_curation_impl,
     create_window_impl,
     get_candidate_ledger_impl,
@@ -1565,6 +1567,35 @@ class Pipeline:
             snap_tol_mhz=snap_tol_mhz,
         )
 
+    def review_acknowledge_environment(
+        self, *, reason: str = ""
+    ) -> EnvironmentAckResult:
+        """Accept an analysis-epoch mismatch so Stage 6 editing can proceed.
+
+        A Stage 6 edit re-fits one window and splices it into a fit whose other
+        windows came from an earlier run.  When that fit was produced under a
+        different :data:`~ftmwpipeline.core.environment.ANALYSIS_EPOCH`, the
+        edit verbs refuse, because the result would hold two different fitting
+        models.  This records the decision to accept that mixture.
+
+        The acknowledgement is persisted in the file rather than passed per
+        call, so a curated result carries the fact in its own record and the
+        reports say the curation crossed an epoch boundary.  It names the
+        environment it was given under, so a later upgrade re-raises the gate.
+
+        Parameters
+        ----------
+        reason :
+            Optional free-text note stored alongside the acknowledgement.
+
+        Returns
+        -------
+        dict
+            The acknowledged environment, the fit's environment, and whether a
+            mismatch actually existed.
+        """
+        return acknowledge_environment_impl(self.filepath, reason=reason)
+
     def review_create(
         self,
         anchor_mhz: float,
@@ -2182,6 +2213,12 @@ class Pipeline:
                 "next_available_stages": self.stage_tracker.get_next_available_stages(),
                 "format_version": validation_report.get("format_version"),
                 "created_with": validation_report.get("created_with"),
+                "stage_environments": validation_report.get("stage_environments", {}),
+                "last_written_with": validation_report.get("last_written_with"),
+                "environment_drift": validation_report.get("environment_drift", []),
+                "environment_acknowledged": validation_report.get(
+                    "environment_acknowledged", False
+                ),
             }
 
             if not validation_report["valid"]:

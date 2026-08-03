@@ -47,9 +47,52 @@ def cmd_info(args: argparse.Namespace) -> int:
     print(
         f"  next available:  {', '.join(info.get('next_available_stages', [])) or '(none)'}"
     )
+    _print_environment(info)
     if info.get("warnings"):
         print(f"  warnings:        {info['warnings']}")
     return 0
+
+
+def _print_environment(info: dict) -> None:
+    """Print the analysis-environment record: what produced each stage.
+
+    Printed per stage rather than once for the file, because the fact worth
+    surfacing is whether the artifacts agree -- a file whose Stage 5 fit and
+    Stage 6 curation came from different code is the case a single stamp
+    cannot express.
+    """
+    from ..core.environment import EnvironmentRecord
+
+    last = info.get("last_written_with")
+    if last:
+        print(f"  last written by: {EnvironmentRecord.from_dict(last).summary()}")
+
+    envs = info.get("stage_environments") or {}
+    if not envs:
+        print("  environment:     (not recorded; file predates the stamp)")
+        return
+
+    epochs = {d.get("analysis_epoch") for d in envs.values() if d.get("analysis_epoch")}
+    versions = {d.get("ftmwpipeline") for d in envs.values() if d.get("ftmwpipeline")}
+    if len(epochs) <= 1 and len(versions) <= 1:
+        blas = next(
+            (d.get("blas") for d in envs.values() if d.get("blas")), "(unknown)"
+        )
+        print(f"  environment:     uniform across {len(envs)} stage(s); BLAS {blas}")
+    else:
+        print("  environment:     MIXED -- stages came from different versions:")
+        for stage in sorted(envs):
+            rec = EnvironmentRecord.from_dict(envs[stage])
+            print(f"      {stage:<28} {rec.summary()}")
+
+    drift = info.get("environment_drift") or []
+    for line in drift:
+        print(f"      drift: {line}")
+    if info.get("environment_acknowledged"):
+        print(
+            "      note: an analysis-epoch mismatch was acknowledged; curation "
+            "crossed an epoch boundary."
+        )
 
 
 def add_info_subcommand(subparsers: Any) -> None:

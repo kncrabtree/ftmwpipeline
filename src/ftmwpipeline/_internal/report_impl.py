@@ -183,6 +183,50 @@ def _unit_latex(name: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _environment_provenance(file_path: Union[Path, str]) -> List[Tuple[str, str]]:
+    """Analysis-environment rows for the exported table's provenance header.
+
+    A reported line list is only reproducible against the environment that
+    produced it, so the table says which one that was -- and says so loudly
+    when the file's stages disagree, because a mixed-environment result is not
+    reproducible from any single version.
+    """
+    from ..core.environment import EnvironmentRecord, describe_environment_drift
+    from ..io.environment_serialization import (
+        load_environment_ack,
+        load_stage_environments,
+    )
+
+    try:
+        with h5py.File(str(file_path), "r") as h5f:
+            envs = load_stage_environments(h5f)
+            ack = load_environment_ack(h5f)
+    except (OSError, KeyError):  # pragma: no cover - report already opened it
+        return []
+
+    if not envs:
+        return [("environment", "not recorded (file predates the stamp)")]
+
+    fit_env: Optional[EnvironmentRecord] = envs.get("stage5_fitting")
+    rows: List[Tuple[str, str]] = []
+    if fit_env is not None:
+        rows.append(("fit_environment", fit_env.summary()))
+        if fit_env.blas:
+            rows.append(("fit_blas", fit_env.blas))
+    drift = describe_environment_drift(envs)
+    if drift:
+        rows.append(("environment_mixed", "; ".join(drift)))
+    if ack is not None:
+        rows.append(
+            (
+                "environment_ack",
+                "curation applied across an analysis-epoch boundary"
+                + (f": {ack.get('reason')}" if ack.get("reason") else ""),
+            )
+        )
+    return rows
+
+
 def _provenance(
     products: FinalProducts,
     file_path: Union[Path, str],
@@ -202,6 +246,7 @@ def _provenance(
         ("amplitude_unit", amp_unit),
         ("n_peaks", str(len(products.peaks))),
     ]
+    out += _environment_provenance(file_path)
     if xref is not None:
         out += [
             ("catalog", Path(xref.catalog_path).name),

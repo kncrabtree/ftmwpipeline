@@ -134,6 +134,79 @@ downstream work. Importing a *different* source onto an existing file is refused
 unless overwriting is requested explicitly, so a finished analysis is never
 silently replaced.
 
+.. _ftmw-analysis-environment:
+
+The analysis environment
+------------------------
+
+Reproducibility needs more than the data and the settings: it needs to know what
+*ran*. Each stage, as it completes, records the environment that produced it —
+the ``ftmwpipeline`` version, the analysis epoch (below), the Python, numpy,
+scipy and h5py versions, the runtime BLAS vendor and thread count, and the
+platform.
+
+The record is **per stage, not per file**, because the pipeline is sequential
+and stateful: stages are run at different times, often across an upgrade, and
+the situation worth detecting is a file whose Stage 5 fit and Stage 6 curation
+came from different code. A single file-level stamp cannot express that. Stage 1
+is deliberately absent — it persists no artifact, since the FT is recomputed on
+demand from the persisted settings, so it is always the current environment.
+
+``ftmwpipeline info`` prints the record, and says ``MIXED`` with a per-stage
+breakdown when the stages disagree. The exported line table and the HTML report
+carry it too, so a result is never read without the environment that produced
+it. A mixed file is *not* invalid — upgrading mid-analysis is normal and often
+harmless — but it is not reproducible from any single version, and the record
+says so rather than implying otherwise.
+
+The analysis epoch
+~~~~~~~~~~~~~~~~~~
+
+One integer, ``ANALYSIS_EPOCH``, is the only machine-checkable compatibility
+signal. It is bumped by hand, and only when a change alters the *numerical
+output* of a stage — not for refactors, new commands, or documentation. This is
+deliberate: at ``0.x`` the package's minor version bumps for ordinary feature
+work, so keying compatibility on the version string would fire constantly on
+changes that alter nothing. The epoch mirrors what the container's format
+version already does — a version whose meaning this project controls.
+
+The interpreter and library versions are recorded but **advisory**: they can
+shift the last bits of a fit, they are rarely under the user's independent
+control, and a conclusion that depends on them is already fragile. Only the
+epoch ever blocks anything.
+
+What a version difference permits
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The policy distinguishes three things by what they can silently corrupt:
+
+* **Reading** — inspecting, loading, and reporting — is *never* gated. An
+  archived file always opens.
+* **Extending forward**, i.e. running a stage that has not run yet, is allowed
+  and *warns*. Its inputs are finished artifacts and the new stage is
+  self-consistently produced by the current environment, so the result is
+  honest as long as the file says the stages differ.
+* **Splicing into an existing artifact** — the Stage 6 edit verbs — is
+  **refused** across an epoch change. ``review edit`` re-fits one window and
+  writes it back into a fit whose other windows came from the earlier code, and
+  the cascade then re-fits its dependents; the result would hold two different
+  fitting models inside one product. That mixture is *within* the artifact, so
+  no stamp on the file can express it and no report can caveat it honestly.
+
+The usual fix is to re-run ``fit run`` so the whole fit comes from one
+environment. If the mixture is acceptable, record that decision with
+``ftmwpipeline review acknowledge-environment``. The acknowledgement is stored
+in the file rather than passed as a command-line flag — on the same principle as
+the frequency-accuracy floor, that a fact which changes how a result should be
+read must be reproducible from the record alone. It names the environment it was
+given under, so a later upgrade asks again instead of inheriting a stale
+acceptance, and the reports state that the curation crossed an epoch boundary.
+
+A file written before environment stamping existed carries no record. Its epoch
+is *unknown*, which is treated as compatible, never as incompatible: refusing to
+work on an existing file because it predates the stamp would punish users for an
+upgrade they did not choose.
+
 Error conditions
 ----------------
 
