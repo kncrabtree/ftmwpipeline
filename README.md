@@ -5,31 +5,26 @@
 [![Documentation Status](https://readthedocs.org/projects/ftmwpipeline/badge/?version=devel)](https://ftmwpipeline.readthedocs.io/en/devel/)
 
 A Python package for FTMW (Fourier Transform Microwave) spectroscopy signal
-processing and peak fitting — from a raw free-induction decay to a fitted line
-list with honest uncertainties.
+processing and peak fitting. No zero-padding, no window functions, just
+statistically-grounded analysis based on the complex FT.
 
-The design goal is a **statistically faithful** measurement, not just a
-plausible-looking spectrum:
-
-- **Unbiased spectrum.** The canonical Fourier transform is computed with no
+- **Unbiased spectrum.** The Fourier transform is computed with no
   apodization, time-domain windowing, or zero-padding. Those operations trade
-  frequency resolution, bias the line shape, and interpolate bins so the noise
-  and χ² statistics no longer mean what they should. Keeping the transform
-  native-length preserves resolution and the line shape, and keeps the per-bin
-  statistics valid for everything downstream.
+  frequency resolution for leakage suppression, bias the line shape, and
+  correlate frequency bins so the noise and χ² statistics no longer carry
+  their meaning. Keeping the transform native-length preserves resolution
+  and the line shape, and keeps the per-bin statistics valid.
 - **Rigorous from noise to fit.** A region-aware, per-bin noise estimate sets
-  detection thresholds; lines are fit in the time domain over finite-duration
-  windows; and fitted parameters carry uncertainties propagated **with their
-  correlations**, not as independent error bars. A reported precision reflects
-  what the data actually constrains.
-- **Reproducible and portable.** Each experiment is one self-contained `.ftmw`
-  file. Given the file and a compatible package version, the analysis
-  reproduces the same result on any machine — no external preset or side
-  artifact can silently change it.
+  detection thresholds; lines are fit in the complex domain to analytic lineshape
+  models over finite-duration windows. Fitted parameters carry meaningful
+  uncertainties.
+- **Reproducible and portable.** Each FID, its analysis settings, and results
+  are contained in an `.ftmw` HDF5 file. The results can be exported into an HTML
+  file with inline graphs for easy browsing and sharing, as well as `.csv` for
+  tabular results.
 - **One analysis, three interfaces.** A command-line interface, an
   object-oriented `Pipeline` class, and a stateless functional API are thin
-  wrappers over one implementation and produce numerically identical results;
-  use whichever fits your workflow.
+  wrappers over one implementation and produce numerically identical results.
 
 ## Installation
 
