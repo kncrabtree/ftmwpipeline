@@ -88,7 +88,7 @@ class EnvironmentRecord:
     Attributes
     ----------
     ftmwpipeline : str
-        Package version string (e.g. ``"0.1.0b2"``). For humans; not gated on.
+        Package version string (e.g. ``"0.1.0b3"``). For humans; not gated on.
     analysis_epoch : int or None
         :data:`ANALYSIS_EPOCH` at write time. ``None`` on a stage written
         before environment recording existed -- an unknown epoch, which is

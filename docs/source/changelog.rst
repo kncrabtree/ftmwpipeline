@@ -8,6 +8,105 @@ Changelog
 Notable changes to ``ftmwpipeline``, newest first. Versions follow
 `semantic versioning <https://semver.org/>`_.
 
+Version 0.1.0b3 (2026-08-03)
+----------------------------
+
+A correctness and provenance beta over 0.1.0b2. As a pre-release it still
+installs only when explicitly requested: ``pip install --pre ftmwpipeline``.
+
+Results are unchanged on a file whose fit already ran: the numeric changes
+below are either latent-correctness fixes that no line in the reference
+fixture reached, or improvements that only engage on shorter records and on
+spectra whose clock spurs the old match window missed.
+
+* **Per-stage analysis environment, with an editing gate.** Every persisted
+  stage now stamps the environment that produced it — package version,
+  analysis epoch, Python, numpy, scipy, h5py, the runtime BLAS vendor, and the
+  platform — instead of one version stamp written at import and never
+  refreshed. Compatibility is keyed on a hand-maintained ``ANALYSIS_EPOCH``
+  bumped only when numerical output changes, not on the package version.
+  Reading is never gated; running a new stage forward warns; splicing a Stage 6
+  edit into a fit produced under a different epoch is refused, because the
+  mixture would live *inside* one artifact where no stamp could describe it.
+  ``review acknowledge-environment`` records acceptance in the ``.ftmw``
+  itself, so the reports say so permanently rather than only in the session
+  where it happened. ``info``, ``validate``, the CSV/JSON provenance header,
+  and the HTML report all surface the record and any mixed-environment
+  warning. Files written before stamping existed have an unknown epoch, which
+  is treated as compatible.
+* **``review create``: a window for a line the detector missed.** Reaching a
+  missed line previously meant lowering the detection threshold, which re-runs
+  Stage 3 and discards Stages 5 and 6 — the entire curated edit set. The new
+  verb installs the missing window instead, with deterministic bounds, freshly
+  appended ids that never renumber existing windows, and no cascade or thaw.
+  It is purely structural: the window is fit with an empty peak set, and
+  putting a line in it is a separate ``review edit --add``, so the decision log
+  records the two operations distinctly. When the gap is too narrow to hold a
+  fittable window, the adjacent window is widened and re-fit instead, reported
+  and logged rather than done silently.
+* **Out-of-range ``review edit --add`` is now rejected.** An add outside the
+  named window's extent used to be seeded and fit against data the window does
+  not cover, with the optimizer quietly pinning it at the nearest edge — so an
+  off-by-one resolving a click to a window produced a wrong fit instead of an
+  error. The post-snap frequency is now checked against the window's range
+  (with half a bin of slack), and the message names the range and points at
+  ``review create``.
+* **Per-peak derivation tag.** ``FittedPeak`` / ``FinalPeak`` carry the
+  ``derivation`` index of the decision that created or last altered a peak
+  (absent when it came through a refit unchanged), exported in the CSV and JSON
+  tables. A consumer binding external state to individual peaks can read it
+  instead of pairing peak sets across an edit.
+* **Parallel fitting fixed and much faster.** Multi-worker Stage 5 fits aborted
+  outright on many-core machines: each forked worker re-scanned loaded native
+  libraries to pin BLAS threads, which is not fork-safe under a multithreaded
+  parent. BLAS is now pinned once in the parent around the fit — fork-safe,
+  scoped to the fit, and restored on return, so importing ``ftmwpipeline`` no
+  longer changes a caller's own BLAS thread count. On a 32-core box the
+  reference fit drops from 148.6 s to 23.2 s at 30 workers, byte-identical to
+  the serial result.
+* **Timebase calibration runs earlier (after Stage 1, before noise).** Its
+  measured clock scale error ``eps`` is now available to every later stage, and
+  its declared dependencies are honest about needing the Stage 1 FT settings.
+  The ``eps`` measurement itself is unchanged.
+* **Correct, ``eps``-aware spur matching (Stage 5).** The nearest-bin spur
+  match now derives its window from the active-FT bin spacing (the former fixed
+  0.04 MHz became an absolute floor — it was half a bin only at one particular
+  record length), honors each lattice point's own window in lattice mode, and
+  shifts the search anchor to the clock-corrected position ``f(1+eps)`` rather
+  than merely widening the tolerance, since a displaced tone lands in a
+  *different* bin that no widening reaches. Across the seven reference
+  fixtures this recovers genuine on-lattice clock spurs the old window missed,
+  with reduced-chi-squared holding or improving.
+* **More stable timebase noise reference.** The ``eps`` fit's noise floor uses
+  32 off-lattice probes instead of 8; the 25th-percentile floor was
+  high-variance and could under-estimate the noise, inflating reported SNRs.
+* **Stage 5 co-fit statistics installed on the thaw path.** An accepted thaw
+  overwrote a window's peaks and decay time but left uncertainties, covariance
+  and reduced chi-squared as carry-over from the superseded independent fit —
+  stale numbers that feed the per-window log, Stage 6 attention routing, and
+  ``fit check`` grading. Per-line uncertainties and covariance now come from
+  the joint fit; chi-squared is recomputed per window so it stays a per-window
+  diagnostic.
+* **Peak-detection edge padding.** The Savitzky–Golay boundary padding
+  block-copied samples in forward order instead of holding the edge value,
+  seaming a discontinuity into the second derivative near each band edge and
+  biasing the concave-down test there. Interior detection is unaffected.
+* **Stage 1 FT visualization shows what later stages use.** The FT panels now
+  render the zero-padded active-band display spectrum (the same surface the
+  Stage 5 report draws), and the second FID panel is the Active FID — the
+  DC-removed ``[start_us, end_us]`` slice on its true time axis — replacing the
+  full-length, mostly-zero "Preprocessed FID" panel. The plot still follows the
+  settings resolved for the call, so the ``ft show --start-us/--end-us/--trim``
+  preview workflow is unchanged.
+* Documentation: the STFT decay-time calibration derivation is now written into
+  :doc:`stage2b_tau`; the fitting methods note is corrected on two points where
+  it disagreed with the shipped code (residual rescue seeds from the calibrated
+  decay time, and a frozen contributor's leakage skirt is drawn at the window's
+  shared decay time). Per-experiment provenance notes and the vinyl-cyanide
+  reference catalog moved into ``examples/blackchirp_data/``, and
+  development-only planning docs and tuning scripts were retired from the
+  distribution.
+
 Version 0.1.0b2 (2026-07-20)
 ----------------------------
 
