@@ -1,17 +1,17 @@
 {
   "2638": {
-    "epsilon_ppm": 2.1325793334101584,
+    "epsilon_ppm": 2.1908787022536673,
     "f_bb_max_mhz": 17920.0,
     "lattice_g_mhz": 640.0,
     "n_controls": 0,
-    "n_detected": 21,
-    "n_rejected": 10,
+    "n_detected": 19,
+    "n_rejected": 8,
     "n_used": 11,
-    "sigma_epsilon_ppm": 0.07321882992374264,
+    "sigma_epsilon_ppm": 0.07407363316907127,
     "span_us": 12.72998,
     "strongest_df_khz": 33.425192483611994,
     "strongest_f_bb_mhz": 15360.0,
-    "strongest_snr": 6007.261668236707
+    "strongest_snr": 4831.088722766587
   },
   "crb_check": {
     "n": 4,
