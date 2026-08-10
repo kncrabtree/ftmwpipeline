@@ -39,13 +39,29 @@ than silently dropping or guessing data.
 """
 
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 import h5py
 import numpy as np
 
 from ..core.data_structures import Peak, PeakClassification
-from ._hdf5_helpers import nan_if_none, none_if_nan, stamp_stage_header
+from ._hdf5_helpers import (
+    REQUIRED,
+    ColumnSpec,
+    nan_if_none,
+    none_if_nan,
+    read_dataset_column,
+    resolve_column_selection,
+    stamp_stage_header,
+)
+
+__all__ = [
+    "save_peaks_to_hdf5",
+    "load_peaks_from_hdf5",
+    "PEAK_COLUMN_SPECS",
+    "read_peak_columns",
+    "read_peak_scalars",
+]
 
 _COLUMNS = (
     "frequency",
@@ -223,3 +239,98 @@ def load_peaks_from_hdf5(h5_group: h5py.Group) -> List[Peak]:
             )
         )
     return peaks
+
+
+# ---------------------------------------------------------------------------
+# Read-only bulk column access (no Peak object construction)
+# ---------------------------------------------------------------------------
+#
+# The Stage 3 list is already stored as flat parallel arrays, so the saving here
+# is the per-row :class:`Peak` construction rather than the h5py traffic. The
+# reader exists mainly so every persisted table is reachable through one
+# uniform read-only surface. See ``fitting_serialization`` for the shared
+# column-spec convention.
+
+#: Stage 3 read columns, in canonical order.
+#:
+#: ``index`` is ``-1`` when the peak carries no user-grid index; NaN marks an
+#: absent float. ``promoted`` is *derived*, not stored: a peak is promoted iff
+#: its user-grid ``snr`` meets the group's ``promotion_min_snr`` cutoff (the
+#: same derivation :func:`load_peaks_from_hdf5` performs), and is all-False when
+#: the group records no cutoff.
+PEAK_COLUMN_SPECS: Dict[str, ColumnSpec] = {
+    "frequency": ("f8", REQUIRED),
+    "intensity": ("f8", REQUIRED),
+    "index": ("i8", REQUIRED),
+    "snr": ("f8", REQUIRED),
+    "noise_std_local": ("f8", REQUIRED),
+    "classification": ("str", REQUIRED),
+    "detection_pass": ("str", REQUIRED),
+    "promoted": ("bool", False),  # derived from promotion_min_snr
+    "internal_snr": ("f8", float("nan")),
+    "internal_frequency": ("f8", float("nan")),
+    "leakage_pedestal": ("f8", float("nan")),
+}
+
+_PEAK_DERIVED = ("promoted",)
+
+
+def _promotion_cutoff(h5_group: h5py.Group) -> Optional[float]:
+    """The group's ``promotion_min_snr``, or ``None`` when unset/NaN."""
+    raw = h5_group.attrs.get("promotion_min_snr")
+    if raw is None:
+        return None
+    value = float(raw)
+    return None if np.isnan(value) else value
+
+
+def read_peak_columns(
+    h5_group: h5py.Group,
+    columns: Optional[Sequence[str]] = None,
+) -> Dict[str, np.ndarray]:
+    """Read Stage 3 peak columns from a ``stage3_peaks`` group in bulk.
+
+    Rows keep their on-disk order, matching :func:`load_peaks_from_hdf5`.
+    See :data:`PEAK_COLUMN_SPECS` for the available columns.
+    """
+    requested = resolve_column_selection(
+        columns, list(PEAK_COLUMN_SPECS), table="peaks"
+    )
+    if "frequency" not in h5_group:
+        raise ValueError("stage3_peaks group missing required column 'frequency'")
+    n = int(h5_group["frequency"].shape[0])
+
+    stored = [c for c in requested if c not in _PEAK_DERIVED]
+    need_snr = "promoted" in requested and "snr" not in stored
+    to_read = list(dict.fromkeys([*stored, *(["snr"] if need_snr else [])]))
+
+    read = {
+        col: read_dataset_column(
+            h5_group, col, PEAK_COLUMN_SPECS[col], n, where="stage3_peaks"
+        )
+        for col in to_read
+    }
+    if "promoted" in requested:
+        cutoff = _promotion_cutoff(h5_group)
+        snr = read["snr"]
+        read["promoted"] = (
+            np.zeros(n, dtype=bool)
+            if cutoff is None
+            else (~np.isnan(snr)) & (snr >= cutoff)
+        )
+    return {c: read[c] for c in requested}
+
+
+def read_peak_scalars(h5_group: h5py.Group) -> Dict[str, Any]:
+    """Read the cheap list-level scalars from a ``stage3_peaks`` group."""
+    creation = h5_group.attrs.get("creation_time", "unknown")
+    if isinstance(creation, bytes):
+        creation = creation.decode("utf-8")
+    return {
+        "n_peaks": int(h5_group.attrs.get("n_peaks", 0)),
+        "promotion_min_snr": _promotion_cutoff(h5_group),
+        "internal_min_snr": none_if_nan(
+            float(h5_group.attrs.get("internal_min_snr", float("nan")))
+        ),
+        "creation_time": str(creation),
+    }

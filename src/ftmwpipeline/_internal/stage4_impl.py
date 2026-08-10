@@ -42,12 +42,11 @@ from ..preprocessing.window_planning import (
     build_window_plan,
 )
 from .active_ft_support import build_active_grid_with_noise
-from .shared_utils import require_resolved
+from .shared_utils import active_acquisition_us, require_resolved
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage1_impl import compute_ft_impl
 from .stage2_impl import _update_stage_completion
 from .stage3_impl import (
-    _active_acquisition_us,
     load_peaks_impl,
 )
 
@@ -183,7 +182,7 @@ def assign_windows_impl(
     active_ft, active_rms = build_active_grid_with_noise(file_path, trim_range)
 
     fid = load_fid_from_pipeline_impl(file_path)
-    acquisition_us = _active_acquisition_us(
+    acquisition_us = active_acquisition_us(
         fid.duration_us, base_pp.start_us, base_pp.end_us
     )
 

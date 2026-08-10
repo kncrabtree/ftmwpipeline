@@ -46,7 +46,7 @@ HDF5 layout::
 
 from __future__ import annotations
 
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, List, Optional, Sequence
 
 import h5py
 import numpy as np
@@ -58,10 +58,23 @@ from ..fitting.tau_calibration import (
     SpurCluster,
     TauCalibrationResult,
 )
-from ._hdf5_helpers import reset_group
+from ._hdf5_helpers import (
+    REQUIRED,
+    ColumnSpec,
+    build_columns,
+    load_json_attr,
+    read_attr_value,
+    read_dataset_column,
+    reset_group,
+    resolve_column_selection,
+)
 
 SCHEMA_VERSION = "1.0"
 GROUP_PATH = "stage2b_tau_calibration"
+
+#: The Gaussian twin: ``tau run --gaussian`` writes a second, independent
+#: calibration here, in the identical layout. Both may coexist on one file.
+GAUSSIAN_GROUP_PATH = "stage2b_tau_G_calibration"
 
 
 __all__ = [
@@ -69,6 +82,16 @@ __all__ = [
     "load_tau_calibration_from_hdf5",
     "SCHEMA_VERSION",
     "GROUP_PATH",
+    "GAUSSIAN_GROUP_PATH",
+    "TAU_BAND_COLUMN_SPECS",
+    "TAU_THIRD_COLUMN_SPECS",
+    "TAU_CONTRIBUTOR_COLUMN_SPECS",
+    "TAU_SPUR_COLUMN_SPECS",
+    "read_tau_band_columns",
+    "read_tau_third_columns",
+    "read_tau_contributor_columns",
+    "read_tau_spur_columns",
+    "read_tau_scalars",
 ]
 
 
@@ -378,3 +401,351 @@ def load_tau_calibration_from_hdf5(
         preconditions_passed=bool(s_attrs["preconditions_passed"]),
         preconditions_notes=notes,
     )
+
+
+# ---------------------------------------------------------------------------
+# Read-only bulk column access (no TauCalibrationResult reconstruction)
+# ---------------------------------------------------------------------------
+#
+# Unlike the Stage 4/5 readers, these are *not* here for speed: Stage 2b
+# persists one group, not one group per window, so the full loader already
+# costs a few milliseconds. They exist so every persisted table is reachable
+# through the same read-only surface -- a consumer should not have to know
+# which stages happen to have a cheap loader, and a CSV of the per-band decay
+# times is worth having whether or not deserializing was ever the bottleneck.
+#
+# Scope: the calibrated decay times (global and per band) and the raw per-bin
+# contributors. The bimodality fit, the Pearson correlations, the frequency
+# thirds and the spur clusters are diagnostics for the calibration algorithm
+# itself; ``load_tau_calibration`` serves those, and cheaply.
+
+#: Per-band read columns, in canonical order. All are attributes of a
+#: ``band_majorities/band_NN`` subgroup. Empty when the calibration ran without
+#: band majorities, in which case Stage 5 falls back to the global ``tau_maj_us``.
+TAU_BAND_COLUMN_SPECS: Dict[str, ColumnSpec] = {
+    "label": ("str", REQUIRED),
+    "freq_lo_mhz": ("f8", REQUIRED),
+    "freq_hi_mhz": ("f8", REQUIRED),
+    "n_contributors": ("i8", REQUIRED),
+    "tau_maj_us": ("f8", REQUIRED),
+    "sigma_tau_us": ("f8", REQUIRED),
+}
+
+#: Per-third read columns: the same shape as a band, from the fixed low/mid/high
+#: split the bimodality diagnostic uses. A third reports a median rather than an
+#: SNR-weighted majority, and carries no spread -- it answers "does tau drift
+#: with frequency", not "what tau should this window use".
+TAU_THIRD_COLUMN_SPECS: Dict[str, ColumnSpec] = {
+    "label": ("str", REQUIRED),
+    "freq_lo_mhz": ("f8", REQUIRED),
+    "freq_hi_mhz": ("f8", REQUIRED),
+    "n_contributors": ("i8", REQUIRED),
+    "median_tau_us": ("f8", REQUIRED),
+}
+
+#: Per-contributor read columns, in canonical order -- one row per STFT bin that
+#: survived the gates and voted on the decay time.
+TAU_CONTRIBUTOR_COLUMN_SPECS: Dict[str, ColumnSpec] = {
+    "bin_index": ("i8", REQUIRED),
+    "freq_mhz": ("f8", REQUIRED),
+    "tau_us": ("f8", REQUIRED),
+    "snr": ("f8", REQUIRED),
+}
+
+#: Per-spur-cluster read columns: one row per contiguous run of bins the spur
+#: gate excluded. The member bin indices of each cluster are stored ragged (a
+#: CSR pair) and so are not a column here; the full loader returns them.
+TAU_SPUR_COLUMN_SPECS: Dict[str, ColumnSpec] = {
+    "center_freq_mhz": ("f8", REQUIRED),
+    "peak_bin_index": ("i8", REQUIRED),
+    "n_bins": ("i8", REQUIRED),
+    "saturated": ("bool", False),
+}
+
+#: On-disk dataset name for each read column whose stored name is plural.
+#: The read surface uses singular column names -- a CSV header names one row's
+#: field -- while the file keeps the names its writer chose.
+_TAU_CONTRIBUTOR_DATASETS = {
+    "bin_index": "bin_indices",
+    "freq_mhz": "freqs_mhz",
+    "tau_us": "taus_us",
+    "snr": "snrs",
+}
+_TAU_SPUR_DATASETS = {
+    "center_freq_mhz": "center_freqs_mhz",
+    "peak_bin_index": "peak_bin_indices",
+}
+#: ``BandMajority.n`` / ``FrequencyThird.n`` are stored as a bare ``n``; a CSV
+#: header of ``n`` says nothing, so the read column names what it counts.
+_TAU_BAND_ATTRS = {"n_contributors": "n"}
+
+#: Scalars lifted from the ``scalars`` subgroup, in reporting order.
+_TAU_SCALAR_ATTRS = (
+    "tau_maj_us",
+    "sigma_tau_us",
+    "n_contributors",
+    "n_spur_bins",
+    "n_seg",
+    "preconditions_passed",
+    "snr_weighted",
+    "start_us",
+    "end_us",
+    "sample_dt_us",
+    "tau_max_us",
+    "t_sigma",
+    "rss_gate_factor",
+    "sigma_x_full",
+    "sigma_frame",
+    "trim_lo_mhz",
+    "trim_hi_mhz",
+    "probe_freq_mhz",
+    "sideband",
+)
+
+#: Fields of the two-component GMM fit that decides whether the decay-time
+#: distribution is bimodal -- the main reason a calibration fails preconditions.
+_TAU_BIMODALITY_ATTRS = (
+    "n",
+    "mu1",
+    "sigma1",
+    "mu_a",
+    "sigma_a",
+    "mu_b",
+    "sigma_b",
+    "pi_a",
+    "aic1",
+    "aic2",
+    "delta_aic",
+    "two_component_preferred",
+    "dominant_weight",
+)
+
+
+def _read_subgroup_table(
+    h5_group: h5py.Group,
+    subgroup: str,
+    specs: Dict[str, ColumnSpec],
+    columns: Optional[Sequence[str]],
+    *,
+    table: str,
+    attr_names: Dict[str, str],
+) -> Dict[str, np.ndarray]:
+    """Read one row per child of *subgroup*, from each child's attributes.
+
+    Shared by the band-majority and frequency-third tables, which have the same
+    shape on disk: a subgroup per frequency slice, each carrying its bounds and
+    statistics as attributes. Rows come back ordered by ``freq_lo_mhz``.
+    """
+    requested = resolve_column_selection(columns, list(specs), table=table)
+    if subgroup not in h5_group:
+        raise ValueError(f"{h5_group.name} missing required {subgroup!r} subgroup")
+    children = h5_group[subgroup]
+
+    # freq_lo_mhz always read: it defines the row order.
+    to_read = list(dict.fromkeys(["freq_lo_mhz", *requested]))
+    rows: Dict[str, List[Any]] = {c: [] for c in to_read}
+    for name in sorted(children.keys()):
+        child = children[name]
+        where = f"{subgroup}/{name}"
+        for col in to_read:
+            rows[col].append(
+                read_attr_value(
+                    child, attr_names.get(col, col), specs[col], where=where
+                )
+            )
+
+    built = build_columns(rows, specs, to_read)
+    order = np.argsort(built["freq_lo_mhz"], kind="stable")
+    return {c: built[c][order] for c in requested}
+
+
+def _read_dataset_table(
+    h5_group: h5py.Group,
+    subgroup: str,
+    specs: Dict[str, ColumnSpec],
+    columns: Optional[Sequence[str]],
+    *,
+    table: str,
+    dataset_names: Dict[str, str],
+) -> Dict[str, np.ndarray]:
+    """Read parallel-array columns out of *subgroup*, in on-disk row order."""
+    requested = resolve_column_selection(columns, list(specs), table=table)
+    if subgroup not in h5_group:
+        raise ValueError(f"{h5_group.name} missing required {subgroup!r} subgroup")
+    source = h5_group[subgroup]
+
+    n: Optional[int] = None
+    out: Dict[str, np.ndarray] = {}
+    for col in requested:
+        column = read_dataset_column(
+            source,
+            col,
+            specs[col],
+            n,
+            where=f"{h5_group.name} {subgroup}",
+            dataset=dataset_names.get(col, col),
+        )
+        if n is None:
+            n = len(column)
+        out[col] = column
+    return out
+
+
+def read_tau_band_columns(
+    h5_group: h5py.Group,
+    columns: Optional[Sequence[str]] = None,
+) -> Dict[str, np.ndarray]:
+    """Read the per-band decay times from a tau-calibration group in bulk.
+
+    Rows are ordered by ascending ``freq_lo_mhz`` (the bands partition the
+    analysis band, so that is also their on-disk ``band_NN`` order). The table
+    is empty when the calibration ran without band majorities, in which case
+    Stage 5 falls back to the global ``tau_maj_us``.
+
+    See :data:`TAU_BAND_COLUMN_SPECS` for the available columns.
+    """
+    return _read_subgroup_table(
+        h5_group,
+        "band_majorities",
+        TAU_BAND_COLUMN_SPECS,
+        columns,
+        table="tau_bands",
+        attr_names=_TAU_BAND_ATTRS,
+    )
+
+
+def read_tau_third_columns(
+    h5_group: h5py.Group,
+    columns: Optional[Sequence[str]] = None,
+) -> Dict[str, np.ndarray]:
+    """Read the low/mid/high frequency thirds from a tau-calibration group.
+
+    Rows are ordered by ascending ``freq_lo_mhz``. See
+    :data:`TAU_THIRD_COLUMN_SPECS` for the available columns.
+    """
+    return _read_subgroup_table(
+        h5_group,
+        "frequency_thirds",
+        TAU_THIRD_COLUMN_SPECS,
+        columns,
+        table="tau_thirds",
+        attr_names=_TAU_BAND_ATTRS,
+    )
+
+
+def read_tau_contributor_columns(
+    h5_group: h5py.Group,
+    columns: Optional[Sequence[str]] = None,
+) -> Dict[str, np.ndarray]:
+    """Read the per-bin tau contributors from a tau-calibration group in bulk.
+
+    Rows keep their on-disk order (ascending STFT bin index), matching the
+    ``contributor_*`` arrays :func:`load_tau_calibration_from_hdf5` returns.
+
+    See :data:`TAU_CONTRIBUTOR_COLUMN_SPECS` for the available columns.
+    """
+    return _read_dataset_table(
+        h5_group,
+        "contributors",
+        TAU_CONTRIBUTOR_COLUMN_SPECS,
+        columns,
+        table="tau_contributors",
+        dataset_names=_TAU_CONTRIBUTOR_DATASETS,
+    )
+
+
+def read_tau_spur_columns(
+    h5_group: h5py.Group,
+    columns: Optional[Sequence[str]] = None,
+) -> Dict[str, np.ndarray]:
+    """Read the excluded spur clusters from a tau-calibration group in bulk.
+
+    Rows keep their on-disk order, matching
+    :attr:`TauCalibrationResult.spur_clusters`. See
+    :data:`TAU_SPUR_COLUMN_SPECS` for the available columns.
+    """
+    return _read_dataset_table(
+        h5_group,
+        "spur_clusters",
+        TAU_SPUR_COLUMN_SPECS,
+        columns,
+        table="tau_spurs",
+        dataset_names=_TAU_SPUR_DATASETS,
+    )
+
+
+def _plain(value: Any) -> Any:
+    """An HDF5 attribute as a plain Python scalar."""
+    if isinstance(value, bytes):
+        return value.decode("utf-8")
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
+def _copy_attrs(
+    group: Optional[h5py.Group],
+    names: Sequence[str],
+    out: Dict[str, Any],
+    *,
+    prefix: str = "",
+) -> None:
+    """Copy the named attributes of *group* into *out*, as plain scalars."""
+    if group is None:
+        return
+    for name in names:
+        if name in group.attrs:
+            out[f"{prefix}{name}"] = _plain(group.attrs[name])
+
+
+def read_tau_scalars(h5_group: h5py.Group) -> Dict[str, Any]:
+    """Read the cheap calibration-level scalars from a tau-calibration group.
+
+    Group attributes only -- the contributor, band, third and spur arrays are
+    not touched. Everything the calibration persists as a scalar is here:
+
+    * the fitted decay time and its spread, the gate knobs that produced them,
+      and the analyzed window;
+    * ``preconditions_passed`` with its three ``preconditions_notes``, which say
+      *why* a calibration is or is not trustworthy;
+    * ``bimodality_*``, the two-component GMM fit that is the usual reason a
+      precondition fails, and the ``pearson_*`` correlations of decay time
+      against SNR and frequency;
+    * the line-shape vote: ``shape`` is what the file is set to use,
+      ``recommended_shape`` is what the vote favored, and the ``shape_vote_*``
+      rates are the vote itself -- the three coexist because a curator may keep
+      a shape the vote did not pick.
+    """
+    out: Dict[str, Any] = {}
+    _copy_attrs(h5_group.get("scalars"), _TAU_SCALAR_ATTRS, out)
+
+    bands = h5_group.get("band_majorities")
+    if bands is not None:
+        out["n_bands"] = int(bands.attrs.get("n_bands", 0))
+    spurs = h5_group.get("spur_clusters")
+    if spurs is not None:
+        out["n_spur_clusters"] = int(spurs.attrs.get("n_clusters", 0))
+
+    notes = h5_group.get("preconditions_notes")
+    if notes is not None:
+        out["preconditions_notes"] = [
+            _plain(note) for note in np.asarray(notes[:]).tolist()
+        ]
+
+    _copy_attrs(
+        h5_group.get("bimodality"), _TAU_BIMODALITY_ATTRS, out, prefix="bimodality_"
+    )
+    _copy_attrs(
+        h5_group.get("pearson"),
+        ("r_log_snr_vs_tau", "r_freq_vs_tau"),
+        out,
+        prefix="pearson_",
+    )
+    _copy_attrs(h5_group.get("algorithm_info"), ("method", "version"), out)
+
+    _copy_attrs(h5_group, ("shape", "recommended_shape", "creation_time"), out)
+    votes = load_json_attr(h5_group, "shape_vote_rates", {}, label="stage2b")
+    if isinstance(votes, dict):
+        for kind, rate in votes.items():
+            out[f"shape_vote_{kind}"] = float(rate)
+    return out

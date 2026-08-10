@@ -91,13 +91,12 @@ from .active_ft_support import (
     build_active_grid_with_noise,
     default_tau0_us,
 )
-from .shared_utils import require_resolved
+from .shared_utils import active_acquisition_us, require_resolved
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage1_impl import compute_ft_impl
 from .stage2_impl import _update_stage_completion
 from .stage2b_impl import load_tau_calibration_impl, tau_calibration_present
 from .stage3_impl import (
-    _active_acquisition_us,
     load_peaks_impl,
 )
 from .stage4_impl import load_windows_impl
@@ -267,7 +266,7 @@ def _build_active_ft_inputs(
     end_us = (
         float(base_pp.end_us) if base_pp.end_us is not None else float(fid.duration_us)
     )
-    acquisition_us = _active_acquisition_us(
+    acquisition_us = active_acquisition_us(
         fid.duration_us, base_pp.start_us, base_pp.end_us
     )
     if acquisition_us <= 0:
@@ -2500,7 +2499,7 @@ def visualize_fit_impl(
     fid = load_fid_from_pipeline_impl(file_path)
     sideband = Sideband.coerce(fid.sideband)
     base_pp = user_ft.metadata["processing_params"]
-    acquisition_us = _active_acquisition_us(
+    acquisition_us = active_acquisition_us(
         fid.duration_us, base_pp.start_us, base_pp.end_us
     )
 

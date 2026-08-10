@@ -84,6 +84,110 @@ To drive a raw source through every stage in one call, use
 :func:`~ftmwpipeline.api.run_pipeline` (functional) or
 :meth:`Pipeline.build <ftmwpipeline.pipeline.Pipeline.build>` (class).
 
+Read-only access to persisted data
+----------------------------------
+
+The ``load_*`` operations above rebuild the complete persisted record — audit
+trails, thaw and rescue histories, fixed-contributor records, covariance blocks
+— because a curator editing that record needs all of it. A consumer that only
+wants a few columns should not pay for it: the cost is per-item HDF5 overhead
+paid thousands of times, not the handful of values kept.
+
+:func:`~ftmwpipeline.api.read_table` is the narrow counterpart. It exposes the
+persisted stage artifacts as tables of bulk columns — each requested column is
+one whole-dataset read, nothing is recomputed, and the file is opened read-only.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 28 72
+
+   * - Table
+     - Contents
+   * - ``tau_bands``
+     - Stage 2b per-band decay times, with uncertainties and frequency ranges —
+       the per-window anchors Stage 5 may consume
+   * - ``tau_thirds``
+     - The low/mid/high split with a median decay time per third: the
+       does-tau-drift-with-frequency diagnostic
+   * - ``tau_contributors``
+     - One row per STFT bin that survived the gates and voted on the decay time
+   * - ``tau_spurs``
+     - One row per excluded spur cluster (the ragged member-bin lists stay with
+       the full loader)
+   * - ``tau_g_*``
+     - The same four for the Gaussian twin calibration, which lives in its own
+       group and may coexist with the primary one
+   * - ``peaks``
+     - Stage 3 detected peaks, including the derived ``promoted`` flag
+   * - ``windows``
+     - Stage 4 planned-window bounds, batch, and contributor counts
+   * - ``window_free_peaks`` / ``window_contributors``
+     - The plan's ragged per-window sets in long form: which Stage 3 peaks a
+       window fits freely, and which it holds fixed from a neighbor
+   * - ``fit_peaks``
+     - Stage 5 fitted peaks, ordered by molecular frequency, carrying the
+       owning window's line ``shape`` so no join is needed
+   * - ``fit_windows``
+     - Stage 5 per-window fit scalars (bounds, tau, cost, quality)
+   * - ``fit_audit`` / ``fit_doublets``
+     - The per-window decision record: every candidate the conservative add loop
+       tried and how it ruled, and every doublet alternative it weighed
+   * - ``fit_thaw`` / ``fit_replans`` / ``fit_rescues``
+     - The plan-level histories: contributors released back to free, window
+       boundaries redrawn mid-fit, and residual re-searches
+
+Two caveats on "cheap". First, not every table is here because its loader was
+slow: Stages 4 and 5 fan out over hundreds of window groups, so the narrow read
+is a large win there, while Stages 2b and 3 persist a single group and already
+load in milliseconds. Those entries exist so that every persisted artifact is
+reachable through one surface rather than only the ones that happened to be
+expensive. Second, the event-log tables (``fit_audit``, ``fit_doublets``,
+``fit_thaw``, ``fit_replans``, ``fit_rescues``) read JSON-encoded records,
+because that is how the fit persists its narrative; reaching them means parsing,
+and there is no narrower path. They still cost far less than a full
+:func:`~ftmwpipeline.api.load_fit`, but they are not the whole-dataset reads the
+rest of this surface is.
+
+Stages 1 and 2 have no table at all: the canonical FT is recomputed from the FID
+rather than persisted, and the Stage 2 noise model is a reconstruction over the
+persisted bins, not a column to read off.
+
+Column names are singular — a header names one row's field, not the stored
+array — even where the file's own dataset is plural (``tau_us`` for
+``taus_us``, and so on).
+
+:func:`~ftmwpipeline.api.read_tables` lists the tables a file carries and their
+columns. :func:`~ftmwpipeline.api.read_metadata` returns the cheap top-level
+scalars as dotted keys — ``file.`` / ``source.`` provenance, the ``fid.``
+acquisition, the ``start.`` detection sweep outcome, the canonical ``ft.``
+window, the ``tau.`` / ``tau_g.`` calibrations and their line-shape vote, the
+``stage3.`` / ``stage4.`` / ``stage5.`` counts, and the ``timebase.`` scale
+error. A section is absent when its stage has not been run, so read with
+``.get()``.
+
+``ft.acquisition_us`` is the active record length every later stage's Fourier
+resolution element ``1 / T`` follows from. It is fixed at Stage 1, so it is
+readable long before a fit exists; ``stage5.acquisition_us`` is the same number
+as the fit recorded it.
+
+Values keep the persisted sentinels rather than the ``None`` the full loaders
+substitute: NaN for an absent float, ``-1`` for an absent id, and tri-state
+small integers for the knockout and tau flags. Use the full loaders when you
+need the reconstructed objects; use these when you need columns.
+
+.. code-block:: python
+
+    import ftmwpipeline.api as ftmw
+
+    lines = ftmw.read_table(
+        "exp_2638.ftmw", "fit_peaks",
+        columns=["frequency_mhz", "decay_rate", "shape"],
+    )
+    resolution_mhz = 1.0 / ftmw.read_metadata("exp_2638.ftmw")["ft.acquisition_us"]
+
+The CLI equivalent is the ``read`` object (:doc:`../cli`), which dumps the same
+tables as CSV, TSV, or JSON.
+
 Pipeline class
 --------------
 

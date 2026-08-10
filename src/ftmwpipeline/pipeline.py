@@ -19,6 +19,8 @@ from typing import (
     cast,
 )
 
+import numpy as np
+
 if TYPE_CHECKING:
     from ._internal.tuning import (
         BatchItem,
@@ -29,6 +31,11 @@ if TYPE_CHECKING:
         SweepResult,
     )
 
+from ._internal.read_impl import (
+    read_metadata_impl,
+    read_table_impl,
+    read_tables_impl,
+)
 from ._internal.report_diff_impl import report_diff_impl
 from ._internal.report_html_impl import report_run_impl
 from ._internal.report_impl import report_table_impl
@@ -2183,6 +2190,68 @@ class Pipeline:
             return result
         except Exception as e:
             raise RuntimeError(f"Failed to show fit: {e}") from e
+
+    # ------------------------------------------------------------------
+    # Read-only access to persisted data (no recompute, no full loaders)
+    # ------------------------------------------------------------------
+
+    def read_table(
+        self,
+        table: str,
+        columns: Optional[Sequence[str]] = None,
+    ) -> Dict[str, np.ndarray]:
+        """Read one persisted table as bulk columns.
+
+        The cheap counterpart to :meth:`load_peaks` / :meth:`load_windows` /
+        :meth:`load_fit`: it reads only the requested columns as whole datasets
+        and reconstructs no object graph, so a consumer that wants a few columns
+        does not pay for audit trails, thaw/rescue histories, fixed-contributor
+        records, or covariance blocks. Nothing is recomputed.
+
+        Parameters
+        ----------
+        table : str
+            One of :meth:`read_tables`' keys -- the Stage 2b calibration tables
+            (and their ``tau_g_`` twins), the Stage 3 peak list, the Stage 4
+            plan and its long-form peak/contributor assignments, and the Stage 5
+            fit plus its decision record. Hyphens and underscores are
+            equivalent.
+        columns : sequence of str, optional
+            Columns to read, in the order wanted; ``None`` reads all of them.
+
+        Returns
+        -------
+        dict
+            ``{column_name: numpy array}``, all of equal length. Sentinels are
+            the persisted ones (NaN for an absent float, ``-1`` for an absent
+            id); see :meth:`read_tables` for the column roster.
+
+        Raises
+        ------
+        ValueError
+            If the table or a column name is unknown, or the stage that
+            produces the table has not been run.
+        """
+        return read_table_impl(str(self.filepath), table, columns)
+
+    def read_tables(self) -> Dict[str, Dict[str, Any]]:
+        """List the readable tables, their columns, and their row counts.
+
+        Reads group attributes only. Each entry reports ``available`` (whether
+        the producing stage has been run), ``n_rows``, ``columns``, and the
+        backing HDF5 ``group``.
+        """
+        return read_tables_impl(str(self.filepath))
+
+    def read_metadata(self) -> Dict[str, Any]:
+        """Read the cheap top-level scalars of the file.
+
+        Group attributes only -- notably ``stage5.acquisition_us`` (the active-FT
+        acquisition length the Fourier resolution element ``1 / acquisition_us``
+        follows from), reachable without deserializing the fit that carries it.
+        Keys are dotted and a section is absent when its stage has not been run.
+        """
+        return read_metadata_impl(str(self.filepath))
 
     def info(self) -> Dict[str, Any]:
         """

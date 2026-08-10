@@ -36,6 +36,13 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union, cast
 
+import numpy as np
+
+from ._internal.read_impl import (
+    read_metadata_impl,
+    read_table_impl,
+    read_tables_impl,
+)
 from ._internal.stage5_impl import _DETAIL_PAD_FACTOR
 from ._internal.stage6_impl import (
     DEFAULT_ATTENTION_CANDIDATE_EVIDENCE,
@@ -1991,6 +1998,124 @@ def show_fit(
 # =============================================================================
 # Utility Functions
 # =============================================================================
+
+
+# =============================================================================
+# Read-only access to persisted data
+# =============================================================================
+#
+# These three delegate straight to the shared ``_internal.read_impl`` core
+# rather than through ``Pipeline.open``, unlike the rest of this module. That
+# is deliberate: ``Pipeline.open`` also validates the provenance record, which a
+# read-only column tap has no business demanding, and routing through it would
+# leave the CLI (which calls the core directly, as every CLI module does)
+# accepting files this surface rejected. One gate, three interfaces.
+
+
+def read_table(
+    file_path: Union[str, Path],
+    table: str,
+    columns: Optional[Sequence[str]] = None,
+) -> Dict[str, np.ndarray]:
+    """Read one persisted table as bulk columns, equivalent to
+    :meth:`Pipeline.read_table`.
+
+    The cheap counterpart to :func:`load_peaks` / :func:`load_windows` /
+    :func:`load_fit`. Those rebuild the complete persisted record -- audit
+    trails, thaw and rescue histories, fixed-contributor records, covariance
+    blocks -- because a curator editing it needs all of it. This reads only the
+    columns asked for, as whole datasets, and reconstructs no object graph.
+    Nothing is recomputed; the file is opened read-only.
+
+    Parameters
+    ----------
+    file_path : str or Path
+        Path to .ftmw pipeline file.
+    table : str
+        One of :func:`read_tables`' keys; hyphens and underscores are
+        equivalent. Stage 2b offers ``tau_bands`` / ``tau_thirds`` /
+        ``tau_contributors`` / ``tau_spurs``, mirrored under a ``tau_g_`` prefix
+        for the Gaussian twin; Stage 3 ``peaks``; Stage 4 ``windows`` plus
+        ``window_free_peaks`` / ``window_contributors`` in long form; Stage 5
+        ``fit_peaks`` / ``fit_windows`` plus the decision record
+        (``fit_audit``, ``fit_doublets``, ``fit_thaw``, ``fit_replans``,
+        ``fit_rescues``).
+    columns : sequence of str, optional
+        Columns to read, in the order wanted; ``None`` reads all of them.
+        Reading only what you need is what makes this cheap.
+
+    Notes
+    -----
+    The event-log tables (``fit_audit``, ``fit_doublets``, ``fit_thaw``,
+    ``fit_replans``, ``fit_rescues``) read JSON-encoded records, because that is
+    how the fit persists its narrative; reaching them means parsing, and there
+    is no narrower path. They still cost far less than a full :func:`load_fit`,
+    but they are not the whole-dataset reads the rest of this surface is.
+
+    Returns
+    -------
+    dict
+        ``{column_name: numpy array}``, all of equal length. Values keep the
+        persisted sentinels (NaN for an absent float, ``-1`` for an absent id,
+        tri-state small ints for the knockout/tau flags) rather than the
+        ``None`` the full loaders substitute.
+
+    Raises
+    ------
+    ValueError
+        If the table or a column name is unknown, or the stage that produces
+        the table has not been run.
+
+    Examples
+    --------
+    >>> import ftmwpipeline.api as ftmw
+    >>> cols = ftmw.read_table(
+    ...     "experiment.ftmw",
+    ...     "fit_peaks",
+    ...     columns=["frequency_mhz", "decay_rate", "shape"],
+    ... )
+    >>> cols["frequency_mhz"][:3]
+    """
+    try:
+        return read_table_impl(file_path, table, columns)
+    except Exception as e:
+        logger.error(f"Failed to read table {table!r} from {file_path}: {e}")
+        raise
+
+
+def read_tables(file_path: Union[str, Path]) -> Dict[str, Dict[str, Any]]:
+    """List the readable tables and their columns, equivalent to
+    :meth:`Pipeline.read_tables`.
+
+    Returns one entry per table name accepted by :func:`read_table`, each with
+    ``available`` (whether the producing stage has been run), ``n_rows``,
+    ``columns``, and the backing HDF5 ``group``. Reads group attributes only.
+    """
+    try:
+        return read_tables_impl(file_path)
+    except Exception as e:
+        logger.error(f"Failed to list readable tables for {file_path}: {e}")
+        raise
+
+
+def read_metadata(file_path: Union[str, Path]) -> Dict[str, Any]:
+    """Read the file's cheap top-level scalars, equivalent to
+    :meth:`Pipeline.read_metadata`.
+
+    Group attributes only -- nothing is deserialized and no window is
+    traversed. Keys are dotted (``file.*``, ``source.*``, ``fid.*``,
+    ``stage3.*``, ``stage4.*``, ``stage5.*``, ``timebase.*``) and a section is
+    simply absent when its stage has not been run, so read with ``.get()``.
+
+    ``stage5.acquisition_us`` is here: the active-FT acquisition length the
+    Fourier resolution element ``1 / acquisition_us`` follows from, reachable
+    without deserializing the fit that carries it.
+    """
+    try:
+        return read_metadata_impl(file_path)
+    except Exception as e:
+        logger.error(f"Failed to read metadata from {file_path}: {e}")
+        raise
 
 
 def get_pipeline_info(file_path: Union[str, Path]) -> Dict[str, Any]:

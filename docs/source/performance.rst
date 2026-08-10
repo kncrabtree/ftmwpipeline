@@ -155,6 +155,28 @@ Performance is best read across the whole pipeline rather than stage by stage: a
 choice made at detection or calibration time propagates into the most expensive
 stage. Tune the earlier, cheaper stages first.
 
+Reading a finished file cheaply
+-------------------------------
+
+Reading back is a different cost from computing. ``load_fit`` and
+``load_windows`` rebuild the whole persisted record — every audit step, thaw
+event, rescue round, doublet alternative, fixed contributor, and covariance
+block — because that is what a curator editing the record needs. Their cost is
+not the bytes moved; it is HDF5's per-item overhead, paid once per attribute and
+dataset on every window group. On a few-hundred-window fit that is thousands of
+small reads for a record a caller may be keeping three columns of.
+
+When a downstream tool only needs columns, use the read-only tap instead:
+``read_table`` reads whole datasets for exactly the columns asked for, walks no
+object graph, and recomputes nothing (see :doc:`api/index`, or the ``read``
+object in :doc:`cli`). ``read_metadata`` reaches the top-level scalars — the
+fit's ``acquisition_us`` among them — from group attributes alone, without
+touching a single window. Passing ``columns=`` is what makes the difference:
+the read scales with the columns requested, not with how much the file holds.
+
+The full loaders remain the right tool whenever the reconstructed objects are
+what you need — curation, visualization, anything that consults the audit trail.
+
 Where the time goes
 -------------------
 

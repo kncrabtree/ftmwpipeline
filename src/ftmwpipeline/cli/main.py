@@ -18,6 +18,7 @@ from .ft_commands import add_ft_subcommands
 from .info_commands import add_info_subcommand
 from .noise_commands import register_noise_commands
 from .peak_commands import register_peak_commands
+from .read_commands import register_read_commands
 from .report_commands import register_report_commands
 from .review_commands import register_review_commands
 from .run_commands import register_run_command
@@ -94,6 +95,7 @@ Stage objects (synonym):
 Meta objects (cross-cutting, optional dotted selector):
   scan      list | run | all              Knob registry; sweep one / all knobs
   settings  show | set | export           Resolved value + provenance; persist; preset
+  read      list | table | meta           Dump persisted data (CSV/TSV/JSON), no recompute
 
 Utility (bare commands):
   formats           List available data formats
@@ -153,6 +155,9 @@ Examples:
 
     # Cross-cutting resolved-settings inspection
     register_settings_commands(subparsers)
+
+    # Cross-cutting read-only data tap
+    register_read_commands(subparsers)
 
     # Instrument clock-source declaration
     register_clocks_commands(subparsers)

@@ -8,6 +8,40 @@ Changelog
 Notable changes to ``ftmwpipeline``, newest first. Versions follow
 `semantic versioning <https://semver.org/>`_.
 
+Unreleased
+----------
+
+* **A read-only tap on persisted data.** The ``load_*`` operations rebuild the
+  complete persisted record — audit trails, thaw and rescue histories,
+  fixed-contributor records, covariance blocks — which is what a curator
+  editing that record needs, and was until now the only way to reach a few
+  columns. A consumer keeping two floats per window paid for all of it: the
+  cost is per-item HDF5 overhead paid thousands of times, not the values kept.
+  :func:`~ftmwpipeline.api.read_table` exposes the same persisted artifacts as
+  tables of bulk columns, reading only the columns asked for and reconstructing
+  nothing: the Stage 2b calibration (per-band decay times, frequency thirds,
+  per-bin contributors, excluded spur clusters — and the same four again for
+  the Gaussian twin), the Stage 3 peak list, the Stage 4 window plan with its
+  free-peak and fixed-contributor assignments in long form, and the Stage 5
+  fitted peaks, per-window scalars, and decision record (the add-loop audit,
+  the doublet alternatives, and the thaw, replan and rescue histories).
+  Measured on a 262-window file, a three-column fitted-peak read costs about a
+  tenth of ``load_fit``'s HDF5 traffic; the Stage 2b and Stage 3 tables are
+  there for uniform access and CSV export rather than speed, since those
+  loaders were never the bottleneck, and the event-log tables cost a JSON parse
+  because that is how the fit persists its narrative. Column names are
+  singular, even where the file's own dataset is plural.
+  :func:`~ftmwpipeline.api.read_metadata` reaches the top-level scalars from
+  group attributes alone — provenance, the FID acquisition, the start-detection
+  sweep outcome, the canonical FT window (with the derived
+  ``ft.acquisition_us``, so the Fourier resolution element is readable as soon
+  as Stage 1 has run rather than only after a fit), the decay-time calibrations
+  and their line-shape vote, the per-stage counts, and the timebase scale
+  error. The ``read`` CLI object (``read list`` / ``read table`` / ``read
+  meta``) dumps the same tables as CSV, TSV, or JSON, to stdout or a file.
+  Values keep the persisted sentinels; the calibrated, presentation-ready line
+  list remains ``report table``.
+
 Version 0.1.0b3 (2026-08-03)
 ----------------------------
 

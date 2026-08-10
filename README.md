@@ -93,6 +93,16 @@ ftmwpipeline fit run      exp.ftmw
 ftmwpipeline report run   exp.ftmw --output-dir report
 ```
 
+Anything a stage persisted can be dumped straight back out, without
+recomputing or reloading the full record:
+
+```bash
+ftmwpipeline read list  exp.ftmw                     # what tables are in there
+ftmwpipeline read table exp.ftmw fit_peaks \
+    --columns frequency_mhz,decay_rate,shape         # CSV to stdout or --output
+ftmwpipeline read meta  exp.ftmw                     # provenance + scalars
+```
+
 ## Documentation
 
 Full documentation — installation, a worked quickstart on bundled example data,

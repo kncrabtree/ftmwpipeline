@@ -68,7 +68,7 @@ from ..preprocessing.peak_detection import (
 )
 from ..utils.signal_processing import make_apodization, matched_filter_window
 from .active_ft_support import build_active_grid_with_noise
-from .shared_utils import require_resolved
+from .shared_utils import active_acquisition_us, require_resolved
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage1_impl import compute_ft_impl
 from .stage2_impl import _update_stage_completion
@@ -162,15 +162,6 @@ def _leakage_floor_amp(
     return cast(
         np.ndarray, k * (np.nan_to_num(scoh, nan=0.0) / np.sqrt(band_m)) * sigma
     )
-
-
-def _active_acquisition_us(
-    fid_duration_us: float, start_us: Optional[float], end_us: Optional[float]
-) -> float:
-    """Effective acquisition length T (µs) of the analyzed FID window."""
-    lo = 0.0 if start_us is None else float(start_us)
-    hi = fid_duration_us if end_us is None else float(end_us)
-    return max(hi - lo, 0.0)
 
 
 def _grid_aware_sg_window(
@@ -600,7 +591,7 @@ def detect_peaks_impl(
     snap_pedestal = _leakage_floor_amp(snap_ft.complex_spectrum, snap_rms, 1.0)
 
     fid = load_fid_from_pipeline_impl(file_path)
-    acquisition_us = _active_acquisition_us(
+    acquisition_us = active_acquisition_us(
         fid.duration_us, base_pp.start_us, base_pp.end_us
     )
 

@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 # creation. It is independent of the package version and uses MAJOR.MINOR
 # semantics: bump MAJOR for a change that older readers cannot safely parse,
 # MINOR for a backward-compatible addition. Reading is governed by
-# _check_format_compatibility(): a newer MAJOR is refused, a newer MINOR warns,
+# check_format_compatibility(): a newer MAJOR is refused, a newer MINOR warns,
 # a missing stamp is treated as a legacy pre-stamp file.
 FTMW_FORMAT_VERSION = "1.0"
 
@@ -457,7 +457,7 @@ def _warn_legacy_ft_apodization_keys(filepath: Path, h5f: "h5py.File") -> None:
             )
 
 
-def _check_format_compatibility(filepath: Path, h5f: "h5py.File") -> None:
+def check_format_compatibility(filepath: Path, h5f: "h5py.File") -> None:
     """Check the file's format-version stamp against this package.
 
     The stamp is the root ``ftmw_format_version`` attribute (MAJOR.MINOR). A
@@ -544,7 +544,7 @@ def open_pipeline_file(
             if source_metadata is None:
                 raise PipelineCorruptionError(filepath, "Missing source metadata")
 
-            _check_format_compatibility(filepath, h5f)
+            check_format_compatibility(filepath, h5f)
             _warn_legacy_ft_apodization_keys(filepath, h5f)
 
             return filepath, source_metadata, stage_tracker

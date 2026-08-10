@@ -103,6 +103,9 @@ Command summary
    * - ``clocks``
      - ``show``, ``set``, ``add``, ``remove``, ``clear``
      - Declare instrument clock fundamentals
+   * - ``read``
+     - ``list``, ``table``, ``meta``
+     - Dump persisted data as CSV/TSV/JSON, no recompute
    * - ``run``
      - —
      - Drive a raw source through every stage
@@ -306,6 +309,69 @@ builds its lattice prior from, writing the recommended declaration layer.
 ``freq[:locked|free[:label]]`` token form (e.g. ``5760:locked:synth``);
 ``remove`` drops sources by frequency and ``clear`` empties the declaration. See
 :doc:`clock_declaration`.
+
+``read`` — read-only data tap
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``read`` dumps what a stage persisted, as delimited text. It recomputes nothing
+and reconstructs no full record: each requested column is one bulk read, so a
+consumer wanting a few columns does not pay for the audit trails, thaw and
+rescue histories, fixed-contributor records, and covariance blocks the full
+loaders rebuild.
+
+``read list <file>`` shows which tables the file carries and what columns each
+one has. ``read table <file> <name>`` dumps one of them:
+
+* ``tau_bands``, ``tau_thirds``, ``tau_contributors``, ``tau_spurs`` — the
+  Stage 2b decay-time calibration: the per-band decay times with their
+  uncertainties and frequency ranges, the low/mid/high drift diagnostic, the
+  raw per-bin contributors that voted, and the excluded spur clusters. The
+  ``tau_g_*`` four are the same for the Gaussian twin (``tau run --gaussian``),
+  which lives in its own group.
+* ``peaks`` — the Stage 3 detected-peak list, including the derived
+  ``promoted`` flag.
+* ``windows`` — the Stage 4 planned-window bounds, batch, and contributor
+  counts; ``window_free_peaks`` and ``window_contributors`` give the plan's
+  ragged per-window sets in long form.
+* ``fit_peaks`` — the Stage 5 fitted peaks, ordered by molecular frequency and
+  carrying the owning window's line shape as a column, so no join is needed.
+* ``fit_windows`` — the Stage 5 per-window fit scalars (bounds, tau, cost,
+  quality).
+* ``fit_audit``, ``fit_doublets``, ``fit_thaw``, ``fit_replans``,
+  ``fit_rescues`` — the fit's decision record: every candidate the conservative
+  add loop tried and how it ruled, the doublet alternatives it weighed, and the
+  plan-level thaw, replan and rescue histories. These read JSON-encoded
+  records, so they cost a parse rather than a bulk read — still far below a
+  full fit load, but not free.
+
+Stages 1 and 2 have no table: the canonical FT is recomputed from the FID
+rather than persisted, and the Stage 2 noise model is a reconstruction over the
+persisted bins, not a column to read off. Column names are singular even where
+the file's own dataset is plural.
+
+``read meta <file>`` dumps the cheap top-level scalars, as dotted keys:
+``file.`` and ``source.`` provenance, the ``fid.`` acquisition, the ``start.``
+detection sweep outcome, the canonical ``ft.`` window — including the derived
+``ft.acquisition_us``, the active record length the resolution element
+``1 / T`` follows from — the ``tau.`` / ``tau_g.`` calibrations with their
+line-shape vote, the ``stage3.`` / ``stage4.`` / ``stage5.`` counts, and the
+``timebase.`` scale error. A section is simply absent when its stage has not
+been run. Nothing is deserialized.
+
+``--columns a,b,c`` restricts the read to the columns wanted, in that order;
+that is what keeps it cheap on a large file. ``--format`` selects ``csv``
+(default), ``tsv``, or ``json``, and ``--output PATH`` writes to a file instead
+of stdout::
+
+    ftmwpipeline read list  exp_2638.ftmw
+    ftmwpipeline read table exp_2638.ftmw fit_peaks \
+        --columns frequency_mhz,decay_rate,shape --output lines.csv
+    ftmwpipeline read meta  exp_2638.ftmw --format json
+
+This is the *persisted* data as stored: floats round-trip exactly and the
+on-disk sentinels are preserved (NaN for an absent float, ``-1`` for an absent
+id). The presentation view — the calibrated final line list with its
+uncertainty budget — is ``report table``, not this.
 
 Whole-pipeline command
 ----------------------

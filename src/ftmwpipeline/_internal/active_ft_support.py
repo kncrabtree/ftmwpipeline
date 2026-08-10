@@ -27,17 +27,9 @@ from ..fitting.active_ft import ActiveFTResult, compute_active_ft
 from ..io.noise_result_serialization import load_noise_result_from_hdf5
 from ..io.noise_settings_serialization import load_noise_settings_from_h5
 from ..preprocessing.noise_estimation import NoiseResult, estimate_active_ft_noise
+from .shared_utils import active_acquisition_us
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage1_impl import compute_ft_impl
-
-
-def _active_acquisition_us(
-    fid_duration_us: float, start_us: Optional[float], end_us: Optional[float]
-) -> float:
-    """Effective acquisition length T (µs) of the analyzed FID window."""
-    lo = 0.0 if start_us is None else float(start_us)
-    hi = fid_duration_us if end_us is None else float(end_us)
-    return max(hi - lo, 0.0)
 
 
 def default_tau0_us(acquisition_us: float) -> float:
@@ -71,7 +63,7 @@ def compute_persisted_active_ft(
     end_us = (
         float(base_pp.end_us) if base_pp.end_us is not None else float(fid.duration_us)
     )
-    acquisition_us = _active_acquisition_us(
+    acquisition_us = active_acquisition_us(
         fid.duration_us, base_pp.start_us, base_pp.end_us
     )
     if acquisition_us <= 0:

@@ -98,7 +98,7 @@ mismatched peak-column lengths, unknown audit-step decision) raises
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 import h5py
 import numpy as np
@@ -117,16 +117,39 @@ from ..core.data_structures import (
     ThawInfo,
 )
 from ._hdf5_helpers import (
+    REQUIRED,
+    ColumnSpec,
+    build_columns,
     load_json_attr,
     nan_if_none,
     none_if_nan,
+    read_attr_value,
+    read_dataset_column,
+    record_row,
     reset_group,
+    resolve_column_selection,
+    stack_columns,
     stamp_stage_header,
 )
 
 __all__ = [
     "save_spectrum_fit_to_hdf5",
     "load_spectrum_fit_from_hdf5",
+    "FIT_PEAK_COLUMN_SPECS",
+    "FIT_WINDOW_COLUMN_SPECS",
+    "FIT_AUDIT_COLUMN_SPECS",
+    "FIT_DOUBLET_COLUMN_SPECS",
+    "FIT_THAW_COLUMN_SPECS",
+    "FIT_REPLAN_COLUMN_SPECS",
+    "FIT_RESCUE_COLUMN_SPECS",
+    "read_fit_peak_columns",
+    "read_fit_window_columns",
+    "read_fit_audit_columns",
+    "read_fit_doublet_columns",
+    "read_fit_thaw_columns",
+    "read_fit_replan_columns",
+    "read_fit_rescue_columns",
+    "read_fit_scalars",
 ]
 
 
@@ -928,3 +951,517 @@ def _load_peak_columns(peaks_group: h5py.Group, *, where: str) -> List[FittedPea
             )
         )
     return peaks
+
+
+# ---------------------------------------------------------------------------
+# Read-only bulk column access (no SpectrumFit reconstruction)
+# ---------------------------------------------------------------------------
+#
+# :func:`load_spectrum_fit_from_hdf5` rebuilds the whole persisted record --
+# audit trails, thaw events, rescue rounds, doublet alternatives, covariance --
+# because a curator editing the fit needs all of it. A consumer that wants a
+# few columns per fitted peak does not, and the reconstruction is where the
+# time goes (per-item h5py overhead paid thousands of times, plus a JSON parse
+# per window). The readers below touch only the columns asked for.
+#
+# They are deliberately *raw*: the on-disk sentinels are preserved rather than
+# translated to ``None`` the way the full loader does, because a bulk column is
+# an array, not a list of objects. The sentinels are documented per column
+# below and are exactly the ones the save side writes.
+
+#: Per-fitted-peak read columns, in canonical order.
+#:
+#: Sentinels (as written by :func:`_save_peak_columns`): NaN encodes an absent
+#: float (``phase``/``decay_rate``/the ``*_error`` columns/``snr``/
+#: ``chi_squared``); ``window_id``/``derivation`` use ``-1`` for "none";
+#: ``knockout_supported`` is tri-state (``1`` supported, ``0`` not, ``-1`` no
+#: knockout was run); an empty ``clock_lattice`` means "off-lattice or no clock
+#: declaration". ``shape`` is derived from the owning window's ``shape``
+#: attribute -- the line shape is per window, and this column broadcasts it so a
+#: consumer needs no join.
+FIT_PEAK_COLUMN_SPECS: Dict[str, ColumnSpec] = {
+    "peak_id": ("i8", REQUIRED),
+    "window_id": ("i8", REQUIRED),
+    "shape": ("str", "lorentzian"),  # derived from the window attr
+    "frequency_mhz": ("f8", REQUIRED),
+    "frequency_error": ("f8", REQUIRED),
+    "amplitude": ("f8", REQUIRED),
+    "amplitude_error": ("f8", REQUIRED),
+    "phase": ("f8", REQUIRED),
+    "phase_error": ("f8", REQUIRED),
+    "decay_rate": ("f8", REQUIRED),
+    "decay_rate_error": ("f8", REQUIRED),
+    "snr": ("f8", REQUIRED),
+    "chi_squared": ("f8", REQUIRED),
+    "origin": ("str", "auto"),
+    "clock_lattice": ("str", ""),
+    "flat_decay": ("bool", False),
+    "derivation": ("i8", -1),
+    "knockout_delta_chi2": ("f8", REQUIRED),
+    "knockout_expected_delta_chi2": ("f8", REQUIRED),
+    "knockout_supported": ("i1", REQUIRED),
+    "knockout_p_value": ("f8", float("nan")),
+    "knockout_n_eff": ("f8", float("nan")),
+    "knockout_aicc_delta": ("f8", float("nan")),
+}
+
+#: ``shape`` is not a stored peak column; it is broadcast from the window.
+_FIT_PEAK_DERIVED = ("shape",)
+
+#: Per-fitted-window read columns, in canonical order. All are window-group
+#: attributes except ``n_peaks``, which is the peak-column length.
+#:
+#: Sentinels: ``freq_min``/``freq_max`` are NaN when the window's freq_range was
+#: not persisted; ``tau_error`` is NaN when tau was held fixed; ``tau_fitted``
+#: is tri-state (``1`` free, ``0`` held, ``-1`` unknown -- an older file).
+FIT_WINDOW_COLUMN_SPECS: Dict[str, ColumnSpec] = {
+    "window_id": ("i8", REQUIRED),
+    "freq_min": ("f8", float("nan")),
+    "freq_max": ("f8", float("nan")),
+    "shape": ("str", "lorentzian"),
+    "n_peaks": ("i8", REQUIRED),  # derived from the peaks subgroup
+    "success": ("bool", REQUIRED),
+    "tau_us": ("f8", REQUIRED),
+    "tau_error": ("f8", float("nan")),
+    "tau_fitted": ("i1", -1),
+    "cost": ("f8", REQUIRED),
+    "iterations": ("i8", REQUIRED),
+    "aic": ("f8", REQUIRED),
+    "reduced_chi2": ("f8", REQUIRED),
+    "edge_coherence_low": ("f8", float("nan")),
+    "edge_coherence_high": ("f8", float("nan")),
+}
+
+_FIT_WINDOW_DERIVED = ("n_peaks",)
+
+
+def _windows_group(h5_group: h5py.Group) -> h5py.Group:
+    if "windows" not in h5_group:
+        raise ValueError("stage5_fitting group missing required 'windows' subgroup")
+    return h5_group["windows"]
+
+
+def _peaks_subgroup(wg: h5py.Group, where: str) -> h5py.Group:
+    try:
+        return wg["peaks"]
+    except KeyError:
+        raise ValueError(f"{where} missing required 'peaks' subgroup") from None
+
+
+def _peak_row_count(peaks_group: h5py.Group, where: str) -> int:
+    """Row count of a peaks subgroup, from the required ``peak_id`` column."""
+    try:
+        dataset = peaks_group["peak_id"]
+    except KeyError:
+        raise ValueError(f"{where} missing required column 'peak_id'") from None
+    return int(dataset.shape[0])
+
+
+def read_fit_peak_columns(
+    h5_group: h5py.Group,
+    columns: Optional[Sequence[str]] = None,
+) -> Dict[str, np.ndarray]:
+    """Read fitted-peak columns from a ``stage5_fitting`` group in bulk.
+
+    Every window's ``peaks`` subgroup contributes its rows; each requested
+    column is one whole-dataset read per window and nothing else in the window
+    group (audit trail, thaw/rescue events, doublet alternatives, covariance)
+    is touched.
+
+    Rows are ordered by ascending molecular frequency, matching
+    :attr:`SpectrumFit.fitted_peaks`, so a consumer can substitute this for the
+    full loader row-for-row.
+
+    Parameters
+    ----------
+    h5_group :
+        The ``/stage5_fitting`` group.
+    columns :
+        Column names to read (see :data:`FIT_PEAK_COLUMN_SPECS`); ``None``
+        reads all of them. Unknown names raise ``ValueError``.
+
+    Returns
+    -------
+    dict
+        ``{column_name: numpy array}``, all of equal length, in the requested
+        order. See :data:`FIT_PEAK_COLUMN_SPECS` for the sentinel conventions.
+    """
+    requested = resolve_column_selection(
+        columns, list(FIT_PEAK_COLUMN_SPECS), table="fit_peaks"
+    )
+    windows_group = _windows_group(h5_group)
+
+    # frequency_mhz always read: it defines the row order.
+    stored = [c for c in requested if c not in _FIT_PEAK_DERIVED]
+    to_read = list(dict.fromkeys(["frequency_mhz", *stored]))
+    chunks: Dict[str, List[np.ndarray]] = {
+        c: [] for c in (*to_read, *_FIT_PEAK_DERIVED)
+    }
+
+    want_shape = "shape" in requested
+    for name in sorted(windows_group.keys()):
+        wg = windows_group[name]
+        where = f"window {name!r} peaks"
+        peaks_group = _peaks_subgroup(wg, f"window {name!r}")
+        # The anchor column defines the window's row count; the rest must agree.
+        n: Optional[int] = None
+        for col in to_read:
+            column = read_dataset_column(
+                peaks_group, col, FIT_PEAK_COLUMN_SPECS[col], n, where=where
+            )
+            if n is None:
+                n = len(column)
+            chunks[col].append(column)
+        if want_shape:
+            assert n is not None  # to_read always carries the anchor column
+            shape_str = read_attr_value(
+                wg, "shape", FIT_PEAK_COLUMN_SPECS["shape"], where=f"window {name!r}"
+            )
+            chunks["shape"].append(np.full(n, shape_str, dtype=object))
+
+    read = stack_columns(
+        chunks,
+        FIT_PEAK_COLUMN_SPECS,
+        [*to_read, *(c for c in _FIT_PEAK_DERIVED if c in requested)],
+    )
+    order = np.argsort(read["frequency_mhz"], kind="stable")
+    return {c: read[c][order] for c in requested}
+
+
+def read_fit_window_columns(
+    h5_group: h5py.Group,
+    columns: Optional[Sequence[str]] = None,
+) -> Dict[str, np.ndarray]:
+    """Read per-window fit scalars from a ``stage5_fitting`` group in bulk.
+
+    One attribute read per window per requested column; the JSON-encoded
+    audit/thaw/rescue/doublet blobs on the window group are never parsed. Rows
+    are ordered by ascending ``window_id``, matching
+    :attr:`SpectrumFit.window_fits`.
+
+    See :data:`FIT_WINDOW_COLUMN_SPECS` for the available columns and their
+    sentinel conventions.
+    """
+    requested = resolve_column_selection(
+        columns, list(FIT_WINDOW_COLUMN_SPECS), table="fit_windows"
+    )
+    windows_group = _windows_group(h5_group)
+
+    # window_id always read: it defines the row order.
+    attr_cols = [c for c in requested if c not in _FIT_WINDOW_DERIVED]
+    to_read = list(dict.fromkeys(["window_id", *attr_cols]))
+    rows: Dict[str, List[Any]] = {c: [] for c in (*to_read, *_FIT_WINDOW_DERIVED)}
+
+    want_n_peaks = "n_peaks" in requested
+    for name in sorted(windows_group.keys()):
+        wg = windows_group[name]
+        where = f"window {name!r}"
+        for col in to_read:
+            rows[col].append(
+                read_attr_value(wg, col, FIT_WINDOW_COLUMN_SPECS[col], where=where)
+            )
+        if want_n_peaks:
+            peaks_group = _peaks_subgroup(wg, where)
+            rows["n_peaks"].append(_peak_row_count(peaks_group, f"{where} peaks"))
+
+    keep = [*to_read, *(c for c in _FIT_WINDOW_DERIVED if c in requested)]
+    built = build_columns(rows, FIT_WINDOW_COLUMN_SPECS, keep)
+    order = np.argsort(built["window_id"], kind="stable")
+    return {c: built[c][order] for c in requested}
+
+
+def read_fit_scalars(h5_group: h5py.Group) -> Dict[str, Any]:
+    """Read the cheap plan-level scalars from a ``stage5_fitting`` group.
+
+    Reads only group attributes -- no window traversal at all. ``acquisition_us``
+    is lifted out of the persisted Stage 5 ``parameters`` blob, which is where
+    the fit records the active-FT acquisition length the resolution element
+    ``1 / acquisition_us`` follows from.
+    """
+    parameters = load_json_attr(h5_group, "parameters", {}, label="stage5_fitting")
+    acquisition = (
+        parameters.get("acquisition_us") if isinstance(parameters, dict) else None
+    )
+    shape_attr = h5_group.attrs.get("shape", "lorentzian")
+    if isinstance(shape_attr, bytes):
+        shape_attr = shape_attr.decode("utf-8")
+    creation = h5_group.attrs.get("creation_time", "unknown")
+    if isinstance(creation, bytes):
+        creation = creation.decode("utf-8")
+    return {
+        "n_windows": int(h5_group.attrs.get("n_windows", 0)),
+        "n_fitted_peaks": int(h5_group.attrs.get("n_fitted_peaks", 0)),
+        "shape": str(shape_attr),
+        "final_plan_revision": int(h5_group.attrs.get("final_plan_revision", 0)),
+        "acquisition_us": None if acquisition is None else float(acquisition),
+        "creation_time": str(creation),
+    }
+
+
+# ---------------------------------------------------------------------------
+# The event logs, as tables
+# ---------------------------------------------------------------------------
+#
+# The fit's decision record -- the conservative add-loop audit, the doublet
+# alternatives it weighed, the thaw and replan history, the rescue rounds -- is
+# JSON-encoded rather than columnar, because it is written once and read as a
+# narrative. These readers present it as flat tables anyway, for the consumer
+# who wants the record in a spreadsheet or a dataframe.
+#
+# Unlike the peak and window readers, these are NOT cheap: reaching a JSON blob
+# means parsing it, and there is no narrower path. The plan-level logs cost one
+# parse each; the per-window ones (audit, doublets) cost one per window, which
+# is a fraction of the full loader's work but not a constant. Said plainly here
+# so nobody reads "read_*" as "free".
+
+#: One row per audit step, across every window. The conservative add loop
+#: records each candidate it tried and why it accepted, rejected or held it.
+#: ``step_index`` is the position within its window's trail, so the narrative
+#: order survives a re-sort.
+FIT_AUDIT_COLUMN_SPECS: Dict[str, ColumnSpec] = {
+    "window_id": ("i8", REQUIRED),
+    "step_index": ("i8", REQUIRED),
+    "decision": ("str", REQUIRED),
+    "n_peaks_before": ("i8", REQUIRED),
+    "candidate_offset_mhz": ("f8", REQUIRED),
+    "chi2_before": ("f8", REQUIRED),
+    "chi2_after": ("f8", REQUIRED),
+    "f_statistic": ("f8", REQUIRED),
+    "p_value": ("f8", REQUIRED),
+    "aic_before": ("f8", REQUIRED),
+    "aic_after": ("f8", REQUIRED),
+    "n_eff": ("f8", float("nan")),
+    "aicc_delta": ("f8", float("nan")),
+    "separation_ok": ("bool", REQUIRED),
+    "reason": ("str", ""),
+}
+
+#: One row per doublet alternative weighed, across every window: a pair the fit
+#: could have merged into one line, with the evidence either way.
+FIT_DOUBLET_COLUMN_SPECS: Dict[str, ColumnSpec] = {
+    "window_id": ("i8", REQUIRED),
+    "frequency_a_mhz": ("f8", REQUIRED),
+    "frequency_b_mhz": ("f8", REQUIRED),
+    "amplitude_a": ("f8", REQUIRED),
+    "amplitude_b": ("f8", REQUIRED),
+    "separation_res_elements": ("f8", REQUIRED),
+    "amp_ratio": ("f8", REQUIRED),
+    "chi2r_production": ("f8", REQUIRED),
+    "chi2r_merged": ("f8", float("nan")),
+    "delta_chi2_raw": ("f8", float("nan")),
+    "delta_aicc": ("f8", float("nan")),
+    "merged_frequency_mhz": ("f8", float("nan")),
+    "merged_amplitude": ("f8", float("nan")),
+    "merged_phase": ("f8", float("nan")),
+    "merged_tau_us": ("f8", float("nan")),
+    "merged_success": ("bool", False),
+    "orth_evidence_delta_chi2": ("f8", float("nan")),
+    "orth_evidence_n_params": ("i8", 3),
+    "support_bins": ("i8", 0),
+}
+
+#: One row per thaw event: a frozen contributor released back to free because
+#: holding it left the window's edge incoherent.
+FIT_THAW_COLUMN_SPECS: Dict[str, ColumnSpec] = {
+    "dependent_window_id": ("i8", REQUIRED),
+    "primary_window_id": ("i8", REQUIRED),
+    "contributor_peak_index": ("i8", REQUIRED),
+    "contributor_frequency_mhz": ("f8", REQUIRED),
+    "edge_side": ("str", REQUIRED),
+    "edge_coherence_before": ("f8", REQUIRED),
+    "edge_coherence_after": ("f8", REQUIRED),
+    "accepted": ("bool", REQUIRED),
+    "reason": ("str", ""),
+}
+
+#: One row per structural replan: a window boundary redrawn mid-fit because it
+#: cut through a real feature.
+FIT_REPLAN_COLUMN_SPECS: Dict[str, ColumnSpec] = {
+    "triggering_window_id": ("i8", REQUIRED),
+    "partner_window_id": ("i8", REQUIRED),
+    "surviving_window_id": ("i8", REQUIRED),
+    "edge_side": ("str", REQUIRED),
+    "edge_coherence_before": ("f8", REQUIRED),
+    "revision_before": ("i8", REQUIRED),
+    "revision_after": ("i8", REQUIRED),
+    "accepted": ("bool", REQUIRED),
+    "reason": ("str", ""),
+}
+
+#: One row per rescue round: a re-search of a window's residual for peaks the
+#: first pass missed. ``n_candidates`` counts the candidates the round examined;
+#: their individual frequencies are nested in the record and stay with the full
+#: loader.
+FIT_RESCUE_COLUMN_SPECS: Dict[str, ColumnSpec] = {
+    "window_id": ("i8", REQUIRED),
+    "round_idx": ("i8", REQUIRED),
+    "n_initial_peaks": ("i8", REQUIRED),
+    "n_rescue_added": ("i8", REQUIRED),
+    "n_pruned_total": ("i8", REQUIRED),
+    "n_pruned_rescue_origin": ("i8", REQUIRED),
+    "n_merged": ("i8", 0),
+    "n_candidates": ("i8", 0),
+    "chi2_before": ("f8", REQUIRED),
+    "chi2_after": ("f8", REQUIRED),
+    "tau_us_before": ("f8", REQUIRED),
+    "tau_us_after": ("f8", REQUIRED),
+    "accepted": ("bool", REQUIRED),
+    "reason": ("str", ""),
+}
+
+
+def _read_plan_log(
+    h5_group: h5py.Group,
+    attr: str,
+    specs: Dict[str, ColumnSpec],
+    columns: Optional[Sequence[str]],
+    *,
+    table: str,
+) -> Dict[str, np.ndarray]:
+    """Read a plan-level JSON event log as a table. One parse, no traversal."""
+    requested = resolve_column_selection(columns, list(specs), table=table)
+    records = load_json_attr(h5_group, attr, [], label="stage5_fitting")
+    rows: Dict[str, List[Any]] = {c: [] for c in requested}
+    for i, record in enumerate(records):
+        record_row(record, specs, requested, rows, where=f"{attr}[{i}]")
+    return build_columns(rows, specs, requested)
+
+
+def _read_window_log(
+    h5_group: h5py.Group,
+    attr: str,
+    specs: Dict[str, ColumnSpec],
+    columns: Optional[Sequence[str]],
+    *,
+    table: str,
+    index_column: Optional[str] = None,
+) -> Dict[str, np.ndarray]:
+    """Read a per-window JSON event log as one table, tagged by ``window_id``.
+
+    *index_column*, when given, records each record's position within its
+    window's log. Windows are visited in ascending id, so the table is grouped
+    by window and ordered within it.
+    """
+    requested = resolve_column_selection(columns, list(specs), table=table)
+    windows_group = _windows_group(h5_group)
+    rows: Dict[str, List[Any]] = {c: [] for c in requested}
+
+    for name in sorted(windows_group.keys()):
+        wg = windows_group[name]
+        window_id = read_attr_value(
+            wg,
+            "window_id",
+            FIT_WINDOW_COLUMN_SPECS["window_id"],
+            where=f"window {name!r}",
+        )
+        records = load_json_attr(wg, attr, [], label="stage5_fitting")
+        for i, record in enumerate(records):
+            extra: Dict[str, Any] = {"window_id": window_id}
+            if index_column is not None:
+                extra[index_column] = i
+            record_row(
+                record,
+                specs,
+                requested,
+                rows,
+                where=f"window {name!r} {attr}[{i}]",
+                extra=extra,
+            )
+
+    built = build_columns(rows, specs, requested)
+    return {c: built[c] for c in requested}
+
+
+def read_fit_audit_columns(
+    h5_group: h5py.Group,
+    columns: Optional[Sequence[str]] = None,
+) -> Dict[str, np.ndarray]:
+    """Read the conservative add-loop audit trail across every window.
+
+    Costs one JSON parse per window -- see the note above these readers.
+    See :data:`FIT_AUDIT_COLUMN_SPECS` for the available columns.
+    """
+    return _read_window_log(
+        h5_group,
+        "audit_trail",
+        FIT_AUDIT_COLUMN_SPECS,
+        columns,
+        table="fit_audit",
+        index_column="step_index",
+    )
+
+
+def read_fit_doublet_columns(
+    h5_group: h5py.Group,
+    columns: Optional[Sequence[str]] = None,
+) -> Dict[str, np.ndarray]:
+    """Read the doublet alternatives weighed, across every window.
+
+    Costs one JSON parse per window. Empty on files written before the
+    doublet-alternative pass existed.
+    See :data:`FIT_DOUBLET_COLUMN_SPECS` for the available columns.
+    """
+    return _read_window_log(
+        h5_group,
+        "doublet_alternatives",
+        FIT_DOUBLET_COLUMN_SPECS,
+        columns,
+        table="fit_doublets",
+    )
+
+
+def read_fit_thaw_columns(
+    h5_group: h5py.Group,
+    columns: Optional[Sequence[str]] = None,
+) -> Dict[str, np.ndarray]:
+    """Read the plan-level thaw history in chronological order.
+
+    See :data:`FIT_THAW_COLUMN_SPECS` for the available columns.
+    """
+    return _read_plan_log(
+        h5_group, "thaw_history", FIT_THAW_COLUMN_SPECS, columns, table="fit_thaw"
+    )
+
+
+def read_fit_replan_columns(
+    h5_group: h5py.Group,
+    columns: Optional[Sequence[str]] = None,
+) -> Dict[str, np.ndarray]:
+    """Read the plan-level structural-replan history in chronological order.
+
+    See :data:`FIT_REPLAN_COLUMN_SPECS` for the available columns.
+    """
+    return _read_plan_log(
+        h5_group,
+        "replan_history",
+        FIT_REPLAN_COLUMN_SPECS,
+        columns,
+        table="fit_replans",
+    )
+
+
+def read_fit_rescue_columns(
+    h5_group: h5py.Group,
+    columns: Optional[Sequence[str]] = None,
+) -> Dict[str, np.ndarray]:
+    """Read the plan-level rescue-round history in chronological order.
+
+    See :data:`FIT_RESCUE_COLUMN_SPECS` for the available columns.
+    """
+    requested = resolve_column_selection(
+        columns, list(FIT_RESCUE_COLUMN_SPECS), table="fit_rescues"
+    )
+    records = load_json_attr(h5_group, "rescue_history", [], label="stage5_fitting")
+    rows: Dict[str, List[Any]] = {c: [] for c in requested}
+    for i, record in enumerate(records):
+        # n_candidates is a count of a nested list, not a stored field.
+        counted = dict(record)
+        counted["n_candidates"] = len(record.get("candidates") or ())
+        record_row(
+            counted,
+            FIT_RESCUE_COLUMN_SPECS,
+            requested,
+            rows,
+            where=f"rescue_history[{i}]",
+        )
+    return build_columns(rows, FIT_RESCUE_COLUMN_SPECS, requested)

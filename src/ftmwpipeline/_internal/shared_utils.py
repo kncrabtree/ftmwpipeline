@@ -11,6 +11,26 @@ from typing import Any, Callable, Dict, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 
+def active_acquisition_us(
+    fid_duration_us: float, start_us: Optional[float], end_us: Optional[float]
+) -> float:
+    """Effective acquisition length T (us) of the analyzed FID window.
+
+    The Fourier resolution element of every downstream stage is ``1 / T``, so
+    Stages 3, 4 and 5, the active-FT builder, and the read-only metadata tap
+    must all compute it the same way. It lives here, in the dependency-free
+    utility module, so a caller that only needs the number does not have to
+    import the active-FT machinery to get it.
+
+    An unset bound means "the whole record": no ``start_us`` is 0, no ``end_us``
+    is the FID duration. The result is clamped at zero so an inverted window
+    yields a length rather than a negative one.
+    """
+    lo = 0.0 if start_us is None else float(start_us)
+    hi = fid_duration_us if end_us is None else float(end_us)
+    return max(hi - lo, 0.0)
+
+
 def require_resolved(
     value: Any,
     name: str,
