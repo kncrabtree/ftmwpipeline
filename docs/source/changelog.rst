@@ -8,8 +8,15 @@ Changelog
 Notable changes to ``ftmwpipeline``, newest first. Versions follow
 `semantic versioning <https://semver.org/>`_.
 
-Unreleased
-----------
+Version 0.1.0b4 (2026-08-10)
+----------------------------
+
+An additive beta over 0.1.0b3. As a pre-release it still installs only when
+explicitly requested: ``pip install --pre ftmwpipeline``.
+
+Nothing about how a file is analyzed changed: no stage was touched, no persisted
+artifact gained or lost a field, and every result is bit-identical to 0.1.0b3.
+What is new is a second way to *read* what a ``.ftmw`` already holds.
 
 * **A read-only tap on persisted data.** The ``load_*`` operations rebuild the
   complete persisted record — audit trails, thaw and rescue histories,
