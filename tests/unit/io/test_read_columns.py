@@ -518,6 +518,57 @@ class TestReadFitPeakColumns:
         by_window = dict(zip(cols["window_id"], cols["shape"]))
         assert by_window == {0: "gaussian", 1: "lorentzian"}
 
+    def test_a_peak_with_no_window_id_of_its_own_is_stamped_with_its_group(
+        self, tmp_path
+    ):
+        """The writer must not put ``-1`` where the owning group has an id.
+
+        ``FittedPeak.window_id`` is optional, but a peak is *stored inside* a
+        window group, so the group always answers the grouping question. A
+        ``-1`` in the column would let a reader that trusts the column drop the
+        row out of its window with no error raised.
+        """
+        orphan = _fitted_peak(9, 0, 36111.0)
+        orphan.window_id = None
+        fit = _sample_fit()
+        fit.window_fits[0].fitted_peaks = [orphan]
+
+        path = tmp_path / "orphan.h5"
+        with h5py.File(path, "w") as h5f:
+            save_spectrum_fit_to_hdf5(fit, h5f.create_group("stage5_fitting"))
+        with h5py.File(path, "r") as h5f:
+            stored = h5f["stage5_fitting/windows/window_0000/peaks/window_id"][:]
+        assert list(stored) == [0]
+
+    def test_a_stored_minus_one_window_id_is_backfilled_from_the_group(self, fit_file):
+        """Files written before the writer stamped the group's id still group.
+
+        The tap and the full loader must agree on which window owns the row --
+        the loader takes it from the group, so the tap does too. Without the
+        backfill the row is silently ungrouped: no exception, no warning, just
+        a peak that appears to belong to no window.
+        """
+        # Reach behind the writer to recreate the on-disk state an older
+        # version produced for a peak whose own window_id was None.
+        with h5py.File(fit_file, "r+") as h5f:
+            h5f["stage5_fitting/windows/window_0000/peaks/window_id"][0] = -1
+
+        with h5py.File(fit_file, "r") as h5f:
+            cols = read_fit_peak_columns(
+                h5f["stage5_fitting"], columns=["peak_id", "window_id"]
+            )
+            fit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+
+        assert -1 not in set(cols["window_id"])
+        # Grouping agrees with the loader's, which reads it off the group.
+        loader_grouping = {
+            p.peak_id: wf.window_id for wf in fit.window_fits for p in wf.fitted_peaks
+        }
+        assert dict(zip(cols["peak_id"], cols["window_id"])) == loader_grouping
+        # And the loader's own per-peak field is backfilled the same way, so
+        # the two never disagree regardless of which one a consumer reads.
+        assert all(p.window_id is not None for p in fit.fitted_peaks)
+
     def test_none_valued_fields_come_back_as_their_sentinels(self, fit_file):
         with h5py.File(fit_file, "r") as h5f:
             cols = read_fit_peak_columns(

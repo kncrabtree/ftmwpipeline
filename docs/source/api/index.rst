@@ -167,13 +167,27 @@ error. A section is absent when its stage has not been run, so read with
 
 ``ft.acquisition_us`` is the active record length every later stage's Fourier
 resolution element ``1 / T`` follows from. It is fixed at Stage 1, so it is
-readable long before a fit exists; ``stage5.acquisition_us`` is the same number
-as the fit recorded it.
+readable long before a fit exists; ``stage5.acquisition_us`` is what the fit
+actually recorded.
+
+The two agree whenever the fit ran on the canonical Stage 1 window, which is the
+usual case — but editing the processing settings between runs separates them,
+and only the Stage 5 value is the window the fit measured its decay times over.
+Pair a fitted ``tau`` against ``stage5.acquisition_us``; reach for
+``ft.acquisition_us`` when you want the resolution element before a fit exists.
+Note that ``1 / T`` is the resolution element, not a line width: the FWHM of the
+finite-``T`` line shape is :func:`~ftmwpipeline.fitting.validation.feature_fwhm`,
+which is a factor of order two wider at typical decay times.
 
 Values keep the persisted sentinels rather than the ``None`` the full loaders
 substitute: NaN for an absent float, ``-1`` for an absent id, and tri-state
 small integers for the knockout and tau flags. Use the full loaders when you
 need the reconstructed objects; use these when you need columns.
+
+``fit_peaks.window_id`` is the exception, and is safe to group by: a peak is
+stored inside a window group, so its owning id is always known and is filled in
+over any ``-1`` an older file wrote. It is never absent, and always the window
+the full loader puts the peak in.
 
 .. code-block:: python
 

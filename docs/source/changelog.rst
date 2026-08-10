@@ -48,6 +48,16 @@ What is new is a second way to *read* what a ``.ftmw`` already holds.
   meta``) dumps the same tables as CSV, TSV, or JSON, to stdout or a file.
   Values keep the persisted sentinels; the calibrated, presentation-ready line
   list remains ``report table``.
+* **A fitted peak's ``window_id`` is now always its owning window's.** The
+  per-peak ``window_id`` column was written as ``-1`` whenever the in-memory
+  ``FittedPeak.window_id`` was ``None``, while the window group it is stored
+  under always carries a real id — so the column and the group could disagree,
+  and the full loader grouped by the group. A consumer that grouped by the
+  column instead would silently drop such a row out of its window: no
+  exception, just a line with no fit behind it. The writer now stamps the
+  owning window's id, and both readers backfill it over a stored ``-1``, so
+  files written by earlier versions group identically. ``window_id`` has no
+  absent case and the ``-1`` sentinel is retired from that column.
 
 Version 0.1.0b3 (2026-08-03)
 ----------------------------

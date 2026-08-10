@@ -560,11 +560,23 @@ def _save_window_fit(window_fit: FittingResult, wg: h5py.Group) -> None:
         wg.attrs["covariance_param_labels"] = json.dumps(list(labels))
 
     peaks_group = wg.create_group("peaks")
-    _save_peak_columns(window_fit.fitted_peaks, peaks_group)
+    _save_peak_columns(
+        window_fit.fitted_peaks, peaks_group, window_id=int(window_fit.window_id)
+    )
 
 
-def _save_peak_columns(peaks: List[FittedPeak], peaks_group: h5py.Group) -> None:
-    """Write a fitted-peak list as parallel arrays under ``peaks_group``."""
+def _save_peak_columns(
+    peaks: List[FittedPeak], peaks_group: h5py.Group, *, window_id: int
+) -> None:
+    """Write a fitted-peak list as parallel arrays under ``peaks_group``.
+
+    ``window_id`` is the owning window group's id. A peak whose own
+    ``window_id`` is ``None`` is stamped with it rather than with a ``-1``
+    sentinel: the peak is stored *inside* that window, so the group already
+    answers the grouping question, and a column that disagreed with the group
+    would let a reader that trusts the column drop the row out of its window
+    silently.
+    """
     n = len(peaks)
     columns: Dict[str, np.ndarray] = {
         "peak_id": np.empty(n, dtype="i8"),
@@ -604,7 +616,7 @@ def _save_peak_columns(peaks: List[FittedPeak], peaks_group: h5py.Group) -> None
         columns["decay_rate_error"][i] = nan_if_none(p.decay_rate_error)
         columns["snr"][i] = nan_if_none(p.snr)
         columns["chi_squared"][i] = nan_if_none(p.chi_squared)
-        columns["window_id"][i] = -1 if p.window_id is None else int(p.window_id)
+        columns["window_id"][i] = window_id if p.window_id is None else int(p.window_id)
         if p.knockout is None:
             columns["knockout_delta_chi2"][i] = float("nan")
             columns["knockout_expected_delta_chi2"][i] = float("nan")
@@ -772,7 +784,9 @@ def _load_window_fit(wg: h5py.Group, where: str) -> FittingResult:
             tau_fitted = True if tau_error is not None else None
     else:
         tau_fitted = True if tau_error is not None else None
-    fitted_peaks = _load_peak_columns(wg["peaks"], where=f"{where}/peaks")
+    fitted_peaks = _load_peak_columns(
+        wg["peaks"], where=f"{where}/peaks", window_id=int(wg.attrs["window_id"])
+    )
     result.fitted_peaks = fitted_peaks
     result.shared_parameters["tau_us"] = {
         "value": tau_us,
@@ -859,8 +873,15 @@ def _load_window_fit(wg: h5py.Group, where: str) -> FittingResult:
     return result
 
 
-def _load_peak_columns(peaks_group: h5py.Group, *, where: str) -> List[FittedPeak]:
-    """Load fitted peaks from parallel-array columns under ``peaks_group``."""
+def _load_peak_columns(
+    peaks_group: h5py.Group, *, where: str, window_id: Optional[int] = None
+) -> List[FittedPeak]:
+    """Load fitted peaks from parallel-array columns under ``peaks_group``.
+
+    ``window_id`` is the owning window group's id, used to backfill a stored
+    ``-1`` (written by versions before the writer stamped the group's id). The
+    peak is inside that window whatever its own column says, so the group wins.
+    """
     missing = [c for c in _PEAK_COLUMNS if c not in peaks_group]
     if missing:
         raise ValueError(f"{where} missing required peak column(s): {missing}")
@@ -929,6 +950,8 @@ def _load_peak_columns(peaks_group: h5py.Group, *, where: str) -> List[FittedPea
                 aicc_delta=float(cols["knockout_aicc_delta"][i]),
             )
         wid_raw = int(cols["window_id"][i])
+        if wid_raw < 0 and window_id is not None:
+            wid_raw = window_id
         peaks.append(
             FittedPeak(
                 peak_id=int(cols["peak_id"][i]),
@@ -973,12 +996,18 @@ def _load_peak_columns(peaks_group: h5py.Group, *, where: str) -> List[FittedPea
 #:
 #: Sentinels (as written by :func:`_save_peak_columns`): NaN encodes an absent
 #: float (``phase``/``decay_rate``/the ``*_error`` columns/``snr``/
-#: ``chi_squared``); ``window_id``/``derivation`` use ``-1`` for "none";
+#: ``chi_squared``); ``derivation`` uses ``-1`` for "none";
 #: ``knockout_supported`` is tri-state (``1`` supported, ``0`` not, ``-1`` no
 #: knockout was run); an empty ``clock_lattice`` means "off-lattice or no clock
 #: declaration". ``shape`` is derived from the owning window's ``shape``
 #: attribute -- the line shape is per window, and this column broadcasts it so a
 #: consumer needs no join.
+#:
+#: ``window_id`` has **no** absent case: a peak is stored inside a window group,
+#: so the group's id is always available and is backfilled over the ``-1`` that
+#: older files wrote for a peak whose own ``window_id`` was ``None``. It is
+#: always a real window id, and always the one the full loader groups the peak
+#: under.
 FIT_PEAK_COLUMN_SPECS: Dict[str, ColumnSpec] = {
     "peak_id": ("i8", REQUIRED),
     "window_id": ("i8", REQUIRED),
@@ -1111,6 +1140,19 @@ def read_fit_peak_columns(
             )
             if n is None:
                 n = len(column)
+            if col == "window_id":
+                # The owning group is the authority on grouping, exactly as it
+                # is for `shape`. Files written before the writer stamped the
+                # group's id carry -1 for a peak whose own window_id was None;
+                # backfilling here keeps the tap and the full loader agreeing
+                # by construction, rather than silently ungrouping the row.
+                wid_attr = read_attr_value(
+                    wg,
+                    "window_id",
+                    FIT_WINDOW_COLUMN_SPECS["window_id"],
+                    where=f"window {name!r}",
+                )
+                column = np.where(column < 0, np.int64(wid_attr), column)
             chunks[col].append(column)
         if want_shape:
             assert n is not None  # to_read always carries the anchor column
