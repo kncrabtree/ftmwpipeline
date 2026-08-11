@@ -6,7 +6,7 @@ spectroscopy data, including baseline estimation, peak detection, window assignm
 and advanced fitting algorithms.
 """
 
-__version__ = "0.1.0b4"
+__version__ = "0.1.0b5"
 __author__ = "Kyle N. Crabtree"
 
 # Note: BLAS/OpenMP thread pinning for the Stage 5 fork pool is deliberately NOT

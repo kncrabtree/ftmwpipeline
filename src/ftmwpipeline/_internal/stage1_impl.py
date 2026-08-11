@@ -30,6 +30,7 @@ from ..core.settings import (
     FTSettings,
     resolve,
 )
+from .shared_utils import fold_settings_blob
 from .stage0_impl import load_fid_from_pipeline_impl
 
 logger = logging.getLogger(__name__)
@@ -46,15 +47,7 @@ def _read_settings_layer(file_path: str, group_path: str) -> Optional[FTSettings
         if group_path not in h5f:
             return None
         attrs: Dict[str, Any] = dict(h5f[group_path].attrs)
-    if "parameters" in attrs and "zpf" not in attrs:
-        try:
-            blob = json.loads(attrs["parameters"])
-            if isinstance(blob, dict):
-                for key, value in blob.items():
-                    attrs.setdefault(key, value)
-        except (json.JSONDecodeError, TypeError):  # pragma: no cover
-            pass
-    return FTSettings.from_attrs(attrs)
+    return FTSettings.from_attrs(fold_settings_blob(attrs))
 
 
 def _resolve_settings(file_path: str, explicit: Optional[FTSettings]) -> FTSettings:

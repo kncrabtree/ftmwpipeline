@@ -375,6 +375,43 @@ class TestReadMetadata:
         # The name the settings view uses for the knob that prompted this.
         assert meta["stage1.units_power"] == meta["ft.units_power"]
 
+    def test_ft_section_reads_a_json_blob_record_like_stage1_does(self, ftmw_file):
+        """A blob-only ``ft_processing`` record must not read as "no settings".
+
+        Early records stored the whole bundle as one JSON ``parameters``
+        attribute instead of individual attributes, and Stage 1 accepts both.
+        If this view accepted only one of them, a blob-only file would report no
+        ``ft.units_power`` here while the display transform read one from the
+        blob -- the same question answered two ways depending on which reader
+        the consumer happened to hold.
+        """
+        from ftmwpipeline._internal.stage1_impl import _read_settings_layer
+
+        expected = read_metadata_impl(ftmw_file)
+
+        # Rewrite the record into the older shape: the same settings, carried
+        # only by the blob.
+        with h5py.File(ftmw_file, "a") as h5f:
+            group = h5f["processing_parameters/ft_processing"]
+            bundle = {k: v for k, v in group.attrs.items()}
+            for key in list(group.attrs):
+                del group.attrs[key]
+            group.attrs["parameters"] = json.dumps(
+                {k: (v.item() if hasattr(v, "item") else v) for k, v in bundle.items()}
+            )
+
+        meta = read_metadata_impl(ftmw_file)
+        assert meta["ft.units_power"] == expected["ft.units_power"]
+        assert meta["ft.start_us"] == pytest.approx(expected["ft.start_us"])
+        assert meta["ft.acquisition_us"] == pytest.approx(expected["ft.acquisition_us"])
+        # And it agrees with the resolver Stage 1 itself goes through.
+        settings = _read_settings_layer(
+            str(ftmw_file), "processing_parameters/ft_processing"
+        )
+        assert settings is not None
+        assert meta["ft.units_power"] == settings.units_power
+        assert meta["ft.start_us"] == pytest.approx(settings.start_us)
+
     def test_ft_section_absent_when_stage1_has_not_run(self, ftmw_file):
         with h5py.File(ftmw_file, "a") as h5f:
             del h5f["processing_parameters/ft_processing"]

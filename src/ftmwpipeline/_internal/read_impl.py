@@ -137,7 +137,7 @@ from ..io.window_serialization import (
     read_window_plan_columns,
     read_window_plan_scalars,
 )
-from .shared_utils import active_acquisition_us
+from .shared_utils import active_acquisition_us, fold_settings_blob
 
 __all__ = [
     "READ_TABLES",
@@ -518,7 +518,12 @@ def _read_ft_window(h5f: h5py.File, out: Dict[str, Any]) -> None:
     group = "processing_parameters/ft_processing"
     if group not in h5f:
         return
-    attrs = h5f[group].attrs
+    # Older records stored the settings bundle as one JSON `parameters` blob
+    # rather than as individual attributes, and Stage 1 reads both shapes. This
+    # view has to read both the same way, or a blob-only file reports no
+    # `ft.units_power` here while the display transform reads one from the blob
+    # -- the same question answered two ways by two readers.
+    attrs = fold_settings_blob(dict(h5f[group].attrs))
     for name in _FT_ATTRS:
         if name in attrs:
             out[f"ft.{name}"] = _decode(attrs[name])

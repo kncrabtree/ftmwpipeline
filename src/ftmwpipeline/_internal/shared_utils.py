@@ -4,6 +4,7 @@ Shared utilities for internal implementations.
 Common functionality used across multiple pipeline stages and interfaces.
 """
 
+import json
 import logging
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
@@ -29,6 +30,36 @@ def active_acquisition_us(
     lo = 0.0 if start_us is None else float(start_us)
     hi = fid_duration_us if end_us is None else float(end_us)
     return max(hi - lo, 0.0)
+
+
+def fold_settings_blob(attrs: Dict[str, Any]) -> Dict[str, Any]:
+    """Fold an older record's JSON ``parameters`` blob into its attribute dict.
+
+    Early ``ft_processing`` records stored the whole settings bundle as one JSON
+    ``parameters`` attribute instead of individual attributes. Both shapes are
+    supported, so every reader of that group has to accept both -- and they must
+    accept them *identically*, or a blob-only file answers one question two ways
+    depending on which reader a consumer happens to be holding.
+
+    Individual attributes win where both are present. ``zpf`` marks a record
+    written in the modern shape, so its presence means the blob (if any) is not
+    the settings bundle and is left alone. A blob that is absent, unparseable,
+    or not an object is a no-op: this widens what can be read, and must never
+    narrow it.
+
+    Returns a new dict; the input is not modified.
+    """
+    folded = dict(attrs)
+    if "parameters" not in folded or "zpf" in folded:
+        return folded
+    try:
+        blob = json.loads(folded["parameters"])
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return folded
+    if isinstance(blob, dict):
+        for key, value in blob.items():
+            folded.setdefault(key, value)
+    return folded
 
 
 def require_resolved(

@@ -8,6 +8,20 @@ Changelog
 Notable changes to ``ftmwpipeline``, newest first. Versions follow
 `semantic versioning <https://semver.org/>`_.
 
+Unreleased
+----------
+
+* **``read_metadata`` reads a JSON-blob ``ft_processing`` record.** Early
+  records stored the Stage 1 settings bundle as one JSON ``parameters``
+  attribute rather than as individual attributes, a shape Stage 1 has always
+  accepted. This view read only the individual attributes, so a blob-only file
+  reported no ``ft.units_power`` at all while the display transform read one
+  from the blob — the same question answered two ways depending on which reader
+  a consumer held. The fold now lives once, in
+  ``_internal.shared_utils.fold_settings_blob``, and both readers go through it,
+  so they cannot drift apart again. Individual attributes still win where both
+  are present, and this only ever widens what is readable.
+
 Version 0.1.0b4 (2026-08-10)
 ----------------------------
 
