@@ -16,11 +16,13 @@ installs only when explicitly requested: ``pip install --pre ftmwpipeline``.
 
 Mostly a second way to *read* what a ``.ftmw`` already holds. One change is not
 additive, and it moves fitted numbers: the finite-``T`` linewidth is now solved
-for rather than measured on a fixed grid, which shifts widths by about 1e-4
-relative and so can flip a peak-separation decision at a boundary.
-**``ANALYSIS_EPOCH`` is 2**, so splicing a Stage 6 edit into a fit produced
-under 0.1.0b3 or earlier is refused until re-fit or acknowledged; reading is
-never gated.
+for rather than measured on a fixed grid, which shifts widths by up to about
+2e-4 relative at a typical acquisition length and so can flip a
+peak-separation decision at a boundary. **``ANALYSIS_EPOCH`` is 2.** Reading is
+never gated and running a stage forward only warns, but splicing a Stage 6 edit
+into a fit stamped with epoch 1 — that is, one produced by 0.1.0b3 — is refused
+until it is re-fit or acknowledged. Fits written before 0.1.0b3 carry no epoch
+stamp at all; an unknown epoch is treated as compatible and is not refused.
 
 * **A read-only tap on persisted data.** The ``load_*`` operations rebuild the
   complete persisted record — audit trails, thaw and rescue histories,
@@ -72,12 +74,17 @@ never gated.
   :func:`~ftmwpipeline.fitting.validation.fwhm_dimensionless` computes that
   ``W`` by bracketing and bisecting the half-maximum crossing, and
   ``feature_fwhm`` is ``W / T``. Three consequences: the width is now accurate
-  to the solver tolerance at every ``T`` rather than losing precision as ``T``
-  grows; it no longer clips, where the old grid silently returned its own 2 MHz
-  span once the true width outran it (below ``T = 0.92 us`` for a Lorentzian at
-  ``tau/T = 0.3``); and it is ~40x faster, which a consumer computing a width
-  per line feels directly. Widths move by about 1e-4 relative, so fitted output
-  is not bit-identical to 0.1.0b3 — hence the epoch bump.
+  to the solver tolerance at every ``T``, where the old grid's step was fixed in
+  absolute frequency and so cost relative precision as the line narrowed with
+  increasing ``T``; it no longer clips, where the old grid silently returned its
+  own 2 MHz span once the true width outran it (below ``T = 0.92 us`` for a
+  Lorentzian at ``tau/T = 0.3``); and it is about 25x faster (5.2 ms to 0.20 ms
+  per call), which the fit itself feels, since the separation constraint and the
+  blend-aware seeder both call it. Widths move relative to 0.1.0b3 by up to
+  7.6e-5 at ``T = 6 us``, 1.8e-4 at 11.7, 3.3e-4 at 25 and 7.2e-4 at 60 —
+  growing with ``T``, as the mechanism implies — so fitted output is not
+  bit-identical, hence the epoch bump. No reference-fixture result in the suite
+  actually changed; the gate is on the possibility, not on one fixture.
 * **``read_metadata`` spells the Stage 1 section both ways.** The CLI has always
   treated ``ft`` and ``stage1`` as interchangeable object names, but this view
   named the canonical data selection ``ft.units_power`` where ``settings show``

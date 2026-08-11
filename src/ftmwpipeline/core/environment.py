@@ -84,9 +84,11 @@ Epoch history
     200001-point grid spanning +/-1 MHz in absolute frequency. The width is
     exactly ``W(tau/T, shape) / T`` -- the model has only two length scales and
     frequency enters solely as ``f*T`` -- so the old grid was quantizing a
-    quantity that does not depend on ``T`` with a step that does. Widths move by
-    about 1e-4 relative, which can flip a peak-separation decision at a
-    boundary, so fitted output is not bit-identical to epoch 1. The old grid
+    quantity that does not depend on ``T`` with a step that does. Widths move
+    relative to epoch 1 by up to 7.6e-5 at ``T = 6 us`` and 7.2e-4 at 60 us --
+    growing with ``T``, since the old step was fixed in absolute frequency --
+    which can flip a peak-separation decision at a boundary, so fitted output is
+    not bit-identical to epoch 1. The old grid
     also clipped silently: it returned its own 2 MHz width once the true FWHM
     outran it, below ``T = W/2`` (0.92 us for a Lorentzian at ``tau/T = 0.3``).
 """
