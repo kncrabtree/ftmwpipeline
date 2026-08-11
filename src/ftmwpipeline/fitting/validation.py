@@ -77,6 +77,7 @@ __all__ = [
     "DEFAULT_CHI2R_NOISE_FLOOR",
     "calculate_hwhm_from_apodization",
     "feature_fwhm",
+    "fwhm_dimensionless",
     "calculate_noise_weighted_chi2",
     "calculate_aic",
     "calculate_aicc",
@@ -427,16 +428,103 @@ def feature_fwhm(
     ------
     ValueError
         If ``tau_us`` or ``acquisition_us`` is not positive.
+
+    See Also
+    --------
+    fwhm_dimensionless : the same width as ``W(tau/T)``, which is what this
+        actually depends on. Reach for it when computing widths for a whole
+        line list at one acquisition length: this function is
+        ``fwhm_dimensionless(tau_us / acquisition_us, shape=shape) /
+        acquisition_us``, so a shared ``T`` costs one solve rather than one per
+        decay time.
     """
     if tau_us <= 0.0:
         raise ValueError("tau_us must be positive")
     if acquisition_us <= 0.0:
         raise ValueError("acquisition_us must be positive")
+    return fwhm_dimensionless(tau_us / acquisition_us, shape=shape) / acquisition_us
 
-    grid = np.linspace(-1.0, 1.0, 200001)
-    mag = np.abs(h_T_shape(shape, grid, tau_us, acquisition_us))
-    above = np.where(mag >= 0.5 * mag.max())[0]
-    return float(grid[above[-1]] - grid[above[0]])
+
+def fwhm_dimensionless(
+    tau_over_acquisition: float,
+    *,
+    shape: "PeakShape | str" = "lorentzian",
+) -> float:
+    """Half-maximum width of ``|h_T|`` in the dimensionless frequency ``u = fT``.
+
+    The finite-``T`` line shape has only two length scales, ``tau`` and ``T``,
+    and frequency enters solely as ``f*T``. Substituting ``t = Ts`` and
+    ``u = fT`` gives ``h_T = T * g(u, T/tau)`` for the Lorentzian and
+    ``T * g_G(u, T/tau_G)`` for the Gaussian, and the ``T`` prefactor cancels
+    against the half-maximum. So the width in ``u`` is a function of
+    ``tau/T`` and the shape *alone*::
+
+        FWHM * T = W(tau/T, shape)
+
+    exactly, for both shapes. This is that ``W``. :func:`feature_fwhm` is this
+    divided by ``T``.
+
+    Solved by bracketing the half-maximum crossing and refining it with a
+    bisection, rather than by measuring it on a grid: ``|h_T|`` peaks at
+    ``u = 0``, is even, and falls monotonically to well below half maximum
+    before the first sidelobe (whose peak is ~0.217 of the maximum, so no
+    sidelobe can re-cross), which makes the crossing a well-posed root. The
+    result is therefore accurate to the solver tolerance at every ``tau/T``,
+    where a fixed grid in absolute frequency loses precision as ``T`` grows and
+    silently clips once the true width outruns the grid.
+
+    Parameters
+    ----------
+    tau_over_acquisition :
+        ``tau / T`` (``tau_G / T`` under ``shape='gaussian'``), ``> 0``.
+    shape :
+        Line-shape selector. The width is shape-dependent.
+
+    Returns
+    -------
+    float
+        ``W = FWHM * T``, dimensionless.
+
+    Raises
+    ------
+    ValueError
+        If ``tau_over_acquisition`` is not positive.
+    """
+    if not tau_over_acquisition > 0.0:
+        raise ValueError("tau_over_acquisition must be positive")
+
+    # T = 1 makes u and the frequency argument the same number, and the scaling
+    # above says the answer does not depend on which T we pick.
+    def magnitude(u: float) -> float:
+        h = h_T_shape(shape, np.array([u]), tau_over_acquisition, 1.0)
+        return float(np.abs(h)[0])
+
+    peak = magnitude(0.0)
+
+    def half_max_excess(u: float) -> float:
+        return magnitude(u) - 0.5 * peak
+
+    # Bracket: double outward from the truncation-limited scale until the
+    # magnitude is below half maximum. Terminates in a handful of steps -- the
+    # decay-limited width grows only as 1 / (pi * tau/T).
+    hi = 0.5
+    while half_max_excess(hi) > 0.0:
+        hi *= 2.0
+        if hi > 1e12:  # pragma: no cover - unreachable for positive tau/T
+            raise RuntimeError(
+                f"no half-maximum crossing below u={hi} for tau/T="
+                f"{tau_over_acquisition}"
+            )
+    lo = 0.0
+    for _ in range(200):
+        mid = 0.5 * (lo + hi)
+        if half_max_excess(mid) > 0.0:
+            lo = mid
+        else:
+            hi = mid
+        if hi - lo <= 1e-14 * max(1.0, hi):
+            break
+    return float(lo + hi)  # 2 * the half-width, by evenness
 
 
 def calculate_noise_weighted_chi2(

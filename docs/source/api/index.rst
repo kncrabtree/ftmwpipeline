@@ -170,6 +170,11 @@ resolution element ``1 / T`` follows from. It is fixed at Stage 1, so it is
 readable long before a fit exists; ``stage5.acquisition_us`` is what the fit
 actually recorded.
 
+Every ``ft.`` key is also emitted as ``stage1.``, the two being the same section
+under the two interchangeable names the CLI already gives that stage — which is
+also the spelling ``settings show`` uses for these same persisted knobs
+(``stage1.units_power``). Bind whichever reads better; they are the same value.
+
 The two agree whenever the fit ran on the canonical Stage 1 window, which is the
 usual case — but editing the processing settings between runs separates them,
 and only the Stage 5 value is the window the fit measured its decay times over.

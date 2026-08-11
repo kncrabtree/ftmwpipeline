@@ -11,12 +11,16 @@ Notable changes to ``ftmwpipeline``, newest first. Versions follow
 Version 0.1.0b4 (2026-08-10)
 ----------------------------
 
-An additive beta over 0.1.0b3. As a pre-release it still installs only when
-explicitly requested: ``pip install --pre ftmwpipeline``.
+A read-access and linewidth beta over 0.1.0b3. As a pre-release it still
+installs only when explicitly requested: ``pip install --pre ftmwpipeline``.
 
-Nothing about how a file is analyzed changed: no stage was touched, no persisted
-artifact gained or lost a field, and every result is bit-identical to 0.1.0b3.
-What is new is a second way to *read* what a ``.ftmw`` already holds.
+Mostly a second way to *read* what a ``.ftmw`` already holds. One change is not
+additive, and it moves fitted numbers: the finite-``T`` linewidth is now solved
+for rather than measured on a fixed grid, which shifts widths by about 1e-4
+relative and so can flip a peak-separation decision at a boundary.
+**``ANALYSIS_EPOCH`` is 2**, so splicing a Stage 6 edit into a fit produced
+under 0.1.0b3 or earlier is refused until re-fit or acknowledged; reading is
+never gated.
 
 * **A read-only tap on persisted data.** The ``load_*`` operations rebuild the
   complete persisted record — audit trails, thaw and rescue histories,
@@ -58,6 +62,28 @@ What is new is a second way to *read* what a ``.ftmw`` already holds.
   owning window's id, and both readers backfill it over a stored ``-1``, so
   files written by earlier versions group identically. ``window_id`` has no
   absent case and the ``-1`` sentinel is retired from that column.
+* **The finite-``T`` linewidth is solved for, not measured on a grid.**
+  :func:`~ftmwpipeline.fitting.validation.feature_fwhm` gridded ``|h_T|`` on a
+  fixed 200001-point ``linspace(-1, 1)`` in absolute MHz and read off the
+  outermost points above half maximum. But the width does not depend on ``T``
+  and the grid did: the model has only two length scales, ``tau`` and ``T``,
+  and frequency enters solely as ``f*T``, so ``FWHM * T = W(tau/T, shape)``
+  exactly. The new
+  :func:`~ftmwpipeline.fitting.validation.fwhm_dimensionless` computes that
+  ``W`` by bracketing and bisecting the half-maximum crossing, and
+  ``feature_fwhm`` is ``W / T``. Three consequences: the width is now accurate
+  to the solver tolerance at every ``T`` rather than losing precision as ``T``
+  grows; it no longer clips, where the old grid silently returned its own 2 MHz
+  span once the true width outran it (below ``T = 0.92 us`` for a Lorentzian at
+  ``tau/T = 0.3``); and it is ~40x faster, which a consumer computing a width
+  per line feels directly. Widths move by about 1e-4 relative, so fitted output
+  is not bit-identical to 0.1.0b3 — hence the epoch bump.
+* **``read_metadata`` spells the Stage 1 section both ways.** The CLI has always
+  treated ``ft`` and ``stage1`` as interchangeable object names, but this view
+  named the canonical data selection ``ft.units_power`` where ``settings show``
+  names the same persisted knob ``stage1.units_power``. Every key in that
+  section is now emitted under both prefixes, so a consumer need not know which
+  surface a name came from.
 
 Version 0.1.0b3 (2026-08-03)
 ----------------------------

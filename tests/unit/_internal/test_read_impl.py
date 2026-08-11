@@ -358,11 +358,30 @@ class TestReadMetadata:
         meta = read_metadata_impl(ftmw_file)
         assert meta["ft.acquisition_us"] == pytest.approx(meta["stage5.acquisition_us"])
 
+    def test_stage1_is_an_exact_synonym_for_the_ft_section(self, ftmw_file):
+        """``ft`` and ``stage1`` name the same stage everywhere else.
+
+        The CLI declares the two object names interchangeable and
+        ``settings show`` spells these same persisted knobs ``stage1.``, so a
+        consumer must not have to know which surface it came from.
+        """
+        meta = read_metadata_impl(ftmw_file)
+        ft_keys = {k.split(".", 1)[1] for k in meta if k.startswith("ft.")}
+        stage1_keys = {k.split(".", 1)[1] for k in meta if k.startswith("stage1.")}
+        assert ft_keys == stage1_keys
+        assert ft_keys  # the fixture has run Stage 1, or this proves nothing
+        for name in ft_keys:
+            assert meta[f"stage1.{name}"] == meta[f"ft.{name}"]
+        # The name the settings view uses for the knob that prompted this.
+        assert meta["stage1.units_power"] == meta["ft.units_power"]
+
     def test_ft_section_absent_when_stage1_has_not_run(self, ftmw_file):
         with h5py.File(ftmw_file, "a") as h5f:
             del h5f["processing_parameters/ft_processing"]
         meta = read_metadata_impl(ftmw_file)
         assert not any(key.startswith("ft.") for key in meta)
+        # The synonym must vanish with it, not linger as a half-present section.
+        assert not any(key.startswith("stage1.") for key in meta)
 
     def test_start_record_reports_the_sweep_outcome(self, ftmw_file):
         meta = read_metadata_impl(ftmw_file)

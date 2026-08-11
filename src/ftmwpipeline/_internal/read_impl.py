@@ -529,6 +529,21 @@ def _read_ft_window(h5f: h5py.File, out: Dict[str, Any]) -> None:
         out["ft.acquisition_us"] = active_acquisition_us(
             float(duration), out.get("ft.start_us"), out.get("ft.end_us")
         )
+    _alias_section(out, "ft", "stage1")
+
+
+def _alias_section(out: Dict[str, Any], canonical: str, synonym: str) -> None:
+    """Emit every ``canonical.`` key a second time under ``synonym.``.
+
+    The CLI declares the semantic object name and its ``stageN`` spelling fully
+    interchangeable (``ft`` / ``stage1``, see ``cli.utils.add_stage_object``),
+    and ``settings show`` names the same persisted Stage 1 knobs
+    ``stage1.units_power`` where this view names them ``ft.units_power``. Rather
+    than make a consumer know which surface it is talking to, both spellings
+    resolve here to the same value.
+    """
+    for key in [k for k in out if k.startswith(f"{canonical}.")]:
+        out[f"{synonym}.{key.split('.', 1)[1]}"] = out[key]
 
 
 def _read_start_record(h5f: h5py.File, out: Dict[str, Any]) -> None:
@@ -576,13 +591,23 @@ def read_metadata_impl(file_path: Union[str, Path]) -> Dict[str, Any]:
         The start-detection sweep outcome, present once ``start run`` has
         stamped one: where the chirp collapsed, whether it was found at all,
         the guard margin added past it, and the band the sweep integrated over.
-    ``ft.``
+    ``ft.`` (equivalently ``stage1.``)
         The canonical Stage 1 data selection -- the analyzed window and the
         frequency trim -- plus the derived ``ft.acquisition_us``, the active
         record length every later stage's resolution element ``1 / T`` follows
         from. It is fixed here, at Stage 1, so it is readable long before a fit
-        exists; ``stage5.acquisition_us`` is the same number as the fit
-        recorded it.
+        exists. Every key in this section is emitted under both prefixes,
+        because the CLI treats ``ft`` and ``stage1`` as interchangeable object
+        names and ``settings show`` spells these same knobs ``stage1.``.
+
+        ``stage5.acquisition_us`` is what the fit recorded. The two agree
+        whenever the fit ran on the canonical Stage 1 window -- the usual case
+        -- but editing the processing settings between runs separates them, and
+        a fitted decay time must be paired against the window the fit measured
+        it over. Note also that ``1 / T`` is the resolution element, not a line
+        width: the FWHM of the finite-``T`` line shape is
+        :func:`~ftmwpipeline.fitting.validation.feature_fwhm`, a factor of order
+        two wider at typical decay times.
     ``tau.`` / ``tau_g.``
         The Stage 2b decay-time calibration and its Gaussian twin: the fitted
         decay time with its uncertainty, the contributor and spur-bin counts,

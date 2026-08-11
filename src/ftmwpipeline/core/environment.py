@@ -57,7 +57,7 @@ __all__ = [
 ]
 
 
-ANALYSIS_EPOCH = 1
+ANALYSIS_EPOCH = 2
 """Declared analysis-compatibility epoch of this package.
 
 Bump this **only** when a change alters the numerical output of a stage --
@@ -78,6 +78,17 @@ Epoch history
     Initial epoch. Assigned when environment recording was introduced; files
     written before that carry no stamp and are treated as being of unknown
     epoch, which never blocks (see :func:`gating_fields_differ`).
+2
+    0.1.0b4. :func:`~ftmwpipeline.fitting.validation.feature_fwhm` solves for
+    the half-maximum crossing of ``|h_T|`` instead of measuring it on a fixed
+    200001-point grid spanning +/-1 MHz in absolute frequency. The width is
+    exactly ``W(tau/T, shape) / T`` -- the model has only two length scales and
+    frequency enters solely as ``f*T`` -- so the old grid was quantizing a
+    quantity that does not depend on ``T`` with a step that does. Widths move by
+    about 1e-4 relative, which can flip a peak-separation decision at a
+    boundary, so fitted output is not bit-identical to epoch 1. The old grid
+    also clipped silently: it returned its own 2 MHz width once the true FWHM
+    outran it, below ``T = W/2`` (0.92 us for a Lorentzian at ``tau/T = 0.3``).
 """
 
 

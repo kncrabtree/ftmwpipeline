@@ -68,6 +68,7 @@ from .validation import (
     calculate_noise_weighted_chi2,
     effective_sample_size,
     feature_fwhm,
+    fwhm_dimensionless,
     validate_peak_separation,
 )
 from .window_fit import (
@@ -107,6 +108,7 @@ __all__ = [
     "calculate_noise_weighted_chi2",
     "effective_sample_size",
     "feature_fwhm",
+    "fwhm_dimensionless",
     "validate_peak_separation",
     # residual_rescue
     "DEFAULT_RESCUE_MAX_ROUNDS",

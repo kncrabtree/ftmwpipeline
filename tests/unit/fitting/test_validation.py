@@ -20,6 +20,7 @@ from ftmwpipeline.fitting.validation import (
     calculate_noise_weighted_chi2,
     effective_sample_size,
     feature_fwhm,
+    fwhm_dimensionless,
     shape_error_fraction,
     snr_aware_chi2_pass,
     validate_peak_separation,
@@ -83,6 +84,50 @@ class TestFeatureFWHM:
             feature_fwhm(0.0, T_US)
         with pytest.raises(ValueError):
             feature_fwhm(TAU_US, -1.0)
+
+    @pytest.mark.parametrize("shape", ["lorentzian", "gaussian"])
+    @pytest.mark.parametrize("ratio", [0.05, 0.25, 0.3, 0.5, 1.0, 4.0])
+    def test_width_times_T_depends_only_on_tau_over_T(self, shape, ratio):
+        """``FWHM * T = W(tau/T, shape)``, exactly, at every acquisition length.
+
+        The model has two length scales and frequency enters only as ``f*T``,
+        so this is an identity, not an approximation -- which is why it is
+        asserted to solver tolerance rather than to a few digits. A fixed grid
+        in absolute frequency cannot satisfy it: its quantization step in ``u``
+        scales with ``T``.
+        """
+        widths = [
+            feature_fwhm(ratio * T, T, shape=shape) * T
+            for T in (0.5, 6.0, 11.73, 25.0, 60.0)
+        ]
+        for w in widths[1:]:
+            assert w == pytest.approx(widths[0], rel=1e-12)
+        assert widths[0] == pytest.approx(
+            fwhm_dimensionless(ratio, shape=shape), rel=1e-12
+        )
+
+    @pytest.mark.parametrize("shape", ["lorentzian", "gaussian"])
+    def test_a_line_wider_than_two_megahertz_is_measured_not_clipped(self, shape):
+        """A width is a measurement, not the width of the grid it was found on.
+
+        The previous fixed ``linspace(-1, 1, 200001)`` returned exactly 2.0 MHz
+        -- its own span -- once the true FWHM outran it, with nothing raised.
+        Short records are outside the FTMW regime, but a silently wrong value
+        is worse than a refused one at any ``T``.
+        """
+        T = 0.05
+        wide = feature_fwhm(0.3 * T, T, shape=shape)
+        assert wide > 2.0, "the regime this guards is not being reached"
+        # Still the same dimensionless width, so it is a measurement.
+        assert wide * T == pytest.approx(
+            fwhm_dimensionless(0.3, shape=shape), rel=1e-12
+        )
+
+    def test_dimensionless_rejects_bad_input(self):
+        with pytest.raises(ValueError):
+            fwhm_dimensionless(0.0)
+        with pytest.raises(ValueError):
+            fwhm_dimensionless(-1.0)
 
 
 # ---------------------------------------------------------------------------
