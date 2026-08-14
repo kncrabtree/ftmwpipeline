@@ -478,23 +478,73 @@ def test_disabled_progress_is_silent():
     assert s.getvalue() == ""
 
 
+def _window_log_record(msg: str, args: tuple) -> logging.LogRecord:
+    return logging.LogRecord(
+        name="ftmwpipeline.fitting.plan_execution",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg=msg,
+        args=args,
+        exc_info=None,
+    )
+
+
 def test_handler_bridges_window_log_to_substep():
-    """A plan_execution per-window INFO record renders as a percentage."""
+    """A plan_execution progress INFO record renders as a percentage."""
     s = _Stream(tty=False)
     p = StageProgress(1, stream=s)
     handler = ProgressHandler(p)
     with p.stage("fit"):
-        rec = logging.LogRecord(
-            name="ftmwpipeline.fitting.plan_execution",
-            level=logging.INFO,
-            pathname=__file__,
-            lineno=1,
-            msg="window %d/%d w%d [%.1f-%.1f MHz]: %d peaks",
-            args=(5, 10, 42, 1.0, 2.0, 3),
-            exc_info=None,
-        )
-        handler.emit(rec)
+        handler.emit(_window_log_record("window %d/%d", (5, 10)))
     assert "fit: 50% (5/10)" in s.getvalue()
+
+
+def test_handler_ignores_per_window_detail_line():
+    """The worker's per-window detail line must not drive the bar.
+
+    It carries a window id, not a completion count; only the dedicated
+    ``window n/total`` progress record does.
+    """
+    s = _Stream(tty=False)
+    p = StageProgress(1, stream=s)
+    handler = ProgressHandler(p)
+    with p.stage("fit"):
+        handler.emit(
+            _window_log_record(
+                "w%d [%.1f-%.1f MHz]: %d peaks, chi2r=%.3g, %.1fs",
+                (42, 1.0, 2.0, 3, 1.1, 0.5),
+            )
+        )
+    assert "%" not in s.getvalue()
+
+
+def test_substep_never_goes_backwards():
+    """A count at or below the high-water mark is dropped, not rendered.
+
+    Guards the stage-level display against an emitter that legitimately
+    replays sub-steps (the fit walk's sequential redo after an accepted thaw).
+    """
+    s = _Stream(tty=False)
+    p = StageProgress(1, stream=s)
+    with p.stage("fit"):
+        p.substep(9, 10)
+        p.substep(3, 10)
+        p.substep(1, 10)
+    out = s.getvalue()
+    assert "90% (9/10)" in out
+    assert "30%" not in out and "10%" not in out
+
+
+def test_substep_high_water_mark_resets_per_stage():
+    """Each stage starts its own bar; a later stage is not gated by an earlier."""
+    s = _Stream(tty=False)
+    p = StageProgress(2, stream=s)
+    with p.stage("fit"):
+        p.substep(10, 10)
+    with p.stage("report"):
+        p.substep(1, 10)
+    assert "report: 10% (1/10)" in s.getvalue()
 
 
 # ---------------------------------------------------------------------------

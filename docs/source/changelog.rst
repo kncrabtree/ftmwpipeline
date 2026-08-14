@@ -22,6 +22,19 @@ Unreleased
   so they cannot drift apart again. Individual attributes still win where both
   are present, and this only ever widens what is readable.
 
+* **The fit stage's progress percentage counts finished windows.** Under the
+  dependency-gated parallel walk each worker logged the scheduling position it
+  had been handed at submission time, not a completion count, and windows finish
+  in a different order than they are dispatched. The percentage therefore jumped
+  around and settled wherever the last window to finish happened to sit in the
+  schedule — a 255-window fit ended its stage displaying ``1% (5/255)``. The
+  count is now emitted by the parent process as each result lands, so it rises
+  monotonically and terminates at 100%; the per-window detail line is logged
+  separately and identified by window id. ``StageProgress`` additionally holds a
+  per-stage high-water mark, so a stage that legitimately re-runs a batch of
+  sub-steps cannot drive the bar backwards. The CLI, the ``Pipeline`` class and
+  the functional API share one reporter and all three are fixed by this.
+
 * **Stage 5 no longer warns that the Stage 2b pre-conditions did not pass.** The
   warning fired at fit time, named Stage 2b, and then said the fit would consume
   the calibration anyway — a failure report with no failure and no action behind

@@ -2,7 +2,7 @@
 
 A small, dependency-free reporter used by the end-to-end ``run`` orchestration
 and the report renderer. It prints a per-stage banner and bridges a sub-step
-count -- emitted by the worker as a ``"window %d/%d ..."`` INFO log -- into a
+count -- emitted as a ``"window %d/%d"`` INFO log -- into a
 percentage on the active stage's line, so a caller gets live progress without
 threading a callback through every layer. Surfaces WARNING+ records and drops
 the rest, so the stage logs stay quiet. TTY-aware: a ``\\r``-updated bar on a
@@ -17,17 +17,24 @@ import time
 from contextlib import contextmanager
 from typing import Iterator, Optional, TextIO, cast
 
-# The sub-step progress log template workers emit (e.g. the Stage-5
-# ``plan_execution`` per-window log, and the report's per-window render /
-# per-figure embed logs). Matching the message *template* (not the rendered
-# string) lets the handler read n/total straight from ``record.args``.
+# The sub-step progress log template (the Stage-5 ``plan_execution`` fit walk,
+# and the report's per-window render / per-figure embed logs). Matching the
+# message *template* (not the rendered string) lets the handler read n/total
+# straight from ``record.args``.
+#
+# The contract on the emitter: ``n`` is a count of sub-steps that have actually
+# FINISHED, and it is emitted from the process doing the collecting. A parallel
+# stage must not let a worker log its own scheduling position -- completions
+# arrive out of submission order, so the bar would jump around and stop wherever
+# the last-finishing item happened to sit in the schedule. Per-item detail lines
+# are logged separately by the workers and are not part of this template.
 WINDOW_LOG_PREFIX = "window %d/%d"
 
 
 class ProgressHandler(logging.Handler):
     """Bridge worker logs into a :class:`StageProgress` display.
 
-    Renders the ``"window %d/%d ..."`` sub-step records as a percentage on the
+    Renders the ``"window %d/%d"`` sub-step records as a percentage on the
     active stage's line, surfaces WARNING+ records on their own line (above the
     bar), and drops everything else -- so the user sees stage progress without
     the full INFO firehose.
@@ -77,6 +84,7 @@ class StageProgress:
         self._isatty = bool(getattr(self._stream, "isatty", lambda: False)())
         self._line_open = False
         self._last_decile = -1
+        self._last_n = 0
 
     def _prefix(self) -> str:
         return "" if self._total <= 1 else f"[{self._index}/{self._total}] "
@@ -118,6 +126,7 @@ class StageProgress:
         self._index += 1
         self._label = label
         self._last_decile = -1
+        self._last_n = 0
         start = time.monotonic()
         self._w(f"{self._prefix()}{label} …")
         self._line_open = True
@@ -136,9 +145,19 @@ class StageProgress:
             self._w(f"{self._prefix()}{label} ✓ ({elapsed:.1f}s)\n")
 
     def substep(self, n: int, total: int) -> None:
-        """Render a within-stage percentage from an (n, total) sub-step count."""
+        """Render a within-stage percentage from an (n, total) sub-step count.
+
+        Monotonic within a stage: a count at or below the highest already shown
+        is dropped rather than rendered. Emitters are expected to send a real
+        completion count, but a stage that legitimately re-runs a batch of
+        sub-steps (the fit walk's sequential redo after an accepted thaw) would
+        otherwise replay a lower count and drive the bar backwards.
+        """
         if not self._enabled or total <= 0:
             return
+        if n <= self._last_n:
+            return
+        self._last_n = n
         pct = max(0, min(100, int(100 * n / total)))
         if self._isatty:
             self._w(f"\r\033[K{self._prefix()}{self._label} … {pct:3d}% ({n}/{total})")

@@ -2602,11 +2602,23 @@ def _add_from_convergence(
     return outcome
 
 
+def _log_window_progress(n_done: int, n_total: int) -> None:
+    """Emit the ``window n/total`` sub-step progress record for one completion.
+
+    The single emitter of the template
+    :data:`~ftmwpipeline._internal.progress.WINDOW_LOG_PREFIX` on the fit path.
+    Always called from the **parent** process with a count of windows actually
+    *finished*, never with a scheduling ordinal: under both parallel walks the
+    submission order and the completion order differ, so a worker-side count
+    would drive the progress bar backwards (and leave it stopped at whatever
+    ordinal happened to finish last).
+    """
+    logger.info("window %d/%d", n_done, n_total)
+
+
 def _process_one_window(
     win: FitWindow,
     *,
-    n_done: int,
-    n_total: int,
     active_ft: ActiveFTResult,
     noise: np.ndarray,
     peak_frequencies_mhz: Sequence[float],
@@ -2643,7 +2655,12 @@ def _process_one_window(
     primary outcome) and appends to ``thaw_history`` / ``rescue_history``.
     Extracted verbatim from :func:`_walk_windows_in_order` so the one per-window
     unit drives both the sequential walk and the per-level parallel pool.
-    ``n_done`` / ``n_total`` are progress-logging context only.
+
+    Logs this window's own outcome line, identified by window id. The
+    ``window n/total`` progress record is deliberately NOT emitted here: under
+    either parallel walk this runs in a worker that cannot know how many
+    windows have finished, so the count is emitted by the parent as each result
+    lands (see :func:`_walk_windows_dag`).
     """
     wid = win.window_id
     t_start = time.monotonic()
@@ -2831,9 +2848,7 @@ def _process_one_window(
     if wid not in outcomes:
         # The window was dropped by the cleanup; nothing more to log / time here.
         logger.info(
-            "window %d/%d w%d [%.1f-%.1f MHz]: dropped (cascaded to empty)",
-            n_done,
-            n_total,
+            "w%d [%.1f-%.1f MHz]: dropped (cascaded to empty)",
             wid,
             win.freq_range[0],
             win.freq_range[1],
@@ -2842,9 +2857,7 @@ def _process_one_window(
     final = outcomes[wid]
     log = logger.warning if elapsed > 60.0 else logger.info
     log(
-        "window %d/%d w%d [%.1f-%.1f MHz]: %d peaks, chi2r=%.3g, %.1fs",
-        n_done,
-        n_total,
+        "w%d [%.1f-%.1f MHz]: %d peaks, chi2r=%.3g, %.1fs",
         wid,
         win.freq_range[0],
         win.freq_range[1],
@@ -2926,8 +2939,6 @@ def _walk_windows_in_order(
         win = by_id[wid]
         _process_one_window(
             win,
-            n_done=n_done,
-            n_total=n_total,
             active_ft=active_ft,
             noise=noise,
             peak_frequencies_mhz=peak_frequencies_mhz,
@@ -2957,6 +2968,7 @@ def _walk_windows_in_order(
             cleanup_history=cleanup_history,
             final_add_snr_threshold=final_add_snr_threshold,
         )
+        _log_window_progress(n_done, n_total)
 
 
 # ---------------------------------------------------------------------------
@@ -3046,7 +3058,7 @@ def _levelize(
 
 
 def _fit_window_worker(
-    task: tuple[int, int],
+    task: int,
 ) -> tuple[
     int,
     Optional[WindowOutcome],
@@ -3074,7 +3086,7 @@ def _fit_window_worker(
     """
     ctx = _WORKER_FIT_CTX
     assert ctx is not None  # set in the parent before the pool forks
-    n_done, wid = task
+    wid = task
     local_outcomes: dict[int, WindowOutcome] = dict(ctx["outcomes"])
     thaw_local: list[ThawEvent] = []
     rescue_local: list[RescueEvent] = []
@@ -3085,8 +3097,6 @@ def _fit_window_worker(
     # a fork child of a multithreaded parent and aborts (SIGABRT).
     _process_one_window(
         ctx["by_id"][wid],
-        n_done=n_done,
-        n_total=ctx["n_total"],
         outcomes=local_outcomes,
         thaw_history=thaw_local,
         rescue_history=rescue_local,
@@ -3097,7 +3107,7 @@ def _fit_window_worker(
 
 
 def _fit_window_worker_dag(
-    task: tuple[int, int, dict[int, WindowOutcome]],
+    task: tuple[int, dict[int, WindowOutcome]],
 ) -> tuple[
     int,
     Optional[WindowOutcome],
@@ -3110,7 +3120,7 @@ def _fit_window_worker_dag(
     Unlike :func:`_fit_window_worker` (which inherits the full earlier-level
     ``outcomes`` via a fresh per-level fork), the persistent DAG pool forks once
     up front with no outcomes, so each task is **handed** its predecessors'
-    outcomes in ``task[2]`` -- exactly the ``primary_window_id`` outcomes the
+    outcomes in ``task[1]`` -- exactly the ``primary_window_id`` outcomes the
     window's fixed contributors read. The heavy shared ``active_ft`` / ``noise``
     still ride the initial fork in :data:`_WORKER_FIT_CTX`. BLAS runs
     single-threaded per process (inherited on fork from the parent's
@@ -3119,7 +3129,7 @@ def _fit_window_worker_dag(
     """
     ctx = _WORKER_FIT_CTX
     assert ctx is not None  # set in the parent before the pool forks
-    n_done, wid, pred_outcomes = task
+    wid, pred_outcomes = task
     local_outcomes: dict[int, WindowOutcome] = dict(pred_outcomes)
     thaw_local: list[ThawEvent] = []
     rescue_local: list[RescueEvent] = []
@@ -3129,8 +3139,6 @@ def _fit_window_worker_dag(
     # child of a multithreaded parent (SIGABRT).
     _process_one_window(
         ctx["by_id"][wid],
-        n_done=n_done,
-        n_total=ctx["n_total"],
         outcomes=local_outcomes,
         thaw_history=thaw_local,
         rescue_history=rescue_local,
@@ -3263,12 +3271,11 @@ def _walk_windows_dag(
     )
 
     global _WORKER_FIT_CTX
-    _WORKER_FIT_CTX = {"by_id": by_id, "n_total": n_total, "shared": shared_kwargs}
+    _WORKER_FIT_CTX = {"by_id": by_id, "shared": shared_kwargs}
     results: dict[
         int, tuple[list[ThawEvent], list[RescueEvent], list[dict[str, Any]]]
     ] = {}
     accepted_thaw = False
-    n_submitted = 0
     try:
         ctx_mp = multiprocessing.get_context("fork")
         with ProcessPoolExecutor(
@@ -3277,8 +3284,6 @@ def _walk_windows_dag(
             futures: dict[Any, int] = {}
 
             def _submit(wid: int) -> None:
-                nonlocal n_submitted
-                n_submitted += 1
                 # Hand the worker every contributor primary's outcome -- not just
                 # the in-order ``preds`` (which gate scheduling). A post-replan
                 # partial re-walk has contributors whose primary was fit in an
@@ -3292,9 +3297,7 @@ def _walk_windows_dag(
                     if not c.edge_free
                 }
                 pred_outcomes = {p: outcomes[p] for p in primary_ids if p in outcomes}
-                fut = ex.submit(
-                    _fit_window_worker_dag, (n_submitted, wid, pred_outcomes)
-                )
+                fut = ex.submit(_fit_window_worker_dag, (wid, pred_outcomes))
                 futures[fut] = wid
 
             for wid in in_order:
@@ -3312,6 +3315,12 @@ def _walk_windows_dag(
                     if outcome is not None:
                         outcomes[wid] = outcome
                     results[wid] = (thaws, rescues, cleanups)
+                    # Progress counts windows FINISHED, in the parent: the
+                    # submission order and the completion order differ under a
+                    # dependency-gated walk, so a worker-side ordinal would make
+                    # the bar jump around and settle wherever the last-finishing
+                    # window happened to sit in the schedule.
+                    _log_window_progress(len(results), n_total)
                     if any(e.accepted for e in thaws):
                         accepted_thaw = True
                     for s in succs[wid]:
@@ -3498,14 +3507,13 @@ def _walk_windows_parallel(
             nd += 1
             _process_one_window(
                 by_id[wid],
-                n_done=nd,
-                n_total=n_total,
                 outcomes=outcomes,
                 thaw_history=thaw_history,
                 rescue_history=rescue_history,
                 cleanup_history=cleanup_history,
                 **shared_kwargs,
             )
+            _log_window_progress(nd, n_total)
 
     if len(levels) > 1 or any(len(lv) > 1 for lv in levels):
         logger.info(
@@ -3526,16 +3534,14 @@ def _walk_windows_parallel(
             continue
 
         # Fork a fresh pool for this level so workers inherit every earlier-level
-        # outcome merged into ``outcomes`` below. Only the (n_done, wid) tuples go
-        # out; the shared arrays and outcomes ride the fork.
+        # outcome merged into ``outcomes`` below. Only the window ids go out; the
+        # shared arrays and outcomes ride the fork.
         global _WORKER_FIT_CTX
         _WORKER_FIT_CTX = {
             "by_id": by_id,
             "outcomes": outcomes,
-            "n_total": n_total,
             "shared": shared_kwargs,
         }
-        tasks = [(n_done + i + 1, wid) for i, wid in enumerate(level)]
         results: dict[int, tuple[int, Optional[WindowOutcome], list, list, list]] = {}
         try:
             from concurrent.futures import ProcessPoolExecutor
@@ -3544,8 +3550,12 @@ def _walk_windows_parallel(
             with ProcessPoolExecutor(
                 max_workers=min(max_workers, len(level)), mp_context=ctx_mp
             ) as ex:
-                for res in ex.map(_fit_window_worker, tasks):
+                # ``ex.map`` yields in input order, so counting consumed results
+                # in the parent gives a monotonic completion count (the worker's
+                # own position in the level is not one).
+                for res in ex.map(_fit_window_worker, list(level)):
                     results[res[0]] = res
+                    _log_window_progress(n_done + len(results), n_total)
         finally:
             _WORKER_FIT_CTX = None
 
