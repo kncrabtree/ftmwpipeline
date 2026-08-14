@@ -22,6 +22,19 @@ Unreleased
   so they cannot drift apart again. Individual attributes still win where both
   are present, and this only ever widens what is readable.
 
+* **Every Stage 6 edit runs through one engine.** The interactive verbs
+  (``review edit`` / ``merge`` / ``split`` / ``accept`` / ``create``) each held
+  their own copy of the load-edit-cascade-persist sequence alongside the batch
+  engine's, which is how the analysis-epoch gate came to be missed on one path.
+  They are now the batch engine applied to a single action, so the epoch gate,
+  the undo baseline, the per-band τ anchor, the spur-catalog replay, the cascade
+  and the persist have one definition each and reach every caller at once.
+  Fitted results are unchanged — bit-identical on a real fixture. Two
+  user-visible consequences: ``review merge`` and ``review split`` no longer
+  load the FID twice, and an identity refit (``review edit`` with nothing added
+  or removed) now refreshes the calibrated final-products table, which it
+  previously left stale after re-converging the window.
+
 * **``review apply`` and ``review undo`` apply a curation plan as one batch.**
   Each action used to rebuild the whole Stage 5 fit context from scratch — its
   own FID load, FT, noise estimation and spur-catalog replay, its own
