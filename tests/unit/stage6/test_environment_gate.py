@@ -144,6 +144,25 @@ class TestSpliceGate:
             ftmw.review_apply(str(fitted), cf)
         assert ftmw.review_log(str(fitted)) == []
 
+    def test_apply_of_only_candidate_accepts_is_gated(self, fitted, tmp_path):
+        """An ``accept`` carrying a candidate adds a peak, so it splices.
+
+        The plan is all-``accept``, which is what the caller-side "any
+        non-accept action" pre-check reads as non-mutating -- the batch engine
+        has to gate itself or this slips through and writes.
+        """
+        wid, freq = self._a_fitted_peak(fitted)
+        cf = tmp_path / "cur.csv"
+        cf.write_text(f"accept,{wid},,candidate={freq:.6f}\n")
+        _force_fit_epoch(fitted, ANALYSIS_EPOCH + 1)
+
+        with pytest.raises(ValueError, match="analysis epoch"):
+            ftmw.review_apply(str(fitted), cf)
+        # Refused before the baseline snapshot, so nothing was written at all.
+        with h5py.File(fitted, "r") as f:
+            assert "stage5_fitting_baseline" not in f
+        assert ftmw.review_log(str(fitted)) == []
+
     def test_dry_run_apply_is_not_gated(self, fitted, tmp_path):
         """A preview writes nothing, so it is a read and must never be gated."""
         wid, freq = self._a_fitted_peak(fitted)

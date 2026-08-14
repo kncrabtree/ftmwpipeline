@@ -1964,11 +1964,19 @@ class Pipeline:
     ) -> CurationApplyResult:
         """Apply a curation file of batched review edits.
 
-        Replays a curation CSV (``action,window,freqs,params`` rows) through the
-        same edit impls the interactive verbs use: a run of add/remove rows on
-        one window coalesces into a single refit, while merge/split/accept stand
-        alone.  With ``dry_run`` the resolved plan and any frequency-resolution
-        warnings are returned without modifying the file.
+        Parses a curation CSV (``action,window,freqs,params`` rows), coalescing
+        a run of add/remove rows on one window into a single refit (merge /
+        split / accept stand alone).  The resolved plan is then applied as one
+        batch: the Stage 5 fit context is built once, every action is applied to
+        an in-memory fit, dependents are cascaded once, and the result is
+        persisted once -- nothing is written unless every action succeeds.
+
+        Cross-window execution order is canonical (creates first, then ascending
+        window id), so the final state does not depend on the order the rows
+        were written in.  The guarantee is on that end state: a batch reproduces
+        the *result* of running the resolved plan by hand, not its sequence of
+        intermediate refits.  With ``dry_run`` the resolved plan and any
+        frequency-resolution warnings are returned without modifying the file.
 
         Parameters
         ----------

@@ -230,10 +230,33 @@ coalescing of a pending group.
 Applying a curation file
 ------------------------
 
-``review apply`` replays a curation file through the same single-window refit
-that the interactive verbs call, so a batch of edits produces exactly the result
-of running the resolved plan by hand. ``--dry-run`` prints the resolved,
-coalesced plan and any frequency-resolution warnings without touching the file:
+``review apply`` executes a curation file's resolved plan as a single batch. It
+loads the Stage 5 fit and builds the active-FT fit context once, applies every
+action to that fit in memory, cascades the dependents of all directly-edited
+windows in one combined pass, and persists the result once. Nothing is written
+until every action has succeeded, so a plan that fails partway through leaves
+the file untouched.
+
+A curated file therefore holds only two states: the base it started from — the
+automatic fit, or the automatic baseline when ``review undo`` is replaying onto
+it — and the revised state the whole edit set produces. The set is applied in
+one canonical order rather than the order the rows happen to be written in.
+``create`` rows run first, since they install the structure later rows name, and
+the remaining actions run grouped by ascending window id. Within a single window
+the specified order is preserved, because a ``merge`` or ``split`` composes on
+the peak set a preceding ``add`` or ``remove`` left behind. Two curation files
+listing the same per-window edits in different row orders reach the same fitted
+state and the same decision log.
+
+That end state is what the guarantee covers. The batch reproduces the *result*
+of running the resolved plan by hand, not its sequence of intermediate refits;
+and because an edit changes the leakage skirt its neighbors froze, the peaks of
+one edit are not guaranteed to land where they would have had that edit been
+applied on its own. Edits are reproducible together, not independent of each
+other.
+
+``--dry-run`` prints the resolved, coalesced plan in the file's own row order,
+along with any frequency-resolution warnings, without touching the file:
 
 .. code-block:: console
 

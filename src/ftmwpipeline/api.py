@@ -1762,11 +1762,13 @@ def review_apply(
 ) -> CurationApplyResult:
     """Apply a curation file of batched review edits.
 
-    Equivalent to :meth:`Pipeline.review_apply`.  Replays a curation CSV through
-    the same edit impls the interactive verbs use (add/remove on one window
-    coalesce into a single refit; merge/split/accept stand alone).  With
-    ``dry_run`` the resolved plan and frequency-resolution warnings are returned
-    without modifying the file.
+    Equivalent to :meth:`Pipeline.review_apply`.  Coalesces add/remove rows on
+    one window into a single refit (merge/split/accept stand alone), then
+    applies the resolved plan as one batch: one shared fit context, one combined
+    cascade, one persist.  Cross-window execution order is canonical, so the
+    final state does not depend on the file's row order.  With ``dry_run`` the
+    resolved plan and frequency-resolution warnings are returned without
+    modifying the file.
 
     Parameters
     ----------

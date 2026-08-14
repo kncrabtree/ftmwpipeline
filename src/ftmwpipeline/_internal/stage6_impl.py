@@ -25,9 +25,9 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import h5py
 import numpy as np
@@ -66,7 +66,7 @@ from .stage0_impl import load_fid_from_pipeline_impl
 from .stage2_impl import _update_stage_completion
 
 if TYPE_CHECKING:  # annotation-only imports (PEP 563 lazy)
-    from ..core.data_structures import FitWindow, WindowPlan
+    from ..core.data_structures import FitWindow, Peak, WindowPlan
     from ..core.environment import EnvironmentRecord
     from ..core.stage_fit_settings import StageFitSettings
     from ..fitting.peak_model import PeakShape
@@ -1054,35 +1054,30 @@ def acknowledge_environment_impl(
     )
 
 
-def effective_window_plan(file_path: Union[Path, str]) -> "WindowPlan":
-    """The Stage 4 plan overlaid with any Stage-6-created / widened windows.
-
-    Stage 6 can install a window for a line the automatic detection missed (see
-    :func:`create_window_impl`). Those windows live in the Stage 6 review state,
-    not in ``/stage4_windows``, so Stage 4's persisted product stays a function
-    of Stage 4's own inputs and re-running Stage 4 (which invalidates Stage 6
-    anyway) never has to reconcile them. Every Stage 6 code path that resolves a
-    ``window_id`` to its geometry goes through here so the base plan and the
-    overlay are never read apart.
+def _overlay_created_windows(
+    plan: "WindowPlan", created_windows: Sequence["FitWindow"]
+) -> "WindowPlan":
+    """Return ``plan`` overlaid with ``created_windows`` (neither argument mutated).
 
     An overlay entry whose ``window_id`` matches a base window **replaces** it
     (the narrow-gap widening case); a fresh id is appended. The result is sorted
     by ascending frequency, matching the plan's own ordering, and carries the
     overlay's inbound dependency edges.
-    """
-    from .stage4_impl import load_windows_impl
 
-    plan: "WindowPlan" = load_windows_impl(str(file_path))["plan"]
-    review = load_stage6_review_from_file(str(file_path))
-    if not review.created_windows:
+    Pulled out of :func:`effective_window_plan` so the batch curation engine
+    (:func:`_execute_curation_batch`) can reapply the same overlay purely in
+    memory as ``create`` actions accumulate within one batch -- geometry for the
+    *next* create in the same batch has to see the previous one without a round
+    trip through the file between them.
+    """
+    if not created_windows:
         return plan
 
-    overlay = {int(w.window_id): w for w in review.created_windows}
+    overlay = {int(w.window_id): w for w in created_windows}
     windows = [overlay.get(int(w.window_id), w) for w in plan.windows]
     known = {int(w.window_id) for w in windows}
     windows.extend(w for wid, w in sorted(overlay.items()) if wid not in known)
     windows.sort(key=lambda w: min(w.freq_range))
-    plan.windows = windows
 
     # A created window is a leaf: it reads its neighbours' frozen leakage and
     # nothing reads it, so its edges are purely additive and cannot introduce a
@@ -1096,9 +1091,31 @@ def effective_window_plan(file_path: Union[Path, str]) -> "WindowPlan":
                 edges.append(edge)
         if wid not in topo:
             topo.append(wid)
-    plan.dependency_edges = sorted(set(edges))
-    plan.topological_order = topo
-    return plan
+
+    return replace(
+        plan,
+        windows=windows,
+        dependency_edges=sorted(set(edges)),
+        topological_order=topo,
+    )
+
+
+def effective_window_plan(file_path: Union[Path, str]) -> "WindowPlan":
+    """The Stage 4 plan overlaid with any Stage-6-created / widened windows.
+
+    Stage 6 can install a window for a line the automatic detection missed (see
+    :func:`create_window_impl`). Those windows live in the Stage 6 review state,
+    not in ``/stage4_windows``, so Stage 4's persisted product stays a function
+    of Stage 4's own inputs and re-running Stage 4 (which invalidates Stage 6
+    anyway) never has to reconcile them. Every Stage 6 code path that resolves a
+    ``window_id`` to its geometry goes through here so the base plan and the
+    overlay are never read apart.
+    """
+    from .stage4_impl import load_windows_impl
+
+    plan: "WindowPlan" = load_windows_impl(str(file_path))["plan"]
+    review = load_stage6_review_from_file(str(file_path))
+    return _overlay_created_windows(plan, review.created_windows)
 
 
 def _next_decision_index(path: str) -> int:
@@ -1985,6 +2002,22 @@ def _cascade_refit_dependents(
     }
     succs = _cascade_succs(window_fits, fit_window_map)
     closure = _cascade_closure(edited_wids, succs)
+    # `_cascade_closure` strips the whole `edited_wids` set from its result, so
+    # when this call batches several DIRECTLY edited windows together (the
+    # curation batch engine's single combined cascade), a window that is both
+    # directly edited AND downstream of ANOTHER directly-edited window in the
+    # same call would otherwise never get its frozen background refreshed from
+    # its sibling's new state. That refresh happened for free in the old
+    # one-edit-at-a-time sequential flow (each edit's own cascade pass reached
+    # it, or its own later direct edit reloaded the sibling's already-cascaded
+    # background from the file) -- reproduce it here by adding back any edited
+    # window reachable from the *rest* of the edited set. A lone edit's
+    # `edited_wids` has nothing left after removing itself, so this is a no-op
+    # for the single-window call the interactive verbs make.
+    edited_set = {int(w) for w in edited_wids}
+    for w in edited_set:
+        if w in _cascade_closure(sorted(edited_set - {w}), succs):
+            closure.add(w)
     if not closure:
         return []
     preds: Dict[int, set] = {w: set() for w in fit_map}
@@ -3944,6 +3977,1091 @@ def _execute_planned_action(path: str, action: PlannedAction) -> None:
         review_accept_impl(path, action.window_id, candidate_freq=action.candidate)
 
 
+# ---------------------------------------------------------------------------
+# Batch curation engine: import once, apply the whole changeset in memory,
+# cascade once, persist once.
+#
+# ``_execute_planned_action`` above (and the single-window verbs it dispatches
+# to) each independently reload the FID, rebuild the active-FT context, and
+# read-modify-write ``/stage5_fitting`` -- fine for one interactive edit, but
+# for a curation batch of N actions that is N redundant imports/FTs/persists
+# for work that is batch-invariant (see ``_build_batch_ctx``). The engine below
+# builds that shared state ONCE, applies every action against an in-memory
+# ``SpectrumFit``, runs a single combined cascade over every directly-edited
+# window, and persists ``/stage5_fitting`` and ``/stage6_review`` once each.
+#
+# Ordering: the final persisted state must not depend on the order actions
+# were listed in the curation file (or the decision log, for undo's replay).
+# Cross-window order is canonicalized -- creates first (in their own relative
+# order, since they install structure later rows name), then every other
+# action grouped by ascending window id -- while the intra-window sequence
+# ``_resolve_curation_plan`` already coalesced is preserved exactly (a stable
+# sort by window id cannot reorder two actions that share one). This is an
+# equivalence of OUTCOME, not of execution: we do not assert that edits on
+# different windows compose independently peak-by-peak, only that "edit 1 then
+# edit 2" and "edit 2 then edit 1" reach the same final state, because both are
+# actually applied in this one deterministic order. Decisions are appended to
+# the log in this same canonical order, so the log itself is order-of-
+# specification-independent too.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _BatchCtx:
+    """Shared, batch-invariant state for one curation batch, plus the
+    in-progress mutable changeset (``spectrum_fit``, the dirty/mutated window
+    sets, and the pending decision-log entries)."""
+
+    resolved: "StageFitSettings"
+    shape_enum: "PeakShape"
+    persisted_cal: object
+    tau_maj_global: Optional[float]
+    sigma_tau_global: Optional[float]
+    tau_source: str
+    fit_ctx: "Stage5FitContext"
+    spectrum_fit: SpectrumFit
+    peaks_loaded: List["Peak"]
+    peak_frequencies_mhz: List[float]
+    min_freeze_snr: float
+    base_plan: "WindowPlan"
+    created_windows: List["FitWindow"]
+    fit_window_map: Dict[int, "FitWindow"] = field(default_factory=dict)
+    dirty_wids: set = field(default_factory=set)
+    """Windows a *direct* edit (add/remove/merge/split/accept-candidate)
+    touched this batch -- the seed set for the one combined cascade."""
+    mutated_wids: set = field(default_factory=set)
+    """Every window whose ``FittingResult`` changed this batch (dirty windows,
+    newly-created windows, and cascaded dependents) -- drives the
+    final-products / attention-reason refresh."""
+    decisions: List[Dict[str, Any]] = field(default_factory=list)
+    """Pending decision-log entries, in the order they will be recorded
+    (``window_id`` / ``frequency_mhz`` / ``kind`` / ``evidence`` / ``bare``)."""
+    next_decision_index: int = 0
+
+
+def _build_batch_ctx(path: str, *, snap_tol_mhz: float) -> _BatchCtx:
+    """Load and resolve everything a curation batch's fit-mutating actions
+    share, exactly once: the persisted fit, settings, calibration, and the
+    active-FT context (:func:`~.stage5_impl.build_stage5_fit_context`, the
+    expensive FID-load-and-FT step this whole engine exists to amortize).
+    """
+    from ..core.stage_fit_settings import ShapeSpec, StageFitSettings
+    from ..core.stage_fit_settings import resolve as resolve_stage_fit_settings
+    from ..fitting.peak_model import PeakShape
+    from ..io.stage_fit_settings_serialization import (
+        load_stage_fit_settings_from_h5,
+        read_recommended_clock_sources,
+        read_stage2b_recommended_shape,
+    )
+    from ..preprocessing.window_planning import DEFAULT_MIN_FREEZE_SNR
+    from .stage2b_impl import load_tau_calibration_impl, tau_calibration_present
+    from .stage3_impl import load_peaks_impl
+    from .stage4_impl import load_windows_impl
+    from .stage5_impl import (
+        Stage5FitContext,
+        _resolve_tau_calibration_for_fit,
+        build_stage5_fit_context,
+    )
+
+    with h5py.File(path, "r") as h5f:
+        if "stage5_fitting" not in h5f:
+            raise ValueError("No Stage 5 fit found in this file. Run 'fit run' first.")
+        spectrum_fit: SpectrumFit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+
+    base_plan: "WindowPlan" = load_windows_impl(path)["plan"]
+    review = load_stage6_review_from_file(path)
+    created_windows = list(review.created_windows)
+
+    peaks_loaded = load_peaks_impl(path)["peaks"]
+    peak_frequencies_mhz = [float(p.frequency) for p in peaks_loaded]
+
+    persisted_settings = load_stage_fit_settings_from_h5(path)
+    recommended_shape_str = read_stage2b_recommended_shape(path)
+    recommended_clocks = read_recommended_clock_sources(path)
+    recommended_settings: Optional[StageFitSettings] = None
+    if recommended_shape_str is not None or recommended_clocks is not None:
+        from ..core.stage_fit_settings import SpurSubSettings
+
+        recommended_settings = StageFitSettings(
+            shape=(
+                ShapeSpec.coerce(recommended_shape_str)
+                if recommended_shape_str is not None
+                else None
+            ),
+            spur=SpurSubSettings(clocks=recommended_clocks),
+        )
+    resolved = resolve_stage_fit_settings(
+        explicit=StageFitSettings(),
+        preset=None,
+        persisted=persisted_settings,
+        recommended=recommended_settings,
+    )
+    assert resolved.shape is not None
+    shape_enum = resolved.shape.kind
+
+    persisted_cal = None
+    if shape_enum is PeakShape.GAUSSIAN:
+        if tau_calibration_present(path, shape="gaussian"):
+            persisted_cal = load_tau_calibration_impl(path, shape="gaussian")[
+                "tau_calibration"
+            ]
+    else:
+        if tau_calibration_present(path):
+            persisted_cal = load_tau_calibration_impl(path)["tau_calibration"]
+    tau_maj_global, sigma_tau_global, tau_source = _resolve_tau_calibration_for_fit(
+        persisted_cal,
+        resolved.tau.tau_maj_override_us,
+        resolved.tau.sigma_tau_override_us,
+    )
+
+    # Replay the persisted Stage 5 gated spur catalog, exactly as the
+    # single-window verbs do -- see their docstrings for why (the refit has to
+    # see the same masking the original fit did).
+    fit_ctx: Stage5FitContext = build_stage5_fit_context(
+        path,
+        resolved,
+        persisted_cal,
+        shape_enum,
+        replay_spur_catalog=spectrum_fit.parameters,
+    )
+
+    min_freeze_snr = float(
+        base_plan.parameters.get("min_freeze_snr", DEFAULT_MIN_FREEZE_SNR)
+    )
+    effective_plan = _overlay_created_windows(base_plan, created_windows)
+    fit_window_map = {w.window_id: w for w in effective_plan.windows}
+
+    return _BatchCtx(
+        resolved=resolved,
+        shape_enum=shape_enum,
+        persisted_cal=persisted_cal,
+        tau_maj_global=tau_maj_global,
+        sigma_tau_global=sigma_tau_global,
+        tau_source=tau_source,
+        fit_ctx=fit_ctx,
+        spectrum_fit=spectrum_fit,
+        peaks_loaded=peaks_loaded,
+        peak_frequencies_mhz=peak_frequencies_mhz,
+        min_freeze_snr=min_freeze_snr,
+        base_plan=base_plan,
+        created_windows=created_windows,
+        fit_window_map=fit_window_map,
+        next_decision_index=len(review.decision_log),
+    )
+
+
+def _batch_effective_plan(ctx: _BatchCtx) -> "WindowPlan":
+    """The window plan as of *this point* in the batch (base + this batch's own
+    creates so far), recomputed in memory -- no file round trip."""
+    return _overlay_created_windows(ctx.base_plan, ctx.created_windows)
+
+
+def _splice_edit_result(
+    spectrum_fit: SpectrumFit, window_id: int, new_wf: FittingResult
+) -> None:
+    """Replace ``window_id``'s entry in ``spectrum_fit`` with ``new_wf`` (an
+    existing window whose peak count may have changed, but not its identity)."""
+    new_global_peaks = [
+        p for p in spectrum_fit.fitted_peaks if p.window_id != window_id
+    ] + list(new_wf.fitted_peaks)
+    new_global_peaks.sort(key=lambda p: float(p.frequency_mhz))
+    spectrum_fit.fitted_peaks = new_global_peaks
+    spectrum_fit.window_fits = [
+        new_wf if wf.window_id == window_id else wf for wf in spectrum_fit.window_fits
+    ]
+
+
+def _splice_new_window_fit(
+    spectrum_fit: SpectrumFit, new_wid: int, new_wf: FittingResult
+) -> None:
+    """Insert a freshly created window's ``FittingResult`` into ``spectrum_fit``,
+    re-sorting ``window_fits`` by ascending window id (matching
+    :func:`create_window_impl`'s persisted ordering)."""
+    other_fits = [wf for wf in spectrum_fit.window_fits if wf.window_id != new_wid]
+    spectrum_fit.window_fits = sorted(
+        other_fits + [new_wf],
+        key=lambda wf: int(wf.window_id) if wf.window_id is not None else -1,
+    )
+    new_global_peaks = [
+        p for p in spectrum_fit.fitted_peaks if p.window_id != new_wid
+    ] + list(new_wf.fitted_peaks)
+    new_global_peaks.sort(key=lambda p: float(p.frequency_mhz))
+    spectrum_fit.fitted_peaks = new_global_peaks
+
+
+def _batch_lookup_wf(ctx: _BatchCtx, window_id: int) -> FittingResult:
+    wf_list = [wf for wf in ctx.spectrum_fit.window_fits if wf.window_id == window_id]
+    if not wf_list:
+        raise KeyError(f"window_id={window_id} not found in the Stage 5 fit")
+    return wf_list[0]
+
+
+def _batch_apply_edit_core(
+    ctx: _BatchCtx,
+    window_id: int,
+    *,
+    add: Sequence[float],
+    remove: Sequence[float],
+    add_seeds: Optional[List[ModelPeak]] = None,
+    add_derivations: Optional[Sequence[Optional[int]]] = None,
+    snap_tol_mhz: float,
+) -> FittingResult:
+    """In-memory equivalent of the fit-mutating middle of
+    :func:`refit_window_impl` (materialize -> NLS -> splice), reusing the
+    batch's shared context instead of rebuilding it. Marks ``window_id`` dirty."""
+    from ..fitting.result_conversion import sort_fitting_result_by_frequency
+
+    wf = _batch_lookup_wf(ctx, window_id)
+    fit_win = ctx.fit_window_map.get(window_id)
+    if fit_win is None:
+        raise KeyError(
+            f"window_id={window_id} not found in the Stage 4 WindowPlan. "
+            "Stage 4 may have been re-run and changed the window geometry."
+        )
+    tau_maj_us, sigma_tau_us = _resolve_refit_window_tau(
+        fit_win,
+        ctx.resolved,
+        ctx.persisted_cal,
+        ctx.tau_maj_global,
+        ctx.sigma_tau_global,
+        ctx.tau_source,
+    )
+    new_wf = refit_window_core(
+        ctx.fit_ctx,
+        fit_win,
+        wf,
+        resolved=ctx.resolved,
+        shape_enum=ctx.shape_enum,
+        tau_maj_us=tau_maj_us,
+        sigma_tau_us=sigma_tau_us,
+        peak_frequencies_mhz=ctx.peak_frequencies_mhz,
+        add=add,
+        remove=remove,
+        add_seeds=add_seeds,
+        add_derivations=add_derivations,
+        snap_tol_mhz=snap_tol_mhz,
+    )
+    sort_fitting_result_by_frequency(new_wf)
+    _splice_edit_result(ctx.spectrum_fit, window_id, new_wf)
+    ctx.dirty_wids.add(window_id)
+    ctx.mutated_wids.add(window_id)
+    return new_wf
+
+
+def _batch_apply_edit_action(
+    ctx: _BatchCtx,
+    window_id: int,
+    add: Sequence[float],
+    remove: Sequence[float],
+    *,
+    snap_tol_mhz: float,
+) -> RefitWindowResult:
+    """Batch equivalent of :func:`refit_window_impl`'s add/remove path: one
+    decision per frequency (adds, then removes), all sharing one evidence dict."""
+    wf = _batch_lookup_wf(ctx, window_id)
+    chi2r_before = float(wf.reduced_chi2)
+    n_before = len(wf.fitted_peaks)
+
+    add_derivations: Optional[List[Optional[int]]] = None
+    if add:
+        base_idx = ctx.next_decision_index
+        add_derivations = [base_idx + i for i in range(len(add))]
+
+    new_wf = _batch_apply_edit_core(
+        ctx,
+        window_id,
+        add=add,
+        remove=remove,
+        add_derivations=add_derivations,
+        snap_tol_mhz=snap_tol_mhz,
+    )
+
+    chi2r_after = float(new_wf.reduced_chi2)
+    n_after = len(new_wf.fitted_peaks)
+    evidence: Dict[str, object] = {
+        "chi2r_before": chi2r_before,
+        "chi2r_after": chi2r_after,
+        "n_peaks_before": n_before,
+        "n_peaks_after": n_after,
+    }
+    for f in add:
+        ctx.decisions.append(
+            {
+                "window_id": window_id,
+                "frequency_mhz": float(f),
+                "kind": "add",
+                "evidence": evidence,
+            }
+        )
+        ctx.next_decision_index += 1
+    for f in remove:
+        ctx.decisions.append(
+            {
+                "window_id": window_id,
+                "frequency_mhz": float(f),
+                "kind": "remove",
+                "evidence": evidence,
+            }
+        )
+        ctx.next_decision_index += 1
+
+    return RefitWindowResult(
+        window_id=window_id,
+        n_peaks_before=n_before,
+        n_peaks_after=n_after,
+        chi2r_before=chi2r_before,
+        chi2r_after=chi2r_after,
+        fitted_peaks=list(new_wf.fitted_peaks),
+    )
+
+
+def _batch_apply_merge(
+    ctx: _BatchCtx,
+    window_id: int,
+    peaks: Sequence[float],
+    *,
+    snap_tol_mhz: float,
+) -> RefitWindowResult:
+    """Batch equivalent of :func:`merge_peaks_impl`. Sideband/center come from
+    the shared ``fit_ctx`` / the window's own persisted geometry, so (unlike the
+    single-window impl) this never needs its own FID load."""
+    wf = _batch_lookup_wf(ctx, window_id)
+
+    matched: List[FittedPeak] = []
+    for req_freq in peaks:
+        req_freq_f = float(req_freq)
+        best: Optional[FittedPeak] = None
+        best_dist = float("inf")
+        for fp in wf.fitted_peaks:
+            d = abs(float(fp.frequency_mhz) - req_freq_f)
+            if d < best_dist:
+                best_dist = d
+                best = fp
+        if best is None or best_dist > snap_tol_mhz:
+            raise ValueError(
+                f"merge: no fitted peak within {snap_tol_mhz:.3f} MHz of "
+                f"{req_freq_f:.4f} MHz (closest distance: {best_dist:.4f} MHz)"
+            )
+        if any(m.frequency_mhz == best.frequency_mhz for m in matched):
+            raise ValueError(
+                f"merge: frequency {req_freq_f:.4f} MHz matched the same "
+                f"fitted peak twice"
+            )
+        matched.append(best)
+
+    weights: List[float] = []
+    for fp in matched:
+        w = float(fp.snr) if fp.snr is not None else float(fp.amplitude)
+        weights.append(max(w, 1e-30))
+    total_w = sum(weights)
+    centroid_freq = (
+        sum(float(fp.frequency_mhz) * w for fp, w in zip(matched, weights)) / total_w
+    )
+    centroid_amp = sum(float(fp.amplitude) for fp in matched)
+
+    merge_freq = centroid_freq
+    merge_amp = centroid_amp
+    if len(matched) == 2:
+        fa = float(matched[0].frequency_mhz)
+        fb = float(matched[1].frequency_mhz)
+        for da in getattr(wf, "doublet_alternatives", []):
+            pair_match = (
+                abs(float(da.frequency_a_mhz) - fa) <= snap_tol_mhz
+                and abs(float(da.frequency_b_mhz) - fb) <= snap_tol_mhz
+            ) or (
+                abs(float(da.frequency_a_mhz) - fb) <= snap_tol_mhz
+                and abs(float(da.frequency_b_mhz) - fa) <= snap_tol_mhz
+            )
+            if (
+                pair_match
+                and da.merged_success
+                and not math.isnan(float(da.merged_frequency_mhz))
+            ):
+                merge_freq = float(da.merged_frequency_mhz)
+                merge_amp = (
+                    float(da.merged_amplitude)
+                    if not math.isnan(float(da.merged_amplitude))
+                    else centroid_amp
+                )
+                break
+
+    remove_freqs = [float(fp.frequency_mhz) for fp in matched]
+
+    sideband = ctx.fit_ctx.sideband
+    s = sideband_sign(sideband)
+    center_mhz: Optional[float] = None
+    if wf.window is not None and wf.window.freq_range is not None:
+        lo, hi = wf.window.freq_range
+        center_mhz = (lo + hi) / 2.0
+
+    add_seeds: Optional[List[ModelPeak]] = None
+    if center_mhz is not None:
+        merge_offset = float(s * (merge_freq - center_mhz))
+        add_seeds = [
+            ModelPeak(
+                amplitude=max(merge_amp, 1e-30), offset_mhz=merge_offset, phase=0.0
+            )
+        ]
+
+    chi2r_before = float(wf.reduced_chi2)
+    n_before = len(wf.fitted_peaks)
+    idx = ctx.next_decision_index
+    new_wf = _batch_apply_edit_core(
+        ctx,
+        window_id,
+        add=[merge_freq],
+        remove=remove_freqs,
+        add_seeds=add_seeds,
+        add_derivations=[idx],
+        snap_tol_mhz=snap_tol_mhz,
+    )
+    chi2r_after = float(new_wf.reduced_chi2)
+    n_after = len(new_wf.fitted_peaks)
+    evidence: Dict[str, object] = {
+        "chi2r_before": chi2r_before,
+        "chi2r_after": chi2r_after,
+        "n_peaks_before": n_before,
+        "n_peaks_after": n_after,
+        "merged_from": [float(f) for f in peaks],
+    }
+    ctx.decisions.append(
+        {
+            "window_id": window_id,
+            "frequency_mhz": merge_freq,
+            "kind": "merge",
+            "evidence": evidence,
+        }
+    )
+    ctx.next_decision_index += 1
+    return RefitWindowResult(
+        window_id=window_id,
+        n_peaks_before=n_before,
+        n_peaks_after=n_after,
+        chi2r_before=chi2r_before,
+        chi2r_after=chi2r_after,
+        fitted_peaks=list(new_wf.fitted_peaks),
+    )
+
+
+def _batch_apply_split(
+    ctx: _BatchCtx,
+    window_id: int,
+    peak: float,
+    into: int,
+    *,
+    snap_tol_mhz: float,
+) -> RefitWindowResult:
+    """Batch equivalent of :func:`split_peak_impl`. The resolution element uses
+    the shared ``fit_ctx.acquisition_us`` rather than a fresh FID load."""
+    wf = _batch_lookup_wf(ctx, window_id)
+
+    peak_f = float(peak)
+    best: Optional[FittedPeak] = None
+    best_dist = float("inf")
+    for fp in wf.fitted_peaks:
+        d = abs(float(fp.frequency_mhz) - peak_f)
+        if d < best_dist:
+            best_dist = d
+            best = fp
+    if best is None or best_dist > snap_tol_mhz:
+        raise ValueError(
+            f"split: no fitted peak within {snap_tol_mhz:.3f} MHz of "
+            f"{peak_f:.4f} MHz (closest distance: {best_dist:.4f} MHz)"
+        )
+    matched_freq = float(best.frequency_mhz)
+    matched_amp = float(best.amplitude)
+
+    acquisition_us = float(ctx.fit_ctx.acquisition_us)
+    resolution_mhz = 1.0 / acquisition_us if acquisition_us > 0 else 0.1
+
+    if into == 2:
+        offsets = [-0.5 * resolution_mhz, 0.5 * resolution_mhz]
+    else:
+        half_span = 0.5 * resolution_mhz
+        offsets = [-half_span + i * resolution_mhz / (into - 1) for i in range(into)]
+
+    add_freqs = [matched_freq + off for off in offsets]
+    per_peak_amp = matched_amp / into
+
+    sideband = ctx.fit_ctx.sideband
+    s = sideband_sign(sideband)
+    center_mhz: Optional[float] = None
+    if wf.window is not None and wf.window.freq_range is not None:
+        lo, hi = wf.window.freq_range
+        if lo > hi:
+            lo, hi = hi, lo
+        center_mhz = (lo + hi) / 2.0
+        add_freqs = [min(max(af, lo), hi) for af in add_freqs]
+
+    add_seeds: Optional[List[ModelPeak]] = None
+    if center_mhz is not None:
+        add_seeds = [
+            ModelPeak(
+                amplitude=max(per_peak_amp, 1e-30),
+                offset_mhz=float(s * (af - center_mhz)),
+                phase=0.0,
+            )
+            for af in add_freqs
+        ]
+
+    chi2r_before = float(wf.reduced_chi2)
+    n_before = len(wf.fitted_peaks)
+    idx = ctx.next_decision_index
+    new_wf = _batch_apply_edit_core(
+        ctx,
+        window_id,
+        add=add_freqs,
+        remove=[matched_freq],
+        add_seeds=add_seeds,
+        add_derivations=[idx] * len(add_freqs),
+        snap_tol_mhz=snap_tol_mhz,
+    )
+    chi2r_after = float(new_wf.reduced_chi2)
+    n_after = len(new_wf.fitted_peaks)
+    evidence: Dict[str, object] = {
+        "chi2r_before": chi2r_before,
+        "chi2r_after": chi2r_after,
+        "n_peaks_before": n_before,
+        "n_peaks_after": n_after,
+        "split_into": into,
+    }
+    ctx.decisions.append(
+        {
+            "window_id": window_id,
+            "frequency_mhz": matched_freq,
+            "kind": "split",
+            "evidence": evidence,
+        }
+    )
+    ctx.next_decision_index += 1
+    return RefitWindowResult(
+        window_id=window_id,
+        n_peaks_before=n_before,
+        n_peaks_after=n_after,
+        chi2r_before=chi2r_before,
+        chi2r_after=chi2r_after,
+        fitted_peaks=list(new_wf.fitted_peaks),
+    )
+
+
+def _batch_apply_accept(
+    ctx: _BatchCtx,
+    window_id: int,
+    candidate: Optional[float],
+    *,
+    snap_tol_mhz: float,
+) -> Optional[RefitWindowResult]:
+    """Batch equivalent of :func:`review_accept_impl`. A bare accept records a
+    "reviewed" decision with no fit change (and keeps the window's existing
+    attention reasons, matching the single-window impl exactly); an accept with
+    a candidate is an add."""
+    if candidate is not None:
+        wf = _batch_lookup_wf(ctx, window_id)
+        chi2r_before = float(wf.reduced_chi2)
+        n_before = len(wf.fitted_peaks)
+        idx = ctx.next_decision_index
+        new_wf = _batch_apply_edit_core(
+            ctx,
+            window_id,
+            add=[float(candidate)],
+            remove=[],
+            add_derivations=[idx],
+            snap_tol_mhz=snap_tol_mhz,
+        )
+        chi2r_after = float(new_wf.reduced_chi2)
+        n_after = len(new_wf.fitted_peaks)
+        evidence: Dict[str, object] = {
+            "chi2r_before": chi2r_before,
+            "chi2r_after": chi2r_after,
+            "n_peaks_before": n_before,
+            "n_peaks_after": n_after,
+        }
+        ctx.decisions.append(
+            {
+                "window_id": window_id,
+                "frequency_mhz": float(candidate),
+                "kind": "add",
+                "evidence": evidence,
+            }
+        )
+        ctx.next_decision_index += 1
+        return RefitWindowResult(
+            window_id=window_id,
+            n_peaks_before=n_before,
+            n_peaks_after=n_after,
+            chi2r_before=chi2r_before,
+            chi2r_after=chi2r_after,
+            fitted_peaks=list(new_wf.fitted_peaks),
+        )
+
+    anchor_freq = 0.0
+    wf_list = [wf for wf in ctx.spectrum_fit.window_fits if wf.window_id == window_id]
+    if wf_list:
+        c = _window_center(wf_list[0])
+        if c is not None:
+            anchor_freq = c
+        elif wf_list[0].fitted_peaks:
+            anchor_freq = float(
+                max(
+                    wf_list[0].fitted_peaks,
+                    key=lambda p: (float(p.snr) if p.snr is not None else 0.0),
+                ).frequency_mhz
+            )
+    ctx.decisions.append(
+        {
+            "window_id": window_id,
+            "frequency_mhz": anchor_freq,
+            "kind": "accept",
+            "evidence": {},
+            "bare": True,
+        }
+    )
+    ctx.next_decision_index += 1
+    return None
+
+
+def _batch_apply_create(
+    ctx: _BatchCtx,
+    anchor_mhz: float,
+    *,
+    replay_window_id: Optional[int],
+    snap_tol_mhz: float,
+) -> CreateWindowResult:
+    """Batch equivalent of :func:`create_window_impl`. Recomputes the effective
+    plan (:func:`_batch_effective_plan`) so a second create in the same batch
+    sees the first one, but never rebuilds ``fit_ctx``."""
+    from ..fitting.result_conversion import sort_fitting_result_by_frequency
+    from .active_ft_support import default_tau0_us
+
+    anchor = float(anchor_mhz)
+    plan = _batch_effective_plan(ctx)
+    fit_map: Dict[int, FittingResult] = {
+        int(wf.window_id): wf
+        for wf in ctx.spectrum_fit.window_fits
+        if wf.window_id is not None
+    }
+
+    if ctx.fit_ctx.trim_range is not None:
+        t_lo, t_hi = (min(ctx.fit_ctx.trim_range), max(ctx.fit_ctx.trim_range))
+        if not (t_lo <= anchor <= t_hi):
+            raise ValueError(
+                f"anchor {anchor:.4f} MHz is outside the analysis band "
+                f"[{t_lo:.4f}, {t_hi:.4f}] MHz. Re-run 'ft run' with a trim "
+                f"that covers it (which rebuilds the fit) if the line is real."
+            )
+
+    from ..preprocessing.window_planning import plan_stage6_window
+
+    params = plan.parameters
+    proposal = plan_stage6_window(
+        plan,
+        ctx.peaks_loaded,
+        ctx.fit_ctx.active_ft.freq_mhz,
+        ctx.fit_ctx.active_ft.complex_spectrum,
+        ctx.fit_ctx.rms_for_fit,
+        anchor,
+        acquisition_us=float(ctx.fit_ctx.acquisition_us),
+        tau_us=params.get("tau_us"),
+        min_window_half_width_mhz=float(params.get("min_window_half_width_mhz", 2.0)),
+        min_window_half_width_points=int(
+            params.get("min_window_half_width_points", 32)
+        ),
+        min_freeze_snr=float(params.get("min_freeze_snr", ctx.min_freeze_snr)),
+        magnitude_attachment_threshold=float(
+            params.get("magnitude_attachment_threshold", 0.1)
+        ),
+        live_window_ids=sorted(fit_map),
+    )
+    fit_win = proposal.window
+    new_wid = int(fit_win.window_id)
+
+    if replay_window_id is not None and int(replay_window_id) != new_wid:
+        want = int(replay_window_id)
+        if proposal.mode == "widened":
+            raise ValueError(
+                f"replaying the window created at {anchor:.4f} MHz now widens "
+                f"window {new_wid} instead of creating window {want}; the base "
+                f"plan or the surviving edit set has changed"
+            )
+        taken = {int(w.window_id) for w in plan.windows}
+        if want in taken:
+            raise ValueError(
+                f"replaying the window created at {anchor:.4f} MHz wants id "
+                f"{want}, which is already in use; the base plan or the "
+                f"surviving edit set has changed"
+            )
+        fit_win.window_id = want
+        new_wid = want
+
+    if proposal.mode == "created":
+        tau_maj_us, sigma_tau_us = _resolve_refit_window_tau(
+            fit_win,
+            ctx.resolved,
+            ctx.persisted_cal,
+            ctx.tau_maj_global,
+            ctx.sigma_tau_global,
+            ctx.tau_source,
+        )
+        tau0 = (
+            float(tau_maj_us)
+            if tau_maj_us is not None and tau_maj_us > 0.0
+            else default_tau0_us(float(ctx.fit_ctx.acquisition_us))
+        )
+        seed_wf = FittingResult(window_id=new_wid, shape=ctx.shape_enum.value)
+        seed_wf.fixed_parameters = _frozen_parameters_from_sources(
+            proposal.depends_on, fit_map, ctx.min_freeze_snr
+        )
+        seed_wf.shared_parameters = {"tau_us": {"value": tau0, "fitted": False}}
+    else:
+        existing_wf = fit_map.get(new_wid)
+        if existing_wf is None:
+            raise ValueError(
+                f"window {new_wid} has no Stage 5 fit to widen; "
+                "re-run 'fit run' before creating windows"
+            )
+        seed_wf = existing_wf
+        tau_maj_us, sigma_tau_us = _resolve_refit_window_tau(
+            fit_win,
+            ctx.resolved,
+            ctx.persisted_cal,
+            ctx.tau_maj_global,
+            ctx.sigma_tau_global,
+            ctx.tau_source,
+        )
+
+    new_wf: FittingResult = refit_window_core(
+        ctx.fit_ctx,
+        fit_win,
+        seed_wf,
+        resolved=ctx.resolved,
+        shape_enum=ctx.shape_enum,
+        tau_maj_us=tau_maj_us,
+        sigma_tau_us=sigma_tau_us,
+        peak_frequencies_mhz=ctx.peak_frequencies_mhz,
+        snap_tol_mhz=snap_tol_mhz,
+    )
+    sort_fitting_result_by_frequency(new_wf)
+    _splice_new_window_fit(ctx.spectrum_fit, new_wid, new_wf)
+
+    ctx.created_windows = [
+        w for w in ctx.created_windows if int(w.window_id) != new_wid
+    ] + [fit_win]
+    ctx.fit_window_map = {w.window_id: w for w in _batch_effective_plan(ctx).windows}
+    ctx.mutated_wids.add(new_wid)
+
+    lo, hi = fit_win.freq_range
+    lo, hi = min(lo, hi), max(lo, hi)
+    grid_span = fit_win.diagnostics.get("grid_span", [0, -1])
+    n_points = int(grid_span[1]) - int(grid_span[0]) + 1
+
+    ctx.decisions.append(
+        {
+            "window_id": new_wid,
+            "frequency_mhz": anchor,
+            "kind": "create_window",
+            "evidence": {
+                "mode": proposal.mode,
+                "freq_min_mhz": lo,
+                "freq_max_mhz": hi,
+                "n_points": n_points,
+                "n_contributors": len(fit_win.fixed_contributors),
+                "depends_on": [int(d) for d in proposal.depends_on],
+            },
+        }
+    )
+    ctx.next_decision_index += 1
+
+    return CreateWindowResult(
+        window_id=new_wid,
+        mode=proposal.mode,
+        anchor_mhz=anchor,
+        freq_range=(lo, hi),
+        n_points=n_points,
+        n_contributors=len(fit_win.fixed_contributors),
+        depends_on=[int(d) for d in proposal.depends_on],
+        n_peaks=len(new_wf.fitted_peaks),
+    )
+
+
+def _canonicalize_batch_plan(
+    plan: Sequence[PlannedAction],
+) -> List[Tuple[int, PlannedAction]]:
+    """Pair each action with its original plan position, then order for
+    execution: creates first (their own relative order -- they install
+    structure later rows name), then every other action grouped by ascending
+    window id. ``sorted`` is stable, so two actions sharing a window id keep
+    the relative order ``_resolve_curation_plan`` already gave them."""
+    indexed = list(enumerate(plan))
+    creates = [t for t in indexed if t[1].kind == "create"]
+    rest = sorted(
+        (t for t in indexed if t[1].kind != "create"), key=lambda t: t[1].window_id
+    )
+    return creates + rest
+
+
+def _persist_batch_review(ctx: _BatchCtx, path: str) -> None:
+    """Persist ``/stage6_review`` once for the whole batch: append every pending
+    decision (assigning sequential ``order_index`` values after whatever the
+    file already held), refresh each touched window's provenance / attention
+    reasons, rebuild the final-products table once if any fit changed, and
+    carry the (now possibly batch-updated) ``created_windows`` overlay."""
+    with h5py.File(path, "r") as h5f:
+        existing_review: Stage6Review = (
+            load_stage6_review_from_hdf5(h5f["stage6_review"])
+            if "stage6_review" in h5f
+            else Stage6Review()
+        )
+
+    base_index = len(existing_review.decision_log)
+    statuses = dict(existing_review.window_statuses)
+    final_products = existing_review.final_products
+
+    sideband: Optional[Sideband] = None
+    merged_window_freqs: Dict[int, List[float]] = {}
+    reason_cache: Dict[int, List[AttentionReason]] = {}
+    spur_centers_mhz: List[float] = [
+        float(v) for v in ctx.spectrum_fit.parameters.get("spur_centers_mhz", [])
+    ]
+    acquisition_us: float = float(
+        ctx.spectrum_fit.parameters.get("acquisition_us", 0.0)
+    )
+
+    if ctx.mutated_wids:
+        fid = load_fid_from_pipeline_impl(path)
+        sideband = Sideband.coerce(fid.sideband)
+        merged_window_freqs = _auto_merged_window_freqs(ctx.spectrum_fit)
+
+        with h5py.File(path, "r") as h5f:
+            floor_khz = load_frequency_calibration_from_hdf5(h5f).sigma_floor_khz
+        cal_state, epsilon, sigma_eps = _derive_frequency_calibration(path)
+        final_products = _build_final_products(
+            ctx.spectrum_fit,
+            probe_freq_mhz=float(fid.probe_freq_mhz),
+            sideband=sideband,
+            calibration_state=cal_state,
+            epsilon=epsilon,
+            sigma_epsilon=sigma_eps,
+            sigma_floor_khz=floor_khz,
+        )
+
+    def _attention_reasons_for(window_id: int) -> List[AttentionReason]:
+        if window_id in reason_cache:
+            return reason_cache[window_id]
+        wf_list = [
+            wf for wf in ctx.spectrum_fit.window_fits if wf.window_id == window_id
+        ]
+        if wf_list and sideband is not None:
+            reasons = _compute_attention_reasons(
+                wf_list[0],
+                spur_centers_mhz=spur_centers_mhz,
+                acquisition_us=acquisition_us,
+                ledger_bar=DEFAULT_DISPLAY_BAR,
+                attention_candidate_evidence=DEFAULT_ATTENTION_CANDIDATE_EVIDENCE,
+                sideband=sideband,
+                kappa=DEFAULT_SHAPE_ERROR_KAPPA,
+                noise_floor=DEFAULT_CHI2R_NOISE_FLOOR,
+                auto_merged=window_id in merged_window_freqs,
+                merged_freqs=merged_window_freqs.get(window_id, ()),
+            )
+        else:
+            existing_status = statuses.get(window_id)
+            reasons = (
+                list(existing_status.attention_reasons)
+                if existing_status is not None
+                else []
+            )
+        reason_cache[window_id] = reasons
+        return reasons
+
+    new_entries: List[DecisionLogEntry] = []
+    for offset, dec in enumerate(ctx.decisions):
+        wid = int(dec["window_id"])
+        kind = str(dec["kind"])
+        new_entries.append(
+            DecisionLogEntry(
+                order_index=base_index + offset,
+                window_id=wid,
+                frequency_mhz=float(dec["frequency_mhz"]),
+                kind=kind,
+                provenance="user",
+                evidence=dict(dec["evidence"]),
+            )
+        )
+        if dec.get("bare"):
+            existing_status = statuses.get(wid)
+            kept_reasons = (
+                list(existing_status.attention_reasons)
+                if existing_status is not None
+                else []
+            )
+            statuses[wid] = WindowReviewStatus(
+                window_id=wid,
+                provenance="reviewed",
+                attention_reasons=kept_reasons,
+                invalidated=False,
+            )
+        else:
+            statuses[wid] = WindowReviewStatus(
+                window_id=wid,
+                provenance="user-edited",
+                attention_reasons=_attention_reasons_for(wid),
+                invalidated=False,
+            )
+
+    new_review = Stage6Review(
+        window_statuses=statuses,
+        decision_log=list(existing_review.decision_log) + new_entries,
+        final_products=final_products,
+        created_windows=list(ctx.created_windows),
+    )
+    with h5py.File(path, "a") as h5f:
+        if "stage6_review" in h5f:
+            del h5f["stage6_review"]
+        grp = h5f.create_group("stage6_review")
+        save_stage6_review_to_hdf5(new_review, grp)
+
+
+def _execute_curation_batch(
+    path: str,
+    plan: List[PlannedAction],
+    *,
+    snap_tol_mhz: float = _REFIT_SNAP_TOL_MHZ,
+) -> int:
+    """Execute a resolved curation plan as one batch: shared context, one
+    combined cascade, one persist of ``/stage5_fitting`` and one of
+    ``/stage6_review``. Falls back to the cheap per-action path
+    (:func:`_execute_planned_action`) when the whole plan is bare ``accept``
+    (no Stage 5 fit touched, so there is nothing to batch and -- unlike every
+    other action -- a bare accept does not even require a Stage 5 fit to
+    exist).
+
+    Returns the number of actions applied (``len(plan)`` on success; a failure
+    raises before this returns and leaves the file untouched, since nothing is
+    persisted until every action in the batch has succeeded).
+    """
+    from ..io.fitting_serialization import save_spectrum_fit_to_hdf5
+
+    if not plan:
+        return 0
+
+    needs_fit = any(a.kind != "accept" or a.candidate is not None for a in plan)
+    if not needs_fit:
+        applied = 0
+        for i, action in enumerate(plan):
+            try:
+                _execute_planned_action(path, action)
+            except (ValueError, KeyError) as exc:
+                raise ValueError(
+                    f"curation action {i + 1} ({describe_planned_action(action)}) "
+                    f"failed: {exc}"
+                ) from exc
+            applied += 1
+        return applied
+
+    # Splicing freshly-computed windows into an existing fit is the one
+    # operation that can mix two analysis models inside one artifact, so the
+    # batch engine gates itself rather than trusting its callers: an all-
+    # ``accept`` plan whose accepts carry candidates is fit-mutating, but it
+    # slips through the callers' "any non-accept action" pre-check. Checked
+    # before the baseline snapshot so a refused batch leaves the file untouched.
+    require_splice_compatible_environment(path)
+
+    # Snapshot the automatic fit before the first edit mutates it in place (a
+    # no-op after the first time), exactly as every fit-mutating single-window
+    # verb does up front -- 'review undo' needs it regardless of whether this
+    # batch ultimately succeeds.
+    _snapshot_stage5_baseline(path)
+    ctx = _build_batch_ctx(path, snap_tol_mhz=snap_tol_mhz)
+
+    applied = 0
+    for original_index, action in _canonicalize_batch_plan(plan):
+        try:
+            if action.kind == "create":
+                if action.anchor is None:
+                    raise ValueError("create action requires an anchor frequency")
+                _batch_apply_create(
+                    ctx,
+                    action.anchor,
+                    replay_window_id=(
+                        None
+                        if action.window_id == _NEW_WINDOW_SENTINEL
+                        else action.window_id
+                    ),
+                    snap_tol_mhz=snap_tol_mhz,
+                )
+            elif action.kind == "edit":
+                _batch_apply_edit_action(
+                    ctx,
+                    action.window_id,
+                    action.add,
+                    action.remove,
+                    snap_tol_mhz=snap_tol_mhz,
+                )
+            elif action.kind == "merge":
+                _batch_apply_merge(
+                    ctx, action.window_id, action.peaks, snap_tol_mhz=snap_tol_mhz
+                )
+            elif action.kind == "split":
+                if action.peak is None:
+                    raise ValueError("split action requires a peak frequency")
+                _batch_apply_split(
+                    ctx,
+                    action.window_id,
+                    action.peak,
+                    action.into,
+                    snap_tol_mhz=snap_tol_mhz,
+                )
+            elif action.kind == "accept":
+                _batch_apply_accept(
+                    ctx,
+                    action.window_id,
+                    action.candidate,
+                    snap_tol_mhz=snap_tol_mhz,
+                )
+        except (ValueError, KeyError) as exc:
+            raise ValueError(
+                f"curation action {original_index + 1} "
+                f"({describe_planned_action(action)}) failed: {exc}"
+            ) from exc
+        applied += 1
+
+    if ctx.dirty_wids:
+        cascaded = _cascade_refit_dependents(
+            spectrum_fit=ctx.spectrum_fit,
+            edited_wids=sorted(ctx.dirty_wids),
+            fit_window_map=ctx.fit_window_map,
+            fit_ctx=ctx.fit_ctx,
+            resolved=ctx.resolved,
+            shape_enum=ctx.shape_enum,
+            persisted_cal=ctx.persisted_cal,
+            tau_maj_us=ctx.tau_maj_global,
+            sigma_tau_us=ctx.sigma_tau_global,
+            tau_source=ctx.tau_source,
+            peak_frequencies_mhz=ctx.peak_frequencies_mhz,
+            min_freeze_snr=ctx.min_freeze_snr,
+            snap_tol_mhz=snap_tol_mhz,
+        )
+        if cascaded:
+            ctx.mutated_wids.update(cascaded)
+            logger.info(
+                "Stage 6 batch cascade: re-fit %d dependent window(s) %s",
+                len(cascaded),
+                sorted(cascaded),
+            )
+
+    shape_attr = str(ctx.spectrum_fit.parameters.get("shape", "lorentzian"))
+    with h5py.File(path, "a") as h5f:
+        if "stage5_fitting" in h5f:
+            del h5f["stage5_fitting"]
+        grp = h5f.create_group("stage5_fitting")
+        save_spectrum_fit_to_hdf5(ctx.spectrum_fit, grp)
+        grp.attrs["shape"] = shape_attr
+
+    _persist_batch_review(ctx, path)
+
+    return applied
+
+
 def apply_curation_impl(
     file_path: Union[Path, str],
     curation_path: Union[Path, str],
@@ -3954,14 +5072,20 @@ def apply_curation_impl(
 
     Parses the curation CSV, coalesces it into a delegated action plan (one
     refit per window for runs of add/remove; merge/split/accept stand alone),
-    and -- unless ``dry_run`` -- executes each action through the same impls the
-    interactive verbs call, so the result is identical to running the resolved
-    plan by hand. ``dry_run`` returns the resolved plan and frequency-resolution
-    warnings without mutating the file.
+    and -- unless ``dry_run`` -- applies the whole plan as one batch
+    (:func:`_execute_curation_batch`): the Stage 5 fit context is built once,
+    every action is applied to an in-memory ``SpectrumFit`` in a canonical
+    cross-window order (ascending window id, independent of the file's row
+    order), the dependents of every directly-edited window are cascaded once,
+    and the result is persisted once. This is an equivalence of *outcome*, not
+    of per-row execution -- see :func:`_execute_curation_batch` for the exact
+    ordering contract. ``dry_run`` returns the resolved plan and
+    frequency-resolution warnings without mutating the file.
 
     Raises ``ValueError`` on a malformed curation file or when an action fails
     to resolve (e.g. a ``remove`` frequency matches no fitted peak), tagged with
-    the offending action.
+    the offending action; a failure leaves the file untouched (nothing is
+    persisted until every action in the plan has succeeded).
     """
     path = str(file_path)
     ops = parse_curation_file(curation_path)
@@ -3979,16 +5103,7 @@ def apply_curation_impl(
             plan=plan, warnings=warnings, applied=0, dry_run=True
         )
 
-    applied = 0
-    for i, action in enumerate(plan):
-        try:
-            _execute_planned_action(path, action)
-        except (ValueError, KeyError) as exc:
-            raise ValueError(
-                f"curation action {i + 1} ({describe_planned_action(action)}) "
-                f"failed: {exc}"
-            ) from exc
-        applied += 1
+    applied = _execute_curation_batch(path, plan)
 
     return CurationApplyResult(
         plan=plan, warnings=warnings, applied=applied, dry_run=False
@@ -4141,21 +5256,23 @@ def review_undo_impl(
         )
 
     # Restore the automatic fit (when fit-mutating edits existed), rebuild the
-    # review afresh from it, then replay the surviving decisions onto it.
+    # review afresh from it, then replay the surviving decisions onto it as one
+    # batch (_execute_curation_batch): a single shared fit context, one
+    # combined cascade, one persist -- instead of one full rebuild per
+    # surviving decision.
     if baseline:
         _restore_stage5_baseline(path)
     with h5py.File(path, "a") as h5f:
         if "stage6_review" in h5f:
             del h5f["stage6_review"]
     review_run_impl(path)
-    for action in plan:
-        _execute_planned_action(path, action)
+    applied = _execute_curation_batch(path, plan)
 
     return UndoResult(
         removed=removed,
         surviving=surviving,
         plan=plan,
-        applied=len(plan),
+        applied=applied,
         dry_run=False,
     )
 

@@ -22,6 +22,25 @@ Unreleased
   so they cannot drift apart again. Individual attributes still win where both
   are present, and this only ever widens what is readable.
 
+* **``review apply`` and ``review undo`` apply a curation plan as one batch.**
+  Each action used to rebuild the whole Stage 5 fit context from scratch — its
+  own FID load, FT, noise estimation and spur-catalog replay, its own
+  read-modify-write of ``/stage5_fitting``, and its own cascade — so a session of
+  edits paid that setup once per action. Measured on a three-edit file, about
+  three quarters of each action was redundant setup. The engine now builds the
+  context once, applies every action to one in-memory ``SpectrumFit``, cascades
+  the dependents of all directly-edited windows in a single combined pass, and
+  persists once; on that file the FT rebuilds went 3 → 1 and the wall time 3.9 s
+  → 2.3 s. Nothing is written unless every action succeeds, so a plan that fails
+  partway through now leaves the file untouched rather than holding part of
+  itself. The fitted result is unchanged — bit-identical on a real fixture — and
+  the guarantee is stated as equivalence of outcome: cross-window execution
+  order is canonical (creates first, then ascending window id), so two curation
+  files listing the same per-window edits in different row orders reach the same
+  fitted state and the same decision log. Order within one window is still the
+  order specified, since a ``merge`` or ``split`` composes on what a preceding
+  ``add`` or ``remove`` left behind.
+
 * **The fit stage's progress percentage counts finished windows.** Under the
   dependency-gated parallel walk each worker logged the scheduling position it
   had been handed at submission time, not a completion count, and windows finish

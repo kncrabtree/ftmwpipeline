@@ -54,6 +54,66 @@ def _write(tmp_path: Path, text: str) -> str:
     return str(p)
 
 
+# ---------------------------------------------------------------------------
+# A wider multi-window fixture for the batch-engine tests further down. The
+# shared 3-window build (conftest.py) keeps only the first 3 dependency-free
+# windows in topological order, and on this slice of 2638 most of those don't
+# clear Stage 5's gate -- typically only one window survives with an actual
+# fit. The batch engine's guarantees are specifically about MULTIPLE windows,
+# so those tests need a build that reliably keeps several live ones.
+# ---------------------------------------------------------------------------
+
+
+def _build_stage5_multi(dest: Path, data_path: str) -> None:
+    from ftmwpipeline._internal.stage4_impl import (
+        load_windows_impl,
+        save_window_plan_impl,
+    )
+
+    ftmw.import_data(dest, source=data_path)
+    ftmw.compute_ft(dest, trim=(26500, 40000))
+    ftmw.estimate_noise(dest)
+    ftmw.detect_peaks(dest)
+    ftmw.assign_windows(dest)
+
+    plan = load_windows_impl(str(dest))["plan"]
+    candidates: List[int] = []
+    for wid in plan.topological_order:
+        deps = [(a, b) for (a, b) in plan.dependency_edges if a == wid or b == wid]
+        if all(a in candidates or a == wid for (a, _) in deps) and all(
+            b in candidates or b == wid for (_, b) in deps
+        ):
+            candidates.append(wid)
+        if len(candidates) >= 12:
+            break
+    keep = set(candidates)
+    plan.windows = [w for w in plan.windows if w.window_id in keep]
+    plan.topological_order = [w for w in plan.topological_order if w in keep]
+    plan.dependency_edges = [
+        (a, b) for (a, b) in plan.dependency_edges if a in keep and b in keep
+    ]
+    save_window_plan_impl(str(dest), plan)
+
+    ftmw.fit_peaks(str(dest))
+
+
+@pytest.fixture(scope="session")
+def _stage5_multi_built(exp_2638_data_path, tmp_path_factory) -> Path:
+    """The shared wider post-fit build -- read-only, built once."""
+    fp = tmp_path_factory.mktemp("stage6_curation_multi") / "stage5_multi.ftmw"
+    _build_stage5_multi(fp, exp_2638_data_path)
+    return fp
+
+
+@pytest.fixture
+def stage5_multi_file(_stage5_multi_built, tmp_path) -> Path:
+    """A fresh writable copy of the wider fixture, which reliably keeps
+    several live (fitted) windows -- used by the batch-engine tests below."""
+    fp = tmp_path / "stage5_multi.ftmw"
+    shutil.copy(_stage5_multi_built, fp)
+    return fp
+
+
 def test_parse_basic_rows(tmp_path):
     ops = parse_curation_file(
         _write(
@@ -564,3 +624,272 @@ def test_undo_cross_interface(stage5_file, tmp_path):
     ref = _fitted_by_window(paths["api"])
     assert _fitted_by_window(paths["pipe"]) == ref
     assert _fitted_by_window(paths["cli"]) == ref
+
+
+# ---------------------------------------------------------------------------
+# Batch curation engine: one context build, canonical cross-window order,
+# one combined cascade (see ``_execute_curation_batch`` in stage6_impl.py).
+#
+# These use window-center anchors rather than existing fitted peaks: the
+# shared 3-window fixture (trimmed to dependency-free windows for speed) does
+# not guarantee more than one window has a surviving peak, but ``add`` only
+# needs a frequency inside the target window's own range.
+# ---------------------------------------------------------------------------
+
+
+def _three_window_ids(path: Path) -> List[int]:
+    """Three window ids that actually have a Stage 5 ``FittingResult`` entry
+    (the Stage 4 plan can hold windows Stage 5 dropped for failing every
+    gate, which ``add`` cannot target)."""
+    wids = sorted(_fitted_by_window(path))
+    if len(wids) < 3:
+        pytest.skip("Need at least three fitted windows")
+    return wids[:3]
+
+
+def _window_center(path: Path, wid: int) -> float:
+    plan = s6.effective_window_plan(str(path))
+    for w in plan.windows:
+        if int(w.window_id) == wid:
+            lo, hi = w.freq_range
+            return 0.5 * (min(lo, hi) + max(lo, hi))
+    raise KeyError(wid)
+
+
+@pytest.mark.integration
+def test_apply_row_order_independent(stage5_multi_file, tmp_path):
+    """The same per-window edits, specified in two different row orders, reach
+    the same final fitted state AND the same decision log: the batch engine
+    canonicalizes cross-window order (ascending window id) rather than
+    replaying the file's own row order."""
+    wa, wb, _ = _three_window_ids(stage5_multi_file)
+    fa = _window_center(stage5_multi_file, wa)
+    fb = _window_center(stage5_multi_file, wb)
+
+    forward = tmp_path / "forward.ftmw"
+    reverse = tmp_path / "reverse.ftmw"
+    shutil.copy(stage5_multi_file, forward)
+    shutil.copy(stage5_multi_file, reverse)
+
+    cur_fwd = tmp_path / "fwd.csv"
+    cur_fwd.write_text(f"add,{wa},{fa},\nadd,{wb},{fb},\n")
+    cur_rev = tmp_path / "rev.csv"
+    cur_rev.write_text(f"add,{wb},{fb},\nadd,{wa},{fa},\n")
+
+    apply_curation_impl(forward, cur_fwd)
+    apply_curation_impl(reverse, cur_rev)
+
+    assert _fitted_by_window(forward) == _fitted_by_window(reverse)
+
+    def _log_shape(fp: Path):
+        return [
+            (e.window_id, e.kind, round(e.frequency_mhz, 6))
+            for e in review_log_impl(fp)
+        ]
+
+    # The decision log itself is order-of-specification-independent too: both
+    # files replay through the same canonical execution order.
+    assert _log_shape(forward) == _log_shape(reverse)
+
+
+@pytest.mark.integration
+def test_apply_batch_builds_fit_context_once(stage5_multi_file, tmp_path, monkeypatch):
+    """A batch touching multiple windows builds the Stage 5 fit context exactly
+    once, not once per action -- the whole point of the batch engine."""
+    from ftmwpipeline._internal import stage5_impl
+
+    wa, wb, _ = _three_window_ids(stage5_multi_file)
+    fa = _window_center(stage5_multi_file, wa)
+    fb = _window_center(stage5_multi_file, wb)
+    fp = tmp_path / "ctxcount.ftmw"
+    shutil.copy(stage5_multi_file, fp)
+
+    calls: List[int] = []
+    orig = stage5_impl.build_stage5_fit_context
+
+    def spy(*args, **kwargs):
+        calls.append(1)
+        return orig(*args, **kwargs)
+
+    monkeypatch.setattr(stage5_impl, "build_stage5_fit_context", spy)
+
+    cur = tmp_path / "multi.csv"
+    cur.write_text(f"add,{wa},{fa},\nadd,{wb},{fb},\n")
+    apply_curation_impl(fp, cur)
+
+    assert len(calls) == 1
+
+
+@pytest.mark.integration
+def test_cascade_downstream_of_two_edits_refit_once(
+    stage5_multi_file, tmp_path, monkeypatch
+):
+    """A window reachable from TWO directly-edited windows in the same batch is
+    refit exactly once, via the one combined cascade -- not once per edit.
+
+    The fixture's windows are independent by construction (the shared build
+    trims to dependency-free windows), so the dependency itself is faked by
+    wrapping ``_cascade_succs``; the refit machinery downstream of that graph
+    (closure, topo order, ``_cascade_refit_dependents``) is entirely real.
+    """
+    w0, w1, w2 = _three_window_ids(stage5_multi_file)
+
+    fp = tmp_path / "cascade_once.ftmw"
+    shutil.copy(stage5_multi_file, fp)
+
+    orig_succs = s6._cascade_succs
+
+    def fake_succs(window_fits, fit_window_map):
+        d = orig_succs(window_fits, fit_window_map)
+        d.setdefault(w0, set()).add(w2)
+        d.setdefault(w1, set()).add(w2)
+        return d
+
+    monkeypatch.setattr(s6, "_cascade_succs", fake_succs)
+
+    orig_core = s6.refit_window_core
+    calls: List[int] = []
+
+    def spy_core(fit_ctx, fit_win, wf, **kwargs):
+        calls.append(int(fit_win.window_id))
+        return orig_core(fit_ctx, fit_win, wf, **kwargs)
+
+    monkeypatch.setattr(s6, "refit_window_core", spy_core)
+
+    fw0, fw1 = _window_center(fp, w0), _window_center(fp, w1)
+    cur = tmp_path / "two_edits.csv"
+    cur.write_text(f"add,{w0},{fw0},\nadd,{w1},{fw1},\n")
+    apply_curation_impl(fp, cur)
+
+    assert calls.count(w0) == 1  # w0's own direct edit
+    assert calls.count(w1) == 1  # w1's own direct edit
+    assert calls.count(w2) == 1  # cascaded once from the final state, not twice
+
+
+@pytest.mark.integration
+def test_undo_one_of_several_replays_batch_once(
+    stage5_multi_file, tmp_path, monkeypatch
+):
+    """Undoing one decision out of several still reaches the correct state, and
+    the surviving decisions replay as ONE batch (one fit-context build), not
+    one full rebuild per surviving decision."""
+    from ftmwpipeline._internal import stage5_impl
+
+    wa, wb, _ = _three_window_ids(stage5_multi_file)
+    fa = _window_center(stage5_multi_file, wa)
+    fb = _window_center(stage5_multi_file, wb)
+
+    # Reference: only wb's add applied to the automatic fit.
+    ref = tmp_path / "ref.ftmw"
+    shutil.copy(stage5_multi_file, ref)
+    apply_curation_impl(ref, _write_curation(tmp_path, f"add,{wb},{fb},\n"))
+
+    both = tmp_path / "both.ftmw"
+    shutil.copy(stage5_multi_file, both)
+    cur = tmp_path / "three.csv"
+    cur.write_text(f"add,{wa},{fa},\nadd,{wb},{fb},\n")
+    apply_curation_impl(both, cur)
+    log = review_log_impl(both)
+    wa_id = next(e.order_index for e in log if e.window_id == wa and e.kind == "add")
+
+    calls: List[int] = []
+    orig = stage5_impl.build_stage5_fit_context
+
+    def spy(*args, **kwargs):
+        calls.append(1)
+        return orig(*args, **kwargs)
+
+    monkeypatch.setattr(stage5_impl, "build_stage5_fit_context", spy)
+
+    result = review_undo_impl(both, [wa_id])
+
+    assert len(calls) == 1
+    assert result.applied == 1  # one surviving action: wb's coalesced edit
+    assert _fitted_by_window(both) == _fitted_by_window(ref)
+
+
+@pytest.mark.integration
+def test_apply_cross_interface_multiwindow_batch(stage5_multi_file, tmp_path):
+    """api / Pipeline / CLI ``review apply`` produce identical fitted state
+    (and the identical decision log) for a batch touching multiple windows --
+    the batched engine's canonical cross-window order must agree across all
+    three thin interfaces, per AGENTS.md's dual-interface invariant."""
+    paths = {k: tmp_path / f"mw_{k}.ftmw" for k in ("api", "pipe", "cli")}
+    for p in paths.values():
+        shutil.copy(stage5_multi_file, p)
+
+    wa, wb, _ = _three_window_ids(paths["api"])
+    fa = _window_center(paths["api"], wa)
+    fb = _window_center(paths["api"], wb)
+    cur = tmp_path / "mw.csv"
+    cur.write_text(f"add,{wa},{fa},\nadd,{wb},{fb},\n")
+
+    ftmw.review_apply(str(paths["api"]), str(cur))
+    Pipeline.open(paths["pipe"]).review_apply(str(cur))
+    rc = cmd_review_apply(
+        argparse.Namespace(
+            file_path=str(paths["cli"]), curation_file=str(cur), dry_run=False
+        )
+    )
+    assert rc == 0
+
+    ref = _fitted_by_window(paths["api"])
+    assert _fitted_by_window(paths["pipe"]) == ref
+    assert _fitted_by_window(paths["cli"]) == ref
+
+    ref_log = [(e.window_id, e.kind) for e in review_log_impl(paths["api"])]
+    assert [(e.window_id, e.kind) for e in review_log_impl(paths["pipe"])] == ref_log
+    assert [(e.window_id, e.kind) for e in review_log_impl(paths["cli"])] == ref_log
+
+
+@pytest.mark.integration
+def test_apply_merge_via_batch_matches_direct_call(stage5_multi_file, tmp_path):
+    """A ``merge`` action replayed through the batch engine
+    (``_batch_apply_merge``) reaches the same state as calling
+    ``merge_peaks_impl`` directly -- batch-of-one is indistinguishable from the
+    interactive path for merge, not just for add/remove."""
+    from ftmwpipeline._internal.stage6_impl import merge_peaks_impl
+
+    by_w = _fitted_by_window(stage5_multi_file)
+    wid = next((w for w, f in by_w.items() if len(f) >= 2), None)
+    if wid is None:
+        pytest.skip("Need a window with at least two fitted peaks")
+    freqs = by_w[wid][:2]
+
+    direct = tmp_path / "direct.ftmw"
+    batched = tmp_path / "batched.ftmw"
+    shutil.copy(stage5_multi_file, direct)
+    shutil.copy(stage5_multi_file, batched)
+
+    merge_peaks_impl(str(direct), wid, freqs)
+
+    cur = tmp_path / "merge.csv"
+    cur.write_text(f"merge,{wid},{freqs[0]};{freqs[1]},\n")
+    apply_curation_impl(batched, cur)
+
+    assert _fitted_by_window(direct) == _fitted_by_window(batched)
+    assert [e.kind for e in review_log_impl(batched)] == ["merge"]
+
+
+@pytest.mark.integration
+def test_apply_split_via_batch_matches_direct_call(stage5_multi_file, tmp_path):
+    """A ``split`` action replayed through the batch engine
+    (``_batch_apply_split``) reaches the same state as calling
+    ``split_peak_impl`` directly."""
+    from ftmwpipeline._internal.stage6_impl import split_peak_impl
+
+    wid, freq = _a_peak(stage5_multi_file)
+
+    direct = tmp_path / "direct.ftmw"
+    batched = tmp_path / "batched.ftmw"
+    shutil.copy(stage5_multi_file, direct)
+    shutil.copy(stage5_multi_file, batched)
+
+    split_peak_impl(str(direct), wid, freq, into=2)
+
+    cur = tmp_path / "split.csv"
+    cur.write_text(f"split,{wid},{freq},into=2\n")
+    apply_curation_impl(batched, cur)
+
+    assert _fitted_by_window(direct) == _fitted_by_window(batched)
+    assert [e.kind for e in review_log_impl(batched)] == ["split"]
