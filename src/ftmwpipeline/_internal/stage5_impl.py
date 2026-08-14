@@ -1797,22 +1797,21 @@ def _fit_peaks_impl(
     # pure-exp Stage 2b (``/stage2b_tau_calibration``). The two
     # calibrations are independent and can coexist on one file; we route
     # to the shape-appropriate one based on the caller's ``shape`` arg.
+    #
+    # A calibration whose pre-conditions did not pass is consumed anyway (the
+    # τ prior is the best band-wide summary available either way), so Stage 5
+    # does NOT warn about it: the fit takes no different action, and the most
+    # common trigger -- a bimodal τ histogram -- is the expected signature of a
+    # decay with several genuine τ populations. The failure is surfaced where it
+    # is actionable instead: ``tau run``'s summary prints the failing
+    # pre-condition notes, and the report raises it as a Stage 2b concern with
+    # the per-band τ variation alongside it.
     persisted_cal: Optional[TauCalibrationResult] = None
     if shape_enum is PeakShape.GAUSSIAN:
         if tau_calibration_present(file_path, shape="gaussian"):
             persisted_cal = load_tau_calibration_impl(file_path, shape="gaussian")[
                 "tau_calibration"
             ]
-            if not persisted_cal.preconditions_passed:
-                logger.warning(
-                    "Stage 2b τ_G calibration pre-conditions did not pass "
-                    "on %s; Stage 5 (gaussian) will still consume "
-                    "tau_G_maj=%.3f (sigma_tau_G=%.3f). Notes: %s",
-                    file_path,
-                    float(persisted_cal.tau_maj_us),
-                    float(persisted_cal.sigma_tau_us),
-                    "; ".join(persisted_cal.preconditions_notes),
-                )
         else:
             logger.warning(
                 "Stage 5 shape='gaussian' but no τ_G calibration is "
@@ -1823,16 +1822,6 @@ def _fit_peaks_impl(
     else:
         if tau_calibration_present(file_path):
             persisted_cal = load_tau_calibration_impl(file_path)["tau_calibration"]
-            if not persisted_cal.preconditions_passed:
-                logger.warning(
-                    "Stage 2b calibration pre-conditions did not pass on %s; "
-                    "Stage 5 will still consume tau_maj=%.3f (sigma_tau=%.3f). "
-                    "Notes: %s",
-                    file_path,
-                    float(persisted_cal.tau_maj_us),
-                    float(persisted_cal.sigma_tau_us),
-                    "; ".join(persisted_cal.preconditions_notes),
-                )
     tau_maj_us, sigma_tau_us, tau_source = _resolve_tau_calibration_for_fit(
         persisted_cal,
         tau_maj_override_v,

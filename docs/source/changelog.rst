@@ -22,6 +22,17 @@ Unreleased
   so they cannot drift apart again. Individual attributes still win where both
   are present, and this only ever widens what is readable.
 
+* **Stage 5 no longer warns that the Stage 2b pre-conditions did not pass.** The
+  warning fired at fit time, named Stage 2b, and then said the fit would consume
+  the calibration anyway — a failure report with no failure and no action behind
+  it. Its most common trigger is a bimodal τ histogram, which is the expected
+  signature of a decay with several genuine τ populations rather than a fault.
+  The pre-condition result is unchanged and still reaches the user where it can
+  be acted on: ``tau run`` prints the failing notes in its summary, the report
+  raises it as a Stage 2b concern alongside the per-band τ variation, and
+  ``read`` still exposes ``preconditions_passed``. Stage 5 still warns when a
+  Gaussian fit finds no τ_G calibration at all, which does name a remedy.
+
 Version 0.1.0b4 (2026-08-10)
 ----------------------------
 
