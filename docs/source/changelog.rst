@@ -11,6 +11,31 @@ Notable changes to ``ftmwpipeline``, newest first. Versions follow
 Unreleased
 ----------
 
+* **``info`` compares the file against the environment running it.** The
+  environment report answered only "were this file's stages produced by the same
+  code", which a file stamped uniformly by one release always passes — including
+  when the interpreter about to edit it is a different release entirely. That is
+  the mismatch a caller of ``info`` most needs, and it was the one thing the
+  report could not express, since it never looked at the running process. ``info``
+  now carries ``current_environment`` and ``runtime_environment_drift`` alongside
+  the existing cross-stage ``environment_drift``, and warns when the *epoch*
+  differs, which is the difference that will refuse a Stage 6 edit. The two
+  comparisons stay separate rather than pooled: a file can disagree with itself,
+  with the running code, or with both, and the fix differs in each case.
+
+* **A stage re-run on a file that predates environment stamping says so.** An
+  unknown epoch is treated as compatible — refusing to work on a legacy file
+  would punish users for an upgrade they did not choose — but that leniency spans
+  an arbitrary version gap in silence, and re-running a stage over an unstamped
+  result is the one case where no gate, no drift report and no epoch check can
+  say whether the new numbers match the old ones. That re-run now logs that
+  reproducibility against the original run cannot be verified. It fires only on a
+  genuine re-run of an unstamped stage: a stage running for the first time has no
+  earlier result to disagree with, and a stamped file is checked by the epoch gate
+  as before. Relatedly, the record's semantics are now stated where they are
+  discoverable: a Stage 6 edit deliberately does not re-stamp ``stage5_fitting``,
+  because that stamp names the automatic fit every edit gates against.
+
 * **``read_metadata`` reads a JSON-blob ``ft_processing`` record.** Early
   records stored the Stage 1 settings bundle as one JSON ``parameters``
   attribute rather than as individual attributes, a shape Stage 1 has always

@@ -25,6 +25,7 @@ The policy under test:
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 from pathlib import Path
 
@@ -38,6 +39,7 @@ from ftmwpipeline.core.environment import (
     EnvironmentRecord,
     capture_environment,
     describe_environment_drift,
+    describe_runtime_drift,
     gating_fields_differ,
 )
 from ftmwpipeline.io.environment_serialization import (
@@ -121,6 +123,45 @@ class TestDescribeDrift:
         a = capture_environment()
         b = EnvironmentRecord.from_dict({**a.to_dict(), "blas": "mkl (4 threads)"})
         assert describe_environment_drift({"x": a, "y": b}) == []
+
+
+class TestDescribeRuntimeDrift:
+    """The other question: was this file produced by the code running now?
+
+    Cross-stage agreement cannot answer it -- a file stamped uniformly by one
+    release has no internal drift at all and may still disagree with the
+    interpreter about to edit it.
+    """
+
+    def test_agreement_reports_nothing(self):
+        rec = capture_environment()
+        assert describe_runtime_drift({"stage5_fitting": rec}, rec) == []
+
+    def test_uniform_file_from_another_version_is_reported(self):
+        cur = capture_environment()
+        old = EnvironmentRecord.from_dict({**cur.to_dict(), "ftmwpipeline": "0.0.1"})
+        lines = describe_runtime_drift(
+            {"stage3_peaks": old, "stage5_fitting": old}, cur
+        )
+        assert describe_environment_drift({"a": old, "b": old}) == []
+        assert any("ftmwpipeline" in line and "0.0.1" in line for line in lines)
+        assert any(cur.ftmwpipeline in line for line in lines)
+
+    def test_epoch_difference_is_reported(self):
+        cur = capture_environment()
+        other = EnvironmentRecord.from_dict(
+            {**cur.to_dict(), "analysis_epoch": ANALYSIS_EPOCH + 1}
+        )
+        lines = describe_runtime_drift({"stage5_fitting": other}, cur)
+        assert any(line.startswith("analysis_epoch:") for line in lines)
+
+    def test_an_unstamped_file_states_nothing_to_disagree_with(self):
+        assert describe_runtime_drift({}, capture_environment()) == []
+
+    def test_blas_is_not_treated_as_drift(self):
+        cur = capture_environment()
+        other = EnvironmentRecord.from_dict({**cur.to_dict(), "blas": "mkl (4)"})
+        assert describe_runtime_drift({"x": other}, cur) == []
 
 
 # ---------------------------------------------------------------------------
@@ -276,3 +317,83 @@ class TestMixedFileDetection:
         self._forge(stamped_file, "stage3_peaks", analysis_epoch=ANALYSIS_EPOCH + 5)
         assert ftmw.load_peaks(str(stamped_file)) is not None
         assert ftmw.get_pipeline_info(str(stamped_file))["valid"] is True
+
+
+class TestRuntimeMismatchDetection:
+    """A file stamped uniformly by another version has no *internal* drift --
+    the mismatch that matters is against the interpreter holding it."""
+
+    @staticmethod
+    def _forge_all(path: Path, **overrides) -> None:
+        with h5py.File(path, "a") as f:
+            g = f["pipeline_stages"]
+            blob = json.loads(str(g.attrs["stage_environments"]))
+            for stage in blob:
+                blob[stage] = {**blob[stage], **overrides}
+            g.attrs["stage_environments"] = json.dumps(blob, sort_keys=True)
+
+    def test_info_reports_the_running_environment(self, stamped_file):
+        info = ftmw.get_pipeline_info(str(stamped_file))
+        assert info["current_environment"]["ftmwpipeline"]
+        assert info["runtime_environment_drift"] == []
+
+    def test_a_uniform_file_from_another_version_is_surfaced(self, stamped_file):
+        self._forge_all(stamped_file, ftmwpipeline="0.0.1")
+        info = ftmw.get_pipeline_info(str(stamped_file))
+        assert info["environment_drift"] == [], "the file's stages still agree"
+        assert any("ftmwpipeline" in line for line in info["runtime_environment_drift"])
+
+    def test_an_epoch_mismatch_against_the_running_code_warns(self, stamped_file):
+        self._forge_all(stamped_file, analysis_epoch=ANALYSIS_EPOCH + 5)
+        info = ftmw.get_pipeline_info(str(stamped_file))
+        assert any(
+            line.startswith("analysis_epoch:")
+            for line in info["runtime_environment_drift"]
+        )
+        assert any("different analysis epoch" in w for w in info["warnings"])
+        assert info["valid"] is True, "a mismatch is a caveat, not corruption"
+
+
+class TestLegacyRerunWarning:
+    """The one case no gate can speak to: re-running a stage over a result that
+    predates environment recording. Unknown epoch reads as compatible, so an
+    arbitrary version gap -- and any numerical change in it -- applies in
+    silence unless the re-run itself says so."""
+
+    @staticmethod
+    def _strip_stamps(path: Path) -> None:
+        with h5py.File(path, "a") as f:
+            g = f["pipeline_stages"]
+            for key in ("stage_environments", "last_written_with"):
+                if key in g.attrs:
+                    del g.attrs[key]
+
+    def test_rerun_of_an_unstamped_stage_warns(self, stamped_file, caplog):
+        self._strip_stamps(stamped_file)
+        with caplog.at_level(logging.WARNING):
+            ftmw.estimate_noise(str(stamped_file))
+        assert any(
+            "reproducibility against the original run cannot be verified"
+            in r.getMessage()
+            for r in caplog.records
+        )
+
+    def test_a_stamped_rerun_is_silent(self, stamped_file, caplog):
+        with caplog.at_level(logging.WARNING):
+            ftmw.estimate_noise(str(stamped_file))
+        assert not any("cannot be verified" in r.getMessage() for r in caplog.records)
+
+    def test_completing_a_new_stage_on_a_legacy_file_is_silent(
+        self, stamped_file, caplog
+    ):
+        """Only a *re-run* is unverifiable; a stage running for the first time
+        has no earlier result to disagree with."""
+        self._strip_stamps(stamped_file)
+        with h5py.File(stamped_file, "a") as f:
+            stages = json.loads(str(f["pipeline_stages"].attrs["completed_stages"]))
+            f["pipeline_stages"].attrs["completed_stages"] = json.dumps(
+                [s for s in stages if s != "stage3_peaks"]
+            )
+        with caplog.at_level(logging.WARNING):
+            ftmw.detect_peaks(str(stamped_file))
+        assert not any("cannot be verified" in r.getMessage() for r in caplog.records)

@@ -521,6 +521,12 @@ def _update_stage_completion(file_path: str, stage_name: str) -> None:
 
             stage_tracker = _load_stage_tracker(Path(file_path), h5f)
 
+            # Whether this call *re-runs* the stage rather than completing it
+            # for the first time -- read before marking, since marking erases
+            # the distinction, and the stamp below reports differently on a
+            # re-run whose predecessor left no environment record.
+            was_complete = stage_name in stage_tracker.completed_stages
+
             # Mark stage as completed
             stage_tracker.mark_completed(stage_name)
 
@@ -542,17 +548,25 @@ def _update_stage_completion(file_path: str, stage_name: str) -> None:
             # record stays complete as stages are added -- and the comparison
             # is naturally the useful one: not "your environment differs from
             # the file's creation" but "this file's stages no longer agree".
-            _stamp_stage_environment(h5f, stage_name)
+            _stamp_stage_environment(h5f, stage_name, rerun=was_complete)
 
     except Exception as e:
         raise RuntimeError(f"Failed to update stage completion: {e}")
 
 
-def _stamp_stage_environment(h5f: "h5py.File", stage_name: str) -> None:
+def _stamp_stage_environment(
+    h5f: "h5py.File", stage_name: str, *, rerun: bool = False
+) -> None:
     """Record the current environment for *stage_name* and report any drift.
 
     Advisory: describing the environment must never fail the stage write it
     describes, so every failure here is logged and swallowed.
+
+    ``rerun`` says the stage was already complete before this call. Combined
+    with an absent prior stamp it identifies the one case the epoch gate cannot
+    speak to -- re-running a stage over a result produced before environment
+    recording existed, where "unknown epoch" is treated as compatible and so
+    spans an arbitrary version gap silently -- and warns about it.
     """
     try:
         from ..core.environment import capture_environment, describe_environment_drift
@@ -564,6 +578,24 @@ def _stamp_stage_environment(h5f: "h5py.File", stage_name: str) -> None:
         current = capture_environment()
         previous = load_stage_environments(h5f)
         save_stage_environment(h5f, stage_name, current)
+
+        # The legacy re-run. The result just overwritten carries no record of
+        # what produced it, so nothing -- not the epoch gate, which reads an
+        # unknown epoch as compatible, and not the cross-stage drift report --
+        # can say whether the new numbers match the old ones. That is a real
+        # possibility over an arbitrary version gap and it is otherwise
+        # completely silent, so say so once, here, where the fact is known.
+        if rerun and stage_name not in previous:
+            logger.warning(
+                "%s was re-run over a result that carries no environment "
+                "stamp (this file predates environment recording), so "
+                "reproducibility against the original run cannot be verified: "
+                "any numerical change between the version that produced it and "
+                "%s applies silently. Compare the stage's outputs before and "
+                "after if the original values matter.",
+                stage_name,
+                current.ftmwpipeline or "the running version",
+            )
 
         # Compare against what was already on the file, excluding this stage's
         # own prior entry (re-running a stage legitimately replaces it).

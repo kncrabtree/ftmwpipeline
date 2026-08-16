@@ -2265,6 +2265,15 @@ class Pipeline:
         """
         Get pipeline file information and status.
 
+        This is the only surface that carries the analysis-environment record
+        (``read`` and the Stage 6 review state do not): ``stage_environments``
+        (per-stage stamps), ``last_written_with``, ``environment_drift``
+        (whether the file's own stages disagree), ``current_environment``
+        (the running interpreter), ``runtime_environment_drift`` (whether the
+        file disagrees with *it* -- the "you are about to edit a file another
+        version wrote" case, which cross-stage drift cannot express), and
+        ``environment_acknowledged``.
+
         Returns
         -------
         dict
@@ -2293,6 +2302,10 @@ class Pipeline:
                 "stage_environments": validation_report.get("stage_environments", {}),
                 "last_written_with": validation_report.get("last_written_with"),
                 "environment_drift": validation_report.get("environment_drift", []),
+                "runtime_environment_drift": validation_report.get(
+                    "runtime_environment_drift", []
+                ),
+                "current_environment": validation_report.get("current_environment"),
                 "environment_acknowledged": validation_report.get(
                     "environment_acknowledged", False
                 ),

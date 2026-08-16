@@ -159,6 +159,24 @@ it. A mixed file is *not* invalid — upgrading mid-analysis is normal and often
 harmless — but it is not reproducible from any single version, and the record
 says so rather than implying otherwise.
 
+``info`` also compares the record against the environment *running it*, and
+reports that separately (``current_environment`` and
+``runtime_environment_drift`` in the dictionary form). The two questions are
+independent: a file every stage of which was stamped by one release has no
+internal drift at all, and may still have been written by a different version
+than the one about to edit it. Only the cross-stage comparison can be made from
+the file alone, so only it is stored; the comparison against the running
+interpreter is made fresh on every call.
+
+A Stage 6 edit deliberately does **not** re-stamp the stage it edits.
+``stage5_fitting``'s record names the environment that produced the automatic
+fit — the artifact every edit splices into and gates against — so re-stamping
+per edit would replace that reference with the editor's own environment and the
+gate would compare each edit against the previous edit instead of against the
+fit. The consequence worth knowing: a file that predates stamping stays
+unstamped through any amount of curation, and its first stamp requires
+re-running the producing stage (``fit run``).
+
 The analysis epoch
 ~~~~~~~~~~~~~~~~~~
 
@@ -205,7 +223,12 @@ acceptance, and the reports state that the curation crossed an epoch boundary.
 A file written before environment stamping existed carries no record. Its epoch
 is *unknown*, which is treated as compatible, never as incompatible: refusing to
 work on an existing file because it predates the stamp would punish users for an
-upgrade they did not choose.
+upgrade they did not choose. That leniency has one cost, and the pipeline names
+it out loud: re-running a stage over an unstamped result logs that
+reproducibility against the original run cannot be verified, because nothing in
+the file says which version produced the numbers being replaced. The warning
+fires once, on the re-run itself; ``info`` shows the same situation as an
+unrecorded environment alongside the version running now.
 
 Error conditions
 ----------------

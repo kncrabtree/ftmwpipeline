@@ -598,7 +598,11 @@ def validate_pipeline_file(filepath: Union[str, Path]) -> Dict[str, Any]:
 
         # Read the format/writer version stamps (absent on legacy files) and
         # the per-stage analysis-environment record.
-        from .core.environment import describe_environment_drift
+        from .core.environment import (
+            capture_environment,
+            describe_environment_drift,
+            describe_runtime_drift,
+        )
         from .io.environment_serialization import (
             load_environment_ack,
             load_last_written_with,
@@ -621,6 +625,22 @@ def validate_pipeline_file(filepath: Union[str, Path]) -> Dict[str, Any]:
             warnings.append(
                 "This file's stages were written by different analysis "
                 "environments: " + "; ".join(env_drift)
+            )
+
+        # The other half of the question, which the cross-stage comparison
+        # cannot answer: a file stamped uniformly by one release has no
+        # internal drift at all, and yet may be about to be edited by a
+        # different one. The caller reading this report is running that
+        # interpreter, so the comparison is free and is exactly the fact they
+        # need to decide whether re-running a stage will reproduce the file.
+        current_env = capture_environment()
+        runtime_drift = describe_runtime_drift(stage_envs, current_env)
+        if any(line.startswith("analysis_epoch:") for line in runtime_drift):
+            warnings.append(
+                "This file was written under a different analysis epoch than "
+                "the running environment: " + "; ".join(runtime_drift) + ". "
+                "Stage 6 curation across that boundary is refused unless "
+                "acknowledged."
             )
         if env_ack is not None:
             warnings.append(
@@ -662,6 +682,8 @@ def validate_pipeline_file(filepath: Union[str, Path]) -> Dict[str, Any]:
                 last_written.to_dict() if last_written is not None else None
             ),
             "environment_drift": env_drift,
+            "runtime_environment_drift": runtime_drift,
+            "current_environment": current_env.to_dict(),
             "environment_acknowledged": env_ack is not None,
         }
 

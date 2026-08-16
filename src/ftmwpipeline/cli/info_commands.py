@@ -70,6 +70,13 @@ def _print_environment(info: dict) -> None:
     envs = info.get("stage_environments") or {}
     if not envs:
         print("  environment:     (not recorded; file predates the stamp)")
+        current = info.get("current_environment")
+        if current:
+            print(
+                "      running now: "
+                f"{EnvironmentRecord.from_dict(current).summary()} -- "
+                "reproducibility against the original run cannot be verified."
+            )
         return
 
     epochs = {d.get("analysis_epoch") for d in envs.values() if d.get("analysis_epoch")}
@@ -88,6 +95,8 @@ def _print_environment(info: dict) -> None:
     drift = info.get("environment_drift") or []
     for line in drift:
         print(f"      drift: {line}")
+    for line in info.get("runtime_environment_drift") or []:
+        print(f"      vs running environment: {line}")
     if info.get("environment_acknowledged"):
         print(
             "      note: an analysis-epoch mismatch was acknowledged; curation "

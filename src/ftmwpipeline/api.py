@@ -2146,6 +2146,11 @@ def get_pipeline_info(file_path: Union[str, Path]) -> Dict[str, Any]:
         - 'next_available_stages': Stages ready to run
         - 'errors': List of issues if invalid
         - 'warnings': List of warnings if any
+        - 'stage_environments', 'last_written_with', 'environment_drift':
+          the per-stage analysis-environment record and whether the file's
+          own stages disagree
+        - 'current_environment', 'runtime_environment_drift': the running
+          interpreter and how the file's stamps differ from it
 
     Examples
     --------

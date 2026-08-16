@@ -20,6 +20,16 @@ Stage 1 is deliberately absent from the record: it persists no artifact (the FT
 is recomputed on demand from the persisted settings), so it is always the
 current environment by construction.
 
+A Stage 6 edit does not re-stamp the stage it edits, and that is deliberate.
+``stage5_fitting``'s record names the environment that produced the *automatic
+fit* -- the thing every later edit splices into and gates against. Re-stamping
+on each curation edit would overwrite that reference with the editor's own
+environment, so the gate would end up comparing each edit against the previous
+edit rather than against the fit, and the epoch boundary it exists to catch
+would dissolve one edit at a time. The consequence to know: a file that
+predates stamping stays unstamped through any amount of curation, and its first
+stamp requires re-running the producing stage (``fit_peaks``).
+
 What "compatible" means
 -----------------------
 Not the package version. At ``0.x`` the minor version bumps for ordinary
@@ -53,6 +63,7 @@ __all__ = [
     "EnvironmentRecord",
     "capture_environment",
     "describe_environment_drift",
+    "describe_runtime_drift",
     "gating_fields_differ",
 ]
 
@@ -307,4 +318,47 @@ def describe_environment_drift(
                 for value, stages in sorted(by_value.items())
             )
             lines.append(f"{field_name}: {parts}")
+    return lines
+
+
+def describe_runtime_drift(
+    records: Mapping[str, EnvironmentRecord],
+    current: Optional[EnvironmentRecord] = None,
+) -> List[str]:
+    """Human-readable lines describing how *current* differs from *records*.
+
+    The companion to :func:`describe_environment_drift`, asking the other
+    question: not "were this file's artifacts produced by the same code" but
+    "was this file produced by the code that is running right now". Both are
+    real and neither implies the other -- a file stamped uniformly by one
+    release has no internal drift at all while still disagreeing with the
+    interpreter about to edit it -- so they are reported separately rather than
+    pooled into one list.
+
+    *current* defaults to :func:`capture_environment`. Returns one line per
+    field on which some stamped stage disagrees with the running environment,
+    naming the stages; empty when they agree or when the file carries no
+    stamps (a legacy file states nothing to disagree with -- see
+    :func:`gating_fields_differ` for why unknown is not incompatible).
+    """
+    if current is None:
+        current = capture_environment()
+
+    lines: List[str] = []
+    for field_name in ("analysis_epoch",) + _ADVISORY_FIELDS:
+        current_value = getattr(current, field_name, None)
+        if current_value in (None, ""):
+            continue
+        by_value: Dict[str, List[str]] = {}
+        for stage, rec in records.items():
+            value = getattr(rec, field_name, None)
+            if value in (None, "") or str(value) == str(current_value):
+                continue
+            by_value.setdefault(str(value), []).append(stage)
+        if by_value:
+            parts = ", ".join(
+                f"{value} ({', '.join(sorted(stages))})"
+                for value, stages in sorted(by_value.items())
+            )
+            lines.append(f"{field_name}: file has {parts}; running {current_value}")
     return lines
