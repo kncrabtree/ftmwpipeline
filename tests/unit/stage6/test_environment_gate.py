@@ -29,6 +29,7 @@ import pytest
 import ftmwpipeline.api as ftmw
 import ftmwpipeline.core.environment as envmod
 from ftmwpipeline.core.environment import ANALYSIS_EPOCH, capture_environment
+from ftmwpipeline.file_manager import AnalysisEpochMismatchError, PipelineFileError
 
 pytestmark = [pytest.mark.integration]
 
@@ -162,6 +163,77 @@ class TestSpliceGate:
         with h5py.File(fitted, "r") as f:
             assert "stage5_fitting_baseline" not in f
         assert ftmw.review_log(str(fitted)) == []
+
+    def test_the_refusal_carries_a_type_not_just_prose(self, fitted):
+        """The refusal is routable without reading its message.
+
+        A caller that must handle *this* refusal differently from every other
+        pipeline error (offer a re-run, not a generic failure) had only the
+        message text to key on before this type existed. Rewording the message
+        would then silently downgrade that recovery path, and no test on the
+        caller's side could catch it -- so the type is the contract and the
+        prose is not.
+        """
+        wid, freq = self._a_fitted_peak(fitted)
+        _force_fit_epoch(fitted, ANALYSIS_EPOCH + 1)
+        with pytest.raises(AnalysisEpochMismatchError) as exc:
+            ftmw.review_edit(str(fitted), wid, remove=[freq])
+
+        err = exc.value
+        assert err.file_epoch == ANALYSIS_EPOCH + 1
+        assert err.current_epoch == ANALYSIS_EPOCH
+        assert Path(err.filepath) == fitted
+        assert err.file_environment.analysis_epoch == ANALYSIS_EPOCH + 1
+        assert err.current_environment.analysis_epoch == ANALYSIS_EPOCH
+
+    def test_the_type_stays_catchable_the_old_ways(self, fitted):
+        """Additive, not breaking: it is still a ValueError, and now also a
+        PipelineFileError, so both existing habits keep working."""
+        assert issubclass(AnalysisEpochMismatchError, ValueError)
+        assert issubclass(AnalysisEpochMismatchError, PipelineFileError)
+
+        wid, freq = self._a_fitted_peak(fitted)
+        _force_fit_epoch(fitted, ANALYSIS_EPOCH + 1)
+        with pytest.raises(ValueError):
+            ftmw.review_edit(str(fitted), wid, remove=[freq])
+
+    def test_undo_refuses_with_the_same_type(self, fitted):
+        wid, freq = self._a_fitted_peak(fitted)
+        ftmw.review_edit(str(fitted), wid, remove=[freq])
+        ftmw.review_edit(str(fitted), wid, add=[freq])
+        _force_fit_epoch(fitted, ANALYSIS_EPOCH + 1)
+        with pytest.raises(AnalysisEpochMismatchError):
+            ftmw.review_undo(str(fitted), [1])
+
+    def test_the_type_survives_review_apply(self, fitted, tmp_path):
+        """``review apply`` re-raises per-action failures as plain ValueError.
+
+        The gate fires *outside* that wrapper, so the typed refusal reaches the
+        caller intact. That placement is load-bearing for anyone routing on the
+        type, and nothing else pins it -- moving the gate inside the batch's
+        try block would downgrade this to an untyped error with the tests all
+        still green.
+        """
+        wid, freq = self._a_fitted_peak(fitted)
+        cf = tmp_path / "cur.csv"
+        cf.write_text(f"remove,{wid},{freq:.6f},\n")
+        _force_fit_epoch(fitted, ANALYSIS_EPOCH + 1)
+
+        with pytest.raises(AnalysisEpochMismatchError):
+            ftmw.review_apply(str(fitted), cf)
+
+    def test_the_message_is_unchanged_by_the_typing(self, fitted):
+        """Typing the refusal must not reword it: the CLI prints str(exc)."""
+        wid, freq = self._a_fitted_peak(fitted)
+        _force_fit_epoch(fitted, ANALYSIS_EPOCH + 1)
+        with pytest.raises(AnalysisEpochMismatchError) as exc:
+            ftmw.review_edit(str(fitted), wid, remove=[freq])
+        msg = str(exc.value)
+        assert msg.startswith(
+            "This file's Stage 5 fit was produced under analysis epoch "
+        )
+        assert "fit run" in msg
+        assert "acknowledge-environment" in msg
 
     def test_dry_run_apply_is_not_gated(self, fitted, tmp_path):
         """A preview writes nothing, so it is a read and must never be gated."""

@@ -103,6 +103,7 @@ from ._internal.timebase_impl import (
     calibrate_timebase_impl,
     load_timebase_calibration_impl,
 )
+from .core.curation import REFIT_SNAP_TOL_MHZ
 from .core.data_structures import (
     FID,
     ComplexFT,
@@ -1535,7 +1536,7 @@ class Pipeline:
         *,
         add: Sequence[float] = (),
         remove: Sequence[float] = (),
-        snap_tol_mhz: float = 0.05,
+        snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
     ) -> RefitWindowResult:
         """User-directed single-window refit (Stage 6 ``review edit``).
 
@@ -1557,7 +1558,8 @@ class Pipeline:
             Molecular frequencies (MHz) of fitted peaks to remove.  Snapped
             to the nearest fitted peak within ``snap_tol_mhz``.
         snap_tol_mhz :
-            Snap tolerance for ``add``/``remove`` (MHz; default 0.05 = 50 kHz).
+            Snap tolerance for ``add``/``remove`` (MHz; default
+            :data:`~ftmwpipeline.core.curation.REFIT_SNAP_TOL_MHZ`, 50 kHz).
 
         Returns
         -------
@@ -1607,7 +1609,7 @@ class Pipeline:
         self,
         anchor_mhz: float,
         *,
-        snap_tol_mhz: float = 0.05,
+        snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
     ) -> CreateWindowResult:
         """Install a fit window covering ``anchor_mhz`` (Stage 6 ``review create``).
 
@@ -1628,7 +1630,8 @@ class Pipeline:
         anchor_mhz :
             Molecular frequency (MHz) the window must cover.
         snap_tol_mhz :
-            Snap tolerance forwarded to the fit core (MHz; default 0.05).
+            Snap tolerance forwarded to the fit core (MHz; default
+            :data:`~ftmwpipeline.core.curation.REFIT_SNAP_TOL_MHZ`).
 
         Returns
         -------
@@ -1648,7 +1651,7 @@ class Pipeline:
         window_id: int,
         peaks: Sequence[float],
         *,
-        snap_tol_mhz: float = 0.05,
+        snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
     ) -> RefitWindowResult:
         """Collapse ≥2 fitted peaks in a window into one (Stage 6 ``review merge``).
 
@@ -1687,7 +1690,7 @@ class Pipeline:
         peak: float,
         *,
         into: int = 2,
-        snap_tol_mhz: float = 0.05,
+        snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
     ) -> RefitWindowResult:
         """Replace one fitted peak with ``into`` peaks (Stage 6 ``review split``).
 
@@ -1928,6 +1931,7 @@ class Pipeline:
         window_id: int,
         *,
         candidate_freq: Optional[float] = None,
+        snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
     ) -> Optional[RefitWindowResult]:
         """Accept a window as-is or accept a specific revived candidate.
 
@@ -1946,14 +1950,22 @@ class Pipeline:
             The window to accept.
         candidate_freq :
             When given, accept by adding this molecular frequency (MHz) as a
-            new peak.  Snapped to the nearest ledger candidate within 50 kHz.
+            new peak.  Snapped to the nearest ledger candidate within
+            ``snap_tol_mhz``.
+        snap_tol_mhz :
+            Snap tolerance for ``candidate_freq`` (MHz; default
+            :data:`~ftmwpipeline.core.curation.REFIT_SNAP_TOL_MHZ`, 50 kHz).
+            Ignored when accepting a window as-is.
 
         Returns
         -------
         RefitWindowResult or None
         """
         return review_accept_impl(
-            self.filepath, window_id, candidate_freq=candidate_freq
+            self.filepath,
+            window_id,
+            candidate_freq=candidate_freq,
+            snap_tol_mhz=snap_tol_mhz,
         )
 
     def review_apply(

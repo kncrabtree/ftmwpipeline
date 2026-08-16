@@ -35,6 +35,7 @@ from .._internal.stage6_impl import (
     review_undo_impl,
     split_peak_impl,
 )
+from ..core.curation import REFIT_SNAP_TOL_MHZ
 from ..core.data_structures import FittingResult, LedgerCandidate, Stage6Review
 from ..io.fitting_serialization import load_spectrum_fit_from_hdf5
 from .utils import add_stage_object, setup_logging
@@ -412,6 +413,7 @@ def cmd_review_edit(args: argparse.Namespace) -> int:
             window_id,
             add=add_freqs,
             remove=remove_freqs,
+            snap_tol_mhz=getattr(args, "snap_tol_mhz", REFIT_SNAP_TOL_MHZ),
         )
     except (ValueError, KeyError) as exc:
         print(f"Error: {exc}")
@@ -482,7 +484,11 @@ def cmd_review_create(args: argparse.Namespace) -> int:
     anchor: float = args.anchor
 
     try:
-        result = create_window_impl(file_path, anchor)
+        result = create_window_impl(
+            file_path,
+            anchor,
+            snap_tol_mhz=getattr(args, "snap_tol_mhz", REFIT_SNAP_TOL_MHZ),
+        )
     except (ValueError, KeyError) as exc:
         print(f"Error: {exc}")
         return 1
@@ -529,7 +535,12 @@ def cmd_review_merge(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        result = merge_peaks_impl(file_path, window_id, peak_freqs)
+        result = merge_peaks_impl(
+            file_path,
+            window_id,
+            peak_freqs,
+            snap_tol_mhz=getattr(args, "snap_tol_mhz", REFIT_SNAP_TOL_MHZ),
+        )
     except (ValueError, KeyError) as exc:
         print(f"Error: {exc}")
         return 1
@@ -568,7 +579,13 @@ def cmd_review_split(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        result = split_peak_impl(file_path, window_id, peak_freq, into=into)
+        result = split_peak_impl(
+            file_path,
+            window_id,
+            peak_freq,
+            into=into,
+            snap_tol_mhz=getattr(args, "snap_tol_mhz", REFIT_SNAP_TOL_MHZ),
+        )
     except (ValueError, KeyError) as exc:
         print(f"Error: {exc}")
         return 1
@@ -606,7 +623,12 @@ def cmd_review_accept(args: argparse.Namespace) -> int:
     candidate_freq: Optional[float] = getattr(args, "candidate", None)
 
     try:
-        result = review_accept_impl(file_path, window_id, candidate_freq=candidate_freq)
+        result = review_accept_impl(
+            file_path,
+            window_id,
+            candidate_freq=candidate_freq,
+            snap_tol_mhz=getattr(args, "snap_tol_mhz", REFIT_SNAP_TOL_MHZ),
+        )
     except (ValueError, KeyError) as exc:
         print(f"Error: {exc}")
         return 1
@@ -1135,6 +1157,18 @@ def register_review_commands(subparsers: Any) -> None:
         ),
     )
     p_accept.add_argument(
+        "--snap-tol-mhz",
+        dest="snap_tol_mhz",
+        type=float,
+        default=REFIT_SNAP_TOL_MHZ,
+        metavar="MHZ",
+        help=(
+            "Tolerance for snapping a requested frequency to an existing peak "
+            f"or ledger candidate (default {REFIT_SNAP_TOL_MHZ} MHz = "
+            f"{REFIT_SNAP_TOL_MHZ * 1e3:.0f} kHz)."
+        ),
+    )
+    p_accept.add_argument(
         "--verbose",
         dest="verbose",
         action="store_true",
@@ -1192,6 +1226,18 @@ def register_review_commands(subparsers: Any) -> None:
         ),
     )
     p_edit.add_argument(
+        "--snap-tol-mhz",
+        dest="snap_tol_mhz",
+        type=float,
+        default=REFIT_SNAP_TOL_MHZ,
+        metavar="MHZ",
+        help=(
+            "Tolerance for snapping a requested frequency to an existing peak "
+            f"or ledger candidate (default {REFIT_SNAP_TOL_MHZ} MHz = "
+            f"{REFIT_SNAP_TOL_MHZ * 1e3:.0f} kHz)."
+        ),
+    )
+    p_edit.add_argument(
         "--verbose",
         dest="verbose",
         action="store_true",
@@ -1229,6 +1275,18 @@ def register_review_commands(subparsers: Any) -> None:
         required=True,
         metavar="F",
         help="Molecular MHz frequency the new window must cover.",
+    )
+    p_create.add_argument(
+        "--snap-tol-mhz",
+        dest="snap_tol_mhz",
+        type=float,
+        default=REFIT_SNAP_TOL_MHZ,
+        metavar="MHZ",
+        help=(
+            "Tolerance for snapping a requested frequency to an existing peak "
+            f"or ledger candidate (default {REFIT_SNAP_TOL_MHZ} MHz = "
+            f"{REFIT_SNAP_TOL_MHZ * 1e3:.0f} kHz)."
+        ),
     )
     p_create.add_argument(
         "--verbose",
@@ -1315,6 +1373,18 @@ def register_review_commands(subparsers: Any) -> None:
         ),
     )
     p_merge.add_argument(
+        "--snap-tol-mhz",
+        dest="snap_tol_mhz",
+        type=float,
+        default=REFIT_SNAP_TOL_MHZ,
+        metavar="MHZ",
+        help=(
+            "Tolerance for snapping a requested frequency to an existing peak "
+            f"or ledger candidate (default {REFIT_SNAP_TOL_MHZ} MHz = "
+            f"{REFIT_SNAP_TOL_MHZ * 1e3:.0f} kHz)."
+        ),
+    )
+    p_merge.add_argument(
         "--verbose",
         dest="verbose",
         action="store_true",
@@ -1361,6 +1431,18 @@ def register_review_commands(subparsers: Any) -> None:
         default=2,
         metavar="K",
         help="Number of replacement peaks (default 2, must be ≥2).",
+    )
+    p_split.add_argument(
+        "--snap-tol-mhz",
+        dest="snap_tol_mhz",
+        type=float,
+        default=REFIT_SNAP_TOL_MHZ,
+        metavar="MHZ",
+        help=(
+            "Tolerance for snapping a requested frequency to an existing peak "
+            f"or ledger candidate (default {REFIT_SNAP_TOL_MHZ} MHz = "
+            f"{REFIT_SNAP_TOL_MHZ * 1e3:.0f} kHz)."
+        ),
     )
     p_split.add_argument(
         "--verbose",

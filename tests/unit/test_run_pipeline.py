@@ -25,6 +25,7 @@ from ftmwpipeline._internal.run_impl import run_pipeline_impl
 from ftmwpipeline.cli._argspec import settings_from_namespace
 from ftmwpipeline.cli.main import main as run_cli
 from ftmwpipeline.cli.run_commands import (
+    _KNOB_STAGES,
     _stage_settings_params,
     _start_detection_params_from_namespace,
     register_run_command,
@@ -301,6 +302,84 @@ class TestNamespacedKnobParsing:
         assert params == {
             "settings": StageFitSettings(tau=TauSubSettings(max_decay_factor=0.9))
         }
+
+
+class TestRunHelpIsReadable:
+    """``run --help`` is a decision list, not a knob dump.
+
+    Every stage knob is settable on ``run``, which is ~150 flags. Printing them
+    all by default buries the dozen flags that decide what a run *does* -- the
+    required trim, where the output goes, whether a report is emitted -- so the
+    knobs are hidden and reachable through ``--help-knobs``. They stay fully
+    functional either way; this is a reading decision, not a deprecation, and
+    these tests pin both halves of it.
+    """
+
+    def _capture(self, argv: list) -> str:
+        import contextlib
+
+        buf = io.StringIO()
+        parser = _run_parser()
+        with contextlib.redirect_stdout(buf), pytest.raises(SystemExit):
+            parser.parse_args(argv)
+        return buf.getvalue()
+
+    def _options(self, argv: list) -> str:
+        """The help minus the epilog, which is free to name knobs as examples."""
+        return self._capture(argv).split("Per-stage knobs")[0]
+
+    def test_default_help_hides_the_stage_knobs(self):
+        text = self._options(["run", "--help"])
+        assert "--trim" in text
+        assert "--report" in text
+        for knob in (
+            "--fit.tau.tau0-us",
+            "--noise.window-mhz",
+            "--peaks.savgol.sg-order",
+        ):
+            assert knob not in text, f"{knob} should be hidden from the default help"
+
+    def test_default_help_says_where_the_knobs_went(self):
+        """Hiding an option is only acceptable if the help says how to find it."""
+        text = self._capture(["run", "--help"])
+        assert "--help-knobs" in text
+        for prefix, command in _KNOB_STAGES:
+            assert f"--{prefix}.*" in text
+            assert command in text
+
+    def test_help_knobs_shows_every_stage(self):
+        text = self._capture(["run", "--help-knobs"])
+        for knob in ("--fit.tau.tau0-us", "--noise.window-mhz", "--start.step-us"):
+            assert knob in text
+
+    def test_help_knobs_can_be_scoped_to_one_stage(self):
+        text = self._options(["run", "--help-knobs", "fit"])
+        assert "--fit.tau.tau0-us" in text
+        assert "--noise.window-mhz" not in text
+
+    def test_help_knobs_rejects_an_unknown_stage(self):
+        parser = _run_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["run", "--help-knobs", "nosuchstage"])
+
+    def test_every_advertised_prefix_actually_has_knobs(self):
+        """The epilog's stage list must not drift from the registered flags."""
+        text = self._capture(["run", "--help-knobs"])
+        for prefix, _ in _KNOB_STAGES:
+            assert (
+                f"--{prefix}." in text
+            ), f"epilog advertises --{prefix}.* but none exist"
+
+    def test_hidden_knobs_still_parse(self):
+        """Hidden is not disabled: the flags must keep working unchanged."""
+        ns = _parse_run(["--noise.window-mhz", "3.5", "--fit.tau.tau0-us", "12"])
+        assert getattr(ns, "noise.window_mhz") == 3.5
+        assert getattr(ns, "fit.tau.tau0_us") == 12.0
+
+    def test_help_knobs_leaves_no_trace_in_the_namespace(self):
+        """It is a help action, so a normal run never sees the dest."""
+        ns = _parse_run([])
+        assert not hasattr(ns, "help_knobs")
 
 
 class _CapturingPipe(_FakePipe):

@@ -37,6 +37,13 @@ Option names must match the corresponding Python API parameter names. A small
 set of bare utility commands (no object) is the only exception (see *Utility
 commands*).
 
+Parity is on the whole parameter set, not just the spelling: a parameter a
+command's Python counterpart exposes must be reachable from the CLI too, at the
+same default. A knob available on two of the three interfaces is the defect the
+single-implementation principle exists to prevent — it makes a scripted workflow
+non-portable to the CLI for no stated reason. A parameter may be deliberately
+withheld from *all* interfaces; it may not be withheld from one.
+
 ### Stage objects
 
 The pipeline stages are the primary objects. Every stage object accepts the
@@ -94,6 +101,23 @@ command (and the Python `.validate()`); the installation check is reserved for
   (e.g. the import command to run when a file is missing, or the predecessor
   stage to run when a dependency is unmet).
 - Plain-text output only. No decorative emoji or Unicode ornamentation.
+
+### Help
+
+`--help` is a reading surface, not a dump of everything the parser accepts. A
+command whose option set is large enough that the important flags stop being
+findable must layer its help:
+
+- the default `--help` shows the flags that decide *what the command does* —
+  what it requires, what it produces, which stages it runs — grouped so the
+  reader can tell required from optional from incidental;
+- bulk per-knob options are hidden from that view but remain fully functional,
+  and the help must say plainly that they exist and how to see them;
+- a second-level flag reveals them, ideally scopeable to one subset.
+
+Hiding is a reading decision and never a deprecation: a hidden option parses
+exactly as a shown one. An option that should not be used must be removed, not
+hidden. This applies today to `run`, which mirrors every stage's knob surface.
 
 ### Exit codes
 

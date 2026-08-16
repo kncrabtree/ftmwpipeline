@@ -61,7 +61,7 @@ def add_settings_args(
     *,
     prefix: Optional[str] = None,
     exclude: Optional[Iterable[str]] = None,
-) -> None:
+) -> List["argparse.Action"]:
     """Add one CLI option per ``cli=True`` knob of ``cls`` to ``parser``.
 
     The argparse ``default`` is forced to ``None`` (the unset sentinel) so the
@@ -78,8 +78,13 @@ def add_settings_args(
     ``exclude`` (top-level field names only) skips fields that a caller wants
     to keep as a distinct, non-namespaced flag (e.g. ``run`` excludes
     ``FTSettings.trim`` because ``--trim`` stays the canonical top-level flag).
+
+    Returns the actions it added, in order, so a caller can post-process them
+    (``run`` hides its ~150 generated knobs from the default ``--help`` and
+    restores them on demand).
     """
     excluded = set(exclude or ())
+    added: List["argparse.Action"] = []
     for sub, f in _cli_fields(cls):
         if sub is None and f.name in excluded:
             continue
@@ -103,7 +108,8 @@ def add_settings_args(
                 kwargs["type"] = km.cli.argtype
             if km.cli.metavar is not None:
                 kwargs["metavar"] = km.cli.metavar
-        parser.add_argument(flag, **kwargs)
+        added.append(parser.add_argument(flag, **kwargs))
+    return added
 
 
 def settings_from_namespace(
@@ -178,7 +184,7 @@ def add_start_detection_args(
     *,
     prefix: Optional[str] = None,
     exclude: Iterable[str] = frozenset(),
-) -> None:
+) -> List["argparse.Action"]:
     """Add one ``--[{prefix}.]<field>`` float flag per ``StartDetectionSettings``
     field not in ``exclude``.
 
@@ -190,21 +196,27 @@ def add_start_detection_args(
     caller keep a subset of fields as a distinct, hand-written flag (e.g. the
     ``start`` subcommand excludes ``band_min_mhz``/``band_max_mhz`` in favor
     of its paired ``--band MIN MAX`` convenience flag).
+
+    Returns the actions it added, in order (see :func:`add_settings_args`).
     """
     excluded = set(exclude)
+    added: List["argparse.Action"] = []
     for f in dataclasses.fields(StartDetectionSettings):
         if f.name in excluded:
             continue
         flag_body = f.name.replace("_", "-")
         flag = f"--{flag_body}" if prefix is None else f"--{prefix}.{flag_body}"
         dest = f.name if prefix is None else f"{prefix}.{f.name}"
-        parser.add_argument(
-            flag,
-            dest=dest,
-            type=float,
-            default=None,
-            help=START_FIELD_HELP.get(f.name, f"Start-detection knob: {f.name}."),
+        added.append(
+            parser.add_argument(
+                flag,
+                dest=dest,
+                type=float,
+                default=None,
+                help=START_FIELD_HELP.get(f.name, f"Start-detection knob: {f.name}."),
+            )
         )
+    return added
 
 
 def start_settings_from_namespace(

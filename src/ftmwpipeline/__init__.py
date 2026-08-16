@@ -21,6 +21,9 @@ __author__ = "Kyle N. Crabtree"
 # Functional API - can be imported as "import ftmwpipeline.api as ftmw"
 from ftmwpipeline import api
 
+# Public curation tolerances (the values the Stage 6 verbs themselves pair at)
+from ftmwpipeline.core.curation import REFIT_SNAP_TOL_MHZ
+
 # Core data structures
 from ftmwpipeline.core.data_structures import (
     FID,
@@ -36,6 +39,16 @@ from ftmwpipeline.core.data_structures import (
     Sideband,
     SpectralWindow,
     WindowPlan,
+)
+
+# Exception family - typed errors callers are expected to catch and route on
+from ftmwpipeline.file_manager import (
+    AnalysisEpochMismatchError,
+    PipelineCompatibilityError,
+    PipelineCorruptionError,
+    PipelineExistsError,
+    PipelineFileError,
+    StageDependencyError,
 )
 
 # Main pipeline interface
@@ -59,6 +72,15 @@ __all__ = [
     "FixedContributor",
     "FitWindow",
     "WindowPlan",
+    # Public curation tolerances
+    "REFIT_SNAP_TOL_MHZ",
+    # Exception family
+    "PipelineFileError",
+    "PipelineExistsError",
+    "StageDependencyError",
+    "PipelineCorruptionError",
+    "PipelineCompatibilityError",
+    "AnalysisEpochMismatchError",
     # Main pipeline interface
     "Pipeline",
     # Functional API module

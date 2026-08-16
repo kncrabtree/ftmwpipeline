@@ -114,6 +114,56 @@ exported at the package top level; the whole-experiment workflow is
 `api.run_pipeline` / `Pipeline.build` (and the `run` CLI verb), which drive a
 raw source through every stage.
 
+## Errors
+
+A caller that must respond differently to different failures must be able to
+tell them apart **by type**, never by matching the text of a message. Message
+wording is a rendering for humans and is free to change; the exception type and
+its attributes are the contract.
+
+Concretely:
+
+- Every failure mode a caller is expected to *route on* has a named exception
+  class, exported from the package top level, carrying the facts of the failure
+  as attributes so the caller can report the condition without re-parsing the
+  message it was told not to parse.
+- The classes form one family under a common base (`PipelineFileError`), so a
+  caller may also catch the whole category.
+- A class introduced for a failure that previously raised a builtin must
+  subclass that builtin, so existing handlers keep working. Adding a type is
+  always additive.
+- The named refusals include: creating over a file with a different source
+  (`PipelineExistsError`), running a stage whose predecessor is incomplete
+  (`StageDependencyError`), a corrupt file (`PipelineCorruptionError`), a file
+  format newer than the reader (`PipelineCompatibilityError`), and a Stage 6
+  edit that would splice a fit across an analysis-epoch boundary
+  (`AnalysisEpochMismatchError`).
+
+Where a diagnostic is delivered as human-readable *lines* rather than an
+exception (the environment-drift lists in `info()` / `validate()`), the machine-
+readable part must be documented as a contract and the rest declared prose. The
+convention is a `"<field_name>: "` prefix; nothing after the colon is stable.
+
+## Public constants
+
+Where an external tool must make the same decision the pipeline makes — most
+importantly, resolving a requested frequency to "the peak at *f*" — the
+tolerance that decision uses is published, not private.
+
+A published constant must be the *single definition* the pipeline itself uses:
+every public parameter defaulting to that behavior takes its default from the
+constant, so reading it is provably reading the value the verbs will apply. A
+public name that merely agrees with hardcoded literals is not compliant, and the
+test suite must pin the identity rather than the equality.
+
+Publishing is read-only by intent. Callers are expected to read the value at
+call time rather than persist it; the constant's meaning is stable even when its
+value is refined.
+
+`REFIT_SNAP_TOL_MHZ` (Stage 6 curation snap tolerance) is published on these
+terms, canonically in `core/curation.py` and re-exported at the package top
+level.
+
 ## Provenance
 
 Every `.ftmw` file records, for the data it was created from: source path,

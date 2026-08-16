@@ -43,6 +43,7 @@ from typing import (
 import h5py
 import numpy as np
 
+from ..core.curation import REFIT_SNAP_TOL_MHZ
 from ..core.data_structures import (
     AttentionReason,
     AuditStep,
@@ -834,12 +835,14 @@ class RefitWindowResult:
 
 # ---------------------------------------------------------------------------
 # Single-window refit engine
+#
+# The add/remove/anchor snap tolerance every verb below defaults to is
+# ``REFIT_SNAP_TOL_MHZ``, imported from ``core.curation`` -- public, because an
+# integrator that resolved "the peak at f" at a different tolerance would
+# disagree with the file about which peak that is.  It is deliberately looser
+# than ``_DEDUP_TOL_MHZ`` (the input is a frequency a person typed, not a fitted
+# value); that constant's docstring has the rest of the rationale.
 # ---------------------------------------------------------------------------
-
-# Tolerance for matching add/remove frequency requests to fitted peaks or
-# ledger candidates (in MHz).  Half the dedup tolerance (10 kHz) is tight
-# enough to snap unambiguously to one peak while forgiving coarse user input.
-_REFIT_SNAP_TOL_MHZ: float = 0.05
 
 
 def _parse_complex_amplitude(value: object) -> complex:
@@ -946,15 +949,21 @@ def require_splice_compatible_environment(path: str) -> None:
 
     Raises
     ------
-    ValueError
+    AnalysisEpochMismatchError
         When the persisted Stage 5 fit was produced under a different
-        ``ANALYSIS_EPOCH`` and no acknowledgement is recorded.
+        ``ANALYSIS_EPOCH`` and no acknowledgement is recorded.  It subclasses
+        both :class:`ValueError` (so pre-existing ``except ValueError`` callers
+        are unaffected) and
+        :class:`~ftmwpipeline.file_manager.PipelineFileError`, and carries the
+        two environments as attributes so a caller can report the mismatch
+        without parsing the message.
     """
     from ..core.environment import (
         EnvironmentRecord,
         capture_environment,
         gating_fields_differ,
     )
+    from ..file_manager import AnalysisEpochMismatchError
     from ..io.environment_serialization import (
         load_environment_ack,
         load_stage_environments,
@@ -986,18 +995,7 @@ def require_splice_compatible_environment(path: str) -> None:
             )
             return
 
-    raise ValueError(
-        f"This file's Stage 5 fit was produced under analysis epoch "
-        f"{fit_env.analysis_epoch} ({fit_env.summary()}), but this is epoch "
-        f"{current.analysis_epoch} ({current.summary()}). A Stage 6 edit "
-        f"re-fits one window and splices it into that fit, which would leave "
-        f"two different fitting models inside one result.\n\n"
-        f"Either re-run 'fit run' so the whole fit comes from this "
-        f"environment, or -- if you accept the mixture -- record that decision "
-        f"in the file with 'ftmwpipeline review acknowledge-environment' and "
-        f"retry. The acknowledgement is persisted, so the reports will say the "
-        f"curation crossed an epoch boundary."
-    )
+    raise AnalysisEpochMismatchError(path, fit_env, current)
 
 
 @dataclass
@@ -1159,7 +1157,7 @@ def refit_window_core(
     add_seeds: Optional[List[ModelPeak]] = None,
     add_origin: str = "user",
     add_derivations: Optional[Sequence[Optional[int]]] = None,
-    snap_tol_mhz: float = _REFIT_SNAP_TOL_MHZ,
+    snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
     freeze_inherited: bool = False,
 ) -> FittingResult:
     """In-memory single-window refit core (no file I/O, no spur replay, no
@@ -2087,7 +2085,7 @@ def refit_window_impl(
     add: Sequence[float] = (),
     remove: Sequence[float] = (),
     add_seeds: Optional[List[ModelPeak]] = None,
-    snap_tol_mhz: float = _REFIT_SNAP_TOL_MHZ,
+    snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
 ) -> RefitWindowResult:
     """User-directed single-window refit for Stage 6 review decisions.
 
@@ -2144,7 +2142,7 @@ def refit_window_impl(
         ``add`` frequency (overrides the ledger-candidate or default seed).
     snap_tol_mhz :
         Maximum distance (MHz) for frequency snapping to an existing peak or
-        ledger candidate.  Defaults to :data:`_REFIT_SNAP_TOL_MHZ` (50 kHz).
+        ledger candidate.  Defaults to :data:`REFIT_SNAP_TOL_MHZ` (50 kHz).
 
     Returns
     -------
@@ -2187,7 +2185,7 @@ def merge_peaks_impl(
     window_id: int,
     peaks: Sequence[float],
     *,
-    snap_tol_mhz: float = _REFIT_SNAP_TOL_MHZ,
+    snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
 ) -> RefitWindowResult:
     """Collapse ≥2 fitted peaks in a window into a single peak.
 
@@ -2263,7 +2261,7 @@ def split_peak_impl(
     peak: float,
     *,
     into: int = 2,
-    snap_tol_mhz: float = _REFIT_SNAP_TOL_MHZ,
+    snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
 ) -> RefitWindowResult:
     """Replace one fitted peak with ``into`` peaks (default 2).
 
@@ -2448,7 +2446,7 @@ def review_accept_impl(
     window_id: int,
     *,
     candidate_freq: Optional[float] = None,
-    snap_tol_mhz: float = _REFIT_SNAP_TOL_MHZ,
+    snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
 ) -> Optional[RefitWindowResult]:
     """Accept a window as-is or accept a specific revived candidate.
 
@@ -2653,7 +2651,7 @@ def create_window_impl(
     file_path: Union[Path, str],
     anchor_mhz: float,
     *,
-    snap_tol_mhz: float = _REFIT_SNAP_TOL_MHZ,
+    snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
     _replay_window_id: Optional[int] = None,
 ) -> CreateWindowResult:
     """Install a Stage 6 fit window covering ``anchor_mhz`` (``review create``).
@@ -3079,7 +3077,7 @@ def _curation_ambiguity_warnings(
     path: str,
     plan: Sequence[PlannedAction],
     *,
-    snap_tol_mhz: float = _REFIT_SNAP_TOL_MHZ,
+    snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
 ) -> List[str]:
     """Advisories where a curation action will not resolve against the file.
 
@@ -4341,7 +4339,7 @@ def _execute_curation_batch(
     path: str,
     plan: List[PlannedAction],
     *,
-    snap_tol_mhz: float = _REFIT_SNAP_TOL_MHZ,
+    snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
 ) -> int:
     """Execute a resolved curation plan as one batch: shared context, one
     combined cascade, one persist of ``/stage5_fitting`` and one of

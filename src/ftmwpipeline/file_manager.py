@@ -21,13 +21,16 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, Union
 
 import h5py
 
 from . import __version__
 from .core.data_structures import FID
 from .io.fid_serialization import load_fid_from_hdf5, save_fid_to_hdf5
+
+if TYPE_CHECKING:  # annotation-only; keeps this module's runtime imports as-is
+    from .core.environment import EnvironmentRecord
 
 # Module-level logger for file manager operations
 logger = logging.getLogger(__name__)
@@ -109,6 +112,67 @@ class PipelineCompatibilityError(PipelineFileError):
             f"  Supported format version: {supported_version}\n\n"
             f"Upgrade ftmwpipeline to read this file:\n"
             f"  pip install --upgrade ftmwpipeline"
+        )
+
+
+class AnalysisEpochMismatchError(PipelineFileError, ValueError):
+    """Raised when a Stage 6 edit would splice a fit across an epoch boundary.
+
+    A Stage 6 fit-mutating verb re-fits one window and writes it back into a
+    :class:`~ftmwpipeline.core.data_structures.SpectrumFit` whose other windows
+    were fit earlier.  When the persisted fit was produced under a different
+    :data:`~ftmwpipeline.core.environment.ANALYSIS_EPOCH` and no acknowledgement
+    is recorded, the result would hold two different fitting models inside one
+    artifact, so the operation is refused (see
+    ``ftmwpipeline._internal.stage6_impl.require_splice_compatible_environment``).
+
+    The remedy is either re-running ``fit run`` under the current environment or
+    persisting the decision to accept the mixture with
+    ``review acknowledge-environment``; both are named in ``str(exc)``.
+
+    Subclasses :class:`ValueError` as well as :class:`PipelineFileError`: the
+    refusal was a bare ``ValueError`` through 0.1.0b5, so every existing
+    ``except ValueError`` caller keeps working.  Catching this type rather than
+    matching the message is the supported way to route the refusal to a
+    dedicated recovery flow -- the message wording is not a contract.
+
+    Attributes
+    ----------
+    filepath : Path
+        The pipeline file whose edit was refused.
+    file_epoch : int or None
+        ``analysis_epoch`` recorded for the persisted Stage 5 fit.
+    current_epoch : int or None
+        ``ANALYSIS_EPOCH`` of the running environment.
+    file_environment : EnvironmentRecord
+        The full record the Stage 5 fit was produced under.
+    current_environment : EnvironmentRecord
+        The full record of the running environment.
+    """
+
+    def __init__(
+        self,
+        filepath: Union[str, Path],
+        file_environment: "EnvironmentRecord",
+        current_environment: "EnvironmentRecord",
+    ):
+        self.filepath = Path(filepath)
+        self.file_environment = file_environment
+        self.current_environment = current_environment
+        self.file_epoch = file_environment.analysis_epoch
+        self.current_epoch = current_environment.analysis_epoch
+        super().__init__(
+            f"This file's Stage 5 fit was produced under analysis epoch "
+            f"{file_environment.analysis_epoch} ({file_environment.summary()}), "
+            f"but this is epoch {current_environment.analysis_epoch} "
+            f"({current_environment.summary()}). A Stage 6 edit "
+            f"re-fits one window and splices it into that fit, which would leave "
+            f"two different fitting models inside one result.\n\n"
+            f"Either re-run 'fit run' so the whole fit comes from this "
+            f"environment, or -- if you accept the mixture -- record that decision "
+            f"in the file with 'ftmwpipeline review acknowledge-environment' and "
+            f"retry. The acknowledgement is persisted, so the reports will say the "
+            f"curation crossed an epoch boundary."
         )
 
 

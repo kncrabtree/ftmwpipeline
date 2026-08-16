@@ -297,6 +297,10 @@ def describe_environment_drift(
     This is what makes a mixed-version file visible: the diagnostic a consumer
     actually needs is not "which version wrote this file" but "were these
     artifacts produced by the same code".
+
+    **Stable contract:** as in :func:`describe_runtime_drift`, each line begins
+    ``"<field_name>: "`` for an :class:`EnvironmentRecord` field name; the tail
+    is prose and differs from that function's, so key on the prefix only.
     """
     pool: Dict[str, EnvironmentRecord] = dict(records)
     if current is not None:
@@ -340,6 +344,17 @@ def describe_runtime_drift(
     naming the stages; empty when they agree or when the file carries no
     stamps (a legacy file states nothing to disagree with -- see
     :func:`gating_fields_differ` for why unknown is not incompatible).
+
+    **Stable contract:** each line begins ``"<field_name>: "``, where
+    ``<field_name>`` is an :class:`EnvironmentRecord` field name, so a caller
+    may key on that prefix to find the field it cares about -- the pipeline
+    itself does, testing ``line.startswith("analysis_epoch:")`` in
+    :func:`ftmwpipeline.file_manager.validate_file`. Everything *after* the
+    colon is human-readable prose and is not a contract; do not parse it.
+    :func:`describe_environment_drift` uses the same prefix convention with a
+    different tail, so key on the prefix only, and note which of the two lists
+    you are consuming (``runtime_environment_drift`` in the ``get_pipeline_info``
+    / ``validate_file`` payloads comes from this function).
     """
     if current is None:
         current = capture_environment()

@@ -56,6 +56,7 @@ from ._internal.stage6_impl import (
     ReviewRunResult,
     UndoResult,
 )
+from .core.curation import REFIT_SNAP_TOL_MHZ
 from .core.data_structures import (
     FID,
     ComplexFT,
@@ -1388,7 +1389,7 @@ def review_edit(
     *,
     add: Sequence[float] = (),
     remove: Sequence[float] = (),
-    snap_tol_mhz: float = 0.05,
+    snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
 ) -> RefitWindowResult:
     """User-directed single-window refit (Stage 6 ``review edit``).
 
@@ -1409,7 +1410,8 @@ def review_edit(
     remove :
         Molecular frequencies (MHz) of fitted peaks to remove.
     snap_tol_mhz :
-        Snap tolerance for ``add``/``remove`` (MHz; default 0.05 = 50 kHz).
+        Snap tolerance for ``add``/``remove`` (MHz; default
+        :data:`~ftmwpipeline.core.curation.REFIT_SNAP_TOL_MHZ`, 50 kHz).
 
     Returns
     -------
@@ -1452,7 +1454,7 @@ def review_create(
     file_path: Union[str, Path],
     anchor_mhz: float,
     *,
-    snap_tol_mhz: float = 0.05,
+    snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
 ) -> CreateWindowResult:
     """Install a fit window covering ``anchor_mhz`` (Stage 6 ``review create``).
 
@@ -1469,7 +1471,8 @@ def review_create(
     anchor_mhz :
         Molecular frequency (MHz) the window must cover.
     snap_tol_mhz :
-        Snap tolerance forwarded to the fit core (MHz; default 0.05).
+        Snap tolerance forwarded to the fit core (MHz; default
+        :data:`~ftmwpipeline.core.curation.REFIT_SNAP_TOL_MHZ`).
 
     Returns
     -------
@@ -1487,7 +1490,7 @@ def review_merge(
     window_id: int,
     peaks: Sequence[float],
     *,
-    snap_tol_mhz: float = 0.05,
+    snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
 ) -> RefitWindowResult:
     """Collapse ≥2 fitted peaks in a window into one (Stage 6 ``review merge``).
 
@@ -1522,7 +1525,7 @@ def review_split(
     peak: float,
     *,
     into: int = 2,
-    snap_tol_mhz: float = 0.05,
+    snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
 ) -> RefitWindowResult:
     """Replace one fitted peak with ``into`` peaks (Stage 6 ``review split``).
 
@@ -1726,6 +1729,7 @@ def review_accept(
     window_id: int,
     *,
     candidate_freq: Optional[float] = None,
+    snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
 ) -> Optional[RefitWindowResult]:
     """Accept a window as-is or accept a specific revived candidate.
 
@@ -1740,6 +1744,10 @@ def review_accept(
     candidate_freq :
         When given, accept by adding this molecular frequency (MHz) as a
         new peak.
+    snap_tol_mhz :
+        Snap tolerance for ``candidate_freq`` (MHz; default
+        :data:`~ftmwpipeline.core.curation.REFIT_SNAP_TOL_MHZ`, 50 kHz).
+        Ignored when accepting a window as-is.
 
     Returns
     -------
@@ -1750,7 +1758,7 @@ def review_accept(
     Requires Stage 5 completed.
     """
     return Pipeline.open(file_path).review_accept(
-        window_id, candidate_freq=candidate_freq
+        window_id, candidate_freq=candidate_freq, snap_tol_mhz=snap_tol_mhz
     )
 
 

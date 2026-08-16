@@ -9,7 +9,7 @@ real logic lives in :func:`run_pipeline_impl`.
 from __future__ import annotations
 
 import argparse
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .._internal.run_impl import run_pipeline_impl
 from ..core.noise_settings import NoiseSettings
@@ -133,8 +133,78 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+# Each stage whose settings dataclass generates a `--<prefix>.*` knob surface on
+# `run`, paired with the per-stage command that documents those same knobs
+# un-prefixed. `run --help-knobs <prefix>` and `<command> --help` therefore show
+# the same set; the pairing is stated here so the epilog cannot drift from it.
+_KNOB_STAGES: List[Tuple[str, str]] = [
+    ("start", "start run"),
+    ("ft", "ft run"),
+    ("noise", "noise run"),
+    ("tau", "tau run"),
+    ("peaks", "peaks run"),
+    ("windows", "windows run"),
+    ("fit", "fit run"),
+]
+
+
+class _KnobHelpAction(argparse.Action):
+    """``--help-knobs [STAGE]``: re-render the help with the knobs visible.
+
+    The ~150 generated ``--<stage>.<knob>`` flags are hidden from the default
+    ``--help`` (see :func:`_hide`). They are real options, not deprecated ones:
+    hiding them is a reading decision, because a flat dump of every knob for
+    every stage buries the dozen flags that decide what a run *does*. This flag
+    is the way back to them, either all at once or one stage at a time.
+    """
+
+    def __init__(self, option_strings: Any, dest: str, **kwargs: Any) -> None:
+        kwargs.setdefault("nargs", "?")
+        kwargs.setdefault("default", argparse.SUPPRESS)
+        kwargs.setdefault("metavar", "STAGE")
+        super().__init__(option_strings, dest, **kwargs)
+        # Populated by register_run_command once the knob groups exist.
+        self.hidden_help: Dict[str, Dict[argparse.Action, str]] = {}
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: Any,
+        option_string: Optional[str] = None,
+    ) -> None:
+        stage = None if values is None else str(values)
+        if stage is not None and stage not in self.hidden_help:
+            known = ", ".join(sorted(self.hidden_help))
+            parser.error(f"--help-knobs: unknown stage {stage!r}; choose from {known}")
+        for prefix, actions in self.hidden_help.items():
+            if stage is not None and prefix != stage:
+                continue
+            for action, original in actions.items():
+                action.help = original
+        parser.print_help()
+        parser.exit()
+
+
+def _hide(actions: List[argparse.Action]) -> Dict[argparse.Action, str]:
+    """Drop *actions* from help output, returning their original help text.
+
+    Suppressing the help string (rather than not registering the flag) keeps
+    every knob fully usable and keeps argparse's own usage line short; the saved
+    text is what ``--help-knobs`` puts back.
+    """
+    saved = {a: (a.help or "") for a in actions}
+    for action in actions:
+        action.help = argparse.SUPPRESS
+    return saved
+
+
 def register_run_command(subparsers: Any) -> None:
     """Register the bare ``run`` end-to-end command."""
+    knob_pointer = "\n".join(
+        f"  --{prefix}.*{' ' * (9 - len(prefix))}same knobs as '{cmd}'"
+        for prefix, cmd in _KNOB_STAGES
+    )
     p = subparsers.add_parser(
         "run",
         help="Run the full pipeline on a raw source (import through review)",
@@ -149,17 +219,27 @@ def register_run_command(subparsers: Any) -> None:
             "Blackchirp clocks.csv) and warns + skips when none is declared\n"
             "(--no-cal skips it deliberately). A fresh build by default."
         ),
+        epilog=(
+            "Per-stage knobs\n"
+            "---------------\n"
+            "Every knob of every stage is also settable here, namespaced under the\n"
+            "stage's prefix (e.g. --noise.window-mhz, --fit.tau.tau0-us). They are\n"
+            "hidden above because there are ~150 of them; a run rarely needs one.\n\n"
+            f"{knob_pointer}\n\n"
+            "  ftmwpipeline run --help-knobs          every stage knob\n"
+            "  ftmwpipeline run --help-knobs fit      one stage's knobs\n"
+            "  ftmwpipeline <stage> run --help        the same knobs, un-prefixed\n"
+            "  ftmwpipeline scan list                 the knob registry, with ranges\n\n"
+            "To persist a knob instead of passing it every run, use\n"
+            "'ftmwpipeline settings set', or pass --preset."
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("source", help="Path to the raw data source (file or directory)")
-    p.add_argument(
-        "--output",
-        dest="output",
-        default=None,
-        metavar="PATH",
-        help="Destination .ftmw file (derived from the source name if omitted).",
-    )
-    p.add_argument(
+
+    # ---- what a run needs to be told -----------------------------------------
+    req = p.add_argument_group("required")
+    req.add_argument("source", help="Path to the raw data source (file or directory)")
+    req.add_argument(
         "--trim",
         "--ft.trim",
         dest="trim",
@@ -171,7 +251,38 @@ def register_run_command(subparsers: Any) -> None:
             "--ft.trim is an alias for this same flag."
         ),
     )
-    p.add_argument(
+
+    # ---- the flags that decide what a run produces ---------------------------
+    common = p.add_argument_group("common")
+    common.add_argument(
+        "--output",
+        dest="output",
+        default=None,
+        metavar="PATH",
+        help="Destination .ftmw file (derived from the source name if omitted).",
+    )
+    common.add_argument(
+        "--report",
+        dest="report",
+        action="store_true",
+        default=False,
+        help="Also emit the Level-1 table + Level-3 HTML report at the end.",
+    )
+    common.add_argument(
+        "--report-dir",
+        dest="report_dir",
+        default=None,
+        metavar="DIR",
+        help="Directory for the --report artifacts (default <stem>_report/).",
+    )
+    common.add_argument(
+        "--preset",
+        dest="preset",
+        default=None,
+        metavar="NAME",
+        help="Settings preset forwarded to the stages that accept one.",
+    )
+    common.add_argument(
         "--sigma-floor",
         dest="sigma_floor",
         type=float,
@@ -179,42 +290,40 @@ def register_run_command(subparsers: Any) -> None:
         metavar="KHZ",
         help="Accuracy floor (kHz) folded into the σ_f budget at review.",
     )
-    p.add_argument(
-        "--preset",
-        dest="preset",
-        default=None,
-        metavar="NAME",
-        help="Settings preset forwarded to the stages that accept one.",
-    )
-    p.add_argument(
-        "--report",
-        dest="report",
+    common.add_argument(
+        "--quiet",
+        dest="quiet",
         action="store_true",
         default=False,
-        help="Also emit the Level-1 table + Level-3 HTML report at the end.",
+        help="Suppress the live per-stage progress display.",
     )
-    p.add_argument(
-        "--report-dir",
-        dest="report_dir",
-        default=None,
-        metavar="DIR",
-        help="Directory for the --report artifacts (default <stem>_report/).",
+    help_knobs = common.add_argument(
+        "--help-knobs",
+        dest="help_knobs",
+        action=_KnobHelpAction,
+        help=(
+            "Show the per-stage knobs hidden from this help; name a stage "
+            "(e.g. --help-knobs fit) for just that stage's."
+        ),
     )
-    p.add_argument(
+
+    # ---- which stages run at all ---------------------------------------------
+    stages = p.add_argument_group("stage selection")
+    stages.add_argument(
         "--no-start-detect",
         dest="detect_start",
         action="store_false",
         default=True,
         help="Skip start-time detection before the FT.",
     )
-    p.add_argument(
+    stages.add_argument(
         "--no-cal",
         dest="calibrate",
         action="store_false",
         default=True,
         help="Skip timebase calibration (no warning); frequencies stay precision-only.",
     )
-    p.add_argument(
+    stages.add_argument(
         "--clocks",
         dest="clocks",
         default=None,
@@ -224,21 +333,17 @@ def register_run_command(subparsers: Any) -> None:
             "':u' to mark one unlocked (e.g. '5120,5760'). Overrides auto-detection."
         ),
     )
-    p.add_argument(
-        "--no-force",
-        dest="force",
-        action="store_false",
-        default=True,
-        help="Do not overwrite an existing file built from a different source.",
-    )
-    p.add_argument(
+
+    # ---- how the source is read ----------------------------------------------
+    src = p.add_argument_group("source handling")
+    src.add_argument(
         "--format",
         dest="format_name",
         default=None,
         metavar="NAME",
         help="Input format name (auto-detected if omitted).",
     )
-    p.add_argument(
+    src.add_argument(
         "--fid-index",
         dest="fid_index",
         type=int,
@@ -246,12 +351,12 @@ def register_run_command(subparsers: Any) -> None:
         metavar="N",
         help="FID index for multi-FID formats (e.g. Blackchirp).",
     )
-    p.add_argument(
-        "--quiet",
-        dest="quiet",
-        action="store_true",
-        default=False,
-        help="Suppress the live per-stage progress display.",
+    src.add_argument(
+        "--no-force",
+        dest="force",
+        action="store_false",
+        default=True,
+        help="Do not overwrite an existing file built from a different source.",
     )
 
     # Namespaced per-knob passthrough: `--<stage>.<flag>`, generated from each
@@ -262,8 +367,14 @@ def register_run_command(subparsers: Any) -> None:
     # already accepts. Only start/ft/noise/tau/peaks/windows/fit have a knob
     # surface today -- timebase/review/report have no settings-dataclass/CLI
     # knob surface to mirror.
+    #
+    # Each group's flags are registered normally and then hidden from help: the
+    # default `--help` is a dozen decisions, not a knob dump. `--help-knobs`
+    # restores them.
+    hidden: Dict[str, Dict[argparse.Action, str]] = {}
+
     grp_start = p.add_argument_group("stage knobs: start")
-    add_start_detection_args(grp_start, prefix="start")
+    hidden["start"] = _hide(add_start_detection_args(grp_start, prefix="start"))
 
     # `trim` stays excluded from the generated `--ft.*` flags because
     # `--ft.trim` is registered above as an explicit second option string on
@@ -271,21 +382,32 @@ def register_run_command(subparsers: Any) -> None:
     # a separate namespaced flag; keeping the exclusion here is what avoids
     # argparse raising a duplicate-option error over `--ft.trim`.
     grp_ft = p.add_argument_group("stage knobs: ft")
-    add_settings_args(grp_ft, FTSettings, prefix="ft", exclude={"trim"})
+    hidden["ft"] = _hide(
+        add_settings_args(grp_ft, FTSettings, prefix="ft", exclude={"trim"})
+    )
 
     grp_noise = p.add_argument_group("stage knobs: noise")
-    add_settings_args(grp_noise, NoiseSettings, prefix="noise")
+    hidden["noise"] = _hide(add_settings_args(grp_noise, NoiseSettings, prefix="noise"))
 
     grp_tau = p.add_argument_group("stage knobs: tau")
-    add_settings_args(grp_tau, TauCalibrationSettings, prefix="tau")
+    hidden["tau"] = _hide(
+        add_settings_args(grp_tau, TauCalibrationSettings, prefix="tau")
+    )
 
     grp_peaks = p.add_argument_group("stage knobs: peaks")
-    add_settings_args(grp_peaks, PeakDetectionSettings, prefix="peaks")
+    hidden["peaks"] = _hide(
+        add_settings_args(grp_peaks, PeakDetectionSettings, prefix="peaks")
+    )
 
     grp_windows = p.add_argument_group("stage knobs: windows")
-    add_settings_args(grp_windows, WindowPlanningSettings, prefix="windows")
+    hidden["windows"] = _hide(
+        add_settings_args(grp_windows, WindowPlanningSettings, prefix="windows")
+    )
 
     grp_fit = p.add_argument_group("stage knobs: fit")
-    add_settings_args(grp_fit, StageFitSettings, prefix="fit")
+    hidden["fit"] = _hide(add_settings_args(grp_fit, StageFitSettings, prefix="fit"))
+
+    assert isinstance(help_knobs, _KnobHelpAction)
+    help_knobs.hidden_help = hidden
 
     p.set_defaults(func=cmd_run)
