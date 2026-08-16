@@ -3060,22 +3060,91 @@ def _fitted_freqs_by_window(path: str) -> Dict[int, List[float]]:
     return out
 
 
+def _planned_window_ranges(path: str) -> Dict[int, Tuple[float, float]]:
+    """``freq_range`` of every window in the effective plan, low bound first.
+
+    Best-effort: a file without a Stage 4 plan yields an empty map rather than
+    raising, so the advisory pass degrades to the checks it can still make.
+    """
+    try:
+        plan = effective_window_plan(path)
+    except Exception:  # pragma: no cover - advisory only, never fatal
+        return {}
+    return {
+        int(w.window_id): (min(w.freq_range), max(w.freq_range)) for w in plan.windows
+    }
+
+
 def _curation_ambiguity_warnings(
     path: str,
     plan: Sequence[PlannedAction],
     *,
     snap_tol_mhz: float = _REFIT_SNAP_TOL_MHZ,
 ) -> List[str]:
-    """Advisories where a target frequency resolves to zero or >1 fitted peaks.
+    """Advisories where a curation action will not resolve against the file.
 
     ``remove`` / ``split`` / ``merge`` match an *existing* fitted peak by nearest
     frequency within ``snap_tol_mhz``; if two peaks sit within tolerance the
-    matcher's pick is ambiguous, and if none do the edit will fail. Both are
-    surfaced up front (especially useful with ``--dry-run``). ``add`` / accepted
-    candidates create peaks, so they are not checked here.
+    matcher's pick is ambiguous, and if none do the edit will fail.
+
+    ``add`` creates a peak, so it has no target to match -- but it does have a
+    target *window*, and that is exactly what goes stale: window ids are
+    reassigned by a Stage 4 re-plan, and a plan window whose peaks all failed
+    their Stage 5 gate carries no fit to edit at all (a large fraction of the
+    plan on a line-dense file). So an ``add`` is checked for the two conditions
+    :func:`refit_window_impl` will later enforce: the window is live, and the
+    frequency lies on its data. The range test allows ``snap_tol_mhz`` of slack
+    on each side because the seed may snap that far onto a ledger candidate --
+    it flags only what cannot land in the window however it snaps, so it never
+    cries wolf on an edge case that would in fact succeed. Accepted candidates
+    are not checked: the window's own ledger supplies the frequency.
+
+    All of this is advisory. It exists so that ``--dry-run`` previews the
+    failures a live apply would hit instead of only some of them.
     """
     by_window = _fitted_freqs_by_window(path)
+    planned_ranges = _planned_window_ranges(path)
     warnings: List[str] = []
+
+    # A ``create`` in this same plan installs the window that a later ``add``
+    # names, and its geometry is not derivable without running the planner, so
+    # adds into it are left to the live apply. An unpinned create's id is not
+    # even known here, so any otherwise-unresolvable window could be it.
+    created_ids = {
+        a.window_id
+        for a in plan
+        if a.kind == "create" and a.window_id != _NEW_WINDOW_SENTINEL
+    }
+    has_unpinned_create = any(
+        a.kind == "create" and a.window_id == _NEW_WINDOW_SENTINEL for a in plan
+    )
+
+    def check_add(wid: int, freq: float, what: str) -> None:
+        if wid in created_ids:
+            return
+        if wid not in by_window:
+            if has_unpinned_create:
+                return
+            if wid in planned_ranges:
+                warnings.append(
+                    f"{what}: window {wid} is in the Stage 4 plan but carries no "
+                    f"Stage 5 fit (every peak in it failed its gate), so there "
+                    f"is nothing to add to (the edit will fail); create a window "
+                    f"at this frequency instead"
+                )
+            else:
+                warnings.append(f"{what}: no window {wid} exists (the edit will fail)")
+            return
+        window_range = planned_ranges.get(wid)
+        if window_range is None:
+            return
+        lo, hi = window_range
+        if not (lo - snap_tol_mhz <= freq <= hi + snap_tol_mhz):
+            warnings.append(
+                f"{what}: {freq:.4f} MHz is outside window {wid}'s range "
+                f"[{lo:.4f}, {hi:.4f}] MHz (the edit will fail); name the window "
+                f"that covers it, or create one if none does"
+            )
 
     def check(wid: int, freq: float, what: str) -> None:
         fitted = by_window.get(wid)
@@ -3101,6 +3170,8 @@ def _curation_ambiguity_warnings(
         if action.kind == "edit":
             for f in action.remove:
                 check(wid, f, f"remove {f:.4f}")
+            for f in action.add:
+                check_add(wid, f, f"add {f:.4f}")
         elif action.kind == "merge":
             for f in action.peaks:
                 check(wid, f, f"merge {f:.4f}")

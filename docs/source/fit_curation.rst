@@ -268,12 +268,24 @@ along with any frequency-resolution warnings, without touching the file:
        4. accept window 8: candidate 15001.4000
    4 action(s) would be applied (nothing written).
 
-The warnings catch the two ways a target frequency fails to resolve: a
-``remove``, ``merge``, or ``split`` frequency that matches no fitted peak within
-tolerance (the edit would fail), or one that sits within tolerance of more than
-one peak (the nearest is taken, which may not be the intended line). Previewing
-them before the refit is the reason ``--dry-run`` exists. ``add`` and revived
-candidates create peaks, so they are not checked.
+The warnings catch the ways an action fails to resolve against the file. For
+``remove``, ``merge`` and ``split`` that is the target frequency: one that
+matches no fitted peak within tolerance (the edit would fail), or one that sits
+within tolerance of more than one peak (the nearest is taken, which may not be
+the intended line). An ``add`` creates its peak and so has no target to match,
+but it does name a *window*, and that is what goes stale — window ids are
+reassigned whenever Stage 4 re-plans, and a plan window whose peaks all failed
+their Stage 5 gate carries no fit to edit at all. So an ``add`` is checked for
+the two conditions the refit will enforce: the window is live, and the frequency
+lies on its data (with the snap tolerance allowed as slack, so only an add that
+cannot land however it snaps is flagged). An ``add`` into a window a ``create``
+in the same file installs is left to the apply, since its geometry does not
+exist yet. Revived candidates are not checked: the window's own ledger supplies
+the frequency.
+
+Previewing all of this before the refit is the reason ``--dry-run`` exists — but
+the preview is advisory, not a gate. The apply is what enforces; it just does so
+without writing anything unless every action succeeds.
 
 Dropping ``--dry-run`` applies the plan, refitting each affected window in place:
 

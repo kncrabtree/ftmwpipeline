@@ -36,6 +36,20 @@ Unreleased
   discoverable: a Stage 6 edit deliberately does not re-stamp ``stage5_fitting``,
   because that stamp names the automatic fit every edit gates against.
 
+* **``review apply --dry-run`` validates ``add`` actions.** The preview resolved
+  ``remove`` / ``merge`` / ``split`` targets against the fitted peaks but said
+  nothing about an ``add``, on the reasoning that an add creates its peak and so
+  has no target to match. It does name a *window*, though, and that is exactly
+  what goes stale: window ids are reassigned whenever Stage 4 re-plans, and a plan
+  window whose peaks all failed their Stage 5 gate carries no fit to edit at all
+  (a large fraction of the plan on a line-dense file). A curation file written
+  against an earlier state could therefore pass a clean dry run and then fail on
+  the apply. The dry run now checks each add for the two conditions the refit
+  enforces — the window is live, and the frequency lies on its data, with the snap
+  tolerance allowed as slack so only an add that cannot land however it snaps is
+  flagged. An add into a window a ``create`` in the same file installs is left to
+  the apply, since its geometry does not exist yet.
+
 * **``read_metadata`` reads a JSON-blob ``ft_processing`` record.** Early
   records stored the Stage 1 settings bundle as one JSON ``parameters``
   attribute rather than as individual attributes, a shape Stage 1 has always

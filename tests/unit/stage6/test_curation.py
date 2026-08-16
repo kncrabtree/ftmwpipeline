@@ -300,11 +300,67 @@ def test_ambiguity_warnings(monkeypatch):
     )
     assert any("no fitted peaks" in w for w in warns)
 
-    # add frequencies are not checked (they create peaks).
-    warns = s6._curation_ambiguity_warnings(
-        "x", [PlannedAction(kind="edit", window_id=5, add=[150.0])]
+
+def test_add_target_warnings(monkeypatch):
+    """An ``add`` has no peak to match, but its *window* is what goes stale."""
+    monkeypatch.setattr(s6, "_fitted_freqs_by_window", lambda path: {5: [100.0, 200.0]})
+    monkeypatch.setattr(
+        s6,
+        "_planned_window_ranges",
+        lambda path: {5: (99.0, 201.0), 7: (300.0, 310.0)},
     )
-    assert warns == []
+
+    def warns_for(plan):
+        return s6._curation_ambiguity_warnings("x", plan)
+
+    # In range on a live window -> nothing to say.
+    assert warns_for([PlannedAction(kind="edit", window_id=5, add=[150.0])]) == []
+
+    # Snap tolerance of slack on each side: an add just off the edge can still
+    # land, and must not be flagged.
+    assert warns_for([PlannedAction(kind="edit", window_id=5, add=[201.04])]) == []
+
+    # Genuinely off the window's data.
+    assert any(
+        "outside window 5's range" in w
+        for w in warns_for([PlannedAction(kind="edit", window_id=5, add=[250.0])])
+    )
+
+    # A plan window whose peaks all failed the Stage 5 gate has no fit to edit.
+    assert any(
+        "no Stage 5 fit" in w
+        for w in warns_for([PlannedAction(kind="edit", window_id=7, add=[305.0])])
+    )
+
+    # A window id that does not exist at all (a stale decision-log CSV).
+    assert any(
+        "no window 9999 exists" in w
+        for w in warns_for([PlannedAction(kind="edit", window_id=9999, add=[100.0])])
+    )
+
+    # A create in the same plan installs the window a later add names, so the
+    # add is left to the live apply rather than flagged against the old state.
+    assert (
+        warns_for(
+            [
+                PlannedAction(kind="create", window_id=42, anchor=150.0),
+                PlannedAction(kind="edit", window_id=42, add=[150.0]),
+            ]
+        )
+        == []
+    )
+    # Same for an unpinned create, whose id is not knowable here.
+    assert (
+        warns_for(
+            [
+                PlannedAction(
+                    kind="create", window_id=s6._NEW_WINDOW_SENTINEL, anchor=150.0
+                ),
+                PlannedAction(kind="edit", window_id=43, add=[150.0]),
+            ]
+        )
+        == []
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -385,6 +441,30 @@ def test_apply_unmatched_remove_fails(stage5_file, tmp_path):
     assert any("no fitted peak within" in w for w in dry.warnings)
 
     with pytest.raises(ValueError, match="curation action 1.*failed"):
+        apply_curation_impl(fp, cur)
+
+
+@pytest.mark.integration
+def test_apply_dry_run_flags_bad_add_targets(stage5_file, tmp_path):
+    """The dry run previews the failures a live apply hits, adds included."""
+    fp = tmp_path / "badadd.ftmw"
+    shutil.copy(stage5_file, fp)
+    wid, freq = _a_peak(fp)
+
+    # A window id that does not exist (what a stale decision-log CSV writes).
+    cur = tmp_path / "nowindow.csv"
+    cur.write_text(f"add,9999,{freq},\n")
+    dry = apply_curation_impl(fp, cur, dry_run=True)
+    assert any("no window 9999 exists" in w for w in dry.warnings)
+    with pytest.raises(ValueError):
+        apply_curation_impl(fp, cur)
+
+    # A frequency the named window does not cover (a re-plan moved the ids).
+    cur = tmp_path / "outofrange.csv"
+    cur.write_text(f"add,{wid},{freq + 500.0},\n")
+    dry = apply_curation_impl(fp, cur, dry_run=True)
+    assert any(f"outside window {wid}'s range" in w for w in dry.warnings)
+    with pytest.raises(ValueError):
         apply_curation_impl(fp, cur)
 
 
