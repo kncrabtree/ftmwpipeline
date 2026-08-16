@@ -50,6 +50,17 @@ Unreleased
   flagged. An add into a window a ``create`` in the same file installs is left to
   the apply, since its geometry does not exist yet.
 
+* **The Stage 2 noise methods note quantifies the Rician ``C(R)``
+  monotonization.** The isotonic replacement of the raw Monte-Carlo table (before
+  ``0.1.0b1``) was characterized by its effect on a typical bin, which is under
+  half a percent and understates it: the two curves differ most where ``R``
+  saturates at the Rayleigh limit, i.e. in the noise-only bins that dominate a
+  full-spectrum median. On one line-dense real file the median RMS moved +4.5%,
+  pruning about a tenth of the final fitted peaks — all threshold-marginal, with
+  the strong lines untouched. The note now states the effect on the noise-floor
+  median and the resulting line count, which is the honest quantity for a change
+  in the correction curve.
+
 * **``read_metadata`` reads a JSON-blob ``ft_processing`` record.** Early
   records stored the Stage 1 settings bundle as one JSON ``parameters``
   attribute rather than as individual attributes, a shape Stage 1 has always

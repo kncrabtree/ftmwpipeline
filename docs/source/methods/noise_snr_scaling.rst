@@ -142,6 +142,23 @@ noisy; the monotone fit is the physically correct curve there.
    monotone fit baked into the estimator, running from :math:`\approx 1.0` under
    strong lines to :math:`\approx 1.5` in pure-noise (Rayleigh) regions.
 
+.. note::
+
+   The monotone fit replaced the raw Monte-Carlo table before ``0.1.0b1``, and
+   the size of that replacement is worth stating precisely, because the obvious
+   way to state it understates it. Where the simulation is well sampled the two
+   curves differ by well under half a percent, so a *typical bin* barely moves.
+   But they differ most exactly where :math:`R` saturates at the Rayleigh
+   limit — the noise-only bins, which are the majority of a spectrum and
+   therefore dominate the full-spectrum median :math:`\sigma`. On one
+   line-dense real file the persisted median RMS moved by :math:`+4.5\,\%`, and
+   because Stage 3 gates on SNR, that pruned about a tenth of the final fitted
+   peaks — every one of them threshold-marginal, with the strong lines
+   untouched. The honest quantity to quote for a change in the correction curve
+   is its effect on the noise-floor median (and on the resulting line count),
+   not the mean shift in :math:`\sigma`. A file analyzed before the change and
+   re-run after it will see this; it is not run-to-run variability.
+
 Validation: shot-count scaling
 ------------------------------
 
