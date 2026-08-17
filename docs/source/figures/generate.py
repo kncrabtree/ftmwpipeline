@@ -81,6 +81,23 @@ TRIM = (26500.0, 40000.0)
 DPI = 130
 
 
+def _save(fig: Any, name: str, **kwargs: Any) -> None:
+    """Write ``fig`` to ``FIG_DIR/name`` and close it.
+
+    The plot helpers hand the figure to their caller, so closing is this
+    script's job. Twelve figures held open at once is harmless when the
+    script is the whole process, but ``make_figures`` also runs inside the
+    test suite, where the figures outlive the test and push the session past
+    matplotlib's ``figure.max_open_warning``.
+    """
+    import matplotlib.pyplot as plt
+
+    kwargs.setdefault("dpi", DPI)
+    kwargs.setdefault("bbox_inches", "tight")
+    fig.savefig(FIG_DIR / name, **kwargs)
+    plt.close(fig)
+
+
 def _build_pipeline(workdir: Path) -> str:
     """Import the 2638 fixture and run Stages 0-2b; return the ``.ftmw`` path."""
     import ftmwpipeline.api as ftmw
@@ -156,27 +173,21 @@ def make_figures() -> None:
         path = _build_pipeline(Path(tmp))
 
         fig0 = plot_start_detection_from_file(path, title="")
-        fig0.savefig(
-            FIG_DIR / "stage0_start_detection.png", dpi=DPI, bbox_inches="tight"
-        )
+        _save(fig0, "stage0_start_detection.png")
 
         fig1 = visualize_ft_impl(
             path, title="", show_fid_panels=False, interactive=False
         )
-        fig1.savefig(FIG_DIR / "stage1_canonical_ft.png", dpi=DPI, bbox_inches="tight")
+        _save(fig1, "stage1_canonical_ft.png")
 
         fig2 = visualize_noise_impl(path, title="", interactive=False)
-        fig2.savefig(FIG_DIR / "stage2_noise.png", dpi=DPI, bbox_inches="tight")
+        _save(fig2, "stage2_noise.png")
 
         fig2b = plot_tau_distribution_from_file(path, shape="lorentzian", title="")
-        fig2b.savefig(
-            FIG_DIR / "stage2b_tau_distribution.png", dpi=DPI, bbox_inches="tight"
-        )
+        _save(fig2b, "stage2b_tau_distribution.png")
 
         fig2c = plot_stft_decay_examples_from_file(path, shape="lorentzian", title="")
-        fig2c.savefig(
-            FIG_DIR / "stage2b_tau_decay_examples.png", dpi=DPI, bbox_inches="tight"
-        )
+        _save(fig2c, "stage2b_tau_decay_examples.png")
 
         # Zoom the heatmap to the neighborhood of the strongest contributor and
         # clip the color range so the per-line decays read clearly.
@@ -191,14 +202,12 @@ def make_figures() -> None:
             freq_window=(f_center - 120.0, f_center + 120.0),
             clip_percentiles=(60.0, 99.9),
         )
-        fig2d.savefig(
-            FIG_DIR / "stage2b_tau_heatmap_zoom.png", dpi=DPI, bbox_inches="tight"
-        )
+        _save(fig2d, "stage2b_tau_heatmap_zoom.png")
 
         fig3 = visualize_peaks_impl(
             path, title="", interactive=False, show_snr_histogram=True
         )
-        fig3.savefig(FIG_DIR / "stage3_peaks.png", dpi=DPI, bbox_inches="tight")
+        _save(fig3, "stage3_peaks.png")
 
         # Stage 4 window plan on the denser vinyl-cyanide fixture (see
         # ``_VCN_FIXTURE``), where the fixed contributors and dependency edges
@@ -206,10 +215,10 @@ def make_figures() -> None:
         with tempfile.TemporaryDirectory() as tmp4:
             wpath = _build_through_windows(Path(tmp4), _VCN_FIXTURE, "exp_1512")
             fig4 = visualize_windows_impl(wpath, title="", interactive=False)
-            fig4.savefig(FIG_DIR / "stage4_windows.png", dpi=DPI, bbox_inches="tight")
+            _save(fig4, "stage4_windows.png")
 
         fig5 = visualize_fit_impl(path, title="", interactive=False)
-        fig5.savefig(FIG_DIR / "stage5_fitting.png", dpi=DPI, bbox_inches="tight")
+        _save(fig5, "stage5_fitting.png")
 
         # Per-window detail: the window covering ~36350 MHz -- a strong, resolved
         # doublet near 36350 (SNR ~300) beside a weak doublet near 36352 (SNR ~40),
@@ -234,7 +243,7 @@ def make_figures() -> None:
             ]
             detail_wid = max(cand)[1] if cand else fit5.window_fits[0].window_id
         fig5b = render_fit_detail_impl(path, detail_wid, title="")
-        fig5b.savefig(FIG_DIR / "stage5_fit_detail.png", dpi=DPI, bbox_inches="tight")
+        _save(fig5b, "stage5_fit_detail.png")
 
         # Stage 6: the report's full-spectrum index overview -- the finalized
         # spectrum with the review-flagged (attention) windows shaded. This is
@@ -263,14 +272,12 @@ def make_figures() -> None:
         fig6 = _plot_index_overview(
             bundle, attention_ranges, title="", figsize=(13.0, 3.2)
         )
-        fig6.savefig(FIG_DIR / "stage6_review.png", dpi=DPI, bbox_inches="tight")
+        _save(fig6, "stage6_review.png")
 
         # Concepts / fit curation: two report magnitude panels overlaid with a
         # real curation cart (merges, an add, splits), in the report's color code.
         fig_cur = _plot_curation_annotations(bundle, np)
-        fig_cur.savefig(
-            FIG_DIR / "fit_curation_annotations.png", dpi=DPI, bbox_inches="tight"
-        )
+        _save(fig_cur, "fit_curation_annotations.png")
 
 
 # A curation cart captured from the browser report on the 2638 example: on

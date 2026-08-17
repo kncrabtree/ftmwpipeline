@@ -145,6 +145,11 @@ def cmd_visualize_fit(args: argparse.Namespace) -> int:
             rescue=args.rescue,
             figsize=figsize,
             title=args.title,
+            # The CLI shows figures only through plt.show(); with --output-dir it
+            # reports paths, and with --no-interactive it reports neither. In both
+            # of those cases holding every rendered figure open buys nothing, and
+            # --all-windows on a line-dense file renders hundreds.
+            retain_figures=args.output_dir is None and not args.no_interactive,
         )
 
         if result["mode"] == "overview":

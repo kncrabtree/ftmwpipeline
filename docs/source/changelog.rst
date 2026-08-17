@@ -27,6 +27,19 @@ had to reach into ``_internal`` or parse out of prose to obtain are now
 published, and the Stage 6 edit paths that carry them were collapsed onto one
 engine so they cannot answer differently.
 
+* **``fit show`` stops holding every rendered figure open.** Each selected window
+  renders one figure, three with ``--apodize`` and ``--rescue``, and all of them
+  were retained so an interactive caller could display them — including when the
+  caller had asked for ``--output-dir`` and was only going to be told the paths.
+  On a line-dense file ``--all-windows`` therefore built hundreds of live
+  matplotlib figures to write hundreds of PNGs, and tripped matplotlib's own
+  ``figure.max_open_warning`` on the way. The CLI now declines the figures when
+  it has an output directory or is non-interactive, and each is closed as soon as
+  it is on disk, bounding live figures at one instead of three per window. The
+  written PNGs, the log and the reported paths are unchanged, and the ``Pipeline``
+  and functional-API contract is unchanged: they still return the figures, since
+  a caller holding a reference is the case the retention exists for.
+
 * **The curation snap tolerance is public.** Matching "the peak at *f*" the way
   a curation refit matches it requires the refit's snap tolerance, which existed
   only as a private constant — so a consumer pairing peaks across a refit had to

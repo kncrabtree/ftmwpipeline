@@ -3258,6 +3258,7 @@ def fit_show_impl(
     rescue: bool = False,
     figsize: Optional[Tuple[float, float]] = None,
     title: Optional[str] = None,
+    retain_figures: bool = True,
 ) -> Dict[str, Any]:
     """Drive ``fit show``: overview (no selector) or one consolidated detail
     figure per selected window.
@@ -3265,7 +3266,15 @@ def fit_show_impl(
     Returns ``{"mode", "window_ids", "figures", "paths", "log"}``. With
     ``output_dir`` each detail figure is written as
     ``<stem>_window_<id>.png`` and its path collected; the figures are also
-    returned so an interactive caller can display them. The text fit log for the
+    returned so an interactive caller can display them.
+
+    Set ``retain_figures=False`` when the figures are not going to be looked
+    at -- the files have been written, or the caller is non-interactive. Each
+    figure is then closed as soon as it is saved and ``"figures"`` comes back
+    empty, which bounds live figures at one instead of three per selected
+    window. The default retains them, so the ``Pipeline`` and functional-API
+    contract documented above is unchanged; only a caller that opts out sees a
+    difference, and what it gives up is a list it was discarding. The text fit log for the
     selected windows is in ``"log"``. With ``apodize`` set, an extra windowed
     (apodized) data-vs-model comparison figure is produced per window
     (``<stem>_window_<id>_apodized.png``) -- a diagnostic view, not a re-fit.
@@ -3305,11 +3314,28 @@ def fit_show_impl(
     figures: list[Any] = []
     paths: list[str] = []
     reports: list[str] = []
+
+    def _keep(fig: Any) -> None:
+        """Retain the figure for the caller, or close it once it is on disk.
+
+        ``--all-windows`` selects every window, and with ``apodize`` and
+        ``rescue`` each one renders three figures, so a large file can hold many
+        hundreds open at once. A caller that asked for files (or that will not
+        display them) never looks at the list, so keeping them alive costs
+        memory for nothing and pushes the process past matplotlib's
+        ``figure.max_open_warning``.
+        """
+        if retain_figures:
+            figures.append(fig)
+            return
+        import matplotlib.pyplot as plt
+
+        plt.close(fig)
+
     for wid in ids:
         fig = render_fit_detail_impl(
             file_path, wid, bundle=bundle, figsize=figsize, title=title
         )
-        figures.append(fig)
         reports.append(
             fit_window_report_text(file_path, wid, bundle=bundle, show_audit=show_audit)
         )
@@ -3317,6 +3343,7 @@ def fit_show_impl(
             dest = out_dir / f"{bundle.file_stem}_window_{wid:03d}.png"
             fig.savefig(str(dest), dpi=130)
             paths.append(str(dest))
+        _keep(fig)
         if apodize:
             wfig = render_windowed_view_impl(
                 file_path,
@@ -3325,20 +3352,20 @@ def fit_show_impl(
                 apodize_us=apodize_us,
                 bundle=bundle,
             )
-            figures.append(wfig)
             if out_dir is not None:
                 wdest = out_dir / f"{bundle.file_stem}_window_{wid:03d}_apodized.png"
                 wfig.savefig(str(wdest), dpi=130)
                 paths.append(str(wdest))
+            _keep(wfig)
         if rescue:
             rfig = render_rescue_summary_impl(
                 file_path, wid, bundle=bundle, figsize=figsize
             )
-            figures.append(rfig)
             if out_dir is not None:
                 rdest = out_dir / f"{bundle.file_stem}_window_{wid:03d}_rescue.png"
                 rfig.savefig(str(rdest), dpi=130)
                 paths.append(str(rdest))
+            _keep(rfig)
     return {
         "mode": "detail",
         "window_ids": ids,

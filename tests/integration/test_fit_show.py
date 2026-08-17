@@ -144,6 +144,40 @@ class TestFitShowImpl:
         for fig in result["figures"]:
             plt.close(fig)
 
+    def test_retain_figures_false_closes_them_and_writes_the_same_pngs(
+        self, stage5_file, tmp_path
+    ):
+        """Opting out returns no figures, leaves none open, and changes no file."""
+        kept_dir = tmp_path / "kept"
+        closed_dir = tmp_path / "closed"
+
+        plt.close("all")
+        kept = fit_show_impl(stage5_file, all_windows=True, output_dir=str(kept_dir))
+        assert len(kept["figures"]) == len(kept["window_ids"])
+        assert len(plt.get_fignums()) == len(kept["figures"])
+        for fig in kept["figures"]:
+            plt.close(fig)
+
+        plt.close("all")
+        closed = fit_show_impl(
+            stage5_file,
+            all_windows=True,
+            output_dir=str(closed_dir),
+            retain_figures=False,
+        )
+        assert closed["figures"] == []
+        assert plt.get_fignums() == []
+
+        # Everything other than the figure list is identical, and the rendered
+        # PNGs are the same files -- this is a memory decision, not a rendering one.
+        assert closed["window_ids"] == kept["window_ids"]
+        assert closed["log"] == kept["log"]
+        assert sorted(p.name for p in closed_dir.glob("*.png")) == sorted(
+            p.name for p in kept_dir.glob("*.png")
+        )
+        for name in (p.name for p in kept_dir.glob("*.png")):
+            assert (closed_dir / name).stat().st_size > 0
+
     def test_log_lists_selected_windows(self, stage5_file, fit_obj):
         wid = int(fit_obj.window_fits[0].window_id)
         result = fit_show_impl(stage5_file, window_ids=[wid])
@@ -153,8 +187,13 @@ class TestFitShowImpl:
 
     def test_show_audit_extends_log(self, stage5_file, fit_obj):
         wid = int(fit_obj.window_fits[0].window_id)
-        plain = fit_show_impl(stage5_file, window_ids=[wid], show_audit=False)["log"]
-        audit = fit_show_impl(stage5_file, window_ids=[wid], show_audit=True)["log"]
+        # Only the log is under test, so decline the figures rather than leak them.
+        plain = fit_show_impl(
+            stage5_file, window_ids=[wid], show_audit=False, retain_figures=False
+        )["log"]
+        audit = fit_show_impl(
+            stage5_file, window_ids=[wid], show_audit=True, retain_figures=False
+        )["log"]
         assert "audit trail" in audit
         assert len(audit) >= len(plain)
 

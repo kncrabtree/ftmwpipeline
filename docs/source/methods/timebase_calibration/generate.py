@@ -350,14 +350,18 @@ def make_figures(result: Any, path: str) -> None:
 
     matplotlib.use("Agg")
 
+    import matplotlib.pyplot as plt
+
     from ftmwpipeline.visualization.report_style import apply_color_cycle
 
     apply_color_cycle(matplotlib)
     figdir = _figdir()
     fig_tb = _plot_timebase(result)
     fig_tb.savefig(figdir / "clock_timebase.png", dpi=130, bbox_inches="tight")
+    plt.close(fig_tb)
     fig_pr = _plot_phase_ramp(path, result)
     fig_pr.savefig(figdir / "clock_phase_ramp.png", dpi=130, bbox_inches="tight")
+    plt.close(fig_pr)
 
 
 def run(do_2638: bool = True, figures: bool = True) -> Dict[str, Any]:

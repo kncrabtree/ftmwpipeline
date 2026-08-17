@@ -160,6 +160,27 @@ def reset_numpy_random_seed():
     np.random.seed(42)
 
 
+@pytest.fixture(autouse=True)
+def close_figures_left_open():
+    """Close any pyplot figure a test leaves behind.
+
+    The render helpers return their figure and the caller owns it, so a test
+    that wants only the log or the saved path still gets a live figure it never
+    closes. Those accumulate across the session -- matplotlib holds every figure
+    created through the pyplot interface until closed -- until some later,
+    innocent test trips ``figure.max_open_warning`` and gets blamed for it.
+
+    Closing per test also keeps the failure local: a test that leaks is the test
+    that pays, not the two hundredth one after it.
+    """
+    yield
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return
+    plt.close("all")
+
+
 def _has_matplotlib() -> bool:
     """Check if matplotlib is available."""
     try:
