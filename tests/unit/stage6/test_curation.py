@@ -390,9 +390,9 @@ def _a_peak(path: Path) -> tuple[int, float]:
 
 
 @pytest.mark.integration
-def test_apply_dry_run_does_not_mutate(stage5_file, tmp_path):
+def test_apply_dry_run_does_not_mutate(stage5_small_source, tmp_path):
     fp = tmp_path / "dry.ftmw"
-    shutil.copy(stage5_file, fp)
+    shutil.copy(stage5_small_source, fp)
     wid, freq = _a_peak(fp)
     cur = tmp_path / "c.csv"
     cur.write_text(f"remove,{wid},{freq},\n")
@@ -405,11 +405,11 @@ def test_apply_dry_run_does_not_mutate(stage5_file, tmp_path):
 
 
 @pytest.mark.integration
-def test_apply_matches_handtyped_sequence(stage5_file, tmp_path):
+def test_apply_matches_handtyped_sequence(stage5_small_source, tmp_path):
     a = tmp_path / "a.ftmw"
     b = tmp_path / "b.ftmw"
-    shutil.copy(stage5_file, a)
-    shutil.copy(stage5_file, b)
+    shutil.copy(stage5_small_source, a)
+    shutil.copy(stage5_small_source, b)
 
     wid, freq = _a_peak(a)
     # Two add rows on one window coalesce into one refit; assert apply matches a
@@ -429,9 +429,9 @@ def test_apply_matches_handtyped_sequence(stage5_file, tmp_path):
 
 
 @pytest.mark.integration
-def test_apply_unmatched_remove_fails(stage5_file, tmp_path):
+def test_apply_unmatched_remove_fails(stage5_small_source, tmp_path):
     fp = tmp_path / "fail.ftmw"
-    shutil.copy(stage5_file, fp)
+    shutil.copy(stage5_small_source, fp)
     wid, _ = _a_peak(fp)
     cur = tmp_path / "c.csv"
     cur.write_text(f"remove,{wid},99999.0,\n")  # nowhere near a peak
@@ -445,10 +445,10 @@ def test_apply_unmatched_remove_fails(stage5_file, tmp_path):
 
 
 @pytest.mark.integration
-def test_apply_dry_run_flags_bad_add_targets(stage5_file, tmp_path):
+def test_apply_dry_run_flags_bad_add_targets(stage5_small_source, tmp_path):
     """The dry run previews the failures a live apply hits, adds included."""
     fp = tmp_path / "badadd.ftmw"
-    shutil.copy(stage5_file, fp)
+    shutil.copy(stage5_small_source, fp)
     wid, freq = _a_peak(fp)
 
     # A window id that does not exist (what a stale decision-log CSV writes).
@@ -469,9 +469,9 @@ def test_apply_dry_run_flags_bad_add_targets(stage5_file, tmp_path):
 
 
 @pytest.mark.integration
-def test_review_log_lists_decisions(stage5_file, tmp_path):
+def test_review_log_lists_decisions(stage5_small_source, tmp_path):
     fp = tmp_path / "log.ftmw"
-    shutil.copy(stage5_file, fp)
+    shutil.copy(stage5_small_source, fp)
     assert review_log_impl(fp) == []  # nothing recorded yet
 
     wid, freq = _a_peak(fp)
@@ -488,11 +488,11 @@ def _write_curation(tmp_path: Path, text: str) -> str:
 
 
 @pytest.mark.integration
-def test_apply_cross_interface(stage5_file, tmp_path):
+def test_apply_cross_interface(stage5_small_source, tmp_path):
     """api / Pipeline / CLI apply produce identical fitted state."""
     paths = {k: tmp_path / f"{k}.ftmw" for k in ("api", "pipe", "cli")}
     for p in paths.values():
-        shutil.copy(stage5_file, p)
+        shutil.copy(stage5_small_source, p)
 
     wid, freq = _a_peak(paths["api"])
     cur = tmp_path / "x.csv"
@@ -513,9 +513,9 @@ def test_apply_cross_interface(stage5_file, tmp_path):
 
 
 @pytest.mark.integration
-def test_cli_log_smoke(stage5_file, tmp_path, capsys):
+def test_cli_log_smoke(stage5_small_source, tmp_path, capsys):
     fp = tmp_path / "clilog.ftmw"
-    shutil.copy(stage5_file, fp)
+    shutil.copy(stage5_small_source, fp)
     rc = cmd_review_log(argparse.Namespace(file_path=str(fp)))
     assert rc == 0
     assert "review log" in capsys.readouterr().out
@@ -566,9 +566,9 @@ def test_decision_to_op_merge_without_peaks_raises():
 
 
 @pytest.mark.integration
-def test_edit_snapshots_baseline(stage5_file, tmp_path):
+def test_edit_snapshots_baseline(stage5_small_source, tmp_path):
     fp = tmp_path / "snap.ftmw"
-    shutil.copy(stage5_file, fp)
+    shutil.copy(stage5_small_source, fp)
     with h5py.File(str(fp), "r") as h5f:
         assert STAGE5_BASELINE_GROUP not in h5f  # none before any edit
 
@@ -579,9 +579,9 @@ def test_edit_snapshots_baseline(stage5_file, tmp_path):
 
 
 @pytest.mark.integration
-def test_undo_single_returns_to_baseline(stage5_file, tmp_path):
+def test_undo_single_returns_to_baseline(stage5_small_source, tmp_path):
     fp = tmp_path / "u1.ftmw"
-    shutil.copy(stage5_file, fp)
+    shutil.copy(stage5_small_source, fp)
     baseline = _fitted_by_window(fp)
 
     wid, freq = _a_peak(fp)
@@ -625,9 +625,9 @@ def test_undo_one_of_two_replays_other(stage5_file, tmp_path):
 
 
 @pytest.mark.integration
-def test_undo_dry_run_no_mutation(stage5_file, tmp_path):
+def test_undo_dry_run_no_mutation(stage5_small_source, tmp_path):
     fp = tmp_path / "udry.ftmw"
-    shutil.copy(stage5_file, fp)
+    shutil.copy(stage5_small_source, fp)
     wid, freq = _a_peak(fp)
     apply_curation_impl(fp, _write_curation(tmp_path, f"add,{wid},{freq + 0.4},\n"))
     log = review_log_impl(fp)
@@ -639,9 +639,9 @@ def test_undo_dry_run_no_mutation(stage5_file, tmp_path):
 
 
 @pytest.mark.integration
-def test_undo_unknown_id_and_empty_log(stage5_file, tmp_path):
+def test_undo_unknown_id_and_empty_log(stage5_small_source, tmp_path):
     fp = tmp_path / "uerr.ftmw"
-    shutil.copy(stage5_file, fp)
+    shutil.copy(stage5_small_source, fp)
     with pytest.raises(ValueError, match="no recorded decisions"):
         review_undo_impl(fp, [0])
 
@@ -652,10 +652,10 @@ def test_undo_unknown_id_and_empty_log(stage5_file, tmp_path):
 
 
 @pytest.mark.integration
-def test_refit_clears_baseline_and_decisions(stage5_file, tmp_path):
+def test_refit_clears_baseline_and_decisions(stage5_small_source, tmp_path):
     """Re-running the automatic fit resets the curation state (fresh start)."""
     fp = tmp_path / "urefit.ftmw"
-    shutil.copy(stage5_file, fp)
+    shutil.copy(stage5_small_source, fp)
     wid, freq = _a_peak(fp)
     apply_curation_impl(fp, _write_curation(tmp_path, f"add,{wid},{freq + 0.4},\n"))
     assert review_log_impl(fp)  # a decision was recorded
@@ -667,10 +667,10 @@ def test_refit_clears_baseline_and_decisions(stage5_file, tmp_path):
 
 
 @pytest.mark.integration
-def test_undo_refused_when_baseline_missing(stage5_file, tmp_path):
+def test_undo_refused_when_baseline_missing(stage5_small_source, tmp_path):
     """If the baseline is gone while fit-mutating decisions remain, undo refuses."""
     fp = tmp_path / "ubad.ftmw"
-    shutil.copy(stage5_file, fp)
+    shutil.copy(stage5_small_source, fp)
     wid, freq = _a_peak(fp)
     apply_curation_impl(fp, _write_curation(tmp_path, f"add,{wid},{freq + 0.4},\n"))
     log = review_log_impl(fp)
@@ -681,10 +681,10 @@ def test_undo_refused_when_baseline_missing(stage5_file, tmp_path):
 
 
 @pytest.mark.integration
-def test_undo_cross_interface(stage5_file, tmp_path):
+def test_undo_cross_interface(stage5_small_source, tmp_path):
     paths = {k: tmp_path / f"u_{k}.ftmw" for k in ("api", "pipe", "cli")}
     for p in paths.values():
-        shutil.copy(stage5_file, p)
+        shutil.copy(stage5_small_source, p)
     wid, freq = _a_peak(paths["api"])
     cur = tmp_path / "uc.csv"
     cur.write_text(f"add,{wid},{freq + 0.4},\nremove,{wid},{freq},\n")

@@ -82,6 +82,25 @@ def _stage5_reviewed_built(_stage5_small_built, tmp_path_factory) -> Path:
     return fp
 
 
+@pytest.fixture(scope="session")
+def stage5_small_source(_stage5_small_built) -> Path:
+    """The shared post-fit build, for a test that copies before it writes.
+
+    Read-only: copy it, never open it for writing. ``stage5_small_file`` already
+    hands out a private per-test copy, so a test that immediately copies *that*
+    to its own name is paying for two copies of a ~7 MB file and reading neither.
+    Copy from here instead -- the bytes are identical, and the discarded copy is
+    the one that goes away.
+    """
+    return _stage5_small_built
+
+
+@pytest.fixture(scope="session")
+def stage5_reviewed_source(_stage5_reviewed_built) -> Path:
+    """The shared post-review build. Read-only; see :func:`stage5_small_source`."""
+    return _stage5_reviewed_built
+
+
 @pytest.fixture
 def stage5_small_file(_stage5_small_built, tmp_path) -> Path:
     """A fresh writable copy of the shared post-fit small fixture."""

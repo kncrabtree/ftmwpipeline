@@ -46,10 +46,10 @@ pytestmark = [pytest.mark.integration]
 
 
 @pytest.fixture
-def writable_stage5_file(stage5_small_file, tmp_path):
+def writable_stage5_file(stage5_small_source, tmp_path):
     """Return a writable copy of the Stage 5 small file."""
     dst = tmp_path / "working.ftmw"
-    shutil.copy(stage5_small_file, dst)
+    shutil.copy(stage5_small_source, dst)
     return dst
 
 
@@ -324,10 +324,10 @@ class TestIdentityRefitPerWindow:
     """Per-window isolation version of the fidelity test."""
 
     @pytest.fixture(autouse=True)
-    def _setup(self, stage5_small_file, tmp_path):
+    def _setup(self, stage5_small_source, tmp_path):
         """Give each test its own writable copy."""
         self.path = tmp_path / "working.ftmw"
-        shutil.copy(stage5_small_file, self.path)
+        shutil.copy(stage5_small_source, self.path)
         self.sf_orig = _load_spectrum_fit(self.path)
         self.windows_with_peaks = [
             wf for wf in self.sf_orig.window_fits if len(wf.fitted_peaks) > 0
@@ -434,9 +434,9 @@ class TestRemovePeak:
     must not re-add it (forbidden_offsets)."""
 
     @pytest.fixture(autouse=True)
-    def _setup(self, stage5_small_file, tmp_path):
+    def _setup(self, stage5_small_source, tmp_path):
         self.path = tmp_path / "working.ftmw"
-        shutil.copy(stage5_small_file, self.path)
+        shutil.copy(stage5_small_source, self.path)
         self.sf = _load_spectrum_fit(self.path)
         # Find a window with at least 2 peaks so removing one leaves something.
         self.wf = next(
@@ -498,9 +498,9 @@ class TestAddPeak:
     (protected_offsets).  The added peak must carry origin='user'."""
 
     @pytest.fixture(autouse=True)
-    def _setup(self, stage5_small_file, tmp_path):
+    def _setup(self, stage5_small_source, tmp_path):
         self.path = tmp_path / "working.ftmw"
-        shutil.copy(stage5_small_file, self.path)
+        shutil.copy(stage5_small_source, self.path)
         self.sf = _load_spectrum_fit(self.path)
         self.wf = next(
             (w for w in self.sf.window_fits if w.window_id is not None),
@@ -607,9 +607,9 @@ class TestAddPeak:
 
 class TestAddOutsideWindowRange:
     @pytest.fixture(autouse=True)
-    def _setup(self, stage5_small_file, tmp_path):
+    def _setup(self, stage5_small_source, tmp_path):
         self.path = tmp_path / "working.ftmw"
-        shutil.copy(stage5_small_file, self.path)
+        shutil.copy(stage5_small_source, self.path)
         self.sf = _load_spectrum_fit(self.path)
         self.wf = next(
             (
@@ -796,9 +796,9 @@ class TestRefitWindowErrors:
         with pytest.raises(ValueError, match="No Stage 5 fit"):
             refit_window_impl(str(fp), 0)
 
-    def test_invalid_window_raises(self, stage5_small_file, tmp_path):
+    def test_invalid_window_raises(self, stage5_small_source, tmp_path):
         dst = tmp_path / "copy.ftmw"
-        shutil.copy(stage5_small_file, dst)
+        shutil.copy(stage5_small_source, dst)
         with pytest.raises(KeyError):
             refit_window_impl(str(dst), 99999)
 

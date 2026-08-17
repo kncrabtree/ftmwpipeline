@@ -60,9 +60,9 @@ def _window_with_range(sf: SpectrumFit):
 
 
 @pytest.fixture
-def working_file(stage5_small_file, tmp_path) -> Path:
+def working_file(stage5_small_source, tmp_path) -> Path:
     dst = tmp_path / "working.ftmw"
-    shutil.copy(stage5_small_file, dst)
+    shutil.copy(stage5_small_source, dst)
     return dst
 
 

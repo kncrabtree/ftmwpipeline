@@ -301,9 +301,9 @@ class TestSplitRecordsSplitDecision:
     """split_peak_impl → decision log entry kind='split'."""
 
     @pytest.fixture(autouse=True)
-    def _setup(self, stage5_small_file, tmp_path):
+    def _setup(self, stage5_small_source, tmp_path):
         self.path = tmp_path / "split_decision.ftmw"
-        shutil.copy(stage5_small_file, self.path)
+        shutil.copy(stage5_small_source, self.path)
         self.sf = _load_sf(self.path)
         self.wf = _first_window_with_n_peaks(self.sf, 1)
 
@@ -368,9 +368,9 @@ class TestReviewAcceptNoCandidate:
     """review_accept_impl (no candidate) → provenance='reviewed', kind='accept'."""
 
     @pytest.fixture(autouse=True)
-    def _setup(self, stage5_small_file, tmp_path):
+    def _setup(self, stage5_small_source, tmp_path):
         self.path = tmp_path / "accept_no_cand.ftmw"
-        shutil.copy(stage5_small_file, self.path)
+        shutil.copy(stage5_small_source, self.path)
         self.sf = _load_sf(self.path)
         self.wf = _first_window_with_n_peaks(self.sf, 1)
 
@@ -429,9 +429,9 @@ class TestReviewAcceptWithCandidate:
     """review_accept_impl(candidate_freq=F) → delegates to add, provenance='user-edited'."""
 
     @pytest.fixture(autouse=True)
-    def _setup(self, stage5_small_file, tmp_path):
+    def _setup(self, stage5_small_source, tmp_path):
         self.path = tmp_path / "accept_with_cand.ftmw"
-        shutil.copy(stage5_small_file, self.path)
+        shutil.copy(stage5_small_source, self.path)
         self.sf = _load_sf(self.path)
         self.wf = _first_window_with_n_peaks(self.sf, 1)
 
@@ -596,9 +596,9 @@ class TestCrossInterfaceReviewStatus:
     """api.get_review_status and Pipeline.review_status return the same state."""
 
     @pytest.fixture(autouse=True)
-    def _setup(self, stage5_small_file, tmp_path):
+    def _setup(self, stage5_small_source, tmp_path):
         self.path = tmp_path / "review_status.ftmw"
-        shutil.copy(stage5_small_file, self.path)
+        shutil.copy(stage5_small_source, self.path)
         self.sf = _load_sf(self.path)
         self.wf = _first_window_with_n_peaks(self.sf, 1)
 
@@ -636,9 +636,9 @@ class TestReviewShowAttentionSmoke:
     """review show --attention does not error after review run."""
 
     @pytest.fixture(autouse=True)
-    def _setup(self, stage5_small_file, tmp_path):
+    def _setup(self, stage5_small_source, tmp_path):
         self.path = tmp_path / "show_attention.ftmw"
-        shutil.copy(stage5_small_file, self.path)
+        shutil.copy(stage5_small_source, self.path)
 
     def test_show_attention_no_error(self):
         ftmw.review_run(self.path)
@@ -681,9 +681,9 @@ class TestReviewShowOutputFile:
     """review show --window N --output PATH creates the file."""
 
     @pytest.fixture(autouse=True)
-    def _setup(self, stage5_small_file, tmp_path):
+    def _setup(self, stage5_small_source, tmp_path):
         self.path = tmp_path / "show_output.ftmw"
-        shutil.copy(stage5_small_file, self.path)
+        shutil.copy(stage5_small_source, self.path)
         self.sf = _load_sf(self.path)
         self.wf = _first_window_with_n_peaks(self.sf, 1)
         self.tmp = tmp_path

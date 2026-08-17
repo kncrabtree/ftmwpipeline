@@ -307,9 +307,9 @@ def test_set_sigma_floor_persists(tmp_path):
 
 
 @pytest.mark.integration
-def test_review_run_builds_final_products(stage5_small_file, tmp_path):
+def test_review_run_builds_final_products(stage5_small_source, tmp_path):
     fp = tmp_path / "copy.ftmw"
-    shutil.copy(stage5_small_file, fp)
+    shutil.copy(stage5_small_source, fp)
 
     review_run_impl(str(fp))
     products = get_final_products_impl(str(fp))
@@ -457,9 +457,9 @@ def test_derive_state_uncalibrated_when_timebase_failed(tmp_path):
 
 
 @pytest.mark.integration
-def test_review_run_sigma_floor_folds_into_budget(stage5_small_file, tmp_path):
+def test_review_run_sigma_floor_folds_into_budget(stage5_small_source, tmp_path):
     fp = tmp_path / "copy.ftmw"
-    shutil.copy(stage5_small_file, fp)
+    shutil.copy(stage5_small_source, fp)
 
     review_run_impl(str(fp), sigma_floor_khz=5.0)
     products = get_final_products_impl(str(fp))
@@ -477,11 +477,11 @@ def test_review_run_sigma_floor_folds_into_budget(stage5_small_file, tmp_path):
 
 
 @pytest.mark.integration
-def test_final_products_cross_interface(stage5_small_file, tmp_path):
+def test_final_products_cross_interface(stage5_small_source, tmp_path):
     fp_api = tmp_path / "api.ftmw"
     fp_pipe = tmp_path / "pipe.ftmw"
-    shutil.copy(stage5_small_file, fp_api)
-    shutil.copy(stage5_small_file, fp_pipe)
+    shutil.copy(stage5_small_source, fp_api)
+    shutil.copy(stage5_small_source, fp_pipe)
 
     ftmw.review_run(str(fp_api), sigma_floor_khz=2.5)
     Pipeline.open(fp_pipe).review_run(sigma_floor_khz=2.5)

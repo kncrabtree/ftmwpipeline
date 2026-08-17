@@ -392,9 +392,9 @@ class TestReviewSplitVerb:
     """split_peak_impl: one peak replaced by K peaks, all origin='user'."""
 
     @pytest.fixture(autouse=True)
-    def _setup(self, stage5_small_file, tmp_path):
+    def _setup(self, stage5_small_source, tmp_path):
         self.path = tmp_path / "split_test.ftmw"
-        shutil.copy(stage5_small_file, self.path)
+        shutil.copy(stage5_small_source, self.path)
         self.sf = _load_spectrum_fit(self.path)
         self.wf = _first_window_with_n_peaks(self.sf, 1)
 

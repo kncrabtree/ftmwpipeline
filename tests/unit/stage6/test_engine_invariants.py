@@ -140,9 +140,9 @@ class TestEveryEntryPointIsGated:
     refusal writes nothing at all."""
 
     @pytest.fixture
-    def fitted(self, stage5_small_file, tmp_path) -> Path:
+    def fitted(self, stage5_small_source, tmp_path) -> Path:
         dst = tmp_path / "fitted.ftmw"
-        shutil.copy(stage5_small_file, dst)
+        shutil.copy(stage5_small_source, dst)
         return dst
 
     @staticmethod
@@ -206,9 +206,9 @@ class TestArgumentChecksPrecedeAnyWrite:
     """A malformed call must be refused before the engine touches the file."""
 
     @pytest.fixture
-    def fitted(self, stage5_small_file, tmp_path) -> Path:
+    def fitted(self, stage5_small_source, tmp_path) -> Path:
         dst = tmp_path / "fitted.ftmw"
-        shutil.copy(stage5_small_file, dst)
+        shutil.copy(stage5_small_source, dst)
         return dst
 
     @staticmethod

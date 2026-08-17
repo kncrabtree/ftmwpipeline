@@ -93,9 +93,9 @@ def _free_anchor(path: Path) -> float:
 
 
 @pytest.fixture
-def working_file(stage5_small_file, tmp_path) -> Path:
+def working_file(stage5_small_source, tmp_path) -> Path:
     dst = tmp_path / "working.ftmw"
-    shutil.copy(stage5_small_file, dst)
+    shutil.copy(stage5_small_source, dst)
     review_run_impl(str(dst))
     return dst
 
@@ -266,12 +266,12 @@ class TestPurelyAdditive:
 
 class TestDeterminism:
     def test_same_anchor_on_two_copies_gives_the_same_window(
-        self, stage5_small_file, tmp_path
+        self, stage5_small_source, tmp_path
     ):
         a = tmp_path / "a.ftmw"
         b = tmp_path / "b.ftmw"
-        shutil.copy(stage5_small_file, a)
-        shutil.copy(stage5_small_file, b)
+        shutil.copy(stage5_small_source, a)
+        shutil.copy(stage5_small_source, b)
         anchor = _free_anchor(a)
 
         ra = create_window_impl(str(a), anchor)
@@ -284,13 +284,15 @@ class TestDeterminism:
         )
         assert ra.freq_range == rb.freq_range
 
-    def test_extent_does_not_depend_on_earlier_edits(self, stage5_small_file, tmp_path):
+    def test_extent_does_not_depend_on_earlier_edits(
+        self, stage5_small_source, tmp_path
+    ):
         """Bounds are a function of the anchor and the BASE plan, so an
         unrelated edit made first must not move them."""
         plain = tmp_path / "plain.ftmw"
         edited = tmp_path / "edited.ftmw"
-        shutil.copy(stage5_small_file, plain)
-        shutil.copy(stage5_small_file, edited)
+        shutil.copy(stage5_small_source, plain)
+        shutil.copy(stage5_small_source, edited)
         anchor = _free_anchor(plain)
 
         live = _live_ranges(edited)
@@ -621,11 +623,11 @@ class TestCrossInterface:
     def _result_tuple(self, r: CreateWindowResult):
         return (r.window_id, r.mode, r.freq_range, r.n_points, r.n_contributors)
 
-    def test_api_pipeline_and_impl_agree(self, stage5_small_file, tmp_path):
+    def test_api_pipeline_and_impl_agree(self, stage5_small_source, tmp_path):
         paths = []
         for name in ("impl.ftmw", "pipe.ftmw", "api.ftmw"):
             p = tmp_path / name
-            shutil.copy(stage5_small_file, p)
+            shutil.copy(stage5_small_source, p)
             paths.append(p)
         anchor = _free_anchor(paths[0])
 
@@ -636,15 +638,15 @@ class TestCrossInterface:
         assert self._result_tuple(r_impl) == self._result_tuple(r_pipe)
         assert self._result_tuple(r_impl) == self._result_tuple(r_api)
 
-    def test_cli_creates_the_same_window(self, stage5_small_file, tmp_path):
+    def test_cli_creates_the_same_window(self, stage5_small_source, tmp_path):
         import argparse
 
         from ftmwpipeline.cli.review_commands import cmd_review_create
 
         ref = tmp_path / "ref.ftmw"
         cli = tmp_path / "cli.ftmw"
-        shutil.copy(stage5_small_file, ref)
-        shutil.copy(stage5_small_file, cli)
+        shutil.copy(stage5_small_source, ref)
+        shutil.copy(stage5_small_source, cli)
         anchor = _free_anchor(ref)
 
         expected = create_window_impl(str(ref), anchor)
@@ -659,14 +661,14 @@ class TestCrossInterface:
         assert (min(lo, hi), max(lo, hi)) == expected.freq_range
 
     def test_cli_reports_a_bad_anchor_as_a_user_error(
-        self, stage5_small_file, tmp_path, capsys
+        self, stage5_small_source, tmp_path, capsys
     ):
         import argparse
 
         from ftmwpipeline.cli.review_commands import cmd_review_create
 
         p = tmp_path / "bad.ftmw"
-        shutil.copy(stage5_small_file, p)
+        shutil.copy(stage5_small_source, p)
         rc = cmd_review_create(
             argparse.Namespace(file_path=str(p), anchor=1000.0, verbose=False)
         )

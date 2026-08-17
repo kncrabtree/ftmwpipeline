@@ -72,10 +72,10 @@ def stage5_multi_peak_file(tmp_path_factory):
 # ---------------------------------------------------------------------------
 
 
-def test_review_run_basic(stage5_small_file, tmp_path):
+def test_review_run_basic(stage5_small_source, tmp_path):
     """review_run_impl completes and writes a valid Stage6Review group."""
     fp = tmp_path / "copy.ftmw"
-    shutil.copy(stage5_small_file, fp)
+    shutil.copy(stage5_small_source, fp)
 
     result = review_run_impl(str(fp))
 
@@ -94,10 +94,10 @@ def test_review_run_basic(stage5_small_file, tmp_path):
     assert len(review.decision_log) == 0
 
 
-def test_review_run_idempotency(stage5_small_file, tmp_path):
+def test_review_run_idempotency(stage5_small_source, tmp_path):
     """Running review_run_impl twice yields identical window statuses."""
     fp = tmp_path / "copy.ftmw"
-    shutil.copy(stage5_small_file, fp)
+    shutil.copy(stage5_small_source, fp)
 
     result1 = review_run_impl(str(fp))
     result2 = review_run_impl(str(fp))
@@ -111,10 +111,10 @@ def test_review_run_idempotency(stage5_small_file, tmp_path):
         assert status.provenance == "auto"
 
 
-def test_provenance_preservation(stage5_small_file, tmp_path):
+def test_provenance_preservation(stage5_small_source, tmp_path):
     """Provenance "reviewed" is preserved across a re-run."""
     fp = tmp_path / "copy.ftmw"
-    shutil.copy(stage5_small_file, fp)
+    shutil.copy(stage5_small_source, fp)
 
     # First run to initialize.
     result = review_run_impl(str(fp))
@@ -204,12 +204,12 @@ def test_serialization_roundtrip(tmp_path):
     assert e.evidence["chi2r_before"] == 5.0
 
 
-def test_cross_interface(stage5_small_file, tmp_path):
+def test_cross_interface(stage5_small_source, tmp_path):
     """api.review_run and Pipeline.review_run produce identical results."""
     fp_api = tmp_path / "api.ftmw"
     fp_pipe = tmp_path / "pipeline.ftmw"
-    shutil.copy(stage5_small_file, fp_api)
-    shutil.copy(stage5_small_file, fp_pipe)
+    shutil.copy(stage5_small_source, fp_api)
+    shutil.copy(stage5_small_source, fp_pipe)
 
     result_api = ftmw.review_run(str(fp_api))
     result_pipe = Pipeline.open(fp_pipe).review_run()
@@ -224,7 +224,7 @@ def test_cross_interface(stage5_small_file, tmp_path):
             assert "stage6_review" in h5f
 
 
-def test_attention_reasons_edge_boundary(stage5_small_file, tmp_path):
+def test_attention_reasons_edge_boundary(stage5_small_source, tmp_path):
     """edge_boundary reason fires when a peak sits at a window edge."""
     from ftmwpipeline.io.fitting_serialization import (
         load_spectrum_fit_from_hdf5,
@@ -232,7 +232,7 @@ def test_attention_reasons_edge_boundary(stage5_small_file, tmp_path):
     )
 
     fp = tmp_path / "edge_test.ftmw"
-    shutil.copy(stage5_small_file, fp)
+    shutil.copy(stage5_small_source, fp)
 
     # Load the fit, force a peak to the window edge in the first window.
     with h5py.File(str(fp), "r") as h5f:
@@ -275,7 +275,7 @@ def test_attention_reasons_edge_boundary(stage5_small_file, tmp_path):
     ), f"Expected edge_boundary reason for window {wid}; got {kinds}"
 
 
-def test_attention_reasons_spur_adjacent(stage5_small_file, tmp_path):
+def test_attention_reasons_spur_adjacent(stage5_small_source, tmp_path):
     """spur_adjacent fires for a fitted line sitting on a gated spur node, and
     stays silent when every gated spur is far from every fitted line."""
     from ftmwpipeline.io.fitting_serialization import (
@@ -285,7 +285,7 @@ def test_attention_reasons_spur_adjacent(stage5_small_file, tmp_path):
 
     def _run_with_spurs(spur_centers):
         fp = tmp_path / f"spur_{abs(hash(tuple(spur_centers))) % 100000}.ftmw"
-        shutil.copy(stage5_small_file, fp)
+        shutil.copy(stage5_small_source, fp)
         with h5py.File(str(fp), "r") as h5f:
             sf = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
         target = _first_window_with_peak(sf)
@@ -329,7 +329,7 @@ def _first_window_with_peak(sf):
     return None
 
 
-def test_overfit_vif_retired(stage5_small_file, tmp_path):
+def test_overfit_vif_retired(stage5_small_source, tmp_path):
     """overfit_vif is retired: a non-identifiable amplitude (VIF >> 1) no longer
     raises a standalone flag. Its content now routes to the end-of-Stage-5 merge
     (``auto_merged_review``) or the SNR-aware gate (``worst_eps``); degeneracy is
@@ -340,7 +340,7 @@ def test_overfit_vif_retired(stage5_small_file, tmp_path):
     )
 
     fp = tmp_path / "vif_test.ftmw"
-    shutil.copy(stage5_small_file, fp)
+    shutil.copy(stage5_small_source, fp)
 
     with h5py.File(str(fp), "r") as h5f:
         sf = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
@@ -367,7 +367,7 @@ def test_overfit_vif_retired(stage5_small_file, tmp_path):
     assert "overfit_vif" not in kinds, f"overfit_vif should be retired; got {kinds}"
 
 
-def test_low_snr_retired(stage5_small_file, tmp_path):
+def test_low_snr_retired(stage5_small_source, tmp_path):
     """A borderline-SNR fitted peak is NOT flagged: low_snr is retired as a
     reason (weak windows are surfaced on demand via ranking, not flagged)."""
     from ftmwpipeline.io.fitting_serialization import (
@@ -376,7 +376,7 @@ def test_low_snr_retired(stage5_small_file, tmp_path):
     )
 
     fp = tmp_path / "lowsnr_test.ftmw"
-    shutil.copy(stage5_small_file, fp)
+    shutil.copy(stage5_small_source, fp)
 
     with h5py.File(str(fp), "r") as h5f:
         sf = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
@@ -429,10 +429,10 @@ def test_multi_peak_candidate_bearing(stage5_multi_peak_file, tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_rank_min_snr_sorted_ascending(stage5_small_file, tmp_path):
+def test_rank_min_snr_sorted_ascending(stage5_small_source, tmp_path):
     """min-snr ranks worst (lowest SNR) first; values are non-decreasing."""
     fp = tmp_path / "rank.ftmw"
-    shutil.copy(stage5_small_file, fp)
+    shutil.copy(stage5_small_source, fp)
 
     ranked = rank_windows_impl(str(fp), by="min-snr")
     assert ranked and all(isinstance(r, RankedWindow) for r in ranked)
@@ -441,49 +441,49 @@ def test_rank_min_snr_sorted_ascending(stage5_small_file, tmp_path):
     assert values == sorted(values)  # ascending: weakest first
 
 
-def test_rank_max_vif_sorted_descending(stage5_small_file, tmp_path):
+def test_rank_max_vif_sorted_descending(stage5_small_source, tmp_path):
     """max-vif ranks worst (highest VIF) first; values are non-increasing."""
     fp = tmp_path / "rank.ftmw"
-    shutil.copy(stage5_small_file, fp)
+    shutil.copy(stage5_small_source, fp)
 
     ranked = rank_windows_impl(str(fp), by="max_vif")  # underscore form accepted
     values = [r.value for r in ranked]
     assert values == sorted(values, reverse=True)
 
 
-def test_rank_top_limits(stage5_small_file, tmp_path):
+def test_rank_top_limits(stage5_small_source, tmp_path):
     """--top limits the result; top<=0 returns all."""
     fp = tmp_path / "rank.ftmw"
-    shutil.copy(stage5_small_file, fp)
+    shutil.copy(stage5_small_source, fp)
 
     all_rows = rank_windows_impl(str(fp), by="chi2r")
     assert len(rank_windows_impl(str(fp), by="chi2r", top=1)) == 1
     assert len(rank_windows_impl(str(fp), by="chi2r", top=0)) == len(all_rows)
 
 
-def test_rank_unknown_metric_raises(stage5_small_file, tmp_path):
+def test_rank_unknown_metric_raises(stage5_small_source, tmp_path):
     fp = tmp_path / "rank.ftmw"
-    shutil.copy(stage5_small_file, fp)
+    shutil.copy(stage5_small_source, fp)
     with pytest.raises(ValueError, match="unknown rank metric"):
         rank_windows_impl(str(fp), by="bogus")
 
 
-def test_rank_all_metrics_run(stage5_small_file, tmp_path):
+def test_rank_all_metrics_run(stage5_small_source, tmp_path):
     """Every registered metric runs without error and stays in-range/sorted."""
     fp = tmp_path / "rank.ftmw"
-    shutil.copy(stage5_small_file, fp)
+    shutil.copy(stage5_small_source, fp)
     for name, (_desc, lower_is_worse) in RANK_METRICS.items():
         ranked = rank_windows_impl(str(fp), by=name)
         values = [r.value for r in ranked]
         assert values == sorted(values, reverse=not lower_is_worse)
 
 
-def test_rank_cross_interface(stage5_small_file, tmp_path):
+def test_rank_cross_interface(stage5_small_source, tmp_path):
     """api.rank_windows and Pipeline.rank_windows agree."""
     import ftmwpipeline.api as ftmw_api
 
     fp = tmp_path / "rank.ftmw"
-    shutil.copy(stage5_small_file, fp)
+    shutil.copy(stage5_small_source, fp)
 
     a = ftmw_api.rank_windows(str(fp), "min-snr", top=3)
     p = Pipeline.open(fp).rank_windows("min-snr", top=3)
