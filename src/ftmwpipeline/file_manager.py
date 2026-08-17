@@ -131,7 +131,7 @@ class AnalysisEpochMismatchError(PipelineFileError, ValueError):
     ``review acknowledge-environment``; both are named in ``str(exc)``.
 
     Subclasses :class:`ValueError` as well as :class:`PipelineFileError`: the
-    refusal was a bare ``ValueError`` through 0.1.0b5, so every existing
+    refusal was a bare ``ValueError`` through 0.1.0b4, so every existing
     ``except ValueError`` caller keeps working.  Catching this type rather than
     matching the message is the supported way to route the refusal to a
     dedicated recovery flow -- the message wording is not a contract.

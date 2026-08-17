@@ -2145,6 +2145,7 @@ def get_pipeline_info(file_path: Union[str, Path]) -> Dict[str, Any]:
     -------
     dict
         Pipeline information including:
+
         - 'filepath': Full path to pipeline file
         - 'valid': Whether file is valid
         - 'source_path': Original data source

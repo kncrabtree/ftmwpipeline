@@ -11,6 +11,67 @@ Notable changes to ``ftmwpipeline``, newest first. Versions follow
 Unreleased
 ----------
 
+Accumulating toward ``1.0.0``. ``0.1.0b4`` is the last published release;
+``0.1.0b5`` and ``0.1.0b6`` are development versions that were never cut, so
+everything below is reachable only from a source checkout. No further beta is
+planned — these entries fold into the ``1.0.0`` section when it is dated.
+
+Results are unchanged on a file whose fit already ran, and **``ANALYSIS_EPOCH``
+stays 2**: the Stage 6 rework is bit-identical on a real fixture, and every
+other change either widens a read surface, adds a name, or moves a message. A
+file fitted under 0.1.0b4 can be curated by this code without re-fitting or
+acknowledging.
+
+Much of what is new is *contract*: two values a downstream consumer previously
+had to reach into ``_internal`` or parse out of prose to obtain are now
+published, and the Stage 6 edit paths that carry them were collapsed onto one
+engine so they cannot answer differently.
+
+* **The curation snap tolerance is public.** Matching "the peak at *f*" the way
+  a curation refit matches it requires the refit's snap tolerance, which existed
+  only as a private constant — so a consumer pairing peaks across a refit had to
+  reach into ``_internal`` or hardcode a copy, and either way could disagree
+  with the file about which peak was meant. ``REFIT_SNAP_TOL_MHZ`` (50 kHz,
+  value unchanged) is now exported from the top-level package and defined once
+  in a new stdlib-only ``core.curation``. That single definition is the point:
+  the value had been spelled as a bare literal in all eight public signatures
+  while only the internal implementations referenced the constant, so publishing
+  the name without collapsing the copies would have moved the drift up a level
+  rather than closing it. Two asymmetries surfaced by the same audit are closed
+  with it — ``review_accept`` now exposes the ``snap_tol_mhz`` its implementation
+  always had, and the CLI gained the matching flag, so the parameter reaches all
+  three interfaces. ``review apply`` deliberately gains no tolerance knob, since
+  an override there would recreate the disagreement the published value exists
+  to prevent. The private ``_internal.stage6_impl._REFIT_SNAP_TOL_MHZ`` alias is
+  **not** kept: a private read that keeps working is how it survives in an
+  integration forever.
+
+* **The analysis-epoch refusal has a type.** Splicing a Stage 6 edit into a fit
+  produced under a different epoch has been refused since ``0.1.0b3``, but it
+  refused with a bare ``ValueError`` whose only distinguishing feature was its
+  wording — so a caller routing that one refusal to a recovery flow (offer a
+  re-run under the current environment, rather than a generic "the edit failed")
+  had nothing to key on but a substring of a message that is ours to rephrase.
+  ``AnalysisEpochMismatchError`` subclasses both ``PipelineFileError`` and
+  ``ValueError``: the ``ValueError`` half keeps every existing catch site working
+  unchanged, and the message text is byte-identical. It carries both epochs and
+  both environment records, so the mismatch can be displayed without parsing the
+  message it replaces. The whole ``PipelineFileError`` family is now exported at
+  top level rather than only the new member. Relatedly, the ``"<field_name>: "``
+  prefix on each drift line from ``describe_environment_drift`` /
+  ``describe_runtime_drift`` is now documented as a contract — while stating
+  plainly that the prose after the colon is not stable.
+
+* **``run --help`` shows the flags that decide a run.** ``run`` mirrors every
+  stage's knob surface, so argparse dumped all ~150 options and printed 315
+  lines, drowning the dozen flags that actually determine what a run does. The
+  per-stage knobs are now hidden from the default help and grouped behind
+  ``--help-knobs`` (bare for everything, or scoped to one stage), with the epilog
+  naming each prefix and the per-stage command that documents the same knobs
+  un-prefixed. Hidden is not disabled — every flag parses exactly as before, and
+  a test pins that — because an option that should not be used should be deleted,
+  not concealed. 315 lines to 77.
+
 * **``info`` compares the file against the environment running it.** The
   environment report answered only "were this file's stages produced by the same
   code", which a file stamped uniformly by one release always passes — including
