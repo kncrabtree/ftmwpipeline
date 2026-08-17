@@ -106,6 +106,14 @@ addopts = [
     "--cov-report=xml",
 ]
 testpaths = ["tests"]
+# Every test that needs a real file imports its own .ftmw, and a .ftmw is ~5.7 MB
+# because it carries a 750k-point float64 FID that gzip cannot compress. A full
+# suite writes ~800 of them (~4.2 GB), and pytest's default policy keeps the last
+# three runs' trees -- enough to fill a 16 GB /tmp tmpfs on the third consecutive
+# run, where the ENOSPC surfaces as ordinary assertion failures rather than as a
+# disk error. Keep the tree only for tests that failed, which is when it is worth
+# opening.
+tmp_path_retention_policy = "failed"
 python_files = ["test_*.py", "*_test.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
