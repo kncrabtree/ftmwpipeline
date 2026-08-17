@@ -43,7 +43,7 @@ from typing import (
 import h5py
 import numpy as np
 
-from ..core.curation import REFIT_SNAP_TOL_MHZ
+from ..core.curation import REFIT_SNAP_TOL_MHZ, Frame
 from ..core.data_structures import (
     AttentionReason,
     AuditStep,
@@ -801,6 +801,90 @@ def rank_windows_impl(
 
 
 # ---------------------------------------------------------------------------
+# Frame conversion: raw (stored / fit-frame) <-> calibrated (report-frame)
+#
+# Every caller-supplied frequency across all three interfaces -- add/remove,
+# candidate_freq, merge peak sets, split peak, create anchor, and a curation
+# file's frequencies -- carries a ``Frame`` (see ``core.curation.Frame`` for
+# the full rationale). ``_resolve_frame`` is called once per verb invocation,
+# before the batch opens (like the arity checks below), so a self_calibrated
+# file's omitted ``frame`` is refused before the undo baseline is taken --
+# same placement, same reason: a refused call must leave the file untouched.
+# The converted (raw) frequency is what every applier below ever sees; no
+# applier or the batch engine itself knows what frame the caller used.
+# ---------------------------------------------------------------------------
+
+_CalibrationStamp = Tuple[str, float, float, float, float, str]
+"""``(calibration_state, epsilon, sigma_epsilon, sigma_floor_khz,
+probe_freq_mhz, sideband)`` -- :func:`_current_calibration_stamp`'s return
+type, named here for readability at the frame-conversion call sites."""
+
+
+def _resolve_frame(
+    path: str, frame: Optional[Frame]
+) -> Tuple[Frame, Optional[_CalibrationStamp]]:
+    """Resolve an omitted/explicit ``frame`` against the file's calibration.
+
+    Returns ``(resolved_frame, stamp)``; ``stamp`` is
+    :func:`_current_calibration_stamp`'s six-tuple (``None`` when the file has
+    no FID header to derive one from, in which case the frame is inert).
+
+    Omitting ``frame`` (``None``) resolves to ``\"raw\"`` -- matching today's
+    undocumented behavior -- everywhere except a ``self_calibrated`` file,
+    where it is refused: that is the one regime where the choice has
+    consequences (a calibrated candidate submitted as raw still resolves, and
+    to the right peak, but lands ``probe_freq * eps/(1+eps)`` off -- under the
+    snap tolerance, over the statistical sigma, invisible in the result).
+    Passing ``frame=\"raw\"`` explicitly is never refused, on any file.
+    """
+    stamp = _current_calibration_stamp(path)
+    cal_state = stamp[0] if stamp is not None else "rb_locked"
+    if frame is None:
+        if cal_state == "self_calibrated":
+            raise ValueError(
+                "frame is required on a self_calibrated file: pass "
+                'frame="raw" or frame="calibrated" explicitly rather than '
+                "relying on the default. A calibrated frequency submitted as "
+                "raw still resolves to the right peak, but is wrong by "
+                "probe_freq * eps/(1+eps) -- under the snap tolerance and "
+                "over the statistical uncertainty, so the mistake would be "
+                "silent."
+            )
+        return "raw", stamp
+    return frame, stamp
+
+
+def _frame_to_raw(
+    freq_mhz: float, *, frame: Frame, stamp: Optional[_CalibrationStamp]
+) -> float:
+    """Convert one caller-supplied frequency to the raw (stored / fit) frame.
+
+    Inverts the baseband-only correction
+    (``f_corr = probe + (f_raw - probe) / (1 + eps)``):
+    ``f_raw = probe + (f_corr - probe) * (1 + eps)``. Identity when
+    ``frame == \"raw\"``, when ``epsilon == 0`` (rb_locked/uncalibrated), or
+    when the file carries no calibration to convert against.
+    """
+    if frame == "raw" or stamp is None:
+        return float(freq_mhz)
+    _, epsilon, _, _, probe_freq_mhz, _ = stamp
+    if epsilon == 0.0:
+        return float(freq_mhz)
+    return float(probe_freq_mhz + (freq_mhz - probe_freq_mhz) * (1.0 + epsilon))
+
+
+def _frame_to_calibrated(
+    freq_mhz: float, *, probe_freq_mhz: float, epsilon: float
+) -> float:
+    """Convert one raw (fit-frame) frequency to the calibrated frame, for
+    labeling a returned result (A6). Mirrors :func:`_build_final_products`'s
+    correction exactly; identity when ``epsilon == 0``."""
+    if epsilon == 0.0:
+        return float(freq_mhz)
+    return float(probe_freq_mhz + (freq_mhz - probe_freq_mhz) / (1.0 + epsilon))
+
+
+# ---------------------------------------------------------------------------
 # Single-window refit result
 # ---------------------------------------------------------------------------
 
@@ -822,7 +906,22 @@ class RefitWindowResult:
     chi2r_after : float
         Reduced chi-squared after the refit.
     fitted_peaks : list of FittedPeak
-        The new per-window fitted peaks (already persisted).
+        The new per-window fitted peaks (already persisted).  Raw / fit-frame
+        frequencies -- the frame the fit and the decision log are stored in.
+    fitted_peaks_calibrated_mhz : list of float
+        The calibrated molecular frequency (MHz) of each entry in
+        ``fitted_peaks``, same order and length: ``fitted_peaks[i]`` in the
+        raw frame, ``fitted_peaks_calibrated_mhz[i]`` in the calibrated one.
+        Equal to the raw value when ``epsilon == 0``.
+    calibration_state : str
+        ``\"rb_locked\"`` / ``\"self_calibrated\"`` / ``\"uncalibrated\"`` --
+        the file's calibration state at the moment of this refit.
+    epsilon : float
+        The fractional timebase scale error actually applied to build
+        ``fitted_peaks_calibrated_mhz`` (``0.0`` unless
+        ``calibration_state == \"self_calibrated\"``).
+    sigma_epsilon : float
+        1-sigma uncertainty on ``epsilon`` (``0.0`` when inapplicable).
     """
 
     window_id: int
@@ -831,6 +930,47 @@ class RefitWindowResult:
     chi2r_before: float
     chi2r_after: float
     fitted_peaks: List[FittedPeak] = field(default_factory=list)
+    fitted_peaks_calibrated_mhz: List[float] = field(default_factory=list)
+    calibration_state: str = "rb_locked"
+    epsilon: float = 0.0
+    sigma_epsilon: float = 0.0
+
+
+def _make_refit_result(
+    ctx: "_BatchCtx",
+    *,
+    window_id: int,
+    n_peaks_before: int,
+    n_peaks_after: int,
+    chi2r_before: float,
+    chi2r_after: float,
+    fitted_peaks: List[FittedPeak],
+) -> RefitWindowResult:
+    """Build one :class:`RefitWindowResult`, labeled with both frames (A6) and
+    stamped with the calibration actually applied -- shared by every applier
+    that returns one (edit / merge / split / accept-with-candidate), so the
+    stamping logic exists in exactly one place."""
+    shared = ctx.shared
+    calibrated = [
+        _frame_to_calibrated(
+            float(p.frequency_mhz),
+            probe_freq_mhz=shared.fit_ctx.probe_freq_mhz,
+            epsilon=shared.epsilon,
+        )
+        for p in fitted_peaks
+    ]
+    return RefitWindowResult(
+        window_id=window_id,
+        n_peaks_before=n_peaks_before,
+        n_peaks_after=n_peaks_after,
+        chi2r_before=chi2r_before,
+        chi2r_after=chi2r_after,
+        fitted_peaks=fitted_peaks,
+        fitted_peaks_calibrated_mhz=calibrated,
+        calibration_state=shared.calibration_state,
+        epsilon=shared.epsilon,
+        sigma_epsilon=shared.sigma_epsilon,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2086,6 +2226,7 @@ def refit_window_impl(
     remove: Sequence[float] = (),
     add_seeds: Optional[List[ModelPeak]] = None,
     snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+    frame: Optional[Frame] = None,
 ) -> RefitWindowResult:
     """User-directed single-window refit for Stage 6 review decisions.
 
@@ -2143,31 +2284,49 @@ def refit_window_impl(
     snap_tol_mhz :
         Maximum distance (MHz) for frequency snapping to an existing peak or
         ledger candidate.  Defaults to :data:`REFIT_SNAP_TOL_MHZ` (50 kHz).
+    frame :
+        The frame ``add`` and ``remove`` are expressed in: ``"raw"`` (the
+        Stage 5 fit / ledger frame) or ``"calibrated"``. Converted to raw
+        before any snapping; storage stays raw regardless. Omitting it
+        defaults to ``"raw"`` and is an error on a ``self_calibrated`` file
+        when ``add`` or ``remove`` is non-empty (see
+        :func:`~ftmwpipeline.core.curation.Frame`).
 
     Returns
     -------
     RefitWindowResult
-        Old vs new peak count, χ²ᵣ before/after, and the new fitted peaks.
+        Old vs new peak count, χ²ᵣ before/after, and the new fitted peaks
+        (both frames -- see :class:`RefitWindowResult`).
 
     Raises
     ------
     ValueError
         When Stage 5 has not been run, the ``window_id`` is not found,
         ``len(add_seeds) != len(add)``, any ``remove`` frequency does not
-        match a fitted peak within ``snap_tol_mhz``, or any ``add`` frequency
-        falls outside the named window's ``freq_range`` after snapping.
+        match a fitted peak within ``snap_tol_mhz``, any ``add`` frequency
+        falls outside the named window's ``freq_range`` after snapping, or
+        ``frame`` is omitted on a ``self_calibrated`` file with a non-empty
+        ``add``/``remove``.
     """
     # Checked before the batch opens so a malformed call cannot even take the
     # undo baseline: a refused edit must leave the file untouched. The applier
     # re-checks, since a curation row reaches it without passing through here.
     _check_add_seeds_arity(add, add_seeds)
+    path = str(file_path)
+    add_raw, remove_raw = list(add), list(remove)
+    if add_raw or remove_raw:
+        resolved_frame, stamp = _resolve_frame(path, frame)
+        add_raw = [_frame_to_raw(f, frame=resolved_frame, stamp=stamp) for f in add_raw]
+        remove_raw = [
+            _frame_to_raw(f, frame=resolved_frame, stamp=stamp) for f in remove_raw
+        ]
     return _run_single_action(
-        str(file_path),
+        path,
         lambda ctx: _batch_apply_edit_action(
             ctx,
             window_id,
-            add,
-            remove,
+            add_raw,
+            remove_raw,
             add_seeds=add_seeds,
             snap_tol_mhz=snap_tol_mhz,
         ),
@@ -2186,6 +2345,7 @@ def merge_peaks_impl(
     peaks: Sequence[float],
     *,
     snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+    frame: Optional[Frame] = None,
 ) -> RefitWindowResult:
     """Collapse ≥2 fitted peaks in a window into a single peak.
 
@@ -2224,27 +2384,34 @@ def merge_peaks_impl(
         ``snap_tol_mhz``.
     snap_tol_mhz :
         Maximum distance (MHz) for frequency snapping.
+    frame :
+        The frame ``peaks`` is expressed in (see :func:`refit_window_impl`).
+        Omitting it is an error on a ``self_calibrated`` file.
 
     Returns
     -------
     RefitWindowResult
         Old vs new peak count (reduced by ``len(peaks) - 1``), χ²ᵣ
-        before/after, and the new fitted peaks.
+        before/after, and the new fitted peaks (both frames).
 
     Raises
     ------
     ValueError
         When fewer than 2 frequencies are supplied, any frequency does not
-        match a fitted peak within tolerance, or Stage 5 has not been run.
+        match a fitted peak within tolerance, Stage 5 has not been run, or
+        ``frame`` is omitted on a ``self_calibrated`` file.
     """
     # Checked before the batch opens so a malformed call cannot even take the
     # undo baseline: a refused edit must leave the file untouched. The applier
     # re-checks, since a curation row reaches it without passing through here.
     _check_merge_arity(peaks)
+    path = str(file_path)
+    resolved_frame, stamp = _resolve_frame(path, frame)
+    peaks_raw = [_frame_to_raw(f, frame=resolved_frame, stamp=stamp) for f in peaks]
     return _run_single_action(
-        str(file_path),
+        path,
         lambda ctx: _batch_apply_merge(
-            ctx, window_id, peaks, snap_tol_mhz=snap_tol_mhz
+            ctx, window_id, peaks_raw, snap_tol_mhz=snap_tol_mhz
         ),
         snap_tol_mhz=snap_tol_mhz,
     )
@@ -2262,6 +2429,7 @@ def split_peak_impl(
     *,
     into: int = 2,
     snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+    frame: Optional[Frame] = None,
 ) -> RefitWindowResult:
     """Replace one fitted peak with ``into`` peaks (default 2).
 
@@ -2291,25 +2459,32 @@ def split_peak_impl(
         Number of replacement peaks (≥2).  Default is 2.
     snap_tol_mhz :
         Maximum distance (MHz) for frequency snapping.
+    frame :
+        The frame ``peak`` is expressed in (see :func:`refit_window_impl`).
+        Omitting it is an error on a ``self_calibrated`` file.
 
     Returns
     -------
     RefitWindowResult
         Old vs new peak count (increased by ``into - 1``), χ²ᵣ
-        before/after, and the new fitted peaks.
+        before/after, and the new fitted peaks (both frames).
 
     Raises
     ------
     ValueError
         When ``into < 2``, the frequency does not match a fitted peak within
-        tolerance, or Stage 5 has not been run.
+        tolerance, Stage 5 has not been run, or ``frame`` is omitted on a
+        ``self_calibrated`` file.
     """
     # Checked before the batch opens: see :func:`merge_peaks_impl`.
     _check_split_arity(into)
+    path = str(file_path)
+    resolved_frame, stamp = _resolve_frame(path, frame)
+    peak_raw = _frame_to_raw(peak, frame=resolved_frame, stamp=stamp)
     return _run_single_action(
-        str(file_path),
+        path,
         lambda ctx: _batch_apply_split(
-            ctx, window_id, peak, into, snap_tol_mhz=snap_tol_mhz
+            ctx, window_id, peak_raw, into, snap_tol_mhz=snap_tol_mhz
         ),
         snap_tol_mhz=snap_tol_mhz,
     )
@@ -2447,6 +2622,7 @@ def review_accept_impl(
     *,
     candidate_freq: Optional[float] = None,
     snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+    frame: Optional[Frame] = None,
 ) -> Optional[RefitWindowResult]:
     """Accept a window as-is or accept a specific revived candidate.
 
@@ -2473,25 +2649,35 @@ def review_accept_impl(
         ledger candidate within ``snap_tol_mhz``.
     snap_tol_mhz :
         Maximum distance (MHz) for snapping to an existing ledger candidate.
+    frame :
+        The frame ``candidate_freq`` is expressed in (see
+        :func:`refit_window_impl`). Irrelevant, and never validated, when
+        ``candidate_freq`` is ``None`` -- a bare accept carries no frequency.
+        Omitting it while ``candidate_freq`` is given is an error on a
+        ``self_calibrated`` file.
 
     Returns
     -------
     RefitWindowResult or None
         ``None`` when accepting as-is; the refit result when ``candidate_freq``
-        was given.
+        was given (both frames -- see :class:`RefitWindowResult`).
     """
     if candidate_freq is None:
         # A bare accept marks the window reviewed and changes no fitted number,
         # so it deliberately does NOT open a batch: it needs no fit context (the
         # expensive part), takes no undo baseline, and is not a splice, so the
-        # epoch gate does not apply to it.
+        # epoch gate does not apply to it. No frequency is carried, so `frame`
+        # is moot and is never resolved/validated here.
         _record_bare_accept(str(file_path), window_id)
         return None
 
+    path = str(file_path)
+    resolved_frame, stamp = _resolve_frame(path, frame)
+    candidate_raw = _frame_to_raw(candidate_freq, frame=resolved_frame, stamp=stamp)
     return _run_single_action(
-        str(file_path),
+        path,
         lambda ctx: _batch_apply_accept(
-            ctx, window_id, candidate_freq, snap_tol_mhz=snap_tol_mhz
+            ctx, window_id, candidate_raw, snap_tol_mhz=snap_tol_mhz
         ),
         snap_tol_mhz=snap_tol_mhz,
     )
@@ -2544,8 +2730,12 @@ def _record_bare_accept(path: str, window_id: int) -> None:
         attention_reasons=kept_reasons,
         invalidated=False,
     )
-    # Accepting as-is does not change the fit, so the calibrated final-products
-    # table stays valid -- carry it forward unchanged.
+    # Accepting as-is does not change the fit, but it can still be the first
+    # write since a timebase re-run: the persisted table's calibration stamp
+    # may no longer match the file's current calibration, and carrying it
+    # forward unchanged would re-persist a stale table (this is exactly the
+    # bug -- a bare accept must not launder it back to disk).
+    final_products = _current_final_products(existing_review.final_products, path)
     new_review = Stage6Review(
         window_statuses=new_statuses,
         decision_log=list(existing_review.decision_log)
@@ -2559,7 +2749,7 @@ def _record_bare_accept(path: str, window_id: int) -> None:
                 evidence={},
             )
         ],
-        final_products=existing_review.final_products,
+        final_products=final_products,
         created_windows=list(existing_review.created_windows),
     )
 
@@ -2588,9 +2778,15 @@ class CreateWindowResult:
         ``"created"`` (a new window was built in a gap) or ``"widened"`` (the gap
         was too narrow, so the adjacent window absorbed the anchor).
     anchor_mhz : float
-        The requested molecular frequency (MHz).
+        The requested molecular frequency (MHz), in the raw / fit frame (the
+        frame the anchor was converted to before installing the window).
+    anchor_calibrated_mhz : float
+        The same anchor in the calibrated frame. Equal to ``anchor_mhz`` when
+        ``epsilon == 0``.
     freq_range : tuple of float
-        The installed window's ``(min_mhz, max_mhz)`` extent.
+        The installed window's ``(min_mhz, max_mhz)`` extent, raw frame.
+    freq_range_calibrated : tuple of float
+        ``freq_range`` in the calibrated frame.
     n_points : int
         Grid points the window covers.
     n_contributors : int
@@ -2601,6 +2797,14 @@ class CreateWindowResult:
         Fitted peaks in the window after the create (``0`` for a fresh window --
         creating a window installs *structure*; adding the line is a separate
         ``review edit --add`` decision).
+    calibration_state : str
+        ``\"rb_locked\"`` / ``\"self_calibrated\"`` / ``\"uncalibrated\"`` --
+        the file's calibration state at the moment of this create.
+    epsilon : float
+        The fractional timebase scale error actually applied (``0.0`` unless
+        ``calibration_state == \"self_calibrated\"``).
+    sigma_epsilon : float
+        1-sigma uncertainty on ``epsilon`` (``0.0`` when inapplicable).
     """
 
     window_id: int
@@ -2611,6 +2815,11 @@ class CreateWindowResult:
     n_contributors: int
     depends_on: List[int]
     n_peaks: int
+    anchor_calibrated_mhz: float = 0.0
+    freq_range_calibrated: Tuple[float, float] = (0.0, 0.0)
+    calibration_state: str = "rb_locked"
+    epsilon: float = 0.0
+    sigma_epsilon: float = 0.0
 
 
 def _frozen_parameters_from_sources(
@@ -2652,6 +2861,7 @@ def create_window_impl(
     anchor_mhz: float,
     *,
     snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+    frame: Optional[Frame] = None,
     _replay_window_id: Optional[int] = None,
 ) -> CreateWindowResult:
     """Install a Stage 6 fit window covering ``anchor_mhz`` (``review create``).
@@ -2696,6 +2906,10 @@ def create_window_impl(
     snap_tol_mhz :
         Frequency-snapping tolerance forwarded to the fit core (unused by the
         empty-peak-set fit; kept for signature parity with the other verbs).
+    frame :
+        The frame ``anchor_mhz`` is expressed in (see
+        :func:`refit_window_impl`). Omitting it is an error on a
+        ``self_calibrated`` file.
     _replay_window_id :
         Internal. The id this create produced the first time round, supplied
         when the decision log is replayed so the window keeps its identity even
@@ -2706,19 +2920,25 @@ def create_window_impl(
     Returns
     -------
     CreateWindowResult
+        Both frames on the anchor and the installed range -- see
+        :class:`CreateWindowResult`.
 
     Raises
     ------
     ValueError
         When Stage 5 has not been run, the anchor is outside the analysis band,
-        or the anchor already falls inside an existing window (that case is an
-        ordinary ``review edit --add`` on that window).
+        the anchor already falls inside an existing window (that case is an
+        ordinary ``review edit --add`` on that window), or ``frame`` is
+        omitted on a ``self_calibrated`` file.
     """
+    path = str(file_path)
+    resolved_frame, stamp = _resolve_frame(path, frame)
+    anchor_raw = _frame_to_raw(anchor_mhz, frame=resolved_frame, stamp=stamp)
     return _run_single_action(
-        str(file_path),
+        path,
         lambda ctx: _batch_apply_create(
             ctx,
-            anchor_mhz,
+            anchor_raw,
             replay_window_id=_replay_window_id,
             snap_tol_mhz=snap_tol_mhz,
         ),
@@ -3224,7 +3444,16 @@ def _restore_stage5_baseline(path: str) -> None:
 
 
 def _execute_planned_action(path: str, action: PlannedAction) -> None:
-    """Dispatch one resolved action to its edit impl (shared by apply + undo)."""
+    """Dispatch one resolved action to its edit impl (shared by apply + undo).
+
+    Every frequency on ``action`` is already raw: a curation file's
+    frequencies are converted to raw by :func:`apply_curation_impl` before a
+    :class:`PlannedAction` is built, and a decision-log replay
+    (:func:`_decision_to_op`) reads frequencies straight from the log, which
+    is raw by construction (see ``core.curation.Frame``). ``frame="raw"`` is
+    passed explicitly rather than left to default, so a self_calibrated
+    file's omitted-frame error can never fire on a replay.
+    """
     if action.kind == "create":
         if action.anchor is None:
             raise ValueError("create action requires an anchor frequency")
@@ -3235,21 +3464,32 @@ def _execute_planned_action(path: str, action: PlannedAction) -> None:
         create_window_impl(
             path,
             action.anchor,
+            frame="raw",
             _replay_window_id=(
                 None if action.window_id == _NEW_WINDOW_SENTINEL else action.window_id
             ),
         )
         return
     if action.kind == "edit":
-        refit_window_impl(path, action.window_id, add=action.add, remove=action.remove)
+        refit_window_impl(
+            path,
+            action.window_id,
+            add=action.add,
+            remove=action.remove,
+            frame="raw",
+        )
     elif action.kind == "merge":
-        merge_peaks_impl(path, action.window_id, action.peaks)
+        merge_peaks_impl(path, action.window_id, action.peaks, frame="raw")
     elif action.kind == "split":
         if action.peak is None:
             raise ValueError("split action requires a peak frequency")
-        split_peak_impl(path, action.window_id, action.peak, into=action.into)
+        split_peak_impl(
+            path, action.window_id, action.peak, into=action.into, frame="raw"
+        )
     elif action.kind == "accept":
-        review_accept_impl(path, action.window_id, candidate_freq=action.candidate)
+        review_accept_impl(
+            path, action.window_id, candidate_freq=action.candidate, frame="raw"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -3282,10 +3522,16 @@ def _execute_planned_action(path: str, action: PlannedAction) -> None:
 
 
 @dataclass
-class _BatchCtx:
-    """Shared, batch-invariant state for one curation batch, plus the
-    in-progress mutable changeset (``spectrum_fit``, the dirty/mutated window
-    sets, and the pending decision-log entries)."""
+class _SharedFitCtx:
+    """Batch-invariant state derived from the file: resolved settings,
+    calibration, and above all ``fit_ctx`` -- the active-FT reconstruction
+    (:func:`~.stage5_impl.build_stage5_fit_context`) this whole engine exists
+    to amortize. Nothing here depends on which windows a batch's actions
+    touch or on any edit a batch makes, so it is safe to build once and reuse
+    across many batches (a later unit does exactly that for preview); nothing
+    on this object is ever mutated after :func:`_build_shared_fit_ctx`
+    returns it.
+    """
 
     resolved: "StageFitSettings"
     shape_enum: "PeakShape"
@@ -3294,11 +3540,42 @@ class _BatchCtx:
     sigma_tau_global: Optional[float]
     tau_source: str
     fit_ctx: "Stage5FitContext"
-    spectrum_fit: SpectrumFit
     peaks_loaded: List["Peak"]
     peak_frequencies_mhz: List[float]
     min_freeze_snr: float
     base_plan: "WindowPlan"
+    calibration_state: str
+    """``\"rb_locked\"`` / ``\"self_calibrated\"`` / ``\"uncalibrated\"``, as
+    :func:`_derive_frequency_calibration` reads it at the moment this context
+    was built (batch-invariant like everything else here). Stamped on every
+    :class:`RefitWindowResult` / :class:`CreateWindowResult` this batch
+    returns (A6) -- read via :func:`_current_calibration_stamp`, never
+    re-derived per applier call."""
+    epsilon: float
+    """The fractional timebase scale error actually applied (``0.0`` unless
+    ``calibration_state == \"self_calibrated\"``)."""
+    sigma_epsilon: float
+    """1-sigma uncertainty on :attr:`epsilon` (``0.0`` when inapplicable)."""
+
+
+@dataclass
+class _BatchChangeset:
+    """The in-progress mutable state of one curation batch: the working
+    ``spectrum_fit`` (reloaded fresh every batch -- it changes on every
+    apply, so it is never amortized across batches), the dirty/mutated window
+    sets, and the pending decision-log entries.
+
+    ``created_windows`` and ``fit_window_map`` live here rather than on
+    :class:`_SharedFitCtx` even though a fresh build derives their starting
+    value from the file (``base_plan`` overlaid with the persisted review's
+    ``created_windows``): a ``create`` action within the batch appends to
+    ``created_windows`` and recomputes ``fit_window_map`` in place
+    (``_batch_apply_create``), and the next batch must see whatever the
+    previous one persisted, so both have to be reloaded per batch exactly
+    like ``spectrum_fit``.
+    """
+
+    spectrum_fit: SpectrumFit
     created_windows: List["FitWindow"]
     fit_window_map: Dict[int, "FitWindow"] = field(default_factory=dict)
     dirty_wids: set = field(default_factory=set)
@@ -3314,11 +3591,27 @@ class _BatchCtx:
     next_decision_index: int = 0
 
 
-def _build_batch_ctx(path: str, *, snap_tol_mhz: float) -> _BatchCtx:
-    """Load and resolve everything a curation batch's fit-mutating actions
-    share, exactly once: the persisted fit, settings, calibration, and the
-    active-FT context (:func:`~.stage5_impl.build_stage5_fit_context`, the
-    expensive FID-load-and-FT step this whole engine exists to amortize).
+@dataclass
+class _BatchCtx:
+    """One batch's full working state: the (possibly reused) shared context
+    plus this batch's own changeset. Every appliers/cascade/persist helper
+    below still addresses fields through ``ctx.shared.*`` /
+    ``ctx.changeset.*`` -- the split is deliberately visible at every call
+    site, since a later unit needs to build one ``_SharedFitCtx`` and reuse it
+    across many ``_BatchChangeset``s.
+    """
+
+    shared: _SharedFitCtx
+    changeset: _BatchChangeset
+
+
+def _build_shared_fit_ctx(path: str) -> _SharedFitCtx:
+    """Load and resolve everything every batch's fit-mutating actions share:
+    settings, calibration, and the active-FT context
+    (:func:`~.stage5_impl.build_stage5_fit_context`, the expensive
+    FID-load-and-FT step this whole engine exists to amortize). Safe to build
+    once and reuse across many batches -- nothing it returns depends on any
+    batch's edits.
     """
     from ..core.stage_fit_settings import ShapeSpec, StageFitSettings
     from ..core.stage_fit_settings import resolve as resolve_stage_fit_settings
@@ -3341,11 +3634,14 @@ def _build_batch_ctx(path: str, *, snap_tol_mhz: float) -> _BatchCtx:
     with h5py.File(path, "r") as h5f:
         if "stage5_fitting" not in h5f:
             raise ValueError("No Stage 5 fit found in this file. Run 'fit run' first.")
+        # Loaded only to seed the spur-catalog replay below -- deliberately
+        # not returned. ``spectrum_fit`` is per-batch state (see
+        # ``_BatchChangeset``); the spur catalog in its ``parameters`` is a
+        # Stage 5 product that Stage 6 never rewrites, so reading it here,
+        # once, is not a staleness risk the way retaining the fit would be.
         spectrum_fit: SpectrumFit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
 
     base_plan: "WindowPlan" = load_windows_impl(path)["plan"]
-    review = load_stage6_review_from_file(path)
-    created_windows = list(review.created_windows)
 
     peaks_loaded = load_peaks_impl(path)["peaks"]
     peak_frequencies_mhz = [float(p.frequency) for p in peaks_loaded]
@@ -3403,10 +3699,17 @@ def _build_batch_ctx(path: str, *, snap_tol_mhz: float) -> _BatchCtx:
     min_freeze_snr = float(
         base_plan.parameters.get("min_freeze_snr", DEFAULT_MIN_FREEZE_SNR)
     )
-    effective_plan = _overlay_created_windows(base_plan, created_windows)
-    fit_window_map = {w.window_id: w for w in effective_plan.windows}
 
-    return _BatchCtx(
+    # The calibration actually in force, read once via the same cheap
+    # attrs-only stamp the final-products staleness check uses (A7) -- never a
+    # full FID load. Stamped on every RefitWindowResult / CreateWindowResult
+    # this batch returns (A6); batch-invariant, like everything else here.
+    stamp = _current_calibration_stamp(path)
+    calibration_state = stamp[0] if stamp is not None else "rb_locked"
+    epsilon = stamp[1] if stamp is not None else 0.0
+    sigma_epsilon = stamp[2] if stamp is not None else 0.0
+
+    return _SharedFitCtx(
         resolved=resolved,
         shape_enum=shape_enum,
         persisted_cal=persisted_cal,
@@ -3414,21 +3717,63 @@ def _build_batch_ctx(path: str, *, snap_tol_mhz: float) -> _BatchCtx:
         sigma_tau_global=sigma_tau_global,
         tau_source=tau_source,
         fit_ctx=fit_ctx,
-        spectrum_fit=spectrum_fit,
         peaks_loaded=peaks_loaded,
         peak_frequencies_mhz=peak_frequencies_mhz,
         min_freeze_snr=min_freeze_snr,
         base_plan=base_plan,
+        calibration_state=calibration_state,
+        epsilon=epsilon,
+        sigma_epsilon=sigma_epsilon,
+    )
+
+
+def _build_batch_changeset(path: str, shared: _SharedFitCtx) -> _BatchChangeset:
+    """Load-or-reset everything one batch's actions accumulate: the current
+    ``spectrum_fit`` (reloaded fresh -- never reused across batches), the
+    review's ``created_windows`` overlay and the ``fit_window_map`` derived
+    from it, and the next decision-log index. Called once per batch,
+    regardless of whether ``shared`` was just built or is being reused from an
+    earlier batch.
+    """
+    with h5py.File(path, "r") as h5f:
+        if "stage5_fitting" not in h5f:
+            raise ValueError("No Stage 5 fit found in this file. Run 'fit run' first.")
+        spectrum_fit: SpectrumFit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+
+    review = load_stage6_review_from_file(path)
+    created_windows = list(review.created_windows)
+    effective_plan = _overlay_created_windows(shared.base_plan, created_windows)
+    fit_window_map = {w.window_id: w for w in effective_plan.windows}
+
+    return _BatchChangeset(
+        spectrum_fit=spectrum_fit,
         created_windows=created_windows,
         fit_window_map=fit_window_map,
         next_decision_index=len(review.decision_log),
     )
 
 
+def _build_batch_ctx(
+    path: str, *, snap_tol_mhz: float, shared: Optional[_SharedFitCtx] = None
+) -> _BatchCtx:
+    """Build one batch's full working context.
+
+    Load-or-accept the shared, batch-invariant half (build it fresh unless a
+    caller already has one -- a later unit reuses one ``_SharedFitCtx`` across
+    many batches in a review session), then always build a brand new
+    changeset: none of the changeset is safe to reuse across batches, even
+    when the shared context is (see ``_BatchChangeset``).
+    """
+    if shared is None:
+        shared = _build_shared_fit_ctx(path)
+    changeset = _build_batch_changeset(path, shared)
+    return _BatchCtx(shared=shared, changeset=changeset)
+
+
 def _batch_effective_plan(ctx: _BatchCtx) -> "WindowPlan":
     """The window plan as of *this point* in the batch (base + this batch's own
     creates so far), recomputed in memory -- no file round trip."""
-    return _overlay_created_windows(ctx.base_plan, ctx.created_windows)
+    return _overlay_created_windows(ctx.shared.base_plan, ctx.changeset.created_windows)
 
 
 def _splice_edit_result(
@@ -3465,7 +3810,9 @@ def _splice_new_window_fit(
 
 
 def _batch_lookup_wf(ctx: _BatchCtx, window_id: int) -> FittingResult:
-    wf_list = [wf for wf in ctx.spectrum_fit.window_fits if wf.window_id == window_id]
+    wf_list = [
+        wf for wf in ctx.changeset.spectrum_fit.window_fits if wf.window_id == window_id
+    ]
     if not wf_list:
         raise KeyError(f"window_id={window_id} not found in the Stage 5 fit")
     return wf_list[0]
@@ -3487,7 +3834,7 @@ def _batch_apply_edit_core(
     from ..fitting.result_conversion import sort_fitting_result_by_frequency
 
     wf = _batch_lookup_wf(ctx, window_id)
-    fit_win = ctx.fit_window_map.get(window_id)
+    fit_win = ctx.changeset.fit_window_map.get(window_id)
     if fit_win is None:
         raise KeyError(
             f"window_id={window_id} not found in the Stage 4 WindowPlan. "
@@ -3495,21 +3842,21 @@ def _batch_apply_edit_core(
         )
     tau_maj_us, sigma_tau_us = _resolve_refit_window_tau(
         fit_win,
-        ctx.resolved,
-        ctx.persisted_cal,
-        ctx.tau_maj_global,
-        ctx.sigma_tau_global,
-        ctx.tau_source,
+        ctx.shared.resolved,
+        ctx.shared.persisted_cal,
+        ctx.shared.tau_maj_global,
+        ctx.shared.sigma_tau_global,
+        ctx.shared.tau_source,
     )
     new_wf = refit_window_core(
-        ctx.fit_ctx,
+        ctx.shared.fit_ctx,
         fit_win,
         wf,
-        resolved=ctx.resolved,
-        shape_enum=ctx.shape_enum,
+        resolved=ctx.shared.resolved,
+        shape_enum=ctx.shared.shape_enum,
         tau_maj_us=tau_maj_us,
         sigma_tau_us=sigma_tau_us,
-        peak_frequencies_mhz=ctx.peak_frequencies_mhz,
+        peak_frequencies_mhz=ctx.shared.peak_frequencies_mhz,
         add=add,
         remove=remove,
         add_seeds=add_seeds,
@@ -3517,14 +3864,14 @@ def _batch_apply_edit_core(
         snap_tol_mhz=snap_tol_mhz,
     )
     sort_fitting_result_by_frequency(new_wf)
-    _splice_edit_result(ctx.spectrum_fit, window_id, new_wf)
+    _splice_edit_result(ctx.changeset.spectrum_fit, window_id, new_wf)
     # An identity refit (no add/remove/seeds) re-converges this window but does
     # not change its peak set, so it does not move the leakage skirt its
     # dependents froze: it is mutated (its own numbers shifted, so the
     # final-products table has to be rebuilt) but not dirty (nothing to cascade).
-    ctx.mutated_wids.add(window_id)
+    ctx.changeset.mutated_wids.add(window_id)
     if add or remove or add_seeds:
-        ctx.dirty_wids.add(window_id)
+        ctx.changeset.dirty_wids.add(window_id)
     return new_wf
 
 
@@ -3545,7 +3892,7 @@ def _batch_apply_edit_action(
     a curation file. ``record_decisions=False`` suppresses the per-frequency
     entries for a composing caller (merge / split) that records its own coarser
     one; the peaks are still stamped with the composing decision's id through
-    ``ctx.next_decision_index``.
+    ``ctx.changeset.next_decision_index``.
     """
     _check_add_seeds_arity(add, add_seeds)
 
@@ -3555,7 +3902,7 @@ def _batch_apply_edit_action(
 
     add_derivations: Optional[List[Optional[int]]] = None
     if add:
-        base_idx = ctx.next_decision_index
+        base_idx = ctx.changeset.next_decision_index
         add_derivations = [base_idx + i for i in range(len(add))]
 
     new_wf = _batch_apply_edit_core(
@@ -3578,7 +3925,7 @@ def _batch_apply_edit_action(
     }
     if record_decisions:
         for f in add:
-            ctx.decisions.append(
+            ctx.changeset.decisions.append(
                 {
                     "window_id": window_id,
                     "frequency_mhz": float(f),
@@ -3586,9 +3933,9 @@ def _batch_apply_edit_action(
                     "evidence": evidence,
                 }
             )
-            ctx.next_decision_index += 1
+            ctx.changeset.next_decision_index += 1
         for f in remove:
-            ctx.decisions.append(
+            ctx.changeset.decisions.append(
                 {
                     "window_id": window_id,
                     "frequency_mhz": float(f),
@@ -3596,9 +3943,10 @@ def _batch_apply_edit_action(
                     "evidence": evidence,
                 }
             )
-            ctx.next_decision_index += 1
+            ctx.changeset.next_decision_index += 1
 
-    return RefitWindowResult(
+    return _make_refit_result(
+        ctx,
         window_id=window_id,
         n_peaks_before=n_before,
         n_peaks_after=n_after,
@@ -3685,7 +4033,7 @@ def _batch_apply_merge(
 
     remove_freqs = [float(fp.frequency_mhz) for fp in matched]
 
-    sideband = ctx.fit_ctx.sideband
+    sideband = ctx.shared.fit_ctx.sideband
     s = sideband_sign(sideband)
     center_mhz: Optional[float] = None
     if wf.window is not None and wf.window.freq_range is not None:
@@ -3703,7 +4051,7 @@ def _batch_apply_merge(
 
     chi2r_before = float(wf.reduced_chi2)
     n_before = len(wf.fitted_peaks)
-    idx = ctx.next_decision_index
+    idx = ctx.changeset.next_decision_index
     new_wf = _batch_apply_edit_core(
         ctx,
         window_id,
@@ -3722,7 +4070,7 @@ def _batch_apply_merge(
         "n_peaks_after": n_after,
         "merged_from": [float(f) for f in peaks],
     }
-    ctx.decisions.append(
+    ctx.changeset.decisions.append(
         {
             "window_id": window_id,
             "frequency_mhz": merge_freq,
@@ -3730,8 +4078,9 @@ def _batch_apply_merge(
             "evidence": evidence,
         }
     )
-    ctx.next_decision_index += 1
-    return RefitWindowResult(
+    ctx.changeset.next_decision_index += 1
+    return _make_refit_result(
+        ctx,
         window_id=window_id,
         n_peaks_before=n_before,
         n_peaks_after=n_after,
@@ -3774,7 +4123,7 @@ def _batch_apply_split(
     matched_freq = float(best.frequency_mhz)
     matched_amp = float(best.amplitude)
 
-    acquisition_us = float(ctx.fit_ctx.acquisition_us)
+    acquisition_us = float(ctx.shared.fit_ctx.acquisition_us)
     resolution_mhz = 1.0 / acquisition_us if acquisition_us > 0 else 0.1
 
     if into == 2:
@@ -3786,7 +4135,7 @@ def _batch_apply_split(
     add_freqs = [matched_freq + off for off in offsets]
     per_peak_amp = matched_amp / into
 
-    sideband = ctx.fit_ctx.sideband
+    sideband = ctx.shared.fit_ctx.sideband
     s = sideband_sign(sideband)
     center_mhz: Optional[float] = None
     if wf.window is not None and wf.window.freq_range is not None:
@@ -3809,7 +4158,7 @@ def _batch_apply_split(
 
     chi2r_before = float(wf.reduced_chi2)
     n_before = len(wf.fitted_peaks)
-    idx = ctx.next_decision_index
+    idx = ctx.changeset.next_decision_index
     new_wf = _batch_apply_edit_core(
         ctx,
         window_id,
@@ -3828,7 +4177,7 @@ def _batch_apply_split(
         "n_peaks_after": n_after,
         "split_into": into,
     }
-    ctx.decisions.append(
+    ctx.changeset.decisions.append(
         {
             "window_id": window_id,
             "frequency_mhz": matched_freq,
@@ -3836,8 +4185,9 @@ def _batch_apply_split(
             "evidence": evidence,
         }
     )
-    ctx.next_decision_index += 1
-    return RefitWindowResult(
+    ctx.changeset.next_decision_index += 1
+    return _make_refit_result(
+        ctx,
         window_id=window_id,
         n_peaks_before=n_before,
         n_peaks_after=n_after,
@@ -3862,7 +4212,7 @@ def _batch_apply_accept(
         wf = _batch_lookup_wf(ctx, window_id)
         chi2r_before = float(wf.reduced_chi2)
         n_before = len(wf.fitted_peaks)
-        idx = ctx.next_decision_index
+        idx = ctx.changeset.next_decision_index
         new_wf = _batch_apply_edit_core(
             ctx,
             window_id,
@@ -3879,7 +4229,7 @@ def _batch_apply_accept(
             "n_peaks_before": n_before,
             "n_peaks_after": n_after,
         }
-        ctx.decisions.append(
+        ctx.changeset.decisions.append(
             {
                 "window_id": window_id,
                 "frequency_mhz": float(candidate),
@@ -3887,8 +4237,9 @@ def _batch_apply_accept(
                 "evidence": evidence,
             }
         )
-        ctx.next_decision_index += 1
-        return RefitWindowResult(
+        ctx.changeset.next_decision_index += 1
+        return _make_refit_result(
+            ctx,
             window_id=window_id,
             n_peaks_before=n_before,
             n_peaks_after=n_after,
@@ -3898,7 +4249,9 @@ def _batch_apply_accept(
         )
 
     anchor_freq = 0.0
-    wf_list = [wf for wf in ctx.spectrum_fit.window_fits if wf.window_id == window_id]
+    wf_list = [
+        wf for wf in ctx.changeset.spectrum_fit.window_fits if wf.window_id == window_id
+    ]
     if wf_list:
         c = _window_center(wf_list[0])
         if c is not None:
@@ -3910,7 +4263,7 @@ def _batch_apply_accept(
                     key=lambda p: (float(p.snr) if p.snr is not None else 0.0),
                 ).frequency_mhz
             )
-    ctx.decisions.append(
+    ctx.changeset.decisions.append(
         {
             "window_id": window_id,
             "frequency_mhz": anchor_freq,
@@ -3919,7 +4272,7 @@ def _batch_apply_accept(
             "bare": True,
         }
     )
-    ctx.next_decision_index += 1
+    ctx.changeset.next_decision_index += 1
     return None
 
 
@@ -3940,12 +4293,15 @@ def _batch_apply_create(
     plan = _batch_effective_plan(ctx)
     fit_map: Dict[int, FittingResult] = {
         int(wf.window_id): wf
-        for wf in ctx.spectrum_fit.window_fits
+        for wf in ctx.changeset.spectrum_fit.window_fits
         if wf.window_id is not None
     }
 
-    if ctx.fit_ctx.trim_range is not None:
-        t_lo, t_hi = (min(ctx.fit_ctx.trim_range), max(ctx.fit_ctx.trim_range))
+    if ctx.shared.fit_ctx.trim_range is not None:
+        t_lo, t_hi = (
+            min(ctx.shared.fit_ctx.trim_range),
+            max(ctx.shared.fit_ctx.trim_range),
+        )
         if not (t_lo <= anchor <= t_hi):
             raise ValueError(
                 f"anchor {anchor:.4f} MHz is outside the analysis band "
@@ -3958,18 +4314,18 @@ def _batch_apply_create(
     params = plan.parameters
     proposal = plan_stage6_window(
         plan,
-        ctx.peaks_loaded,
-        ctx.fit_ctx.active_ft.freq_mhz,
-        ctx.fit_ctx.active_ft.complex_spectrum,
-        ctx.fit_ctx.rms_for_fit,
+        ctx.shared.peaks_loaded,
+        ctx.shared.fit_ctx.active_ft.freq_mhz,
+        ctx.shared.fit_ctx.active_ft.complex_spectrum,
+        ctx.shared.fit_ctx.rms_for_fit,
         anchor,
-        acquisition_us=float(ctx.fit_ctx.acquisition_us),
+        acquisition_us=float(ctx.shared.fit_ctx.acquisition_us),
         tau_us=params.get("tau_us"),
         min_window_half_width_mhz=float(params.get("min_window_half_width_mhz", 2.0)),
         min_window_half_width_points=int(
             params.get("min_window_half_width_points", 32)
         ),
-        min_freeze_snr=float(params.get("min_freeze_snr", ctx.min_freeze_snr)),
+        min_freeze_snr=float(params.get("min_freeze_snr", ctx.shared.min_freeze_snr)),
         magnitude_attachment_threshold=float(
             params.get("magnitude_attachment_threshold", 0.1)
         ),
@@ -3999,20 +4355,20 @@ def _batch_apply_create(
     if proposal.mode == "created":
         tau_maj_us, sigma_tau_us = _resolve_refit_window_tau(
             fit_win,
-            ctx.resolved,
-            ctx.persisted_cal,
-            ctx.tau_maj_global,
-            ctx.sigma_tau_global,
-            ctx.tau_source,
+            ctx.shared.resolved,
+            ctx.shared.persisted_cal,
+            ctx.shared.tau_maj_global,
+            ctx.shared.sigma_tau_global,
+            ctx.shared.tau_source,
         )
         tau0 = (
             float(tau_maj_us)
             if tau_maj_us is not None and tau_maj_us > 0.0
-            else default_tau0_us(float(ctx.fit_ctx.acquisition_us))
+            else default_tau0_us(float(ctx.shared.fit_ctx.acquisition_us))
         )
-        seed_wf = FittingResult(window_id=new_wid, shape=ctx.shape_enum.value)
+        seed_wf = FittingResult(window_id=new_wid, shape=ctx.shared.shape_enum.value)
         seed_wf.fixed_parameters = _frozen_parameters_from_sources(
-            proposal.depends_on, fit_map, ctx.min_freeze_snr
+            proposal.depends_on, fit_map, ctx.shared.min_freeze_snr
         )
         seed_wf.shared_parameters = {"tau_us": {"value": tau0, "fitted": False}}
     else:
@@ -4025,39 +4381,41 @@ def _batch_apply_create(
         seed_wf = existing_wf
         tau_maj_us, sigma_tau_us = _resolve_refit_window_tau(
             fit_win,
-            ctx.resolved,
-            ctx.persisted_cal,
-            ctx.tau_maj_global,
-            ctx.sigma_tau_global,
-            ctx.tau_source,
+            ctx.shared.resolved,
+            ctx.shared.persisted_cal,
+            ctx.shared.tau_maj_global,
+            ctx.shared.sigma_tau_global,
+            ctx.shared.tau_source,
         )
 
     new_wf: FittingResult = refit_window_core(
-        ctx.fit_ctx,
+        ctx.shared.fit_ctx,
         fit_win,
         seed_wf,
-        resolved=ctx.resolved,
-        shape_enum=ctx.shape_enum,
+        resolved=ctx.shared.resolved,
+        shape_enum=ctx.shared.shape_enum,
         tau_maj_us=tau_maj_us,
         sigma_tau_us=sigma_tau_us,
-        peak_frequencies_mhz=ctx.peak_frequencies_mhz,
+        peak_frequencies_mhz=ctx.shared.peak_frequencies_mhz,
         snap_tol_mhz=snap_tol_mhz,
     )
     sort_fitting_result_by_frequency(new_wf)
-    _splice_new_window_fit(ctx.spectrum_fit, new_wid, new_wf)
+    _splice_new_window_fit(ctx.changeset.spectrum_fit, new_wid, new_wf)
 
-    ctx.created_windows = [
-        w for w in ctx.created_windows if int(w.window_id) != new_wid
+    ctx.changeset.created_windows = [
+        w for w in ctx.changeset.created_windows if int(w.window_id) != new_wid
     ] + [fit_win]
-    ctx.fit_window_map = {w.window_id: w for w in _batch_effective_plan(ctx).windows}
-    ctx.mutated_wids.add(new_wid)
+    ctx.changeset.fit_window_map = {
+        w.window_id: w for w in _batch_effective_plan(ctx).windows
+    }
+    ctx.changeset.mutated_wids.add(new_wid)
 
     lo, hi = fit_win.freq_range
     lo, hi = min(lo, hi), max(lo, hi)
     grid_span = fit_win.diagnostics.get("grid_span", [0, -1])
     n_points = int(grid_span[1]) - int(grid_span[0]) + 1
 
-    ctx.decisions.append(
+    ctx.changeset.decisions.append(
         {
             "window_id": new_wid,
             "frequency_mhz": anchor,
@@ -4072,8 +4430,10 @@ def _batch_apply_create(
             },
         }
     )
-    ctx.next_decision_index += 1
+    ctx.changeset.next_decision_index += 1
 
+    probe_freq_mhz = ctx.shared.fit_ctx.probe_freq_mhz
+    epsilon = ctx.shared.epsilon
     return CreateWindowResult(
         window_id=new_wid,
         mode=proposal.mode,
@@ -4083,6 +4443,16 @@ def _batch_apply_create(
         n_contributors=len(fit_win.fixed_contributors),
         depends_on=[int(d) for d in proposal.depends_on],
         n_peaks=len(new_wf.fitted_peaks),
+        anchor_calibrated_mhz=_frame_to_calibrated(
+            anchor, probe_freq_mhz=probe_freq_mhz, epsilon=epsilon
+        ),
+        freq_range_calibrated=(
+            _frame_to_calibrated(lo, probe_freq_mhz=probe_freq_mhz, epsilon=epsilon),
+            _frame_to_calibrated(hi, probe_freq_mhz=probe_freq_mhz, epsilon=epsilon),
+        ),
+        calibration_state=ctx.shared.calibration_state,
+        epsilon=epsilon,
+        sigma_epsilon=ctx.shared.sigma_epsilon,
     )
 
 
@@ -4102,12 +4472,22 @@ def _canonicalize_batch_plan(
     return creates + rest
 
 
-def _persist_batch_review(ctx: _BatchCtx, path: str) -> None:
-    """Persist ``/stage6_review`` once for the whole batch: append every pending
-    decision (assigning sequential ``order_index`` values after whatever the
-    file already held), refresh each touched window's provenance / attention
-    reasons, rebuild the final-products table once if any fit changed, and
-    carry the (now possibly batch-updated) ``created_windows`` overlay."""
+def _derive_batch_review(ctx: _BatchCtx, path: str) -> Stage6Review:
+    """Derive the new ``/stage6_review`` for the whole batch, without writing
+    it: append every pending decision (assigning sequential ``order_index``
+    values after whatever the file already held), refresh each touched
+    window's provenance / attention reasons, rebuild the final-products table
+    once if any fit changed or its persisted stamp has gone stale against the
+    file's current calibration (a bare-accept-only batch mutates no fit but
+    must still not launder a stale table back to disk), and carry the (now
+    possibly batch-updated) ``created_windows`` overlay.
+
+    Reloads ``/stage6_review``, the FID and the frequency calibration from
+    ``path`` -- current on-disk state, not anything cached on ``ctx`` -- since
+    those are what the new review has to be consistent with. Split out from
+    the write so a preview (a later unit) can derive the would-be review
+    in memory and never call :func:`_persist_batch_review` at all.
+    """
     with h5py.File(path, "r") as h5f:
         existing_review: Stage6Review = (
             load_stage6_review_from_hdf5(h5f["stage6_review"])
@@ -4123,22 +4503,27 @@ def _persist_batch_review(ctx: _BatchCtx, path: str) -> None:
     merged_window_freqs: Dict[int, List[float]] = {}
     reason_cache: Dict[int, List[AttentionReason]] = {}
     spur_centers_mhz: List[float] = [
-        float(v) for v in ctx.spectrum_fit.parameters.get("spur_centers_mhz", [])
+        float(v)
+        for v in ctx.changeset.spectrum_fit.parameters.get("spur_centers_mhz", [])
     ]
     acquisition_us: float = float(
-        ctx.spectrum_fit.parameters.get("acquisition_us", 0.0)
+        ctx.changeset.spectrum_fit.parameters.get("acquisition_us", 0.0)
     )
 
-    if ctx.mutated_wids:
+    # Rebuild whenever the fit changed *or* the persisted stamp no longer
+    # matches the file's current calibration (a timebase re-run since the
+    # table was last built, with no fit-mutating Stage 6 action this batch --
+    # a bare accept is exactly this case, since it adds no mutated_wids).
+    if ctx.changeset.mutated_wids or _final_products_is_stale(final_products, path):
         fid = load_fid_from_pipeline_impl(path)
         sideband = Sideband.coerce(fid.sideband)
-        merged_window_freqs = _auto_merged_window_freqs(ctx.spectrum_fit)
+        merged_window_freqs = _auto_merged_window_freqs(ctx.changeset.spectrum_fit)
 
         with h5py.File(path, "r") as h5f:
             floor_khz = load_frequency_calibration_from_hdf5(h5f).sigma_floor_khz
         cal_state, epsilon, sigma_eps = _derive_frequency_calibration(path)
         final_products = _build_final_products(
-            ctx.spectrum_fit,
+            ctx.changeset.spectrum_fit,
             probe_freq_mhz=float(fid.probe_freq_mhz),
             sideband=sideband,
             calibration_state=cal_state,
@@ -4151,7 +4536,9 @@ def _persist_batch_review(ctx: _BatchCtx, path: str) -> None:
         if window_id in reason_cache:
             return reason_cache[window_id]
         wf_list = [
-            wf for wf in ctx.spectrum_fit.window_fits if wf.window_id == window_id
+            wf
+            for wf in ctx.changeset.spectrum_fit.window_fits
+            if wf.window_id == window_id
         ]
         if wf_list and sideband is not None:
             reasons = _compute_attention_reasons(
@@ -4177,7 +4564,7 @@ def _persist_batch_review(ctx: _BatchCtx, path: str) -> None:
         return reasons
 
     new_entries: List[DecisionLogEntry] = []
-    for offset, dec in enumerate(ctx.decisions):
+    for offset, dec in enumerate(ctx.changeset.decisions):
         wid = int(dec["window_id"])
         kind = str(dec["kind"])
         new_entries.append(
@@ -4211,12 +4598,22 @@ def _persist_batch_review(ctx: _BatchCtx, path: str) -> None:
                 invalidated=False,
             )
 
-    new_review = Stage6Review(
+    return Stage6Review(
         window_statuses=statuses,
         decision_log=list(existing_review.decision_log) + new_entries,
         final_products=final_products,
-        created_windows=list(ctx.created_windows),
+        created_windows=list(ctx.changeset.created_windows),
     )
+
+
+def _persist_batch_review(ctx: _BatchCtx, path: str) -> None:
+    """Derive the batch's new ``/stage6_review`` and write it.
+
+    The write half of :func:`_derive_batch_review`; kept separate so a
+    preview can call the derive half alone. This function is the engine's
+    only writer of ``/stage6_review``.
+    """
+    new_review = _derive_batch_review(ctx, path)
     with h5py.File(path, "a") as h5f:
         if "stage6_review" in h5f:
             del h5f["stage6_review"]
@@ -4266,47 +4663,63 @@ def _open_batch(path: str, *, snap_tol_mhz: float) -> _BatchCtx:
     return _build_batch_ctx(path, snap_tol_mhz=snap_tol_mhz)
 
 
-def _finish_batch(ctx: _BatchCtx, path: str, *, snap_tol_mhz: float) -> List[int]:
-    """Close a batch: one combined cascade, one fit persist, one review persist.
+def _cascade_batch(ctx: _BatchCtx, *, snap_tol_mhz: float) -> List[int]:
+    """Run the batch's one combined cascade over the union of the
+    directly-edited windows, mutating ``ctx.changeset.spectrum_fit`` and
+    ``ctx.changeset.mutated_wids`` in place. Touches no file.
 
-    The counterpart to :func:`_open_batch`. Cascading once over the union of the
-    directly-edited windows -- rather than once per action -- is what makes the
-    result independent of the order the actions were applied in. Returns the
-    cascaded window ids.
+    Cascading once -- rather than once per action -- is what makes the result
+    independent of the order the actions were applied in. Split out from
+    :func:`_finish_batch` so a preview (a later unit) can run this same
+    cascade in memory and stop there, never reaching the persists below.
+    Returns the cascaded window ids.
     """
-    from ..io.fitting_serialization import save_spectrum_fit_to_hdf5
-
     cascaded: List[int] = []
-    if ctx.dirty_wids:
+    if ctx.changeset.dirty_wids:
         cascaded = _cascade_refit_dependents(
-            spectrum_fit=ctx.spectrum_fit,
-            edited_wids=sorted(ctx.dirty_wids),
-            fit_window_map=ctx.fit_window_map,
-            fit_ctx=ctx.fit_ctx,
-            resolved=ctx.resolved,
-            shape_enum=ctx.shape_enum,
-            persisted_cal=ctx.persisted_cal,
-            tau_maj_us=ctx.tau_maj_global,
-            sigma_tau_us=ctx.sigma_tau_global,
-            tau_source=ctx.tau_source,
-            peak_frequencies_mhz=ctx.peak_frequencies_mhz,
-            min_freeze_snr=ctx.min_freeze_snr,
+            spectrum_fit=ctx.changeset.spectrum_fit,
+            edited_wids=sorted(ctx.changeset.dirty_wids),
+            fit_window_map=ctx.changeset.fit_window_map,
+            fit_ctx=ctx.shared.fit_ctx,
+            resolved=ctx.shared.resolved,
+            shape_enum=ctx.shared.shape_enum,
+            persisted_cal=ctx.shared.persisted_cal,
+            tau_maj_us=ctx.shared.tau_maj_global,
+            sigma_tau_us=ctx.shared.sigma_tau_global,
+            tau_source=ctx.shared.tau_source,
+            peak_frequencies_mhz=ctx.shared.peak_frequencies_mhz,
+            min_freeze_snr=ctx.shared.min_freeze_snr,
             snap_tol_mhz=snap_tol_mhz,
         )
         if cascaded:
-            ctx.mutated_wids.update(cascaded)
+            ctx.changeset.mutated_wids.update(cascaded)
             logger.info(
                 "Stage 6 cascade: re-fit %d dependent window(s) %s",
                 len(cascaded),
                 sorted(cascaded),
             )
+    return cascaded
 
-    shape_attr = str(ctx.spectrum_fit.parameters.get("shape", "lorentzian"))
+
+def _finish_batch(ctx: _BatchCtx, path: str, *, snap_tol_mhz: float) -> List[int]:
+    """Close a batch: one combined cascade, one fit persist, one review persist.
+
+    The counterpart to :func:`_open_batch`. Kept as cascade-then-persist in one
+    function (rather than letting a caller cascade and persist separately) so
+    that this remains the engine's one and only writer of ``/stage5_fitting``
+    -- see ``test_only_finish_batch_persists_the_fit``. Returns the cascaded
+    window ids.
+    """
+    from ..io.fitting_serialization import save_spectrum_fit_to_hdf5
+
+    cascaded = _cascade_batch(ctx, snap_tol_mhz=snap_tol_mhz)
+
+    shape_attr = str(ctx.changeset.spectrum_fit.parameters.get("shape", "lorentzian"))
     with h5py.File(path, "a") as h5f:
         if "stage5_fitting" in h5f:
             del h5f["stage5_fitting"]
         grp = h5f.create_group("stage5_fitting")
-        save_spectrum_fit_to_hdf5(ctx.spectrum_fit, grp)
+        save_spectrum_fit_to_hdf5(ctx.changeset.spectrum_fit, grp)
         grp.attrs["shape"] = shape_attr
 
     _persist_batch_review(ctx, path)
@@ -4434,25 +4847,66 @@ def _execute_curation_batch(
     return applied
 
 
+def _planned_action_has_freq(action: PlannedAction) -> bool:
+    """Whether *action* carries any caller-supplied frequency at all -- a bare
+    ``accept`` (``candidate is None``) does not, so it needs no frame."""
+    return bool(
+        action.add
+        or action.remove
+        or action.peaks
+        or action.peak is not None
+        or action.candidate is not None
+        or action.anchor is not None
+    )
+
+
+def _planned_action_to_raw(
+    action: PlannedAction, *, frame: Frame, stamp: Optional[_CalibrationStamp]
+) -> PlannedAction:
+    """Convert every frequency on *action* to the raw frame (the batch door's
+    counterpart to the per-verb conversions above)."""
+
+    def conv(f: float) -> float:
+        return _frame_to_raw(f, frame=frame, stamp=stamp)
+
+    return replace(
+        action,
+        add=[conv(f) for f in action.add],
+        remove=[conv(f) for f in action.remove],
+        peaks=[conv(f) for f in action.peaks],
+        peak=None if action.peak is None else conv(action.peak),
+        candidate=None if action.candidate is None else conv(action.candidate),
+        anchor=None if action.anchor is None else conv(action.anchor),
+    )
+
+
 def apply_curation_impl(
     file_path: Union[Path, str],
     curation_path: Union[Path, str],
     *,
     dry_run: bool = False,
+    frame: Optional[Frame] = None,
 ) -> CurationApplyResult:
     """Apply a curation file to *file_path*, delegating to the edit impls.
 
     Parses the curation CSV, coalesces it into a delegated action plan (one
     refit per window for runs of add/remove; merge/split/accept stand alone),
-    and -- unless ``dry_run`` -- applies the whole plan as one batch
-    (:func:`_execute_curation_batch`): the Stage 5 fit context is built once,
-    every action is applied to an in-memory ``SpectrumFit`` in a canonical
-    cross-window order (ascending window id, independent of the file's row
-    order), the dependents of every directly-edited window are cascaded once,
-    and the result is persisted once. This is an equivalence of *outcome*, not
-    of per-row execution -- see :func:`_execute_curation_batch` for the exact
-    ordering contract. ``dry_run`` returns the resolved plan and
+    converts every frequency on the resolved plan to raw (before ambiguity
+    resolution, before any snapping), and -- unless ``dry_run`` -- applies the
+    whole plan as one batch (:func:`_execute_curation_batch`): the Stage 5 fit
+    context is built once, every action is applied to an in-memory
+    ``SpectrumFit`` in a canonical cross-window order (ascending window id,
+    independent of the file's row order), the dependents of every
+    directly-edited window are cascaded once, and the result is persisted
+    once. This is an equivalence of *outcome*, not of per-row execution -- see
+    :func:`_execute_curation_batch` for the exact ordering contract.
+    ``dry_run`` returns the resolved (raw-converted) plan and
     frequency-resolution warnings without mutating the file.
+
+    ``frame`` applies uniformly to every frequency the curation file carries
+    -- there is no per-row frame column (a curation-file frame *header* is a
+    separate, later piece of work). Omitting it is an error on a
+    ``self_calibrated`` file when the plan carries any frequency at all.
 
     Raises ``ValueError`` on a malformed curation file or when an action fails
     to resolve (e.g. a ``remove`` frequency matches no fitted peak), tagged with
@@ -4462,6 +4916,13 @@ def apply_curation_impl(
     path = str(file_path)
     ops = parse_curation_file(curation_path)
     plan = _resolve_curation_plan(ops)
+
+    if any(_planned_action_has_freq(a) for a in plan):
+        resolved_frame, stamp = _resolve_frame(path, frame)
+        plan = [
+            _planned_action_to_raw(a, frame=resolved_frame, stamp=stamp) for a in plan
+        ]
+
     warnings = _curation_ambiguity_warnings(path, plan)
 
     # No epoch pre-check here: _execute_curation_batch gates itself before it
@@ -4939,9 +5400,151 @@ def set_sigma_floor_impl(file_path: Union[Path, str], sigma_floor_khz: float) ->
         save_frequency_calibration_to_hdf5(FrequencyCalibration(floor), h5f)
 
 
+def _fid_header_for_stamp(path: str) -> Optional[Tuple[float, str]]:
+    """Return ``(probe_freq_mhz, sideband)`` for the staleness stamp, read
+    straight from ``/stage0_fid_data/acquisition`` -- the exact attrs
+    :func:`~ftmwpipeline.io.fid_serialization.load_fid_from_hdf5` uses to
+    build ``FID.probe_freq_mhz`` / ``FID.sideband`` -- without touching the
+    ``time_series_data`` dataset (hundreds of thousands of points) or paying
+    :func:`load_fid_from_pipeline_impl`'s full pipeline-file validation. This
+    runs on every ``get_final_products_impl`` call, so it has to be cheap.
+
+    Deliberately reads the ``acquisition`` subgroup, not the sibling
+    ``summary_probe_freq_mhz`` / ``summary_sideband`` attrs on
+    ``stage0_fid_data`` -- those are a denormalized quick-access copy for
+    cache tooling, not the field the loader treats as authoritative.
+
+    Returns ``None`` when there is no FID header to read (e.g. a file that
+    carries only a hand-built ``stage6_review`` group, as some report-table
+    tests do) -- nothing to compare a stamp against, not evidence of staleness.
+    """
+    with h5py.File(path, "r") as h5f:
+        fid_grp = h5f.get("stage0_fid_data")
+        if fid_grp is None:
+            return None
+        acq = fid_grp.get("acquisition")
+        if (
+            acq is None
+            or "probe_freq_mhz" not in acq.attrs
+            or "sideband" not in acq.attrs
+        ):
+            return None
+        probe_freq_mhz = float(acq.attrs["probe_freq_mhz"])
+        sideband_raw = acq.attrs["sideband"]
+    if isinstance(sideband_raw, bytes):
+        sideband_raw = sideband_raw.decode("utf-8")
+    return probe_freq_mhz, str(sideband_raw)
+
+
+def _current_calibration_stamp(
+    path: str,
+) -> Optional[Tuple[str, float, float, float, float, str]]:
+    """The six-tuple a fresh :class:`FinalProducts` would be stamped with
+    *right now*: ``(calibration_state, epsilon, sigma_epsilon,
+    sigma_floor_khz, probe_freq_mhz, sideband)``.
+
+    Derived straight from the file -- ``spur.clocks``, ``timebase_calibration``,
+    ``/frequency_calibration`` and the FID header -- never from a persisted
+    ``FinalProducts``. Comparing a stamp against this is the whole staleness
+    check. ``None`` when the file has no FID header to derive a probe
+    frequency / sideband from (see :func:`_fid_header_for_stamp`).
+    """
+    header = _fid_header_for_stamp(path)
+    if header is None:
+        return None
+    probe_freq_mhz, sideband_value = header
+    cal_state, epsilon, sigma_eps = _derive_frequency_calibration(path)
+    with h5py.File(path, "r") as h5f:
+        floor_khz = load_frequency_calibration_from_hdf5(h5f).sigma_floor_khz
+    return (
+        cal_state,
+        float(epsilon),
+        float(sigma_eps),
+        float(floor_khz),
+        float(probe_freq_mhz),
+        sideband_value,
+    )
+
+
+def _final_products_is_stale(fp: Optional[FinalProducts], path: str) -> bool:
+    """Whether ``fp``'s calibration stamp no longer matches the file's
+    currently-derived calibration (e.g. after a timebase re-run that never
+    touched Stage 6). ``None`` (no table built yet) is never "stale" -- there
+    is nothing to have gone stale. Likewise when the file has nothing to
+    derive a current stamp from (:func:`_current_calibration_stamp` returns
+    ``None``): with no grounds to declare staleness, trust the persisted
+    table rather than force a rebuild that cannot succeed anyway."""
+    if fp is None:
+        return False
+    current = _current_calibration_stamp(path)
+    if current is None:
+        return False
+    stamped = (
+        fp.calibration_state,
+        float(fp.epsilon),
+        float(fp.sigma_epsilon),
+        float(fp.sigma_floor_khz),
+        float(fp.probe_freq_mhz),
+        fp.sideband,
+    )
+    return stamped != current
+
+
+def _rebuild_final_products(path: str) -> Optional[FinalProducts]:
+    """Rebuild the final-products table from the raw Stage 5 fit and the
+    file's current calibration. Pure derivation, read-only -- touches no file
+    and does not require a Stage 6 action. Returns ``None`` when there is no
+    Stage 5 fit to derive from."""
+    with h5py.File(path, "r") as h5f:
+        if "stage5_fitting" not in h5f:
+            return None
+        spectrum_fit: SpectrumFit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+        floor_khz = load_frequency_calibration_from_hdf5(h5f).sigma_floor_khz
+    fid = load_fid_from_pipeline_impl(path)
+    sideband = Sideband.coerce(fid.sideband)
+    cal_state, epsilon, sigma_eps = _derive_frequency_calibration(path)
+    return _build_final_products(
+        spectrum_fit,
+        probe_freq_mhz=float(fid.probe_freq_mhz),
+        sideband=sideband,
+        calibration_state=cal_state,
+        epsilon=epsilon,
+        sigma_epsilon=sigma_eps,
+        sigma_floor_khz=floor_khz,
+    )
+
+
+def _current_final_products(
+    existing: Optional[FinalProducts], path: str
+) -> Optional[FinalProducts]:
+    """Return final products consistent with the file's current calibration.
+
+    ``existing`` is whatever a persisted ``Stage6Review`` carries (``None``
+    until ``review run`` first builds a table). When it is present but its
+    stamp no longer matches the file's current calibration -- most commonly a
+    timebase re-run with no Stage 6 action at all -- rebuild from the raw
+    Stage 5 fit rather than returning the stale table.
+
+    Read-only: never writes to ``path``, so it is safe to call on a file the
+    caller has open only for reading (or not open at all). Callers that want
+    the rebuilt table to stick persist it themselves.
+    """
+    if existing is None or not _final_products_is_stale(existing, path):
+        return existing
+    return _rebuild_final_products(path)
+
+
 def get_final_products_impl(file_path: Union[Path, str]) -> Optional[FinalProducts]:
-    """Return the persisted Stage 6 final-products table, or ``None``."""
-    return load_stage6_review_from_file(str(file_path)).final_products
+    """Return the current Stage 6 final-products table, or ``None``.
+
+    Rebuilds from the raw Stage 5 fit -- in memory, without persisting --
+    when the persisted table's calibration stamp no longer matches the
+    file's current calibration (e.g. a timebase re-run since the table was
+    last built). See :func:`_current_final_products`.
+    """
+    path = str(file_path)
+    existing = load_stage6_review_from_file(path).final_products
+    return _current_final_products(existing, path)
 
 
 def _derive_frequency_calibration(

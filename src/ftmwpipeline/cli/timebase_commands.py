@@ -163,12 +163,16 @@ def register_timebase_commands(subparsers: argparse._SubParsersAction) -> None:
             "Demodulate the active FID at each Rb-locked clock-lattice "
             "frequency (multiples of the locked fundamentals' GCD), read each "
             "tone's residual offset by an ML fine-frequency scan, and fit the "
-            "shared fractional scale error eps (every measured frequency reads "
-            "f_true * (1 + eps)) with consistency outlier rejection. The clock "
-            "declaration is taken from the persisted Stage 5 spur.clocks; "
+            "shared fractional scale error eps (a baseband tone reads "
+            "f_bb_true * (1 + eps)) with consistency outlier rejection. The "
+            "clock declaration is taken from the persisted Stage 5 spur.clocks; "
             "declare it first via 'settings set' or a fit preset. Persists eps "
             "to /timebase_calibration. Measures eps only -- applying it to the "
-            "frequency axis is out of scope."
+            "frequency axis is out of scope.\n\n"
+            "eps is a digitizer-clock error, so it scales the BASEBAND "
+            "frequency: the molecular-frame correction is "
+            "f_corr = probe + (f_raw - probe)/(1 + eps), not f_raw/(1 + eps). "
+            "The two differ by probe_freq * eps/(1 + eps)."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

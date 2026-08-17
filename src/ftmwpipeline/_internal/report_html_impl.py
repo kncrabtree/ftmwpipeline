@@ -4012,7 +4012,7 @@ def _assemble_report_site(
     )
     from .report_impl import _render_markdown
     from .stage5_impl import _resolve_detail_bundle
-    from .stage6_impl import get_candidate_ledger_impl
+    from .stage6_impl import _current_final_products, get_candidate_ledger_impl
 
     key = str(windows).lower()
     if key not in VALID_WINDOW_FILTERS:
@@ -4023,7 +4023,7 @@ def _assemble_report_site(
 
     path = str(file_path)
     review = load_stage6_review_from_file(path)
-    products = review.final_products
+    products = _current_final_products(review.final_products, path)
     if products is None:
         raise ValueError(
             "No final-products table found in this file. Run 'review run' first "

@@ -35,7 +35,7 @@ from .._internal.stage6_impl import (
     review_undo_impl,
     split_peak_impl,
 )
-from ..core.curation import REFIT_SNAP_TOL_MHZ
+from ..core.curation import REFIT_SNAP_TOL_MHZ, Frame
 from ..core.data_structures import FittingResult, LedgerCandidate, Stage6Review
 from ..io.fitting_serialization import load_spectrum_fit_from_hdf5
 from .utils import add_stage_object, setup_logging
@@ -43,6 +43,27 @@ from .utils import add_stage_object, setup_logging
 
 def _ensure_ftmw(path: str) -> str:
     return path if path.endswith(".ftmw") else path + ".ftmw"
+
+
+def _add_frame_argument(parser: argparse.ArgumentParser) -> None:
+    """Register ``--frame``, identically, on every verb that takes a
+    caller-supplied frequency (dest name matches the Python parameter name --
+    the dual-interface invariant)."""
+    parser.add_argument(
+        "--frame",
+        dest="frame",
+        choices=("raw", "calibrated"),
+        default=None,
+        metavar="FRAME",
+        help=(
+            "Frame the frequency argument(s) are expressed in: 'raw' (the "
+            "Stage 5 fit / ledger frame) or 'calibrated' (the corrected "
+            "molecular frame the final-products table reports). Omitting it "
+            "defaults to 'raw', matching today's behavior; on a "
+            "self_calibrated file, omitting it while a frequency is given "
+            "is refused rather than silently assumed."
+        ),
+    )
 
 
 def _load_window_fits(file_path: str) -> List[FittingResult]:
@@ -407,6 +428,8 @@ def cmd_review_edit(args: argparse.Namespace) -> int:
             "performing identity refit (no-op edit)."
         )
 
+    frame: Optional[Frame] = getattr(args, "frame", None)
+
     try:
         result: RefitWindowResult = refit_window_impl(
             file_path,
@@ -414,6 +437,7 @@ def cmd_review_edit(args: argparse.Namespace) -> int:
             add=add_freqs,
             remove=remove_freqs,
             snap_tol_mhz=getattr(args, "snap_tol_mhz", REFIT_SNAP_TOL_MHZ),
+            frame=frame,
         )
     except (ValueError, KeyError) as exc:
         print(f"Error: {exc}")
@@ -482,12 +506,14 @@ def cmd_review_create(args: argparse.Namespace) -> int:
     setup_logging(getattr(args, "verbose", False))
     file_path = _ensure_ftmw(args.file_path)
     anchor: float = args.anchor
+    frame: Optional[Frame] = getattr(args, "frame", None)
 
     try:
         result = create_window_impl(
             file_path,
             anchor,
             snap_tol_mhz=getattr(args, "snap_tol_mhz", REFIT_SNAP_TOL_MHZ),
+            frame=frame,
         )
     except (ValueError, KeyError) as exc:
         print(f"Error: {exc}")
@@ -534,12 +560,15 @@ def cmd_review_merge(args: argparse.Namespace) -> int:
         )
         return 1
 
+    frame: Optional[Frame] = getattr(args, "frame", None)
+
     try:
         result = merge_peaks_impl(
             file_path,
             window_id,
             peak_freqs,
             snap_tol_mhz=getattr(args, "snap_tol_mhz", REFIT_SNAP_TOL_MHZ),
+            frame=frame,
         )
     except (ValueError, KeyError) as exc:
         print(f"Error: {exc}")
@@ -578,6 +607,8 @@ def cmd_review_split(args: argparse.Namespace) -> int:
         print(f"Error: --into must be >= 2; got {into}.")
         return 1
 
+    frame: Optional[Frame] = getattr(args, "frame", None)
+
     try:
         result = split_peak_impl(
             file_path,
@@ -585,6 +616,7 @@ def cmd_review_split(args: argparse.Namespace) -> int:
             peak_freq,
             into=into,
             snap_tol_mhz=getattr(args, "snap_tol_mhz", REFIT_SNAP_TOL_MHZ),
+            frame=frame,
         )
     except (ValueError, KeyError) as exc:
         print(f"Error: {exc}")
@@ -621,6 +653,7 @@ def cmd_review_accept(args: argparse.Namespace) -> int:
     file_path = _ensure_ftmw(args.file_path)
     window_id: int = args.window
     candidate_freq: Optional[float] = getattr(args, "candidate", None)
+    frame: Optional[Frame] = getattr(args, "frame", None)
 
     try:
         result = review_accept_impl(
@@ -628,6 +661,7 @@ def cmd_review_accept(args: argparse.Namespace) -> int:
             window_id,
             candidate_freq=candidate_freq,
             snap_tol_mhz=getattr(args, "snap_tol_mhz", REFIT_SNAP_TOL_MHZ),
+            frame=frame,
         )
     except (ValueError, KeyError) as exc:
         print(f"Error: {exc}")
@@ -689,9 +723,12 @@ def cmd_review_apply(args: argparse.Namespace) -> int:
     setup_logging(getattr(args, "verbose", False))
     file_path = _ensure_ftmw(args.file_path)
     dry_run: bool = getattr(args, "dry_run", False)
+    frame: Optional[Frame] = getattr(args, "frame", None)
 
     try:
-        result = apply_curation_impl(file_path, args.curation_file, dry_run=dry_run)
+        result = apply_curation_impl(
+            file_path, args.curation_file, dry_run=dry_run, frame=frame
+        )
     except (ValueError, KeyError, OSError) as exc:
         print(f"Error: {exc}")
         return 1
@@ -966,6 +1003,7 @@ def register_review_commands(subparsers: Any) -> None:
         default=False,
         help="Print the resolved plan and warnings without modifying the file.",
     )
+    _add_frame_argument(p_apply)
     p_apply.add_argument(
         "--verbose",
         dest="verbose",
@@ -1168,6 +1206,7 @@ def register_review_commands(subparsers: Any) -> None:
             f"{REFIT_SNAP_TOL_MHZ * 1e3:.0f} kHz)."
         ),
     )
+    _add_frame_argument(p_accept)
     p_accept.add_argument(
         "--verbose",
         dest="verbose",
@@ -1237,6 +1276,7 @@ def register_review_commands(subparsers: Any) -> None:
             f"{REFIT_SNAP_TOL_MHZ * 1e3:.0f} kHz)."
         ),
     )
+    _add_frame_argument(p_edit)
     p_edit.add_argument(
         "--verbose",
         dest="verbose",
@@ -1288,6 +1328,7 @@ def register_review_commands(subparsers: Any) -> None:
             f"{REFIT_SNAP_TOL_MHZ * 1e3:.0f} kHz)."
         ),
     )
+    _add_frame_argument(p_create)
     p_create.add_argument(
         "--verbose",
         dest="verbose",
@@ -1384,6 +1425,7 @@ def register_review_commands(subparsers: Any) -> None:
             f"{REFIT_SNAP_TOL_MHZ * 1e3:.0f} kHz)."
         ),
     )
+    _add_frame_argument(p_merge)
     p_merge.add_argument(
         "--verbose",
         dest="verbose",
@@ -1444,6 +1486,7 @@ def register_review_commands(subparsers: Any) -> None:
             f"{REFIT_SNAP_TOL_MHZ * 1e3:.0f} kHz)."
         ),
     )
+    _add_frame_argument(p_split)
     p_split.add_argument(
         "--verbose",
         dest="verbose",

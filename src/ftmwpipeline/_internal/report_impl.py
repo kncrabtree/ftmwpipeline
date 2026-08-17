@@ -42,7 +42,6 @@ from ..fitting.validation import (
     snr_aware_chi2_pass,
 )
 from ..io.peak_serialization import load_peaks_from_hdf5
-from ..io.stage6_review_serialization import load_stage6_review_from_file
 from .catalog_xref import CatalogCrossRef, CatalogMatch, load_cross_ref
 
 VALID_FORMATS = ("csv", "json", "latex")
@@ -595,13 +594,15 @@ def report_table_impl(
         ``review run`` consolidation has not been run), or *catalog* is given
         but unreadable / empty.
     """
+    from .stage6_impl import get_final_products_impl
+
     key = str(fmt).lower()
     if key not in _RENDERERS:
         raise ValueError(
             f"unknown report format {fmt!r}; choose one of {VALID_FORMATS}"
         )
 
-    products = load_stage6_review_from_file(str(file_path)).final_products
+    products = get_final_products_impl(str(file_path))
     if products is None:
         raise ValueError(
             "No final-products table found in this file. Run 'review run' first "
@@ -913,11 +914,11 @@ def _assemble_summary(file_path: Union[Path, str]) -> _SummaryModel:
     from ..io.timebase_serialization import load_timebase_calibration_from_hdf5
     from ..io.window_serialization import load_window_plan_from_hdf5
     from .stage1_impl import _read_settings_layer
+    from .stage6_impl import get_final_products_impl
     from .start_detection_impl import resolve_start_provenance
 
     path = str(file_path)
-    review = load_stage6_review_from_file(path)
-    products = review.final_products
+    products = get_final_products_impl(path)
     if products is None:
         raise ValueError(
             "No final-products table found in this file. Run 'review run' first "

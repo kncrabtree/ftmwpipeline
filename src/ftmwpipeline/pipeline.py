@@ -103,7 +103,7 @@ from ._internal.timebase_impl import (
     calibrate_timebase_impl,
     load_timebase_calibration_impl,
 )
-from .core.curation import REFIT_SNAP_TOL_MHZ
+from .core.curation import REFIT_SNAP_TOL_MHZ, Frame
 from .core.data_structures import (
     FID,
     ComplexFT,
@@ -1537,6 +1537,7 @@ class Pipeline:
         add: Sequence[float] = (),
         remove: Sequence[float] = (),
         snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+        frame: Optional[Frame] = None,
     ) -> RefitWindowResult:
         """User-directed single-window refit (Stage 6 ``review edit``).
 
@@ -1560,11 +1561,17 @@ class Pipeline:
         snap_tol_mhz :
             Snap tolerance for ``add``/``remove`` (MHz; default
             :data:`~ftmwpipeline.core.curation.REFIT_SNAP_TOL_MHZ`, 50 kHz).
+        frame :
+            The frame ``add``/``remove`` are expressed in; converted to raw
+            before any snapping. Omitting it is an error on a
+            ``self_calibrated`` file when ``add`` or ``remove`` is non-empty
+            (see :data:`~ftmwpipeline.core.curation.Frame`).
 
         Returns
         -------
         RefitWindowResult
-            Old vs new peak count, χ²ᵣ before/after, and the new fitted peaks.
+            Old vs new peak count, χ²ᵣ before/after, and the new fitted peaks
+            (both frames).
 
         Requires Stage 5 completed.
         """
@@ -1574,6 +1581,7 @@ class Pipeline:
             add=add,
             remove=remove,
             snap_tol_mhz=snap_tol_mhz,
+            frame=frame,
         )
 
     def review_acknowledge_environment(
@@ -1610,6 +1618,7 @@ class Pipeline:
         anchor_mhz: float,
         *,
         snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+        frame: Optional[Frame] = None,
     ) -> CreateWindowResult:
         """Install a fit window covering ``anchor_mhz`` (Stage 6 ``review create``).
 
@@ -1632,11 +1641,17 @@ class Pipeline:
         snap_tol_mhz :
             Snap tolerance forwarded to the fit core (MHz; default
             :data:`~ftmwpipeline.core.curation.REFIT_SNAP_TOL_MHZ`).
+        frame :
+            The frame ``anchor_mhz`` is expressed in; converted to raw before
+            installing the window. Omitting it is an error on a
+            ``self_calibrated`` file (see
+            :data:`~ftmwpipeline.core.curation.Frame`).
 
         Returns
         -------
         CreateWindowResult
-            The installed window's id, mode, extent, and contributor count.
+            The installed window's id, mode, extent, and contributor count
+            (both frames).
 
         Requires Stage 5 completed.
         """
@@ -1644,6 +1659,7 @@ class Pipeline:
             self.filepath,
             anchor_mhz,
             snap_tol_mhz=snap_tol_mhz,
+            frame=frame,
         )
 
     def review_merge(
@@ -1652,6 +1668,7 @@ class Pipeline:
         peaks: Sequence[float],
         *,
         snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+        frame: Optional[Frame] = None,
     ) -> RefitWindowResult:
         """Collapse ≥2 fitted peaks in a window into one (Stage 6 ``review merge``).
 
@@ -1669,11 +1686,16 @@ class Pipeline:
             Molecular frequencies (MHz) of the peaks to collapse (≥2).
         snap_tol_mhz :
             Maximum distance (MHz) for frequency snapping to fitted peaks.
+        frame :
+            The frame ``peaks`` is expressed in. Omitting it is an error on a
+            ``self_calibrated`` file (see
+            :data:`~ftmwpipeline.core.curation.Frame`).
 
         Returns
         -------
         RefitWindowResult
-            Old vs new peak count, χ²ᵣ before/after, and the new fitted peaks.
+            Old vs new peak count, χ²ᵣ before/after, and the new fitted peaks
+            (both frames).
 
         Requires Stage 5 completed.
         """
@@ -1682,6 +1704,7 @@ class Pipeline:
             window_id,
             peaks,
             snap_tol_mhz=snap_tol_mhz,
+            frame=frame,
         )
 
     def review_split(
@@ -1691,6 +1714,7 @@ class Pipeline:
         *,
         into: int = 2,
         snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+        frame: Optional[Frame] = None,
     ) -> RefitWindowResult:
         """Replace one fitted peak with ``into`` peaks (Stage 6 ``review split``).
 
@@ -1708,11 +1732,16 @@ class Pipeline:
             Number of replacement peaks (≥2, default 2).
         snap_tol_mhz :
             Maximum distance (MHz) for frequency snapping to fitted peaks.
+        frame :
+            The frame ``peak`` is expressed in. Omitting it is an error on a
+            ``self_calibrated`` file (see
+            :data:`~ftmwpipeline.core.curation.Frame`).
 
         Returns
         -------
         RefitWindowResult
-            Old vs new peak count, χ²ᵣ before/after, and the new fitted peaks.
+            Old vs new peak count, χ²ᵣ before/after, and the new fitted peaks
+            (both frames).
 
         Requires Stage 5 completed.
         """
@@ -1722,6 +1751,7 @@ class Pipeline:
             peak,
             into=into,
             snap_tol_mhz=snap_tol_mhz,
+            frame=frame,
         )
 
     def review_run(
@@ -1932,6 +1962,7 @@ class Pipeline:
         *,
         candidate_freq: Optional[float] = None,
         snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+        frame: Optional[Frame] = None,
     ) -> Optional[RefitWindowResult]:
         """Accept a window as-is or accept a specific revived candidate.
 
@@ -1956,6 +1987,11 @@ class Pipeline:
             Snap tolerance for ``candidate_freq`` (MHz; default
             :data:`~ftmwpipeline.core.curation.REFIT_SNAP_TOL_MHZ`, 50 kHz).
             Ignored when accepting a window as-is.
+        frame :
+            The frame ``candidate_freq`` is expressed in. Irrelevant when
+            ``candidate_freq`` is ``None``. Omitting it while
+            ``candidate_freq`` is given is an error on a ``self_calibrated``
+            file (see :data:`~ftmwpipeline.core.curation.Frame`).
 
         Returns
         -------
@@ -1966,6 +2002,7 @@ class Pipeline:
             window_id,
             candidate_freq=candidate_freq,
             snap_tol_mhz=snap_tol_mhz,
+            frame=frame,
         )
 
     def review_apply(
@@ -1973,6 +2010,7 @@ class Pipeline:
         curation_path: Union[str, Path],
         *,
         dry_run: bool = False,
+        frame: Optional[Frame] = None,
     ) -> CurationApplyResult:
         """Apply a curation file of batched review edits.
 
@@ -1996,13 +2034,20 @@ class Pipeline:
             Path to the curation CSV to apply.
         dry_run :
             Preview the resolved plan without writing (default ``False``).
+        frame :
+            The frame every frequency in the curation file is expressed in --
+            applies uniformly (no per-row frame column). Omitting it is an
+            error on a ``self_calibrated`` file when the file carries any
+            frequency (see :data:`~ftmwpipeline.core.curation.Frame`).
 
         Returns
         -------
         CurationApplyResult
             The resolved action plan, warnings, and the number applied.
         """
-        return apply_curation_impl(self.filepath, curation_path, dry_run=dry_run)
+        return apply_curation_impl(
+            self.filepath, curation_path, dry_run=dry_run, frame=frame
+        )
 
     def review_log(self) -> List[DecisionLogEntry]:
         """Return the persisted Stage 6 decision log (read-only, in order).

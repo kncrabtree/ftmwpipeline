@@ -129,10 +129,24 @@ class TimebaseCalibrationResult:
     Attributes
     ----------
     epsilon : float
-        Fractional scope-timebase scale error (dimensionless). Every measured
-        frequency reads ``f_true * (1 + epsilon)``; correct via
-        ``f_true = f_measured / (1 + epsilon)``. ``0.0`` when the
+        Fractional scope-timebase scale error (dimensionless). ``0.0`` when the
         preconditions fail.
+
+        The error is a property of the digitizer clock, so it scales the
+        **baseband** frequency, not the molecular one: a baseband tone reads
+        ``f_bb_true * (1 + epsilon)``, corrected by
+        ``f_bb_true = f_bb_meas / (1 + epsilon)``. In the molecular frame that
+        is a correction about the probe, not a rescale of the absolute
+        frequency::
+
+            f_corr = probe + (f_raw - probe) / (1 + epsilon)
+
+        Applying ``f_raw / (1 + epsilon)`` instead is a common misreading and is
+        wrong by exactly ``probe_freq * epsilon / (1 + epsilon)`` -- a constant,
+        sideband-independent offset (~41 kHz at 1 ppm on a 41 GHz probe), which
+        is small enough to pass peak-resolution snapping and far larger than a
+        typical statistical uncertainty. See the module docstring for the
+        sideband-by-sideband form.
     sigma_epsilon : float
         Formal 1-sigma uncertainty on ``epsilon``
         (``1 / sqrt(sum (f / sigma_tot)^2)`` over kept tones). ``inf`` when
