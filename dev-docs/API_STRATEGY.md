@@ -15,7 +15,7 @@ Both are thin; all stage logic resides in shared internal implementation
 functions (see [`SERIALIZATION_STRATEGY.md`](SERIALIZATION_STRATEGY.md) and
 [`CLI_STRATEGY.md`](CLI_STRATEGY.md) for the other consumers of that shared
 core). The scientific invariants the API must uphold — faithful raw data, the
-unbiased canonical spectrum, reproducibility — are specified in
+unbiased active FT, reproducibility — are specified in
 [`SCIENCE_STRATEGY.md`](SCIENCE_STRATEGY.md) and are not restated here.
 
 ## Principles
@@ -78,16 +78,18 @@ without altering any existing signature. The roster of stages, their parameters,
 and their return types are the code's to define; the requirement here is the
 shared shape, not the list.
 
-**Canonical FT settings.** That the canonical transform is unapodized,
-un-windowed, and native-length is a scientific requirement specified in
-[`SCIENCE_STRATEGY.md`](SCIENCE_STRATEGY.md). The API consequence is that the
-user-chosen Stage 1 settings are data selection and display/scaling only, and
-are persisted as the experiment's canonical settings; every later stage operates
-on the spectrum they define and none carries its own trim. Resolution order per
-setting is **explicit caller override > persisted canonical > import-time
-recommended default**. Passing an explicit override stores it as the new
-canonical state and invalidates any downstream stage results, which must be
-re-run.
+**Active-FT settings.** That the measured transform is unapodized, un-windowed,
+and native-length is a scientific requirement specified in
+[`SCIENCE_STRATEGY.md`](SCIENCE_STRATEGY.md), which also fixes the vocabulary:
+the **active FT** is the single grid every measuring stage consumes, the
+**magnitude-display FT** is the 2x zero-padded display spectrum, and the term
+"canonical spectrum" is retired. The API consequence is that the user-chosen
+Stage 1 settings are data selection and display/scaling only, and are persisted
+as the experiment's active-region settings; every later stage operates on the
+spectrum they define and none carries its own trim. Resolution order per setting
+is **explicit caller override > persisted > import-time recommended default**.
+Passing an explicit override stores it as the new persisted state and
+invalidates any downstream stage results, which must be re-run.
 
 ### Introspection
 

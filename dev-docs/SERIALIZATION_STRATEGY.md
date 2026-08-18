@@ -63,7 +63,7 @@ The invariant — **persisted outranks preset** — is what makes Principle 4 ho
 a `.yml` a recipient happens to have (possibly tuned for a different instrument)
 cannot change the output of a shared, fully-processed `.ftmw`. The preset layer
 exists to *seed* fields the file has not yet fixed, not to second-guess fields
-it has. It is consistent with the canonical (data-selection) settings, whose
+it has. It is consistent with the active-region (data-selection) settings, whose
 resolution omits the preset layer (`explicit > persisted > recommended`); the
 preset layer slots directly below persisted for every stage that has one.
 
