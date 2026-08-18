@@ -31,6 +31,7 @@ from .._internal.stage6_impl import (
     refit_window_impl,
     review_accept_impl,
     review_log_impl,
+    review_preview_impl,
     review_run_impl,
     review_undo_impl,
     split_peak_impl,
@@ -752,6 +753,34 @@ def cmd_review_apply(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_review_preview(args: argparse.Namespace) -> int:
+    """Preview a curation file's fitted outcome, run to completion in memory
+    -- nothing is written."""
+    setup_logging(getattr(args, "verbose", False))
+    file_path = _ensure_ftmw(args.file_path)
+    frame: Optional[Frame] = getattr(args, "frame", None)
+
+    try:
+        result = review_preview_impl(file_path, args.curation_file, frame=frame)
+    except (ValueError, KeyError, OSError) as exc:
+        print(f"Error: {exc}")
+        return 1
+
+    print("review preview (nothing written):")
+    if not result.windows:
+        print("  (no fit-mutating actions; nothing to preview)")
+        return 0
+    for wid in sorted(result.windows):
+        w = result.windows[wid]
+        actions = ",".join(str(i + 1) for i in w.action_indices) or "-"
+        print(
+            f"  window {wid:>4}  [{w.origin:>8}]  actions={actions:<8}  "
+            f"peaks {w.n_peaks_before}->{w.n_peaks_after}  "
+            f"chi2r {w.chi2r_before:.3f}->{w.chi2r_after:.3f}"
+        )
+    return 0
+
+
 def cmd_review_log(args: argparse.Namespace) -> int:
     """List the persisted Stage 6 decision log (read-only)."""
     setup_logging(getattr(args, "verbose", False))
@@ -866,7 +895,7 @@ def register_review_commands(subparsers: Any) -> None:
             "merge, split peaks) -- one at a time or batched from a curation file,\n"
             "and undo them by id.  Create a window for a line no window covers.\n\n"
             "Verbs: run, show, rank, edit, create, merge, split, accept, apply,\n"
-            "log, undo"
+            "preview, log, undo"
         ),
     )
 
@@ -1012,6 +1041,39 @@ def register_review_commands(subparsers: Any) -> None:
         help="Enable verbose logging.",
     )
     p_apply.set_defaults(func=cmd_review_apply)
+
+    # ---- review preview --------------------------------------------------------
+    p_preview = verbs.add_parser(
+        "preview",
+        help="Preview a curation file's fitted outcome (writes nothing)",
+        description=(
+            "Run a curation file's resolved plan to completion in memory --\n"
+            "the same parse, frame conversion, appliers, and one combined\n"
+            "cascade 'apply' uses -- and report the fitted outcome without\n"
+            "writing anything to the file.\n\n"
+            "The result is keyed by window id, read after the cascade (not\n"
+            "per-action, since a cascade can supersede an action's own\n"
+            "numbers), and reports final-product numbers: calibrated\n"
+            "frequency and the three-term sigma budget, identical to what a\n"
+            "subsequent 'apply' of the same plan would persist.\n\n"
+            "Epoch-gated exactly like 'apply', except a plan of entirely bare\n"
+            "accept rows, which touches no fit and so is not gated either."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_preview.add_argument(
+        "file_path", help="Path to .ftmw pipeline file (.ftmw auto-added)"
+    )
+    p_preview.add_argument("curation_file", help="Path to the curation CSV to preview.")
+    _add_frame_argument(p_preview)
+    p_preview.add_argument(
+        "--verbose",
+        dest="verbose",
+        action="store_true",
+        default=False,
+        help="Enable verbose logging.",
+    )
+    p_preview.set_defaults(func=cmd_review_preview)
 
     # ---- review log ----------------------------------------------------------
     p_log = verbs.add_parser(

@@ -80,6 +80,7 @@ from ._internal.stage6_impl import (
     EnvironmentAckResult,
     RankedWindow,
     RefitWindowResult,
+    ReviewPreviewResult,
     ReviewRunResult,
     UndoResult,
     acknowledge_environment_impl,
@@ -93,6 +94,7 @@ from ._internal.stage6_impl import (
     refit_window_impl,
     review_accept_impl,
     review_log_impl,
+    review_preview_impl,
     review_run_impl,
     review_undo_impl,
     set_sigma_floor_impl,
@@ -2048,6 +2050,45 @@ class Pipeline:
         return apply_curation_impl(
             self.filepath, curation_path, dry_run=dry_run, frame=frame
         )
+
+    def review_preview(
+        self,
+        curation_path: Union[str, Path],
+        *,
+        frame: Optional[Frame] = None,
+    ) -> ReviewPreviewResult:
+        """Run a curation file's resolved plan to completion in memory and
+        report the fitted outcome, without writing anything.
+
+        Shares every hook :meth:`review_apply` uses -- the same parse/resolve/
+        frame-convert prologue, the same per-action appliers, the same one
+        combined cascade -- except the batch is never persisted: no undo
+        baseline is taken and ``/stage5_fitting`` / ``/stage6_review`` are
+        never written. Epoch-gated exactly like ``review_apply`` (a preview
+        across an unacknowledged epoch boundary would show numbers whose
+        accept is guaranteed to refuse), except for a plan of entirely bare
+        ``accept`` rows, which -- like the live apply -- touches no fit and so
+        is not gated at all.
+
+        The result is keyed by window id, read *after* the cascade -- not
+        per-action, since an action's own returned numbers can be superseded
+        by the cascade that follows it -- and reports final-product numbers
+        (calibrated frequency, the three-term sigma budget), identical to
+        what a subsequent ``review_apply`` of the same plan would persist.
+
+        Parameters
+        ----------
+        curation_path :
+            Path to the curation CSV to preview.
+        frame :
+            The frame every frequency in the curation file is expressed in --
+            same rules as :meth:`review_apply`.
+
+        Returns
+        -------
+        ReviewPreviewResult
+        """
+        return review_preview_impl(self.filepath, curation_path, frame=frame)
 
     def review_log(self) -> List[DecisionLogEntry]:
         """Return the persisted Stage 6 decision log (read-only, in order).

@@ -53,6 +53,7 @@ from ._internal.stage6_impl import (
     EnvironmentAckResult,
     RankedWindow,
     RefitWindowResult,
+    ReviewPreviewResult,
     ReviewRunResult,
     UndoResult,
 )
@@ -1849,6 +1850,47 @@ def review_apply(
     return Pipeline.open(file_path).review_apply(
         curation_path, dry_run=dry_run, frame=frame
     )
+
+
+def review_preview(
+    file_path: Union[str, Path],
+    curation_path: Union[str, Path],
+    *,
+    frame: Optional[Frame] = None,
+) -> ReviewPreviewResult:
+    """Run a curation file's resolved plan to completion in memory and report
+    the fitted outcome, without writing anything.
+
+    Equivalent to :meth:`Pipeline.review_preview`. Shares every hook
+    :func:`review_apply` uses -- the same parse/resolve/frame-convert
+    prologue, the same per-action appliers, the same one combined cascade --
+    except the batch is never persisted: no undo baseline is taken and
+    nothing is written to *file_path*. Epoch-gated exactly like
+    :func:`review_apply`, except a plan of entirely bare ``accept`` rows,
+    which touches no fit and so is not gated (matching the live apply).
+
+    The result is keyed by window id, read after the cascade -- not
+    per-action -- and reports final-product numbers (calibrated frequency,
+    the three-term sigma budget), identical to what a subsequent
+    :func:`review_apply` of the same plan would persist.
+
+    Parameters
+    ----------
+    file_path :
+        Path to the ``.ftmw`` pipeline file.
+    curation_path :
+        Path to the curation CSV to preview.
+    frame :
+        The frame every frequency in the curation file is expressed in --
+        same rules as :func:`review_apply`.
+
+    Returns
+    -------
+    ReviewPreviewResult
+
+    Requires Stage 5 completed.
+    """
+    return Pipeline.open(file_path).review_preview(curation_path, frame=frame)
 
 
 def review_log(file_path: Union[str, Path]) -> List[DecisionLogEntry]:

@@ -3603,6 +3603,17 @@ class _BatchCtx:
 
     shared: _SharedFitCtx
     changeset: _BatchChangeset
+    baseline_taken: bool = True
+    """Whether :func:`_open_batch` took the undo baseline snapshot for this
+    context. ``False`` only for a context built via
+    ``_open_batch(..., snapshot=False)`` -- a preview. :func:`_finish_batch`
+    refuses to persist such a context: writing fit-mutating edits without
+    ever having taken the baseline would silently break ``review undo`` for
+    the file (a later edit would then snapshot an already-edited fit as if
+    it were the automatic one). Structural, not a remembered convention --
+    see ``test_engine_invariants.py``'s docstring on why this module prefers
+    guards enforced by structure.
+    """
 
 
 def _build_shared_fit_ctx(path: str) -> _SharedFitCtx:
@@ -4645,22 +4656,44 @@ def _check_split_arity(into: int) -> None:
         raise ValueError(f"split requires into >= 2; got {into}")
 
 
-def _open_batch(path: str, *, snap_tol_mhz: float) -> _BatchCtx:
-    """Gate, snapshot, and build the shared context for a fit-mutating batch.
+def _open_batch(
+    path: str,
+    *,
+    snap_tol_mhz: float,
+    snapshot: bool = True,
+    shared: Optional[_SharedFitCtx] = None,
+) -> _BatchCtx:
+    """Gate, (optionally) snapshot, and build the shared context for a
+    fit-mutating batch.
 
     The one entry into the Stage 6 fit-editing engine. Every fit-mutating
     operation -- the interactive single-window verbs and a curation file alike
     -- opens its work here, so the epoch gate and the undo baseline are enforced
     structurally rather than remembered at each call site.
+
+    ``snapshot=False`` is for :func:`review_preview_impl` alone: a preview
+    must be epoch-gated exactly like a real batch, but it may never take the
+    undo baseline, because that is a write and a preview writes nothing. The
+    call stays textually inside this function either way, so
+    ``test_only_open_batch_takes_the_undo_baseline`` still holds: the
+    baseline is taken in exactly one place, just not on every call.
+
+    ``shared`` lets a caller with an already-built :class:`_SharedFitCtx`
+    reuse it (a later unit does this for an amortized review session); a
+    fresh one is built when omitted.
     """
     # Splicing a freshly-computed window into an existing fit is the one
     # operation that can mix two analysis models inside one artifact. Checked
     # before the snapshot so a refused batch leaves the file untouched.
     require_splice_compatible_environment(path)
-    # Snapshot the automatic fit before the first edit mutates it in place (a
-    # no-op after the first time), so 'review undo' can restore it and replay.
-    _snapshot_stage5_baseline(path)
-    return _build_batch_ctx(path, snap_tol_mhz=snap_tol_mhz)
+    if snapshot:
+        # Snapshot the automatic fit before the first edit mutates it in place
+        # (a no-op after the first time), so 'review undo' can restore it and
+        # replay.
+        _snapshot_stage5_baseline(path)
+    ctx = _build_batch_ctx(path, snap_tol_mhz=snap_tol_mhz, shared=shared)
+    ctx.baseline_taken = snapshot
+    return ctx
 
 
 def _cascade_batch(ctx: _BatchCtx, *, snap_tol_mhz: float) -> List[int]:
@@ -4711,6 +4744,13 @@ def _finish_batch(ctx: _BatchCtx, path: str, *, snap_tol_mhz: float) -> List[int
     window ids.
     """
     from ..io.fitting_serialization import save_spectrum_fit_to_hdf5
+
+    if not ctx.baseline_taken:
+        raise ValueError(
+            "refusing to persist a batch context whose undo baseline was "
+            "never taken (built via _open_batch(..., snapshot=False)); this "
+            "is a preview-only context and must never reach _finish_batch"
+        )
 
     cascaded = _cascade_batch(ctx, snap_tol_mhz=snap_tol_mhz)
 
@@ -4939,6 +4979,252 @@ def apply_curation_impl(
     return CurationApplyResult(
         plan=plan, warnings=warnings, applied=applied, dry_run=False
     )
+
+
+# ---------------------------------------------------------------------------
+# review_preview_impl: run a curation plan to completion in memory and
+# report the fitted outcome, without persisting anything (C1-C6).
+#
+# Reuses the exact hooks Task B built for this: _build_batch_ctx (shared
+# context, optionally reused), the same per-action appliers
+# _execute_curation_batch dispatches to, _cascade_batch (the one combined
+# cascade, touches no file), and _derive_batch_review (the would-be review
+# INCLUDING final products, no write). _finish_batch -- the engine's only
+# writer of /stage5_fitting -- is never called.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class PreviewWindowResult:
+    """One window's outcome from :func:`review_preview_impl`, read off the
+    in-memory fit *after* the batch's one combined cascade -- never off an
+    applier's own (potentially superseded) ``RefitWindowResult``. See
+    ``scratch/bq-correspondence/reply-preview-execute.md`` section 2: the
+    appliers return a result before the cascade runs, and
+    ``_cascade_closure`` can supersede it, so per-action alignment was
+    deliberately rejected in favor of this shape.
+
+    Attributes
+    ----------
+    window_id : int
+        The window this entry reports on.
+    origin : str
+        ``"direct"`` -- some action in the plan targeted this window (edit /
+        merge / split / accept-with-candidate / create); ``"cascaded"`` --
+        the combined cascade refit this window as a downstream dependent of
+        some *other* directly-edited window, without any action of its own
+        naming it. A window that is both directly edited *and* downstream of
+        a sibling edit in the same batch (the case ``_cascade_closure``
+        deliberately adds back, ``stage6_impl.py`` ~:2026) is ``"direct"``:
+        it has an originating action, even though the cascade pass re-fit it
+        again to pick up the sibling's refreshed background.
+    action_indices : list of int
+        0-based indices into ``ReviewPreviewResult.plan`` of every action
+        that directly targeted this window. Empty for a purely-cascaded
+        window.
+    n_peaks_before, n_peaks_after : int
+        Peak count in this window before the batch / after the cascade.
+    chi2r_before, chi2r_after : float
+        Reduced chi-squared before the batch / after the cascade.
+    peaks : list of FinalPeak
+        This window's rows from the would-be final-products table
+        (:func:`_derive_batch_review`) -- calibrated frequencies and the
+        three-term sigma budget, identical in shape and value to what a
+        subsequent ``apply`` of the same plan would persist. Not the
+        raw / stat-only ``RefitWindowResult.fitted_peaks``.
+    """
+
+    window_id: int
+    origin: str
+    action_indices: List[int] = field(default_factory=list)
+    n_peaks_before: int = 0
+    n_peaks_after: int = 0
+    chi2r_before: float = 0.0
+    chi2r_after: float = 0.0
+    peaks: List["FinalPeak"] = field(default_factory=list)
+
+
+@dataclass
+class ReviewPreviewResult:
+    """Outcome of :func:`review_preview_impl`: a curation plan run to
+    completion in memory, never persisted.
+
+    Attributes
+    ----------
+    windows : dict of int to PreviewWindowResult
+        Keyed by window id, read *after* the batch's one combined cascade --
+        not per-action (see :class:`PreviewWindowResult`). Empty for a plan
+        that touches no fit (e.g. entirely bare ``accept`` rows).
+    plan : list of PlannedAction
+        The resolved, frame-converted, coalesced action sequence -- the same
+        shape ``apply_curation_impl`` would execute. ``action_indices`` on
+        each :class:`PreviewWindowResult` index into this list.
+    """
+
+    windows: Dict[int, PreviewWindowResult] = field(default_factory=dict)
+    plan: List["PlannedAction"] = field(default_factory=list)
+
+
+def review_preview_impl(
+    file_path: Union[Path, str],
+    curation_path: Union[Path, str],
+    *,
+    frame: Optional[Frame] = None,
+    snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+) -> ReviewPreviewResult:
+    """Run a curation file's resolved plan to completion in memory and report
+    the fitted outcome -- final-product numbers, post-cascade -- without
+    writing anything to *file_path*.
+
+    Mirrors :func:`apply_curation_impl`'s parse / resolve / frame-convert
+    prologue exactly (same warnings-free path; a curation-file frame header
+    is separate, later work), then instead of delegating to
+    :func:`_execute_curation_batch` (which persists), runs the same
+    canonicalized action sequence against the same appliers, the same one
+    combined cascade (:func:`_cascade_batch`), and the same derive-without-
+    write step (:func:`_derive_batch_review`) that a live apply's persist
+    would have used. ``_finish_batch`` -- the engine's only writer of
+    ``/stage5_fitting`` -- is never called, and the undo baseline snapshot is
+    never taken (``_open_batch(..., snapshot=False)``): a preview writes
+    nothing, byte for byte.
+
+    Epoch-gated exactly like a real batch (the same ``_open_batch`` call, so
+    the same ``require_splice_compatible_environment`` check): a preview
+    across an unacknowledged epoch boundary would show numbers whose accept
+    is guaranteed to refuse.
+
+    A plan consisting entirely of bare ``accept`` rows (no frequency, no fit
+    touched) short-circuits before the gate: it does no fits, is not
+    epoch-gated (a bare accept in a live apply is not gated either -- see
+    :func:`review_accept_impl`), and returns an empty ``windows`` dict.
+
+    Raises the same per-action attributed ``ValueError`` a live apply raises
+    (tagged with the 1-based action index and its description), on the same
+    failures, since it shares the same appliers.
+    """
+    path = str(file_path)
+    ops = parse_curation_file(curation_path)
+    plan = _resolve_curation_plan(ops)
+
+    if any(_planned_action_has_freq(a) for a in plan):
+        resolved_frame, stamp = _resolve_frame(path, frame)
+        plan = [
+            _planned_action_to_raw(a, frame=resolved_frame, stamp=stamp) for a in plan
+        ]
+
+    needs_fit = any(a.kind != "accept" or a.candidate is not None for a in plan)
+    if not needs_fit:
+        # C5: bare-accept-only (or empty) plan -- no fits, no gate, nothing to
+        # report. Mirrors _execute_curation_batch's own cheap path, which
+        # likewise never opens the engine for this shape.
+        return ReviewPreviewResult(windows={}, plan=plan)
+
+    ctx = _open_batch(path, snap_tol_mhz=snap_tol_mhz, snapshot=False)
+
+    # Snapshot every touched window's pre-batch stats now, before any action
+    # mutates ctx.changeset.spectrum_fit in place -- this is the "before" a
+    # multi-action batch on one window (or a cascade that revisits a directly
+    # -edited window) must report, not any action's own intermediate result.
+    before_stats: Dict[int, Tuple[int, float]] = {
+        int(wf.window_id): (len(wf.fitted_peaks), float(wf.reduced_chi2))
+        for wf in ctx.changeset.spectrum_fit.window_fits
+        if wf.window_id is not None
+    }
+
+    action_indices: Dict[int, List[int]] = {}
+    for original_index, action in _canonicalize_batch_plan(plan):
+        try:
+            if action.kind == "create":
+                if action.anchor is None:
+                    raise ValueError("create action requires an anchor frequency")
+                created = _batch_apply_create(
+                    ctx,
+                    action.anchor,
+                    replay_window_id=(
+                        None
+                        if action.window_id == _NEW_WINDOW_SENTINEL
+                        else action.window_id
+                    ),
+                    snap_tol_mhz=snap_tol_mhz,
+                )
+                action_indices.setdefault(created.window_id, []).append(original_index)
+            elif action.kind == "edit":
+                _batch_apply_edit_action(
+                    ctx,
+                    action.window_id,
+                    action.add,
+                    action.remove,
+                    snap_tol_mhz=snap_tol_mhz,
+                )
+                action_indices.setdefault(action.window_id, []).append(original_index)
+            elif action.kind == "merge":
+                _batch_apply_merge(
+                    ctx, action.window_id, action.peaks, snap_tol_mhz=snap_tol_mhz
+                )
+                action_indices.setdefault(action.window_id, []).append(original_index)
+            elif action.kind == "split":
+                if action.peak is None:
+                    raise ValueError("split action requires a peak frequency")
+                _batch_apply_split(
+                    ctx,
+                    action.window_id,
+                    action.peak,
+                    action.into,
+                    snap_tol_mhz=snap_tol_mhz,
+                )
+                action_indices.setdefault(action.window_id, []).append(original_index)
+            elif action.kind == "accept":
+                _batch_apply_accept(
+                    ctx,
+                    action.window_id,
+                    action.candidate,
+                    snap_tol_mhz=snap_tol_mhz,
+                )
+                if action.candidate is not None:
+                    action_indices.setdefault(action.window_id, []).append(
+                        original_index
+                    )
+        except (ValueError, KeyError) as exc:
+            raise ValueError(
+                f"curation action {original_index + 1} "
+                f"({describe_planned_action(action)}) failed: {exc}"
+            ) from exc
+
+    # Direct = every window some action touched this batch, snapshotted
+    # BEFORE the cascade runs (mutated_wids only grows from here). Anything
+    # _cascade_batch adds beyond this set arrived purely as a dependent.
+    direct_wids = set(ctx.changeset.mutated_wids)
+    cascaded_wids = set(_cascade_batch(ctx, snap_tol_mhz=snap_tol_mhz))
+
+    review = _derive_batch_review(ctx, path)
+    peaks_by_window: Dict[int, List["FinalPeak"]] = {}
+    if review.final_products is not None:
+        for peak in review.final_products.peaks:
+            if peak.window_id is not None:
+                peaks_by_window.setdefault(int(peak.window_id), []).append(peak)
+
+    after_by_wid: Dict[int, Tuple[int, float]] = {
+        int(wf.window_id): (len(wf.fitted_peaks), float(wf.reduced_chi2))
+        for wf in ctx.changeset.spectrum_fit.window_fits
+        if wf.window_id is not None
+    }
+
+    windows: Dict[int, PreviewWindowResult] = {}
+    for wid in sorted(direct_wids | cascaded_wids):
+        n_before, chi2r_before = before_stats.get(wid, (0, 0.0))
+        n_after, chi2r_after = after_by_wid.get(wid, (0, 0.0))
+        windows[wid] = PreviewWindowResult(
+            window_id=wid,
+            origin="direct" if wid in direct_wids else "cascaded",
+            action_indices=sorted(action_indices.get(wid, [])),
+            n_peaks_before=n_before,
+            n_peaks_after=n_after,
+            chi2r_before=chi2r_before,
+            chi2r_after=chi2r_after,
+            peaks=peaks_by_window.get(wid, []),
+        )
+
+    return ReviewPreviewResult(windows=windows, plan=plan)
 
 
 def review_log_impl(file_path: Union[Path, str]) -> List[DecisionLogEntry]:
