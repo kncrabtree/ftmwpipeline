@@ -99,6 +99,42 @@ re-run.
 Stage methods must reject execution when a required predecessor stage is not
 complete, with an error naming the missing dependency.
 
+### Amortized sessions
+
+Some stages expose an additional, optional session surface for repeated
+in-process calls against the same file — `Pipeline.review_session()` (Stage 6)
+is the first of these. A session is a context manager that holds one
+expensive, file-derived context (built once, synchronously, on entry) and
+reuses it across every verb issued through it, instead of each call rebuilding
+that context from scratch. It never changes what a verb returns or persists —
+correctness does not depend on the session amortizing anything: every verb
+re-validates a cheap on-disk fingerprint before trusting the cached context
+and transparently rebuilds it, exactly like the sessionless method it wraps,
+on any mismatch. Only latency differs; results are identical either way.
+
+**This is deliberately a `Pipeline`-class-only surface**, not mirrored on the
+functional API or the CLI:
+
+- The functional API is defined above as *stateless* ("every function takes
+  the `.ftmw` path as its first argument") — a call that hands back a live,
+  in-process handle with retained memory does not fit that contract, and
+  scripting/batch use (the functional API's stated purpose) rarely benefits
+  from amortizing a single process's worth of edits against one file the way
+  an interactive client issuing many small edits does.
+- The CLI is stateless *between invocations* by its own principle
+  (`CLI_STRATEGY.md`, Principles #4): each invocation is a separate process,
+  so there is no process-lifetime handle for a session to hold open. A CLI
+  command that wanted the same amortization would need a long-lived server
+  process, which is out of scope here.
+
+Neither omission is a cross-interface divergence: the CLI and the functional
+API still produce results identical to the class API's session-hosted calls
+for identical inputs (`API_STRATEGY.md`, Principles #4) — a session is a pure
+latency optimization for a long-lived, in-process, file-bound caller (exactly
+what `Pipeline` already is), not a new behavior. A client that wants the
+amortization uses `Pipeline`; one that does not, or that cannot (a fresh CLI
+process per call), pays full price per call and gets the same answer.
+
 ## Functional API
 
 A stateless surface where every function takes the `.ftmw` path as its first

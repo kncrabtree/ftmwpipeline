@@ -82,6 +82,7 @@ from ._internal.stage6_impl import (
     RefitWindowResult,
     ReviewPreviewResult,
     ReviewRunResult,
+    ReviewSession,
     UndoResult,
     acknowledge_environment_impl,
     apply_curation_impl,
@@ -2093,6 +2094,48 @@ class Pipeline:
         ReviewPreviewResult
         """
         return review_preview_impl(self.filepath, curation_path, frame=frame)
+
+    def review_session(self) -> ReviewSession:
+        """Open an amortized Stage 6 review session bound to this file (D3).
+
+        A context manager holding one shared active-FT fit context, reused
+        across every review verb issued through it -- ``review_edit``/
+        ``review_merge``/``review_split``/``review_accept``/``review_create``/
+        ``review_undo``/``review_preview``/``review_apply`` -- instead of each
+        call rebuilding it from scratch (~420 ms of the ~516 ms an interactive
+        single-window verb otherwise costs cold). A ``review_preview`` followed
+        by a ``review_apply`` of the identical plan against an unchanged file
+        persists the preview's already-computed outcome rather than
+        recomputing it (D4); see :class:`~ftmwpipeline._internal.stage6_impl.
+        ReviewSession` for the full contract.
+
+        Opening the session (entering the ``with`` block) builds the shared
+        context synchronously and blocks -- there is no thread inside the
+        library, so a caller wanting the warm-up off its own critical path
+        must arrange that on its own thread/process.
+
+        Correctness never depends on the session amortizing anything: every
+        verb re-validates a cheap on-disk fingerprint before using the cached
+        context and rebuilds it -- exactly like the sessionless methods this
+        wraps -- on any mismatch (a foreign writer touched the file since the
+        session opened, or since its last use).
+
+        Not thread-safe, and does not add any file locking beyond what the
+        sessionless verbs already have (none): single-writer discipline per
+        file remains the caller's.
+
+        Usage::
+
+            with pipeline.review_session() as session:
+                session.review_edit(window_id, add=[123.456])
+                preview = session.review_preview("edits.csv")
+                session.review_apply("edits.csv")  # reuses the preview
+
+        Returns
+        -------
+        ReviewSession
+        """
+        return ReviewSession(self.filepath)
 
     def review_log(self) -> List[DecisionLogEntry]:
         """Return the persisted Stage 6 decision log (read-only, in order).

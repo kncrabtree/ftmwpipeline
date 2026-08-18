@@ -23,8 +23,10 @@ Wrapped identically by the CLI, Pipeline class, and functional API.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
+import os
 import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -2291,6 +2293,7 @@ def refit_window_impl(
     add_seeds: Optional[List[ModelPeak]] = None,
     snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
     frame: Optional[Frame] = None,
+    _shared: Optional["_SharedFitCtx"] = None,
 ) -> RefitWindowResult:
     """User-directed single-window refit for Stage 6 review decisions.
 
@@ -2355,6 +2358,9 @@ def refit_window_impl(
         defaults to ``"raw"`` and is an error on a ``self_calibrated`` file
         when ``add`` or ``remove`` is non-empty (see
         :func:`~ftmwpipeline.core.curation.Frame`).
+    _shared :
+        Internal. An already-built :class:`_SharedFitCtx` to reuse (see
+        ``ReviewSession``, D3) instead of rebuilding it from the file.
 
     Returns
     -------
@@ -2395,6 +2401,7 @@ def refit_window_impl(
             snap_tol_mhz=snap_tol_mhz,
         ),
         snap_tol_mhz=snap_tol_mhz,
+        shared=_shared,
     )
 
 
@@ -2410,6 +2417,7 @@ def merge_peaks_impl(
     *,
     snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
     frame: Optional[Frame] = None,
+    _shared: Optional["_SharedFitCtx"] = None,
 ) -> RefitWindowResult:
     """Collapse ≥2 fitted peaks in a window into a single peak.
 
@@ -2451,6 +2459,8 @@ def merge_peaks_impl(
     frame :
         The frame ``peaks`` is expressed in (see :func:`refit_window_impl`).
         Omitting it is an error on a ``self_calibrated`` file.
+    _shared :
+        Internal. See :func:`refit_window_impl`.
 
     Returns
     -------
@@ -2478,6 +2488,7 @@ def merge_peaks_impl(
             ctx, window_id, peaks_raw, snap_tol_mhz=snap_tol_mhz
         ),
         snap_tol_mhz=snap_tol_mhz,
+        shared=_shared,
     )
 
 
@@ -2494,6 +2505,7 @@ def split_peak_impl(
     into: int = 2,
     snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
     frame: Optional[Frame] = None,
+    _shared: Optional["_SharedFitCtx"] = None,
 ) -> RefitWindowResult:
     """Replace one fitted peak with ``into`` peaks (default 2).
 
@@ -2526,6 +2538,8 @@ def split_peak_impl(
     frame :
         The frame ``peak`` is expressed in (see :func:`refit_window_impl`).
         Omitting it is an error on a ``self_calibrated`` file.
+    _shared :
+        Internal. See :func:`refit_window_impl`.
 
     Returns
     -------
@@ -2551,6 +2565,7 @@ def split_peak_impl(
             ctx, window_id, peak_raw, into, snap_tol_mhz=snap_tol_mhz
         ),
         snap_tol_mhz=snap_tol_mhz,
+        shared=_shared,
     )
 
 
@@ -2687,6 +2702,7 @@ def review_accept_impl(
     candidate_freq: Optional[float] = None,
     snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
     frame: Optional[Frame] = None,
+    _shared: Optional["_SharedFitCtx"] = None,
 ) -> Optional[RefitWindowResult]:
     """Accept a window as-is or accept a specific revived candidate.
 
@@ -2719,6 +2735,10 @@ def review_accept_impl(
         ``candidate_freq`` is ``None`` -- a bare accept carries no frequency.
         Omitting it while ``candidate_freq`` is given is an error on a
         ``self_calibrated`` file.
+    _shared :
+        Internal. See :func:`refit_window_impl`. Irrelevant when
+        ``candidate_freq`` is ``None`` -- a bare accept never opens the batch
+        engine at all.
 
     Returns
     -------
@@ -2744,6 +2764,7 @@ def review_accept_impl(
             ctx, window_id, candidate_raw, snap_tol_mhz=snap_tol_mhz
         ),
         snap_tol_mhz=snap_tol_mhz,
+        shared=_shared,
     )
 
 
@@ -2927,6 +2948,7 @@ def create_window_impl(
     snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
     frame: Optional[Frame] = None,
     _replay_window_id: Optional[int] = None,
+    _shared: Optional["_SharedFitCtx"] = None,
 ) -> CreateWindowResult:
     """Install a Stage 6 fit window covering ``anchor_mhz`` (``review create``).
 
@@ -2980,6 +3002,8 @@ def create_window_impl(
         if an earlier create was dropped from the edit set. The *geometry* is
         still re-derived; only the label is replayed, and a structural change
         that makes the label wrong raises before anything is written.
+    _shared :
+        Internal. See :func:`refit_window_impl`.
 
     Returns
     -------
@@ -3007,6 +3031,7 @@ def create_window_impl(
             snap_tol_mhz=snap_tol_mhz,
         ),
         snap_tol_mhz=snap_tol_mhz,
+        shared=_shared,
     )
 
 
@@ -3141,12 +3166,20 @@ class CurationApplyResult:
         Number of actions executed (``0`` for a dry run).
     dry_run : bool
         Whether the file was previewed without mutating.
+    base_changed : bool
+        D4. ``True`` only when a :class:`ReviewSession` had a staged preview
+        for this exact plan that it had to drop and recompute because the
+        file's base state moved out from under it since the preview ran
+        (either a foreign write, or another mutating verb issued on the same
+        session in between). Always ``False`` for every sessionless caller
+        (the default) -- there is nothing to have staged.
     """
 
     plan: List["PlannedAction"]
     warnings: List[str]
     applied: int
     dry_run: bool
+    base_changed: bool = False
 
 
 def _parse_curation_params(raw: str, line_no: int) -> Dict[str, str]:
@@ -4923,19 +4956,33 @@ def _derive_batch_review(ctx: _BatchCtx, path: str) -> Stage6Review:
     )
 
 
+def _write_stage6_review_only(review: Stage6Review, path: str) -> None:
+    """Write *review* to ``/stage6_review`` verbatim -- no derivation.
+
+    The write half of :func:`_persist_batch_review`, split out so
+    :func:`_finish_batch` can persist an ALREADY-derived review (D4's
+    staged-preview reuse: a ``ReviewSession`` accept that persists exactly
+    what an immediately-preceding preview already computed, rather than
+    re-deriving and trusting the two to agree) without going through
+    :func:`_derive_batch_review` a second time.
+    """
+    with h5py.File(path, "a") as h5f:
+        if "stage6_review" in h5f:
+            del h5f["stage6_review"]
+        grp = h5f.create_group("stage6_review")
+        save_stage6_review_to_hdf5(review, grp)
+
+
 def _persist_batch_review(ctx: _BatchCtx, path: str) -> None:
     """Derive the batch's new ``/stage6_review`` and write it.
 
     The write half of :func:`_derive_batch_review`; kept separate so a
     preview can call the derive half alone. This function is the engine's
-    only writer of ``/stage6_review``.
+    only writer of ``/stage6_review`` for the ordinary (non-staged) path --
+    see :func:`_write_stage6_review_only` for the staged-reuse path.
     """
     new_review = _derive_batch_review(ctx, path)
-    with h5py.File(path, "a") as h5f:
-        if "stage6_review" in h5f:
-            del h5f["stage6_review"]
-        grp = h5f.create_group("stage6_review")
-        save_stage6_review_to_hdf5(new_review, grp)
+    _write_stage6_review_only(new_review, path)
 
 
 def _check_add_seeds_arity(
@@ -5040,7 +5087,14 @@ def _cascade_batch(ctx: _BatchCtx, *, snap_tol_mhz: float) -> List[int]:
     return cascaded
 
 
-def _finish_batch(ctx: _BatchCtx, path: str, *, snap_tol_mhz: float) -> List[int]:
+def _finish_batch(
+    ctx: _BatchCtx,
+    path: str,
+    *,
+    snap_tol_mhz: float,
+    cascaded: Optional[List[int]] = None,
+    precomputed_review: Optional[Stage6Review] = None,
+) -> List[int]:
     """Close a batch: one combined cascade, one fit persist, one review persist.
 
     The counterpart to :func:`_open_batch`. Kept as cascade-then-persist in one
@@ -5048,6 +5102,16 @@ def _finish_batch(ctx: _BatchCtx, path: str, *, snap_tol_mhz: float) -> List[int
     that this remains the engine's one and only writer of ``/stage5_fitting``
     -- see ``test_only_finish_batch_persists_the_fit``. Returns the cascaded
     window ids.
+
+    ``cascaded``/``precomputed_review``, when given, are an ALREADY-cascaded
+    window-id list and an ALREADY-derived :class:`Stage6Review` from an
+    earlier :func:`_cascade_batch` / :func:`_derive_batch_review` call against
+    this EXACT ``ctx`` -- the staged-preview reuse path (D4,
+    ``ReviewSession``). Skips re-cascading and/or re-deriving and persists
+    exactly those, so the bytes on disk are guaranteed to be what a preceding
+    preview showed rather than a second computation trusted to agree with the
+    first. ``None`` (every sessionless caller) computes them here, unchanged
+    from before.
     """
     from ..io.fitting_serialization import save_spectrum_fit_to_hdf5
 
@@ -5058,7 +5122,8 @@ def _finish_batch(ctx: _BatchCtx, path: str, *, snap_tol_mhz: float) -> List[int
             "is a preview-only context and must never reach _finish_batch"
         )
 
-    cascaded = _cascade_batch(ctx, snap_tol_mhz=snap_tol_mhz)
+    if cascaded is None:
+        cascaded = _cascade_batch(ctx, snap_tol_mhz=snap_tol_mhz)
 
     shape_attr = str(ctx.changeset.spectrum_fit.parameters.get("shape", "lorentzian"))
     with h5py.File(path, "a") as h5f:
@@ -5068,7 +5133,10 @@ def _finish_batch(ctx: _BatchCtx, path: str, *, snap_tol_mhz: float) -> List[int
         save_spectrum_fit_to_hdf5(ctx.changeset.spectrum_fit, grp)
         grp.attrs["shape"] = shape_attr
 
-    _persist_batch_review(ctx, path)
+    if precomputed_review is not None:
+        _write_stage6_review_only(precomputed_review, path)
+    else:
+        _persist_batch_review(ctx, path)
     return cascaded
 
 
@@ -5080,6 +5148,7 @@ def _run_single_action(
     apply: "Callable[[_BatchCtx], _T]",
     *,
     snap_tol_mhz: float,
+    shared: Optional[_SharedFitCtx] = None,
 ) -> _T:
     """Run one fit-mutating action as a batch of one, returning its result.
 
@@ -5087,8 +5156,12 @@ def _run_single_action(
     checking: they and ``review apply`` share the same context build, the same
     appliers, the same cascade and the same persist, so a change to any of those
     reaches every caller at once and a new verb cannot be written that skips one.
+
+    ``shared`` lets a caller with an already-built :class:`_SharedFitCtx`
+    reuse it (``ReviewSession``, D3); a fresh one is built when omitted,
+    exactly as before.
     """
-    ctx = _open_batch(path, snap_tol_mhz=snap_tol_mhz)
+    ctx = _open_batch(path, snap_tol_mhz=snap_tol_mhz, shared=shared)
     result = apply(ctx)
     _finish_batch(ctx, path, snap_tol_mhz=snap_tol_mhz)
     return result
@@ -5099,6 +5172,7 @@ def _execute_curation_batch(
     plan: List[PlannedAction],
     *,
     snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+    shared: Optional[_SharedFitCtx] = None,
 ) -> int:
     """Execute a resolved curation plan as one batch: shared context, one
     combined cascade, one persist of ``/stage5_fitting`` and one of
@@ -5107,6 +5181,11 @@ def _execute_curation_batch(
     (no Stage 5 fit touched, so there is nothing to batch and -- unlike every
     other action -- a bare accept does not even require a Stage 5 fit to
     exist).
+
+    ``shared`` lets a caller with an already-built :class:`_SharedFitCtx`
+    reuse it (``ReviewSession``, D3); a fresh one is built when omitted,
+    exactly as before. Unused on the bare-accept-only fallback path, which
+    never opens the engine at all.
 
     Returns the number of actions applied (``len(plan)`` on success; a failure
     raises before this returns and leaves the file untouched, since nothing is
@@ -5134,7 +5213,7 @@ def _execute_curation_batch(
     # all-``accept`` plan whose accepts carry candidates is fit-mutating but
     # reads as non-mutating to the callers' "any non-accept action" pre-check,
     # so a caller-side gate alone would let that shape through.
-    ctx = _open_batch(path, snap_tol_mhz=snap_tol_mhz)
+    ctx = _open_batch(path, snap_tol_mhz=snap_tol_mhz, shared=shared)
 
     applied = 0
     for original_index, action in _canonicalize_batch_plan(plan):
@@ -5232,6 +5311,7 @@ def apply_curation_impl(
     *,
     dry_run: bool = False,
     frame: Optional[Frame] = None,
+    _shared: Optional["_SharedFitCtx"] = None,
 ) -> CurationApplyResult:
     """Apply a curation file to *file_path*, delegating to the edit impls.
 
@@ -5263,6 +5343,8 @@ def apply_curation_impl(
     to resolve (e.g. a ``remove`` frequency matches no fitted peak), tagged with
     the offending action; a failure leaves the file untouched (nothing is
     persisted until every action in the plan has succeeded).
+
+    ``_shared`` is internal -- see :func:`refit_window_impl`.
     """
     path = str(file_path)
     ops = parse_curation_file(curation_path)
@@ -5290,7 +5372,7 @@ def apply_curation_impl(
             plan=plan, warnings=warnings, applied=0, dry_run=True
         )
 
-    applied = _execute_curation_batch(path, plan)
+    applied = _execute_curation_batch(path, plan, shared=_shared)
 
     return CurationApplyResult(
         plan=plan, warnings=warnings, applied=applied, dry_run=False
@@ -5387,16 +5469,37 @@ class ReviewPreviewResult:
     warnings: List[str] = field(default_factory=list)
 
 
-def review_preview_impl(
+@dataclass
+class _PreviewRun:
+    """Internal: everything one preview computed, including the pieces
+    :func:`review_preview_impl` throws away but a :class:`ReviewSession`
+    needs to stage for a possible immediately-following accept (D4): the
+    finished (already cascaded, never persisted) batch context, its cascaded
+    window ids, and the already-derived would-be review. ``ctx`` /
+    ``cascaded_wids`` / ``review`` are ``None`` (empty) only for the
+    bare-accept-only short circuit, which never opens the engine and so has
+    nothing to stage.
+    """
+
+    result: ReviewPreviewResult
+    ctx: Optional[_BatchCtx] = None
+    cascaded_wids: List[int] = field(default_factory=list)
+    review: Optional[Stage6Review] = None
+
+
+def _run_review_preview(
     file_path: Union[Path, str],
     curation_path: Union[Path, str],
     *,
     frame: Optional[Frame] = None,
     snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
-) -> ReviewPreviewResult:
+    shared: Optional[_SharedFitCtx] = None,
+) -> _PreviewRun:
     """Run a curation file's resolved plan to completion in memory and report
     the fitted outcome -- final-product numbers, post-cascade -- without
-    writing anything to *file_path*.
+    writing anything to *file_path*. The body of :func:`review_preview_impl`,
+    plus the internal state (D4) a :class:`ReviewSession` needs to persist a
+    following accept without recomputing.
 
     Mirrors :func:`apply_curation_impl`'s parse / resolve / frame-convert
     prologue exactly, including the curation file's optional frame header
@@ -5423,6 +5526,10 @@ def review_preview_impl(
     Raises the same per-action attributed ``ValueError`` a live apply raises
     (tagged with the 1-based action index and its description), on the same
     failures, since it shares the same appliers.
+
+    ``shared`` lets a caller with an already-built :class:`_SharedFitCtx`
+    reuse it (``ReviewSession``, D3); a fresh one is built when omitted,
+    exactly as before.
     """
     path = str(file_path)
     ops = parse_curation_file(curation_path)
@@ -5445,9 +5552,11 @@ def review_preview_impl(
         # C5: bare-accept-only (or empty) plan -- no fits, no gate, nothing to
         # report. Mirrors _execute_curation_batch's own cheap path, which
         # likewise never opens the engine for this shape.
-        return ReviewPreviewResult(windows={}, plan=plan, warnings=warnings)
+        return _PreviewRun(
+            result=ReviewPreviewResult(windows={}, plan=plan, warnings=warnings)
+        )
 
-    ctx = _open_batch(path, snap_tol_mhz=snap_tol_mhz, snapshot=False)
+    ctx = _open_batch(path, snap_tol_mhz=snap_tol_mhz, snapshot=False, shared=shared)
 
     # Snapshot every touched window's pre-batch stats now, before any action
     # mutates ctx.changeset.spectrum_fit in place -- this is the "before" a
@@ -5552,7 +5661,29 @@ def review_preview_impl(
             peaks=peaks_by_window.get(wid, []),
         )
 
-    return ReviewPreviewResult(windows=windows, plan=plan, warnings=warnings)
+    result = ReviewPreviewResult(windows=windows, plan=plan, warnings=warnings)
+    return _PreviewRun(
+        result=result, ctx=ctx, cascaded_wids=sorted(cascaded_wids), review=review
+    )
+
+
+def review_preview_impl(
+    file_path: Union[Path, str],
+    curation_path: Union[Path, str],
+    *,
+    frame: Optional[Frame] = None,
+    snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+) -> ReviewPreviewResult:
+    """Run a curation file's resolved plan to completion in memory and report
+    the fitted outcome -- final-product numbers, post-cascade -- without
+    writing anything to *file_path*. See :func:`_run_review_preview` for the
+    full contract; this is the public entry point, which discards the
+    internal staging state a :class:`ReviewSession` needs and a sessionless
+    caller does not.
+    """
+    return _run_review_preview(
+        file_path, curation_path, frame=frame, snap_tol_mhz=snap_tol_mhz
+    ).result
 
 
 def review_log_impl(file_path: Union[Path, str]) -> List[DecisionLogEntry]:
@@ -5626,6 +5757,7 @@ def review_undo_impl(
     ids: Sequence[int],
     *,
     dry_run: bool = False,
+    _shared: Optional["_SharedFitCtx"] = None,
 ) -> UndoResult:
     """Undo one or more recorded decisions by id, replaying the rest.
 
@@ -5637,6 +5769,12 @@ def review_undo_impl(
 
     ``dry_run`` returns the removed/surviving split and the resolved replay plan
     without mutating.
+
+    ``_shared`` is internal (see :func:`refit_window_impl`) -- safe to reuse
+    across an undo's restore-then-replay because none of it (the baseline
+    restore, the review rebuild, the surviving-decision replay) touches
+    anything :class:`_SharedFitCtx` derives from (settings, tau calibration,
+    the base window plan, or the calibration stamp).
 
     Raises ``ValueError`` if an id is unknown, there are no decisions, or the
     automatic-fit baseline is unavailable while fit-mutating decisions exist
@@ -5711,7 +5849,7 @@ def review_undo_impl(
         if "stage6_review" in h5f:
             del h5f["stage6_review"]
     review_run_impl(path)
-    applied = _execute_curation_batch(path, plan)
+    applied = _execute_curation_batch(path, plan, shared=_shared)
 
     return UndoResult(
         removed=removed,
@@ -6452,3 +6590,481 @@ def review_run_impl(
         n_attention=n_attention,
         reason_counts=reason_counts,
     )
+
+
+# ---------------------------------------------------------------------------
+# D1: the fingerprint a ReviewSession checks before trusting its cached
+# _SharedFitCtx. See ``scratch/preview-session-plan.md`` ("Task D") and
+# ``scratch/bq-correspondence/reply-preview-execute.md`` section 4.
+# ---------------------------------------------------------------------------
+
+_FitCtxFingerprint = Tuple[int, int, Tuple[Any, ...]]
+"""``(st_mtime_ns, st_size, stage_provenance)`` -- see
+:func:`_compute_fit_ctx_fingerprint`."""
+
+
+def _fit_ctx_stage_provenance(path: str) -> Tuple[Any, ...]:
+    """Cheap, attrs-only proxy for whether :func:`_build_shared_fit_ctx`
+    would now return something different than the last time this was read --
+    the "stage provenance" half of D1's fingerprint, behind the mtime+size
+    fast path.
+
+    ``/pipeline_stages``' own ``completed_stages``/``last_updated`` attrs
+    catch a Stage 5 (or earlier) re-run, but NOT a timebase re-run:
+    ``timebase_calibration`` is in no stage's dependency list
+    (``file_manager.py:283``) and ``timebase_impl`` never calls
+    ``invalidate_downstream_stages`` -- the exact gap A7 hit for
+    final-products staleness. A timebase re-run changes
+    ``_SharedFitCtx.epsilon`` / ``calibration_state`` without touching the
+    stage tracker at all, so :func:`_current_calibration_stamp` (the same
+    stamp A7 already computes) is read directly here too. The Stage 5
+    ``shape`` attr and the Stage 6 decision-log length round out the set:
+    together they cover every input :func:`_build_shared_fit_ctx` derives
+    from that could plausibly change without moving the file's mtime or
+    size -- defense in depth behind the fast path, not a replacement for it
+    (see :func:`_compute_fit_ctx_fingerprint`).
+    """
+    with h5py.File(path, "r") as h5f:
+        stages_attrs = h5f["pipeline_stages"].attrs if "pipeline_stages" in h5f else {}
+        completed = str(stages_attrs.get("completed_stages", "[]"))
+        last_updated = str(stages_attrs.get("last_updated", ""))
+
+        shape_attr: Optional[str] = None
+        if "stage5_fitting" in h5f:
+            raw_shape = h5f["stage5_fitting"].attrs.get("shape")
+            if isinstance(raw_shape, bytes):
+                raw_shape = raw_shape.decode("utf-8")
+            shape_attr = None if raw_shape is None else str(raw_shape)
+
+        decision_log_len = 0
+        if "stage6_review" in h5f and "decision_log" in h5f["stage6_review"]:
+            raw_log = h5f["stage6_review/decision_log"].attrs.get("data", "[]")
+            try:
+                decision_log_len = len(json.loads(raw_log))
+            except (TypeError, ValueError):
+                decision_log_len = -1
+
+    cal_stamp = _current_calibration_stamp(path)
+    return (completed, last_updated, shape_attr, decision_log_len, cal_stamp)
+
+
+def _compute_fit_ctx_fingerprint(path: str) -> _FitCtxFingerprint:
+    """The validity fingerprint a :class:`ReviewSession` checks before
+    trusting its cached :class:`_SharedFitCtx` (D1): ``st_mtime_ns`` and
+    ``st_size`` (a few microseconds; the near-free fast path -- any write to
+    the file changes at least one) plus :func:`_fit_ctx_stage_provenance` (a
+    handful of attrs-only HDF5 reads, no dataset loads; ~0.8 ms measured,
+    against ~420 ms for the shared context it guards) as a second-tier check
+    for whatever the fast path alone might miss -- a foreign write landing
+    inside the filesystem's mtime granularity.
+
+    ALWAYS re-read live from disk -- never predicted from what a caller
+    believes it just wrote. In particular, :class:`ReviewSession` re-reads
+    this after every one of its own writes rather than computing what the
+    new value "should" be, so a second writer landing in the very same
+    instant is still caught the next time the session is used (settled
+    decision 7 in ``scratch/preview-session-plan.md``: no on-disk generation
+    counter -- this re-read is the substitute).
+    """
+    st = os.stat(path)
+    return (st.st_mtime_ns, st.st_size, _fit_ctx_stage_provenance(path))
+
+
+def _resolve_curation_call(
+    path: str, curation_path: Union[Path, str], frame: Optional[Frame]
+) -> Tuple[List["PlannedAction"], Frame, Optional[_CalibrationStamp]]:
+    """Parse + resolve + frame-convert a curation file into the ready-to-run
+    plan -- the shared prologue :func:`apply_curation_impl` and
+    :func:`_run_review_preview` each already inline for themselves. A THIRD
+    inlined copy for :class:`ReviewSession`'s staged-plan comparison would
+    make three, so it is factored out here instead (used only by new D3/D4
+    code; the two existing inlined copies are left as they are).
+    """
+    ops = parse_curation_file(curation_path)
+    plan = _resolve_curation_plan(ops)
+    resolved_frame: Frame = "raw"
+    stamp: Optional[_CalibrationStamp] = None
+    if any(_planned_action_has_freq(a) for a in plan):
+        resolved_frame, stamp = _resolve_curation_frame(path, ops.header, frame)
+        plan = [
+            _planned_action_to_raw(a, frame=resolved_frame, stamp=stamp) for a in plan
+        ]
+    return plan, resolved_frame, stamp
+
+
+# ---------------------------------------------------------------------------
+# D3/D4: the amortized review session.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _StagedPreview:
+    """A finished, cascaded, but never-persisted batch outcome retained by a
+    :class:`ReviewSession` immediately after ``review_preview`` (D4) -- so an
+    immediately-following ``review_apply`` of the identical plan against an
+    unchanged base can persist it directly instead of re-running the
+    appliers, the cascade, and the review derivation a second time. Dropped
+    the moment anything about the base -- or the requested plan -- no longer
+    matches (see ``ReviewSession.review_apply``).
+    """
+
+    fingerprint: _FitCtxFingerprint
+    curation_path: str
+    frame: Optional[Frame]
+    resolved_plan: List["PlannedAction"]
+    warnings: List[str]
+    ctx: _BatchCtx
+    cascaded_wids: List[int]
+    review: Stage6Review
+
+
+class ReviewSession:
+    """Amortized Stage 6 review session (D3): a context manager holding one
+    :class:`_SharedFitCtx` -- the ~420 ms active-FT reconstruction every
+    fit-mutating Stage 6 verb otherwise rebuilds from scratch -- reused
+    across every verb this session issues against the same file: ``edit``,
+    ``merge``, ``split``, ``accept``, ``create``, ``undo``, ``preview`` and
+    ``apply``. Hosting the whole verb set (not just preview/apply) is
+    deliberate: an interactive single-window edit costs ~516 ms cold,
+    essentially all of it the same setup a batch amortizes, so a session that
+    only sped up the batch door would leave every interactive click paying
+    the full price.
+
+    Opened via :meth:`Pipeline.review_session`. Warm-up (building the shared
+    context) is synchronous and happens in :meth:`__enter__`, blocking --
+    there is no thread inside the library (settled decision 7 in
+    ``scratch/preview-session-plan.md``).
+
+    **Correctness never depends on reuse.** Every verb re-validates a cheap
+    on-disk fingerprint (:func:`_compute_fit_ctx_fingerprint`, ~0.8 ms)
+    before doing any work; a mismatch (a foreign writer touched the file, or
+    this is the session's first use) rebuilds the shared context from
+    scratch -- identically to what the sessionless functions this class
+    wraps do on their own when no ``shared`` is passed. After each of the
+    session's OWN writes, the fingerprint is RE-READ from disk, never
+    predicted, so a foreign writer landing in the same instant is still
+    caught on the session's next use.
+
+    Retains ~26 MB of active-FT arrays for its lifetime (D5); lifetime is
+    entirely caller-controlled (``with`` block, or explicit :meth:`close`) --
+    there is no module-level cache, so a session that is never opened, or one
+    that is closed, costs nothing beyond the object itself.
+
+    Not thread-safe, holds no lock, and does not protect the file from a
+    second writer (settled decision 7): single-writer discipline per file is
+    the caller's, exactly as it is for every sessionless verb.
+    """
+
+    def __init__(self, path: Union[str, Path]) -> None:
+        self._path = str(path)
+        self._shared: Optional[_SharedFitCtx] = None
+        self._fingerprint: Optional[_FitCtxFingerprint] = None
+        self._staged: Optional[_StagedPreview] = None
+        self._pending_base_changed = False
+        self._closed = False
+
+    # -- lifecycle ----------------------------------------------------------
+
+    def __enter__(self) -> "ReviewSession":
+        self._shared = _build_shared_fit_ctx(self._path)
+        self._fingerprint = _compute_fit_ctx_fingerprint(self._path)
+        self._closed = False
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
+
+    def close(self) -> None:
+        """Release the retained shared context (D5). Idempotent."""
+        self._shared = None
+        self._fingerprint = None
+        self._staged = None
+        self._pending_base_changed = False
+        self._closed = True
+
+    # -- internal freshness / staging bookkeeping ----------------------------
+
+    def _require_open(self) -> _SharedFitCtx:
+        if self._closed or self._shared is None:
+            raise ValueError(
+                "review session is closed; use "
+                "'with pipeline.review_session() as session:' and call verbs "
+                "only inside the block"
+            )
+        return self._shared
+
+    def _sync(self) -> _SharedFitCtx:
+        """Validate the cached shared context against a freshly-read
+        fingerprint; rebuild (and drop any staged preview) on a mismatch.
+        Called before every verb -- the sole gate that keeps correctness
+        independent of whatever ``self._shared`` currently holds. A forced
+        rebuild here is byte-for-byte the same rebuild a sessionless caller
+        gets automatically on every call.
+        """
+        self._require_open()
+        live = _compute_fit_ctx_fingerprint(self._path)
+        if live != self._fingerprint:
+            self._shared = _build_shared_fit_ctx(self._path)
+            self._fingerprint = live
+            self._drop_staged(base_changed=True)
+        assert self._shared is not None
+        return self._shared
+
+    def _drop_staged(self, *, base_changed: bool) -> None:
+        if self._staged is not None:
+            self._staged = None
+            if base_changed:
+                self._pending_base_changed = True
+
+    def _resync_after_write(self) -> None:
+        """Re-read (never predict) the fingerprint after one of this
+        session's own writes. A session-issued edit never touches anything
+        :class:`_SharedFitCtx` derives from (settings, tau calibration, the
+        base window plan, the calibration stamp), so this refreshes the
+        stored baseline without forcing a rebuild -- but it is read from
+        disk, not computed from what was just written, so a foreign writer
+        that landed in the very same instant is still caught on the NEXT
+        verb call's :meth:`_sync`.
+        """
+        self._fingerprint = _compute_fit_ctx_fingerprint(self._path)
+
+    # -- single-window verbs --------------------------------------------------
+
+    def review_edit(
+        self,
+        window_id: int,
+        *,
+        add: Sequence[float] = (),
+        remove: Sequence[float] = (),
+        snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+        frame: Optional[Frame] = None,
+    ) -> RefitWindowResult:
+        """Session-hosted :func:`refit_window_impl`. See its docstring for
+        the full contract; identical here except the shared fit context is
+        reused (validated fresh first) rather than rebuilt."""
+        shared = self._sync()
+        self._drop_staged(base_changed=True)
+        result = refit_window_impl(
+            self._path,
+            window_id,
+            add=add,
+            remove=remove,
+            snap_tol_mhz=snap_tol_mhz,
+            frame=frame,
+            _shared=shared,
+        )
+        self._resync_after_write()
+        return result
+
+    def review_merge(
+        self,
+        window_id: int,
+        peaks: Sequence[float],
+        *,
+        snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+        frame: Optional[Frame] = None,
+    ) -> RefitWindowResult:
+        """Session-hosted :func:`merge_peaks_impl`."""
+        shared = self._sync()
+        self._drop_staged(base_changed=True)
+        result = merge_peaks_impl(
+            self._path,
+            window_id,
+            peaks,
+            snap_tol_mhz=snap_tol_mhz,
+            frame=frame,
+            _shared=shared,
+        )
+        self._resync_after_write()
+        return result
+
+    def review_split(
+        self,
+        window_id: int,
+        peak: float,
+        *,
+        into: int = 2,
+        snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+        frame: Optional[Frame] = None,
+    ) -> RefitWindowResult:
+        """Session-hosted :func:`split_peak_impl`."""
+        shared = self._sync()
+        self._drop_staged(base_changed=True)
+        result = split_peak_impl(
+            self._path,
+            window_id,
+            peak,
+            into=into,
+            snap_tol_mhz=snap_tol_mhz,
+            frame=frame,
+            _shared=shared,
+        )
+        self._resync_after_write()
+        return result
+
+    def review_accept(
+        self,
+        window_id: int,
+        *,
+        candidate_freq: Optional[float] = None,
+        snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+        frame: Optional[Frame] = None,
+    ) -> Optional[RefitWindowResult]:
+        """Session-hosted :func:`review_accept_impl`."""
+        shared = self._sync()
+        self._drop_staged(base_changed=True)
+        result = review_accept_impl(
+            self._path,
+            window_id,
+            candidate_freq=candidate_freq,
+            snap_tol_mhz=snap_tol_mhz,
+            frame=frame,
+            _shared=shared,
+        )
+        self._resync_after_write()
+        return result
+
+    def review_create(
+        self,
+        anchor_mhz: float,
+        *,
+        snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+        frame: Optional[Frame] = None,
+    ) -> CreateWindowResult:
+        """Session-hosted :func:`create_window_impl`."""
+        shared = self._sync()
+        self._drop_staged(base_changed=True)
+        result = create_window_impl(
+            self._path,
+            anchor_mhz,
+            snap_tol_mhz=snap_tol_mhz,
+            frame=frame,
+            _shared=shared,
+        )
+        self._resync_after_write()
+        return result
+
+    def review_undo(
+        self,
+        ids: Sequence[int],
+        *,
+        dry_run: bool = False,
+    ) -> UndoResult:
+        """Session-hosted :func:`review_undo_impl`."""
+        shared = self._sync()
+        if not dry_run:
+            self._drop_staged(base_changed=True)
+        result = review_undo_impl(self._path, ids, dry_run=dry_run, _shared=shared)
+        if not dry_run:
+            self._resync_after_write()
+        return result
+
+    # -- batch door: preview / apply, with D4's staged reuse -----------------
+
+    def review_preview(
+        self,
+        curation_path: Union[str, Path],
+        *,
+        frame: Optional[Frame] = None,
+    ) -> ReviewPreviewResult:
+        """Session-hosted :func:`review_preview_impl`. Stages its finished,
+        cascaded, in-memory outcome (D4) so an immediately-following
+        :meth:`review_apply` of the identical plan against an unchanged base
+        can persist it directly rather than recomputing -- see that method.
+        """
+        shared = self._sync()
+        # A fresh preview supersedes any earlier drift note.
+        self._pending_base_changed = False
+        run = _run_review_preview(self._path, curation_path, frame=frame, shared=shared)
+        if run.ctx is not None and run.review is not None:
+            assert self._fingerprint is not None
+            self._staged = _StagedPreview(
+                fingerprint=self._fingerprint,
+                curation_path=str(curation_path),
+                frame=frame,
+                resolved_plan=list(run.result.plan),
+                warnings=list(run.result.warnings),
+                ctx=run.ctx,
+                cascaded_wids=list(run.cascaded_wids),
+                review=run.review,
+            )
+        else:
+            self._staged = None
+        return run.result
+
+    def _persist_staged(self, staged: _StagedPreview) -> List[int]:
+        """The write half of D4's staged-reuse accept: re-gate and take the
+        undo baseline exactly as a live accept would (via :func:`_open_batch`
+        -- the only function structurally permitted to take that baseline),
+        then persist the ALREADY-cascaded fit and the ALREADY-derived review
+        from the staged preview -- never re-cascading or re-deriving, so the
+        persisted bytes are guaranteed to be exactly what the preview showed
+        rather than a second computation trusted to agree with the first.
+        """
+        gate_ctx = _open_batch(
+            self._path, snap_tol_mhz=REFIT_SNAP_TOL_MHZ, shared=self._shared
+        )
+        staged.ctx.baseline_taken = gate_ctx.baseline_taken
+        return _finish_batch(
+            staged.ctx,
+            self._path,
+            snap_tol_mhz=REFIT_SNAP_TOL_MHZ,
+            cascaded=staged.cascaded_wids,
+            precomputed_review=staged.review,
+        )
+
+    def review_apply(
+        self,
+        curation_path: Union[str, Path],
+        *,
+        frame: Optional[Frame] = None,
+    ) -> CurationApplyResult:
+        """Session-hosted :func:`apply_curation_impl`, with D4's staged
+        reuse: when an immediately-preceding :meth:`review_preview` staged
+        the identical plan (same curation file, same ``frame``, same
+        resolved actions) against a base that has not moved since (the
+        fingerprint captured at preview time still matches), this persists
+        that finished result directly instead of re-running the appliers,
+        the cascade, and the review derivation. Any mismatch -- a different
+        plan, or a base that moved -- falls back to a full, ordinary apply,
+        identical to the sessionless :func:`apply_curation_impl`.
+
+        ``base_changed`` on the result is ``True`` only when a staged preview
+        existed but had to be dropped because the base moved out from under
+        it (a foreign write, or another mutating verb issued on this session
+        in between) -- never merely because no preview preceded this call.
+        """
+        shared = self._sync()
+        base_changed = self._pending_base_changed
+        self._pending_base_changed = False
+
+        staged = self._staged
+        if staged is not None:
+            same_request = (
+                staged.curation_path == str(curation_path)
+                and staged.frame == frame
+                and staged.fingerprint == self._fingerprint
+            )
+            if same_request:
+                plan, _, _ = _resolve_curation_call(self._path, curation_path, frame)
+                if plan == staged.resolved_plan:
+                    self._persist_staged(staged)
+                    self._staged = None
+                    self._resync_after_write()
+                    return CurationApplyResult(
+                        plan=plan,
+                        warnings=staged.warnings,
+                        applied=len(plan),
+                        dry_run=False,
+                        base_changed=base_changed,
+                    )
+            # Staged, but it does not match this call -- irrelevant now.
+            self._staged = None
+
+        result = apply_curation_impl(
+            self._path, curation_path, frame=frame, _shared=shared
+        )
+        if base_changed:
+            result = replace(result, base_changed=True)
+        self._resync_after_write()
+        return result
