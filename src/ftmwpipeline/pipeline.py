@@ -2038,14 +2038,18 @@ class Pipeline:
             Preview the resolved plan without writing (default ``False``).
         frame :
             The frame every frequency in the curation file is expressed in --
-            applies uniformly (no per-row frame column). Omitting it is an
-            error on a ``self_calibrated`` file when the file carries any
-            frequency (see :data:`~ftmwpipeline.core.curation.Frame`).
+            applies uniformly (no per-row frame column). The file's own
+            optional ``# frame: ...`` / ``# epsilon: ...`` header takes
+            precedence over (or must agree with) this argument; omitting
+            both is an error on a ``self_calibrated`` file when the file
+            carries any frequency (see
+            :data:`~ftmwpipeline.core.curation.Frame`).
 
         Returns
         -------
         CurationApplyResult
-            The resolved action plan, warnings, and the number applied.
+            The resolved action plan, warnings (including a possible
+            frame-mismatch advisory), and the number applied.
         """
         return apply_curation_impl(
             self.filepath, curation_path, dry_run=dry_run, frame=frame

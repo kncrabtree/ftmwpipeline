@@ -1837,9 +1837,11 @@ def review_apply(
         Preview the resolved plan without writing (default ``False``).
     frame :
         The frame every frequency in the curation file is expressed in --
-        applies uniformly (no per-row frame column). Omitting it is an error
-        on a ``self_calibrated`` file when the file carries any frequency
-        (see :data:`~ftmwpipeline.core.curation.Frame`).
+        applies uniformly (no per-row frame column). The file's own optional
+        ``# frame: ...`` / ``# epsilon: ...`` header takes precedence over
+        (or must agree with) this argument; omitting both is an error on a
+        ``self_calibrated`` file when the file carries any frequency (see
+        :data:`~ftmwpipeline.core.curation.Frame`).
 
     Returns
     -------

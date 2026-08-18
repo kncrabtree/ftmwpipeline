@@ -767,6 +767,10 @@ def cmd_review_preview(args: argparse.Namespace) -> int:
         return 1
 
     print("review preview (nothing written):")
+    if result.warnings:
+        print("warnings:")
+        for w_msg in result.warnings:
+            print(f"  - {w_msg}")
     if not result.windows:
         print("  (no fit-mutating actions; nothing to preview)")
         return 0

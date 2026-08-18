@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import (
@@ -852,6 +853,69 @@ def _resolve_frame(
             )
         return "raw", stamp
     return frame, stamp
+
+
+def _resolve_curation_frame(
+    path: str,
+    header: "CurationFileHeader",
+    frame: Optional[Frame],
+) -> Tuple[Frame, Optional[_CalibrationStamp]]:
+    """Resolve a curation file's effective frame, combining its optional
+    file-level header (A3) with the per-call ``frame`` argument, and refuse a
+    header whose stamped epsilon no longer matches the file's current one.
+
+    Precedence: the header alone wins when only the header declares a frame;
+    the ``frame`` argument alone wins when only it is given; when both are
+    given and DISAGREE, refuse; when neither is given, fall back to
+    :func:`_resolve_frame`'s normal rule (default raw, refuse on a
+    self_calibrated file when ``frame`` is omitted).
+
+    When the header stamps an epsilon (only reachable with
+    ``header.frame == \"calibrated\"`` -- :func:`parse_curation_file` refuses
+    any other combination at parse time), it is compared against the file's
+    CURRENT epsilon (:func:`_current_calibration_stamp`) -- never against the
+    ``frame`` argument, which carries no epsilon of its own. Any disagreement
+    is refused rather than silently resolved with either value: a batch
+    staged calibrated against one epsilon and applied after the file's
+    calibration has moved (e.g. a timebase re-run) would otherwise resolve
+    every candidate against the wrong raw frequency, silently -- exactly the
+    failure mode the stamp exists to catch.
+    """
+    if header.frame is not None and frame is not None and header.frame != frame:
+        raise ValueError(
+            f"curation file frame disagreement: the file's header declares "
+            f'frame="{header.frame}", but frame="{frame}" was passed '
+            f"explicitly. Pass a matching frame (or omit it to use the "
+            f"file's header), or edit the file's header to match."
+        )
+
+    if header.frame is not None:
+        resolved_frame: Frame = header.frame
+        stamp = _current_calibration_stamp(path)
+    elif frame is not None:
+        resolved_frame = frame
+        stamp = _current_calibration_stamp(path)
+    else:
+        resolved_frame, stamp = _resolve_frame(path, None)
+
+    # stamp is None means the target file has no FID header to derive a
+    # current calibration from at all (e.g. a hand-built minimal fixture) --
+    # no grounds to declare drift, so trust the header rather than refuse
+    # against a fabricated "current epsilon" (same stance as
+    # ``_final_products_is_stale`` for the analogous A7 staleness check).
+    if header.epsilon is not None and stamp is not None:
+        current_eps = stamp[1]
+        if not math.isclose(header.epsilon, current_eps, rel_tol=1e-6, abs_tol=1e-12):
+            raise ValueError(
+                f"curation file frame drift: this file was staged "
+                f"frame=calibrated at epsilon={header.epsilon:.6e}, but the "
+                f"target file's current epsilon is {current_eps:.6e}. The "
+                f"calibration has changed since this file was written (e.g. "
+                f"a timebase re-run) -- re-stage the curation file against "
+                f"the current calibration rather than applying it as-is."
+            )
+
+    return resolved_frame, stamp
 
 
 def _frame_to_raw(
@@ -2994,6 +3058,49 @@ class CurationOp:
 
 
 @dataclass
+class CurationFileHeader:
+    """A curation file's optional file-level frame declaration (A3).
+
+    ``# frame: raw`` or ``# frame: calibrated`` as a whole-line comment
+    anywhere in the file declares the frame every frequency in the file is
+    expressed in -- the curation file is the one place a calibrated
+    frequency becomes a DURABLE artifact (everywhere else, ``frame`` is a
+    per-call argument that leaves no trace). When ``frame`` is
+    ``\"calibrated\"``, the file must also carry ``# epsilon: <value>``,
+    stamping the epsilon it was written under -- this is what lets a later
+    apply/preview detect that the calibration has drifted (e.g. a timebase
+    re-run) since the file was staged, and refuse rather than silently
+    resolving against the wrong peaks (see :func:`_resolve_curation_frame`).
+    ``epsilon`` without ``frame: calibrated`` is rejected at parse time: an
+    epsilon stamp is meaningless without a calibrated-frame declaration to
+    attach it to.
+
+    Both directives are optional; ``frame is None`` and ``epsilon is None``
+    is an ordinary file with no header, which falls back to the normal
+    per-call ``frame`` resolution unchanged.
+    """
+
+    frame: Optional[Frame] = None
+    epsilon: Optional[float] = None
+
+
+class ParsedCurationFile(List[CurationOp]):
+    """The result of :func:`parse_curation_file`: a list of the file's parsed
+    :class:`CurationOp` rows (every existing ``ops = parse_curation_file(...)``
+    / ``ops[i]`` / ``len(ops)`` / iteration caller keeps working exactly as
+    before -- this is a list) plus the file's optional :class:`CurationFileHeader`
+    (A3), attached as an attribute rather than changing the return shape."""
+
+    def __init__(self, ops: Sequence[CurationOp], header: CurationFileHeader) -> None:
+        super().__init__(ops)
+        self.header = header
+
+
+_CURATION_FRAME_HEADER_RE = re.compile(r"^#\s*frame\s*:\s*(.+?)\s*$", re.IGNORECASE)
+_CURATION_EPSILON_HEADER_RE = re.compile(r"^#\s*epsilon\s*:\s*(.+?)\s*$", re.IGNORECASE)
+
+
+@dataclass
 class PlannedAction:
     """One resolved curation action (post-coalescing) ready to delegate.
 
@@ -3026,7 +3133,10 @@ class CurationApplyResult:
     plan : list of PlannedAction
         The resolved, coalesced action sequence (the same in dry-run and live).
     warnings : list of str
-        Frequency-resolution advisories (ambiguous or unmatched targets).
+        Advisories that do not block the apply: frequency-resolution
+        advisories (ambiguous or unmatched targets) plus the A5
+        frame-mismatch diagnostic (:func:`_frame_mismatch_warnings`) when the
+        batch's own signature suggests it.
     applied : int
         Number of actions executed (``0`` for a dry run).
     dry_run : bool
@@ -3055,22 +3165,72 @@ def _parse_curation_params(raw: str, line_no: int) -> Dict[str, str]:
     return params
 
 
-def parse_curation_file(curation_path: Union[Path, str]) -> List[CurationOp]:
-    """Parse a curation CSV into ordered :class:`CurationOp` rows.
+def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
+    """Parse a curation CSV into ordered :class:`CurationOp` rows, plus its
+    optional file-level :class:`CurationFileHeader` (A3).
 
     Columns are ``action,window,freqs,params``. Blank lines and ``#`` comments
     are ignored; an optional header row (first cell ``action``) is skipped.
     ``freqs`` is a ``;``-separated list of molecular MHz; ``params`` is a
     ``;``-separated list of ``key=value`` modifiers.
 
-    Raises ``ValueError`` (with the 1-based source line) on any malformed row.
+    Two ``#``-comment directives are recognized anywhere in the file and
+    collected onto the returned :class:`ParsedCurationFile`'s ``.header``
+    rather than being treated as ordinary comments: ``# frame: raw`` /
+    ``# frame: calibrated`` declares the frame every frequency in the file is
+    expressed in, and ``# epsilon: <value>`` (only valid alongside
+    ``frame: calibrated``) stamps the epsilon the file was written under.
+    Every other ``#``-prefixed line is an ordinary, ignored comment. See
+    :func:`_resolve_curation_frame` for how the header interacts with the
+    per-call ``frame`` argument.
+
+    Raises ``ValueError`` (with the 1-based source line) on any malformed row
+    or header directive.
     """
     text = Path(curation_path).read_text()
     ops: List[CurationOp] = []
+    header = CurationFileHeader()
     for line_no, raw_line in enumerate(text.splitlines(), start=1):
         line = raw_line.strip()
-        if not line or line.startswith("#"):
+        if not line:
             continue
+        if line.startswith("#"):
+            m = _CURATION_FRAME_HEADER_RE.match(line)
+            if m is not None:
+                raw_value = m.group(1).strip()
+                value = raw_value.lower()
+                if value not in ("raw", "calibrated"):
+                    raise ValueError(
+                        f"curation line {line_no}: 'frame' header must be "
+                        f"'raw' or 'calibrated', got {raw_value!r}"
+                    )
+                if header.frame is not None and header.frame != value:
+                    raise ValueError(
+                        f"curation line {line_no}: conflicting 'frame' "
+                        f"header (already declared {header.frame!r} earlier "
+                        f"in this file)"
+                    )
+                header.frame = value  # type: ignore[assignment]
+                continue
+            m = _CURATION_EPSILON_HEADER_RE.match(line)
+            if m is not None:
+                raw_eps = m.group(1).strip()
+                try:
+                    eps_value = float(raw_eps)
+                except ValueError:
+                    raise ValueError(
+                        f"curation line {line_no}: 'epsilon' header "
+                        f"{raw_eps!r} is not a number"
+                    ) from None
+                if header.epsilon is not None and header.epsilon != eps_value:
+                    raise ValueError(
+                        f"curation line {line_no}: conflicting 'epsilon' "
+                        f"header (already declared {header.epsilon!r} "
+                        f"earlier in this file)"
+                    )
+                header.epsilon = eps_value
+                continue
+            continue  # an ordinary comment
         fields = [f.strip() for f in line.split(",")]
         action = fields[0].lower()
         if action == "action":  # header row
@@ -3167,7 +3327,24 @@ def parse_curation_file(curation_path: Union[Path, str]) -> List[CurationOp]:
                 line_no=line_no,
             )
         )
-    return ops
+
+    if header.epsilon is not None and header.frame != "calibrated":
+        raise ValueError(
+            "curation file: an 'epsilon' header requires a 'frame: "
+            "calibrated' header alongside it -- an epsilon stamp is "
+            "meaningless without a calibrated-frame declaration to attach "
+            "it to"
+        )
+    if header.frame == "calibrated" and header.epsilon is None:
+        raise ValueError(
+            "curation file: 'frame: calibrated' requires an 'epsilon' "
+            "header stamping the epsilon the file was written under (e.g. "
+            "'# epsilon: 2.2e-6') -- otherwise a later apply/preview cannot "
+            "detect that the calibration has drifted since this file was "
+            "staged"
+        )
+
+    return ParsedCurationFile(ops, header)
 
 
 def _resolve_curation_plan(ops: Sequence[CurationOp]) -> List[PlannedAction]:
@@ -3396,6 +3573,135 @@ def _curation_ambiguity_warnings(
         elif action.kind == "split" and action.peak is not None:
             check(wid, action.peak, f"split {action.peak:.4f}")
     return warnings
+
+
+# ---------------------------------------------------------------------------
+# A5: frame-mismatch diagnostic -- advisory only, never a refusal.
+#
+# When a curation file was actually staged in the calibrated frame but
+# declared (or defaulted to) raw, every remove/merge/split/accept-candidate
+# frequency still resolves -- to the right peak, via the ordinary snap
+# tolerance -- but lands off by the omitted conversion:
+# ``(probe - f_raw) * eps / (1 + eps)``, per candidate (see
+# ``TestFrameConversionArithmetic`` / ``TestConversionBeforeSnapping`` in
+# ``test_frame_parameter.py`` for the same arithmetic on a single call). A
+# whole BATCH doing this in lockstep -- several candidates, all displaced the
+# same direction, each by very nearly what THIS file's own current epsilon
+# predicts for its own matched frequency -- is a signature an honestly-raw
+# batch practically never produces by chance. That specificity (not just "a
+# common offset", but the one *this file's calibration* predicts) is what
+# keeps the false-positive rate low; see :func:`_frame_mismatch_warnings`.
+# ---------------------------------------------------------------------------
+
+_FRAME_MISMATCH_MIN_CANDIDATES = 3
+"""Below this many matched candidates, a coincidental near-hit is too easy;
+require the diagnostic to explain several independent candidates at once."""
+
+_FRAME_MISMATCH_REL_TOL = 0.25
+"""Each residual must land within +/-25% of what this file's OWN epsilon
+predicts for its own matched frequency -- a specific, precomputed value, not
+merely "some common offset". A genuine hand-typed batch practically never
+lands every candidate this close to a value it has no way to know."""
+
+_FRAME_MISMATCH_FLOOR_MHZ = 0.003
+"""Minimum |predicted offset| (3 kHz) to even consider a candidate. Guards
+the vanishingly-small-epsilon regime, where the predicted offset is smaller
+than ordinary NLS refit jitter and indistinguishable from a correctly
+raw-declared batch -- firing there would be pure noise, not signal."""
+
+
+def _frame_mismatch_warnings(
+    path: str,
+    plan: Sequence[PlannedAction],
+    *,
+    resolved_frame: Frame,
+    stamp: Optional[_CalibrationStamp],
+) -> List[str]:
+    """Advisory-only diagnostic (A5): flag a batch whose candidates all
+    resolve with a residual consistent with a calibrated-frame curation file
+    that was declared (or defaulted to) raw.
+
+    Never raises and never blocks anything -- this is a heuristic, and a
+    heuristic that refused would be worse than none. Returns ``[]`` (inert)
+    unless ALL of the following hold:
+
+    - ``resolved_frame == \"raw\"`` -- if the caller correctly declared
+      ``calibrated``, the conversion already happened and no systematic
+      residual should remain to diagnose;
+    - the file is ``self_calibrated`` with a nonzero epsilon -- inert on
+      every ``rb_locked``/``uncalibrated`` file, where epsilon is always
+      ``0.0`` and the two frames coincide;
+    - at least :data:`_FRAME_MISMATCH_MIN_CANDIDATES` of the batch's
+      ``remove`` / ``merge`` peaks / ``split`` peak / ``accept`` candidate
+      frequencies (the ones that resolve against an *existing* fitted peak --
+      ``add`` and ``create`` have no such target and are excluded) land
+      within :data:`_FRAME_MISMATCH_REL_TOL` of the offset THIS file's
+      current epsilon predicts for that exact candidate
+      (``(probe - f_matched) * eps / (1 + eps)``), with the predicted
+      magnitude clearing :data:`_FRAME_MISMATCH_FLOOR_MHZ`;
+    - every one of those residuals shares the same sign -- a real omitted
+      conversion pushes every candidate the same direction; independently
+      mistyped or mis-snapped frequencies would not.
+    """
+    if resolved_frame != "raw" or stamp is None:
+        return []
+    cal_state, epsilon, _sigma_eps, _floor_khz, probe_freq_mhz, _sideband = stamp
+    if cal_state != "self_calibrated" or epsilon == 0.0:
+        return []
+
+    by_window = _fitted_freqs_by_window(path)
+
+    def nearest(wid: int, freq: float) -> Optional[float]:
+        fitted = by_window.get(wid)
+        if not fitted:
+            return None
+        best = min(fitted, key=lambda f: abs(f - freq))
+        if abs(best - freq) > REFIT_SNAP_TOL_MHZ:
+            return None
+        return best
+
+    residuals: List[float] = []
+    predicted: List[float] = []
+    for action in plan:
+        wid = action.window_id
+        targets: List[float] = []
+        if action.kind == "edit":
+            targets.extend(action.remove)
+        elif action.kind == "merge":
+            targets.extend(action.peaks)
+        elif action.kind == "split" and action.peak is not None:
+            targets.append(action.peak)
+        elif action.kind == "accept" and action.candidate is not None:
+            targets.append(action.candidate)
+        for f in targets:
+            match = nearest(wid, f)
+            if match is None:
+                continue
+            residuals.append(f - match)
+            predicted.append((probe_freq_mhz - match) * epsilon / (1.0 + epsilon))
+
+    if len(residuals) < _FRAME_MISMATCH_MIN_CANDIDATES:
+        return []
+
+    for r, p in zip(residuals, predicted):
+        if abs(p) < _FRAME_MISMATCH_FLOOR_MHZ:
+            return []
+        lo = abs(p) * (1.0 - _FRAME_MISMATCH_REL_TOL)
+        hi = abs(p) * (1.0 + _FRAME_MISMATCH_REL_TOL)
+        if not (lo <= abs(r) <= hi):
+            return []
+        if (r > 0) != (p > 0):
+            return []
+
+    mean_residual_khz = (sum(residuals) / len(residuals)) * 1e3
+    return [
+        f"{len(residuals)} candidate(s) in this batch resolved with a "
+        f"residual clustered near {mean_residual_khz:+.1f} kHz -- matching "
+        f"what this file's epsilon ({epsilon * 1e6:+.3f} ppm) predicts for a "
+        f"calibrated frequency submitted as raw. The curation file may have "
+        f"been staged in the calibrated frame but declared (or defaulted to) "
+        f"raw; double check its frame before trusting this batch."
+    ]
 
 
 # --- the automatic-fit baseline (for undo replay) --------------------------
@@ -4944,9 +5250,14 @@ def apply_curation_impl(
     frequency-resolution warnings without mutating the file.
 
     ``frame`` applies uniformly to every frequency the curation file carries
-    -- there is no per-row frame column (a curation-file frame *header* is a
-    separate, later piece of work). Omitting it is an error on a
-    ``self_calibrated`` file when the plan carries any frequency at all.
+    -- there is no per-row frame column. The file's own optional header (A3,
+    ``# frame: ...`` / ``# epsilon: ...``, see :func:`parse_curation_file`
+    and :func:`_resolve_curation_frame`) takes precedence when it disagrees
+    with neither, or wins outright when ``frame`` is omitted; when both are
+    given and disagree, the call is refused. Omitting both is an error on a
+    ``self_calibrated`` file when the plan carries any frequency at all. A
+    calibrated header whose stamped epsilon no longer matches the file's
+    current one is refused -- never silently resolved with either value.
 
     Raises ``ValueError`` on a malformed curation file or when an action fails
     to resolve (e.g. a ``remove`` frequency matches no fitted peak), tagged with
@@ -4957,13 +5268,18 @@ def apply_curation_impl(
     ops = parse_curation_file(curation_path)
     plan = _resolve_curation_plan(ops)
 
+    resolved_frame: Frame = "raw"
+    stamp: Optional[_CalibrationStamp] = None
     if any(_planned_action_has_freq(a) for a in plan):
-        resolved_frame, stamp = _resolve_frame(path, frame)
+        resolved_frame, stamp = _resolve_curation_frame(path, ops.header, frame)
         plan = [
             _planned_action_to_raw(a, frame=resolved_frame, stamp=stamp) for a in plan
         ]
 
     warnings = _curation_ambiguity_warnings(path, plan)
+    warnings += _frame_mismatch_warnings(
+        path, plan, resolved_frame=resolved_frame, stamp=stamp
+    )
 
     # No epoch pre-check here: _execute_curation_batch gates itself before it
     # snapshots or writes anything, and it knows which plans are fit-mutating
@@ -5059,10 +5375,16 @@ class ReviewPreviewResult:
         The resolved, frame-converted, coalesced action sequence -- the same
         shape ``apply_curation_impl`` would execute. ``action_indices`` on
         each :class:`PreviewWindowResult` index into this list.
+    warnings : list of str
+        Advisories that do not block the preview -- currently just the A5
+        frame-mismatch diagnostic (:func:`_frame_mismatch_warnings`). Empty
+        for a plan that touches no fit, since the diagnostic needs matched
+        candidates to compare.
     """
 
     windows: Dict[int, PreviewWindowResult] = field(default_factory=dict)
     plan: List["PlannedAction"] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
 
 
 def review_preview_impl(
@@ -5077,8 +5399,8 @@ def review_preview_impl(
     writing anything to *file_path*.
 
     Mirrors :func:`apply_curation_impl`'s parse / resolve / frame-convert
-    prologue exactly (same warnings-free path; a curation-file frame header
-    is separate, later work), then instead of delegating to
+    prologue exactly, including the curation file's optional frame header
+    (A3) and the A5 frame-mismatch advisory, then instead of delegating to
     :func:`_execute_curation_batch` (which persists), runs the same
     canonicalized action sequence against the same appliers, the same one
     combined cascade (:func:`_cascade_batch`), and the same derive-without-
@@ -5106,18 +5428,24 @@ def review_preview_impl(
     ops = parse_curation_file(curation_path)
     plan = _resolve_curation_plan(ops)
 
+    resolved_frame: Frame = "raw"
+    stamp: Optional[_CalibrationStamp] = None
     if any(_planned_action_has_freq(a) for a in plan):
-        resolved_frame, stamp = _resolve_frame(path, frame)
+        resolved_frame, stamp = _resolve_curation_frame(path, ops.header, frame)
         plan = [
             _planned_action_to_raw(a, frame=resolved_frame, stamp=stamp) for a in plan
         ]
+
+    warnings = _frame_mismatch_warnings(
+        path, plan, resolved_frame=resolved_frame, stamp=stamp
+    )
 
     needs_fit = any(a.kind != "accept" or a.candidate is not None for a in plan)
     if not needs_fit:
         # C5: bare-accept-only (or empty) plan -- no fits, no gate, nothing to
         # report. Mirrors _execute_curation_batch's own cheap path, which
         # likewise never opens the engine for this shape.
-        return ReviewPreviewResult(windows={}, plan=plan)
+        return ReviewPreviewResult(windows={}, plan=plan, warnings=warnings)
 
     ctx = _open_batch(path, snap_tol_mhz=snap_tol_mhz, snapshot=False)
 
@@ -5224,7 +5552,7 @@ def review_preview_impl(
             peaks=peaks_by_window.get(wid, []),
         )
 
-    return ReviewPreviewResult(windows=windows, plan=plan)
+    return ReviewPreviewResult(windows=windows, plan=plan, warnings=warnings)
 
 
 def review_log_impl(file_path: Union[Path, str]) -> List[DecisionLogEntry]:

@@ -100,6 +100,41 @@ must be minimal — declare recognized inputs and provide a single function
 returning an FID (plus optional recommended parameters); loaders must be able
 to signal problems by raising, not by implementing validation hooks.
 
+## Curation-file frame header
+
+A Stage 6 curation file (`action,window,freqs,params` CSV) is the one place a
+caller-supplied *calibrated* frequency becomes a durable, external artifact --
+everywhere else `frame` is a per-call argument that leaves no trace on disk.
+Because of that, the file must be able to declare its own frame rather than
+relying solely on the caller passing a matching argument at apply/preview
+time.
+
+- A curation file MAY carry a whole-line `#`-comment header,
+  `# frame: raw` or `# frame: calibrated`, anywhere in the file.
+- When `frame: calibrated` is declared, the file MUST also carry
+  `# epsilon: <value>`, stamping the epsilon the file was written under. A
+  file cannot declare `epsilon` without `frame: calibrated`, and cannot
+  declare `frame: calibrated` without `epsilon` -- an epsilon stamp is
+  meaningless without a calibrated-frame declaration to attach it to, and a
+  calibrated declaration with no stamp cannot be checked for drift.
+- At apply/preview time, the header and the caller's `frame` argument are
+  reconciled: the header wins when only the header is present; the argument
+  wins when only it is present; the two disagreeing is refused; neither
+  present falls back to the ordinary `frame` resolution (default raw, refuse
+  on a `self_calibrated` `.ftmw` file).
+- A calibrated header's stamped epsilon MUST be compared against the target
+  `.ftmw` file's *current* epsilon. On disagreement the call is refused, with
+  both values named in the error -- never silently resolved against either
+  one. A batch staged calibrated against one epsilon and applied after the
+  target file's calibration has moved (e.g. a timebase re-run) would
+  otherwise resolve every candidate against the wrong raw frequency, with no
+  sign anything had changed.
+
+This mirrors the file-level settings-resolution precedence above
+(explicit > persisted) at the granularity of one external artifact: the
+curation file's own declared state outranks an unstated default, and a stale
+stamp is refused rather than silently trusted.
+
 ## Non-goals / constraints
 
 - Storing ComplexFT, or any large array recomputable in interactive time, is
