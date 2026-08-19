@@ -21,8 +21,11 @@ __author__ = "Kyle N. Crabtree"
 # Functional API - can be imported as "import ftmwpipeline.api as ftmw"
 from ftmwpipeline import api
 
+# Public frequency-calibration vocabulary (what frame a file's data is in)
+from ftmwpipeline.core.calibration import CalibrationStamp, CalibrationState
+
 # Public curation tolerances (the values the Stage 6 verbs themselves pair at)
-from ftmwpipeline.core.curation import REFIT_SNAP_TOL_MHZ
+from ftmwpipeline.core.curation import REFIT_SNAP_TOL_MHZ, Frame
 
 # Core data structures
 from ftmwpipeline.core.data_structures import (
@@ -72,8 +75,12 @@ __all__ = [
     "FixedContributor",
     "FitWindow",
     "WindowPlan",
-    # Public curation tolerances
+    # Public curation tolerances and frame vocabulary
     "REFIT_SNAP_TOL_MHZ",
+    "Frame",
+    # Public frequency-calibration vocabulary
+    "CalibrationState",
+    "CalibrationStamp",
     # Exception family
     "PipelineFileError",
     "PipelineExistsError",

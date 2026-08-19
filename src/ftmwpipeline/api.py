@@ -57,6 +57,7 @@ from ._internal.stage6_impl import (
     ReviewRunResult,
     UndoResult,
 )
+from .core.calibration import CalibrationStamp
 from .core.curation import REFIT_SNAP_TOL_MHZ, Frame
 from .core.data_structures import (
     FID,
@@ -922,6 +923,28 @@ def load_timebase_calibration(
     except Exception as e:
         logger.error(f"Failed to load timebase calibration from {file_path}: {e}")
         raise
+
+
+def frequency_calibration(file_path: Union[str, Path]) -> CalibrationStamp:
+    """Return the frequency calibration ``file_path`` is under right now.
+
+    Equivalent to :meth:`Pipeline.frequency_calibration`.  Read-only,
+    non-mutating, and answerable at any stage -- including on a file that has
+    only been imported.  The returned
+    :class:`~ftmwpipeline.core.calibration.CalibrationStamp` carries the
+    derived ``state``, the ``epsilon`` / ``sigma_epsilon`` that will be
+    applied, the declared ``sigma_floor_khz``, and the ``probe_freq_mhz`` /
+    ``sideband`` the calibrated frame is defined against -- everything needed
+    to label an axis honestly or to move a frequency between the ``"raw"`` and
+    ``"calibrated"`` frames (:data:`~ftmwpipeline.core.curation.Frame`).
+
+    This is the state *derived* from the clock declaration and the live
+    ``timebase_calibration``, not a persisted copy: use it rather than
+    :func:`load_timebase_calibration` (which requires a measurement to exist
+    and cannot answer the state question) or ``FinalProducts``' stamp (which
+    describes a past Stage 6 build).
+    """
+    return Pipeline.open(file_path).frequency_calibration()
 
 
 def recommend_shape(

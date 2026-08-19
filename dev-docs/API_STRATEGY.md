@@ -202,6 +202,34 @@ value is refined.
 terms, canonically in `core/curation.py` and re-exported at the package top
 level.
 
+The same rule governs published *vocabularies* — the string sets a caller must
+be able to pin a parser on, such as the frame names and the frequency-
+calibration states. A published vocabulary is a named type, not a set of
+literals a consumer transcribes from prose, and its members are stable: a
+member may gain meaning but must not be renamed or silently reused.
+
+## Derived state is read, never re-derived
+
+Where the pipeline derives a fact about a file rather than storing it — most
+importantly *which frame* the file's frequencies are in and by how much they
+are corrected — that derivation is published as a read-only accessor. The
+requirement is the constants rule applied to a computation: a consumer that
+re-implemented the derivation from the persisted parts would re-implement the
+precondition logic too, and would drift from it.
+
+Such an accessor must be:
+
+- **derived at call time**, from the same inputs the verbs consult, so it
+  cannot disagree with what the pipeline will actually apply, and cannot
+  report a value that has gone stale;
+- **total**, degrading to the documented default for every input a file may
+  legitimately lack, so it answers at any stage — including a file that has
+  been through nothing but the import — rather than raising;
+- **read-only**, safe to call on a file the caller may not write to.
+
+A stage's own persisted artifact (`load_*`) does not satisfy this: it requires
+the stage to have run and describes that run, not the file's current state.
+
 ## Provenance
 
 Every `.ftmw` file records, for the data it was created from: source path,

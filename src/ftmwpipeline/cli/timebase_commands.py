@@ -1,22 +1,28 @@
 """CLI subcommands for scope-timebase self-calibration.
 
-Two verbs on the ``timebase`` object:
+Three verbs on the ``timebase`` object:
 
 - ``timebase run``: demodulates the active FID at the Rb-locked clock spur
   lattice, fits the shared fractional scale error ``eps``, and persists it.
 - ``timebase show``: prints the persisted summary plus the per-tone table
   (kept, rejected, and drift-control sections).
+- ``timebase state``: prints the *derived* frequency calibration the file is
+  under -- which frame its frequencies are in, and by how much they are
+  corrected. Has no ``run``/``show`` form: it is derived, never persisted, and
+  ``show`` is the persisted measurement's per-tone table.
 
-Both delegate to the shared :mod:`_internal.timebase_impl` orchestration layer
-per the dual-interface rule. No plotting in this surface.
+All delegate to the shared ``_internal`` orchestration layer per the
+dual-interface rule. No plotting in this surface.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 from typing import Any, Dict
 
+from .._internal.stage6_impl import frequency_calibration_impl
 from .._internal.timebase_impl import (
     calibrate_timebase_impl,
     load_timebase_calibration_impl,
@@ -143,12 +149,84 @@ def cmd_show_timebase(args: argparse.Namespace) -> int:
     return 0
 
 
+#: What each derived state means for the frequencies the file reports, printed
+#: alongside the state so the reader does not have to look the vocabulary up.
+_STATE_NOTES = {
+    "rb_locked": (
+        "no unlocked clock declared; axis absolutely calibrated as acquired "
+        "(eps is a null op)"
+    ),
+    "self_calibrated": (
+        "unlocked digitizer with a measured timebase calibration applied; "
+        "raw and calibrated frames differ"
+    ),
+    "uncalibrated": (
+        "unlocked digitizer with no usable timebase calibration; frequencies "
+        "reported as acquired and caveated -- run 'timebase run'"
+    ),
+}
+
+
+def cmd_timebase_state(args: argparse.Namespace) -> int:
+    """Print the derived frequency-calibration state (never mutates)."""
+    setup_logging(args.verbose)
+    file_path = args.file_path
+    if not file_path.endswith(".ftmw"):
+        file_path = file_path + ".ftmw"
+
+    try:
+        stamp = frequency_calibration_impl(file_path)
+    except FileNotFoundError as e:
+        print_error(str(e))
+        return 1
+    except Exception as e:
+        print_error(f"Failed to read the frequency calibration: {e}")
+        if args.verbose:
+            import traceback
+
+            traceback.print_exc()
+        return 1
+
+    if args.format == "json":
+        print(
+            json.dumps(
+                {
+                    "state": stamp.state,
+                    "epsilon": stamp.epsilon,
+                    "sigma_epsilon": stamp.sigma_epsilon,
+                    "sigma_floor_khz": stamp.sigma_floor_khz,
+                    "probe_freq_mhz": stamp.probe_freq_mhz,
+                    "sideband": stamp.sideband,
+                },
+                indent=2,
+            )
+        )
+        return 0
+
+    print(f"Frequency calibration for: {file_path}")
+    print(f"  state              : {stamp.state}")
+    note = _STATE_NOTES.get(stamp.state)
+    if note:
+        print(f"                       ({note})")
+    print(
+        f"  epsilon            : {stamp.epsilon * 1e6:+.3f} +- "
+        f"{stamp.sigma_epsilon * 1e6:.3f} ppm"
+    )
+    print(f"  sigma floor        : {stamp.sigma_floor_khz:.3f} kHz")
+    if stamp.probe_freq_mhz is None:
+        print("  probe / sideband   : (no FID header; no frame conversion possible)")
+    else:
+        print(f"  probe frequency    : {stamp.probe_freq_mhz:.6f} MHz")
+        print(f"  sideband           : {stamp.sideband}")
+    return 0
+
+
 def register_timebase_commands(subparsers: argparse._SubParsersAction) -> None:
     """Register scope-timebase self-calibration object-verb subcommands."""
     verbs = add_stage_object(
         subparsers,
         "timebase",
-        help="Scope-timebase self-calibration (run / show)",
+        help="Scope-timebase self-calibration (run / show / state)",
         description=(
             "Measure the digitizer-clock fractional scale error eps from the "
             "Rb-locked spur lattice and view the per-tone diagnostics."
@@ -220,3 +298,40 @@ def register_timebase_commands(subparsers: argparse._SubParsersAction) -> None:
         help="Enable verbose logging",
     )
     parser_show.set_defaults(func=cmd_show_timebase)
+
+    # --- timebase state ----------------------------------------------------
+    parser_state = verbs.add_parser(
+        "state",
+        help="Print the derived frequency calibration the file is under",
+        description=(
+            "Answer, for any file at any stage, what frame its frequencies are "
+            "in and by how much they are corrected: the derived calibration "
+            "state (rb_locked / self_calibrated / uncalibrated), the eps +- "
+            "sigma that will be applied, the declared systematic accuracy "
+            "floor, and the probe/sideband the calibrated frame is defined "
+            "against.\n\n"
+            "The state is DERIVED, never stored -- it follows from the clock "
+            "declaration ('clocks show') plus whether a usable timebase "
+            "calibration is present -- so it cannot disagree with what the "
+            "pipeline will actually apply, and it is readable long before "
+            "Stage 6 builds a final-products table. Read-only: this verb "
+            "never writes to the file."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser_state.add_argument(
+        "file_path", help="Path to .ftmw pipeline file (extension added if missing)"
+    )
+    parser_state.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        help="Output format (default: text)",
+    )
+    parser_state.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable verbose logging",
+    )
+    parser_state.set_defaults(func=cmd_timebase_state)

@@ -46,6 +46,7 @@ from typing import (
 import h5py
 import numpy as np
 
+from ..core.calibration import CalibrationStamp, CalibrationState
 from ..core.curation import REFIT_SNAP_TOL_MHZ, Frame
 from ..core.data_structures import (
     AttentionReason,
@@ -6248,6 +6249,45 @@ def _fid_header_for_stamp(path: str) -> Optional[Tuple[float, str]]:
     return probe_freq_mhz, str(sideband_raw)
 
 
+def frequency_calibration_impl(file_path: Union[Path, str]) -> CalibrationStamp:
+    """The frequency calibration ``file_path`` is under right now.
+
+    The public read behind ``api.frequency_calibration`` /
+    ``Pipeline.frequency_calibration`` / ``timebase state``, and the single
+    definition the staleness stamp is built from (see
+    :func:`_current_calibration_stamp`).
+
+    Read-only and *total*: it derives the state from the clock declaration and
+    the live ``timebase_calibration`` rather than reading a persisted copy, and
+    every input it cannot find degrades to the documented default rather than
+    raising -- so it answers on a file that has been through no stage beyond
+    the FID import, and it can never disagree with what a ``frame="calibrated"``
+    call will actually apply. The one hard error is a file that is not there.
+
+    Lives here, beside the derivation, rather than under Stage 6: it describes
+    the *file*, not the Stage 6 products, and predates them.
+    """
+    path = str(file_path)
+    if not Path(path).exists():
+        raise FileNotFoundError(
+            f"Pipeline file not found: {path}\n\n"
+            f"To create a new pipeline:\n"
+            f"  ftmwpipeline data import {path} path/to/data/"
+        )
+    cal_state, epsilon, sigma_eps = _derive_frequency_calibration(path)
+    header = _fid_header_for_stamp(path)
+    with h5py.File(path, "r") as h5f:
+        floor_khz = load_frequency_calibration_from_hdf5(h5f).sigma_floor_khz
+    return CalibrationStamp(
+        state=cal_state,
+        epsilon=float(epsilon),
+        sigma_epsilon=float(sigma_eps),
+        sigma_floor_khz=float(floor_khz),
+        probe_freq_mhz=None if header is None else float(header[0]),
+        sideband=None if header is None else header[1],
+    )
+
+
 def _current_calibration_stamp(
     path: str,
 ) -> Optional[Tuple[str, float, float, float, float, str]]:
@@ -6255,26 +6295,22 @@ def _current_calibration_stamp(
     *right now*: ``(calibration_state, epsilon, sigma_epsilon,
     sigma_floor_khz, probe_freq_mhz, sideband)``.
 
-    Derived straight from the file -- ``spur.clocks``, ``timebase_calibration``,
-    ``/frequency_calibration`` and the FID header -- never from a persisted
-    ``FinalProducts``. Comparing a stamp against this is the whole staleness
-    check. ``None`` when the file has no FID header to derive a probe
-    frequency / sideband from (see :func:`_fid_header_for_stamp`).
+    :func:`frequency_calibration_impl`'s reading of the file, flattened for
+    comparison against a persisted ``FinalProducts``' own stamp -- that
+    comparison is the whole staleness check. ``None`` when the file has no FID
+    header to derive a probe frequency / sideband from (see
+    :func:`_fid_header_for_stamp`): nothing to compare against.
     """
-    header = _fid_header_for_stamp(path)
-    if header is None:
+    stamp = frequency_calibration_impl(path)
+    if stamp.probe_freq_mhz is None or stamp.sideband is None:
         return None
-    probe_freq_mhz, sideband_value = header
-    cal_state, epsilon, sigma_eps = _derive_frequency_calibration(path)
-    with h5py.File(path, "r") as h5f:
-        floor_khz = load_frequency_calibration_from_hdf5(h5f).sigma_floor_khz
     return (
-        cal_state,
-        float(epsilon),
-        float(sigma_eps),
-        float(floor_khz),
-        float(probe_freq_mhz),
-        sideband_value,
+        stamp.state,
+        stamp.epsilon,
+        stamp.sigma_epsilon,
+        stamp.sigma_floor_khz,
+        stamp.probe_freq_mhz,
+        stamp.sideband,
     )
 
 
@@ -6361,7 +6397,7 @@ def get_final_products_impl(file_path: Union[Path, str]) -> Optional[FinalProduc
 
 def _derive_frequency_calibration(
     path: str,
-) -> Tuple[str, float, float]:
+) -> Tuple[CalibrationState, float, float]:
     """Derive the calibration state and the applied (epsilon, sigma_epsilon).
 
     The state is *derived*, not stored: it follows from the clock declaration
@@ -6375,9 +6411,22 @@ def _derive_frequency_calibration(
       its uncertainty are applied.
     - An unlocked digitizer declared but no usable timebase calibration ->
       ``"uncalibrated"``; frequencies are reported as-is (caveated).
+
+    The declaration is read at the same precedence
+    :func:`~ftmwpipeline._internal.timebase_impl._resolve_clocks` uses --
+    persisted Stage 5 ``spur.clocks`` first, then the recommended declaration
+    (``clocks set`` / a loader-injected one). Consulting the recommended layer
+    matters before Stage 5 has persisted anything: ``timebase run`` accepts
+    that layer, so a file can carry a real calibration measured against an
+    unlocked digitizer that persisted settings have never heard of, and
+    reading only the persisted layer would call that file ``rb_locked`` and
+    silently drop the epsilon it measured.
     """
     from ..core.stage_fit_settings import resolve as resolve_stage_fit_settings
-    from ..io.stage_fit_settings_serialization import load_stage_fit_settings_from_h5
+    from ..io.stage_fit_settings_serialization import (
+        load_stage_fit_settings_from_h5,
+        read_recommended_clock_sources,
+    )
 
     clocks: Tuple = ()
     try:
@@ -6387,6 +6436,12 @@ def _derive_frequency_calibration(
         clocks = tuple(resolved.spur.clocks or ())
     except Exception:
         clocks = ()
+
+    if not clocks:
+        try:
+            clocks = tuple(read_recommended_clock_sources(path) or ())
+        except Exception:
+            clocks = ()
 
     has_unlocked = any(not c.locked for c in clocks)
     if not has_unlocked:

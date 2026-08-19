@@ -87,6 +87,7 @@ from ._internal.stage6_impl import (
     acknowledge_environment_impl,
     apply_curation_impl,
     create_window_impl,
+    frequency_calibration_impl,
     get_candidate_ledger_impl,
     get_final_products_impl,
     get_review_status_impl,
@@ -106,6 +107,7 @@ from ._internal.timebase_impl import (
     calibrate_timebase_impl,
     load_timebase_calibration_impl,
 )
+from .core.calibration import CalibrationStamp
 from .core.curation import REFIT_SNAP_TOL_MHZ, Frame
 from .core.data_structures import (
     FID,
@@ -862,6 +864,28 @@ class Pipeline:
             TimebaseCalibrationResult,
             load_timebase_calibration_impl(str(self.filepath))["timebase_calibration"],
         )
+
+    def frequency_calibration(self) -> CalibrationStamp:
+        """The frequency calibration this file is under right now.
+
+        Returns a :class:`~ftmwpipeline.core.calibration.CalibrationStamp`:
+        the derived calibration ``state``, the ``epsilon`` /
+        ``sigma_epsilon`` that will be applied, the declared
+        ``sigma_floor_khz``, and the ``probe_freq_mhz`` / ``sideband`` the
+        calibrated frame is defined against.
+
+        Read-only, non-mutating, and answerable at any stage -- including a
+        file that has only been imported. Unlike
+        :meth:`load_timebase_calibration` (which reads the persisted
+        measurement and requires one to exist) this *derives* the state from
+        the clock declaration plus the live calibration, so it is the honest
+        answer to "what frame is this file's data in, and by how much": it
+        cannot disagree with what a ``frame="calibrated"`` call will apply.
+        Unlike :attr:`FinalProducts.calibration_state` it describes the file
+        rather than a past Stage 6 build, so it exists before Stage 6 and
+        never goes stale.
+        """
+        return frequency_calibration_impl(self.filepath)
 
     def get_clock_sources(self) -> Optional[Tuple["ClockSource", ...]]:
         """Return the declared (recommended) instrument clock sources, or ``None``.
