@@ -57,6 +57,38 @@ def _resolve_settings(file_path: str, explicit: Optional[FTSettings]) -> FTSetti
     return resolve(explicit, persisted, recommended)
 
 
+def _reject_window_past_record(
+    end_us: float, duration_us: float, sample_dt_us: float
+) -> None:
+    """Refuse an active-region end time beyond the end of the recording.
+
+    An ``end_us`` past the record is a mistake, not a request to be honored:
+    the active region would claim a duration the FID does not contain, and
+    ``1 / T`` -- the active-FT bin spacing every bin-relative tolerance in the
+    pipeline resolves against (``dev-docs/SCIENCE_STRATEGY.md`` Requirement 8)
+    -- would describe a spectrum that does not exist. The sample slice clamps
+    itself, so nothing crashes; the tolerances just quietly come out wrong, by
+    the ratio of the claimed length to the real one.
+
+    It is refused rather than trimmed because there is already a correct way to
+    say "to the end of the record", and it costs the caller nothing: leave
+    ``end_us`` unset. Trimming would be the right compromise only if a caller
+    were obliged to state an exact end time, and none is.
+
+    A half-sample tolerance is allowed so that naming the record's own duration
+    -- the commonest way to write "all of it" explicitly -- is never rejected
+    by float representation.
+    """
+    if end_us > duration_us + 0.5 * sample_dt_us:
+        raise ValueError(
+            f"end_us={end_us:g} us is past the end of the recording "
+            f"({duration_us:g} us). The active region cannot be longer than "
+            f"the FID: its length sets the active-FT bin spacing that every "
+            f"frequency tolerance is resolved against. Pass an end_us within "
+            f"the record, or omit it to use the whole record."
+        )
+
+
 def compute_ft_impl(
     file_path: str,
     settings: Optional[FTSettings] = None,
@@ -95,6 +127,13 @@ def compute_ft_impl(
 
     resolved = _resolve_settings(file_path, settings)
     trim_range = resolved.trim
+
+    if resolved.end_us is not None:
+        _reject_window_past_record(
+            float(resolved.end_us),
+            float(fid.duration_us),
+            float(fid.spacing) * 1e6,
+        )
 
     logger.info("Resolved FT processing settings:")
     for name, value in resolved.to_preprocess_kwargs().items():
@@ -280,6 +319,7 @@ def _build_display_and_active_fid(
         if resolved_settings.end_us is not None
         else float(original_fid.duration_us)
     )
+    _reject_window_past_record(end_us, float(original_fid.duration_us), sample_dt_us)
 
     freq, spectrum = _padded_active_display_ft(
         fid_samples,

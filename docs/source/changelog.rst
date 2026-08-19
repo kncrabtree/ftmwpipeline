@@ -32,6 +32,35 @@ had to reach into ``_internal`` or parse out of prose to obtain are now
 published, and the Stage 6 edit paths that carry them were collapsed onto one
 engine so they cannot answer differently.
 
+* **An active region can no longer claim to be longer than the recording.**
+  ``end_us`` was validated only for being non-negative and greater than
+  ``start_us`` — never against the length of the FID. The sample slice clamps
+  itself to the record, but the *declared* length did not, so an ``end_us``
+  past the end of the data made the two disagree without limit. Since the
+  active region's length sets the active-FT bin spacing that every
+  bin-relative tolerance resolves against, the whole pipeline then measured
+  against the bin spacing of a spectrum that does not exist: on a 12.65 µs
+  record, ``compute_ft(end_us=100.0)`` made the published snap tolerance
+  report 6.25 kHz instead of 49.4 kHz — 8× too tight, with the candidate-dedup
+  window, the spur integer gate, the timebase scan and the frame-mismatch
+  floor all wrong by the same factor, silently and with every number finite.
+
+  Stage 1 now **refuses** such a window, naming both the requested end and the
+  record's duration. It is refused rather than trimmed because omitting
+  ``end_us`` already means "to the end of the record", so there is a correct
+  path that costs the caller nothing and an out-of-range value can only be a
+  mistake. Independently, ``active_acquisition_us`` now clamps to the record,
+  so no derived quantity can describe more data than exists whatever route it
+  arrives by — the refusal stops bad input at the door, and the clamp is what
+  makes the refusal unnecessary to trust.
+
+  ``validate`` reports a file that already carries such a window rather than
+  silently correcting it: current reads of that file are now right, but its
+  persisted Stage 3–5 results were computed against the over-long length, and
+  the honest thing is to say so and let the owner re-run Stage 1. No epoch
+  implication — the refusal moves no number on any valid file, and an affected
+  file is named rather than quietly changed.
+
 * **A preview window with no fit reports its absence, not a zero.**
   ``PreviewWindowResult.chi2r_before`` / ``chi2r_after`` were plain ``float``
   defaulting to ``0.0``, so a window the batch itself *creates* -- which never

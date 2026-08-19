@@ -21,7 +21,7 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 import h5py
 
@@ -624,6 +624,46 @@ def open_pipeline_file(
             raise RuntimeError(f"Failed to open pipeline file {filepath}: {e}") from e
 
 
+def _warn_active_window_past_record(h5f: "h5py.File", fid: Any) -> List[str]:
+    """Report a persisted active-region ``end_us`` that runs past the recording.
+
+    Stage 1 refuses such a window at the door and
+    :func:`~ftmwpipeline._internal.shared_utils.active_acquisition_us` clamps it,
+    so nothing derived from this file is wrong *today*. But a file written
+    before that refusal existed still carries the bad bound, and its persisted
+    Stage 3-5 results were computed against the over-long length -- every
+    bin-relative tolerance resolved against the bin spacing of a spectrum that
+    does not exist, by the ratio of the claimed length to the real one.
+
+    Reported rather than silently corrected, deliberately. The clamp means a
+    fresh read of this file now answers differently than it did before the fix,
+    and the honest thing is to say so and let the owner re-run Stage 1, rather
+    than to move the numbers underneath them without a word.
+    """
+    group = h5f.get("processing_parameters/ft_processing")
+    if group is None:
+        return []
+    raw_end = group.attrs.get("end_us")
+    try:
+        end_us = float(raw_end)
+    except (TypeError, ValueError):
+        return []  # unset sentinel or a non-numeric attr: nothing declared
+    duration_us = float(fid.duration_us)
+    sample_dt_us = float(fid.spacing) * 1e6
+    if end_us <= duration_us + 0.5 * sample_dt_us:
+        return []
+    return [
+        f"The persisted active region ends at {end_us:g} us, past the end of "
+        f"the {duration_us:g} us recording. Stage 1 now refuses such a window "
+        f"and the length is clamped to the record wherever it is read, so "
+        f"current answers are correct -- but any persisted Stage 3-5 result on "
+        f"this file was computed against the over-long length, which sets the "
+        f"active-FT bin spacing every frequency tolerance resolves against. "
+        f"Re-run 'ft run' with an end_us inside the record (or omit it) and "
+        f"re-fit."
+    ]
+
+
 def validate_pipeline_file(filepath: Union[str, Path]) -> Dict[str, Any]:
     """
     Validate a pipeline file for integrity and correctness.
@@ -728,6 +768,7 @@ def validate_pipeline_file(filepath: Union[str, Path]) -> Dict[str, Any]:
                 fid = load_fid_from_hdf5(stage0_group)
                 if fid.n_points == 0:
                     errors.append("FID data is empty")
+                warnings.extend(_warn_active_window_past_record(h5f, fid))
         except Exception as e:
             errors.append(f"Cannot load FID data: {e}")
 

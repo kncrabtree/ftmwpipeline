@@ -26,9 +26,24 @@ def active_acquisition_us(
     An unset bound means "the whole record": no ``start_us`` is 0, no ``end_us``
     is the FID duration. The result is clamped at zero so an inverted window
     yields a length rather than a negative one.
+
+    ``end_us`` is **clamped to the record**, so the returned length can never
+    describe more data than was recorded. This is a structural guarantee, not a
+    courtesy to the caller: ``1 / T`` is the active-FT bin spacing that every
+    bin-relative tolerance in the pipeline resolves against
+    (:func:`~ftmwpipeline.fitting.active_ft.active_ft_bin_spacing_mhz`,
+    ``dev-docs/SCIENCE_STRATEGY.md`` Requirement 8), while the sample slice
+    that actually feeds the transform is clamped independently
+    (:func:`~ftmwpipeline.fitting.active_ft.active_region_bounds`). Without the
+    clamp here the two disagree without limit for an over-long ``end_us`` and
+    the pipeline resolves every tolerance against the spacing of a spectrum
+    that does not exist -- 8x too tight at ``end_us = 100`` on a 12.65 us
+    record, silently. Stage 1 refuses such a window at the door
+    (``stage1_impl.compute_ft_impl``); this clamp is what makes the refusal
+    unnecessary to trust.
     """
     lo = 0.0 if start_us is None else float(start_us)
-    hi = fid_duration_us if end_us is None else float(end_us)
+    hi = fid_duration_us if end_us is None else min(float(end_us), fid_duration_us)
     return max(hi - lo, 0.0)
 
 
