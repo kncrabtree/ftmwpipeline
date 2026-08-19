@@ -63,6 +63,7 @@ from ..core.data_structures import (
     Stage6Review,
     WindowReviewStatus,
 )
+from ..fitting.active_ft import active_ft_bin_spacing_mhz
 from ..fitting.peak_model import ModelPeak
 from ..fitting.peak_model import molecular_frequency as _molecular_frequency
 from ..fitting.peak_model import sideband_sign
@@ -114,8 +115,19 @@ DEFAULT_ATTENTION_CANDIDATE_EVIDENCE: float = 10.0
 # passes the bar even when its raw SNR is below DEFAULT_DISPLAY_BAR.
 _NEAR_GATE_FACTOR: float = 10.0
 
-# Deduplicate candidates whose molecular frequencies are within this window.
-_DEDUP_TOL_MHZ: float = 0.02  # 20 kHz; roughly half an active-FT bin at 13 µs
+# Deduplicate candidates whose molecular frequencies are within this window,
+# expressed as a fraction of the active-FT bin spacing (Requirement 8,
+# dev-docs/SCIENCE_STRATEGY.md) rather than a frozen MHz width -- the ledger's
+# candidates are Stage 5 audit-trail / rescue-round frequencies, always on the
+# active FT. 0.25 bins, not "roughly half a bin": at the reference 13 us
+# acquisition the old 0.02 MHz value against the true 79.052 kHz active
+# spacing is 0.253 bins, a quarter bin, not a half -- the previous comment's
+# "roughly half" was simply wrong, not merely imprecise. Resolved to MHz in
+# :func:`derive_candidate_ledger` via ``res_element_mhz`` (the caller's
+# resolved active-FT bin spacing); falls back to 0.0 (exact-frequency dedup
+# only) when the caller has no resolved spacing, which should not occur on a
+# valid persisted Stage 5 fit (acquisition_us is always recorded there).
+_DEDUP_TOL_BINS: float = 0.25
 
 # Brightness-scaled shape-error reach is shared with the Stage 5 final
 # add-from-convergence pass (one calibration, two consumers); see
@@ -383,9 +395,9 @@ def derive_candidate_ledger(
 
     Walks ``fitting_result.audit_trail`` and ``fitting_result.rescue_events``,
     converts baseband offsets to molecular MHz, deduplicates within
-    ``_DEDUP_TOL_MHZ``, applies the display ``bar``, and returns a list of
-    :class:`~ftmwpipeline.core.data_structures.LedgerCandidate` sorted by
-    molecular frequency.
+    ``_DEDUP_TOL_BINS`` active-FT bins, applies the display ``bar``, and
+    returns a list of :class:`~ftmwpipeline.core.data_structures.LedgerCandidate`
+    sorted by molecular frequency.
 
     Parameters
     ----------
@@ -398,13 +410,17 @@ def derive_candidate_ledger(
     bar :
         Display SNR / evidence bar.  Candidates below it are dropped.
     res_element_mhz :
-        Fourier resolution element (``1 / T_active`` MHz). When given, the
-        brightness-scaled shape-error filter runs: a candidate is a lineshape
+        Fourier resolution element (``1 / T_active`` MHz, from
+        :func:`~ftmwpipeline.fitting.active_ft.active_ft_bin_spacing_mhz`).
+        Drives two things: (1) the dedup tolerance
+        (``_DEDUP_TOL_BINS * res_element_mhz``; ``None`` or non-positive falls
+        back to 0.0 -- exact-frequency dedup only), and (2), when given, the
+        brightness-scaled shape-error filter: a candidate is a lineshape
         sidelobe of a brighter fitted line -- and is excluded -- when
         ``sep_res <= SHAPE_ERROR_REACH_KAPPA * snr / evidence`` for some fitted
         peak (the ``~1/sep_res`` lineshape-error shadow; see
-        :data:`SHAPE_ERROR_REACH_KAPPA`).  ``None`` disables the filter (legacy
-        behavior).
+        :data:`SHAPE_ERROR_REACH_KAPPA`).  ``None`` disables the shape filter
+        (legacy behavior).
 
     Returns
     -------
@@ -415,13 +431,19 @@ def derive_candidate_ledger(
         fitting_result.window_id if fitting_result.window_id is not None else -1
     )
 
+    dedup_tol_mhz = (
+        _DEDUP_TOL_BINS * res_element_mhz
+        if res_element_mhz is not None and res_element_mhz > 0.0
+        else 0.0
+    )
+
     raw: List[Dict] = []
     raw.extend(_audit_step_candidates(fitting_result.audit_trail, center_mhz, sideband))
     raw.extend(
         _rescue_round_candidates(fitting_result.rescue_events, center_mhz, sideband)
     )
 
-    merged = _dedup_and_merge(raw, _DEDUP_TOL_MHZ)
+    merged = _dedup_and_merge(raw, dedup_tol_mhz)
 
     # Drop candidates that coincide with an installed fitted peak.  The rescue
     # round records every *detected* candidate, including those the conservative
@@ -435,7 +457,7 @@ def derive_candidate_ledger(
         not_installed = [
             c
             for c in merged
-            if np.min(np.abs(fitted_freqs - c["freq_mhz"])) > _DEDUP_TOL_MHZ
+            if np.min(np.abs(fitted_freqs - c["freq_mhz"])) > dedup_tol_mhz
         ]
     else:
         not_installed = merged
@@ -544,7 +566,9 @@ def get_candidate_ledger_impl(
         sideband = Sideband.coerce(sideband)
 
     acquisition_us = float(spectrum_fit.parameters.get("acquisition_us", 0.0))
-    res_element_mhz = 1.0 / acquisition_us if acquisition_us > 0.0 else None
+    res_element_mhz = (
+        active_ft_bin_spacing_mhz(acquisition_us) if acquisition_us > 0.0 else None
+    )
 
     window_fits = spectrum_fit.window_fits
     if window_id is not None:
@@ -763,7 +787,9 @@ def rank_windows_impl(
     fid = load_fid_from_pipeline_impl(path)
     sideband = Sideband.coerce(fid.sideband)
     acquisition_us = float(spectrum_fit.parameters.get("acquisition_us", 0.0))
-    res_element_mhz = 1.0 / acquisition_us if acquisition_us > 0.0 else None
+    res_element_mhz = (
+        active_ft_bin_spacing_mhz(acquisition_us) if acquisition_us > 0.0 else None
+    )
     spur_centers_mhz = [
         float(v) for v in spectrum_fit.parameters.get("spur_centers_mhz", [])
     ]
@@ -1046,8 +1072,9 @@ def _make_refit_result(
 # ``REFIT_SNAP_TOL_MHZ``, imported from ``core.curation`` -- public, because an
 # integrator that resolved "the peak at f" at a different tolerance would
 # disagree with the file about which peak that is.  It is deliberately looser
-# than ``_DEDUP_TOL_MHZ`` (the input is a frequency a person typed, not a fitted
-# value); that constant's docstring has the rest of the rationale.
+# than the resolved ``_DEDUP_TOL_BINS`` tolerance (the input is a frequency a
+# person typed, not a fitted value); that constant's docstring has the rest
+# of the rationale.
 # ---------------------------------------------------------------------------
 
 
@@ -1752,6 +1779,11 @@ def refit_window_core(
                 center_mhz=center_for_ledger,
                 sideband=wf_sideband,
                 bar=0.0,  # all candidates; the user has decided to add this peak
+                res_element_mhz=(
+                    active_ft_bin_spacing_mhz(acquisition_us)
+                    if acquisition_us > 0.0
+                    else None
+                ),
             )
             best_cand = None
             best_dist = float("inf")
@@ -3636,11 +3668,30 @@ predicts for its own matched frequency -- a specific, precomputed value, not
 merely "some common offset". A genuine hand-typed batch practically never
 lands every candidate this close to a value it has no way to know."""
 
-_FRAME_MISMATCH_FLOOR_MHZ = 0.003
-"""Minimum |predicted offset| (3 kHz) to even consider a candidate. Guards
-the vanishingly-small-epsilon regime, where the predicted offset is smaller
-than ordinary NLS refit jitter and indistinguishable from a correctly
-raw-declared batch -- firing there would be pure noise, not signal."""
+_FRAME_MISMATCH_FLOOR_BINS = 0.05
+"""Minimum |predicted offset|, as a fraction of the active-FT bin spacing, to
+even consider a candidate. Guards the vanishingly-small-epsilon regime, where
+the predicted offset is smaller than ordinary NLS refit jitter (itself a
+sub-bin quantity) and indistinguishable from a correctly raw-declared batch --
+firing there would be pure noise, not signal. Added 2026-08-18; not part of
+the family of constants recovered from a pre-existing nominal-80-kHz design
+(see ``scratch/bin-relative-constants-plan.md``) -- 0.05 is a fresh,
+reasonable round bin fraction, not a recovered value. Resolved to MHz in
+:func:`_frame_mismatch_warnings` via :func:`_persisted_acquisition_us`;
+falls back to 0.0 when no Stage 5 fit is persisted, which is moot in
+practice since ``by_window`` is then empty and the function returns early."""
+
+
+def _persisted_acquisition_us(path: str) -> float:
+    """Persisted Stage 5 active-region acquisition length (us), or 0.0 absent
+    a fit. The active-FT bin spacing every spectral-distance tolerance in
+    this module resolves against is ``1 / acquisition_us``
+    (:func:`~ftmwpipeline.fitting.active_ft.active_ft_bin_spacing_mhz`)."""
+    with h5py.File(path, "r") as h5f:
+        if "stage5_fitting" not in h5f:
+            return 0.0
+        spectrum_fit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+    return float(spectrum_fit.parameters.get("acquisition_us", 0.0))
 
 
 def _frame_mismatch_warnings(
@@ -3671,7 +3722,7 @@ def _frame_mismatch_warnings(
       within :data:`_FRAME_MISMATCH_REL_TOL` of the offset THIS file's
       current epsilon predicts for that exact candidate
       (``(probe - f_matched) * eps / (1 + eps)``), with the predicted
-      magnitude clearing :data:`_FRAME_MISMATCH_FLOOR_MHZ`;
+      magnitude clearing the :data:`_FRAME_MISMATCH_FLOOR_BINS` floor;
     - every one of those residuals shares the same sign -- a real omitted
       conversion pushes every candidate the same direction; independently
       mistyped or mis-snapped frequencies would not.
@@ -3681,6 +3732,13 @@ def _frame_mismatch_warnings(
     cal_state, epsilon, _sigma_eps, _floor_khz, probe_freq_mhz, _sideband = stamp
     if cal_state != "self_calibrated" or epsilon == 0.0:
         return []
+
+    acquisition_us = _persisted_acquisition_us(path)
+    frame_mismatch_floor_mhz = (
+        _FRAME_MISMATCH_FLOOR_BINS * active_ft_bin_spacing_mhz(acquisition_us)
+        if acquisition_us > 0.0
+        else 0.0
+    )
 
     by_window = _fitted_freqs_by_window(path)
 
@@ -3717,7 +3775,7 @@ def _frame_mismatch_warnings(
         return []
 
     for r, p in zip(residuals, predicted):
-        if abs(p) < _FRAME_MISMATCH_FLOOR_MHZ:
+        if abs(p) < frame_mismatch_floor_mhz:
             return []
         lo = abs(p) * (1.0 - _FRAME_MISMATCH_REL_TOL)
         hi = abs(p) * (1.0 + _FRAME_MISMATCH_REL_TOL)
@@ -6010,7 +6068,9 @@ def _compute_attention_reasons(
     # --- candidate_bearing: flag when the window has candidates above bar ----
     center_mhz = _window_center(wf)
     if center_mhz is not None:
-        res_element_mhz = 1.0 / acquisition_us if acquisition_us > 0.0 else None
+        res_element_mhz = (
+            active_ft_bin_spacing_mhz(acquisition_us) if acquisition_us > 0.0 else None
+        )
         cands = derive_candidate_ledger(
             wf,
             center_mhz=center_mhz,

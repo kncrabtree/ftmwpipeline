@@ -44,9 +44,11 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from math import gcd
-from typing import List, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
+
+from .active_ft import active_ft_bin_spacing_mhz
 
 logger = logging.getLogger(__name__)
 
@@ -57,8 +59,8 @@ __all__ = [
     "DEFAULT_KAPPA_SYS",
     "DEFAULT_SNR_MIN",
     "DEFAULT_N_BLOCKS",
-    "DEFAULT_SCAN_HALF_RANGE_MHZ",
-    "DEFAULT_SCAN_STEP_MHZ",
+    "DEFAULT_SCAN_HALF_RANGE_BINS",
+    "DEFAULT_SCAN_STEP_BINS",
     "DEFAULT_NYQUIST_FRACTION",
     "DEFAULT_MAX_REJECT_ITERS",
     "DEFAULT_REJECT_SIGMA",
@@ -70,8 +72,18 @@ __all__ = [
 DEFAULT_KAPPA_SYS = 0.2e-6  # systematic per-tone fractional floor (sigma_tot)
 DEFAULT_SNR_MIN = 8.0  # peak/noise gate for a tone to count as detected
 DEFAULT_N_BLOCKS = 4096  # block-average count before the ML fine scan
-DEFAULT_SCAN_HALF_RANGE_MHZ = 0.1  # ML fine scan spans +-this around nominal
-DEFAULT_SCAN_STEP_MHZ = 0.0001  # 0.1 kHz scan step
+
+# The ML fine scan resolves a tone's residual offset from its nominal
+# lattice frequency by searching a grid of trial frequencies -- a sub-bin
+# search, so its span and step are defined as fractions of the active-FT bin
+# spacing (Requirement 8, dev-docs/SCIENCE_STRATEGY.md), not a frozen MHz
+# width: an absolute MHz width is either wastefully coarse-stepped or
+# needlessly wide depending on the acquisition length it happens to be tuned
+# for. Resolved to MHz in :func:`calibrate_timebase_from_fid` via
+# :func:`~ftmwpipeline.fitting.active_ft.active_ft_bin_spacing_mhz` against
+# that call's own ``end_us - start_us``.
+DEFAULT_SCAN_HALF_RANGE_BINS = 1.25  # ML fine scan spans +-this many bins
+DEFAULT_SCAN_STEP_BINS = 0.00125  # scan step, as a fraction of a bin
 DEFAULT_NYQUIST_FRACTION = 0.98  # highest lattice index sits below this * Nyquist
 DEFAULT_MAX_REJECT_ITERS = 10  # iterative consistency-rejection cap
 DEFAULT_REJECT_SIGMA = 4.0  # |df - eps*f| > this * sigma_tot => reject
@@ -258,8 +270,8 @@ def calibrate_timebase_from_fid(
     kappa_sys: float = DEFAULT_KAPPA_SYS,
     snr_min: float = DEFAULT_SNR_MIN,
     n_blocks: int = DEFAULT_N_BLOCKS,
-    scan_half_range_mhz: float = DEFAULT_SCAN_HALF_RANGE_MHZ,
-    scan_step_mhz: float = DEFAULT_SCAN_STEP_MHZ,
+    scan_half_range_mhz: Optional[float] = None,
+    scan_step_mhz: Optional[float] = None,
     nyquist_fraction: float = DEFAULT_NYQUIST_FRACTION,
     max_reject_iters: int = DEFAULT_MAX_REJECT_ITERS,
     reject_sigma: float = DEFAULT_REJECT_SIGMA,
@@ -297,6 +309,13 @@ def calibrate_timebase_from_fid(
         Systematic per-tone fractional floor folded into ``sigma_tot``.
     snr_min : float
         Peak/noise gate for a tone to count as detected.
+    scan_half_range_mhz, scan_step_mhz : float, optional
+        ML fine-scan span / step (MHz). ``None`` (the default) resolves each
+        to :data:`DEFAULT_SCAN_HALF_RANGE_BINS` /
+        :data:`DEFAULT_SCAN_STEP_BINS` active-FT bins at *this call's own*
+        ``end_us - start_us`` -- never a frozen absolute width (Requirement
+        8, dev-docs/SCIENCE_STRATEGY.md). Pass an explicit MHz value only to
+        override the resolved default.
 
     Returns
     -------
@@ -345,8 +364,23 @@ def calibrate_timebase_from_fid(
         notes.append("active region too short to demodulate any tone")
         return _empty_result(False)
 
+    # Resolved after the preconditions above so a malformed/inverted active
+    # region (span <= 0) never reaches the bin-spacing accessor, which raises
+    # on a non-positive acquisition length.
+    active_bin_mhz = active_ft_bin_spacing_mhz(float(end_us) - float(start_us))
+    scan_half_range_v = (
+        DEFAULT_SCAN_HALF_RANGE_BINS * active_bin_mhz
+        if scan_half_range_mhz is None
+        else float(scan_half_range_mhz)
+    )
+    scan_step_v = (
+        DEFAULT_SCAN_STEP_BINS * active_bin_mhz
+        if scan_step_mhz is None
+        else float(scan_step_mhz)
+    )
+
     grid, _t_blocks, scan_matrix = _build_block_demod(
-        t, n_blocks, scan_half_range_mhz, scan_step_mhz
+        t, n_blocks, scan_half_range_v, scan_step_v
     )
 
     def scan(fbb: float) -> Tuple[float, float]:
@@ -365,7 +399,7 @@ def calibrate_timebase_from_fid(
             joff = 0.5 * (amp[j - 1] - amp[j + 1]) / denom if denom != 0 else 0.0
         else:
             joff = 0.0
-        return float(grid[j] + joff * scan_step_mhz), float(amp[j])
+        return float(grid[j] + joff * scan_step_v), float(amp[j])
 
     # Noise reference: 25th percentile of the scan peak at off-lattice
     # quasi-random frequencies (fixed seed, matching the prototype).
@@ -385,7 +419,7 @@ def calibrate_timebase_from_fid(
     # --- locked lattice tones ----------------------------------------------
     k_max = int(np.floor((nyquist_fraction * nyq) / g))
     detected: List[TimebaseToneRead] = []
-    edge_tol = edge_pin_steps * scan_step_mhz
+    edge_tol = edge_pin_steps * scan_step_v
     for k in range(1, k_max + 1):
         fbb = k * g
         df, pk = scan(fbb)
@@ -393,7 +427,7 @@ def calibrate_timebase_from_fid(
         if snr < snr_min:
             continue
         # Edge-pinned maxima are scan artifacts, not tones.
-        if abs(abs(df) - scan_half_range_mhz) < edge_tol:
+        if abs(abs(df) - scan_half_range_v) < edge_tol:
             continue
         sigma_f = sigma_f_coef / snr
         sigma_tot = float(np.hypot(sigma_f, kappa_sys * fbb))
@@ -470,7 +504,7 @@ def calibrate_timebase_from_fid(
             snr = pk / noise_ref
             if snr < snr_min:
                 continue
-            if abs(abs(df) - scan_half_range_mhz) < edge_tol:
+            if abs(abs(df) - scan_half_range_v) < edge_tol:
                 continue
             sigma_f = sigma_f_coef / snr
             sigma_tot = float(np.hypot(sigma_f, kappa_sys * fbb))

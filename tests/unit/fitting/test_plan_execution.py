@@ -115,13 +115,13 @@ def _make_active_ft(
     """
     spec = np.asarray(complex_spectrum, dtype=np.complex128)
     n_active = spec.size
-    n_padded = max(int(round(n_active / alpha)), n_active)
+    n_raw = max(int(round(n_active / alpha)), n_active)
     return ActiveFTResult(
         freq_mhz=np.asarray(freq_array, dtype=float),
         complex_spectrum=spec,
         alpha=float(alpha),
         n_active=n_active,
-        n_padded=n_padded,
+        n_raw=n_raw,
     )
 
 

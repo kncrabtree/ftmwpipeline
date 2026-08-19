@@ -140,10 +140,10 @@ class TestComputeActiveFTStructure:
             end_us=END_US,
             probe_freq_mhz=PROBE_MHZ,
             sideband=Sideband.LOWER,
-            n_padded=2048,
+            n_raw=2048,
         )
         assert result.n_active == 1000
-        assert result.n_padded == 2048
+        assert result.n_raw == 2048
         assert result.alpha == pytest.approx(1000.0 / 2048.0)
 
     def test_freq_grid_bin_spacing_is_one_over_t_active(self):
@@ -156,7 +156,7 @@ class TestComputeActiveFTStructure:
             end_us=END_US,
             probe_freq_mhz=PROBE_MHZ,
             sideband=Sideband.UPPER,
-            n_padded=N_TOTAL,
+            n_raw=N_TOTAL,
         )
         bin_widths = np.abs(np.diff(result.freq_mhz))
         # Upper sideband: monotone ascending.
@@ -173,7 +173,7 @@ class TestComputeActiveFTStructure:
             end_us=END_US,
             probe_freq_mhz=PROBE_MHZ,
             sideband=Sideband.LOWER,
-            n_padded=N_TOTAL,
+            n_raw=N_TOTAL,
         )
         assert result.freq_mhz[0] > result.freq_mhz[-1]
         # DC bin == probe frequency.
@@ -188,7 +188,7 @@ class TestComputeActiveFTStructure:
             end_us=END_US,
             probe_freq_mhz=PROBE_MHZ,
             sideband=Sideband.UPPER,
-            n_padded=N_TOTAL,
+            n_raw=N_TOTAL,
         )
         assert result.freq_mhz[0] < result.freq_mhz[-1]
         assert result.freq_mhz[0] == pytest.approx(PROBE_MHZ)
@@ -205,7 +205,7 @@ class TestComputeActiveFTInputValidation:
                 end_us=10.0,
                 probe_freq_mhz=PROBE_MHZ,
                 sideband=Sideband.LOWER,
-                n_padded=N_TOTAL,
+                n_raw=N_TOTAL,
             )
 
     def test_non_positive_dt_raises(self):
@@ -217,11 +217,11 @@ class TestComputeActiveFTInputValidation:
                 end_us=1.0,
                 probe_freq_mhz=PROBE_MHZ,
                 sideband=Sideband.LOWER,
-                n_padded=10,
+                n_raw=10,
             )
 
-    def test_n_padded_smaller_than_active_raises(self):
-        with pytest.raises(ValueError, match="n_padded"):
+    def test_n_raw_smaller_than_active_raises(self):
+        with pytest.raises(ValueError, match="n_raw"):
             compute_active_ft(
                 np.zeros(N_TOTAL),
                 sample_dt_us=DT_US,
@@ -229,7 +229,7 @@ class TestComputeActiveFTInputValidation:
                 end_us=END_US,
                 probe_freq_mhz=PROBE_MHZ,
                 sideband=Sideband.LOWER,
-                n_padded=100,
+                n_raw=100,
             )
 
 
@@ -273,7 +273,7 @@ class TestRecoverDampedCosine:
             end_us=END_US,
             probe_freq_mhz=PROBE_MHZ,
             sideband=sideband,
-            n_padded=N_TOTAL,
+            n_raw=N_TOTAL,
         )
 
         # Slice a +-1 MHz window around the line.
@@ -335,7 +335,7 @@ class TestNoPhaseRamp:
             end_us=END_US,
             probe_freq_mhz=PROBE_MHZ,
             sideband=sideband,
-            n_padded=N_TOTAL,
+            n_raw=N_TOTAL,
         )
 
         # Bin closest to the line.
@@ -387,7 +387,7 @@ class TestStage2NoiseOnActiveFT:
         """
         rng = np.random.default_rng(SEED)
         n_total = 20000
-        n_padded = 32768
+        n_raw = 32768
         sigma_t = 0.5
         fid = rng.normal(0.0, sigma_t, n_total)
 
@@ -401,7 +401,7 @@ class TestStage2NoiseOnActiveFT:
             end_us=end_us,
             probe_freq_mhz=PROBE_MHZ,
             sideband=Sideband.LOWER,
-            n_padded=n_padded,
+            n_raw=n_raw,
             rdc=False,
         )
 
@@ -437,8 +437,8 @@ class TestActiveFTResult:
             complex_spectrum=np.array([1 + 0j, 0 + 1j]),
             alpha=0.5,
             n_active=10,
-            n_padded=20,
+            n_raw=20,
         )
         assert result.alpha == 0.5
         assert result.n_active == 10
-        assert result.n_padded == 20
+        assert result.n_raw == 20

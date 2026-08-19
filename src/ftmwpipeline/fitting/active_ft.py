@@ -62,11 +62,61 @@ from .peak_model import sideband_sign
 
 __all__ = [
     "ActiveFTResult",
+    "active_ft_bin_spacing_mhz",
     "active_region_bounds",
     "compute_active_ft",
 ]
 
 SidebandLike = Union[Sideband, str]
+
+
+def active_ft_bin_spacing_mhz(acquisition_us: float) -> float:
+    """Active-FT bin spacing (MHz): ``1 / acquisition_us``.
+
+    THE single resolved accessor for the active-FT bin spacing
+    (``dev-docs/SCIENCE_STRATEGY.md`` Requirement 8). Every tolerance,
+    threshold, window width, or increment that expresses a *spectral
+    distance* as a multiple of the active-FT bin must compute that multiple
+    through this function -- never by re-deriving ``1.0 / T`` inline at the
+    call site. A duplicated inline form is exactly how a future edit could
+    silently substitute the wrong quantity below, with nothing to catch it.
+    It lives in this module (not a dependency-free utility module) because
+    the active FT is what it is the spacing *of*: the two belong together,
+    and every consumer of this function already needs to know what the
+    active FT is.
+
+    Parameters
+    ----------
+    acquisition_us : float
+        The active region's duration, ``end_us - start_us``. This is the one
+        spectrum every measuring stage shares -- Stage 2's noise estimate,
+        Stage 3's peak detection, and Stage 5's fit all run on the active FT
+        (see the module docstring and ``dev-docs/SCIENCE_STRATEGY.md``
+        Requirements 2 and 8). The magnitude-display FT (2x zero-padded for
+        visualization) and the raw / full-length / imported FT (the
+        untrimmed original record, e.g. for Stage 0 start detection) are
+        never measurement surfaces.
+
+    **Never** pass ``ActiveFTResult.n_raw`` / ``Stage5FitContext.n_raw``, a
+    sample count, or anything derived from the persisted Stage 1 full-length
+    record here. ``n_raw`` is kept on the active-FT result only so a caller
+    can recompute ``alpha = N_active / N_raw``; it is *not* the active FT's
+    own length, and using it in place of ``acquisition_us`` gives a bin
+    spacing wrong by ``alpha`` -- silently, since both are plain floats and
+    the mistake has no type error to catch it. This function takes a
+    *duration* (microseconds), never a sample count, specifically so that
+    mistake cannot be made by passing the wrong argument of the same type in
+    the wrong units.
+
+    Raises
+    ------
+    ValueError
+        If ``acquisition_us`` is not positive.
+    """
+    t = float(acquisition_us)
+    if t <= 0.0:
+        raise ValueError(f"acquisition_us must be positive, got {t}")
+    return 1.0 / t
 
 
 def active_region_bounds(
@@ -108,24 +158,31 @@ class ActiveFTResult:
         (natural ``h_T`` form -- see module docstring). Shape matches
         ``freq_mhz``.
     alpha : float
-        ``N_active / N_padded`` -- the persisted bin-correlation factor. Equal
+        ``N_active / N_raw`` -- the persisted bin-correlation factor. Equal
         to 1 only when the FFT input is exactly the active region (test
-        fixtures); for the persisted full-record FT this is the
-        active-sample fraction that links persisted-FT noise to active-FT
-        noise.
+        fixtures); for the raw, full-length FT this is the active-sample
+        fraction that links full-length-FT noise to active-FT noise.
     n_active : int
-        Number of FID samples in ``[t0, t0+T]`` -- the FFT input length.
-    n_padded : int
-        Length of the persisted Stage 1 full-record FT input (informational).
-        Tracked so callers can compute ``alpha`` exactly without re-deriving
-        it from the FID.
+        Number of FID samples in ``[t0, t0+T]`` -- the FFT input length. This
+        is the active FT's own length; its bin spacing is
+        ``1 / acquisition_us`` (:func:`compute_active_ft`'s ``end_us -
+        start_us``), NOT ``1 / (n_active * sample_dt_us)`` in general and
+        never derived from ``n_raw`` below.
+    n_raw : int
+        Length of the raw, full-length FID record (informational; the Stage 1
+        full-length FT is unpadded, so this is also that FT's input length).
+        Tracked only so callers can recompute ``alpha`` without re-deriving it
+        from the FID. **Never** use ``n_raw`` where the active FT's own length
+        or bin spacing is wanted; see
+        :func:`ftmwpipeline.fitting.active_ft.active_ft_bin_spacing_mhz`
+        for the full statement of this trap.
     """
 
     freq_mhz: np.ndarray
     complex_spectrum: np.ndarray
     alpha: float
     n_active: int
-    n_padded: int
+    n_raw: int
 
 
 def compute_active_ft(
@@ -136,7 +193,7 @@ def compute_active_ft(
     end_us: float,
     probe_freq_mhz: float,
     sideband: SidebandLike,
-    n_padded: int,
+    n_raw: int,
     rdc: bool = True,
 ) -> ActiveFTResult:
     """Compute the active-portion FT of an FID for Stage 5 fitting.
@@ -169,11 +226,14 @@ def compute_active_ft(
         ``f = probe + s * f_bb`` with ``s`` from :func:`sideband_sign`.
     sideband : Sideband or str
         Sideband configuration (``"lower"`` / ``"upper"`` or the enum).
-    n_padded : int
-        Length of the persisted Stage 1 full-record FT input. Used only to
-        record ``alpha = N_active / N_padded`` on the result. Pass
-        ``N_active`` (so ``alpha = 1``) for synthetic tests where there is no
-        persisted record to compare against.
+    n_raw : int
+        Length of the raw, full-length FID record (the Stage 1 full-length FT
+        input). Used only to record ``alpha = N_active / N_raw`` on the
+        result -- never to derive the active FT's own length or bin spacing
+        (that is ``n_active`` / ``end_us - start_us``, computed independently
+        of ``n_raw`` below). Pass ``N_active`` (so ``alpha = 1``) for
+        synthetic tests where there is no full-length record to compare
+        against.
     rdc : bool, default True
         Subtract the mean of the active region (matches the persisted Stage 1
         DC-removal step, which is unconditional).
@@ -187,7 +247,7 @@ def compute_active_ft(
     ------
     ValueError
         If ``fid`` is not 1-D, ``sample_dt_us`` is non-positive, the active
-        region is empty or out of bounds, or ``n_padded < n_active``.
+        region is empty or out of bounds, or ``n_raw < n_active``.
     """
     fid_arr = np.asarray(fid, dtype=float)
     if fid_arr.ndim != 1:
@@ -215,8 +275,8 @@ def compute_active_ft(
     active = fid_arr[start_idx:end_idx].astype(float, copy=True)
     n_active = active.size
 
-    if n_padded < n_active:
-        raise ValueError(f"n_padded ({n_padded}) must be >= n_active ({n_active})")
+    if n_raw < n_active:
+        raise ValueError(f"n_raw ({n_raw}) must be >= n_active ({n_active})")
 
     # Match Stage 1's unconditional DC-removal step (mean removal) on the
     # active region.
@@ -233,12 +293,12 @@ def compute_active_ft(
     s = sideband_sign(sideband)
     freq_mhz = probe_freq_mhz + s * f_bb_mhz
 
-    alpha = float(n_active) / float(n_padded)
+    alpha = float(n_active) / float(n_raw)
 
     return ActiveFTResult(
         freq_mhz=freq_mhz.astype(float),
         complex_spectrum=spectrum.astype(np.complex128),
         alpha=alpha,
         n_active=int(n_active),
-        n_padded=int(n_padded),
+        n_raw=int(n_raw),
     )

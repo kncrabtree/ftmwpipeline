@@ -103,7 +103,7 @@ achieves them is the code's to decide.
    `df = 1 / (end_us - start_us)`, is the spacing every spectral tolerance is
    defined against. There is no second measurement grid to choose from, and a
    tolerance defined against anything else — a record length, a padded length,
-   an `n_padded` field — is wrong by that ratio, silently.
+   a raw-record length field (`n_raw`) — is wrong by that ratio, silently.
 
    Only two transforms are not the active FT, and neither is ever measured on:
    Stage 0 start detection, which necessarily precedes knowledge of the active

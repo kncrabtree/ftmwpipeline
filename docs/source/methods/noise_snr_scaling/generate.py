@@ -84,7 +84,7 @@ def active_magnitude(fixture: str, frame: int) -> Tuple[np.ndarray, np.ndarray]:
         end_us=fid.duration_us,
         probe_freq_mhz=fid.probe_freq_mhz,
         sideband=fid.sideband,
-        n_padded=len(fid.data),
+        n_raw=len(fid.data),
     )
     order = np.argsort(aft.freq_mhz)
     freq = aft.freq_mhz[order]

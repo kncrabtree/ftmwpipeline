@@ -72,10 +72,13 @@ def compute_persisted_active_ft(
             f"acquisition length ({acquisition_us} us)"
         )
 
-    # n_padded: the persisted Stage 1 full-record FT input length (the native FID
-    # length -- the persisted FT is unpadded). Recorded on the result as
-    # ``alpha`` for diagnostics only; the active FT itself is unpadded.
-    n_padded = int(np.asarray(fid.data).size)
+    # n_raw: the length of the raw, full-length FID record (the native sample
+    # count -- the Stage 1 full-length FT is unpadded, so this is also that
+    # FT's input length). Recorded on the result only so ``alpha =
+    # N_active / N_raw`` can be recomputed; it is NOT the active FT's own
+    # length (that is ``n_active``) and must never be used in its place --
+    # doing so understates the active-FT bin spacing by a factor of ``alpha``.
+    n_raw = int(np.asarray(fid.data).size)
 
     return compute_active_ft(
         np.asarray(fid.data, dtype=float),
@@ -84,7 +87,7 @@ def compute_persisted_active_ft(
         end_us=end_us,
         probe_freq_mhz=float(fid.probe_freq_mhz),
         sideband=Sideband.coerce(fid.sideband),
-        n_padded=n_padded,
+        n_raw=n_raw,
     )
 
 
@@ -110,8 +113,10 @@ def _persisted_scatter_knobs(file_path: str) -> dict:
     """Resolve the persisted Stage 2 scatter knobs (non-None only).
 
     Returns the resolved scatter parameters so the active-FT authority noise
-    is measured with the *same* knobs Stage 2 used on the full-record FT.
-    Fields left None by the resolver fall through to
+    is measured with the *same* knobs Stage 2 used on the trimmed active FT
+    (``build_trimmed_active_ft`` -- "the unapodized active FT (trimmed to the
+    analysis band) -- the single grid every later stage consumes"; see
+    ``stage2_impl.py``). Fields left None by the resolver fall through to
     :func:`estimate_noise_scatter`'s defaults (= Stage 2's hard defaults).
     """
     resolved = resolve_noise_settings(

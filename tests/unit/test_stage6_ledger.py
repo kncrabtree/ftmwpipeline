@@ -15,7 +15,6 @@ import numpy as np
 import pytest
 
 from ftmwpipeline._internal.stage6_impl import (
-    _DEDUP_TOL_MHZ,
     DEFAULT_DISPLAY_BAR,
     _audit_step_candidates,
     _dedup_and_merge,
@@ -365,8 +364,12 @@ class TestDeriveCandidateLedger:
         )
         freqs = [c.frequency_mhz for c in result]
         # The installed one (36012) is gone; the rejected one (36006) survives.
-        assert all(abs(f - 36012.0) > _DEDUP_TOL_MHZ for f in freqs)
-        assert any(abs(f - 36006.0) <= _DEDUP_TOL_MHZ for f in freqs)
+        # A margin well inside the 6 MHz gap between the two candidates and
+        # well outside any plausible dedup tolerance -- this test is about
+        # installed-candidate subtraction, not the exact tolerance value.
+        margin = 0.01
+        assert all(abs(f - 36012.0) > margin for f in freqs)
+        assert any(abs(f - 36006.0) <= margin for f in freqs)
 
     def test_dedup_across_audit_and_rescue(self):
         """One offset appearing in both audit and rescue collapses to one entry."""
@@ -381,8 +384,17 @@ class TestDeriveCandidateLedger:
         cand_info = RescueCandidateInfo(frequency_mhz=2.005, magnitude=6.0, snr=8.0)
         rnd = _make_rescue_round([cand_info])
         fr = _make_fitting_result(audit_trail=[step], rescue_events=[rnd])
+        # ``_RES_ELEMENT`` (defined below, ~0.08 MHz) resolves the dedup
+        # tolerance (_DEDUP_TOL_BINS * res_element_mhz ~ 0.02 MHz) -- without
+        # it the dedup tolerance falls back to 0.0 (exact-frequency dedup
+        # only) and the two near-duplicate offsets (2.0, 2.005) would not
+        # merge.
         result = derive_candidate_ledger(
-            fr, center_mhz=_CENTER, sideband=_LOWER, bar=0.0
+            fr,
+            center_mhz=_CENTER,
+            sideband=_LOWER,
+            bar=0.0,
+            res_element_mhz=_RES_ELEMENT,
         )
         assert len(result) == 1  # deduped
         # Both sites should appear
@@ -463,8 +475,14 @@ class TestDeriveCandidateLedger:
         rnd0 = _make_rescue_round([c0], round_idx=0)
         rnd1 = _make_rescue_round([c1], round_idx=1)
         fr = _make_fitting_result(rescue_events=[rnd0, rnd1])
+        # See test_dedup_across_audit_and_rescue: res_element_mhz is required
+        # for the two near-duplicate offsets (2.000, 2.008) to dedup.
         result = derive_candidate_ledger(
-            fr, center_mhz=_CENTER, sideband=_UPPER, bar=0.0
+            fr,
+            center_mhz=_CENTER,
+            sideband=_UPPER,
+            bar=0.0,
+            res_element_mhz=_RES_ELEMENT,
         )
         assert len(result) == 1  # deduped
         assert result[0].best_evidence == pytest.approx(7.0)

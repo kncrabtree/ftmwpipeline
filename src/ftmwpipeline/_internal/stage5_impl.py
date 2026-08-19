@@ -245,7 +245,7 @@ def _build_active_ft_inputs(
     float,  # end_us (active end)
     float,  # probe_freq_mhz
     Sideband,
-    int,  # n_padded
+    int,  # n_raw
     float,  # acquisition_us (= end - start)
     ComplexFT,  # the user (persisted) ComplexFT
     Optional[Tuple[float, float]],  # trim_range (analysis band)
@@ -276,10 +276,12 @@ def _build_active_ft_inputs(
         )
     sideband = Sideband.coerce(fid.sideband)
 
-    # n_padded: the persisted Stage 1 full-record FT input length (the native FID
-    # length -- the persisted FT is unpadded). The active-FT records alpha for
-    # diagnostic only; the fit itself is independent of n_padded.
-    n_padded = int(np.asarray(fid.data).size)
+    # n_raw: the length of the raw, full-length FID record (the Stage 1
+    # full-length FT is unpadded, so this is also that FT's input length).
+    # The active FT records alpha = N_active / N_raw for diagnostics only;
+    # the fit itself is independent of n_raw, and n_raw must NEVER be used as
+    # a stand-in for the active FT's own length (n_active) or bin spacing.
+    n_raw = int(np.asarray(fid.data).size)
 
     trim_range = stage1.get("trim_range")
 
@@ -290,7 +292,7 @@ def _build_active_ft_inputs(
         end_us,
         float(fid.probe_freq_mhz),
         sideband,
-        n_padded,
+        n_raw,
         acquisition_us,
         user_ft,
         trim_range,
@@ -1166,7 +1168,14 @@ class Stage5FitContext:
     sample_dt_us: float
     start_us: float
     end_us: float
-    n_padded: int
+
+    # Length of the raw, full-length FID record (the Stage 1 full-length FT's
+    # input length). Kept only so ``alpha = N_active / N_raw`` can be
+    # recomputed -- it is NOT the active FT's own length. The active-FT bin
+    # spacing is ``1 / (end_us - start_us)``
+    # (:func:`ftmwpipeline.fitting.active_ft.active_ft_bin_spacing_mhz`);
+    # deriving it from ``n_raw`` instead is wrong by ``alpha``, silently.
+    n_raw: int
 
     # Trim range (lo, hi) in MHz, or None when the full active-FT is the band.
     trim_range: Optional[Tuple[float, float]]
@@ -1236,7 +1245,7 @@ def build_stage5_fit_context(
         end_us,
         probe_freq_mhz,
         sideband,
-        n_padded,
+        n_raw,
         acquisition_us,
         user_ft,
         trim_range,
@@ -1249,7 +1258,7 @@ def build_stage5_fit_context(
         end_us=end_us,
         probe_freq_mhz=probe_freq_mhz,
         sideband=sideband,
-        n_padded=n_padded,
+        n_raw=n_raw,
     )
 
     scatter_knobs = _persisted_scatter_knobs(file_path)
@@ -1492,7 +1501,7 @@ def build_stage5_fit_context(
         sample_dt_us=sample_dt_us,
         start_us=start_us,
         end_us=end_us,
-        n_padded=n_padded,
+        n_raw=n_raw,
         trim_range=trim_range,
         user_ft=user_ft,
     )
@@ -2148,7 +2157,10 @@ def _fit_peaks_impl(
         "acquisition_us": acquisition_us,
         "active_ft_alpha": float(active_ft.alpha),
         "n_active": int(active_ft.n_active),
-        "n_padded": int(active_ft.n_padded),
+        # Persisted key name kept as "n_padded" for file-format
+        # backward-compatibility; the in-memory attribute is ``n_raw`` (see
+        # ActiveFTResult / fitting.active_ft.active_ft_bin_spacing_mhz).
+        "n_padded": int(active_ft.n_raw),
         "sideband": sideband.value,
         "tau_maj_us": tau_maj_us,
         "sigma_tau_us": sigma_tau_us,
@@ -2660,7 +2672,7 @@ def compute_display_ft_impl(
         end_us,
         probe_freq_mhz,
         sideband,
-        _n_padded,
+        _n_raw,
         _acquisition_us,
         user_ft,
         _trim_range,
@@ -2712,7 +2724,7 @@ def _resolve_detail_bundle(file_path: str) -> _DetailBundle:
         end_us,
         probe_freq_mhz,
         sideband,
-        _n_padded,
+        _n_raw,
         acquisition_us,
         _user_ft,
         trim_range,
@@ -3143,7 +3155,7 @@ def render_windowed_view_impl(
         end_us,
         probe_freq_mhz,
         sideband,
-        _n_padded,
+        _n_raw,
         _acquisition_us,
         _user_ft,
         _trim_range,

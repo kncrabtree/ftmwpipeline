@@ -60,6 +60,12 @@ logger = logging.getLogger(__name__)
 
 # A declared locked fundamental is accepted as integral-MHz when it is within
 # this of an integer (Rb-locked synthesizers are exact to << 1 Hz).
+#
+# Legitimately absolute (dev-docs/SCIENCE_STRATEGY.md Requirement 8): this is
+# a float-comparison tolerance on a user-declared clock fundamental (a value
+# a person typed when declaring an instrument clock source), not a spectral
+# distance on any FT grid -- it owes nothing to the active-FT bin spacing and
+# must not be converted to a bin-relative quantity.
 _INTEGRAL_TOL_MHZ = 1e-6
 
 

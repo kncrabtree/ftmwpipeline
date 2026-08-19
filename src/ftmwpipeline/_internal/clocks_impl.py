@@ -29,6 +29,12 @@ logger = logging.getLogger(__name__)
 
 # Frequency match tolerance for ``remove`` (MHz).  Matches the 6-decimal
 # rounding that ``ClockSource.to_dict`` persists.
+#
+# Legitimately absolute (dev-docs/SCIENCE_STRATEGY.md Requirement 8): this is
+# a float-comparison tolerance on a user-declared clock frequency (a value a
+# person typed when declaring an instrument clock source), not a spectral
+# distance on any FT grid -- it owes nothing to the active-FT bin spacing and
+# must not be converted to a bin-relative quantity.
 _FREQ_TOL_MHZ = 1e-6
 
 
