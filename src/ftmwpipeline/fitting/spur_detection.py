@@ -68,7 +68,9 @@ __all__ = [
     "GatedSpur",
     "SpurMaskSpec",
     "SpurSet",
-    "DEFAULT_INTEGER_TOL_MHZ",
+    "DEFAULT_INTEGER_TOL_BINS",
+    "DEFAULT_MERGE_TOL_BINS",
+    "NOMINATION_TOL_BINS",
     "DEFAULT_MATCH_BIN_FRACTION",
     "DEFAULT_EPS_WIDEN_N_SIGMA",
     "DEFAULT_NARROWNESS_RATIO",
@@ -95,13 +97,25 @@ __all__ = [
 
 # Detection thresholds (validated on the 2638 fixture; instrument-tunable
 # via the Stage 5 ``spur`` settings sub-block).
-DEFAULT_INTEGER_TOL_MHZ = 0.04  # ~half a bin (active-FT spacing ~79 kHz)
+# How close a candidate center must sit to its integer-MHz (or lattice)
+# anchor to count as on it, in active-FT bins. Half a bin: the anchor either
+# owns the bin or it does not. Was ``DEFAULT_INTEGER_TOL_MHZ = 0.04``, which
+# is half a bin only at the reference ``T_active ~ 13 us`` -- the definition
+# was always this bin count, written down in MHz (SCIENCE_STRATEGY
+# Requirement 8).
+DEFAULT_INTEGER_TOL_BINS = 0.5
+# Two detections closer than this (in active-FT bins) are one spur, not two:
+# nothing narrower than a bin is resolvable, so sub-bin duplicates are the
+# same tone found twice. A SEPARATE tolerance from the integer gate above --
+# they shared the 0.04 MHz literal by inheritance, not by design, and they
+# answer different questions.
+DEFAULT_MERGE_TOL_BINS = 0.5
+# Nomination veto radius: drop a peak candidate only when it sits essentially
+# *on* a spur core (within one bin), so a real line a couple of bins away
+# survives even though the residual mask still spans +/-N bins.
+NOMINATION_TOL_BINS = 1.0
 # Nearest-bin match window as a fraction of the active-FT bin spacing
-# ``Delta_f = 1/T_active``. 0.5 == half a bin: correct at any active length,
-# whereas the fixed ``DEFAULT_INTEGER_TOL_MHZ`` (0.04) is only ~half a bin at
-# the reference ``T_active ~ 13 us``. The match tolerance is the larger of the
-# two (0.04 is an absolute floor), so long/reference records are byte-neutral
-# and short records get a correctly-sized window.
+# ``Delta_f = 1/T_active``. 0.5 == half a bin: correct at any active length.
 DEFAULT_MATCH_BIN_FRACTION = 0.5
 # Clock scale-error (eps) match-window widening: a scale error displaces a
 # measured tone by ``eps * f_bb`` (baseband frequency), so the eps-aware match
@@ -320,10 +334,11 @@ class SpurSet:
 
     @property
     def nomination_tol_mhz(self) -> float:
-        # Drop a candidate only when it sits essentially *on* the spur core
-        # (within one bin), so a real line a couple of bins away survives
-        # nomination even though the residual mask still spans +/-N bins.
-        return max(self.bin_spacing_mhz, DEFAULT_INTEGER_TOL_MHZ)
+        # One bin (:data:`NOMINATION_TOL_BINS`). This used to be floored at an
+        # absolute 0.04 MHz, which took over whenever the bin was finer than
+        # that -- i.e. it stopped tightening with resolution exactly when the
+        # resolution was best.
+        return NOMINATION_TOL_BINS * self.bin_spacing_mhz
 
     def window_mask_spec(
         self,
@@ -443,7 +458,6 @@ def detect_active_ft_spurs(
     sigma_c_sorted: np.ndarray,
     *,
     band: Tuple[float, float],
-    integer_tol_mhz: float = DEFAULT_INTEGER_TOL_MHZ,
     bin_fraction: float = DEFAULT_MATCH_BIN_FRACTION,
     narrowness_ratio: float = DEFAULT_NARROWNESS_RATIO,
     snr_threshold: float = DEFAULT_SNR_THRESHOLD,
@@ -460,19 +474,19 @@ def detect_active_ft_spurs(
         (the SNR floor uses ``sigma_c`` directly, matching the prototype).
     band
         ``(lo, hi)`` molecular-frequency analysis range (MHz).
-    integer_tol_mhz, narrowness_ratio, snr_threshold
-        Gate thresholds (see module-level defaults). ``integer_tol_mhz`` is
-        an absolute *floor* on the nearest-bin match window (see
-        ``bin_fraction``), not the window itself.
+    narrowness_ratio, snr_threshold
+        Gate thresholds (see module-level defaults).
     bin_fraction
         Nearest-bin match window as a fraction of the active-FT bin spacing
-        ``Delta_f = median(|diff(freqs)|)``. In integer mode the match
-        tolerance is ``max(integer_tol_mhz, bin_fraction * Delta_f)`` -- the
-        bin-width term makes the window correct at any active length
-        (``DEFAULT_INTEGER_TOL_MHZ`` alone is ~half a bin only at the
-        reference ``T_active ~ 13 us``), while the floor keeps long/reference
-        records byte-neutral. When ``freqs`` has fewer than two samples the
-        spacing is unknown and the tolerance falls back to ``integer_tol_mhz``.
+        ``Delta_f = median(|diff(freqs)|)``: in integer mode the match
+        tolerance *is* ``bin_fraction * Delta_f``, so it is correct at any
+        active length. It used to be ``max(integer_tol_mhz, bin_fraction *
+        Delta_f)``; that absolute floor won whenever the bin was finer than
+        40 kHz, pinning the window at one laboratory's acquisition length
+        (SCIENCE_STRATEGY Requirement 8). With fewer than two samples the
+        spacing is unknown, no bin-relative window exists, and nothing can be
+        matched -- the sweep returns no spurs rather than falling back to an
+        absolute guess.
     lattice_points
         When ``None`` (the default) the frequency anchor is the legacy
         integer-MHz sweep and every entry uses the bin-width-derived default
@@ -483,23 +497,21 @@ def detect_active_ft_spurs(
         :class:`Spur` is stamped with ``lattice=point.identity``. In lattice
         mode each point's match window is ``max(point.window_mhz,
         bin_fraction * Delta_f)`` -- the point's own window (which may already
-        carry the upstream eps widening) floored by the bin width, rather than
-        the scalar tolerance. The ``integer_mhz`` field keeps
+        carry the upstream eps widening) floored by the bin width. That floor
+        is itself a bin count, not an absolute frequency, so it stays correct
+        at any active length. The ``integer_mhz`` field keeps
         ``int(round(center))`` semantics.
     """
     freqs = np.asarray(freqs_sorted_mhz, dtype=float)
     mag = np.abs(np.asarray(complex_spectrum_sorted))
     sig = np.asarray(sigma_c_sorted, dtype=float)
     lo, hi = band
-    bin_spacing = float(np.median(np.abs(np.diff(freqs)))) if freqs.size >= 2 else 0.0
-    # The bin-width-derived default: the fixed ``integer_tol_mhz`` is an
-    # absolute floor, plus a half-bin (bin_fraction) term so short records get
-    # a correctly-sized window (byte-neutral where 0.5*Delta_f <= 0.04).
-    default_tol = (
-        max(integer_tol_mhz, bin_fraction * bin_spacing)
-        if bin_spacing > 0
-        else integer_tol_mhz
-    )
+    if freqs.size < 2:
+        # No spacing, so no bin-relative match window and nothing to match
+        # against. The old code fell back to an absolute tolerance here.
+        return []
+    bin_spacing = float(np.median(np.abs(np.diff(freqs))))
+    default_tol = bin_fraction * bin_spacing
     # Sweep entries: (target frequency, identity-or-None, match_tol). The
     # integer sweep uses ``None`` + ``default_tol`` (legacy: integer_mhz = the
     # swept integer); the lattice sweep stamps the lattice identity
@@ -1032,8 +1044,9 @@ def gate_spurs(
     active_ft_spurs: Sequence[Spur],
     saturated_clusters: Sequence[SpurCluster],
     *,
-    integer_tol_mhz: float = DEFAULT_INTEGER_TOL_MHZ,
-    merge_tol_mhz: float = DEFAULT_INTEGER_TOL_MHZ,
+    bin_spacing_mhz: float,
+    integer_tol_bins: float = DEFAULT_INTEGER_TOL_BINS,
+    merge_tol_bins: float = DEFAULT_MERGE_TOL_BINS,
     decay_probe: Optional[Callable[[float], Tuple[float, float]]] = None,
     lattice_decay_ratio: float = DEFAULT_LATTICE_DECAY_RATIO,
     band_power_probe: Optional[Callable[[float], Tuple[float, float]]] = None,
@@ -1120,10 +1133,20 @@ def gate_spurs(
     without acquisition segments load with ``None``, and behavior is
     byte-identical to before).
 
-    Detections within ``merge_tol_mhz`` of each other are merged into one
+    Detections within ``merge_tol_bins`` of each other are merged into one
     :class:`GatedSpur`; a non-``None`` lattice identity is preserved across
     the merge.
+
+    Both tolerances are active-FT **bin counts** resolved against
+    ``bin_spacing_mhz``, which the caller must supply because a bare spur list
+    does not carry the grid it was found on. They were one absolute 0.04 MHz
+    constant, shared by inheritance rather than by design: the integer gate
+    asks "is this center *on* an integer MHz", the merge tolerance asks "are
+    these two detections the same tone". Both are spectral distances and both
+    must tighten as resolution improves (SCIENCE_STRATEGY Requirement 8).
     """
+    integer_tol_mhz = integer_tol_bins * float(bin_spacing_mhz)
+    merge_tol_mhz = merge_tol_bins * float(bin_spacing_mhz)
     gated: List[GatedSpur] = []
 
     def _add(
@@ -1425,7 +1448,7 @@ def build_spur_set(
     *,
     band: Tuple[float, float],
     saturated_clusters: Sequence[SpurCluster] = (),
-    integer_tol_mhz: float = DEFAULT_INTEGER_TOL_MHZ,
+    integer_tol_bins: float = DEFAULT_INTEGER_TOL_BINS,
     narrowness_ratio: float = DEFAULT_NARROWNESS_RATIO,
     snr_threshold: float = DEFAULT_SNR_THRESHOLD,
     mask_half_width_bins: int = DEFAULT_MASK_HALF_WIDTH_BINS,
@@ -1545,7 +1568,6 @@ def build_spur_set(
             complex_spectrum_sorted,
             sigma_c_sorted,
             band=band,
-            integer_tol_mhz=integer_tol_mhz,
             narrowness_ratio=narrowness_ratio,
             snr_threshold=snr_threshold,
             lattice_points=None,
@@ -1563,7 +1585,6 @@ def build_spur_set(
             complex_spectrum_sorted,
             sigma_c_sorted,
             band=band,
-            integer_tol_mhz=integer_tol_mhz,
             narrowness_ratio=narrowness_ratio,
             snr_threshold=snr_threshold,
             lattice_points=locked_points,
@@ -1573,7 +1594,6 @@ def build_spur_set(
             complex_spectrum_sorted,
             sigma_c_sorted,
             band=band,
-            integer_tol_mhz=integer_tol_mhz,
             narrowness_ratio=narrowness_ratio,
             snr_threshold=snr_threshold,
             lattice_points=None,
@@ -1619,10 +1639,14 @@ def build_spur_set(
             )
     clusters = tuple(saturated_clusters) if use_stft_catalog else ()
     flat_decay_flags: List[float] = []
+    # The grid's own spacing, resolved once: the gate's tolerances are bin
+    # counts and a spur list does not carry the grid it came from.
+    bin_spacing = float(np.median(np.abs(np.diff(freqs)))) if freqs.size >= 2 else 0.0
     gated = gate_spurs(
         active_spurs,
         clusters,
-        integer_tol_mhz=integer_tol_mhz,
+        bin_spacing_mhz=bin_spacing,
+        integer_tol_bins=integer_tol_bins,
         decay_probe=decay_probe,
         lattice_decay_ratio=lattice_decay_ratio,
         band_power_probe=band_power_probe,
@@ -1633,10 +1657,6 @@ def build_spur_set(
         chirp_response_protect_ratio=chirp_response_protect_ratio,
         flat_decay_out=flat_decay_flags,
     )
-    if freqs.size >= 2:
-        bin_spacing = float(np.median(np.abs(np.diff(freqs))))
-    else:
-        bin_spacing = 0.0
     base_bins = int(mask_half_width_bins)
     if mask_target_residual_snr > 0.0:
         drift_win = lattice.drift_window_mhz if lattice is not None else 0.0

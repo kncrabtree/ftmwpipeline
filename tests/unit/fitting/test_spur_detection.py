@@ -15,14 +15,27 @@ from ftmwpipeline.fitting.spur_detection import (
     SpurSet,
     build_spur_set,
     detect_active_ft_spurs,
-    gate_spurs,
 )
+from ftmwpipeline.fitting.spur_detection import gate_spurs as _gate_spurs
 from ftmwpipeline.fitting.tau_calibration import SpurCluster
 
 # Active-FT bin spacing ~79 kHz on 2638; use it so integer-MHz centers land
 # on a grid bin within the detector's integer tolerance.
 SPACING = 0.079
 BAND = (26500.0, 40000.0)
+
+
+def gate_spurs(active_ft_spurs, saturated_clusters, **kwargs):
+    """``gate_spurs`` at this module's grid spacing.
+
+    The gate's tolerances are active-FT bin counts, so it has to be told the
+    spacing of the grid its input was found on -- a bare spur list does not
+    carry one. Every grid here is built at :data:`SPACING`, so the wrapper
+    supplies it once instead of every call restating it; a test that means a
+    different spacing passes ``bin_spacing_mhz`` explicitly.
+    """
+    kwargs.setdefault("bin_spacing_mhz", SPACING)
+    return _gate_spurs(active_ft_spurs, saturated_clusters, **kwargs)
 
 
 def _grid(centers_and_widths, *, lo=26500.0, hi=40000.0, noise=1.0):
@@ -1126,7 +1139,7 @@ def test_chirp_response_gate_confirm_yields_to_clear_decay():
     decay, which a CW tone cannot fake in the narrow lane (a phase-modulated
     carrier pseudo-decays near the bar and is arbitrated in the drift lane).
     """
-    from ftmwpipeline.fitting.spur_detection import Spur, gate_spurs
+    from ftmwpipeline.fitting.spur_detection import Spur
 
     probe = _cr_probe_for(cw_amp=1.0)
 
@@ -1176,7 +1189,7 @@ def test_chirp_response_gate_confirm_yields_to_clear_decay():
 #     with high fid_detectability -> protect verdict vetoes the gating.
 def test_chirp_response_protect_vetoes_molecular_line():
     """A chirp-responsive line absent pre-record is protected from gating."""
-    from ftmwpipeline.fitting.spur_detection import Spur, gate_spurs
+    from ftmwpipeline.fitting.spur_detection import Spur
 
     # Strong line in FID only; CW counterpart would be bright pre-record.
     probe = _cr_probe_for(line_amp=1.0, tau_us=4.0)
@@ -1211,7 +1224,7 @@ def test_chirp_response_protect_vetoes_molecular_line():
 def test_chirp_response_inconclusive_falls_through():
     """A tone weak enough to be below the pre-record floor leaves the verdict
     to the existing lanes (no protect, no gate-confirm)."""
-    from ftmwpipeline.fitting.spur_detection import Spur, gate_spurs
+    from ftmwpipeline.fitting.spur_detection import Spur
 
     # Pure-noise probe: both pre_snr and fid_detectability will be near 1
     # (noise-level), so neither gate-confirm nor protect fires.
@@ -1280,7 +1293,6 @@ def test_chirp_response_lower_sideband_probe_mapping():
 def test_chirp_response_none_probe_byte_identical():
     """Passing chirp_response_probe=None must be exactly equivalent to
     omitting it (byte-identical SpurSet)."""
-    from ftmwpipeline.fitting.spur_detection import gate_spurs
 
     freqs, spec, sig_c = _grid([(30720.0, 100.0, 0.0)])
     narrow = detect_active_ft_spurs(freqs, spec, sig_c, band=BAND)
@@ -1373,7 +1385,7 @@ def test_comb_excluded_freq_returns_inconclusive():
     With exclusion, it returns NaN (inconclusive), so the narrowness / decay
     / lattice lanes decide instead.
     """
-    from ftmwpipeline.fitting.spur_detection import Spur, gate_spurs
+    from ftmwpipeline.fitting.spur_detection import Spur
 
     # Build probe with comb nulled in pre-record AND exclusion active.
     probe = _cx_probe(
@@ -1412,7 +1424,7 @@ def test_comb_excluded_without_exclusion_triggers_protect():
     This test pins the CURRENT behavior so the fix is clearly validated by
     the companion test above.
     """
-    from ftmwpipeline.fitting.spur_detection import Spur, gate_spurs
+    from ftmwpipeline.fitting.spur_detection import Spur
 
     # Same nulled pre-record, but NO exclusion list.
     probe = _cx_probe(_CX_COMB_FREQ, pre_comb_nulled=True, excluded_comb_mhz=None)
@@ -1481,42 +1493,71 @@ def test_off_comb_freq_unaffected_by_exclusion():
 # ---------------------------------------------------------------------------
 # C3 Part 2: bin-width-correct + eps-aware match window
 # ---------------------------------------------------------------------------
-def test_bin_width_match_tolerance_admits_short_record_tone():
-    """2a: the bin-width floor admits a tone the fixed 0.04 MHz window misses.
+def _single_tone_grid(spacing, offset_mhz, *, integer_mhz=30000.0):
+    """A grid at ``spacing`` whose nearest bin to ``integer_mhz`` sits exactly
+    ``offset_mhz`` away, carrying a narrow single-bin tone in that bin.
 
-    On a short record the active-FT bin spacing is large, so the fixed
-    ``DEFAULT_INTEGER_TOL_MHZ = 0.04`` (~half a bin only at ``T_active ~ 13
-    us``) is far tighter than half a bin. A narrow integer-MHz tone whose
-    nearest grid bin lands 0.08 MHz from the integer (> 0.04 but < 0.5*Delta_f
-    = 0.1) must now be matched via the bin-width term, and must NOT be matched
-    when the bin-width term is removed (``bin_fraction=0`` -> the old fixed
-    0.04 floor).
+    A grid's nearest bin to any target is within half a spacing of it, so an
+    offset larger than that only exists where the grid has a hole -- the same
+    device :func:`_dense_grid_with_tones` uses. The hole is local, so the
+    grid's *median* spacing (what the detector derives its window from) stays
+    ``spacing``.
     """
-    spacing = 0.2  # short record: 0.5*spacing = 0.10 MHz > the 0.04 floor
-    # Bins offset so the nearest bin to integer 30000 sits 0.08 MHz away.
-    freqs = np.arange(29995.08, 30005.0, spacing)
-    j = int(np.argmin(np.abs(freqs - 30000.08)))
-    assert abs(freqs[j] - 30000.08) < 1e-9  # a bin sits exactly at 30000.08
-    # Nearest bin to the integer target is that 0.08-MHz-offset bin.
-    k = int(np.argmin(np.abs(freqs - 30000.0)))
-    assert abs(freqs[k] - 30000.0) == pytest.approx(0.08, abs=1e-9)
+    tone = integer_mhz + offset_mhz
+    freqs = np.arange(integer_mhz - 5.0, integer_mhz + 5.0, spacing)
+    freqs = freqs[np.abs(freqs - integer_mhz) >= offset_mhz + 0.5 * spacing]
+    freqs = np.sort(np.concatenate([freqs, [tone]]))
+    k = int(np.argmin(np.abs(freqs - integer_mhz)))
+    assert abs(abs(freqs[k] - integer_mhz) - offset_mhz) < 1e-9
+    assert float(np.median(np.abs(np.diff(freqs)))) == pytest.approx(spacing)
     spec = np.zeros(freqs.size, dtype=np.complex128)
-    spec[j] = 100.0  # narrow single-bin spike, SNR 100
-    sig_c = np.full(freqs.size, 1.0)
+    spec[k] = 100.0  # narrow single-bin spike, SNR 100
+    return freqs, spec, np.full(freqs.size, 1.0), float(freqs[k])
+
+
+def test_match_window_scales_with_the_record_length():
+    """The match window is half a bin at *any* acquisition length.
+
+    The same absolute offset from an integer MHz must be matched on a short
+    record (where half a bin is wide) and missed on a long one (where it is
+    narrow) -- which is the whole content of Requirement 8. Under the retired
+    ``max(DEFAULT_INTEGER_TOL_MHZ, bin_fraction * Delta_f)`` form the absolute
+    0.04 MHz term decided both cases: it missed the short-record tone at 0.08
+    MHz and admitted the long-record tone at 0.03 MHz -- exactly backwards.
+    """
     band = (29996.0, 30004.0)
 
-    # Default bin_fraction=0.5 -> tol = max(0.04, 0.10) = 0.10 >= 0.08 -> match.
+    # Short record: spacing 0.2 MHz, so half a bin is 0.10 MHz. A tone 0.08
+    # MHz off the integer is inside that (and was outside the old 0.04).
+    freqs, spec, sig_c, center = _single_tone_grid(0.2, 0.08)
     detected = detect_active_ft_spurs(freqs, spec, sig_c, band=band, snr_threshold=5.0)
     assert any(
-        abs(s.center_mhz - 30000.08) < 1e-6 for s in detected
-    ), "the bin-width floor should admit the 0.08-MHz-offset short-record tone"
-    # bin_fraction=0 -> tol = max(0.04, 0) = 0.04 < 0.08 -> the fixed floor misses it.
-    missed = detect_active_ft_spurs(
-        freqs, spec, sig_c, band=band, snr_threshold=5.0, bin_fraction=0.0
-    )
+        abs(s.center_mhz - center) < 1e-6 for s in detected
+    ), "half a bin on a short record must admit a 0.08-MHz-offset tone"
+
+    # Long record: spacing 0.02 MHz, so half a bin is 0.01 MHz. A tone 0.03
+    # MHz off the integer is 1.5 bins away -- resolvably NOT on the integer,
+    # though the old absolute floor (0.04) would have swept it in.
+    freqs, spec, sig_c, center = _single_tone_grid(0.02, 0.03)
+    detected = detect_active_ft_spurs(freqs, spec, sig_c, band=band, snr_threshold=5.0)
     assert not any(
-        abs(s.center_mhz - 30000.08) < 1e-6 for s in missed
-    ), "with only the fixed 0.04 floor the offset tone must NOT be matched"
+        abs(s.center_mhz - center) < 1e-6 for s in detected
+    ), "half a bin on a long record must reject a tone 1.5 bins off the integer"
+
+
+def test_match_window_is_purely_bin_relative():
+    """``bin_fraction=0`` leaves no window at all -- there is no absolute
+    floor underneath it any more."""
+    freqs, spec, sig_c, center = _single_tone_grid(0.2, 0.08)
+    missed = detect_active_ft_spurs(
+        freqs,
+        spec,
+        sig_c,
+        band=(29996.0, 30004.0),
+        snr_threshold=5.0,
+        bin_fraction=0.0,
+    )
+    assert not any(abs(s.center_mhz - center) < 1e-6 for s in missed)
 
 
 def _dense_grid_with_tones(targets_tones, *, spacing=SPACING, hole=0.075, peak=100.0):
@@ -1580,9 +1621,9 @@ def test_per_point_window_governs_lattice_match():
     assert not any(
         abs(c - tone_narrow) < 1e-6 for c in centers
     ), "the narrow-window point must NOT match a tone outside its 0.05 window"
-    # Sanity: a big bin_fraction lifts the floor above 0.12 and the narrow
-    # point then matches too -- confirming the window (not the floor) is what
-    # rejected it above.
+    # Sanity: a big bin_fraction lifts the bin-relative floor above 0.12 and
+    # the narrow point then matches too -- confirming the per-point window
+    # (not the floor) is what rejected it above.
     detected_floor = detect_active_ft_spurs(
         freqs,
         spec,
@@ -1594,7 +1635,7 @@ def test_per_point_window_governs_lattice_match():
     )
     assert any(
         abs(s.center_mhz - tone_narrow) < 1e-6 for s in detected_floor
-    ), "a large bin-width floor should override the narrow per-point window"
+    ), "a large bin-relative floor should override the narrow per-point window"
 
 
 def test_eps_relocation_gates_spur_displaced_to_a_different_bin():

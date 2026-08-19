@@ -172,7 +172,7 @@ stage5:
     residual_edge_m: 32
   spur:
     enabled: true
-    integer_tol_mhz: 0.04
+    integer_tol_bins: 0.5
     narrowness_ratio: 0.3
     snr_threshold: 5.0
     mask_half_width_bins: 2

@@ -197,7 +197,7 @@ def test_stage5_rescue_spur_thaw_families_wired():
 
     cases = {
         "stage5.rescue.snr_threshold": ("plot_rescue", _RESCUE_COLS),
-        "stage5.spur.integer_tol_mhz": ("plot_spur", _SPUR_COLS),
+        "stage5.spur.integer_tol_bins": ("plot_spur", _SPUR_COLS),
         "stage5.thaw.residual_edge_threshold": ("plot_thaw", _THAW_COLS),
     }
     for path, (plot_name, cols) in cases.items():

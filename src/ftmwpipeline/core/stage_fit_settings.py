@@ -525,12 +525,12 @@ class SpurSubSettings:
         inst_sensitivity="N",
         grid=(False, True),
     )
-    integer_tol_mhz: Optional[float] = knob_field(
-        help="Max distance (MHz) from an integer MHz for the spur gate's hard "
-        "integer requirement (~½ active-FT bin).",
+    integer_tol_bins: Optional[float] = knob_field(
+        help="Max distance (active-FT bins) from an integer MHz for the spur "
+        "gate's hard integer requirement.",
         tier="primary",
         inst_sensitivity="Y",
-        grid=(0.02, 0.04, 0.08, 0.16),
+        grid=(0.25, 0.5, 1.0, 2.0),
     )
     narrowness_ratio: Optional[float] = knob_field(
         help="max(neighbor)/peak below which an integer-MHz bin is "
@@ -819,7 +819,7 @@ _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
         # validated zero real-line false-positive on 2638. These mirror the
         # ``DEFAULT_*`` constants in ``fitting/spur_detection.py``.
         "enabled": True,
-        "integer_tol_mhz": 0.04,
+        "integer_tol_bins": 0.5,
         "narrowness_ratio": 0.30,
         "snr_threshold": 5.0,
         "mask_half_width_bins": 2,

@@ -1438,7 +1438,7 @@ for _field in (
 # the master switch, frequency-domain SNR floor, and saturated-catalog toggle
 # (advanced). The spur metric + plot are supplied here.
 for _field in (
-    "integer_tol_mhz",
+    "integer_tol_bins",
     "narrowness_ratio",
     "mask_half_width_bins",
     "enabled",

@@ -34,10 +34,12 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import replace
 from typing import Any, Dict, Optional, Tuple
 
 import h5py
 
+from .._internal.shared_utils import active_acquisition_us, fold_settings_blob
 from ..core.data_structures import ChirpWindow
 from ..core.stage_fit_settings import (
     _SUB_NAMES,
@@ -48,6 +50,7 @@ from ..core.stage_fit_settings import (
 from ..core.stage_fit_settings import from_attrs as stage_fit_from_attrs
 from ..core.stage_fit_settings import to_attrs as stage_fit_to_attrs
 from ..core.start_detection_settings import StartDetectionSettings
+from ..fitting.active_ft import active_ft_bin_spacing_mhz
 from ..preprocessing.start_detection import StartDetectionRecord, StartDetectionResult
 from ._settings_serialization import (
     decode_attr,
@@ -116,19 +119,99 @@ def _read_shape(grp: h5py.Group, attrs_dict: Dict[str, Any]) -> None:
         attrs_dict["shape"] = _NONE_SENTINEL
 
 
+#: The legacy absolute spelling of ``spur.integer_tol_bins``, migrated at read
+#: time (see :func:`_migrate_integer_tol`).
+_LEGACY_INTEGER_TOL_ATTR = "integer_tol_mhz"
+
+
+def _persisted_acquisition_us(h5f: h5py.File) -> Optional[float]:
+    """The file's own active-region length ``end_us - start_us`` (us).
+
+    Read from the persisted Stage 1 window plus the FID duration, through the
+    one helper every stage uses, so the spacing a migrated knob is converted
+    against is the spacing the fit will actually run at. ``None`` when the
+    file does not carry enough to say.
+    """
+    fid = h5f.get("stage0_fid_data/acquisition")
+    ft = h5f.get("processing_parameters/ft_processing")
+    if fid is None or ft is None or "duration_us" not in fid.attrs:
+        return None
+    attrs = fold_settings_blob(dict(ft.attrs))
+    acquisition_us = active_acquisition_us(
+        float(fid.attrs["duration_us"]),
+        _optional_float(attrs.get("start_us")),
+        _optional_float(attrs.get("end_us")),
+    )
+    return acquisition_us if acquisition_us > 0.0 else None
+
+
+def _optional_float(value: Any) -> Optional[float]:
+    """A persisted bound as a float, treating the unset sentinel as unset."""
+    decoded = decode_attr(value)
+    if decoded is None or decoded == _NONE_SENTINEL:
+        return None
+    try:
+        return float(decoded)
+    except (TypeError, ValueError):
+        return None
+
+
+def _migrate_integer_tol(
+    file_path: str, settings: Optional[StageFitSettings]
+) -> Optional[StageFitSettings]:
+    """Convert a legacy persisted ``spur.integer_tol_mhz`` to bins.
+
+    The knob was an absolute frequency until it was redefined as a count of
+    active-FT bins (``dev-docs/SCIENCE_STRATEGY.md`` Requirement 8). The
+    conversion is **exact per file, not a default-and-hope**: a file carrying
+    that setting also carries its own active region, so
+    ``bins = mhz / (1 / T_active)`` is computable for that file alone. A
+    reader must therefore never see a file lose the tolerance it was fitted
+    with.
+
+    Applies only when the file has no new-spelling value (a file written by
+    this version wins over its own legacy attr) and when the active region is
+    readable; otherwise the field stays ``None`` and the resolver's default
+    applies, which is the same outcome an unset knob has always had.
+    """
+    if settings is None or settings.spur.integer_tol_bins is not None:
+        return settings
+    with h5py.File(file_path, "r") as h5f:
+        group = h5f.get(f"{STAGE_FIT_PATH}/spur")
+        if group is None or _LEGACY_INTEGER_TOL_ATTR not in group.attrs:
+            return settings
+        legacy = _optional_float(group.attrs[_LEGACY_INTEGER_TOL_ATTR])
+        acquisition_us = _persisted_acquisition_us(h5f)
+    if legacy is None or acquisition_us is None:
+        return settings
+    bins = legacy / active_ft_bin_spacing_mhz(acquisition_us)
+    logger.info(
+        "Migrating persisted spur.integer_tol_mhz=%g to spur.integer_tol_bins"
+        "=%g (T_active=%g us) for %s",
+        legacy,
+        bins,
+        acquisition_us,
+        file_path,
+    )
+    return replace(settings, spur=replace(settings.spur, integer_tol_bins=bins))
+
+
 def load_stage_fit_settings_from_h5(file_path: str) -> Optional[StageFitSettings]:
     """Return the persisted :class:`StageFitSettings`, or ``None`` if absent.
 
     Tolerates missing sub-blocks (a partial group still loads); fields
-    not present default to ``None``.
+    not present default to ``None``. A file written before ``spur``'s
+    integer tolerance became a bin count has it converted here, exactly
+    (:func:`_migrate_integer_tol`).
     """
-    return load_subblock_settings(
+    settings = load_subblock_settings(
         file_path,
         STAGE_FIT_PATH,
         _SUB_NAMES,
         stage_fit_from_attrs,
         extra_top=_read_shape,
     )
+    return _migrate_integer_tol(file_path, settings)
 
 
 def stage_fit_settings_present(file_path: str) -> bool:

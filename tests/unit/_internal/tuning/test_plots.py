@@ -872,7 +872,7 @@ def test_knob_plot_wiring():
     )
 
     assert get_knob("stage5.rescue.snr_threshold").plot is plot_rescue
-    assert get_knob("stage5.spur.integer_tol_mhz").plot is plot_spur
+    assert get_knob("stage5.spur.integer_tol_bins").plot is plot_spur
     assert get_knob("stage5.thaw.residual_edge_threshold").plot is plot_thaw
 
 

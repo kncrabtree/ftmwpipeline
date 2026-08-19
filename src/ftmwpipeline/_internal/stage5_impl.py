@@ -1225,7 +1225,7 @@ def build_stage5_fit_context(
         Self-contained shared context ready for :func:`execute_plan` or a
         single-window refit.
     """
-    from ..fitting.active_ft import compute_active_ft
+    from ..fitting.active_ft import active_ft_bin_spacing_mhz, compute_active_ft
     from ..fitting.clock_lattice import build_clock_lattice
     from ..fitting.spur_detection import (
         build_spur_set,
@@ -1380,8 +1380,14 @@ def build_stage5_fit_context(
                         acq_segs.pre_record.size,
                         acq_segs.pre_record_us,
                     )
-        integer_tol_v = _required_float(
-            spur_cfg.integer_tol_mhz, "spur.integer_tol_mhz"
+        # The knob is a bin count; the lattice builder wants MHz, so resolve
+        # it once here against the active region's own spacing (Requirement 8:
+        # bins are the definition, the MHz value is an output of it).
+        integer_tol_bins_v = _required_float(
+            spur_cfg.integer_tol_bins, "spur.integer_tol_bins"
+        )
+        integer_tol_v = integer_tol_bins_v * active_ft_bin_spacing_mhz(
+            end_us - start_us
         )
         band_power_probe = None
         lattice_kwargs: Dict[str, Any] = {}
@@ -1444,7 +1450,7 @@ def build_stage5_fit_context(
             sorted_sig_c,
             band=spur_band,
             saturated_clusters=saturated_clusters,
-            integer_tol_mhz=integer_tol_v,
+            integer_tol_bins=integer_tol_bins_v,
             narrowness_ratio=_required_float(
                 spur_cfg.narrowness_ratio, "spur.narrowness_ratio"
             ),

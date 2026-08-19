@@ -156,3 +156,74 @@ class TestStage2bRecommendedShape:
         # A reset verdict (shape=None, no vote_rates) clears the stale breakdown.
         write_stage2b_recommended_shape(empty_ftmw, shape=None)
         assert read_stage2b_vote_rates(empty_ftmw) == {}
+
+
+class TestIntegerTolMigration:
+    """``spur.integer_tol_mhz`` -> ``spur.integer_tol_bins`` at read time.
+
+    The knob was an absolute frequency before it was redefined as a count of
+    active-FT bins (SCIENCE_STRATEGY Requirement 8). A file written under the
+    old spelling must not lose the tolerance it was fitted with, and the
+    conversion is exact for that file: it carries its own active region, so
+    ``bins = mhz * T_active`` needs no default and no guess.
+    """
+
+    ACQUISITION_US = 12.64996  # the 2638 active region -> df = 79.052 kHz
+
+    def _write_legacy(self, path, *, integer_tol_mhz=0.04, with_window=True) -> None:
+        """Persist settings, then rewrite the spur block the old way."""
+        save_stage_fit_settings_to_h5(path, resolve())
+        with h5py.File(path, "a") as h5f:
+            spur = h5f[f"{STAGE_FIT_PATH}/spur"]
+            del spur.attrs["integer_tol_bins"]
+            spur.attrs["integer_tol_mhz"] = float(integer_tol_mhz)
+            if not with_window:
+                return
+            acq = h5f.require_group("stage0_fid_data/acquisition")
+            acq.attrs["duration_us"] = 15.0
+            ft = h5f.require_group("processing_parameters/ft_processing")
+            ft.attrs["start_us"] = 2.35
+            ft.attrs["end_us"] = 2.35 + self.ACQUISITION_US
+
+    def test_legacy_value_converts_exactly(self, empty_ftmw) -> None:
+        self._write_legacy(empty_ftmw, integer_tol_mhz=0.04)
+        loaded = load_stage_fit_settings_from_h5(empty_ftmw)
+        assert loaded is not None
+        # 0.04 MHz at df = 1/12.64996 us: 0.04 * 12.64996 bins.
+        assert loaded.spur.integer_tol_bins == pytest.approx(0.04 * self.ACQUISITION_US)
+        assert loaded.spur.integer_tol_bins == pytest.approx(0.506, abs=1e-3)
+
+    def test_conversion_uses_the_files_own_acquisition(self, empty_ftmw) -> None:
+        """Not a default-and-hope: a different active region converts the same
+        MHz value to a different bin count."""
+        save_stage_fit_settings_to_h5(empty_ftmw, resolve())
+        with h5py.File(empty_ftmw, "a") as h5f:
+            spur = h5f[f"{STAGE_FIT_PATH}/spur"]
+            del spur.attrs["integer_tol_bins"]
+            spur.attrs["integer_tol_mhz"] = 0.04
+            acq = h5f.require_group("stage0_fid_data/acquisition")
+            acq.attrs["duration_us"] = 60.0
+            ft = h5f.require_group("processing_parameters/ft_processing")
+            ft.attrs["start_us"] = 0.0
+            ft.attrs["end_us"] = 50.0  # a long record: 0.04 MHz is 2 bins
+        loaded = load_stage_fit_settings_from_h5(empty_ftmw)
+        assert loaded is not None
+        assert loaded.spur.integer_tol_bins == pytest.approx(2.0)
+
+    def test_new_spelling_wins_over_a_stale_legacy_attr(self, empty_ftmw) -> None:
+        save_stage_fit_settings_to_h5(empty_ftmw, resolve())
+        with h5py.File(empty_ftmw, "a") as h5f:
+            h5f[f"{STAGE_FIT_PATH}/spur"].attrs["integer_tol_mhz"] = 0.16
+        loaded = load_stage_fit_settings_from_h5(empty_ftmw)
+        assert loaded is not None
+        assert loaded.spur.integer_tol_bins == pytest.approx(0.5)
+
+    def test_unreadable_active_region_leaves_the_knob_unset(self, empty_ftmw) -> None:
+        """With no window to convert against, the field stays ``None`` and the
+        resolver's default applies -- the same outcome an unset knob has always
+        had, rather than a fabricated bin count."""
+        self._write_legacy(empty_ftmw, with_window=False)
+        loaded = load_stage_fit_settings_from_h5(empty_ftmw)
+        assert loaded is not None
+        assert loaded.spur.integer_tol_bins is None
+        assert resolve(persisted=loaded).spur.integer_tol_bins == pytest.approx(0.5)

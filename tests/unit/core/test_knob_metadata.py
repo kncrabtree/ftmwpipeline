@@ -479,7 +479,7 @@ class TestStage5RegistrySingleSource:
             "doublet_alternative.k_res",
             "rescue.snr_threshold",
             "rescue.max_rounds",
-            "spur.integer_tol_mhz",
+            "spur.integer_tol_bins",
             "thaw.residual_edge_threshold",
             "thaw.residual_edge_m",
         ):
