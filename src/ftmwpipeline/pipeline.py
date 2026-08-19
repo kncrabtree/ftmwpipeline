@@ -88,6 +88,7 @@ from ._internal.stage6_impl import (
     apply_curation_impl,
     create_window_impl,
     frequency_calibration_impl,
+    refit_snap_tol_mhz_impl,
     get_candidate_ledger_impl,
     get_final_products_impl,
     get_review_status_impl,
@@ -108,7 +109,7 @@ from ._internal.timebase_impl import (
     load_timebase_calibration_impl,
 )
 from .core.calibration import CalibrationStamp
-from .core.curation import REFIT_SNAP_TOL_MHZ, Frame
+from .core.curation import Frame
 from .core.data_structures import (
     FID,
     ComplexFT,
@@ -887,6 +888,32 @@ class Pipeline:
         """
         return frequency_calibration_impl(self.filepath)
 
+    def refit_snap_tol_mhz(self) -> float:
+        """The Stage 6 curation snap tolerance (MHz) this file resolves to.
+
+        ``REFIT_SNAP_TOL_BINS / T_active``. The tolerance is *defined* as a
+        multiple of the active-FT bin spacing
+        (:data:`~ftmwpipeline.core.curation.REFIT_SNAP_TOL_BINS`), so its MHz
+        value belongs to this file, not to the package -- 49.4 kHz at a
+        12.65 us active region, 6.3 kHz at 100 us. An external tool that
+        pairs "the peak at *f*" must read this rather than resolve the bin
+        count against a spacing of its own, or it will disagree with the file
+        about which peak that is.
+
+        Derived at call time from the same active region the curation verbs
+        consult (persisted Stage 5 first, the declared Stage 1 window
+        otherwise), so it cannot disagree with what a
+        :meth:`review_apply` on this file will snap with, and it cannot go
+        stale the way a persisted copy would. Read-only, and answerable on a
+        file that has been through nothing but the FID import.
+
+        Raises :class:`~ftmwpipeline.file_manager.StageDependencyError` on a
+        file carrying no resolvable active region at all -- a refusal rather
+        than a fabricated MHz value, since a bin-defined tolerance on a file
+        with no spectrum has no honest answer.
+        """
+        return refit_snap_tol_mhz_impl(self.filepath)
+
     def get_clock_sources(self) -> Optional[Tuple["ClockSource", ...]]:
         """Return the declared (recommended) instrument clock sources, or ``None``.
 
@@ -1563,7 +1590,7 @@ class Pipeline:
         *,
         add: Sequence[float] = (),
         remove: Sequence[float] = (),
-        snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+        snap_tol_mhz: Optional[float] = None,
         frame: Optional[Frame] = None,
     ) -> RefitWindowResult:
         """User-directed single-window refit (Stage 6 ``review edit``).
@@ -1586,8 +1613,11 @@ class Pipeline:
             Molecular frequencies (MHz) of fitted peaks to remove.  Snapped
             to the nearest fitted peak within ``snap_tol_mhz``.
         snap_tol_mhz :
-            Snap tolerance for ``add``/``remove`` (MHz; default
-            :data:`~ftmwpipeline.core.curation.REFIT_SNAP_TOL_MHZ`, 50 kHz).
+            Snap tolerance for ``add``/``remove`` (MHz).  ``None`` (the
+            default) resolves this file's own
+            :data:`~ftmwpipeline.core.curation.REFIT_SNAP_TOL_BINS` active-FT
+            bins -- read the resolved value with
+            :meth:`refit_snap_tol_mhz`.
         frame :
             The frame ``add``/``remove`` are expressed in; converted to raw
             before any snapping. Omitting it is an error on a
@@ -1644,7 +1674,7 @@ class Pipeline:
         self,
         anchor_mhz: float,
         *,
-        snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+        snap_tol_mhz: Optional[float] = None,
         frame: Optional[Frame] = None,
     ) -> CreateWindowResult:
         """Install a fit window covering ``anchor_mhz`` (Stage 6 ``review create``).
@@ -1666,8 +1696,9 @@ class Pipeline:
         anchor_mhz :
             Molecular frequency (MHz) the window must cover.
         snap_tol_mhz :
-            Snap tolerance forwarded to the fit core (MHz; default
-            :data:`~ftmwpipeline.core.curation.REFIT_SNAP_TOL_MHZ`).
+            Snap tolerance forwarded to the fit core (MHz).  ``None`` (the
+            default) resolves this file's own tolerance -- see
+            :meth:`refit_snap_tol_mhz`.
         frame :
             The frame ``anchor_mhz`` is expressed in; converted to raw before
             installing the window. Omitting it is an error on a
@@ -1694,7 +1725,7 @@ class Pipeline:
         window_id: int,
         peaks: Sequence[float],
         *,
-        snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+        snap_tol_mhz: Optional[float] = None,
         frame: Optional[Frame] = None,
     ) -> RefitWindowResult:
         """Collapse ≥2 fitted peaks in a window into one (Stage 6 ``review merge``).
@@ -1740,7 +1771,7 @@ class Pipeline:
         peak: float,
         *,
         into: int = 2,
-        snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+        snap_tol_mhz: Optional[float] = None,
         frame: Optional[Frame] = None,
     ) -> RefitWindowResult:
         """Replace one fitted peak with ``into`` peaks (Stage 6 ``review split``).
@@ -1988,7 +2019,7 @@ class Pipeline:
         window_id: int,
         *,
         candidate_freq: Optional[float] = None,
-        snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+        snap_tol_mhz: Optional[float] = None,
         frame: Optional[Frame] = None,
     ) -> Optional[RefitWindowResult]:
         """Accept a window as-is or accept a specific revived candidate.
@@ -2011,9 +2042,10 @@ class Pipeline:
             new peak.  Snapped to the nearest ledger candidate within
             ``snap_tol_mhz``.
         snap_tol_mhz :
-            Snap tolerance for ``candidate_freq`` (MHz; default
-            :data:`~ftmwpipeline.core.curation.REFIT_SNAP_TOL_MHZ`, 50 kHz).
-            Ignored when accepting a window as-is.
+            Snap tolerance for ``candidate_freq`` (MHz).  ``None`` (the
+            default) resolves this file's own tolerance -- see
+            :meth:`refit_snap_tol_mhz`.  Ignored when accepting a window
+            as-is.
         frame :
             The frame ``candidate_freq`` is expressed in. Irrelevant when
             ``candidate_freq`` is ``None``. Omitting it while

@@ -8,6 +8,7 @@ Implements the ``review run``/``show``/``rank``/``edit``/``create``/``merge``/
 """
 
 import argparse
+import json
 from typing import Any, List, Optional, Sequence
 
 import h5py
@@ -18,6 +19,7 @@ from .._internal.stage6_impl import (
     RANK_METRICS,
     RefitWindowResult,
     ReviewRunResult,
+    _active_acquisition_us_for_snap,
     _normalize_metric,
     acknowledge_environment_impl,
     apply_curation_impl,
@@ -28,6 +30,7 @@ from .._internal.stage6_impl import (
     get_review_status_impl,
     merge_peaks_impl,
     rank_windows_impl,
+    refit_snap_tol_mhz_impl,
     refit_window_impl,
     review_accept_impl,
     review_log_impl,
@@ -36,7 +39,8 @@ from .._internal.stage6_impl import (
     review_undo_impl,
     split_peak_impl,
 )
-from ..core.curation import REFIT_SNAP_TOL_MHZ, Frame
+from ..core.curation import REFIT_SNAP_TOL_BINS, Frame
+from ..fitting.active_ft import active_ft_bin_spacing_mhz
 from ..core.data_structures import FittingResult, LedgerCandidate, Stage6Review
 from ..io.fitting_serialization import load_spectrum_fit_from_hdf5
 from .utils import add_stage_object, setup_logging
@@ -89,6 +93,49 @@ def _combined_label(status: Optional["WindowReviewStatus"]) -> str:  # type: ign
     if n_attn:
         return f"{prov}·needs-attention[{n_attn}]"
     return f"{prov}·—"
+
+
+def cmd_review_snap_tolerance(args: argparse.Namespace) -> int:
+    """Print the resolved Stage 6 snap tolerance for one file (never mutates)."""
+    setup_logging(args.verbose)
+    file_path = args.file_path
+    if not file_path.endswith(".ftmw"):
+        file_path = file_path + ".ftmw"
+
+    try:
+        snap_tol_mhz = refit_snap_tol_mhz_impl(file_path)
+        acquisition_us = _active_acquisition_us_for_snap(file_path)
+    except FileNotFoundError as exc:
+        print(f"Error: {exc}")
+        return 1
+    except Exception as exc:
+        print(f"Error: failed to resolve the snap tolerance: {exc}")
+        if args.verbose:
+            import traceback
+
+            traceback.print_exc()
+        return 1
+
+    bin_spacing_mhz = active_ft_bin_spacing_mhz(acquisition_us)
+
+    if args.format == "json":
+        print(
+            json.dumps(
+                {
+                    "snap_tol_mhz": snap_tol_mhz,
+                    "snap_tol_bins": REFIT_SNAP_TOL_BINS,
+                    "bin_spacing_mhz": bin_spacing_mhz,
+                    "acquisition_us": acquisition_us,
+                },
+                indent=2,
+            )
+        )
+        return 0
+
+    print(f"snap tolerance: {snap_tol_mhz:.6f} MHz ({snap_tol_mhz * 1e3:.1f} kHz)")
+    print(f"  {REFIT_SNAP_TOL_BINS} active-FT bins @ df = {bin_spacing_mhz:.6f} MHz")
+    print(f"  T_active = {acquisition_us:.5f} us")
+    return 0
 
 
 def cmd_review_show(args: argparse.Namespace) -> int:
@@ -437,7 +484,7 @@ def cmd_review_edit(args: argparse.Namespace) -> int:
             window_id,
             add=add_freqs,
             remove=remove_freqs,
-            snap_tol_mhz=getattr(args, "snap_tol_mhz", REFIT_SNAP_TOL_MHZ),
+            snap_tol_mhz=getattr(args, "snap_tol_mhz", None),
             frame=frame,
         )
     except (ValueError, KeyError) as exc:
@@ -513,7 +560,7 @@ def cmd_review_create(args: argparse.Namespace) -> int:
         result = create_window_impl(
             file_path,
             anchor,
-            snap_tol_mhz=getattr(args, "snap_tol_mhz", REFIT_SNAP_TOL_MHZ),
+            snap_tol_mhz=getattr(args, "snap_tol_mhz", None),
             frame=frame,
         )
     except (ValueError, KeyError) as exc:
@@ -568,7 +615,7 @@ def cmd_review_merge(args: argparse.Namespace) -> int:
             file_path,
             window_id,
             peak_freqs,
-            snap_tol_mhz=getattr(args, "snap_tol_mhz", REFIT_SNAP_TOL_MHZ),
+            snap_tol_mhz=getattr(args, "snap_tol_mhz", None),
             frame=frame,
         )
     except (ValueError, KeyError) as exc:
@@ -616,7 +663,7 @@ def cmd_review_split(args: argparse.Namespace) -> int:
             window_id,
             peak_freq,
             into=into,
-            snap_tol_mhz=getattr(args, "snap_tol_mhz", REFIT_SNAP_TOL_MHZ),
+            snap_tol_mhz=getattr(args, "snap_tol_mhz", None),
             frame=frame,
         )
     except (ValueError, KeyError) as exc:
@@ -661,7 +708,7 @@ def cmd_review_accept(args: argparse.Namespace) -> int:
             file_path,
             window_id,
             candidate_freq=candidate_freq,
-            snap_tol_mhz=getattr(args, "snap_tol_mhz", REFIT_SNAP_TOL_MHZ),
+            snap_tol_mhz=getattr(args, "snap_tol_mhz", None),
             frame=frame,
         )
     except (ValueError, KeyError) as exc:
@@ -899,7 +946,7 @@ def register_review_commands(subparsers: Any) -> None:
             "merge, split peaks) -- one at a time or batched from a curation file,\n"
             "and undo them by id.  Create a window for a line no window covers.\n\n"
             "Verbs: run, show, rank, edit, create, merge, split, accept, apply,\n"
-            "preview, log, undo"
+            "preview, log, undo, acknowledge-environment, snap-tolerance"
         ),
     )
 
@@ -1143,6 +1190,42 @@ def register_review_commands(subparsers: Any) -> None:
     )
     p_undo.set_defaults(func=cmd_review_undo)
 
+    # ---- review snap-tolerance ----------------------------------------------
+    p_snap = verbs.add_parser(
+        "snap-tolerance",
+        help="Print the snap tolerance this file's curation verbs resolve to",
+        description=(
+            "Answer, for one file, the tolerance every Stage 6 curation verb "
+            "will pair a requested frequency against.\n\n"
+            f"The tolerance is DEFINED as {REFIT_SNAP_TOL_BINS} active-FT bins, "
+            "not as a frequency, so its MHz value is a property of this file's "
+            "active region: ~49 kHz at a 12.65 us acquisition, ~6 kHz at 100 "
+            "us. It is derived at call time from the same active region the "
+            "verbs consult, so it cannot disagree with what a 'review apply' "
+            "on this file will snap with -- read it here rather than "
+            "multiplying the bin count by a spacing of your own. Read-only: "
+            "this verb never writes to the file."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_snap.add_argument(
+        "file_path", help="Path to .ftmw pipeline file (.ftmw auto-added)"
+    )
+    p_snap.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        help="Output format (default: text)",
+    )
+    p_snap.add_argument(
+        "--verbose",
+        dest="verbose",
+        action="store_true",
+        default=False,
+        help="Enable verbose logging.",
+    )
+    p_snap.set_defaults(func=cmd_review_snap_tolerance)
+
     p_show = verbs.add_parser(
         "show",
         help="Show per-window summary or candidate ledger",
@@ -1264,12 +1347,13 @@ def register_review_commands(subparsers: Any) -> None:
         "--snap-tol-mhz",
         dest="snap_tol_mhz",
         type=float,
-        default=REFIT_SNAP_TOL_MHZ,
+        default=None,
         metavar="MHZ",
         help=(
             "Tolerance for snapping a requested frequency to an existing peak "
-            f"or ledger candidate (default {REFIT_SNAP_TOL_MHZ} MHz = "
-            f"{REFIT_SNAP_TOL_MHZ * 1e3:.0f} kHz)."
+            f"or ledger candidate. Defaults to this file's own resolved "
+            f"tolerance ({REFIT_SNAP_TOL_BINS} active-FT bins; see "
+            f"'ftmwpipeline review snap-tolerance')."
         ),
     )
     _add_frame_argument(p_accept)
@@ -1334,12 +1418,13 @@ def register_review_commands(subparsers: Any) -> None:
         "--snap-tol-mhz",
         dest="snap_tol_mhz",
         type=float,
-        default=REFIT_SNAP_TOL_MHZ,
+        default=None,
         metavar="MHZ",
         help=(
             "Tolerance for snapping a requested frequency to an existing peak "
-            f"or ledger candidate (default {REFIT_SNAP_TOL_MHZ} MHz = "
-            f"{REFIT_SNAP_TOL_MHZ * 1e3:.0f} kHz)."
+            f"or ledger candidate. Defaults to this file's own resolved "
+            f"tolerance ({REFIT_SNAP_TOL_BINS} active-FT bins; see "
+            f"'ftmwpipeline review snap-tolerance')."
         ),
     )
     _add_frame_argument(p_edit)
@@ -1386,12 +1471,13 @@ def register_review_commands(subparsers: Any) -> None:
         "--snap-tol-mhz",
         dest="snap_tol_mhz",
         type=float,
-        default=REFIT_SNAP_TOL_MHZ,
+        default=None,
         metavar="MHZ",
         help=(
             "Tolerance for snapping a requested frequency to an existing peak "
-            f"or ledger candidate (default {REFIT_SNAP_TOL_MHZ} MHz = "
-            f"{REFIT_SNAP_TOL_MHZ * 1e3:.0f} kHz)."
+            f"or ledger candidate. Defaults to this file's own resolved "
+            f"tolerance ({REFIT_SNAP_TOL_BINS} active-FT bins; see "
+            f"'ftmwpipeline review snap-tolerance')."
         ),
     )
     _add_frame_argument(p_create)
@@ -1483,12 +1569,13 @@ def register_review_commands(subparsers: Any) -> None:
         "--snap-tol-mhz",
         dest="snap_tol_mhz",
         type=float,
-        default=REFIT_SNAP_TOL_MHZ,
+        default=None,
         metavar="MHZ",
         help=(
             "Tolerance for snapping a requested frequency to an existing peak "
-            f"or ledger candidate (default {REFIT_SNAP_TOL_MHZ} MHz = "
-            f"{REFIT_SNAP_TOL_MHZ * 1e3:.0f} kHz)."
+            f"or ledger candidate. Defaults to this file's own resolved "
+            f"tolerance ({REFIT_SNAP_TOL_BINS} active-FT bins; see "
+            f"'ftmwpipeline review snap-tolerance')."
         ),
     )
     _add_frame_argument(p_merge)
@@ -1544,12 +1631,13 @@ def register_review_commands(subparsers: Any) -> None:
         "--snap-tol-mhz",
         dest="snap_tol_mhz",
         type=float,
-        default=REFIT_SNAP_TOL_MHZ,
+        default=None,
         metavar="MHZ",
         help=(
             "Tolerance for snapping a requested frequency to an existing peak "
-            f"or ledger candidate (default {REFIT_SNAP_TOL_MHZ} MHz = "
-            f"{REFIT_SNAP_TOL_MHZ * 1e3:.0f} kHz)."
+            f"or ledger candidate. Defaults to this file's own resolved "
+            f"tolerance ({REFIT_SNAP_TOL_BINS} active-FT bins; see "
+            f"'ftmwpipeline review snap-tolerance')."
         ),
     )
     _add_frame_argument(p_split)

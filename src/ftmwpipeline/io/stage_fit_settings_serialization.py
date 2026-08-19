@@ -124,19 +124,30 @@ def _read_shape(grp: h5py.Group, attrs_dict: Dict[str, Any]) -> None:
 _LEGACY_INTEGER_TOL_ATTR = "integer_tol_mhz"
 
 
-def _persisted_acquisition_us(h5f: h5py.File) -> Optional[float]:
-    """The file's own active-region length ``end_us - start_us`` (us).
+def declared_active_acquisition_us(h5f: h5py.File) -> Optional[float]:
+    """The file's own *declared* active-region length ``end_us - start_us`` (us).
 
     Read from the persisted Stage 1 window plus the FID duration, through the
     one helper every stage uses, so the spacing a migrated knob is converted
     against is the spacing the fit will actually run at. ``None`` when the
     file does not carry enough to say.
+
+    Public within the package (rather than a private helper of the knob
+    migration it was written for) because it is the pre-Stage-5 half of every
+    "what bin spacing does this file resolve against" question: the Stage 6
+    snap-tolerance accessor falls back to it on a file that has not been
+    fitted yet. Two readers of the declared active region would be two answers
+    (``dev-docs/SCIENCE_STRATEGY.md`` Requirement 8).
     """
     fid = h5f.get("stage0_fid_data/acquisition")
-    ft = h5f.get("processing_parameters/ft_processing")
-    if fid is None or ft is None or "duration_us" not in fid.attrs:
+    if fid is None or "duration_us" not in fid.attrs:
         return None
-    attrs = fold_settings_blob(dict(ft.attrs))
+    ft = h5f.get("processing_parameters/ft_processing")
+    # No ``ft_processing`` at all is not "cannot say": it is a file that has
+    # declared no window, which :func:`active_acquisition_us` already spells as
+    # both bounds unset -- the whole record. Answering here is what lets a
+    # bare import resolve a bin-relative tolerance.
+    attrs = fold_settings_blob(dict(ft.attrs)) if ft is not None else {}
     acquisition_us = active_acquisition_us(
         float(fid.attrs["duration_us"]),
         _optional_float(attrs.get("start_us")),
@@ -181,7 +192,7 @@ def _migrate_integer_tol(
         if group is None or _LEGACY_INTEGER_TOL_ATTR not in group.attrs:
             return settings
         legacy = _optional_float(group.attrs[_LEGACY_INTEGER_TOL_ATTR])
-        acquisition_us = _persisted_acquisition_us(h5f)
+        acquisition_us = declared_active_acquisition_us(h5f)
     if legacy is None or acquisition_us is None:
         return settings
     bins = legacy / active_ft_bin_spacing_mhz(acquisition_us)
@@ -575,6 +586,7 @@ def read_recommended_start_detection(
 
 __all__ = [
     "STAGE_FIT_PATH",
+    "declared_active_acquisition_us",
     "save_stage_fit_settings_to_h5",
     "load_stage_fit_settings_from_h5",
     "stage_fit_settings_present",

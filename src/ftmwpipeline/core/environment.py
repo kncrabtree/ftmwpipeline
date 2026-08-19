@@ -68,7 +68,7 @@ __all__ = [
 ]
 
 
-ANALYSIS_EPOCH = 2
+ANALYSIS_EPOCH = 3
 """Declared analysis-compatibility epoch of this package.
 
 Bump this **only** when a change alters the numerical output of a stage --
@@ -102,6 +102,26 @@ Epoch history
     not bit-identical to epoch 1. The old grid
     also clipped silently: it returned its own 2 MHz width once the true FWHM
     outran it, below ``T = W/2`` (0.92 us for a Lorentzian at ``tau/T = 0.3``).
+3
+    2026-08-19. Every tolerance expressing a *spectral distance* is now
+    **defined** as a multiple of the active-FT bin spacing
+    ``df_active = 1 / (end_us - start_us)`` rather than frozen in MHz
+    (``dev-docs/SCIENCE_STRATEGY.md`` Requirement 8): the candidate-dedup
+    window, the spur integer-MHz gate and its separate spur-merge tolerance,
+    the timebase sub-bin scan range and step, and the Stage 6 curation snap
+    tolerance. Each had been designed as a round bin count against a nominal
+    80 kHz spacing and written down in MHz, so converting them recovers the
+    original definition -- but the true reference spacing is 79.052 kHz, so
+    **every one of them moves by about 1.2 % on an existing file**, and each
+    moves by more, in either direction, on a file acquired at any other
+    length. Two of them also lose an absolute floor that used to win outright
+    at long acquisitions: the spur integer tolerance was
+    ``max(0.04 MHz, 0.5 bins)`` and stayed pinned at 40 kHz -- spanning many
+    bins -- once the record was long enough, and the snap tolerance was a flat
+    50 kHz. Both now tighten with resolution as they were meant to. Fitted
+    output is therefore not bit-identical to epoch 2 on any file, and a peak
+    pair straddling one of these boundaries can change dedup, gate, or snap
+    outcome outright.
 """
 
 

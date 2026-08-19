@@ -47,7 +47,7 @@ import h5py
 import numpy as np
 
 from ..core.calibration import CalibrationStamp, CalibrationState
-from ..core.curation import REFIT_SNAP_TOL_MHZ, Frame
+from ..core.curation import REFIT_SNAP_TOL_BINS, Frame
 from ..core.data_structures import (
     AttentionReason,
     AuditStep,
@@ -1070,13 +1070,103 @@ def _make_refit_result(
 # Single-window refit engine
 #
 # The add/remove/anchor snap tolerance every verb below defaults to is
-# ``REFIT_SNAP_TOL_MHZ``, imported from ``core.curation`` -- public, because an
-# integrator that resolved "the peak at f" at a different tolerance would
-# disagree with the file about which peak that is.  It is deliberately looser
-# than the resolved ``_DEDUP_TOL_BINS`` tolerance (the input is a frequency a
-# person typed, not a fitted value); that constant's docstring has the rest
-# of the rationale.
+# ``REFIT_SNAP_TOL_BINS`` active-FT bins, imported from ``core.curation`` --
+# public, because an integrator that resolved "the peak at f" at a different
+# tolerance would disagree with the file about which peak that is. Being a bin
+# count it has no MHz value until a file is named, so every verb takes
+# ``snap_tol_mhz: Optional[float] = None`` and resolves it exactly once, at the
+# public boundary, through :func:`resolve_snap_tol_mhz`; everything further in
+# takes the resolved ``float`` as a required argument. That is the same
+# discipline the spur gate's ``gate_spurs`` adopted for ``bin_spacing_mhz``:
+# a default further in would be an absolute constant coming back.
 # ---------------------------------------------------------------------------
+
+
+def _active_acquisition_us_for_snap(path: str) -> float:
+    """The active-region length (us) this file's snap tolerance resolves against.
+
+    Persisted Stage 5 first, the declared Stage 1 window second -- the same
+    precedence, and for the same reason, that ``timebase_impl._resolve_clocks``
+    uses for the clock declaration. The fitted peaks a curation verb snaps
+    *to* live on the grid the fit actually ran on, so once a fit exists its
+    own recorded ``acquisition_us`` is the authority even if the declared
+    window has since been edited; before a fit exists, the declared window is
+    the grid a fit would run on and there is nothing else to prefer.
+
+    Returns ``0.0`` when the file carries neither -- a file with no Stage 0
+    FID acquisition at all, which is a hand-built file rather than anything
+    the importer produces.
+    """
+    from ..io.stage_fit_settings_serialization import declared_active_acquisition_us
+
+    fitted = _persisted_acquisition_us(path)
+    if fitted > 0.0:
+        return fitted
+    with h5py.File(path, "r") as h5f:
+        declared = declared_active_acquisition_us(h5f)
+    return float(declared) if declared is not None and declared > 0.0 else 0.0
+
+
+def refit_snap_tol_mhz_impl(file_path: Union[Path, str]) -> float:
+    """The Stage 6 curation snap tolerance (MHz) resolved for ``file_path``.
+
+    The public read behind ``api.refit_snap_tol_mhz`` /
+    ``Pipeline.refit_snap_tol_mhz`` / ``review snap-tolerance``, and the single
+    definition every curation verb's default is taken from (see
+    :func:`resolve_snap_tol_mhz`).
+
+    ``REFIT_SNAP_TOL_BINS / T_active``.  The tolerance is *defined* in
+    active-FT bins (``dev-docs/SCIENCE_STRATEGY.md`` Requirement 8), so its MHz
+    value is a property of one file and an integrator must read it rather than
+    resolve the bin count itself -- that is the whole point of publishing this.
+
+    Read-only, and derived at call time from the same active region the verbs
+    consult, so it cannot disagree with what a ``review apply`` on this file
+    will snap with.  Answerable on a file that has been through nothing but the
+    FID import: an unset Stage 1 window means "the whole record", which is a
+    perfectly good active region.
+
+    Raises
+    ------
+    FileNotFoundError
+        If ``file_path`` does not exist.
+    StageDependencyError
+        If the file carries no resolvable active region at all -- no persisted
+        Stage 5 ``acquisition_us`` *and* no Stage 0 FID duration to fall back
+        on.  **This is the documented degrade: a refusal, not a legacy
+        absolute value.**  A bin-defined tolerance on a file with no spectrum
+        has no honest MHz answer, and inventing one would hand a caller a
+        number the pipeline itself would never pair at.  Unreachable for any
+        file this package's importer wrote.
+    """
+    from ..file_manager import StageDependencyError
+
+    path = str(file_path)
+    if not Path(path).exists():
+        raise FileNotFoundError(
+            f"Pipeline file not found: {path}\n\n"
+            f"To create a new pipeline:\n"
+            f"  ftmwpipeline data import {path} path/to/data/"
+        )
+    acquisition_us = _active_acquisition_us_for_snap(path)
+    if acquisition_us <= 0.0:
+        raise StageDependencyError(
+            "review snap-tolerance", ["stage0_fid_data"], Path(path)
+        )
+    return REFIT_SNAP_TOL_BINS * active_ft_bin_spacing_mhz(acquisition_us)
+
+
+def resolve_snap_tol_mhz(path: str, snap_tol_mhz: Optional[float]) -> float:
+    """A caller's explicit ``snap_tol_mhz`` (MHz), or this file's resolved default.
+
+    The one place ``None`` becomes a number.  Every public curation entry point
+    calls this once and passes the resolved ``float`` inward, so a batch cannot
+    snap two of its actions at two tolerances and an integrator reading
+    :func:`refit_snap_tol_mhz_impl` gets the value that batch will actually use.
+    """
+    if snap_tol_mhz is not None:
+        return float(snap_tol_mhz)
+    return refit_snap_tol_mhz_impl(path)
 
 
 def _parse_complex_amplitude(value: object) -> complex:
@@ -1391,7 +1481,7 @@ def refit_window_core(
     add_seeds: Optional[List[ModelPeak]] = None,
     add_origin: str = "user",
     add_derivations: Optional[Sequence[Optional[int]]] = None,
-    snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+    snap_tol_mhz: float,
     freeze_inherited: bool = False,
 ) -> FittingResult:
     """In-memory single-window refit core (no file I/O, no spur replay, no
@@ -2324,7 +2414,7 @@ def refit_window_impl(
     add: Sequence[float] = (),
     remove: Sequence[float] = (),
     add_seeds: Optional[List[ModelPeak]] = None,
-    snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+    snap_tol_mhz: Optional[float] = None,
     frame: Optional[Frame] = None,
     _shared: Optional["_SharedFitCtx"] = None,
 ) -> RefitWindowResult:
@@ -2383,7 +2473,9 @@ def refit_window_impl(
         ``add`` frequency (overrides the ledger-candidate or default seed).
     snap_tol_mhz :
         Maximum distance (MHz) for frequency snapping to an existing peak or
-        ledger candidate.  Defaults to :data:`REFIT_SNAP_TOL_MHZ` (50 kHz).
+        ledger candidate.  ``None`` (the default) resolves this file's own
+        :data:`~ftmwpipeline.core.curation.REFIT_SNAP_TOL_BINS` active-FT bins
+        via :func:`refit_snap_tol_mhz_impl`.
     frame :
         The frame ``add`` and ``remove`` are expressed in: ``"raw"`` (the
         Stage 5 fit / ledger frame) or ``"calibrated"``. Converted to raw
@@ -2416,6 +2508,7 @@ def refit_window_impl(
     # re-checks, since a curation row reaches it without passing through here.
     _check_add_seeds_arity(add, add_seeds)
     path = str(file_path)
+    snap_tol = resolve_snap_tol_mhz(path, snap_tol_mhz)
     add_raw, remove_raw = list(add), list(remove)
     if add_raw or remove_raw:
         resolved_frame, stamp = _resolve_frame(path, frame)
@@ -2431,9 +2524,9 @@ def refit_window_impl(
             add_raw,
             remove_raw,
             add_seeds=add_seeds,
-            snap_tol_mhz=snap_tol_mhz,
+            snap_tol_mhz=snap_tol,
         ),
-        snap_tol_mhz=snap_tol_mhz,
+        snap_tol_mhz=snap_tol,
         shared=_shared,
     )
 
@@ -2448,7 +2541,7 @@ def merge_peaks_impl(
     window_id: int,
     peaks: Sequence[float],
     *,
-    snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+    snap_tol_mhz: Optional[float] = None,
     frame: Optional[Frame] = None,
     _shared: Optional["_SharedFitCtx"] = None,
 ) -> RefitWindowResult:
@@ -2488,7 +2581,8 @@ def merge_peaks_impl(
         must be provided.  Each is snapped to the nearest fitted peak within
         ``snap_tol_mhz``.
     snap_tol_mhz :
-        Maximum distance (MHz) for frequency snapping.
+        Maximum distance (MHz) for frequency snapping.  ``None`` (the default)
+        resolves this file's own tolerance -- see :func:`refit_window_impl`.
     frame :
         The frame ``peaks`` is expressed in (see :func:`refit_window_impl`).
         Omitting it is an error on a ``self_calibrated`` file.
@@ -2513,14 +2607,15 @@ def merge_peaks_impl(
     # re-checks, since a curation row reaches it without passing through here.
     _check_merge_arity(peaks)
     path = str(file_path)
+    snap_tol = resolve_snap_tol_mhz(path, snap_tol_mhz)
     resolved_frame, stamp = _resolve_frame(path, frame)
     peaks_raw = [_frame_to_raw(f, frame=resolved_frame, stamp=stamp) for f in peaks]
     return _run_single_action(
         path,
         lambda ctx: _batch_apply_merge(
-            ctx, window_id, peaks_raw, snap_tol_mhz=snap_tol_mhz
+            ctx, window_id, peaks_raw, snap_tol_mhz=snap_tol
         ),
-        snap_tol_mhz=snap_tol_mhz,
+        snap_tol_mhz=snap_tol,
         shared=_shared,
     )
 
@@ -2536,7 +2631,7 @@ def split_peak_impl(
     peak: float,
     *,
     into: int = 2,
-    snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+    snap_tol_mhz: Optional[float] = None,
     frame: Optional[Frame] = None,
     _shared: Optional["_SharedFitCtx"] = None,
 ) -> RefitWindowResult:
@@ -2567,7 +2662,8 @@ def split_peak_impl(
     into :
         Number of replacement peaks (≥2).  Default is 2.
     snap_tol_mhz :
-        Maximum distance (MHz) for frequency snapping.
+        Maximum distance (MHz) for frequency snapping.  ``None`` (the default)
+        resolves this file's own tolerance -- see :func:`refit_window_impl`.
     frame :
         The frame ``peak`` is expressed in (see :func:`refit_window_impl`).
         Omitting it is an error on a ``self_calibrated`` file.
@@ -2590,14 +2686,15 @@ def split_peak_impl(
     # Checked before the batch opens: see :func:`merge_peaks_impl`.
     _check_split_arity(into)
     path = str(file_path)
+    snap_tol = resolve_snap_tol_mhz(path, snap_tol_mhz)
     resolved_frame, stamp = _resolve_frame(path, frame)
     peak_raw = _frame_to_raw(peak, frame=resolved_frame, stamp=stamp)
     return _run_single_action(
         path,
         lambda ctx: _batch_apply_split(
-            ctx, window_id, peak_raw, into, snap_tol_mhz=snap_tol_mhz
+            ctx, window_id, peak_raw, into, snap_tol_mhz=snap_tol
         ),
-        snap_tol_mhz=snap_tol_mhz,
+        snap_tol_mhz=snap_tol,
         shared=_shared,
     )
 
@@ -2733,7 +2830,7 @@ def review_accept_impl(
     window_id: int,
     *,
     candidate_freq: Optional[float] = None,
-    snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+    snap_tol_mhz: Optional[float] = None,
     frame: Optional[Frame] = None,
     _shared: Optional["_SharedFitCtx"] = None,
 ) -> Optional[RefitWindowResult]:
@@ -2789,14 +2886,15 @@ def review_accept_impl(
         return None
 
     path = str(file_path)
+    snap_tol = resolve_snap_tol_mhz(path, snap_tol_mhz)
     resolved_frame, stamp = _resolve_frame(path, frame)
     candidate_raw = _frame_to_raw(candidate_freq, frame=resolved_frame, stamp=stamp)
     return _run_single_action(
         path,
         lambda ctx: _batch_apply_accept(
-            ctx, window_id, candidate_raw, snap_tol_mhz=snap_tol_mhz
+            ctx, window_id, candidate_raw, snap_tol_mhz=snap_tol
         ),
-        snap_tol_mhz=snap_tol_mhz,
+        snap_tol_mhz=snap_tol,
         shared=_shared,
     )
 
@@ -2978,7 +3076,7 @@ def create_window_impl(
     file_path: Union[Path, str],
     anchor_mhz: float,
     *,
-    snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+    snap_tol_mhz: Optional[float] = None,
     frame: Optional[Frame] = None,
     _replay_window_id: Optional[int] = None,
     _shared: Optional["_SharedFitCtx"] = None,
@@ -3053,6 +3151,7 @@ def create_window_impl(
         omitted on a ``self_calibrated`` file.
     """
     path = str(file_path)
+    snap_tol = resolve_snap_tol_mhz(path, snap_tol_mhz)
     resolved_frame, stamp = _resolve_frame(path, frame)
     anchor_raw = _frame_to_raw(anchor_mhz, frame=resolved_frame, stamp=stamp)
     return _run_single_action(
@@ -3061,9 +3160,9 @@ def create_window_impl(
             ctx,
             anchor_raw,
             replay_window_id=_replay_window_id,
-            snap_tol_mhz=snap_tol_mhz,
+            snap_tol_mhz=snap_tol,
         ),
-        snap_tol_mhz=snap_tol_mhz,
+        snap_tol_mhz=snap_tol,
         shared=_shared,
     )
 
@@ -3540,7 +3639,7 @@ def _curation_ambiguity_warnings(
     path: str,
     plan: Sequence[PlannedAction],
     *,
-    snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+    snap_tol_mhz: float,
 ) -> List[str]:
     """Advisories where a curation action will not resolve against the file.
 
@@ -3735,11 +3834,14 @@ def _frame_mismatch_warnings(
         return []
 
     acquisition_us = _persisted_acquisition_us(path)
-    frame_mismatch_floor_mhz = (
-        _FRAME_MISMATCH_FLOOR_BINS * active_ft_bin_spacing_mhz(acquisition_us)
-        if acquisition_us > 0.0
-        else 0.0
+    bin_spacing_mhz = (
+        active_ft_bin_spacing_mhz(acquisition_us) if acquisition_us > 0.0 else 0.0
     )
+    frame_mismatch_floor_mhz = _FRAME_MISMATCH_FLOOR_BINS * bin_spacing_mhz
+    # The same snap the verbs will use, resolved from the same spacing -- this
+    # heuristic decides which candidates *would* have paired, so a tolerance of
+    # its own would diagnose a batch nobody is going to run.
+    snap_tol_mhz = REFIT_SNAP_TOL_BINS * bin_spacing_mhz
 
     by_window = _fitted_freqs_by_window(path)
 
@@ -3748,7 +3850,7 @@ def _frame_mismatch_warnings(
         if not fitted:
             return None
         best = min(fitted, key=lambda f: abs(f - freq))
-        if abs(best - freq) > REFIT_SNAP_TOL_MHZ:
+        if abs(best - freq) > snap_tol_mhz:
             return None
         return best
 
@@ -5230,7 +5332,7 @@ def _execute_curation_batch(
     path: str,
     plan: List[PlannedAction],
     *,
-    snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+    snap_tol_mhz: float,
     shared: Optional[_SharedFitCtx] = None,
 ) -> int:
     """Execute a resolved curation plan as one batch: shared context, one
@@ -5417,7 +5519,8 @@ def apply_curation_impl(
             _planned_action_to_raw(a, frame=resolved_frame, stamp=stamp) for a in plan
         ]
 
-    warnings = _curation_ambiguity_warnings(path, plan)
+    snap_tol = resolve_snap_tol_mhz(path, None)
+    warnings = _curation_ambiguity_warnings(path, plan, snap_tol_mhz=snap_tol)
     warnings += _frame_mismatch_warnings(
         path, plan, resolved_frame=resolved_frame, stamp=stamp
     )
@@ -5431,7 +5534,7 @@ def apply_curation_impl(
             plan=plan, warnings=warnings, applied=0, dry_run=True
         )
 
-    applied = _execute_curation_batch(path, plan, shared=_shared)
+    applied = _execute_curation_batch(path, plan, snap_tol_mhz=snap_tol, shared=_shared)
 
     return CurationApplyResult(
         plan=plan, warnings=warnings, applied=applied, dry_run=False
@@ -5551,7 +5654,7 @@ def _run_review_preview(
     curation_path: Union[Path, str],
     *,
     frame: Optional[Frame] = None,
-    snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+    snap_tol_mhz: Optional[float] = None,
     shared: Optional[_SharedFitCtx] = None,
 ) -> _PreviewRun:
     """Run a curation file's resolved plan to completion in memory and report
@@ -5591,6 +5694,7 @@ def _run_review_preview(
     exactly as before.
     """
     path = str(file_path)
+    snap_tol = resolve_snap_tol_mhz(path, snap_tol_mhz)
     ops = parse_curation_file(curation_path)
     plan = _resolve_curation_plan(ops)
 
@@ -5615,7 +5719,7 @@ def _run_review_preview(
             result=ReviewPreviewResult(windows={}, plan=plan, warnings=warnings)
         )
 
-    ctx = _open_batch(path, snap_tol_mhz=snap_tol_mhz, snapshot=False, shared=shared)
+    ctx = _open_batch(path, snap_tol_mhz=snap_tol, snapshot=False, shared=shared)
 
     # Snapshot every touched window's pre-batch stats now, before any action
     # mutates ctx.changeset.spectrum_fit in place -- this is the "before" a
@@ -5641,7 +5745,7 @@ def _run_review_preview(
                         if action.window_id == _NEW_WINDOW_SENTINEL
                         else action.window_id
                     ),
-                    snap_tol_mhz=snap_tol_mhz,
+                    snap_tol_mhz=snap_tol,
                 )
                 action_indices.setdefault(created.window_id, []).append(original_index)
             elif action.kind == "edit":
@@ -5650,12 +5754,12 @@ def _run_review_preview(
                     action.window_id,
                     action.add,
                     action.remove,
-                    snap_tol_mhz=snap_tol_mhz,
+                    snap_tol_mhz=snap_tol,
                 )
                 action_indices.setdefault(action.window_id, []).append(original_index)
             elif action.kind == "merge":
                 _batch_apply_merge(
-                    ctx, action.window_id, action.peaks, snap_tol_mhz=snap_tol_mhz
+                    ctx, action.window_id, action.peaks, snap_tol_mhz=snap_tol
                 )
                 action_indices.setdefault(action.window_id, []).append(original_index)
             elif action.kind == "split":
@@ -5666,7 +5770,7 @@ def _run_review_preview(
                     action.window_id,
                     action.peak,
                     action.into,
-                    snap_tol_mhz=snap_tol_mhz,
+                    snap_tol_mhz=snap_tol,
                 )
                 action_indices.setdefault(action.window_id, []).append(original_index)
             elif action.kind == "accept":
@@ -5674,7 +5778,7 @@ def _run_review_preview(
                     ctx,
                     action.window_id,
                     action.candidate,
-                    snap_tol_mhz=snap_tol_mhz,
+                    snap_tol_mhz=snap_tol,
                 )
                 if action.candidate is not None:
                     action_indices.setdefault(action.window_id, []).append(
@@ -5690,7 +5794,7 @@ def _run_review_preview(
     # BEFORE the cascade runs (mutated_wids only grows from here). Anything
     # _cascade_batch adds beyond this set arrived purely as a dependent.
     direct_wids = set(ctx.changeset.mutated_wids)
-    cascaded_wids = set(_cascade_batch(ctx, snap_tol_mhz=snap_tol_mhz))
+    cascaded_wids = set(_cascade_batch(ctx, snap_tol_mhz=snap_tol))
 
     review = _derive_batch_review(ctx, path)
     peaks_by_window: Dict[int, List["FinalPeak"]] = {}
@@ -5731,7 +5835,7 @@ def review_preview_impl(
     curation_path: Union[Path, str],
     *,
     frame: Optional[Frame] = None,
-    snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+    snap_tol_mhz: Optional[float] = None,
 ) -> ReviewPreviewResult:
     """Run a curation file's resolved plan to completion in memory and report
     the fitted outcome -- final-product numbers, post-cascade -- without
@@ -5908,7 +6012,9 @@ def review_undo_impl(
         if "stage6_review" in h5f:
             del h5f["stage6_review"]
     review_run_impl(path)
-    applied = _execute_curation_batch(path, plan, shared=_shared)
+    applied = _execute_curation_batch(
+        path, plan, snap_tol_mhz=resolve_snap_tol_mhz(path, None), shared=_shared
+    )
 
     return UndoResult(
         removed=removed,
@@ -6951,7 +7057,7 @@ class ReviewSession:
         *,
         add: Sequence[float] = (),
         remove: Sequence[float] = (),
-        snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+        snap_tol_mhz: Optional[float] = None,
         frame: Optional[Frame] = None,
     ) -> RefitWindowResult:
         """Session-hosted :func:`refit_window_impl`. See its docstring for
@@ -6976,7 +7082,7 @@ class ReviewSession:
         window_id: int,
         peaks: Sequence[float],
         *,
-        snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+        snap_tol_mhz: Optional[float] = None,
         frame: Optional[Frame] = None,
     ) -> RefitWindowResult:
         """Session-hosted :func:`merge_peaks_impl`."""
@@ -6999,7 +7105,7 @@ class ReviewSession:
         peak: float,
         *,
         into: int = 2,
-        snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+        snap_tol_mhz: Optional[float] = None,
         frame: Optional[Frame] = None,
     ) -> RefitWindowResult:
         """Session-hosted :func:`split_peak_impl`."""
@@ -7022,7 +7128,7 @@ class ReviewSession:
         window_id: int,
         *,
         candidate_freq: Optional[float] = None,
-        snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+        snap_tol_mhz: Optional[float] = None,
         frame: Optional[Frame] = None,
     ) -> Optional[RefitWindowResult]:
         """Session-hosted :func:`review_accept_impl`."""
@@ -7043,7 +7149,7 @@ class ReviewSession:
         self,
         anchor_mhz: float,
         *,
-        snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+        snap_tol_mhz: Optional[float] = None,
         frame: Optional[Frame] = None,
     ) -> CreateWindowResult:
         """Session-hosted :func:`create_window_impl`."""
@@ -7116,14 +7222,13 @@ class ReviewSession:
         persisted bytes are guaranteed to be exactly what the preview showed
         rather than a second computation trusted to agree with the first.
         """
-        gate_ctx = _open_batch(
-            self._path, snap_tol_mhz=REFIT_SNAP_TOL_MHZ, shared=self._shared
-        )
+        snap_tol = resolve_snap_tol_mhz(self._path, None)
+        gate_ctx = _open_batch(self._path, snap_tol_mhz=snap_tol, shared=self._shared)
         staged.ctx.baseline_taken = gate_ctx.baseline_taken
         return _finish_batch(
             staged.ctx,
             self._path,
-            snap_tol_mhz=REFIT_SNAP_TOL_MHZ,
+            snap_tol_mhz=snap_tol,
             cascaded=staged.cascaded_wids,
             precomputed_review=staged.review,
         )

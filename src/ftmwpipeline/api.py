@@ -58,7 +58,7 @@ from ._internal.stage6_impl import (
     UndoResult,
 )
 from .core.calibration import CalibrationStamp
-from .core.curation import REFIT_SNAP_TOL_MHZ, Frame
+from .core.curation import Frame
 from .core.data_structures import (
     FID,
     ComplexFT,
@@ -947,6 +947,33 @@ def frequency_calibration(file_path: Union[str, Path]) -> CalibrationStamp:
     return Pipeline.open(file_path).frequency_calibration()
 
 
+def refit_snap_tol_mhz(file_path: Union[str, Path]) -> float:
+    """The Stage 6 curation snap tolerance (MHz) ``file_path`` resolves to.
+
+    Equivalent to :meth:`Pipeline.refit_snap_tol_mhz`. Read-only,
+    non-mutating, and answerable at any stage -- including on a file that has
+    only been imported.
+
+    The tolerance is *defined* as
+    :data:`~ftmwpipeline.core.curation.REFIT_SNAP_TOL_BINS` active-FT bins
+    (``dev-docs/SCIENCE_STRATEGY.md`` Requirement 8), so it has no MHz value
+    until a file is named: 49.4 kHz at a 12.65 us active region, 6.3 kHz at
+    100 us. **This is the read to pair against.** Resolving the bin count
+    yourself, against an ``acquisition_us`` you derived, is the two-reads-can-
+    disagree surface this accessor exists to remove; it is derived here at
+    call time from the same active region the curation verbs consult, so it
+    cannot disagree with what a :func:`review_apply` on that file will snap
+    with.
+
+    Raises :class:`~ftmwpipeline.file_manager.StageDependencyError` on a file
+    carrying no resolvable active region at all (no persisted Stage 5
+    ``acquisition_us`` and no Stage 0 FID duration) -- a refusal rather than a
+    fabricated MHz value. Unreachable for any file this package's importer
+    wrote.
+    """
+    return Pipeline.open(file_path).refit_snap_tol_mhz()
+
+
 def recommend_shape(
     file_path: Union[str, Path],
     *,
@@ -1423,7 +1450,7 @@ def review_edit(
     *,
     add: Sequence[float] = (),
     remove: Sequence[float] = (),
-    snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+    snap_tol_mhz: Optional[float] = None,
     frame: Optional[Frame] = None,
 ) -> RefitWindowResult:
     """User-directed single-window refit (Stage 6 ``review edit``).
@@ -1445,8 +1472,10 @@ def review_edit(
     remove :
         Molecular frequencies (MHz) of fitted peaks to remove.
     snap_tol_mhz :
-        Snap tolerance for ``add``/``remove`` (MHz; default
-        :data:`~ftmwpipeline.core.curation.REFIT_SNAP_TOL_MHZ`, 50 kHz).
+        Snap tolerance for ``add``/``remove`` (MHz).  ``None`` (the default)
+        resolves this file's own
+        :data:`~ftmwpipeline.core.curation.REFIT_SNAP_TOL_BINS` active-FT bins
+        -- read the resolved value with :func:`refit_snap_tol_mhz`.
     frame :
         The frame ``add``/``remove`` are expressed in: ``"raw"`` or
         ``"calibrated"``; converted to raw before any snapping. Omitting it
@@ -1496,7 +1525,7 @@ def review_create(
     file_path: Union[str, Path],
     anchor_mhz: float,
     *,
-    snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+    snap_tol_mhz: Optional[float] = None,
     frame: Optional[Frame] = None,
 ) -> CreateWindowResult:
     """Install a fit window covering ``anchor_mhz`` (Stage 6 ``review create``).
@@ -1514,8 +1543,9 @@ def review_create(
     anchor_mhz :
         Molecular frequency (MHz) the window must cover.
     snap_tol_mhz :
-        Snap tolerance forwarded to the fit core (MHz; default
-        :data:`~ftmwpipeline.core.curation.REFIT_SNAP_TOL_MHZ`).
+        Snap tolerance forwarded to the fit core (MHz).  ``None`` (the
+        default) resolves this file's own tolerance -- see
+        :func:`refit_snap_tol_mhz`.
     frame :
         The frame ``anchor_mhz`` is expressed in; converted to raw before
         installing the window. Omitting it is an error on a
@@ -1540,7 +1570,7 @@ def review_merge(
     window_id: int,
     peaks: Sequence[float],
     *,
-    snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+    snap_tol_mhz: Optional[float] = None,
     frame: Optional[Frame] = None,
 ) -> RefitWindowResult:
     """Collapse ≥2 fitted peaks in a window into one (Stage 6 ``review merge``).
@@ -1581,7 +1611,7 @@ def review_split(
     peak: float,
     *,
     into: int = 2,
-    snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+    snap_tol_mhz: Optional[float] = None,
     frame: Optional[Frame] = None,
 ) -> RefitWindowResult:
     """Replace one fitted peak with ``into`` peaks (Stage 6 ``review split``).
@@ -1791,7 +1821,7 @@ def review_accept(
     window_id: int,
     *,
     candidate_freq: Optional[float] = None,
-    snap_tol_mhz: float = REFIT_SNAP_TOL_MHZ,
+    snap_tol_mhz: Optional[float] = None,
     frame: Optional[Frame] = None,
 ) -> Optional[RefitWindowResult]:
     """Accept a window as-is or accept a specific revived candidate.
@@ -1808,8 +1838,8 @@ def review_accept(
         When given, accept by adding this molecular frequency (MHz) as a
         new peak.
     snap_tol_mhz :
-        Snap tolerance for ``candidate_freq`` (MHz; default
-        :data:`~ftmwpipeline.core.curation.REFIT_SNAP_TOL_MHZ`, 50 kHz).
+        Snap tolerance for ``candidate_freq`` (MHz).  ``None`` (the default)
+        resolves this file's own tolerance -- see :func:`refit_snap_tol_mhz`.
         Ignored when accepting a window as-is.
     frame :
         The frame ``candidate_freq`` is expressed in. Irrelevant when

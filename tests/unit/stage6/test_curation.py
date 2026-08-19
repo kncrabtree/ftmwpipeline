@@ -276,6 +276,12 @@ def test_describe_planned_action_strings():
 # ---------------------------------------------------------------------------
 
 
+# The warnings helper is an engine function: it takes the RESOLVED tolerance,
+# never a default (see test_snap_tolerance_contract). These pure tests pass the
+# reference-acquisition value directly rather than opening a file for it.
+_SNAP_TOL_MHZ = 0.05
+
+
 def test_ambiguity_warnings(monkeypatch):
     monkeypatch.setattr(
         s6,
@@ -284,19 +290,25 @@ def test_ambiguity_warnings(monkeypatch):
     )
     # Two peaks within 50 kHz of 100.01 -> ambiguous.
     warns = s6._curation_ambiguity_warnings(
-        "x", [PlannedAction(kind="edit", window_id=5, remove=[100.01])]
+        "x",
+        [PlannedAction(kind="edit", window_id=5, remove=[100.01])],
+        snap_tol_mhz=_SNAP_TOL_MHZ,
     )
     assert any("within" in w and "2 fitted peaks" in w for w in warns)
 
     # No peak near 150.0 -> unmatched (will fail).
     warns = s6._curation_ambiguity_warnings(
-        "x", [PlannedAction(kind="edit", window_id=5, remove=[150.0])]
+        "x",
+        [PlannedAction(kind="edit", window_id=5, remove=[150.0])],
+        snap_tol_mhz=_SNAP_TOL_MHZ,
     )
     assert any("no fitted peak within" in w for w in warns)
 
     # Unknown window -> no fitted peaks.
     warns = s6._curation_ambiguity_warnings(
-        "x", [PlannedAction(kind="split", window_id=9, peak=1.0)]
+        "x",
+        [PlannedAction(kind="split", window_id=9, peak=1.0)],
+        snap_tol_mhz=_SNAP_TOL_MHZ,
     )
     assert any("no fitted peaks" in w for w in warns)
 
@@ -311,7 +323,7 @@ def test_add_target_warnings(monkeypatch):
     )
 
     def warns_for(plan):
-        return s6._curation_ambiguity_warnings("x", plan)
+        return s6._curation_ambiguity_warnings("x", plan, snap_tol_mhz=_SNAP_TOL_MHZ)
 
     # In range on a live window -> nothing to say.
     assert warns_for([PlannedAction(kind="edit", window_id=5, add=[150.0])]) == []

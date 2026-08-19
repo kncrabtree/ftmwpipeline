@@ -72,7 +72,18 @@ from .edge_coherence import (
 # Stage 4 parameter defaults. All configurable on the pipeline file.
 DEFAULT_MAX_WINDOW_WIDTH_MHZ = 40.0
 """Width cap default. On 2638 a strong line's above-threshold skirt extends to
-~40 MHz, so a single window wider than this is already dense/coupled."""
+~40 MHz, so a single window wider than this is already dense/coupled.
+
+ASSESSED AND KEPT ABSOLUTE, 2026-08-19 (``dev-docs/SCIENCE_STRATEGY.md``
+Requirement 8, task E4). Two reasons, recorded so a future audit does not
+re-derive them. First, the bin-relative form of this cap **already exists and
+already wins**: :data:`DEFAULT_MAX_WINDOW_WIDTH_POINTS` is positive by default
+and *replaces* this value, for exactly the Requirement 8 reason its own
+docstring gives. This is the fallback the caller selects by setting the points
+cap to ``0``, so converting it would leave the knob with two bin-count
+spellings and no absolute one. Second, on its own terms it is a genuine
+spectral width -- an observed skirt extent in MHz on a real spectrum -- not a
+bin count that was written down in MHz."""
 
 DEFAULT_MAX_WINDOW_WIDTH_POINTS = 96
 """Width cap in active-FT grid points; ``0`` disables it so the cap is
@@ -96,7 +107,18 @@ flagged as a thaw-and-re-fit candidate rather than safely frozen."""
 DEFAULT_MIN_WINDOW_HALF_WIDTH_MHZ = 2.0
 """Minimum half-width of a window built around an isolated weak line. The MHz
 form of the window margin; the points form (:data:`DEFAULT_MIN_WINDOW_HALF_WIDTH_POINTS`)
-supersedes it whenever that is positive (mirroring the width-cap MHz/points pair)."""
+supersedes it whenever that is positive (mirroring the width-cap MHz/points pair).
+
+ASSESSED AND KEPT ABSOLUTE, 2026-08-19 (``dev-docs/SCIENCE_STRATEGY.md``
+Requirement 8, task E4), for the first of the two reasons on
+:data:`DEFAULT_MAX_WINDOW_WIDTH_MHZ`: the margin's bin-relative definition
+already exists and is already the default
+(:data:`DEFAULT_MIN_WINDOW_HALF_WIDTH_POINTS`, 32 active-FT points), and this
+is the fallback a caller selects by zeroing it. The requirement it serves --
+a window must hold enough bins for a 4-parameter fit -- is a bin count, and it
+is stated as one there. Note the two are NOT the same number expressed twice:
+32 points is ~2.53 MHz on the reference grid, against 2.0 MHz here. Do not
+"reconcile" them; the MHz form is legacy and inert by default."""
 
 DEFAULT_MIN_WINDOW_HALF_WIDTH_POINTS = 32
 """The window margin in active-FT grid points: the empty noise budget kept on

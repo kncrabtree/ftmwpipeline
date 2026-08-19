@@ -198,9 +198,34 @@ Publishing is read-only by intent. Callers are expected to read the value at
 call time rather than persist it; the constant's meaning is stable even when its
 value is refined.
 
-`REFIT_SNAP_TOL_MHZ` (Stage 6 curation snap tolerance) is published on these
-terms, canonically in `core/curation.py` and re-exported at the package top
-level.
+### A constant whose value is per-file is published as its definition
+
+Some published constants are not numbers at all: a tolerance expressing a
+spectral distance is *defined* as a multiple of the active-FT bin spacing
+(`SCIENCE_STRATEGY.md` Requirement 8), so it has no value until a file is
+named. Publishing a resolved frequency for such a constant would republish
+exactly the frozen-in-MHz mistake, and inviting the caller to resolve the
+definition itself would recreate the two-reads-can-disagree surface the
+single-definition rule exists to close.
+
+The compliant shape is both halves, and only these two:
+
+- **the definition** — the bin count — published as the constant, with its
+  docstring stating that it must not be multiplied by a spacing the caller
+  derived; and
+- **one accessor** returning the resolved value for a named file, meeting the
+  "derived state is read" requirements below.
+
+The verbs' parameters then default to `None`, not to a number — a float default
+would be one acquisition length's answer frozen into every other file's call —
+and the resolution happens once, at the public boundary, with the resolved
+value passed inward as a required argument. The resolved value must not also be
+stamped onto result objects: one read is the point.
+
+`REFIT_SNAP_TOL_BINS` (Stage 6 curation snap tolerance, 0.625 active-FT bins) is
+published on these terms, canonically in `core/curation.py` and re-exported at
+the package top level, with `api.refit_snap_tol_mhz` /
+`Pipeline.refit_snap_tol_mhz` / `review snap-tolerance` as the accessor.
 
 The same rule governs published *vocabularies* — the string sets a caller must
 be able to pin a parser on, such as the frame names and the frequency-
@@ -226,6 +251,14 @@ Such an accessor must be:
   legitimately lack, so it answers at any stage — including a file that has
   been through nothing but the import — rather than raising;
 - **read-only**, safe to call on a file the caller may not write to.
+
+Totality is bounded by what a legitimate file may lack, not by what an
+arbitrary HDF5 file may lack. An accessor may refuse on a file that carries
+none of the inputs its answer is *about* — but the refusal must be documented
+at the accessor, as a decision, so a caller knows which of "a defined default"
+and "an error" it is holding. Where refusing and defaulting are both defensible,
+prefer whichever the pipeline itself would do: fabricating a value the verbs
+would never actually use is worse than an error.
 
 A stage's own persisted artifact (`load_*`) does not satisfy this: it requires
 the stage to have run and describes that run, not the file's current state.

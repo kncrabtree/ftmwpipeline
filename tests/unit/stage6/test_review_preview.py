@@ -343,14 +343,18 @@ class TestUnbaselinedContextCannotBePersisted:
         self, sc_multi_file: Path
     ) -> None:
         ctx = s6._open_batch(
-            str(sc_multi_file), snap_tol_mhz=s6.REFIT_SNAP_TOL_MHZ, snapshot=False
+            str(sc_multi_file),
+            snap_tol_mhz=s6.resolve_snap_tol_mhz(str(sc_multi_file), None),
+            snapshot=False,
         )
         assert ctx.baseline_taken is False
 
         before = _digest(sc_multi_file)
         with pytest.raises(ValueError, match="undo baseline was.*never taken"):
             s6._finish_batch(
-                ctx, str(sc_multi_file), snap_tol_mhz=s6.REFIT_SNAP_TOL_MHZ
+                ctx,
+                str(sc_multi_file),
+                snap_tol_mhz=s6.resolve_snap_tol_mhz(str(sc_multi_file), None),
             )
         assert _digest(sc_multi_file) == before, (
             "a refused _finish_batch must not have written anything before " "raising"
@@ -364,10 +368,16 @@ class TestUnbaselinedContextCannotBePersisted:
         """Sanity check: the guard is specific to snapshot=False, not a
         blanket refusal -- the normal (snapshot=True) path still persists."""
         ctx = s6._open_batch(
-            str(sc_multi_file), snap_tol_mhz=s6.REFIT_SNAP_TOL_MHZ, snapshot=True
+            str(sc_multi_file),
+            snap_tol_mhz=s6.resolve_snap_tol_mhz(str(sc_multi_file), None),
+            snapshot=True,
         )
         assert ctx.baseline_taken is True
-        s6._finish_batch(ctx, str(sc_multi_file), snap_tol_mhz=s6.REFIT_SNAP_TOL_MHZ)
+        s6._finish_batch(
+            ctx,
+            str(sc_multi_file),
+            snap_tol_mhz=s6.resolve_snap_tol_mhz(str(sc_multi_file), None),
+        )
         with h5py.File(sc_multi_file, "r") as f:
             assert "stage5_fitting_baseline" in f
 

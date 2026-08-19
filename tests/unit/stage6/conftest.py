@@ -34,10 +34,22 @@ def exp_2638_data_path() -> str:
     return str(_DATA)
 
 
-def _build_stage5_small(dest: Path, data_path: str) -> None:
-    """Import 2638, trim to the first 3 dependency-free windows, fit Stage 5."""
+def _build_stage5_small(
+    dest: Path, data_path: str, *, end_us: float | None = None
+) -> None:
+    """Import 2638, trim to the first 3 dependency-free windows, fit Stage 5.
+
+    ``end_us`` truncates the active region, giving a build at a materially
+    different acquisition length. Every tolerance defined as a multiple of the
+    active-FT bin spacing (``dev-docs/SCIENCE_STRATEGY.md`` Requirement 8)
+    resolves to a different frequency there, which is the only way to test
+    that they were converted at all -- a suite at one acquisition length
+    cannot fail for the reason that work exists.
+    """
     ftmw.import_data(dest, source=data_path)
-    ftmw.compute_ft(dest, trim=(26500, 40000))
+    ftmw.compute_ft(
+        dest, trim=(26500, 40000), **({} if end_us is None else {"end_us": end_us})
+    )
     ftmw.estimate_noise(dest)
     ftmw.detect_peaks(dest)
     ftmw.assign_windows(dest)
@@ -99,6 +111,26 @@ def stage5_small_source(_stage5_small_built) -> Path:
 def stage5_reviewed_source(_stage5_reviewed_built) -> Path:
     """The shared post-review build. Read-only; see :func:`stage5_small_source`."""
     return _stage5_reviewed_built
+
+
+@pytest.fixture(scope="session")
+def _stage5_short_active_built(exp_2638_data_path, tmp_path_factory) -> Path:
+    """The same build at a SHORTER active region (T = 5.65 us vs 12.65 us).
+
+    Session-scoped and used by one module: it costs a second full 2638 fit, so
+    it is deliberately not something every Stage 6 test drags along.
+    """
+    fp = tmp_path_factory.mktemp("stage6_short_active") / "stage5_short.ftmw"
+    _build_stage5_small(fp, exp_2638_data_path, end_us=8.0)
+    return fp
+
+
+@pytest.fixture
+def stage5_short_active_file(_stage5_short_active_built, tmp_path) -> Path:
+    """A fresh writable copy of the short-active-region fixture."""
+    fp = tmp_path / "stage5_short.ftmw"
+    shutil.copy(_stage5_short_active_built, fp)
+    return fp
 
 
 @pytest.fixture

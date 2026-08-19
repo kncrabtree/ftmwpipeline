@@ -84,6 +84,38 @@ class NoiseResult:
 # ``docs/source/methods/noise_snr_scaling.rst``.
 
 # Default knobs (instrument-family-dependent).
+#
+# ASSESSED AND KEPT ABSOLUTE, 2026-08-19 (dev-docs/SCIENCE_STRATEGY.md
+# Requirement 8, task E4 of scratch/bin-relative-constants-plan.md). Every
+# ``*_MHZ`` width below is a genuine spectral width, not a bin count written in
+# MHz, and must NOT be redefined as a multiple of the active-FT bin spacing.
+# Recorded here so a future audit does not have to re-derive the judgment:
+#
+# 1. What they have to be wide relative to is a *spectroscopic* scale measured
+#    in MHz -- how fast the receiver's noise floor varies with frequency
+#    (``WINDOW``, ``SMOOTHING``, ``CONVOLVE``) and how wide a line-dense
+#    molecular band is (``SMOOTHING`` again, which must ride the floor straight
+#    through one) -- not a transform scale. Requirement 8's failure mode, a
+#    constant that "encodes one lab's acquisition length", does not apply: 80
+#    MHz means the same physical thing at every acquisition length, and the
+#    estimator's statistical validity only improves as resolution does.
+#    Redefining them in bins would be the actual error, tying a receiver
+#    property to the FID duration.
+#
+# 2. They also carry a bin-COUNT requirement -- a MAD needs enough surviving
+#    samples, a rank filter needs a sane footprint -- but that requirement is
+#    already expressed separately and correctly *in bins*:
+#    ``SCATTER_MIN_WINDOW_SAMPLES`` gates the per-region MAD, and the
+#    ``ped_size`` / ``smooth_size`` clamps in :func:`estimate_noise_scatter`
+#    floor and cap the filter footprints. A spectral width plus an explicit
+#    bin-count guard is the right factoring; one number trying to be both is
+#    what Requirement 8 objects to.
+#
+# 3. Nothing here is frozen against a *nominal* spacing, which is what made the
+#    converted constants wrong: :func:`estimate_noise_scatter` measures ``df``
+#    from the grid it is handed and converts every width below into bins itself,
+#    per call. That each width also happens to be a round bin count at 80 kHz is
+#    arithmetic, not evidence -- see the plan's own caution on roundness.
 SCATTER_WINDOW_MHZ = 80.0  # full width of the per-region scatter-MAD window
 SCATTER_PEDESTAL_MHZ = 20.0  # running-median width isolating the leakage pedestal
 SCATTER_LINE_K = 8.0  # robust-σ multiple above which a bin is flagged a line

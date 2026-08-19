@@ -16,16 +16,82 @@ Accumulating toward ``1.0.0``. ``0.1.0b4`` is the last published release;
 everything below is reachable only from a source checkout. No further beta is
 planned — these entries fold into the ``1.0.0`` section when it is dated.
 
-Results are unchanged on a file whose fit already ran, and **``ANALYSIS_EPOCH``
-stays 2**: the Stage 6 rework is bit-identical on a real fixture, and every
-other change either widens a read surface, adds a name, or moves a message. A
-file fitted under 0.1.0b4 can be curated by this code without re-fitting or
-acknowledging.
+**``ANALYSIS_EPOCH`` moves 2 → 3.** Every tolerance that expresses a spectral
+distance is now defined in active-FT bins rather than in MHz (see the first
+entry below), which moves fitted output on every existing file. A file fitted
+under 0.1.0b4 must therefore be re-fit, or have the mismatch accepted with
+``review acknowledge-environment``, before Stage 6 will splice an edit into it.
+That refusal is the epoch gate working as intended, not a regression.
+
+Everything else here is unchanged numerically: the Stage 6 rework is
+bit-identical on a real fixture, and the remaining changes widen a read surface,
+add a name, or move a message.
 
 Much of what is new is *contract*: two values a downstream consumer previously
 had to reach into ``_internal`` or parse out of prose to obtain are now
 published, and the Stage 6 edit paths that carry them were collapsed onto one
 engine so they cannot answer differently.
+
+* **Spectral tolerances are defined in active-FT bins, not in MHz**
+  (``ANALYSIS_EPOCH`` 2 → 3). A tolerance that expresses a distance *in a
+  spectrum* is a property of the resolution, so freezing one in MHz encodes a
+  single laboratory's acquisition length and is wrong everywhere else — too
+  coarse at long acquisitions, where it merges genuinely resolved lines, and
+  too fine at short ones. Each such constant is now defined as a multiple of
+  the active-FT bin spacing ``1 / (end_us - start_us)``, resolved per file
+  through the one accessor ``fitting.active_ft.active_ft_bin_spacing_mhz``:
+  the candidate-dedup window (0.25 bins), the spur integer-MHz gate (0.5) and
+  the separate spur-merge tolerance it had been sharing a number with by
+  accident (0.5), the timebase sub-bin scan range and step (1.25 and 0.00125),
+  the Stage 6 frame-mismatch floor (0.05), and the curation snap tolerance
+  (0.625).
+
+  Every one of them turned out to be an exact round bin count against a
+  *nominal* 80 kHz spacing, so these were designed in bins and written down in
+  MHz; the conversion recovers the original definitions rather than inventing
+  new ones. The true reference spacing is 79.052 kHz, so **each has been
+  running about 1.2 % off its intended value**, and correcting that is what
+  moves fitted output on an existing file. Two of them additionally lose an
+  absolute floor that used to win outright at long acquisitions: the spur
+  integer tolerance was ``max(0.04 MHz, 0.5 bins)``, pinned at 40 kHz and
+  spanning many bins once the record was long enough, and the snap tolerance
+  was a flat 50 kHz. Both now tighten with resolution as they were meant to.
+  A file's persisted ``spur.integer_tol_mhz`` knob migrates to bins at read
+  time, exactly and per file — the file carries its own active region, so no
+  default-and-hope is involved.
+
+  Not everything absolute was converted, and the reasons are recorded at each
+  definition rather than left to be re-derived: the two clock-frequency
+  comparison tolerances (``1e-6``) are float comparisons on a value a person
+  typed, not distances on any grid; and the Stage 2 scatter widths and the
+  Stage 4 window bounds are genuine spectral widths — what they must be wide
+  relative to is how fast the receiver's noise floor varies and how wide a
+  line-dense band is, both measured in MHz. The window bounds' bin-relative
+  form already existed and is already the default (``*_POINTS``), with the MHz
+  form as the fallback a caller selects by zeroing it.
+
+  **The published surface changes shape.** ``REFIT_SNAP_TOL_MHZ`` is deleted,
+  with no deprecation alias — an alias would preserve exactly the
+  "resolve it yourself" surface this work removes. In its place
+  ``REFIT_SNAP_TOL_BINS`` (0.625) is the definition, and
+  ``api.refit_snap_tol_mhz`` / ``Pipeline.refit_snap_tol_mhz`` /
+  ``ftmwpipeline review snap-tolerance`` resolve it for a named file: 49.4 kHz
+  at the 12.65 µs reference active region, 6.3 kHz at 100 µs. Read the
+  accessor rather than multiplying the bin count by a spacing of your own —
+  it derives from the same active region the curation verbs consult, so it
+  cannot disagree with what a ``review apply`` on that file will snap with.
+  Every verb's ``snap_tol_mhz`` parameter now defaults to ``None`` (resolve
+  for this file) instead of to a number; passing an explicit MHz value still
+  overrides it for that call.
+
+  The snap tolerance keeps **no absolute floor**, which is a deliberate
+  reversal of its own recorded rationale. The old 50 kHz was justified by
+  *input* precision — "the input is a frequency a person typed off a plot or a
+  line list" — and human typing does not get finer as the acquisition gets
+  longer. It is overruled because the plot the person reads has exactly this
+  resolution, an FTMW line list is quoted to ~1 kHz, and a miss is loud
+  (``remove`` raises and names the closest peak and its distance) rather than
+  silently wrong.
 
 * **``fit show`` stops holding every rendered figure open.** Each selected window
   renders one figure, three with ``--apodize`` and ``--rescue``, and all of them
@@ -44,9 +110,11 @@ engine so they cannot answer differently.
   a curation refit matches it requires the refit's snap tolerance, which existed
   only as a private constant — so a consumer pairing peaks across a refit had to
   reach into ``_internal`` or hardcode a copy, and either way could disagree
-  with the file about which peak was meant. ``REFIT_SNAP_TOL_MHZ`` (50 kHz,
-  value unchanged) is now exported from the top-level package and defined once
-  in a new stdlib-only ``core.curation``. That single definition is the point:
+  with the file about which peak was meant. It is now exported from the
+  top-level package and defined once in a new stdlib-only ``core.curation``.
+  (The published spelling has since become ``REFIT_SNAP_TOL_BINS`` plus a
+  per-file accessor — see the bin-relative-tolerances entry below, which
+  supersedes the absolute ``REFIT_SNAP_TOL_MHZ`` described here.) That single definition is the point:
   the value had been spelled as a bare literal in all eight public signatures
   while only the internal implementations referenced the constant, so publishing
   the name without collapsing the copies would have moved the drift up a level

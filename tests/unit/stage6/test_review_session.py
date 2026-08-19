@@ -961,7 +961,9 @@ class TestEngineInvariantsStillHold:
         """My new ``cascaded``/``precomputed_review`` params on
         ``_finish_batch`` must not bypass the baseline guard."""
         ctx = s6._open_batch(
-            str(sc_multi_file), snap_tol_mhz=s6.REFIT_SNAP_TOL_MHZ, snapshot=False
+            str(sc_multi_file),
+            snap_tol_mhz=s6.resolve_snap_tol_mhz(str(sc_multi_file), None),
+            snapshot=False,
         )
         assert ctx.baseline_taken is False
         before = _digest(sc_multi_file)
@@ -969,7 +971,7 @@ class TestEngineInvariantsStillHold:
             s6._finish_batch(
                 ctx,
                 str(sc_multi_file),
-                snap_tol_mhz=s6.REFIT_SNAP_TOL_MHZ,
+                snap_tol_mhz=s6.resolve_snap_tol_mhz(str(sc_multi_file), None),
                 cascaded=[],
                 precomputed_review=s6.Stage6Review(),
             )

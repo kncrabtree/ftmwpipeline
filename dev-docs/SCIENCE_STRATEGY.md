@@ -90,10 +90,35 @@ achieves them is the code's to decide.
    assume one.
 
    The exceptions are quantities that are genuinely absolute and owe nothing to
-   the transform: float-comparison tolerances on user-declared values (a clock
-   frequency the user typed), and a user-declared accuracy floor. These must say
-   so at their definition; anything else expressed in frequency units is a
-   defect.
+   the transform:
+
+   - float-comparison tolerances on user-declared values (a clock frequency the
+     user typed) and a user-declared accuracy floor — these describe an input,
+     not a spectrum; and
+   - widths whose *referent* is physical rather than spectral: how fast the
+     receiver's noise floor varies with frequency, how wide a line-dense
+     molecular band is, how far a strong line's skirt reaches. These mean the
+     same thing at every acquisition length, and redefining one in bins would
+     be the mirror-image error — tying an instrument or molecular property to
+     the FID duration.
+
+   The test is what the quantity has to be wide (or narrow) *relative to*: a
+   line, a bin, a resolution element — bin-relative; a receiver response, a
+   band, an observed skirt — absolute. Where a width carries both a spectral
+   scale and a minimum bin count, express them as two constants, a spectral
+   width plus an explicit bin-count guard, rather than one number serving as
+   both.
+
+   Every constant in either class must say at its definition that it was
+   assessed and why it is absolute; anything else expressed in frequency units
+   is a defect. Roundness is not evidence for a bin count and never settles the
+   question — resolve each site against the spectrum that site actually
+   processes.
+
+   A constant whose definition is a bin count has no value until a file is
+   named. Where such a constant is *published*, publish the definition and one
+   per-file accessor, never a resolved frequency; `API_STRATEGY.md` governs the
+   shape.
 
    **Terminology is normative here.** The **active FT** is the transform of the
    FID between the persisted active-region bounds `[start_us, end_us]` only —
