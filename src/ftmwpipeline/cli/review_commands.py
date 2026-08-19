@@ -824,10 +824,14 @@ def cmd_review_preview(args: argparse.Namespace) -> int:
     for wid in sorted(result.windows):
         w = result.windows[wid]
         actions = ",".join(str(i + 1) for i in w.action_indices) or "-"
+        # "-" for a side with no fit to report (a window this batch created has
+        # no "before"); printing 0.000 there would read as a perfect fit.
+        chi2r_before = "-" if w.chi2r_before is None else f"{w.chi2r_before:.3f}"
+        chi2r_after = "-" if w.chi2r_after is None else f"{w.chi2r_after:.3f}"
         print(
             f"  window {wid:>4}  [{w.origin:>8}]  actions={actions:<8}  "
             f"peaks {w.n_peaks_before}->{w.n_peaks_after}  "
-            f"chi2r {w.chi2r_before:.3f}->{w.chi2r_after:.3f}"
+            f"chi2r {chi2r_before}->{chi2r_after}"
         )
     return 0
 

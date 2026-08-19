@@ -5584,8 +5584,21 @@ class PreviewWindowResult:
         window.
     n_peaks_before, n_peaks_after : int
         Peak count in this window before the batch / after the cascade.
-    chi2r_before, chi2r_after : float
-        Reduced chi-squared before the batch / after the cascade.
+    chi2r_before, chi2r_after : float or None
+        Reduced chi-squared before the batch / after the cascade, or ``None``
+        when that side carries no fit to compute one against -- most obviously
+        ``chi2r_before`` on a window the batch itself *creates*, which has no
+        "before" at all.
+
+        ``None`` rather than ``0.0`` because a reduced chi-squared of exactly
+        zero is a value a genuine fit essentially never produces, so a
+        fabricated one is indistinguishable from an extraordinary one: a
+        consumer rendering "before -> after" would show ``0.00 -> 1.4`` and read
+        it as a perfect fit that got worse. The same absence-vs-plausible-number
+        distinction :class:`~ftmwpipeline.core.calibration.CalibrationStamp`
+        makes for ``probe_freq_mhz``. ``n_peaks_before == 0`` is a *tell* for
+        this case but not a contract -- it is a default riding alongside, and
+        a window can legitimately be emptied to zero peaks by an edit.
     peaks : list of FinalPeak
         This window's rows from the would-be final-products table
         (:func:`_derive_batch_review`) -- calibrated frequencies and the
@@ -5599,8 +5612,8 @@ class PreviewWindowResult:
     action_indices: List[int] = field(default_factory=list)
     n_peaks_before: int = 0
     n_peaks_after: int = 0
-    chi2r_before: float = 0.0
-    chi2r_after: float = 0.0
+    chi2r_before: Optional[float] = None
+    chi2r_after: Optional[float] = None
     peaks: List["FinalPeak"] = field(default_factory=list)
 
 
@@ -5811,8 +5824,15 @@ def _run_review_preview(
 
     windows: Dict[int, PreviewWindowResult] = {}
     for wid in sorted(direct_wids | cascaded_wids):
-        n_before, chi2r_before = before_stats.get(wid, (0, 0.0))
-        n_after, chi2r_after = after_by_wid.get(wid, (0, 0.0))
+        # A window absent from one side's stats has no fit on that side -- a
+        # window this batch created has no "before" at all. Report the absence
+        # rather than a plausible-looking 0.0 (see PreviewWindowResult).
+        before = before_stats.get(wid)
+        after = after_by_wid.get(wid)
+        n_before: int = before[0] if before is not None else 0
+        chi2r_before: Optional[float] = before[1] if before is not None else None
+        n_after: int = after[0] if after is not None else 0
+        chi2r_after: Optional[float] = after[1] if after is not None else None
         windows[wid] = PreviewWindowResult(
             window_id=wid,
             origin="direct" if wid in direct_wids else "cascaded",

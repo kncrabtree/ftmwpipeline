@@ -32,6 +32,23 @@ had to reach into ``_internal`` or parse out of prose to obtain are now
 published, and the Stage 6 edit paths that carry them were collapsed onto one
 engine so they cannot answer differently.
 
+* **A preview window with no fit reports its absence, not a zero.**
+  ``PreviewWindowResult.chi2r_before`` / ``chi2r_after`` were plain ``float``
+  defaulting to ``0.0``, so a window the batch itself *creates* -- which never
+  had a "before" fit -- reported a real, finite ``chi2r_before = 0.0``. A
+  consumer rendering "before → after" showed ``0.00 → 1.4`` and read it as a
+  perfect fit that got worse; χ²ᵣ = 0.0 is also a value a genuine fit
+  essentially never produces, so the fabricated number was indistinguishable
+  from an extraordinary one. Both fields are now ``Optional[float]`` and are
+  ``None`` when that side carries no fit, the same absence-versus-plausible-
+  number distinction ``CalibrationStamp`` already makes for ``probe_freq_mhz``.
+  ``review preview`` prints ``-`` for an absent side. ``n_peaks_before == 0``
+  was the available tell for this case and remains true, but it was a default
+  riding alongside rather than a contract -- and a window can legitimately be
+  emptied to zero peaks by an edit. ``RefitWindowResult``'s same-named fields
+  are unchanged: an interactive verb always refits a window that already
+  existed.
+
 * **Spectral tolerances are defined in active-FT bins, not in MHz**
   (``ANALYSIS_EPOCH`` 2 → 3). A tolerance that expresses a distance *in a
   spectrum* is a property of the resolution, so freezing one in MHz encodes a

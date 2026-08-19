@@ -207,6 +207,18 @@ def _window_stats(path: Path) -> Dict[int, tuple]:
     }
 
 
+def _anchor_in_a_gap(path: Path) -> float:
+    """A molecular frequency inside the analysis band but outside every planned
+    window -- the input ``create`` needs, and the only way to reach a preview
+    entry for a window that has no "before" fit."""
+    plan = load_windows_impl(str(path))["plan"]
+    spans = sorted((min(w.freq_range), max(w.freq_range)) for w in plan.windows)
+    for (_lo1, hi1), (lo2, _hi2) in zip(spans, spans[1:]):
+        if lo2 - hi1 > 4.0:
+            return 0.5 * (hi1 + lo2)
+    pytest.skip("no gap between planned windows wide enough to create into")
+
+
 def _digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -698,3 +710,55 @@ class TestPreviewEqualsApplyWithGenuineCascade:
         apply_curation_impl(apply_path, cur, frame="raw")
         persisted_stats = _window_stats(apply_path)
         assert persisted_stats[w2][1] == pytest.approx(MARKER)
+
+
+class TestAbsentFitReportsNoneNotZero:
+    """A window with no fit on one side reports ``None``, never a fabricated
+    ``0.0`` (BlackQuill ask of 2026-08-19).
+
+    chi2r = 0.0 is a value a genuine fit essentially never produces, so a
+    fabricated one is indistinguishable from an extraordinary one: a consumer
+    rendering "before -> after" shows ``0.00 -> 1.4`` and reads it as a perfect
+    fit that got worse.
+    """
+
+    def test_dataclass_defaults_are_absent_not_zero(self) -> None:
+        """The default itself is the contract -- a 0.0 default would reintroduce
+        the fabrication wherever a field is not explicitly set."""
+        entry = s6.PreviewWindowResult(window_id=1, origin="direct")
+        assert entry.chi2r_before is None
+        assert entry.chi2r_after is None
+
+    def test_created_window_has_no_before_chi2r(
+        self, sc_multi_file: Path, tmp_path: Path
+    ) -> None:
+        """A window the batch itself creates never had a "before" fit."""
+        anchor = _anchor_in_a_gap(sc_multi_file)
+        cur = tmp_path / "cur.csv"
+        cur.write_text(f"create,new,{anchor:.6f},\n")
+
+        result = review_preview_impl(sc_multi_file, cur, frame="raw")
+
+        created = [w for w in result.windows.values() if w.origin == "direct"]
+        assert created, "the create action should report a direct window"
+        for w in created:
+            assert w.chi2r_before is None, (
+                f"window {w.window_id} reports chi2r_before="
+                f"{w.chi2r_before!r} for a fit that never existed"
+            )
+
+    def test_an_ordinary_edit_still_reports_both_sides(
+        self, sc_multi_file: Path, tmp_path: Path
+    ) -> None:
+        """The guard is specific to a missing fit, not a blanket None: a window
+        that existed before and after still carries two real numbers."""
+        wid = _fitted_window_ids(sc_multi_file)[0]
+        freq = _window_center(sc_multi_file, wid)
+        cur = tmp_path / "cur.csv"
+        cur.write_text(f"add,{wid},{freq},\n")
+
+        result = review_preview_impl(sc_multi_file, cur, frame="raw")
+
+        w = result.windows[wid]
+        assert w.chi2r_before is not None and w.chi2r_before > 0.0
+        assert w.chi2r_after is not None and w.chi2r_after > 0.0
