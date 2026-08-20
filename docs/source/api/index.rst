@@ -66,7 +66,8 @@ a diagnostic figure.
      - :func:`~ftmwpipeline.api.load_tau_calibration`, :func:`~ftmwpipeline.api.recommend_shape`
    * - Timebase calibration
      - :func:`~ftmwpipeline.api.calibrate_timebase`
-     - :func:`~ftmwpipeline.api.load_timebase_calibration`
+     - :func:`~ftmwpipeline.api.load_timebase_calibration`,
+       :func:`~ftmwpipeline.api.frequency_calibration`
    * - Peaks (Stage 3)
      - :func:`~ftmwpipeline.api.detect_peaks`
      - :func:`~ftmwpipeline.api.load_peaks`, :func:`~ftmwpipeline.api.visualize_peaks`
@@ -227,7 +228,13 @@ Data structures
 The domain types returned and consumed by the stage operations. They are
 defined in :mod:`ftmwpipeline.core.data_structures` unless noted.
 
+.. autoclass:: ftmwpipeline.core.data_structures.FTMWData
+   :members:
+
 .. autoclass:: ftmwpipeline.core.data_structures.FID
+   :members:
+
+.. autoclass:: ftmwpipeline.core.data_structures.FIDProcessingParameters
    :members:
 
 .. autoclass:: ftmwpipeline.core.data_structures.ComplexFT
@@ -239,6 +246,9 @@ defined in :mod:`ftmwpipeline.core.data_structures` unless noted.
 .. autoclass:: ftmwpipeline.preprocessing.noise_estimation.NoiseResult
    :members:
 
+.. autoclass:: ftmwpipeline.core.data_structures.PeakClassification
+   :members:
+
 .. autoclass:: ftmwpipeline.core.data_structures.Peak
    :members:
 
@@ -246,6 +256,12 @@ defined in :mod:`ftmwpipeline.core.data_structures` unless noted.
    :members:
 
 .. autoclass:: ftmwpipeline.core.data_structures.SpectralWindow
+   :members:
+
+.. autoclass:: ftmwpipeline.core.data_structures.FixedContributor
+   :members:
+
+.. autoclass:: ftmwpipeline.core.data_structures.FitWindow
    :members:
 
 .. autoclass:: ftmwpipeline.core.data_structures.WindowPlan
@@ -295,6 +311,36 @@ calibrations.
 .. autoclass:: ftmwpipeline.fitting.timebase_calibration.TimebaseCalibrationResult
    :members:
 
+The next two are different in kind from those above: they are not the record
+of a calibration *run*, but the answer to "what frame is this file's frequency
+data in right now, and by how much is it corrected".
+:func:`~ftmwpipeline.api.frequency_calibration` /
+:meth:`~ftmwpipeline.pipeline.Pipeline.frequency_calibration` /
+``timebase state`` (:doc:`../clock_declaration`) *derive* that answer on every
+call from the clock declaration and the live timebase calibration, so it is
+readable at any stage — including before Stage 5 — and, being derived rather
+than persisted, it cannot go stale.
+
+.. autoclass:: ftmwpipeline.core.calibration.CalibrationStamp
+   :members:
+
+.. autodata:: ftmwpipeline.core.calibration.CalibrationState
+   :annotation:
+
+Curation vocabulary
+--------------------
+
+Public vocabulary shared by every Stage 6 curation verb (``review edit`` /
+``create`` / ``merge`` / ``split`` / ``accept``, and ``review apply``), defined
+in :mod:`ftmwpipeline.core.curation` so an external tool can pair against the
+exact values the pipeline itself uses rather than a separately maintained copy.
+
+.. autodata:: ftmwpipeline.core.curation.Frame
+   :annotation:
+
+.. autodata:: ftmwpipeline.core.curation.REFIT_SNAP_TOL_BINS
+   :annotation:
+
 Settings objects
 ----------------
 
@@ -336,3 +382,7 @@ The file-management error family, all subclasses of
 .. autoexception:: ftmwpipeline.file_manager.PipelineCorruptionError
 
 .. autoexception:: ftmwpipeline.file_manager.StageDependencyError
+
+.. autoexception:: ftmwpipeline.file_manager.PipelineCompatibilityError
+
+.. autoexception:: ftmwpipeline.file_manager.AnalysisEpochMismatchError

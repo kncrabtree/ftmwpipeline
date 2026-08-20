@@ -220,6 +220,106 @@ its phase rather than a fitted lineshape, the precision bound that follows, and 
 the correction reaches the line list — is the subject of the :doc:`timebase
 self-calibration methods note <methods/timebase_calibration>`.
 
+Reading the calibration state
+------------------------------
+
+``timebase run`` and ``timebase show`` are about the *measurement*: they only
+have anything to report once a self-calibration has actually been performed.
+A different, more general question — "what frame is this file's frequency
+data in right now, and by how much is it corrected?" — is answered by
+``timebase state`` (functional API: :func:`ftmwpipeline.api.frequency_calibration`;
+``Pipeline``: :meth:`~ftmwpipeline.pipeline.Pipeline.frequency_calibration`).
+
+This is a **derived** read, not a persisted one: it is recomputed on every call
+from the clock declaration (``clocks show`` — the persisted Stage 5
+declaration if a fit has run, otherwise the recommended layer an importer or
+``clocks set`` wrote) and, if one exists, the live timebase calibration. It
+never disagrees with what a ``frame="calibrated"`` curation call will actually
+apply, because it is derived the same way that call derives its correction.
+It is read-only and mutates nothing.
+
+Because it degrades to documented defaults at every step rather than raising,
+it answers on a file that has been through nothing but the FID import —
+**before Stage 5 or Stage 6 have ever run.** The only error case is the file
+not existing at all. This makes it the read an integrator should build
+against for "is this file's frequency axis calibrated," rather than
+:func:`~ftmwpipeline.api.load_timebase_calibration` (raises if no measurement
+exists yet) or the Stage 6 :class:`~ftmwpipeline.core.data_structures.FinalProducts`
+stamp (only exists once Stage 6 has run, and describes that past build rather
+than the file's current state — it can go stale if the clock declaration or
+timebase calibration changes afterward).
+
+The returned value is a
+:class:`~ftmwpipeline.core.calibration.CalibrationStamp`, carrying:
+
+- ``state`` — one of three :data:`~ftmwpipeline.core.calibration.CalibrationState`
+  strings: ``"rb_locked"`` (no unlocked clock declared; the frequency axis is
+  used as acquired, :math:`\varepsilon` is a null op), ``"self_calibrated"``
+  (an unlocked digitizer is declared *and* a passing timebase calibration is
+  present; raw and calibrated frames actually differ), or ``"uncalibrated"``
+  (an unlocked digitizer is declared but nothing usable has been measured yet
+  — frequencies are reported as acquired and caveated; run ``timebase run``).
+- ``epsilon`` / ``sigma_epsilon`` — the fractional scale error that will be
+  applied and its 1-sigma uncertainty (both ``0.0`` unless ``state`` is
+  ``"self_calibrated"``).
+- ``sigma_floor_khz`` — the declared systematic accuracy floor folded into
+  every peak's frequency budget (``0.0`` until one is declared).
+- ``probe_freq_mhz`` / ``sideband`` — the probe/LO frequency and sideband the
+  calibrated frame is defined against, read from the FID header; both are
+  ``None`` only when the file carries no FID header to read them from, in
+  which case no raw/calibrated frame conversion is possible yet.
+
+The examples below are from a file with an unlocked digitizer clock declared
+and a measured :math:`\varepsilon = +2.2\pm0.1` ppm persisted against it.
+
+.. code-block:: console
+
+   $ ftmwpipeline timebase state exp.ftmw
+   Frequency calibration for: exp.ftmw
+     state              : self_calibrated
+                          (unlocked digitizer with a measured timebase calibration applied; raw and calibrated frames differ)
+     epsilon            : +2.200 +- 0.100 ppm
+     sigma floor        : 0.000 kHz
+     probe frequency    : 40960.000000 MHz
+     sideband           : upper
+
+   $ ftmwpipeline timebase state exp.ftmw --format json
+   {
+     "state": "self_calibrated",
+     "epsilon": 2.2e-06,
+     "sigma_epsilon": 1e-07,
+     "sigma_floor_khz": 0.0,
+     "probe_freq_mhz": 40960.0,
+     "sideband": "upper"
+   }
+
+.. code-block:: python
+
+   import ftmwpipeline.api as ftmw
+   from ftmwpipeline import Pipeline
+
+   stamp = ftmw.frequency_calibration("exp.ftmw")
+   # CalibrationStamp(state='self_calibrated', epsilon=2.2e-06,
+   #                   sigma_epsilon=1e-07, sigma_floor_khz=0.0,
+   #                   probe_freq_mhz=40960.0, sideband='upper')
+
+   # Equivalently, bound to an open Pipeline:
+   Pipeline.open("exp.ftmw").frequency_calibration() == stamp   # True
+
+On a freshly-imported file with no clock declaration at all, ``state`` reads
+``"rb_locked"`` and :math:`\varepsilon` is identically zero:
+
+.. code-block:: console
+
+   $ ftmwpipeline timebase state exp_fresh.ftmw
+   Frequency calibration for: exp_fresh.ftmw
+     state              : rb_locked
+                          (no unlocked clock declared; axis absolutely calibrated as acquired (eps is a null op))
+     epsilon            : +0.000 +- 0.000 ppm
+     sigma floor        : 0.000 kHz
+     probe frequency    : 40960.000000 MHz
+     sideband           : upper
+
 Interfaces
 ----------
 
@@ -229,8 +329,8 @@ behave identically across the CLI, the functional API, and the ``Pipeline`` clas
 - ``clocks`` — ``show`` / ``set`` / ``add`` / ``remove`` / ``clear``
   (``get_clock_sources`` / ``set_clock_sources`` / ``remove_clock_sources`` /
   ``clear_clock_sources``).
-- ``timebase`` — ``run`` / ``show`` (``calibrate_timebase`` /
-  ``load_timebase_calibration``).
+- ``timebase`` — ``run`` / ``show`` / ``state`` (``calibrate_timebase`` /
+  ``load_timebase_calibration`` / ``frequency_calibration``).
 
 The clock declaration is persisted with the file and travels with it; the timebase
 calibration is persisted as its own record and consumed by Stage 6.
