@@ -32,6 +32,19 @@ had to reach into ``_internal`` or parse out of prose to obtain are now
 published, and the Stage 6 edit paths that carry them were collapsed onto one
 engine so they cannot answer differently.
 
+* **The curation cart's CSV export declares its own frame.** The interactive
+  report's cart wrote a bare ``action,window,freqs,params`` header with no
+  ``# frame:`` directive. Since omitting the frame on a frequency-bearing
+  curation file became a hard error on a ``self_calibrated`` file, the cart's
+  own export — and the ``review apply`` command the cart prints beside it —
+  could not be applied to such a file at all, not even with ``--dry-run``. The
+  cart emits raw Stage 5 model frequencies deliberately: the value the edit
+  verbs match on, not the calibrated value shown in the table. So the export
+  now leads with ``# frame: raw``, which is the honest declaration of what it
+  carries. The printed command is still left without ``--frame`` on purpose —
+  the file's own header answers the question now, and an explicit ``--frame``
+  that disagreed with the header would be refused.
+
 * **An active region can no longer claim to be longer than the recording.**
   ``end_us`` was validated only for being non-negative and greater than
   ``start_us`` — never against the length of the FID. The sample slice clamps

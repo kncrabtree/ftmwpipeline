@@ -1902,7 +1902,10 @@ _CURATION_JS = r"""<script>
   }
   function csvCell(s) { return (s == null) ? '' : String(s); }
   function toCsv() {
-    var lines = ['action,window,freqs,params'];
+    // The cart exports raw Stage 5 model frequencies (see fit_curation.rst),
+    // so the file must self-declare that frame -- otherwise applying it to a
+    // self_calibrated file is a hard error (frame is required there).
+    var lines = ['# frame: raw', 'action,window,freqs,params'];
     ops.forEach(function (o) {
       if (o.action === 'undo') return;  // not a curation-file op
       lines.push([o.action, o.window, csvCell(o.freqs),
