@@ -132,9 +132,9 @@ from .core.start_detection_settings import StartDetectionSettings
 from .core.tau_calibration_settings import TauCalibrationSettings
 from .core.window_planning_settings import WindowPlanningSettings
 from .file_manager import (
+    PipelineFileError,
     PipelineStageTracker,
     SourceMetadata,
-    StageDependencyError,
     create_pipeline_file,
     open_pipeline_file,
     validate_pipeline_file,
@@ -287,6 +287,8 @@ class Pipeline:
         # Load FID data
         try:
             fid = load_fid(source_path, format_name, **loader_params)
+        except (ValueError, PipelineFileError, FileNotFoundError):
+            raise
         except Exception as e:
             raise RuntimeError(f"Failed to load FID data: {e}") from e
 
@@ -406,6 +408,8 @@ class Pipeline:
                 f"Loaded FID data: {fid.n_points:,} points, {fid.duration_us:.1f} μs"
             )
             return fid
+        except (ValueError, PipelineFileError, FileNotFoundError):
+            raise
         except Exception as e:
             raise RuntimeError(f"Failed to load FID data: {e}") from e
 
@@ -470,6 +474,8 @@ class Pipeline:
             if trim:
                 self.logger.info(f"Trimmed to {trim[0]:.1f}-{trim[1]:.1f} MHz")
             return complex_ft
+        except (ValueError, PipelineFileError, FileNotFoundError):
+            raise
         except Exception as e:
             raise RuntimeError(f"Failed to compute FT: {e}") from e
 
@@ -514,6 +520,8 @@ class Pipeline:
         """
         try:
             return compute_display_ft_impl(str(self.filepath), pad_factor=pad_factor)
+        except (ValueError, PipelineFileError, FileNotFoundError):
+            raise
         except Exception as e:
             raise RuntimeError(f"Failed to compute display FT: {e}") from e
 
@@ -613,6 +621,8 @@ class Pipeline:
             self.logger.info("FT visualization completed")
             return fig
 
+        except (ValueError, PipelineFileError, FileNotFoundError):
+            raise
         except Exception as e:
             raise RuntimeError(f"Failed to create FT visualization: {e}") from e
 
@@ -668,8 +678,8 @@ class Pipeline:
             self.logger.info("Stage 2: Noise estimation completed successfully")
             return cast(NoiseResult, result["noise_result"])
 
-        except StageDependencyError:
-            # Re-raise dependency errors with clear message
+        except (ValueError, PipelineFileError, FileNotFoundError):
+            # Re-raise typed errors (StageDependencyError and friends included)
             raise
         except Exception as e:
             raise RuntimeError(f"Failed to estimate noise: {e}") from e
@@ -743,8 +753,8 @@ class Pipeline:
             self.logger.info("Noise visualization completed")
             return fig
 
-        except StageDependencyError:
-            # Re-raise dependency errors with clear message
+        except (ValueError, PipelineFileError, FileNotFoundError):
+            # Re-raise typed errors (StageDependencyError and friends included)
             raise
         except Exception as e:
             raise RuntimeError(f"Failed to create noise visualization: {e}") from e
@@ -800,7 +810,7 @@ class Pipeline:
                 "pass" if tc.preconditions_passed else "fail",
             )
             return cast(TauCalibrationResult, tc)
-        except StageDependencyError:
+        except (ValueError, PipelineFileError, FileNotFoundError):
             raise
         except Exception as e:
             raise RuntimeError(f"Failed to calibrate tau: {e}") from e
@@ -852,9 +862,7 @@ class Pipeline:
                 "pass" if tc.preconditions_passed else "fail",
             )
             return cast(TimebaseCalibrationResult, tc)
-        except StageDependencyError:
-            raise
-        except ValueError:
+        except (ValueError, PipelineFileError, FileNotFoundError):
             raise
         except Exception as e:
             raise RuntimeError(f"Failed to calibrate timebase: {e}") from e
@@ -1014,7 +1022,7 @@ class Pipeline:
                 groups if groups else "no Stage 2b group present",
             )
             return cast(ShapeRecommendation, rec)
-        except StageDependencyError:
+        except (ValueError, PipelineFileError, FileNotFoundError):
             raise
         except Exception as e:
             raise RuntimeError(f"Failed to recommend shape: {e}") from e
@@ -1234,7 +1242,7 @@ class Pipeline:
                 result["n_gap"],
             )
             return cast(List[Peak], result["peaks"])
-        except StageDependencyError:
+        except (ValueError, PipelineFileError, FileNotFoundError):
             raise
         except Exception as e:
             raise RuntimeError(f"Failed to detect peaks: {e}") from e
@@ -1302,6 +1310,8 @@ class Pipeline:
 
                 plt.show()
             return fig
+        except (ValueError, PipelineFileError, FileNotFoundError):
+            raise
         except Exception as e:
             raise RuntimeError(f"Failed to create peak visualization: {e}") from e
 
@@ -1373,7 +1383,7 @@ class Pipeline:
                 result["n_fixed_contributors"],
             )
             return cast(WindowPlan, result["plan"])
-        except StageDependencyError:
+        except (ValueError, PipelineFileError, FileNotFoundError):
             raise
         except Exception as e:
             raise RuntimeError(f"Failed to assign windows: {e}") from e
@@ -1435,6 +1445,8 @@ class Pipeline:
 
                 plt.show()
             return fig
+        except (ValueError, PipelineFileError, FileNotFoundError):
+            raise
         except Exception as e:
             raise RuntimeError(f"Failed to create window visualization: {e}") from e
 
@@ -1546,7 +1558,7 @@ class Pipeline:
                 result["final_plan_revision"],
             )
             return cast(SpectrumFit, result["fit"])
-        except StageDependencyError:
+        except (ValueError, PipelineFileError, FileNotFoundError):
             raise
         except Exception as e:
             raise RuntimeError(f"Failed to fit peaks: {e}") from e
@@ -2305,7 +2317,7 @@ class Pipeline:
                 report["parameters"]["kappa"],
             )
             return report
-        except StageDependencyError:
+        except (ValueError, PipelineFileError, FileNotFoundError):
             raise
         except Exception as e:
             raise RuntimeError(f"Failed to validate Stage 5 shape error: {e}") from e
@@ -2341,6 +2353,8 @@ class Pipeline:
 
                 plt.show()
             return fig
+        except (ValueError, PipelineFileError, FileNotFoundError):
+            raise
         except Exception as e:
             raise RuntimeError(f"Failed to create fit visualization: {e}") from e
 
@@ -2397,6 +2411,8 @@ class Pipeline:
 
                 plt.show()
             return result
+        except (ValueError, PipelineFileError, FileNotFoundError):
+            raise
         except Exception as e:
             raise RuntimeError(f"Failed to show fit: {e}") from e
 

@@ -32,6 +32,34 @@ had to reach into ``_internal`` or parse out of prose to obtain are now
 published, and the Stage 6 edit paths that carry them were collapsed onto one
 engine so they cannot answer differently.
 
+* **``Pipeline`` methods let a typed error propagate instead of flattening it
+  into ``RuntimeError``.** Eighteen methods (``compute_ft``, ``fit_peaks``,
+  ``estimate_noise``, ``calibrate_tau``, ``calibrate_timebase``, and the rest
+  of the stage-driving surface) wrapped their whole body in
+  ``except Exception as e: raise RuntimeError(f"Failed to ...: {e}") from e``,
+  so a caller could route on nothing but a substring of the message. That
+  flattened a ``ValueError`` from a stage's own input validation — a mistake in
+  what the caller asked for — into the same type as a genuine internal failure,
+  and it flattened the whole ``PipelineFileError`` family, including
+  ``AnalysisEpochMismatchError``, which was given its own type precisely so a
+  consumer could route on it rather than match a message. The refusal added
+  below for an ``end_us`` past the record is the case that motivated fixing
+  this now: it surfaced as ``RuntimeError: Failed to compute FT: end_us=100 us
+  is past the end of the recording (12.65 us)`` — the words survived, the type
+  did not. ``ValueError``, the ``PipelineFileError`` family, and
+  ``FileNotFoundError`` (a missing pipeline file or preset path is the same
+  class of user mistake, and is not a ``ValueError``) now propagate with their
+  own type; the ``RuntimeError`` wrap remains only for an exception none of
+  those methods' own contracts name.
+
+  This is a **behavior change for an existing caller that catches
+  ``RuntimeError`` around one of these methods** — that ``except`` clause may
+  stop matching once the underlying failure is a ``ValueError`` or a
+  ``PipelineFileError`` subclass instead. Nothing is lost in the process: every
+  wrap still chains with ``from e``, and every propagated error is exactly what
+  the failing stage raised, so a caller that widens to ``except Exception`` (or
+  adds the specific type it now needs) sees the same message it always did.
+
 * **The curation cart's CSV export declares its own frame.** The interactive
   report's cart wrote a bare ``action,window,freqs,params`` header with no
   ``# frame:`` directive. Since omitting the frame on a frequency-bearing
