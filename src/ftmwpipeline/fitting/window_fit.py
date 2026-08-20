@@ -754,9 +754,7 @@ def evaluate_baseline(
     ):
         return cast(np.ndarray, np.zeros(u.size, dtype=np.complex128))
     basis = baseline_basis(u, int(fit.baseline_order), float(fit.baseline_offset_scale))
-    return cast(
-        np.ndarray, basis @ np.asarray(fit.baseline_coeffs, dtype=np.complex128)
-    )
+    return basis @ np.asarray(fit.baseline_coeffs, dtype=np.complex128)
 
 
 def in_window_skirt_budget(
@@ -852,7 +850,7 @@ def _pack(peaks: Sequence[ModelPeak], tau_us: float, fit_tau: bool) -> np.ndarra
         values += [pk.amplitude, pk.offset_mhz, pk.phase]
     if fit_tau:
         values.append(tau_us)
-    return cast(np.ndarray, np.asarray(values, dtype=float))
+    return np.asarray(values, dtype=float)
 
 
 def _unpack(
@@ -1401,11 +1399,11 @@ def fit_window(
         r = (z - model) / sig_ri
         data_r = np.concatenate([r.real[keep], r.imag[keep]])
         if not penalties_active:
-            return cast(np.ndarray, data_r)
+            return data_r
         pen_r, _ = _penalty_residuals_and_jacobian(
             params, k, tau0_us, fit_tau, **penalty_kw
         )
-        return cast(np.ndarray, np.concatenate([data_r, pen_r]))
+        return np.concatenate([data_r, pen_r])
 
     def _weighted_model_jacobian(peaks: Sequence[ModelPeak], tau: float) -> np.ndarray:
         # d(residual)/d(p) = -(d(model)/d(p)) / sig_ri, complex, columns =
@@ -1427,7 +1425,7 @@ def fit_window(
         weighted = _weighted_model_jacobian(peaks, tau)
         data_jac = np.concatenate([weighted.real[keep], weighted.imag[keep]], axis=0)
         if not penalties_active:
-            return cast(np.ndarray, data_jac)
+            return data_jac
         _, pen_jac = _penalty_residuals_and_jacobian(
             params, k, tau0_us, fit_tau, **penalty_kw
         )
@@ -1436,7 +1434,7 @@ def fit_window(
             pen_jac = np.concatenate(
                 [pen_jac, np.zeros((pen_jac.shape[0], 2 * n_base))], axis=1
             )
-        return cast(np.ndarray, np.concatenate([data_jac, pen_jac], axis=0))
+        return np.concatenate([data_jac, pen_jac], axis=0)
 
     try:
         sol = least_squares(
