@@ -202,6 +202,146 @@ class TestEvaluateEdgeFreeContributors:
         )
         assert frozen == []
 
+    def test_without_point_map_uid_stays_unset(self):
+        """No PointMap supplied (the default) -- peak_uid stays None, matching
+        every other seed constructor's ``point_map=None`` default."""
+        freq = np.arange(36080.0, 36140.0, DF_MHZ)
+        z = _synth_spectrum(freq, [(36100.0, 5.0, 0.3)])
+        active = _make_active_ft(freq, z)
+        contributors = [
+            FixedContributor(
+                peak_index=1,
+                primary_window_id=0,
+                frequency_mhz=36100.0,
+                edge_free=True,
+            ),
+        ]
+        frozen = evaluate_edge_free_contributors(
+            contributors,
+            active.freq_mhz,
+            active.complex_spectrum,
+            dependent_center_mhz=36120.0,
+            sideband=SIDEBAND,
+            tau_us=TAU_US,
+            acquisition_us=T_US,
+        )
+        assert len(frozen) == 1
+        assert frozen[0].model_peak.peak_uid is None
+
+    def test_peak_uid_stamped_from_seed_matches_a_k1_seed_in_any_window(self):
+        """A birth: the frozen model's peak_uid is stamped from the
+        contributor's own seed frequency (``c.frequency_mhz``), and because
+        point space is absolute the same number is what a K=1 seed at that
+        Stage 3 frequency would get in ANY window's own frame -- not a
+        lookup, a consequence of both being births at the same seed
+        frequency (see scratch/edge-free-contributor-identity.md)."""
+        from ftmwpipeline.fitting.active_ft import peak_uid_from_offset
+
+        true_freq = 36100.0
+        freq = np.arange(36080.0, 36140.0, DF_MHZ)
+        z = _synth_spectrum(freq, [(true_freq, 5.0, 0.3)])
+        active = _make_active_ft(freq, z)
+        contributors = [
+            FixedContributor(
+                peak_index=1,
+                primary_window_id=0,
+                frequency_mhz=true_freq,
+                edge_free=True,
+            ),
+        ]
+        dep_center = 36120.0
+        n_active, sample_dt_us = 1000, 0.05
+        s = sideband_sign(SIDEBAND)
+        point_map = PointMap.from_frame(
+            dep_center, SIDEBAND, PROBE_MHZ, n_active, sample_dt_us
+        )
+        frozen = evaluate_edge_free_contributors(
+            contributors,
+            active.freq_mhz,
+            active.complex_spectrum,
+            dependent_center_mhz=dep_center,
+            sideband=SIDEBAND,
+            tau_us=TAU_US,
+            acquisition_us=T_US,
+            point_map=point_map,
+        )
+        assert len(frozen) == 1
+        uid = frozen[0].model_peak.peak_uid
+        assert uid is not None
+        assert uid == point_map.stamp(s * (true_freq - dep_center))
+
+        # Absoluteness: a K=1 seed at the same Stage 3 frequency, computed in
+        # a completely different window's frame (arbitrary center, nothing to
+        # do with dep_center), lands on the exact same identifier.
+        other_center = 36042.0
+        other_offset = s * (true_freq - other_center)
+        other_uid = peak_uid_from_offset(
+            other_offset, other_center, SIDEBAND, PROBE_MHZ, n_active, sample_dt_us
+        )
+        assert uid == other_uid
+
+    def test_peak_uid_stamped_from_seed_not_from_vp_refined_position(self):
+        """The VP frequency refinement (:data:`DEFAULT_EDGE_FREE_FREQ_REFINE`)
+        moves ``line_freqs`` (plan_execution.py ~:833) and the returned
+        ``FrozenPeak.frequency_mhz`` legitimately follows that refined value
+        -- but the identifier must not. Deliberately mis-seed the
+        contributor off the line's true position (within the VP trust
+        region) so the read genuinely refines back toward the true center;
+        pins that peak_uid is stamped from the (unrefined) seed and NOT
+        from the refined read position, catching the exact re-derivation
+        mistake the design forbids."""
+        true_freq = 36100.0
+        seed_freq = true_freq + 0.01  # deliberately off, within the VP bound
+        freq = np.arange(36080.0, 36140.0, DF_MHZ)
+        z = _synth_spectrum(freq, [(true_freq, 5.0, 0.3)])
+        active = _make_active_ft(freq, z)
+        contributors = [
+            FixedContributor(
+                peak_index=1,
+                primary_window_id=0,
+                frequency_mhz=seed_freq,
+                edge_free=True,
+            ),
+        ]
+        dep_center = 36120.0
+        n_active, sample_dt_us = 1000, 0.05
+        s = sideband_sign(SIDEBAND)
+        point_map = PointMap.from_frame(
+            dep_center, SIDEBAND, PROBE_MHZ, n_active, sample_dt_us
+        )
+        frozen = evaluate_edge_free_contributors(
+            contributors,
+            active.freq_mhz,
+            active.complex_spectrum,
+            dependent_center_mhz=dep_center,
+            sideband=SIDEBAND,
+            tau_us=TAU_US,
+            acquisition_us=T_US,
+            point_map=point_map,
+        )
+        assert len(frozen) == 1
+        fp = frozen[0]
+
+        # Confirm the VP refinement actually moved the read position -- the
+        # returned frequency_mhz (f0, the refined value) should have pulled
+        # back toward the true center, away from the deliberately-wrong seed.
+        moved_mhz = abs(fp.frequency_mhz - seed_freq)
+        assert moved_mhz > 0.002, (
+            f"VP refinement only moved the read {moved_mhz:.5f} MHz -- too "
+            "small to distinguish a stamp-from-seed from a "
+            "stamp-from-refined-value regression"
+        )
+        assert fp.frequency_mhz == pytest.approx(true_freq, abs=1e-3)
+
+        # The positive: stamped from the (unrefined) seed frequency.
+        expected_from_seed = point_map.stamp(s * (seed_freq - dep_center))
+        assert fp.model_peak.peak_uid == expected_from_seed
+
+        # The negative that matters most: NOT the point-space id of the
+        # VP-refined (fitted) position.
+        uid_from_refined = point_map.stamp(s * (fp.frequency_mhz - dep_center))
+        assert fp.model_peak.peak_uid != uid_from_refined
+
 
 class TestSubtractFrozenBackground:
     def test_no_contributors_returns_data_unchanged(self):

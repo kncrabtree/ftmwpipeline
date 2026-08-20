@@ -711,6 +711,7 @@ def evaluate_edge_free_contributors(
     acquisition_us: float,
     shape: "PeakShape | str" = "lorentzian",
     read_half_width_mhz: Optional[float] = None,
+    point_map: Optional[PointMap] = None,
 ) -> list[FrozenPeak]:
     """Materialize edge-free contributors via a self-contained active-FT read.
 
@@ -758,6 +759,16 @@ def evaluate_edge_free_contributors(
         Half-width of the per-line core read region (MHz). ``None`` (default)
         uses ``8 / T`` (eight resolution elements), the 360 w287 A/B sweet
         spot.
+    point_map : PointMap, optional
+        The *dependent* window's offset -> point-hundredths map. Each
+        contributor's frozen model is a birth -- a fresh single-line model
+        constructed at its own seed frequency, ``c.frequency_mhz`` (never the
+        variable-projection-refined ``f0``, a fitted value) -- so when
+        supplied, it stamps
+        :attr:`~ftmwpipeline.fitting.peak_model.ModelPeak.peak_uid` on the
+        returned :class:`FrozenPeak` from that seed frequency, exactly like
+        every other seed constructor. ``None`` (the default) leaves
+        ``peak_uid`` unstamped, matching :func:`~ftmwpipeline.fitting.window_fit._seed_peak`.
     """
     s = sideband_sign(sideband)
     freq = np.asarray(active_freq_mhz, dtype=float)
@@ -838,6 +849,16 @@ def evaluate_edge_free_contributors(
         coeffs, *_ = np.linalg.lstsq(design, z_core, rcond=None)
         for c, f0, g in zip(group, line_freqs, coeffs):
             delta_dep = s * (f0 - dependent_center_mhz)
+            # Birth: this contributor's frozen model is a fresh single-line
+            # read anchored at its own seed frequency c.frequency_mhz -- never
+            # f0, the VP-refined (fitted) position -- so peak_uid is stamped
+            # from c, exactly like every other seed constructor. frequency_mhz
+            # keeps using f0, as it always has; only the uid changes source.
+            uid = (
+                point_map.stamp(s * (c.frequency_mhz - dependent_center_mhz))
+                if point_map is not None
+                else None
+            )
             frozen.append(
                 FrozenPeak(
                     peak_index=c.peak_index,
@@ -846,6 +867,7 @@ def evaluate_edge_free_contributors(
                         amplitude=float(np.abs(g)),
                         offset_mhz=float(delta_dep),
                         phase=float(np.angle(g)),
+                        peak_uid=uid,
                     ),
                     frequency_mhz=float(f0),
                     freeze_eligible=c.freeze_eligible,
@@ -3939,6 +3961,7 @@ def _fit_one_window(
             tau_us=tau0_us,
             acquisition_us=acquisition_us,
             shape=conservative_kwargs.get("shape", "lorentzian"),
+            point_map=conservative_kwargs.get("point_map"),
         )
 
     candidate_offsets, candidate_passes = _peaks_to_candidate_offsets(

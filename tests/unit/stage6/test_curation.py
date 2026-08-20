@@ -748,6 +748,41 @@ def _window_center(path: Path, wid: int) -> float:
     raise KeyError(wid)
 
 
+def _clear_add_freq(path: Path, wid: int) -> float:
+    """An in-window frequency that is a legitimate ``add`` target.
+
+    NOT the window center: Stage 4 builds a window around the detection that
+    seeded it, so the center is the *birth position* of the peak already fitted
+    there. An ``add`` at the center therefore asks for a second peak at an
+    existing peak's exact identity -- both are stamped with the same
+    ``peak_uid`` and the refit is refused as a duplicate identifier. (Resolving
+    a blend is what ``split`` is for.) Pick the in-window position furthest
+    from every fitted peak instead, which is what "add a line the detector
+    missed" actually means.
+    """
+    import h5py as _h5py
+    import numpy as _np
+
+    from ftmwpipeline._internal.stage4_impl import load_windows_impl as _lw
+    from ftmwpipeline.io.fitting_serialization import (
+        load_spectrum_fit_from_hdf5 as _load_sf,
+    )
+
+    plan = _lw(str(path))["plan"]
+    w = next(x for x in plan.windows if int(x.window_id) == wid)
+    lo, hi = w.freq_range
+    lo, hi = min(lo, hi), max(lo, hi)
+    with _h5py.File(str(path), "r") as h5f:
+        sf = _load_sf(h5f["stage5_fitting"])
+    wf = next((x for x in sf.window_fits if int(x.window_id) == wid), None)
+    peaks = [float(p.frequency_mhz) for p in (wf.fitted_peaks if wf else [])]
+    if not peaks:
+        return 0.5 * (lo + hi)
+    grid = _np.linspace(lo, hi, 512)[1:-1]
+    dist = _np.min(_np.abs(grid[:, None] - _np.asarray(peaks)[None, :]), axis=1)
+    return float(grid[int(_np.argmax(dist))])
+
+
 @pytest.mark.integration
 def test_apply_row_order_independent(stage5_multi_file, tmp_path):
     """The same per-window edits, specified in two different row orders, reach
@@ -755,8 +790,8 @@ def test_apply_row_order_independent(stage5_multi_file, tmp_path):
     canonicalizes cross-window order (ascending window id) rather than
     replaying the file's own row order."""
     wa, wb, _ = _three_window_ids(stage5_multi_file)
-    fa = _window_center(stage5_multi_file, wa)
-    fb = _window_center(stage5_multi_file, wb)
+    fa = _clear_add_freq(stage5_multi_file, wa)
+    fb = _clear_add_freq(stage5_multi_file, wb)
 
     forward = tmp_path / "forward.ftmw"
     reverse = tmp_path / "reverse.ftmw"
@@ -791,8 +826,8 @@ def test_apply_batch_builds_fit_context_once(stage5_multi_file, tmp_path, monkey
     from ftmwpipeline._internal import stage5_impl
 
     wa, wb, _ = _three_window_ids(stage5_multi_file)
-    fa = _window_center(stage5_multi_file, wa)
-    fb = _window_center(stage5_multi_file, wb)
+    fa = _clear_add_freq(stage5_multi_file, wa)
+    fb = _clear_add_freq(stage5_multi_file, wb)
     fp = tmp_path / "ctxcount.ftmw"
     shutil.copy(stage5_multi_file, fp)
 
@@ -848,7 +883,7 @@ def test_cascade_downstream_of_two_edits_refit_once(
 
     monkeypatch.setattr(s6, "refit_window_core", spy_core)
 
-    fw0, fw1 = _window_center(fp, w0), _window_center(fp, w1)
+    fw0, fw1 = _clear_add_freq(fp, w0), _clear_add_freq(fp, w1)
     cur = tmp_path / "two_edits.csv"
     cur.write_text(f"add,{w0},{fw0},\nadd,{w1},{fw1},\n")
     apply_curation_impl(fp, cur)
@@ -868,8 +903,8 @@ def test_undo_one_of_several_replays_batch_once(
     from ftmwpipeline._internal import stage5_impl
 
     wa, wb, _ = _three_window_ids(stage5_multi_file)
-    fa = _window_center(stage5_multi_file, wa)
-    fb = _window_center(stage5_multi_file, wb)
+    fa = _clear_add_freq(stage5_multi_file, wa)
+    fb = _clear_add_freq(stage5_multi_file, wb)
 
     # Reference: only wb's add applied to the automatic fit.
     ref = tmp_path / "ref.ftmw"
@@ -911,8 +946,8 @@ def test_apply_cross_interface_multiwindow_batch(stage5_multi_file, tmp_path):
         shutil.copy(stage5_multi_file, p)
 
     wa, wb, _ = _three_window_ids(paths["api"])
-    fa = _window_center(paths["api"], wa)
-    fb = _window_center(paths["api"], wb)
+    fa = _clear_add_freq(paths["api"], wa)
+    fb = _clear_add_freq(paths["api"], wb)
     cur = tmp_path / "mw.csv"
     cur.write_text(f"add,{wa},{fa},\nadd,{wb},{fb},\n")
 

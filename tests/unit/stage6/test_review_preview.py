@@ -197,6 +197,41 @@ def _window_center(path: Path, wid: int) -> float:
     raise KeyError(wid)
 
 
+def _clear_add_freq(path: Path, wid: int) -> float:
+    """An in-window frequency that is a legitimate ``add`` target.
+
+    NOT the window center: Stage 4 builds a window around the detection that
+    seeded it, so the center is the *birth position* of the peak already fitted
+    there. An ``add`` at the center therefore asks for a second peak at an
+    existing peak's exact identity -- both are stamped with the same
+    ``peak_uid`` and the refit is refused as a duplicate identifier. (Resolving
+    a blend is what ``split`` is for.) Pick the in-window position furthest
+    from every fitted peak instead, which is what "add a line the detector
+    missed" actually means.
+    """
+    import h5py as _h5py
+    import numpy as _np
+
+    from ftmwpipeline._internal.stage4_impl import load_windows_impl as _lw
+    from ftmwpipeline.io.fitting_serialization import (
+        load_spectrum_fit_from_hdf5 as _load_sf,
+    )
+
+    plan = _lw(str(path))["plan"]
+    w = next(x for x in plan.windows if int(x.window_id) == wid)
+    lo, hi = w.freq_range
+    lo, hi = min(lo, hi), max(lo, hi)
+    with _h5py.File(str(path), "r") as h5f:
+        sf = _load_sf(h5f["stage5_fitting"])
+    wf = next((x for x in sf.window_fits if int(x.window_id) == wid), None)
+    peaks = [float(p.frequency_mhz) for p in (wf.fitted_peaks if wf else [])]
+    if not peaks:
+        return 0.5 * (lo + hi)
+    grid = _np.linspace(lo, hi, 512)[1:-1]
+    dist = _np.min(_np.abs(grid[:, None] - _np.asarray(peaks)[None, :]), axis=1)
+    return float(grid[int(_np.argmax(dist))])
+
+
 def _window_stats(path: Path) -> Dict[int, tuple]:
     with h5py.File(str(path), "r") as h5f:
         sf = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
@@ -666,8 +701,8 @@ class TestPreviewEqualsApplyWithGenuineCascade:
         shutil.copy(sc_multi_file, preview_path)
         shutil.copy(sc_multi_file, apply_path)
 
-        freq0 = _window_center(preview_path, w0)
-        freq2 = _window_center(preview_path, w2)
+        freq0 = _clear_add_freq(preview_path, w0)
+        freq2 = _clear_add_freq(preview_path, w2)
         cur = tmp_path / "cur.csv"
         cur.write_text(f"add,{w0},{freq0},\nadd,{w2},{freq2},\n")
 

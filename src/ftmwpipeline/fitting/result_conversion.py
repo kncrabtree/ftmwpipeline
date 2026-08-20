@@ -459,6 +459,44 @@ def _match_free_peak_index(
     return int(best_idx)
 
 
+def _check_no_duplicate_peak_uids(
+    fitted_peaks: Sequence[FittedPeak], *, window_id: Optional[int]
+) -> None:
+    """Refuse a window whose fitted peaks carry a duplicated ``peak_uid``.
+
+    Scoped to the free/fitted peak set that becomes :class:`FittedPeak` --
+    never the frozen/fixed background, which legitimately shares a uid with
+    the fitted peak it represents (an edge-free contributor's birth is
+    stamped from the same seed frequency as its primary window's own seed,
+    so the two coincide by construction). Only non-``None`` uids are
+    compared; ``None`` is the absence of a value, not a value, so any number
+    of unstamped peaks may coexist.
+
+    Seeds are separated by at least ~25 hundredths of a point at worst case
+    (see ``scratch/peak-identity-plan.md``), so a genuine collision among
+    fitted peaks means something is structurally wrong upstream -- this is
+    an invariant violation, not a user-input problem, and the run should
+    stop rather than persist a duplicated identifier to exactly the
+    consumers the identifier exists to serve.
+    """
+    seen: dict[int, FittedPeak] = {}
+    for peak in fitted_peaks:
+        uid = peak.peak_uid
+        if uid is None:
+            continue
+        prior = seen.get(uid)
+        if prior is not None:
+            raise RuntimeError(
+                f"Invariant violation: duplicate peak_uid={uid} in window "
+                f"{window_id!r} -- fitted peaks at {prior.frequency_mhz!r} MHz "
+                f"and {peak.frequency_mhz!r} MHz both carry this identifier. "
+                "Two distinct fitted peaks must never share a peak_uid; this "
+                "indicates a structural bug in the stamping path, not a "
+                "user-input problem."
+            )
+        seen[uid] = peak
+
+
 # ---------------------------------------------------------------------------
 # Public converters
 # ---------------------------------------------------------------------------
@@ -599,6 +637,8 @@ def window_outcome_to_fitting_result(
                 peak_uid=peak.peak_uid,
             )
         )
+
+    _check_no_duplicate_peak_uids(fitted_peaks, window_id=fit_window.window_id)
 
     shape_attr = inner.shape
     shape_str = shape_attr.value if hasattr(shape_attr, "value") else str(shape_attr)

@@ -183,6 +183,41 @@ def _window_center(path: Path, wid: int) -> float:
     raise KeyError(wid)
 
 
+def _clear_add_freq(path: Path, wid: int) -> float:
+    """An in-window frequency that is a legitimate ``add`` target.
+
+    NOT the window center: Stage 4 builds a window around the detection that
+    seeded it, so the center is the *birth position* of the peak already fitted
+    there. An ``add`` at the center therefore asks for a second peak at an
+    existing peak's exact identity -- both are stamped with the same
+    ``peak_uid`` and the refit is refused as a duplicate identifier. (Resolving
+    a blend is what ``split`` is for.) Pick the in-window position furthest
+    from every fitted peak instead, which is what "add a line the detector
+    missed" actually means.
+    """
+    import h5py as _h5py
+    import numpy as _np
+
+    from ftmwpipeline._internal.stage4_impl import load_windows_impl as _lw
+    from ftmwpipeline.io.fitting_serialization import (
+        load_spectrum_fit_from_hdf5 as _load_sf,
+    )
+
+    plan = _lw(str(path))["plan"]
+    w = next(x for x in plan.windows if int(x.window_id) == wid)
+    lo, hi = w.freq_range
+    lo, hi = min(lo, hi), max(lo, hi)
+    with _h5py.File(str(path), "r") as h5f:
+        sf = _load_sf(h5f["stage5_fitting"])
+    wf = next((x for x in sf.window_fits if int(x.window_id) == wid), None)
+    peaks = [float(p.frequency_mhz) for p in (wf.fitted_peaks if wf else [])]
+    if not peaks:
+        return 0.5 * (lo + hi)
+    grid = _np.linspace(lo, hi, 512)[1:-1]
+    dist = _np.min(_np.abs(grid[:, None] - _np.asarray(peaks)[None, :]), axis=1)
+    return float(grid[int(_np.argmax(dist))])
+
+
 def _window_stats(path: Path) -> Dict[int, Tuple[int, float]]:
     with h5py.File(str(path), "r") as h5f:
         sf = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
@@ -397,8 +432,8 @@ class TestSessionMatchesSessionless:
 
         wids = _fitted_window_ids(sc_multi_file)
         w0, w1 = wids[0], wids[1]
-        f0 = _window_center(sc_multi_file, w0)
-        f1 = _window_center(sc_multi_file, w1)
+        f0 = _clear_add_freq(sc_multi_file, w0)
+        f1 = _clear_add_freq(sc_multi_file, w1)
 
         plain = tmp_path / "plain.ftmw"
         shutil.copy(sc_multi_file, plain)
@@ -468,7 +503,7 @@ class TestSessionMatchesSessionless:
             if wf.window_id == w_split
             for p in wf.fitted_peaks
         )
-        accept_anchor = _window_center(sc_multi_file, w_accept)
+        accept_anchor = _clear_add_freq(sc_multi_file, w_accept)
 
         plain = tmp_path / "plain.ftmw"
         shutil.copy(sc_multi_file, plain)
@@ -606,8 +641,8 @@ class TestStagedReuse:
     ) -> None:
         wids = _fitted_window_ids(sc_multi_file)
         w_preview, w_other = wids[0], wids[1]
-        freq_preview = _window_center(sc_multi_file, w_preview)
-        freq_other = _window_center(sc_multi_file, w_other)
+        freq_preview = _clear_add_freq(sc_multi_file, w_preview)
+        freq_other = _clear_add_freq(sc_multi_file, w_other)
         cur = tmp_path / "cur.csv"
         cur.write_text(f"add,{w_preview},{freq_preview},\n")
 
@@ -629,9 +664,9 @@ class TestStagedReuse:
         wids = _fitted_window_ids(sc_multi_file)
         w_a, w_b = wids[0], wids[1]
         cur_a = tmp_path / "a.csv"
-        cur_a.write_text(f"add,{w_a},{_window_center(sc_multi_file, w_a)},\n")
+        cur_a.write_text(f"add,{w_a},{_clear_add_freq(sc_multi_file, w_a)},\n")
         cur_b = tmp_path / "b.csv"
-        cur_b.write_text(f"add,{w_b},{_window_center(sc_multi_file, w_b)},\n")
+        cur_b.write_text(f"add,{w_b},{_clear_add_freq(sc_multi_file, w_b)},\n")
 
         # A pristine baseline (no curation at all) establishes window A's
         # untouched stats to compare against.
@@ -688,8 +723,8 @@ class TestMutationProbeAlwaysMiss:
 
         wids = _fitted_window_ids(sc_multi_file)
         w0, w1 = wids[0], wids[1]
-        f0 = _window_center(sc_multi_file, w0)
-        f1 = _window_center(sc_multi_file, w1)
+        f0 = _clear_add_freq(sc_multi_file, w0)
+        f1 = _clear_add_freq(sc_multi_file, w1)
 
         plain = tmp_path / "plain.ftmw"
         shutil.copy(sc_multi_file, plain)
@@ -898,8 +933,8 @@ class TestBoundedMemory:
         session at all."""
         wids = _fitted_window_ids(sc_multi_file)
         w0, w1 = wids[0], wids[1]
-        f0 = _window_center(sc_multi_file, w0)
-        f1 = _window_center(sc_multi_file, w1)
+        f0 = _clear_add_freq(sc_multi_file, w0)
+        f1 = _clear_add_freq(sc_multi_file, w1)
 
         never_sessioned = tmp_path / "never_sessioned.ftmw"
         shutil.copy(sc_multi_file, never_sessioned)

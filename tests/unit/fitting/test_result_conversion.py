@@ -767,3 +767,128 @@ class TestSingleWindowConversion:
                 peak_frequencies_mhz=peak_freqs,
                 acquisition_us=T_US,
             )
+
+
+# ---------------------------------------------------------------------------
+# P6 part A: refuse a window whose fitted peaks share a peak_uid
+# ---------------------------------------------------------------------------
+class TestDuplicatePeakUidRefusal:
+    """``window_outcome_to_fitting_result`` (result_conversion.py ~:585-600)
+    is the single choke point that builds a window's :class:`FittedPeak`
+    list -- the collision rule (P6, "refuse, scoped to fitted peaks")
+    belongs here. ``None`` is the absence of a value, not a value, so any
+    number of unstamped peaks may coexist; only non-``None`` uids are
+    compared. Frozen/fixed peaks are exempt by design (an edge-free
+    contributor's birth legitimately coincides with its primary window's own
+    seed uid), so the check must never reach into ``outcome.fixed_peaks``.
+    """
+
+    def _two_peak_window(self):
+        """One window, two free peaks, no fixed contributors."""
+        from ftmwpipeline.fitting.peak_model import h_T
+
+        sigma = 1.0
+        f0, f1 = 36100.0, 36106.0
+        center = 0.5 * (f0 + f1)
+        freq_array = np.arange(center - 5.0, center + 5.0, DF_MHZ)
+        s = -1.0 if SIDEBAND == Sideband.LOWER else 1.0
+        a0 = _amp_for_snr(120.0, sigma)
+        a1 = _amp_for_snr(80.0, sigma)
+        z = np.zeros(freq_array.shape, dtype=np.complex128)
+        for f_j, amp, phi in [(f0, a0, 0.3), (f1, a1, 1.7)]:
+            du = s * (freq_array - f_j)
+            z += 0.5 * amp * np.exp(1j * phi) * h_T(du, TAU_US, T_US)
+        rng = np.random.default_rng(SEED + 55)
+        spectrum = z + _complex_noise(freq_array.size, sigma, rng)
+        rms_noise = np.full(freq_array.size, sigma)
+        win = FitWindow(
+            window_id=0,
+            freq_range=(center - 4.0, center + 4.0),
+            free_peak_indices=[0, 1],
+            batch=0,
+        )
+        plan = WindowPlan(windows=[win], dependency_edges=[], topological_order=[0])
+        out = execute_plan(
+            plan,
+            _make_active_ft(freq_array, spectrum),
+            rms_noise,
+            [f0, f1],
+            sideband=SIDEBAND,
+            acquisition_us=T_US,
+            tau0_us=TAU_US,
+        )
+        return out, plan, [f0, f1]
+
+    def test_duplicate_nonnull_uid_raises(self):
+        out, plan, peak_freqs = self._two_peak_window()
+        outcome = out.window_outcomes[0]
+        assert len(outcome.fit.fit.peaks) == 2
+        for p in outcome.fit.fit.peaks:
+            p.peak_uid = 4242
+        with pytest.raises(RuntimeError, match=r"duplicate peak_uid=4242"):
+            window_outcome_to_fitting_result(
+                outcome,
+                plan.window(0),
+                sideband=SIDEBAND,
+                peak_frequencies_mhz=peak_freqs,
+                acquisition_us=T_US,
+            )
+
+    def test_error_names_window_and_both_frequencies(self):
+        out, plan, peak_freqs = self._two_peak_window()
+        outcome = out.window_outcomes[0]
+        for p in outcome.fit.fit.peaks:
+            p.peak_uid = 777
+        with pytest.raises(RuntimeError) as excinfo:
+            window_outcome_to_fitting_result(
+                outcome,
+                plan.window(0),
+                sideband=SIDEBAND,
+                peak_frequencies_mhz=peak_freqs,
+                acquisition_us=T_US,
+            )
+        msg = str(excinfo.value)
+        assert "777" in msg
+        assert "window" in msg.lower()
+        assert "0" in msg  # window_id
+        assert "invariant" in msg.lower()
+
+    def test_none_uids_do_not_collide(self):
+        """Any number of unstamped (peak_uid=None) peaks may coexist."""
+        out, plan, peak_freqs = self._two_peak_window()
+        outcome = out.window_outcomes[0]
+        assert len(outcome.fit.fit.peaks) == 2
+        for p in outcome.fit.fit.peaks:
+            p.peak_uid = None
+        result = window_outcome_to_fitting_result(
+            outcome,
+            plan.window(0),
+            sideband=SIDEBAND,
+            peak_frequencies_mhz=peak_freqs,
+            acquisition_us=T_US,
+        )
+        assert len(result.fitted_peaks) == 2
+        assert all(p.peak_uid is None for p in result.fitted_peaks)
+
+    def test_frozen_peak_sharing_a_fitted_peaks_uid_does_not_raise(self):
+        """A frozen/fixed background peak is exempt by design: an edge-free
+        contributor's frozen model legitimately coincides with a fitted
+        peak's uid (both are births at the same seed frequency). The check
+        must be scoped to the free/fitted set only."""
+        plan_outcome, plan, peak_freqs, *_ = _two_window_plan_outcome()
+        outcome_b = plan_outcome.window_outcomes[1]
+        assert len(outcome_b.fixed_peaks) == 1
+        assert len(outcome_b.fit.fit.peaks) == 1
+        shared_uid = 909090
+        outcome_b.fixed_peaks[0].model_peak.peak_uid = shared_uid
+        outcome_b.fit.fit.peaks[0].peak_uid = shared_uid
+        result = window_outcome_to_fitting_result(
+            outcome_b,
+            plan.window(1),
+            sideband=SIDEBAND,
+            peak_frequencies_mhz=peak_freqs,
+            acquisition_us=T_US,
+        )
+        assert len(result.fitted_peaks) == 1
+        assert result.fitted_peaks[0].peak_uid == shared_uid
+        assert result.fixed_parameters["frozen_peak_0"]["peak_uid"] == shared_uid
