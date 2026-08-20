@@ -20,7 +20,9 @@ from ftmwpipeline.fitting.window_fit import (
     ParameterErrors,
     WindowFitResult,
     _effective_min_pair_separation,
+    _pack,
     _penalty_residuals_and_jacobian,
+    _unpack,
     fit_window,
     model_jacobian,
 )
@@ -81,6 +83,41 @@ class TestEffectiveMinPairSeparation:
 
 
 # ---------------------------------------------------------------------------
+# _unpack -- peak_uid carry via seed_peaks (P2)
+# ---------------------------------------------------------------------------
+class TestUnpackIdentityCarry:
+    """``_unpack``'s ``seed_peaks`` param carries peak_uid by packed index --
+    a copy, not a match, exploiting that packed slot i is always
+    seed_peaks[i] within one call."""
+
+    def test_no_seed_peaks_leaves_uid_none(self):
+        seeds = [
+            ModelPeak(amplitude=1.0, offset_mhz=0.1, phase=0.0, peak_uid=7),
+            ModelPeak(amplitude=2.0, offset_mhz=-0.1, phase=0.5, peak_uid=8),
+        ]
+        params = _pack(seeds, TAU_US, fit_tau=False)
+        peaks, _ = _unpack(params, 2, TAU_US, fit_tau=False)
+        assert [p.peak_uid for p in peaks] == [None, None]
+
+    def test_seed_peaks_carries_uid_by_index(self):
+        seeds = [
+            ModelPeak(amplitude=1.0, offset_mhz=0.1, phase=0.0, peak_uid=7),
+            ModelPeak(amplitude=2.0, offset_mhz=-0.1, phase=0.5, peak_uid=8),
+            ModelPeak(amplitude=3.0, offset_mhz=0.3, phase=1.0),  # unstamped
+        ]
+        params = _pack(seeds, TAU_US, fit_tau=False)
+        # Perturb the packed values so this is genuinely an "unpack of a
+        # moved vector," not a trivial round trip.
+        params = params + 1e-3
+        peaks, _ = _unpack(params, 3, TAU_US, fit_tau=False, seed_peaks=seeds)
+        assert [p.peak_uid for p in peaks] == [7, 8, None]
+        # The carried identifier does not depend on the (now-moved) unpacked
+        # value -- it came from the seed, not a recompute.
+        assert peaks[0].offset_mhz != pytest.approx(seeds[0].offset_mhz)
+        assert peaks[0].peak_uid == seeds[0].peak_uid
+
+
+# ---------------------------------------------------------------------------
 # Noiseless recovery
 # ---------------------------------------------------------------------------
 class TestNoiselessRecovery:
@@ -134,6 +171,39 @@ class TestNoiselessRecovery:
         assert res.fit_tau
         assert res.tau_us == pytest.approx(true_tau, rel=1e-5)
         assert res.tau_error is not None
+
+    def test_peak_uid_is_carried_unchanged_while_the_fit_moves(self):
+        """P2: identity rides on the seed object through one NLS call.
+
+        _unpack rebuilds peaks by parameter-vector index, and within one
+        solver call scipy never reorders the parameter vector -- so input
+        index i is output index i and the carry is a copy, not a match.
+        Pin that: a stamped peak_uid survives the fit unchanged while the
+        fitted offset genuinely moves off the (deliberately off) seed.
+        """
+        u = _offset_grid(2.0)
+        true = ModelPeak(amplitude=8.0, offset_mhz=0.31, phase=1.1)
+        z = model_spectrum(u, [true], TAU_US, T_US)
+        init = ModelPeak(amplitude=6.0, offset_mhz=0.20, phase=0.4, peak_uid=424242)
+
+        res = fit_window(u, z, 1.0, [init], TAU_US, T_US, fit_tau=False)
+
+        assert res.success
+        assert res.peaks[0].peak_uid == 424242
+        assert res.peaks[0].offset_mhz != pytest.approx(init.offset_mhz)
+        assert res.peaks[0].offset_mhz == pytest.approx(true.offset_mhz, abs=1e-7)
+
+    def test_unstamped_peak_stays_unstamped(self):
+        """A seed with no peak_uid (the common case pre-P3) unpacks to None,
+        not a fabricated identity."""
+        u = _offset_grid(2.0)
+        true = ModelPeak(amplitude=8.0, offset_mhz=0.31, phase=1.1)
+        z = model_spectrum(u, [true], TAU_US, T_US)
+        init = ModelPeak(amplitude=6.0, offset_mhz=0.20, phase=0.4)
+
+        res = fit_window(u, z, 1.0, [init], TAU_US, T_US, fit_tau=False)
+
+        assert res.peaks[0].peak_uid is None
 
     def test_fitted_spectrum_and_residual_are_consistent(self):
         """fitted_spectrum is the model of the fitted peaks; residual is z - it."""

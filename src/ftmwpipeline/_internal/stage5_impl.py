@@ -590,6 +590,9 @@ def _collapse_outcome(
     snap_tol_mhz: float,
     max_iterations: int,
     records: List[Dict[str, Any]],
+    probe_freq_mhz: Optional[float] = None,
+    n_active: Optional[int] = None,
+    sample_dt_us: Optional[float] = None,
 ) -> "WindowOutcome":
     """Collapse degenerate sub-resolution overfit pairs to a fixpoint, in outcome
     space (outcome twin of :func:`apply_vif_collapse`'s ``_collapse_one``).
@@ -599,9 +602,23 @@ def _collapse_outcome(
     over the relaxed result, capped at ``max_iterations``). Each merge appends a
     collapse provenance record; the merged line's frequency-error inflation by
     the unresolved spread is applied at end-of-walk from those records (reusing
-    :func:`_inflate_merged_frequency_errors`)."""
+    :func:`_inflate_merged_frequency_errors`).
+
+    ``probe_freq_mhz`` / ``n_active`` / ``sample_dt_us``, when all supplied,
+    stamp a fresh :attr:`~ftmwpipeline.fitting.peak_model.ModelPeak.peak_uid`
+    on each merged seed (a genuinely new entity -- see the plan's blend rule).
+    Any missing leaves the merged seed unstamped (``None``), never a fallback
+    derivation."""
+    from ..fitting.active_ft import peak_uid_from_offset
     from ..fitting.peak_model import ModelPeak, sideband_sign
     from ..fitting.result_conversion import FittedLineView, outcome_line_views
+
+    def _stamp(offset_mhz: float, center: float) -> Optional[int]:
+        if probe_freq_mhz is None or n_active is None or sample_dt_us is None:
+            return None
+        return peak_uid_from_offset(
+            offset_mhz, center, sideband, probe_freq_mhz, n_active, sample_dt_us
+        )
 
     max_sep_mhz = max_sep_res * res_element_mhz
     frac_max_sep_mhz = frac_max_sep_res * res_element_mhz
@@ -735,6 +752,7 @@ def _collapse_outcome(
                 amplitude=max(abs(m_amp), 1e-30),
                 offset_mhz=float(m_off),
                 phase=float(m_phase),
+                peak_uid=_stamp(float(m_off), center_mhz),
             )
             fa, fb = float(va.frequency_mhz), float(vb.frequency_mhz)
             amp_a, amp_b = abs(float(va.amplitude)), abs(float(vb.amplitude))
@@ -811,6 +829,9 @@ def _degenerate_merge_trial_outcome(
     acquisition_us: float,
     records: List[Dict[str, Any]],
     max_iterations: int = 6,
+    probe_freq_mhz: Optional[float] = None,
+    n_active: Optional[int] = None,
+    sample_dt_us: Optional[float] = None,
 ) -> "WindowOutcome":
     """Trial-merge comparable-brightness degenerate over-splits in the band the
     unconditional collapse leaves behind (Type A), in outcome space.
@@ -824,11 +845,23 @@ def _degenerate_merge_trial_outcome(
     The merge holding distinguishes a genuine over-split (kept) from a real
     poorly-conditioned doublet (rejected, chi2r blows up). Accepted merges append
     the same collapse provenance the VIF collapse writes, so the merged line's
-    frequency-error inflation and the ``auto_merged_review`` flag both apply."""
+    frequency-error inflation and the ``auto_merged_review`` flag both apply.
+
+    ``probe_freq_mhz`` / ``n_active`` / ``sample_dt_us``, when all supplied,
+    stamp a fresh ``peak_uid`` on the merged seed; any missing leaves it
+    unstamped."""
     if res_element_mhz <= 0.0 or max_sep_res <= min_sep_res or degenerate_frac <= 0.0:
         return outcome
+    from ..fitting.active_ft import peak_uid_from_offset
     from ..fitting.peak_model import ModelPeak, sideband_sign
     from ..fitting.result_conversion import FittedLineView, outcome_line_views
+
+    def _stamp(offset_mhz: float, center: float) -> Optional[int]:
+        if probe_freq_mhz is None or n_active is None or sample_dt_us is None:
+            return None
+        return peak_uid_from_offset(
+            offset_mhz, center, sideband, probe_freq_mhz, n_active, sample_dt_us
+        )
 
     min_sep_mhz = min_sep_res * res_element_mhz
     max_sep_mhz = max_sep_res * res_element_mhz
@@ -878,7 +911,10 @@ def _degenerate_merge_trial_outcome(
         m_off = (oa * aw + ob * bw) / total
         m_amp = float(va.amplitude) + float(vb.amplitude)
         seed = ModelPeak(
-            amplitude=max(abs(m_amp), 1e-30), offset_mhz=float(m_off), phase=0.0
+            amplitude=max(abs(m_amp), 1e-30),
+            offset_mhz=float(m_off),
+            phase=0.0,
+            peak_uid=_stamp(float(m_off), center_mhz),
         )
         chi2_before = float(cur.fit.fit.reduced_chi2)
         trial = refit_outcome(
@@ -1053,6 +1089,9 @@ def build_finalize_node(
     acquisition_us: float,
     snap_tol_mhz: float = 0.05,
     max_iterations: int = 5,
+    probe_freq_mhz: Optional[float] = None,
+    n_active: Optional[int] = None,
+    sample_dt_us: Optional[float] = None,
 ) -> "FinalizeNode":
     """Build the per-node cleanup callback injected into the fit walk.
 
@@ -1062,7 +1101,11 @@ def build_finalize_node(
     per-window prune / collapse provenance rides on the :class:`NodeCleanup`
     (carried out even on a drop); the end-of-walk aggregation derives the
     ``peak_survival`` / ``vif_collapse`` diagnostics from it. A disabled cleanup
-    returns the outcome untouched."""
+    returns the outcome untouched.
+
+    ``probe_freq_mhz`` / ``n_active`` / ``sample_dt_us`` (all three, or none)
+    let the collapse / degenerate-merge passes stamp a fresh ``peak_uid`` on
+    each merged seed -- see ``ModelPeak.peak_uid``."""
     from ..fitting.plan_execution import NodeCleanup
 
     def finalize_node(outcome: "WindowOutcome") -> "NodeCleanup":
@@ -1091,6 +1134,9 @@ def build_finalize_node(
             snap_tol_mhz=snap_tol_mhz,
             max_iterations=max_iterations,
             records=collapse_records,
+            probe_freq_mhz=probe_freq_mhz,
+            n_active=n_active,
+            sample_dt_us=sample_dt_us,
         )
         result = _degenerate_merge_trial_outcome(
             result,
@@ -1102,6 +1148,9 @@ def build_finalize_node(
             sideband=sideband,
             acquisition_us=acquisition_us,
             records=collapse_records,
+            probe_freq_mhz=probe_freq_mhz,
+            n_active=n_active,
+            sample_dt_us=sample_dt_us,
         )
         sidelobe_records: List[Dict[str, Any]] = []
         result = _sidelobe_prune_outcome(
@@ -2107,6 +2156,9 @@ def _fit_peaks_impl(
         res_element_mhz=(1.0 / acquisition_us if acquisition_us > 0 else 0.0),
         sideband=sideband,
         acquisition_us=acquisition_us,
+        probe_freq_mhz=fit_ctx.probe_freq_mhz,
+        n_active=active_ft.n_active,
+        sample_dt_us=fit_ctx.sample_dt_us,
     )
 
     final_add_v = resolved.rescue.final_add_snr_threshold
@@ -2142,6 +2194,8 @@ def _fit_peaks_impl(
         jobs=jobs,
         finalize_node=finalize_node,
         final_add_snr_threshold=final_add_snr_v,
+        probe_freq_mhz=fit_ctx.probe_freq_mhz,
+        sample_dt_us=fit_ctx.sample_dt_us,
     )
     # A structural replan (merge) rebuilds the plan inside ``execute_plan`` --
     # the survivor's ``freq_range`` becomes the union of the merged windows.

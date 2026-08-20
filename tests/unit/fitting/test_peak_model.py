@@ -420,6 +420,39 @@ class TestBasebandMapping:
 
 
 # ---------------------------------------------------------------------------
+# ModelPeak.peak_uid -- the optional identity slot (P2)
+# ---------------------------------------------------------------------------
+class TestModelPeakIdentitySlot:
+    def test_defaults_to_none(self):
+        """None of the ~22 existing construction sites pass peak_uid; the
+        field must default so they keep working, and the default must read
+        as "unstamped", not a fabricated identity."""
+        peak = ModelPeak(amplitude=2.0, offset_mhz=0.31, phase=1.1)
+        assert peak.peak_uid is None
+
+    def test_positional_construction_still_works(self):
+        """peak_uid is trailing, so ModelPeak(amp, off, phase) positional
+        construction (used throughout the fitting modules) is unaffected."""
+        peak = ModelPeak(1.0, 0.1, 0.3)
+        assert peak.peak_uid is None
+
+    def test_can_be_stamped(self):
+        peak = ModelPeak(amplitude=1.0, offset_mhz=0.0, phase=0.0, peak_uid=12345)
+        assert peak.peak_uid == 12345
+
+    def test_stamped_peak_still_models_identically(self):
+        """peak_uid plays no role in the spectrum model -- stamping a peak
+        must not move any fitted number."""
+        u = _offset_grid(1.0)
+        bare = ModelPeak(amplitude=3.0, offset_mhz=0.4, phase=0.7)
+        stamped = ModelPeak(amplitude=3.0, offset_mhz=0.4, phase=0.7, peak_uid=999)
+        assert np.array_equal(
+            model_spectrum(u, [bare], TAU_US, T_US),
+            model_spectrum(u, [stamped], TAU_US, T_US),
+        )
+
+
+# ---------------------------------------------------------------------------
 # model_spectrum -- the window model
 # ---------------------------------------------------------------------------
 class TestModelSpectrum:

@@ -30,7 +30,7 @@ from ftmwpipeline.core.data_structures import (
     Sideband,
     WindowPlan,
 )
-from ftmwpipeline.fitting.active_ft import ActiveFTResult
+from ftmwpipeline.fitting.active_ft import ActiveFTResult, PointMap
 from ftmwpipeline.fitting.peak_model import (
     ModelPeak,
     effective_tau,
@@ -45,6 +45,7 @@ from ftmwpipeline.fitting.plan_execution import (
     ReplanEvent,
     ThawEvent,
     WindowOutcome,
+    _window_center_mhz,
     attempt_thaw_round,
     evaluate_edge_free_contributors,
     execute_plan,
@@ -1661,10 +1662,13 @@ class TestParallelWalkEquivalence:
         )
         return plan, freq_array, spectrum, rms_noise, [f0, f1, f2]
 
-    def _fit(self, workers):
+    def _fit(self, workers, *, with_point_map: bool = False):
         plan, freqs, spec, noise, peak_freqs = self._build_plan()
         old = _pe._FIT_WINDOW_WORKERS
         _pe._FIT_WINDOW_WORKERS = workers
+        extra: dict = {}
+        if with_point_map:
+            extra = dict(probe_freq_mhz=PROBE_MHZ, sample_dt_us=0.05)
         try:
             return execute_plan(
                 plan,
@@ -1674,6 +1678,7 @@ class TestParallelWalkEquivalence:
                 sideband=SIDEBAND,
                 acquisition_us=T_US,
                 tau0_us=TAU_US,
+                **extra,
             )
         finally:
             _pe._FIT_WINDOW_WORKERS = old
@@ -1698,6 +1703,101 @@ class TestParallelWalkEquivalence:
         # The dependent (window 2) still saw window 0 as a frozen contributor.
         assert len(par.window_outcomes[2].fixed_peaks) == 1
         assert par.window_outcomes[2].fixed_peaks[0].primary_window_id == 0
+
+    @pytest.mark.skipif(
+        "fork" not in __import__("multiprocessing").get_all_start_methods(),
+        reason="requires fork start method",
+    )
+    def test_parallel_and_sequential_agree_on_peak_uid(self):
+        """The PointMap threaded via ``probe_freq_mhz``/``sample_dt_us`` must
+        actually reach a worker process, not silently read back as None only
+        under the parallel walk. Window 2 (batch 1, a dependent scheduled
+        after window 0 via the DAG walk) is included deliberately -- it is
+        the case that exercises the worker-dispatch boundary, not just the
+        trivial width-1 level."""
+        seq = self._fit(1, with_point_map=True)
+        par = self._fit(2, with_point_map=True)
+        assert set(seq.window_outcomes) == set(par.window_outcomes) == {0, 1, 2}
+        for wid in (0, 1, 2):
+            so, po = seq.window_outcomes[wid], par.window_outcomes[wid]
+            assert so.fit.n_peaks == po.fit.n_peaks > 0
+            sp = sorted(so.fit.peaks, key=lambda p: p.offset_mhz)
+            pp = sorted(po.fit.peaks, key=lambda p: p.offset_mhz)
+            for a, b in zip(sp, pp):
+                assert a.peak_uid is not None
+                assert b.peak_uid is not None
+                assert a.peak_uid == b.peak_uid
+
+
+# ---------------------------------------------------------------------------
+# execute_plan's PointMap threading (P3, second landing). The seeding chain
+# (window_fit._seed_peak, reached via conservative_fit) never sees
+# center_mhz / sideband / probe_freq_mhz -- execute_plan builds a per-window
+# PointMap from those (plus n_active / sample_dt_us) the moment a window's
+# frame is known and rides it into every seed constructor via the
+# conservative-kwargs bag.
+# ---------------------------------------------------------------------------
+class TestExecutePlanPeakUidStamping:
+    def _single_line_plan(self):
+        sigma = 1.0
+        f0 = 36100.0
+        freq_array = np.arange(f0 - 5.0, f0 + 5.0, DF_MHZ)
+        spectrum = _synth_spectrum(freq_array, [(f0, _amp_for_snr(200.0, sigma), 0.4)])
+        rng = np.random.default_rng(SEED + 41)
+        spectrum = spectrum + _complex_noise(freq_array.size, sigma, rng)
+        rms_noise = np.full(freq_array.size, sigma)
+        win = FitWindow(0, (f0 - 1.0, f0 + 1.0), free_peak_indices=[0], batch=0)
+        plan = WindowPlan(windows=[win], dependency_edges=[], topological_order=[0])
+        active_ft = _make_active_ft(freq_array, spectrum)
+        return plan, active_ft, rms_noise, f0
+
+    def test_seeded_peak_gets_the_expected_uid(self):
+        """The K=1 seed offset equals the Stage-3 candidate (a clean, strong,
+        unblended line does not escalate), so the stamp is pinned exactly
+        against PointMap.stamp of that known candidate offset -- not merely
+        checked for presence."""
+        sample_dt_us = 0.05
+        plan, active_ft, rms_noise, f0 = self._single_line_plan()
+        out = execute_plan(
+            plan,
+            active_ft,
+            rms_noise,
+            [f0],
+            sideband=SIDEBAND,
+            acquisition_us=T_US,
+            tau0_us=TAU_US,
+            probe_freq_mhz=PROBE_MHZ,
+            sample_dt_us=sample_dt_us,
+        )
+        outcome = out.window_outcomes[0]
+        assert outcome.fit.n_peaks == 1
+        pk = outcome.fit.peaks[0]
+        assert pk.peak_uid is not None
+
+        center = _window_center_mhz(outcome)
+        s = sideband_sign(SIDEBAND)
+        candidate_offset = s * (f0 - center)
+        point_map = PointMap.from_frame(
+            center, SIDEBAND, PROBE_MHZ, active_ft.n_active, sample_dt_us
+        )
+        assert pk.peak_uid == point_map.stamp(candidate_offset)
+
+    def test_without_probe_freq_mhz_or_sample_dt_us_peaks_stay_unstamped(self):
+        """The default -- unset probe_freq_mhz/sample_dt_us -- leaves every
+        peak unstamped, matching pre-landing behavior exactly."""
+        plan, active_ft, rms_noise, f0 = self._single_line_plan()
+        out = execute_plan(
+            plan,
+            active_ft,
+            rms_noise,
+            [f0],
+            sideband=SIDEBAND,
+            acquisition_us=T_US,
+            tau0_us=TAU_US,
+        )
+        outcome = out.window_outcomes[0]
+        assert outcome.fit.n_peaks == 1
+        assert outcome.fit.peaks[0].peak_uid is None
 
 
 # ---------------------------------------------------------------------------
@@ -1750,6 +1850,64 @@ class TestRefitOutcome:
         for a, b in zip(after, before):
             assert a.offset_mhz == pytest.approx(b.offset_mhz, abs=2e-4)
             assert a.amplitude == pytest.approx(b.amplitude, rel=2e-3)
+
+    def test_peak_uid_survives_refit_while_offset_moves(self):
+        """P3 propagation: refit_outcome rebuilds ModelPeak from inner.peaks
+        (plan_execution.py ~1507) -- it must carry each seed's existing
+        peak_uid forward, and must NOT mint a fresh one from the refit's
+        (moved) offset. Pins both halves: the carry, and the negative case
+        that catches a re-derivation regression.
+
+        The seed offsets are deliberately perturbed off their converged
+        values before the refit (standing in for a warm-started refit whose
+        seed is stale -- e.g. a neighbor's edit shifted this window's
+        starting point): a plain identity refit reproduces the converged
+        position almost exactly (see test_identity_refit_reproduces_the_fit's
+        own 2e-4 MHz tolerance), which is too small a move to reliably
+        distinguish "carried" from "re-derived" against rounding."""
+        from ftmwpipeline.fitting.active_ft import peak_uid_from_offset
+
+        outcome = self._two_line_window_outcome(36100.0, 36106.0)
+        peaks = sorted(outcome.fit.peaks, key=lambda p: p.offset_mhz)
+        assert len(peaks) == 2
+        # Stand in for birth-time stamps from an earlier fit in this lineage
+        # (arbitrary values a long way from anything the point-space formula
+        # would produce for these offsets, so a re-derivation regression
+        # cannot accidentally pass).
+        peaks[0].peak_uid = 111111
+        peaks[1].peak_uid = 222222
+        # Perturb the seed well off its converged offset -- large enough
+        # that the re-converged fit is a materially different position, not
+        # a rounding-level nudge.
+        perturbation_mhz = 0.05
+        seed_offsets = {}
+        for p in peaks:
+            p.offset_mhz += perturbation_mhz
+            seed_offsets[p.peak_uid] = p.offset_mhz
+        center_mhz = _window_center_mhz(outcome)
+
+        refit = refit_outcome(outcome)
+        after = refit.fit.peaks
+        assert {p.peak_uid for p in after} == {111111, 222222}
+
+        n_active, sample_dt_us = 1000, 0.05
+        for p in after:
+            # The carry: the identifier is exactly the value stamped before
+            # this refit, unchanged by it.
+            assert p.peak_uid in (111111, 222222)
+            # Confirm the refit actually moved this peak away from its
+            # (perturbed) seed -- otherwise this case proves nothing.
+            moved_mhz = abs(p.offset_mhz - seed_offsets[p.peak_uid])
+            assert moved_mhz > 0.01, (
+                f"refit only moved the peak {moved_mhz:.5f} MHz -- too small "
+                "to distinguish carry from re-derivation"
+            )
+            # The negative case that matters most: the identifier is NOT the
+            # point-space position recomputed from the fitted (moved) offset.
+            recomputed_from_fit = peak_uid_from_offset(
+                p.offset_mhz, center_mhz, SIDEBAND, PROBE_MHZ, n_active, sample_dt_us
+            )
+            assert p.peak_uid != recomputed_from_fit
 
     def test_remove_drops_the_targeted_peak(self):
         """A remove edit drops the nearest converged peak; the survivor holds."""
@@ -2004,6 +2162,68 @@ def test_add_from_convergence_recovers_companion():
         finalize_node=noop_finalize,
     )
     assert result.fit.n_peaks == 2  # companion was recovered
+
+
+def test_add_from_convergence_stamps_the_added_peak_when_point_map_supplied():
+    """F-2's warm-started add is another genuine seed birth
+    (:func:`_add_from_convergence` calls ``_seed_peak`` directly, outside
+    ``window_fit.py``) -- it must stamp too when a ``point_map`` rides in
+    the ``conservative_kwargs`` bag, exactly like every other seed site."""
+    from ftmwpipeline.fitting.plan_execution import (
+        NodeCleanup,
+        _add_from_convergence,
+        _window_center_mhz,
+    )
+
+    sigma = 1.0
+    f0 = 36100.0
+    f1 = 36101.5
+
+    outcome = _one_line_outcome(f0)
+    assert outcome.fit.n_peaks == 1
+
+    grid = np.asarray(outcome.offset_grid_mhz, dtype=float)
+    a1 = _amp_for_snr(35.0, sigma)
+    center = f0
+    freq_array_full = np.arange(center - 5.0, center + 5.0, DF_MHZ)
+    companion_full = _synth_spectrum(freq_array_full, [(f1, a1, 1.1)])
+    mask = (freq_array_full >= center - 4.0) & (freq_array_full <= center + 4.0)
+    companion_in_window = companion_full[mask]
+    assert companion_in_window.size == grid.size
+
+    outcome.complex_spectrum = (
+        np.asarray(outcome.complex_spectrum, dtype=np.complex128) + companion_in_window
+    )
+    outcome.full_residual = (
+        np.asarray(outcome.full_residual, dtype=np.complex128) + companion_in_window
+    )
+
+    s = -1.0  # lower sideband
+    companion_offset = s * (f1 - center)
+
+    outcome.rescue_events = [
+        _make_rescue_event(0, [_make_cand(companion_offset, 30.0, sigma)])
+    ]
+
+    def noop_finalize(o: WindowOutcome) -> NodeCleanup:
+        return NodeCleanup(outcome=o)
+
+    window_center = _window_center_mhz(outcome)
+    point_map = PointMap.from_frame(
+        window_center, SIDEBAND, PROBE_MHZ, outcome.offset_grid_mhz.size * 100, 0.05
+    )
+
+    result = _add_from_convergence(
+        outcome,
+        acquisition_us=T_US,
+        conservative_kwargs={"point_map": point_map},
+        snr_threshold=10.0,
+        finalize_node=noop_finalize,
+    )
+    assert result.fit.n_peaks == 2
+    added = [p for p in result.fit.peaks if abs(p.offset_mhz - companion_offset) < 0.3]
+    assert len(added) == 1
+    assert added[0].peak_uid == point_map.stamp(companion_offset)
 
 
 def test_add_from_convergence_rejects_collapse():

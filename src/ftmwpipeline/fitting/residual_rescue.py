@@ -36,6 +36,7 @@ from typing import Any, List, Optional, Sequence, Tuple
 import numpy as np
 
 from . import validation
+from .active_ft import PointMap
 from .peak_model import ModelPeak, PeakShape, model_spectrum
 from .residual_screening import (
     ResidualPeakCandidate,
@@ -182,7 +183,9 @@ class RescueOutcome:
     knockouts: List[KnockoutResult]
 
 
-def _merge_cluster(cluster: List[ModelPeak]) -> ModelPeak:
+def _merge_cluster(
+    cluster: List[ModelPeak], *, point_map: Optional[PointMap] = None
+) -> ModelPeak:
     """Collapse a cluster of close peaks into one via complex amplitude sum.
 
     The merged peak's amplitude is ``|sum_j A_j exp(i phi_j)|`` (proper
@@ -190,6 +193,13 @@ def _merge_cluster(cluster: List[ModelPeak]) -> ModelPeak:
     phase would cancel, which is the right physics), and its phase is the
     angle of that complex sum. The merged offset is the amplitude-weighted
     mean of the cluster offsets.
+
+    A single-member "cluster" is not a merge -- the input peak is returned
+    verbatim (carrying its own ``peak_uid`` unchanged). A genuine multi-peak
+    merge produces a NEW entity per the plan's blend rule (a re-partitioned
+    joint fit is not any one input peak moved), so ``point_map``, when
+    supplied, stamps a fresh ``peak_uid`` on the merged result at its merged
+    offset; ``None`` leaves it unstamped.
     """
     if len(cluster) == 1:
         return cluster[0]
@@ -209,6 +219,7 @@ def _merge_cluster(cluster: List[ModelPeak]) -> ModelPeak:
         amplitude=float(abs(total)),
         offset_mhz=merged_offset,
         phase=float(np.angle(total)),
+        peak_uid=point_map.stamp(merged_offset) if point_map is not None else None,
     )
 
 
@@ -235,6 +246,7 @@ def merge_close_peaks_cleanup(
     gate_budget_extra: Optional[np.ndarray] = None,
     protected_offsets: Optional[Sequence[float]] = None,
     protected_tol_mhz: float = 0.0,
+    point_map: Optional[PointMap] = None,
 ) -> Tuple[WindowFitResult, int]:
     """Multi-tier merge cleanup for close peak pairs.
 
@@ -286,6 +298,11 @@ def merge_close_peaks_cleanup(
 
     ``significance`` is retained on the signature but is not used as a
     gate threshold.
+
+    ``point_map``, when supplied, is forwarded to :func:`_merge_cluster` so
+    every merged pair is stamped with a fresh ``peak_uid`` (a merge product
+    is a new entity, not either input peak moved -- see the plan's blend
+    rule). ``None`` leaves merged peaks unstamped.
 
     Returns ``(updated_fit, n_merged)``. ``n_merged`` is the number of
     successful merges (each removes one peak from the set).
@@ -437,7 +454,9 @@ def merge_close_peaks_cleanup(
                 f"band={amp_ratio_band:.4f})",
                 flush=True,
             )
-        merged_pair = _merge_cluster([sorted_peaks[merge_i], sorted_peaks[merge_i + 1]])
+        merged_pair = _merge_cluster(
+            [sorted_peaks[merge_i], sorted_peaks[merge_i + 1]], point_map=point_map
+        )
         merged_init = (
             sorted_peaks[:merge_i] + [merged_pair] + sorted_peaks[merge_i + 2 :]
         )
@@ -1482,7 +1501,12 @@ def rescue_and_consolidate(
         the joint refit's constraints. Pass the same options the initial
         fit received (notably ``tau_apodization_us``, ``max_decay_factor``,
         and the penalty lambdas) so the rescue and the joint refit enforce
-        the same physics as the original pass.
+        the same physics as the original pass. A ``"point_map"`` entry (a
+        :class:`~ftmwpipeline.fitting.active_ft.PointMap` for this window)
+        rides along like any other setting here: it reaches the rescue's own
+        seeds automatically (forwarded via ``**kwargs``) and is pulled out
+        explicitly for the merge cleanup's fresh-stamp-on-merge (see
+        :func:`_merge_cluster`).
     """
     if max_rescue_rounds <= 0:
         return ConsolidatedRescueOutcome(
@@ -1519,6 +1543,13 @@ def rescue_and_consolidate(
             DEFAULT_MIN_PAIR_SEPARATION_RESOLUTION_FACTOR,
         )
     )
+    # This window's PointMap (see plan_execution._process_one_window), when
+    # supplied, rides the same conservative-kwargs bag every other per-window
+    # setting does here. It reaches attempt_residual_rescue's inner
+    # conservative_fit automatically (via ``**ckwargs`` there); the merge
+    # cleanup below needs it explicitly since _merge_cluster's product is a
+    # NEW entity (the blend rule), not a carried peak.
+    point_map: Optional[PointMap] = ckwargs_in.get("point_map")
 
     # Derive the joint refit's constraints once. The bounds (tau, amp,
     # penalty references) are properties of the window's data, not of
@@ -1719,6 +1750,7 @@ def rescue_and_consolidate(
             gate_budget_extra=gate_budget_extra,
             protected_offsets=protected_offsets,
             protected_tol_mhz=protected_tol_mhz,
+            point_map=point_map,
         )
 
         # Per-peak knockout produces persisted diagnostics (n_eff,

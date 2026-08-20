@@ -62,9 +62,12 @@ from .peak_model import sideband_sign
 
 __all__ = [
     "ActiveFTResult",
+    "PointMap",
     "active_ft_bin_spacing_mhz",
+    "active_ft_point_hundredths",
     "active_region_bounds",
     "compute_active_ft",
+    "peak_uid_from_offset",
 ]
 
 SidebandLike = Union[Sideband, str]
@@ -117,6 +120,225 @@ def active_ft_bin_spacing_mhz(acquisition_us: float) -> float:
     if t <= 0.0:
         raise ValueError(f"acquisition_us must be positive, got {t}")
     return 1.0 / t
+
+
+def active_ft_point_hundredths(
+    f_bb_mhz: float, n_active: int, sample_dt_us: float
+) -> int:
+    """Baseband frequency -> hundredths of an active-FT point (a peak's identity).
+
+    A peak's identifier is its position in active-FT point space, in
+    hundredths of a point, stamped once at the moment the peak is seeded and
+    carried thereafter -- never re-derived from a fitted value (see
+    ``scratch/peak-identity-plan.md``, "The design"). This function is the
+    single derivation point for that coordinate, the reason it lives beside
+    :func:`active_ft_bin_spacing_mhz`: both exist so that no second inline
+    copy of "the active-FT's own spacing" can silently drift from this one.
+
+    THE DIVISOR IS THE RFFT GRID'S OWN SPACING, NOT ``active_ft_bin_spacing_mhz``.
+    :func:`compute_active_ft` builds its baseband axis with
+    ``np.fft.rfftfreq(n_active, d=sample_dt_us)``, whose spacing is
+    ``1 / (n_active * sample_dt_us)``. :func:`active_ft_bin_spacing_mhz`
+    instead returns ``1 / acquisition_us`` -- a different expression that is
+    NOT interchangeable here. An identifier is an index into a specific
+    array (the rfft grid), so it must be computed with the spacing of that
+    same array. Measured 2026-08-19 (``scratch/peak-identity-plan.md``,
+    "The divisor is the rfft grid's own spacing"): the two spacings agree
+    exactly when the active bounds fall on sample boundaries, and to
+    <=2e-5 relative otherwise -- close, but this is a *consistency*
+    requirement (the diagnostic recompute below must use the same divisor
+    the stamp used), not a "close enough" one, so the rfft grid's own
+    spacing is the only correct choice.
+
+    Point number is ``point = f_bb_mhz * n_active * sample_dt_us`` (the
+    inverse of the rfft grid's spacing), and the return is
+    ``round(100 * point)``. Rounding uses Python's ``round()``, i.e.
+    round-half-to-even (banker's rounding): deliberate, not an
+    afterthought -- with seed separations of >=25 hundredths-of-a-point
+    (see the plan's uniqueness table), a landing exactly on a .5 boundary
+    is astronomically unlikely, and round-half-to-even avoids the
+    systematic upward bias plain round-half-up would introduce over many
+    peaks.
+
+    This function is used to STAMP an identifier at seed time, and may
+    additionally be used as an in-run diagnostic recompute (comparing a
+    peak's current point position back to its stamped identifier, to catch
+    a peak that has wandered). It is NEVER how identity is established: an
+    identifier is carried, not recomputed, once stamped.
+
+    Parameters
+    ----------
+    f_bb_mhz : float
+        Baseband frequency in MHz -- non-negative, as on an rfft grid (no
+        probe arithmetic enters; this is the same ``f_bb`` axis
+        :func:`compute_active_ft` builds with ``np.fft.rfftfreq``).
+    n_active : int
+        Number of FID samples in the active region (``ActiveFTResult.n_active``
+        / :func:`compute_active_ft`'s FFT input length). Positive.
+    sample_dt_us : float
+        FID sample spacing in microseconds. Positive.
+
+    Returns
+    -------
+    int
+        Hundredths of an active-FT point.
+
+    Raises
+    ------
+    ValueError
+        If ``n_active`` or ``sample_dt_us`` is not positive, or if
+        ``f_bb_mhz`` is negative.
+    """
+    n = int(n_active)
+    dt = float(sample_dt_us)
+    f_bb = float(f_bb_mhz)
+    if n <= 0:
+        raise ValueError(f"n_active must be positive, got {n}")
+    if dt <= 0.0:
+        raise ValueError(f"sample_dt_us must be positive, got {dt}")
+    if f_bb < 0.0:
+        raise ValueError(f"f_bb_mhz must be non-negative, got {f_bb}")
+    point = f_bb * n * dt
+    return round(100.0 * point)
+
+
+def peak_uid_from_offset(
+    offset_mhz: float,
+    center_mhz: float,
+    sideband: SidebandLike,
+    probe_freq_mhz: float,
+    n_active: int,
+    sample_dt_us: float,
+) -> int:
+    """Stamp a peak's identifier from its seed in ``ModelPeak.offset_mhz`` space.
+
+    ``ModelPeak.offset_mhz`` is the signed offset ``delta = s*(f_molecular -
+    f_center)`` from a window's reference (molecular) frequency -- not the
+    baseband frequency :func:`active_ft_point_hundredths` needs. This is the
+    single place that recovers ``f_bb`` from a birth-site seed and stamps it,
+    so every birth site performs the same two-step inversion (molecular
+    frequency, then baseband) rather than five copies of the same three
+    lines: ``f_molecular = f_center + s*delta``, then ``f_bb = s*(f_molecular
+    - f_probe)`` (:func:`~ftmwpipeline.fitting.peak_model.molecular_frequency`
+    inverted, then :func:`~ftmwpipeline.fitting.peak_model.sideband_sign`
+    applied again to invert the probe arithmetic).
+
+    Call this exactly once, at the moment a genuinely new peak is seeded
+    (see ``ModelPeak.peak_uid`` and ``scratch/peak-identity-plan.md``) --
+    never on a fitted position, and never on a peak that is merely being
+    rebuilt/propagated (those must carry the source peak's own
+    ``peak_uid`` instead).
+
+    Parameters
+    ----------
+    offset_mhz : float
+        The seed's signed baseband offset from the window center (the value
+        that becomes ``ModelPeak.offset_mhz``).
+    center_mhz : float
+        The window's reference (molecular) frequency.
+    sideband : Sideband or str
+        Sideband configuration.
+    probe_freq_mhz : float
+        Probe (LO) frequency in MHz.
+    n_active : int
+        Number of FID samples in the active region
+        (``ActiveFTResult.n_active``). Positive.
+    sample_dt_us : float
+        FID sample spacing in microseconds. Positive.
+
+    Returns
+    -------
+    int
+        Hundredths of an active-FT point (see :func:`active_ft_point_hundredths`).
+    """
+    s = sideband_sign(sideband)
+    f_molecular = float(center_mhz) + s * float(offset_mhz)
+    f_bb = s * (f_molecular - float(probe_freq_mhz))
+    return active_ft_point_hundredths(f_bb, n_active, sample_dt_us)
+
+
+@dataclass(frozen=True)
+class PointMap:
+    """Per-window affine map from ``ModelPeak.offset_mhz`` to point-hundredths.
+
+    The seeding chain in :mod:`ftmwpipeline.fitting.window_fit` is
+    deliberately frame-agnostic: it works entirely in a window's
+    signed baseband-offset space and never sees ``center_mhz``,
+    ``sideband``, or ``probe_freq_mhz``. Threading those three values down
+    into every seed constructor would break that property on purpose. This
+    class exploits an algebraic shortcut instead: because
+    :func:`~ftmwpipeline.fitting.peak_model.sideband_sign` squares to 1, the
+    two inversions :func:`peak_uid_from_offset` performs (offset -> molecular
+    frequency -> baseband frequency) collapse into ONE affine function of the
+    offset::
+
+        f_bb  = s*(f_c + s*d - f_probe) = s*(f_c - f_probe) + d
+        point = f_bb * n_active * dt    = origin_points + d * points_per_mhz
+
+    where ``d`` is ``offset_mhz``. ``points_per_mhz`` (``n_active *
+    sample_dt_us``) does not depend on ``sideband`` at all -- the two signs
+    cancel -- so it is the same for every window in a run; ``origin_points``
+    (``s*(center_mhz - probe_freq_mhz) * points_per_mhz``) is the per-window
+    offset. Measured 2026-08-19 over 20000 randomized in-range cases:
+    ``PointMap(...).stamp(d)`` and :func:`peak_uid_from_offset` agree
+    EXACTLY (max absolute difference 0), so a seed site needs only this pair
+    of floats -- not the three frame values -- to stamp a correct
+    :attr:`~ftmwpipeline.fitting.peak_model.ModelPeak.peak_uid`.
+
+    A plain frozen dataclass of two floats: pickles trivially, so it can ride
+    a multiprocessing fork/task boundary (the parallel window walk) exactly
+    like any other small value passed into a worker.
+
+    Attributes
+    ----------
+    origin_points : float
+        Point-space position (not yet rounded/scaled to hundredths) of this
+        window's ``offset_mhz = 0`` reference.
+    points_per_mhz : float
+        ``n_active * sample_dt_us`` -- the point-space scale of one MHz of
+        offset. Sideband-independent (see above).
+    """
+
+    origin_points: float
+    points_per_mhz: float
+
+    @classmethod
+    def from_frame(
+        cls,
+        center_mhz: float,
+        sideband: SidebandLike,
+        probe_freq_mhz: float,
+        n_active: int,
+        sample_dt_us: float,
+    ) -> "PointMap":
+        """Build the map for one window from its frame (see the class docstring).
+
+        Parameters mirror :func:`peak_uid_from_offset`'s frame arguments minus
+        ``offset_mhz`` -- this is the per-window setup done ONCE (typically
+        the moment a window's ``center_mhz`` is known), so every seed born in
+        that window can then call :meth:`stamp` with just its own offset.
+        """
+        n = int(n_active)
+        dt = float(sample_dt_us)
+        if n <= 0:
+            raise ValueError(f"n_active must be positive, got {n}")
+        if dt <= 0.0:
+            raise ValueError(f"sample_dt_us must be positive, got {dt}")
+        s = sideband_sign(sideband)
+        points_per_mhz = n * dt
+        origin_points = s * (float(center_mhz) - float(probe_freq_mhz)) * points_per_mhz
+        return cls(origin_points=origin_points, points_per_mhz=points_per_mhz)
+
+    def stamp(self, offset_mhz: float) -> int:
+        """Hundredths of an active-FT point for a seed at ``offset_mhz``.
+
+        Exactly equivalent to
+        ``peak_uid_from_offset(offset_mhz, center_mhz, sideband,
+        probe_freq_mhz, n_active, sample_dt_us)`` for the frame
+        :meth:`from_frame` was built from (pinned by test, since the
+        equivalence is this class's entire reason to exist).
+        """
+        return round(100.0 * (self.origin_points + offset_mhz * self.points_per_mhz))
 
 
 def active_region_bounds(

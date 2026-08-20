@@ -28,7 +28,10 @@ from scipy.optimize import least_squares
 from ftmwpipeline.core.data_structures import Sideband
 from ftmwpipeline.fitting.active_ft import (
     ActiveFTResult,
+    PointMap,
+    active_ft_point_hundredths,
     compute_active_ft,
+    peak_uid_from_offset,
 )
 from ftmwpipeline.fitting.peak_model import (
     effective_tau,
@@ -424,6 +427,262 @@ class TestStage2NoiseOnActiveFT:
         theory_complex_rms = DT_US * sigma_t * float(np.sqrt(active.n_active))
         median_rms = float(np.median(noise_result.rms_noise))
         assert median_rms == pytest.approx(theory_complex_rms, rel=0.15)
+
+
+# ---------------------------------------------------------------------------
+# active_ft_point_hundredths -- the peak-identity coordinate helper (P1)
+# ---------------------------------------------------------------------------
+class TestActiveFtPointHundredths:
+    """The single derivation point for a peak's point-space identifier."""
+
+    def test_bin_k_maps_to_k_times_100(self):
+        """A baseband frequency exactly on rfft bin k round-trips to k*100.
+
+        Same round-trip guarantee as the rfft grid itself: bin k sits at
+        ``k / (n_active * sample_dt_us)`` MHz, so the helper should return
+        exactly ``100 * k`` with no rounding drift.
+        """
+        n_active = 1000
+        dt = 0.05
+        grid = np.fft.rfftfreq(n_active, d=dt)
+        for k in (0, 1, 5, 250, len(grid) - 1):
+            assert active_ft_point_hundredths(grid[k], n_active, dt) == 100 * k
+
+    def test_spacing_matches_rfftfreq_grid(self):
+        """Every bin of an arbitrary (non-power-of-two) rfft grid round-trips.
+
+        This is the consistency property the docstring promises: the
+        divisor must be the rfft grid's own spacing (1/(n_active*dt)), not
+        active_ft_bin_spacing_mhz's 1/acquisition_us. Checked against
+        np.fft.rfftfreq directly (not re-derived inline) for a non-bin-
+        -aligned n_active / dt pair, over every bin rather than just one.
+        """
+        n_active = 733
+        dt = 0.0731
+        grid = np.fft.rfftfreq(n_active, d=dt)
+        for k in range(0, len(grid), 37):
+            assert active_ft_point_hundredths(grid[k], n_active, dt) == 100 * k
+
+    def test_negative_frequency_raises(self):
+        with pytest.raises(ValueError):
+            active_ft_point_hundredths(-0.01, 1000, 0.05)
+
+    def test_nonpositive_n_active_raises(self):
+        with pytest.raises(ValueError):
+            active_ft_point_hundredths(1.0, 0, 0.05)
+        with pytest.raises(ValueError):
+            active_ft_point_hundredths(1.0, -10, 0.05)
+
+    def test_nonpositive_sample_dt_raises(self):
+        with pytest.raises(ValueError):
+            active_ft_point_hundredths(1.0, 1000, 0.0)
+        with pytest.raises(ValueError):
+            active_ft_point_hundredths(1.0, 1000, -0.05)
+
+    def test_returns_plain_int(self):
+        assert isinstance(active_ft_point_hundredths(1.0, 1000, 0.05), int)
+
+
+# ---------------------------------------------------------------------------
+# peak_uid_from_offset -- recovers f_bb from a ModelPeak.offset_mhz seed (P3)
+# ---------------------------------------------------------------------------
+class TestPeakUidFromOffset:
+    """Every birth site stamps through this: offset_mhz -> f_molecular ->
+    f_bb -> active_ft_point_hundredths. Pinned against a manual inversion,
+    not just against active_ft_point_hundredths (that would only prove the
+    two functions agree with each other, not that either is correct)."""
+
+    N_ACTIVE = 1000
+    DT = 0.05
+    PROBE_MHZ = 40960.0
+
+    def test_matches_manual_inversion_lower_sideband(self):
+        # s = -1: f_molecular = center - offset; f_bb = -(f_molecular - probe)
+        center = 36100.0
+        offset = 0.734
+        got = peak_uid_from_offset(
+            offset, center, Sideband.LOWER, self.PROBE_MHZ, self.N_ACTIVE, self.DT
+        )
+        f_molecular = center - offset
+        f_bb = -(f_molecular - self.PROBE_MHZ)
+        want = active_ft_point_hundredths(f_bb, self.N_ACTIVE, self.DT)
+        assert got == want
+
+    def test_matches_manual_inversion_upper_sideband(self):
+        # s = +1: f_molecular = center + offset; f_bb = f_molecular - probe
+        center = 41500.0
+        offset = -0.412
+        got = peak_uid_from_offset(
+            offset, center, Sideband.UPPER, self.PROBE_MHZ, self.N_ACTIVE, self.DT
+        )
+        f_molecular = center + offset
+        f_bb = f_molecular - self.PROBE_MHZ
+        want = active_ft_point_hundredths(f_bb, self.N_ACTIVE, self.DT)
+        assert got == want
+
+    def test_center_on_probe_zero_offset_is_bin_zero(self):
+        # f_molecular == probe, offset == 0 -> f_bb == 0 -> point 0.
+        assert (
+            peak_uid_from_offset(
+                0.0,
+                self.PROBE_MHZ,
+                Sideband.LOWER,
+                self.PROBE_MHZ,
+                self.N_ACTIVE,
+                self.DT,
+            )
+            == 0
+        )
+
+    def test_string_sideband_matches_enum(self):
+        center, offset = 36100.0, 0.2
+        via_enum = peak_uid_from_offset(
+            offset, center, Sideband.LOWER, self.PROBE_MHZ, self.N_ACTIVE, self.DT
+        )
+        via_str = peak_uid_from_offset(
+            offset, center, "lower", self.PROBE_MHZ, self.N_ACTIVE, self.DT
+        )
+        assert via_enum == via_str
+
+    def test_sideband_sign_genuinely_participates(self):
+        # A molecular frequency below the probe is a valid lower-sideband
+        # baseband target (f_bb = probe - f_molecular >= 0) but an invalid
+        # upper-sideband one (f_bb = f_molecular - probe < 0) -- so feeding
+        # the wrong sideband through must be caught, not silently accepted
+        # with the sign dropped.
+        f_molecular_below_probe = 36100.0
+        offset = 0.0  # center == f_molecular when offset is 0
+        got = peak_uid_from_offset(
+            offset,
+            f_molecular_below_probe,
+            Sideband.LOWER,
+            self.PROBE_MHZ,
+            self.N_ACTIVE,
+            self.DT,
+        )
+        assert got == active_ft_point_hundredths(
+            self.PROBE_MHZ - f_molecular_below_probe, self.N_ACTIVE, self.DT
+        )
+        with pytest.raises(ValueError):
+            peak_uid_from_offset(
+                offset,
+                f_molecular_below_probe,
+                Sideband.UPPER,
+                self.PROBE_MHZ,
+                self.N_ACTIVE,
+                self.DT,
+            )
+
+    def test_returns_plain_int(self):
+        result = peak_uid_from_offset(
+            0.2, 36100.0, Sideband.LOWER, self.PROBE_MHZ, self.N_ACTIVE, self.DT
+        )
+        assert isinstance(result, int)
+
+
+# ---------------------------------------------------------------------------
+# PointMap -- the frame-agnostic seeder's route to the same stamp (P3, second
+# landing). Point space is affine in ModelPeak.offset_mhz (sideband_sign
+# squares to 1), so a per-window (origin_points, points_per_mhz) pair stamps
+# exactly like peak_uid_from_offset without the seeder ever learning
+# center_mhz / sideband / probe_freq_mhz. This equivalence is the entire
+# basis for the approach: if it drifts, identifiers minted by the two routes
+# disagree and the diagnostic recompute is worthless.
+# ---------------------------------------------------------------------------
+class TestPointMap:
+    N_ACTIVE = 1000
+    DT = 0.05
+    PROBE_MHZ = 40960.0
+
+    def test_equivalent_to_peak_uid_from_offset_lower_sideband(self):
+        center = 36100.0
+        offset = 0.734
+        pm = PointMap.from_frame(
+            center, Sideband.LOWER, self.PROBE_MHZ, self.N_ACTIVE, self.DT
+        )
+        want = peak_uid_from_offset(
+            offset, center, Sideband.LOWER, self.PROBE_MHZ, self.N_ACTIVE, self.DT
+        )
+        assert pm.stamp(offset) == want
+
+    def test_equivalent_to_peak_uid_from_offset_upper_sideband(self):
+        center = 41500.0
+        offset = -0.412
+        pm = PointMap.from_frame(
+            center, Sideband.UPPER, self.PROBE_MHZ, self.N_ACTIVE, self.DT
+        )
+        want = peak_uid_from_offset(
+            offset, center, Sideband.UPPER, self.PROBE_MHZ, self.N_ACTIVE, self.DT
+        )
+        assert pm.stamp(offset) == want
+
+    def test_equivalent_over_randomized_in_range_cases(self):
+        """Pinned equivalence: exact integer agreement, not approximate, over
+        many randomized frames and offsets -- the property the whole
+        frame-agnostic seeding approach leans on (see the module docstring
+        above and ``scratch/peak-identity-plan.md``)."""
+        rng = np.random.default_rng(20260819)
+        n_cases = 2000
+        tried = 0
+        max_abs_diff = 0
+        while tried < n_cases:
+            probe = float(rng.uniform(1000.0, 40000.0))
+            sideband = rng.choice([Sideband.LOWER, Sideband.UPPER])
+            s = 1.0 if sideband == Sideband.UPPER else -1.0
+            f_bb0 = float(rng.uniform(500.0, 20000.0))
+            center = probe + s * f_bb0
+            n_active = int(rng.integers(1000, 400000))
+            dt = float(rng.uniform(1e-4, 1e-2))
+            offset = float(rng.uniform(-499.0, 499.0))
+            if f_bb0 + offset < 0.0:
+                continue  # peak_uid_from_offset requires f_bb >= 0
+            tried += 1
+            pm = PointMap.from_frame(center, sideband, probe, n_active, dt)
+            got = pm.stamp(offset)
+            want = peak_uid_from_offset(offset, center, sideband, probe, n_active, dt)
+            max_abs_diff = max(max_abs_diff, abs(got - want))
+            assert got == want
+        assert max_abs_diff == 0
+        assert tried == n_cases
+
+    def test_points_per_mhz_is_sideband_independent(self):
+        # The two sideband-sign inversions collapse algebraically, so the
+        # scale term must not depend on which sideband built the map.
+        lower = PointMap.from_frame(
+            36100.0, Sideband.LOWER, self.PROBE_MHZ, self.N_ACTIVE, self.DT
+        )
+        upper = PointMap.from_frame(
+            36100.0, Sideband.UPPER, self.PROBE_MHZ, self.N_ACTIVE, self.DT
+        )
+        assert lower.points_per_mhz == upper.points_per_mhz
+        assert lower.points_per_mhz == pytest.approx(self.N_ACTIVE * self.DT)
+
+    def test_non_positive_n_active_raises(self):
+        with pytest.raises(ValueError):
+            PointMap.from_frame(36100.0, Sideband.LOWER, self.PROBE_MHZ, 0, self.DT)
+
+    def test_non_positive_sample_dt_raises(self):
+        with pytest.raises(ValueError):
+            PointMap.from_frame(
+                36100.0, Sideband.LOWER, self.PROBE_MHZ, self.N_ACTIVE, 0.0
+            )
+
+    def test_is_frozen_and_picklable(self):
+        import pickle
+
+        pm = PointMap.from_frame(
+            36100.0, Sideband.LOWER, self.PROBE_MHZ, self.N_ACTIVE, self.DT
+        )
+        with pytest.raises(Exception):
+            pm.origin_points = 0.0  # type: ignore[misc]
+        restored = pickle.loads(pickle.dumps(pm))
+        assert restored == pm
+
+    def test_returns_plain_int(self):
+        pm = PointMap.from_frame(
+            36100.0, Sideband.LOWER, self.PROBE_MHZ, self.N_ACTIVE, self.DT
+        )
+        assert isinstance(pm.stamp(0.2), int)
 
 
 # ---------------------------------------------------------------------------

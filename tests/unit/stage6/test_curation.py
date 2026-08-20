@@ -985,3 +985,120 @@ def test_apply_split_via_batch_matches_direct_call(stage5_multi_file, tmp_path):
 
     assert _fitted_by_window(direct) == _fitted_by_window(batched)
     assert [e.kind for e in review_log_impl(batched)] == ["split"]
+
+
+# ---------------------------------------------------------------------------
+# P3: birth-site peak_uid stamping (merge / split products)
+#
+# ``ModelPeak.peak_uid`` never reaches HDF5 / FittedPeak yet (that is P4), so
+# the only place it is observable is on the in-memory ModelPeak objects that
+# flow through the NLS, before ``window_outcome_to_fitting_result`` converts
+# them. Two spies cross-check the wiring without re-testing the point-space
+# math itself (that is ``TestPeakUidFromOffset`` in test_active_ft.py):
+#   * one on ``peak_uid_from_offset`` as called from stage6_impl, capturing
+#     exactly what it was asked to stamp and what it returned;
+#   * one on ``window_outcome_to_fitting_result``, capturing the peak list
+#     that reaches conversion (post-NLS, pre-strip).
+# If the birth's stamped value survives the NLS unchanged, the last peak in
+# the captured pre-conversion list carries exactly the captured return value.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_merge_product_peak_uid_survives_the_nls(stage5_multi_file, monkeypatch):
+    """The merge birth in ``_batch_apply_merge`` stamps a fresh peak_uid on
+    its seed; that value must still be on the merged line's ModelPeak after
+    the joint NLS converges (P2's carry-by-index), not None and not
+    silently dropped."""
+    from ftmwpipeline._internal import stage6_impl as s6mod
+    from ftmwpipeline.fitting import result_conversion
+
+    by_w = _fitted_by_window(stage5_multi_file)
+    wid = next((w for w, f in by_w.items() if len(f) >= 2), None)
+    if wid is None:
+        pytest.skip("Need a window with at least two fitted peaks")
+    freqs = by_w[wid][:2]
+
+    stamp_calls = []
+    real_stamp = s6mod.peak_uid_from_offset
+
+    def _spy_stamp(*args, **kwargs):
+        result = real_stamp(*args, **kwargs)
+        stamp_calls.append((args, kwargs, result))
+        return result
+
+    monkeypatch.setattr(s6mod, "peak_uid_from_offset", _spy_stamp)
+
+    converted = []
+    real_convert = result_conversion.window_outcome_to_fitting_result
+
+    def _spy_convert(outcome, *args, **kwargs):
+        converted.append(list(outcome.fit.fit.peaks))
+        return real_convert(outcome, *args, **kwargs)
+
+    monkeypatch.setattr(
+        result_conversion, "window_outcome_to_fitting_result", _spy_convert
+    )
+
+    s6mod.merge_peaks_impl(str(stage5_multi_file), wid, freqs)
+
+    assert len(stamp_calls) == 1, (
+        "expected exactly one peak_uid_from_offset call (the merge product's "
+        f"birth), got {len(stamp_calls)}"
+    )
+    _, _, stamped_uid = stamp_calls[0]
+    assert stamped_uid is not None
+
+    assert converted, "window_outcome_to_fitting_result was never called"
+    pre_conversion_peaks = converted[-1]
+    # add_seeds is appended after the inherited peaks (see refit_window_core's
+    # final_seeds = inherited + add), and P2's _unpack carries peak_uid by
+    # packed index, so the merge product is the LAST peak.
+    merged = pre_conversion_peaks[-1]
+    assert merged.peak_uid == stamped_uid
+
+
+@pytest.mark.integration
+def test_split_products_peak_uid_survives_the_nls(stage5_multi_file, monkeypatch):
+    """The split birth in ``_batch_apply_split`` stamps a fresh peak_uid on
+    each of the ``into`` product seeds; every one must still carry its own
+    stamped value after the joint NLS converges."""
+    from ftmwpipeline._internal import stage6_impl as s6mod
+    from ftmwpipeline.fitting import result_conversion
+
+    wid, freq = _a_peak(stage5_multi_file)
+
+    stamp_calls = []
+    real_stamp = s6mod.peak_uid_from_offset
+
+    def _spy_stamp(*args, **kwargs):
+        result = real_stamp(*args, **kwargs)
+        stamp_calls.append(result)
+        return result
+
+    monkeypatch.setattr(s6mod, "peak_uid_from_offset", _spy_stamp)
+
+    converted = []
+    real_convert = result_conversion.window_outcome_to_fitting_result
+
+    def _spy_convert(outcome, *args, **kwargs):
+        converted.append(list(outcome.fit.fit.peaks))
+        return real_convert(outcome, *args, **kwargs)
+
+    monkeypatch.setattr(
+        result_conversion, "window_outcome_to_fitting_result", _spy_convert
+    )
+
+    s6mod.split_peak_impl(str(stage5_multi_file), wid, freq, into=2)
+
+    assert len(stamp_calls) == 2, (
+        f"expected one peak_uid_from_offset call per split product, got "
+        f"{len(stamp_calls)}"
+    )
+    assert all(uid is not None for uid in stamp_calls)
+    assert len(set(stamp_calls)) == 2, "the two split products must get distinct ids"
+
+    assert converted, "window_outcome_to_fitting_result was never called"
+    pre_conversion_peaks = converted[-1]
+    tail = {p.peak_uid for p in pre_conversion_peaks[-2:]}
+    assert tail == set(stamp_calls)

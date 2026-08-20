@@ -22,10 +22,12 @@ Covers :func:`rescue_and_consolidate`'s contract:
 import numpy as np
 import pytest
 
+from ftmwpipeline.fitting.active_ft import PointMap
 from ftmwpipeline.fitting.peak_model import ModelPeak, effective_tau, model_spectrum
 from ftmwpipeline.fitting.residual_rescue import (
     DEFAULT_RESCUE_MAX_ROUNDS,
     ConsolidatedRescueOutcome,
+    _merge_cluster,
     attempt_residual_rescue,
     merge_close_peaks_cleanup,
     rescue_and_consolidate,
@@ -684,6 +686,82 @@ class TestMergeCleanupAICc:
         assert merged.fit_tau is False
         assert merged.tau_was_fit is True
         assert merged.tau_error == pytest.approx(k2_fit.tau_error)
+
+
+# ---------------------------------------------------------------------------
+# _merge_cluster / merge_close_peaks_cleanup peak_uid stamping (P3, second
+# landing). A merge product is a NEW entity per the plan's blend rule -- it
+# must get a fresh stamp, never carry either input's peak_uid.
+# ---------------------------------------------------------------------------
+class TestMergeClusterPeakUid:
+    N_ACTIVE = 100000
+    DT = 0.001
+    CENTER_MHZ = 36100.0
+    PROBE_MHZ = 40960.0
+    SIDEBAND = "lower"
+
+    def _point_map(self) -> PointMap:
+        return PointMap.from_frame(
+            self.CENTER_MHZ, self.SIDEBAND, self.PROBE_MHZ, self.N_ACTIVE, self.DT
+        )
+
+    def test_single_member_cluster_returns_the_peak_verbatim(self):
+        """Not a merge: the lone peak (and its own peak_uid) passes through
+        unchanged, point_map or not."""
+        pk = ModelPeak(amplitude=3.0, offset_mhz=0.1, phase=0.2, peak_uid=999)
+        out = _merge_cluster([pk], point_map=self._point_map())
+        assert out is pk
+        assert out.peak_uid == 999
+
+    def test_merge_gets_a_fresh_stamp_when_point_map_supplied(self):
+        point_map = self._point_map()
+        a = ModelPeak(amplitude=2.0, offset_mhz=-0.01, phase=0.0, peak_uid=111)
+        b = ModelPeak(amplitude=2.0, offset_mhz=0.01, phase=0.0, peak_uid=222)
+        merged = _merge_cluster([a, b], point_map=point_map)
+        assert merged.peak_uid == point_map.stamp(merged.offset_mhz)
+        # Never a carry of either input's identity.
+        assert merged.peak_uid not in (111, 222)
+
+    def test_merge_is_unstamped_without_point_map(self):
+        a = ModelPeak(amplitude=2.0, offset_mhz=-0.01, phase=0.0, peak_uid=111)
+        b = ModelPeak(amplitude=2.0, offset_mhz=0.01, phase=0.0, peak_uid=222)
+        merged = _merge_cluster([a, b])
+        assert merged.peak_uid is None
+
+    def test_merge_close_peaks_cleanup_stamps_the_collapsed_duplicate(self):
+        """End-to-end through the cleanup entry point (mirrors
+        TestMergeCleanupAICc.test_duplicate_pair_collapses): the collapsed
+        duplicate pair is a new entity and gets a fresh stamp when a
+        point_map is supplied."""
+        rng = np.random.default_rng(SEED + 1)
+        true = ModelPeak(_amp_for_snr(120.0), 0.0, 0.5)
+        u, z = _window([true], 0.8, 1.0, rng)
+        sigma = np.full(u.size, 1.0)
+        duplicate_init = [
+            ModelPeak(true.amplitude / 2, -0.5 * DF_MHZ, 0.5, peak_uid=1),
+            ModelPeak(true.amplitude / 2, +0.5 * DF_MHZ, 0.5, peak_uid=2),
+        ]
+        fit_kwargs = derive_window_fit_constraints(
+            z, sigma, TAU_US, T_US
+        ).fit_kwargs_inner
+        k2_fit = fit_window(u, z, sigma, duplicate_init, TAU_US, T_US, **fit_kwargs)
+        assert k2_fit.success and k2_fit.n_peaks == 2
+
+        point_map = self._point_map()
+        merged, n_merged = merge_close_peaks_cleanup(
+            u,
+            z,
+            sigma,
+            k2_fit,
+            TAU_US,
+            T_US,
+            fit_kwargs_inner=fit_kwargs,
+            point_map=point_map,
+        )
+        assert n_merged == 1
+        assert merged.n_peaks == 1
+        assert merged.peaks[0].peak_uid == point_map.stamp(merged.peaks[0].offset_mhz)
+        assert merged.peaks[0].peak_uid not in (1, 2)
 
 
 # ---------------------------------------------------------------------------

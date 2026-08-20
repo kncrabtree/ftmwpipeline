@@ -60,6 +60,7 @@ import numpy as np
 from scipy.optimize import least_squares
 
 from . import validation
+from .active_ft import PointMap
 from .peak_model import (
     ModelPeak,
     PeakShape,
@@ -855,14 +856,32 @@ def _pack(peaks: Sequence[ModelPeak], tau_us: float, fit_tau: bool) -> np.ndarra
 
 
 def _unpack(
-    params: np.ndarray, k: int, tau_fixed: float, fit_tau: bool
+    params: np.ndarray,
+    k: int,
+    tau_fixed: float,
+    fit_tau: bool,
+    seed_peaks: Optional[Sequence[ModelPeak]] = None,
 ) -> tuple[list[ModelPeak], float]:
-    """Inverse of :func:`_pack`."""
+    """Inverse of :func:`_pack`.
+
+    ``seed_peaks``, when given, is the same ``initial_peaks`` sequence
+    :func:`_pack` packed to build the parameter vector this call unpacks --
+    within one solver call, scipy's ``least_squares`` never reorders the
+    parameter vector, so packed slot ``i`` is always ``seed_peaks[i]`` and
+    unpacked slot ``i`` is the same line refined. That correspondence is what
+    lets identity ride across the call as a **copy**, not a match:
+    ``seed_peaks[i].peak_uid`` is carried onto the rebuilt peak at index
+    ``i`` unchanged, never recomputed from the unpacked ``offset_mhz``. Omit
+    ``seed_peaks`` for a purely internal unpack (e.g. mid-solve residual /
+    penalty evaluation) where the rebuilt peaks are not returned to a caller;
+    the identifier is irrelevant there and is left ``None``.
+    """
     peaks = [
         ModelPeak(
             amplitude=float(params[3 * i]),
             offset_mhz=float(params[3 * i + 1]),
             phase=float(params[3 * i + 2]),
+            peak_uid=seed_peaks[i].peak_uid if seed_peaks is not None else None,
         )
         for i in range(k)
     ]
@@ -1461,7 +1480,7 @@ def fit_window(
         )
 
     sol_x = np.asarray(sol.x, dtype=float)
-    peaks, tau = _unpack(sol_x, k, tau0_us, fit_tau)
+    peaks, tau = _unpack(sol_x, k, tau0_us, fit_tau, seed_peaks=initial_peaks)
     for pk in peaks:
         pk.phase = _wrap_phase(pk.phase)
     baseline_coeffs: Optional[np.ndarray] = None
@@ -1978,12 +1997,21 @@ def _seed_peak(
     acquisition_us: float,
     *,
     shape: PeakShape | str = PeakShape.LORENTZIAN,
+    point_map: Optional[PointMap] = None,
 ) -> ModelPeak:
     """Initial-guess line at ``offset_mhz`` from the local residual.
 
     Amplitude from the residual magnitude divided by the on-line gain
     ``tau_eff``, phase from the residual phase. ``offset_grid_mhz`` must be
     ascending (``np.interp`` requirement).
+
+    ``point_map``, when supplied, stamps a fresh
+    :attr:`~ftmwpipeline.fitting.peak_model.ModelPeak.peak_uid` on the
+    returned seed -- this is the sole seed constructor for the initial K=1
+    seed, the blend-aware K=2/K=3 escalation, the frozen-incremental primary
+    placement, and the add-one loop, so every real Stage 5 seed is born here.
+    ``None`` (the default) leaves ``peak_uid`` unstamped, matching every
+    caller that has not been given a map for its window's frame.
     """
     mag = float(
         np.abs(np.interp(offset_mhz, offset_grid_mhz, np.abs(residual_spectrum)))
@@ -1991,7 +2019,10 @@ def _seed_peak(
     gain = max(effective_tau_shape(shape, tau0_us, acquisition_us), 1e-9)
     phase = float(np.interp(offset_mhz, offset_grid_mhz, np.angle(residual_spectrum)))
     return ModelPeak(
-        amplitude=max(2.0 * mag / gain, 1e-6), offset_mhz=offset_mhz, phase=phase
+        amplitude=max(2.0 * mag / gain, 1e-6),
+        offset_mhz=offset_mhz,
+        phase=phase,
+        peak_uid=point_map.stamp(offset_mhz) if point_map is not None else None,
     )
 
 
@@ -2032,6 +2063,7 @@ def _blend_aware_seed(
     gate_budget_extra: Optional[np.ndarray] = None,
     baseline_order: Optional[int] = None,
     baseline_offset_scale: Optional[float] = None,
+    point_map: Optional[PointMap] = None,
 ) -> tuple[WindowFitResult, list[AddStep]]:
     """Seed the window fit, escalating K=1 -> K=2 -> K=3 on an elevated chi².
 
@@ -2156,6 +2188,7 @@ def _blend_aware_seed(
                 tau0_us,
                 acquisition_us,
                 shape=shape_resolved,
+                point_map=point_map,
             )
         ],
         tau0_us,
@@ -2204,6 +2237,7 @@ def _blend_aware_seed(
                 tau0_us,
                 acquisition_us,
                 shape=shape_resolved,
+                point_map=point_map,
             )
             for pos in positions
         ]
@@ -2237,6 +2271,7 @@ def _blend_aware_seed(
                     prev.tau_us,
                     acquisition_us,
                     shape=shape_resolved,
+                    point_map=point_map,
                 )
             ]
             trial_res = fit_window(
@@ -2396,6 +2431,7 @@ def _robust_line_masked_baseline(
     offset_scale: float,
     mask_kappa: float,
     n_iter: int = 5,
+    point_map: Optional[PointMap] = None,
 ) -> Optional[np.ndarray]:
     """Robust (IRLS) complex baseline pre-fit on amplitude-masked bins.
 
@@ -2421,7 +2457,11 @@ def _robust_line_masked_baseline(
         return None
     line_sum = np.zeros(u.size)
     for off in seed_offsets:
-        sd = _seed_peak(off, u, z, tau0_us, acquisition_us, shape=shape)
+        # A placement aid only (see the docstring); the seed's peak_uid, if
+        # any, is never read -- it is discarded with the rest of ``sd``.
+        sd = _seed_peak(
+            off, u, z, tau0_us, acquisition_us, shape=shape, point_map=point_map
+        )
         line_sum += np.abs(
             model_spectrum(u, [sd], tau0_us, acquisition_us, shape=shape)
         )
@@ -2453,6 +2493,7 @@ def _frozen_incremental_seed(
     fit_kwargs_inner: dict[str, Any],
     shape: PeakShape,
     spur_mask: Optional[SpurMaskSpec],
+    point_map: Optional[PointMap] = None,
 ) -> list[ModelPeak]:
     """Place each primary one at a time against the residual of the already-
     placed peaks, then leave the joint relax to the caller.
@@ -2496,7 +2537,15 @@ def _frozen_incremental_seed(
     placed: list[ModelPeak] = []
     for off in order:
         resid = z - model_spectrum(u_grid, placed, tau0_us, acquisition_us, shape=shape)
-        seed = _seed_peak(off, u_grid, resid, tau0_us, acquisition_us, shape=shape)
+        seed = _seed_peak(
+            off,
+            u_grid,
+            resid,
+            tau0_us,
+            acquisition_us,
+            shape=shape,
+            point_map=point_map,
+        )
         fit_new = fit_window(
             u_grid,
             resid,
@@ -2646,6 +2695,7 @@ def conservative_fit(
     protected_offsets: Optional[Sequence[float]] = None,
     protected_tol_mhz: float = 0.0,
     candidate_passes: Optional[Sequence[str]] = None,
+    point_map: Optional[PointMap] = None,
 ) -> ConservativeFitResult:
     """Conservative incremental peak fitting of one window.
 
@@ -2678,6 +2728,15 @@ def conservative_fit(
         over the ``"gap"`` candidates only. ``None`` (or any missing label)
         treats the candidate as primary. ``FTMW_NO_SEED_ALL_PRIMARY`` restores
         the legacy single-strongest seed + add-one-over-all path.
+    point_map : PointMap, optional
+        This window's offset -> point-hundredths affine map
+        (:meth:`~ftmwpipeline.fitting.active_ft.PointMap.from_frame`).
+        Forwarded to every internal seed constructor so every peak born
+        here (the K=1 seed, the K=2/K=3 blend escalation, the frozen-
+        incremental primaries, and every add-loop candidate) carries a
+        stamped ``peak_uid``. ``None`` (the default) leaves every seed
+        unstamped -- the caller has not been given a map for this window's
+        frame.
     tau0_us : float
         Default / starting shared decay constant (microseconds).
     acquisition_us : float
@@ -2979,6 +3038,7 @@ def conservative_fit(
             gate_budget_extra=budget,
             baseline_order=baseline_order,
             baseline_offset_scale=baseline_offset_scale,
+            point_map=point_map,
         )
 
     if len(primary_offsets) >= 2:
@@ -3008,6 +3068,7 @@ def conservative_fit(
                 order=int(baseline_order),
                 offset_scale=baseline_offset_scale or 1.0,
                 mask_kappa=DEFAULT_PLACEMENT_BASELINE_MASK_KAPPA,
+                point_map=point_map,
             )
             if base is not None:
                 placement_z = z - base
@@ -3021,6 +3082,7 @@ def conservative_fit(
             fit_kwargs_inner=fit_kwargs_inner,
             shape=shape_resolved,
             spur_mask=spur_mask,
+            point_map=point_map,
         )
         current = fit_window(
             u,
@@ -3172,6 +3234,7 @@ def conservative_fit(
                     current.tau_us,
                     acquisition_us,
                     shape=shape_resolved,
+                    point_map=point_map,
                 )
             ]
         )
@@ -3462,7 +3525,14 @@ def conservative_fit(
                 )
             )
             tentative.append(
-                _seed_peak(cand, u, residual, current.tau_us, acquisition_us)
+                _seed_peak(
+                    cand,
+                    u,
+                    residual,
+                    current.tau_us,
+                    acquisition_us,
+                    point_map=point_map,
+                )
             )
             consecutive_rejects += 1
             if consecutive_rejects > patience:

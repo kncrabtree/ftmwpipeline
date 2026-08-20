@@ -69,7 +69,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Tuple, Union, cast
+from typing import Optional, Tuple, Union, cast
 
 import numpy as np
 from scipy.special import wofz
@@ -527,11 +527,22 @@ class ModelPeak:
         frequency, in MHz.
     phase : float
         Line phase ``φ`` in radians.
+    peak_uid : int or None, default None
+        This peak's identifier: its position in active-FT point space, in
+        hundredths of a point (:func:`ftmwpipeline.fitting.active_ft.active_ft_point_hundredths`),
+        stamped once at the moment the peak is *seeded* (a Stage 3 detection,
+        a blend escalation, a curated add, a split/merge product, ...) and
+        carried unchanged thereafter -- it is never recomputed from a fitted
+        value. ``None`` means the peak is unstamped (either this landing has
+        not yet wired up a birth site, or the peak comes from a fit produced
+        before this field existed). Identity is a within-run handle only; see
+        ``scratch/peak-identity-plan.md``.
     """
 
     amplitude: float
     offset_mhz: float
     phase: float
+    peak_uid: Optional[int] = None
 
 
 def model_spectrum(

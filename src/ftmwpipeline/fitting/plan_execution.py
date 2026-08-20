@@ -84,7 +84,7 @@ from ftmwpipeline.preprocessing.window_planning import replan as stage4_replan
 
 from ..utils.parallelism import resolve_worker_count
 from . import validation
-from .active_ft import ActiveFTResult
+from .active_ft import ActiveFTResult, PointMap
 from .doublet_alternative import DoubletAdjudication, adjudicate_close_pairs
 from .peak_model import (
     ModelPeak,
@@ -667,6 +667,7 @@ def evaluate_ancestor_leakage(
                     amplitude=float(pk.amplitude),
                     offset_mhz=float(delta_dep),
                     phase=float(pk.phase),
+                    peak_uid=pk.peak_uid,
                 ),
                 frequency_mhz=float(fitted_freq_mhz),
                 freeze_eligible=True,  # cleared min_freeze_snr by construction
@@ -1503,7 +1504,8 @@ def refit_outcome(
     # Seeds from the converged free peaks (their ParameterErrors carried parallel
     # for the freeze re-append below), with the remove edits applied first.
     seeds: List[ModelPeak] = [
-        ModelPeak(p.amplitude, p.offset_mhz, p.phase) for p in inner.peaks
+        ModelPeak(p.amplitude, p.offset_mhz, p.phase, peak_uid=p.peak_uid)
+        for p in inner.peaks
     ]
     seed_errors: List[ParameterErrors] = list(inner.peak_errors)
     for rm in remove_offsets:
@@ -1818,10 +1820,11 @@ def local_thaw_cofit(
     # peak (that would double-count the line). So: primary's free peaks
     # (unchanged) + dependent's free peaks (remapped into the primary frame).
     primary_peaks = [
-        ModelPeak(pk.amplitude, pk.offset_mhz, pk.phase) for pk in primary.fit.peaks
+        ModelPeak(pk.amplitude, pk.offset_mhz, pk.phase, peak_uid=pk.peak_uid)
+        for pk in primary.fit.peaks
     ]
     dep_peaks_in_primary = [
-        ModelPeak(pk.amplitude, pk.offset_mhz + shift, pk.phase)
+        ModelPeak(pk.amplitude, pk.offset_mhz + shift, pk.phase, peak_uid=pk.peak_uid)
         for pk in dependent.fit.peaks
     ]
     init = primary_peaks + dep_peaks_in_primary
@@ -1990,6 +1993,8 @@ def execute_plan(
     min_freeze_snr: Optional[float] = None,
     finalize_node: Optional[FinalizeNode] = None,
     final_add_snr_threshold: Optional[float] = None,
+    probe_freq_mhz: Optional[float] = None,
+    sample_dt_us: Optional[float] = None,
 ) -> PlanFitOutcome:
     """Walk a Stage 4 :class:`WindowPlan` and fit every window on the active-FT.
 
@@ -2104,6 +2109,19 @@ def execute_plan(
         :data:`DEFAULT_BASELINE_EDGE_THRESHOLD`
         ``S_coh`` threshold gating the baseline refit (a dedicated threshold
         well below the thaw default).
+    probe_freq_mhz, sample_dt_us : float, optional
+        The experiment's probe (LO) frequency and FID sample spacing. When
+        BOTH are supplied (along with ``active_ft.n_active``, always
+        available), each window builds a
+        :class:`~ftmwpipeline.fitting.active_ft.PointMap` from its own
+        ``center_mhz`` and this run's ``sideband`` the moment the window's
+        frame is known, so every peak seeded through
+        :func:`~ftmwpipeline.fitting.window_fit.conservative_fit` (the
+        initial fit, the residual-rescue add loop, and the F-2
+        add-from-convergence pass) is stamped with a
+        :attr:`~ftmwpipeline.fitting.peak_model.ModelPeak.peak_uid`.
+        ``None`` (either, the default) leaves every peak in this run
+        unstamped -- the caller has not supplied the frame.
 
     Returns
     -------
@@ -2189,6 +2207,8 @@ def execute_plan(
         finalize_node=finalize_node,
         cleanup_history=cleanup_history,
         final_add_snr_threshold=final_add_snr_threshold,
+        probe_freq_mhz=probe_freq_mhz,
+        sample_dt_us=sample_dt_us,
     )
     logger.info("initial walk: %.1fs", time.monotonic() - _t_initial)
 
@@ -2279,6 +2299,8 @@ def execute_plan(
                 finalize_node=finalize_node,
                 cleanup_history=cleanup_history,
                 final_add_snr_threshold=final_add_snr_threshold,
+                probe_freq_mhz=probe_freq_mhz,
+                sample_dt_us=sample_dt_us,
             )
 
             applied_pairs = {
@@ -2557,6 +2579,7 @@ def _add_from_convergence(
             tau_us,
             acquisition_us,
             shape=shape,
+            point_map=conservative_kwargs.get("point_map"),
         )
 
         # Attempt the warm-started add.
@@ -2647,6 +2670,8 @@ def _process_one_window(
     finalize_node: Optional[FinalizeNode] = None,
     cleanup_history: Optional[list[dict[str, Any]]] = None,
     final_add_snr_threshold: Optional[float] = None,
+    probe_freq_mhz: Optional[float] = None,
+    sample_dt_us: Optional[float] = None,
 ) -> None:
     """Process one window end to end: conservative fit -> bounded thaw loop ->
     residual-rescue B-loop -> leakage-wing baseline -> doublet adjudication.
@@ -2678,6 +2703,31 @@ def _process_one_window(
         ck_for_window["tau_maj_us"] = float(tau_maj_w)
         ck_for_window["sigma_tau_us"] = float(sigma_tau_w)
         tau0_us_for_window = float(tau_maj_w)
+    # This window's offset -> point-hundredths map (see PointMap), built the
+    # moment its frame (center_mhz, sideband, probe, n_active, dt) is known --
+    # the same center_mhz formula ``materialize_window`` uses. Riding on
+    # ``ck_for_window`` (the "conservative_kwargs" bag) is what gets it, with
+    # no further threading, into every seed constructor reachable from here:
+    # the initial conservative fit, the residual-rescue add loop (its
+    # ``conservative_kwargs`` bag is this same dict), and the F-2
+    # add-from-convergence pass below. ``None`` when the caller has not
+    # supplied a frame -- every seed then stays unstamped, exactly as before
+    # this landing.
+    if probe_freq_mhz is not None and sample_dt_us is not None:
+        lo_w, hi_w = win.freq_range
+        if lo_w > hi_w:
+            lo_w, hi_w = hi_w, lo_w
+        center_mhz_for_window = 0.5 * (lo_w + hi_w)
+        point_map = PointMap.from_frame(
+            center_mhz_for_window,
+            sideband,
+            probe_freq_mhz,
+            active_ft.n_active,
+            sample_dt_us,
+        )
+        if ck_for_window is conservative_kwargs:
+            ck_for_window = dict(conservative_kwargs)
+        ck_for_window["point_map"] = point_map
     outcome = _fit_one_window(
         win,
         active_ft,
@@ -2899,6 +2949,8 @@ def _walk_windows_in_order(
     finalize_node: Optional[FinalizeNode] = None,
     cleanup_history: Optional[list[dict[str, Any]]] = None,
     final_add_snr_threshold: Optional[float] = None,
+    probe_freq_mhz: Optional[float] = None,
+    sample_dt_us: Optional[float] = None,
 ) -> None:
     """Fit each window in ``order``, run the bounded local-thaw loop, and
     (when ``max_residual_rescue_rounds > 0``) the residual-rescue B-loop.
@@ -2967,6 +3019,8 @@ def _walk_windows_in_order(
             finalize_node=finalize_node,
             cleanup_history=cleanup_history,
             final_add_snr_threshold=final_add_snr_threshold,
+            probe_freq_mhz=probe_freq_mhz,
+            sample_dt_us=sample_dt_us,
         )
         _log_window_progress(n_done, n_total)
 
@@ -3405,6 +3459,8 @@ def _walk_windows_parallel(
     finalize_node: Optional[FinalizeNode] = None,
     cleanup_history: Optional[list[dict[str, Any]]] = None,
     final_add_snr_threshold: Optional[float] = None,
+    probe_freq_mhz: Optional[float] = None,
+    sample_dt_us: Optional[float] = None,
 ) -> None:
     """Cross-window parallel form of :func:`_walk_windows_in_order`.
 
@@ -3457,6 +3513,8 @@ def _walk_windows_parallel(
         min_freeze_snr=min_freeze_snr,
         finalize_node=finalize_node,
         final_add_snr_threshold=final_add_snr_threshold,
+        probe_freq_mhz=probe_freq_mhz,
+        sample_dt_us=sample_dt_us,
     )
 
     import multiprocessing
@@ -4198,13 +4256,14 @@ def _perform_thaw(
     # Remap the dependent frame: shift = s*(dep_center - primary_center).
     shift = s * (dep_center - primary_center)
     dep_peaks = [
-        ModelPeak(pk.amplitude, pk.offset_mhz - shift, pk.phase)
+        ModelPeak(pk.amplitude, pk.offset_mhz - shift, pk.phase, peak_uid=pk.peak_uid)
         for pk in dep_peaks_in_primary
     ]
     thawed_in_dep = ModelPeak(
         thawed_peak_primary.amplitude,
         thawed_peak_primary.offset_mhz - shift,
         thawed_peak_primary.phase,
+        peak_uid=thawed_peak_primary.peak_uid,
     )
 
     # Provisional dependent residual after a (hypothetical) install: free peaks
@@ -4364,7 +4423,10 @@ def _install_cofit_outcome(
             )
         ]
     # Replace the free-peak fit's peaks/tau and reconstruct the full model.
-    new_peak_list = [ModelPeak(p.amplitude, p.offset_mhz, p.phase) for p in new_peaks]
+    new_peak_list = [
+        ModelPeak(p.amplitude, p.offset_mhz, p.phase, peak_uid=p.peak_uid)
+        for p in new_peaks
+    ]
     outcome.fit.fit.peaks = new_peak_list
     outcome.fit.fit.tau_us = tau_us
     outcome.fit.fit.tau_error = joint.tau_error
@@ -4761,7 +4823,10 @@ def _apply_baseline_to_outcome(
         u,
         data_minus_bg,
         outcome.rms_noise,
-        [ModelPeak(p.amplitude, p.offset_mhz, p.phase) for p in inner.peaks],
+        [
+            ModelPeak(p.amplitude, p.offset_mhz, p.phase, peak_uid=p.peak_uid)
+            for p in inner.peaks
+        ],
         tau0_us,
         acquisition_us,
         spur_mask=spur_mask,

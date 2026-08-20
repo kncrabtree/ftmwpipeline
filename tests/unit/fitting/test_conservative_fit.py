@@ -10,6 +10,7 @@ add-one-peak audit trail, and the per-line knockout validation.
 import numpy as np
 import pytest
 
+from ftmwpipeline.fitting.active_ft import PointMap
 from ftmwpipeline.fitting.peak_model import ModelPeak, effective_tau, model_spectrum
 from ftmwpipeline.fitting.validation import feature_fwhm
 from ftmwpipeline.fitting.window_fit import (
@@ -325,3 +326,100 @@ class TestKnockout:
         u, z = _window([ModelPeak(_amp_for_snr(50.0), 0.0, 0.0)], 1.0, 1.0, rng)
         empty = fit_window(u, z, 1.0, [], TAU_US, T_US)
         assert knockout_test(u, z, 1.0, empty, T_US) == []
+
+
+# ---------------------------------------------------------------------------
+# peak_uid stamping via PointMap (P3, second landing). _seed_peak is the sole
+# seed constructor conservative_fit reaches -- the K=1 seed, the blend-aware
+# escalation, and the add-one loop -- so a point_map threaded into
+# conservative_fit must stamp every peak it accepts.
+# ---------------------------------------------------------------------------
+class TestPeakUidStamping:
+    N_ACTIVE = 100000
+    DT = 0.001
+    CENTER_MHZ = 36100.0
+    PROBE_MHZ = 40960.0
+    SIDEBAND = "lower"
+
+    def _point_map(self) -> PointMap:
+        return PointMap.from_frame(
+            self.CENTER_MHZ, self.SIDEBAND, self.PROBE_MHZ, self.N_ACTIVE, self.DT
+        )
+
+    def test_add_loop_seed_gets_the_expected_peak_uid(self):
+        """A peak seeded at a known offset through the real add loop carries
+        exactly the peak_uid PointMap.stamp predicts for that offset."""
+        rng = np.random.default_rng(SEED)
+        true = ModelPeak(_amp_for_snr(200.0), 0.42, 1.0)
+        u, z = _window([true], 1.5, 1.0, rng)
+        point_map = self._point_map()
+
+        res = conservative_fit(
+            u, z, 1.0, [true.offset_mhz], TAU_US, T_US, point_map=point_map
+        )
+
+        assert res.n_peaks == 1
+        assert res.peaks[0].peak_uid == point_map.stamp(true.offset_mhz)
+
+    def test_no_point_map_leaves_the_peak_unstamped(self):
+        """The pre-existing default: omitting point_map stamps nothing."""
+        rng = np.random.default_rng(SEED)
+        true = ModelPeak(_amp_for_snr(200.0), 0.42, 1.0)
+        u, z = _window([true], 1.5, 1.0, rng)
+
+        res = conservative_fit(u, z, 1.0, [true.offset_mhz], TAU_US, T_US)
+
+        assert res.n_peaks == 1
+        assert res.peaks[0].peak_uid is None
+
+    def test_peak_uid_survives_a_fit_that_moves_the_peak(self):
+        """The negative test that matters most: the stamp is the SEED's
+        point-space position, never the recomputed position of the fitted
+        (moved) result. A deliberately off-position candidate makes the NLS
+        genuinely move the peak away from its seed offset."""
+        rng = np.random.default_rng(SEED)
+        true = ModelPeak(_amp_for_snr(300.0), 0.42, 1.0)
+        u, z = _window([true], 1.5, 0.3, rng)
+        point_map = self._point_map()
+        seed_offset = 0.30  # off the true 0.42 line
+
+        res = conservative_fit(
+            u, z, 0.3, [seed_offset], TAU_US, T_US, point_map=point_map
+        )
+
+        assert res.n_peaks == 1
+        fitted = res.peaks[0]
+        # The fit genuinely moved off the seed toward the true line.
+        assert fitted.offset_mhz != pytest.approx(seed_offset)
+        assert abs(fitted.offset_mhz - true.offset_mhz) < 0.02
+        # The identifier is the SEED's stamp -- never the fitted position's.
+        assert fitted.peak_uid == point_map.stamp(seed_offset)
+        assert fitted.peak_uid != point_map.stamp(fitted.offset_mhz)
+
+    def test_blend_escalation_seeds_are_stamped(self):
+        """The K=2 straddle re-seed (_blend_aware_seed's escalation path)
+        also stamps through the same point_map."""
+        rng = np.random.default_rng(SEED)
+        true = [
+            ModelPeak(_amp_for_snr(250.0), -0.05, 0.2),
+            ModelPeak(_amp_for_snr(220.0), 0.05, 2.4),
+        ]
+        u, z = _window(true, 1.5, 0.4, rng)
+        point_map = self._point_map()
+
+        res = conservative_fit(
+            u,
+            z,
+            0.4,
+            [0.0],
+            TAU_US,
+            T_US,
+            point_map=point_map,
+            candidate_passes=["primary"],
+        )
+
+        assert res.n_peaks >= 1
+        # Every accepted peak -- whether from the K=1 seed or a straddled
+        # K=2/K=3 escalation -- carries a stamp when a point_map is given.
+        for pk in res.peaks:
+            assert pk.peak_uid is not None

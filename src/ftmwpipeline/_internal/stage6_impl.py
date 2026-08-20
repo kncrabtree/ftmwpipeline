@@ -64,7 +64,7 @@ from ..core.data_structures import (
     Stage6Review,
     WindowReviewStatus,
 )
-from ..fitting.active_ft import active_ft_bin_spacing_mhz
+from ..fitting.active_ft import active_ft_bin_spacing_mhz, peak_uid_from_offset
 from ..fitting.peak_model import ModelPeak
 from ..fitting.peak_model import molecular_frequency as _molecular_frequency
 from ..fitting.peak_model import sideband_sign
@@ -1895,6 +1895,14 @@ def refit_window_core(
                     amplitude=cand_amp,
                     offset_mhz=cand_offset,
                     phase=0.0,
+                    peak_uid=peak_uid_from_offset(
+                        cand_offset,
+                        center_mhz,
+                        sideband,
+                        fit_ctx.probe_freq_mhz,
+                        fit_ctx.active_ft.n_active,
+                        fit_ctx.sample_dt_us,
+                    ),
                 )
             else:
                 # Fresh seed: amplitude from data at nearest bin.
@@ -1908,6 +1916,14 @@ def refit_window_core(
                     amplitude=max(amp_seed, 1e-30),
                     offset_mhz=add_offset,
                     phase=float(np.angle(data_minus_bg[nearest_bin])),
+                    peak_uid=peak_uid_from_offset(
+                        add_offset,
+                        center_mhz,
+                        sideband,
+                        fit_ctx.probe_freq_mhz,
+                        fit_ctx.active_ft.n_active,
+                        fit_ctx.sample_dt_us,
+                    ),
                 )
         # Range check on the POST-snap seed: the snap (or an explicit
         # ``add_seeds`` entry) is what the NLS actually starts from, so it is
@@ -4556,7 +4572,17 @@ def _batch_apply_merge(
         merge_offset = float(s * (merge_freq - center_mhz))
         add_seeds = [
             ModelPeak(
-                amplitude=max(merge_amp, 1e-30), offset_mhz=merge_offset, phase=0.0
+                amplitude=max(merge_amp, 1e-30),
+                offset_mhz=merge_offset,
+                phase=0.0,
+                peak_uid=peak_uid_from_offset(
+                    merge_offset,
+                    center_mhz,
+                    sideband,
+                    ctx.shared.fit_ctx.probe_freq_mhz,
+                    ctx.shared.fit_ctx.active_ft.n_active,
+                    ctx.shared.fit_ctx.sample_dt_us,
+                ),
             )
         ]
 
@@ -4663,6 +4689,14 @@ def _batch_apply_split(
                 amplitude=max(per_peak_amp, 1e-30),
                 offset_mhz=float(s * (af - center_mhz)),
                 phase=0.0,
+                peak_uid=peak_uid_from_offset(
+                    float(s * (af - center_mhz)),
+                    center_mhz,
+                    sideband,
+                    ctx.shared.fit_ctx.probe_freq_mhz,
+                    ctx.shared.fit_ctx.active_ft.n_active,
+                    ctx.shared.fit_ctx.sample_dt_us,
+                ),
             )
             for af in add_freqs
         ]
