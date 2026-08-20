@@ -141,6 +141,7 @@ def _final_peak_to_dict(p: FinalPeak) -> Dict[str, Any]:
         "snr_error": p.snr_error,
         "clock_lattice": p.clock_lattice,
         "derivation": p.derivation,
+        "peak_uid": p.peak_uid,
     }
 
 
@@ -167,6 +168,9 @@ def _final_peak_from_dict(d: Dict[str, Any]) -> FinalPeak:
         # Absent in tables written before the derivation tag; None reads as
         # "carried through unchanged", correct for a pre-curation table.
         derivation=(None if d.get("derivation") is None else int(d["derivation"])),
+        # Absent in tables written before peak identity; None is the honest
+        # value for a pre-existing table -- never backfilled.
+        peak_uid=(None if d.get("peak_uid") is None else int(d["peak_uid"])),
     )
 
 

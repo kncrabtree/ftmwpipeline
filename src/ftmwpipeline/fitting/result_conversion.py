@@ -596,6 +596,7 @@ def window_outcome_to_fitting_result(
                 chi_squared=chi_squared_for_peak,
                 window_id=fit_window.window_id,
                 knockout=knockout,
+                peak_uid=peak.peak_uid,
             )
         )
 
@@ -681,6 +682,7 @@ def window_outcome_to_fitting_result(
             "amplitude": frozen.model_peak.amplitude,
             "phase": frozen.model_peak.phase,
             "freeze_eligible": frozen.freeze_eligible,
+            "peak_uid": frozen.model_peak.peak_uid,
         }
 
     result.residuals = np.asarray(outcome.full_residual, dtype=np.complex128)

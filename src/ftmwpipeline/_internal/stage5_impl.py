@@ -1087,11 +1087,11 @@ def build_finalize_node(
     res_element_mhz: float,
     sideband: Sideband,
     acquisition_us: float,
+    probe_freq_mhz: float,
+    n_active: int,
+    sample_dt_us: float,
     snap_tol_mhz: float = 0.05,
     max_iterations: int = 5,
-    probe_freq_mhz: Optional[float] = None,
-    n_active: Optional[int] = None,
-    sample_dt_us: Optional[float] = None,
 ) -> "FinalizeNode":
     """Build the per-node cleanup callback injected into the fit walk.
 
@@ -1103,9 +1103,13 @@ def build_finalize_node(
     ``peak_survival`` / ``vif_collapse`` diagnostics from it. A disabled cleanup
     returns the outcome untouched.
 
-    ``probe_freq_mhz`` / ``n_active`` / ``sample_dt_us`` (all three, or none)
-    let the collapse / degenerate-merge passes stamp a fresh ``peak_uid`` on
-    each merged seed -- see ``ModelPeak.peak_uid``."""
+    ``probe_freq_mhz`` / ``n_active`` / ``sample_dt_us`` are required (rather
+    than the ``Optional[...] = None`` that ``_collapse_outcome`` and
+    ``_degenerate_merge_trial_outcome`` still accept, since tests construct
+    those directly): this is the only production call site that stamps
+    identifiers on the collapse / degenerate-merge passes' merged seeds, so a
+    future caller that forgets one fails loudly at the call site instead of
+    silently producing unstamped merges -- see ``ModelPeak.peak_uid``."""
     from ..fitting.plan_execution import NodeCleanup
 
     def finalize_node(outcome: "WindowOutcome") -> "NodeCleanup":

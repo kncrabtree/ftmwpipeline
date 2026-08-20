@@ -85,6 +85,10 @@ HDF5 layout (under the caller-provided group, e.g. ``/stage5_fitting``)::
                                                           absent column -> None,
                                                           "carried through
                                                           unchanged")
+                peak_uid                         [i8]    (point-space identity,
+                                                          stamped at birth;
+                                                          -1 or an absent
+                                                          column -> None)
         window_0001/ ...
 
 Round-trip contract: ``save`` -> hand-edit -> ``load`` returns the edited
@@ -604,6 +608,7 @@ def _save_peak_columns(
     origin_col: np.ndarray = np.empty(n, dtype=object)
     flat_decay_col: np.ndarray = np.empty(n, dtype="i1")
     derivation_col: np.ndarray = np.empty(n, dtype="i8")
+    peak_uid_col: np.ndarray = np.empty(n, dtype="i8")
     for i, p in enumerate(peaks):
         columns["peak_id"][i] = _peak_id_to_int(p.peak_id)
         columns["frequency_mhz"][i] = float(p.frequency_mhz)
@@ -642,6 +647,9 @@ def _save_peak_columns(
         # derivation: Stage-6 decision id that created/altered the peak; -1
         # encodes None ("carried through the refit unchanged").
         derivation_col[i] = -1 if p.derivation is None else int(p.derivation)
+        # peak_uid: point-space identity stamped at birth; -1 encodes None
+        # (absent, or a fit produced before this field existed).
+        peak_uid_col[i] = -1 if p.peak_uid is None else int(p.peak_uid)
     for name, data in columns.items():
         peaks_group.create_dataset(name, data=data)
     # String columns stored as variable-length UTF-8 datasets.
@@ -649,6 +657,7 @@ def _save_peak_columns(
     peaks_group.create_dataset("origin", data=origin_col, dtype=_vlen_str)
     peaks_group.create_dataset("flat_decay", data=flat_decay_col)
     peaks_group.create_dataset("derivation", data=derivation_col)
+    peaks_group.create_dataset("peak_uid", data=peak_uid_col)
 
 
 # ---------------------------------------------------------------------------
@@ -934,6 +943,15 @@ def _load_peak_columns(
         ]
     else:
         derivation_vals = [None] * n
+    # Optional numeric column: absent in files written before peak identity.
+    # -1 (and an absent column) decode to None -- no identifier is the honest
+    # value for a fit produced before this field existed.
+    if "peak_uid" in peaks_group:
+        peak_uid_vals: List[Optional[int]] = [
+            (None if int(v) < 0 else int(v)) for v in peaks_group["peak_uid"][:]
+        ]
+    else:
+        peak_uid_vals = [None] * n
     peaks: List[FittedPeak] = []
     for i in range(n):
         ko_supported_raw = int(cols["knockout_supported"][i])
@@ -971,6 +989,7 @@ def _load_peak_columns(
                 origin=origin_vals[i],
                 flat_decay=flat_decay_vals[i],
                 derivation=derivation_vals[i],
+                peak_uid=peak_uid_vals[i],
             )
         )
     return peaks
@@ -996,7 +1015,7 @@ def _load_peak_columns(
 #:
 #: Sentinels (as written by :func:`_save_peak_columns`): NaN encodes an absent
 #: float (``phase``/``decay_rate``/the ``*_error`` columns/``snr``/
-#: ``chi_squared``); ``derivation`` uses ``-1`` for "none";
+#: ``chi_squared``); ``derivation`` and ``peak_uid`` use ``-1`` for "none";
 #: ``knockout_supported`` is tri-state (``1`` supported, ``0`` not, ``-1`` no
 #: knockout was run); an empty ``clock_lattice`` means "off-lattice or no clock
 #: declaration". ``shape`` is derived from the owning window's ``shape``
@@ -1026,6 +1045,7 @@ FIT_PEAK_COLUMN_SPECS: Dict[str, ColumnSpec] = {
     "clock_lattice": ("str", ""),
     "flat_decay": ("bool", False),
     "derivation": ("i8", -1),
+    "peak_uid": ("i8", -1),
     "knockout_delta_chi2": ("f8", REQUIRED),
     "knockout_expected_delta_chi2": ("f8", REQUIRED),
     "knockout_supported": ("i1", REQUIRED),

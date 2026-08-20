@@ -287,6 +287,11 @@ _CSV_COLUMNS = [
     # consumer reads the identity change instead of pairing peak sets across
     # edits.
     "derivation",
+    # Point-space peak identity, stamped once at birth and carried unchanged
+    # through every refit and curation edit; empty for a fit produced before
+    # this field existed. Valid only within the one Stage 5 fit lineage this
+    # table was built from.
+    "peak_uid",
 ]
 
 
@@ -324,6 +329,7 @@ def _csv_row(p: FinalPeak, unit_value: float) -> List[str]:
         "" if p.window_id is None else str(p.window_id),
         p.clock_lattice or "",
         "" if p.derivation is None else str(p.derivation),
+        "" if p.peak_uid is None else str(p.peak_uid),
     ]
 
 
@@ -398,6 +404,7 @@ def _peak_json(
         "window_id": p.window_id,
         "clock_lattice": p.clock_lattice,
         "derivation": p.derivation,
+        "peak_uid": p.peak_uid,
     }
     if with_catalog:
         payload["catalog"] = _catalog_json(match)

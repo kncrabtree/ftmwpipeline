@@ -967,6 +967,73 @@ class TestOriginRoundTrip:
 
 
 # ---------------------------------------------------------------------------
+# Peak identity (peak_uid) persistence
+# ---------------------------------------------------------------------------
+class TestPeakUidRoundTrip:
+    """The ``peak_uid`` point-space identity persists and rehydrates
+    correctly. Never re-derived on either side of the boundary -- these
+    tests only check that the stamped value survives, not what it is."""
+
+    def test_stamped_peak_round_trips(self, tmp_path):
+        """A peak with ``peak_uid`` set survives save -> load unchanged."""
+        peak = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        peak.peak_uid = 361_000_00
+        win = _make_window_fit(0, [peak], audit=[], thaw_events=[])
+        fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
+
+        loaded = _roundtrip(fit, tmp_path / "fit.h5")
+
+        got = loaded.fitted_peaks[0]
+        assert got.peak_uid == 361_000_00
+        # Also survives in the per-window peak list.
+        assert loaded.window_fits[0].fitted_peaks[0].peak_uid == 361_000_00
+
+    def test_unstamped_peak_round_trips_as_none(self, tmp_path):
+        """A peak with no identifier loads with ``peak_uid=None``."""
+        peak = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        assert peak.peak_uid is None
+        win = _make_window_fit(0, [peak], audit=[], thaw_events=[])
+        fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
+
+        loaded = _roundtrip(fit, tmp_path / "fit.h5")
+
+        assert loaded.fitted_peaks[0].peak_uid is None
+
+    def test_mixed_identity_in_one_window(self, tmp_path):
+        """One stamped + one unstamped peak in the same window both
+        round-trip independently."""
+        pk_a = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        pk_b = _sample_fitted_peak(peak_id=1, window_id=0, freq_mhz=36105.0)
+        pk_a.peak_uid = 42
+        # pk_b.peak_uid stays None
+        win = _make_window_fit(0, [pk_a, pk_b], audit=[], thaw_events=[])
+        fit = SpectrumFit(window_fits=[win], fitted_peaks=[pk_a, pk_b])
+
+        loaded = _roundtrip(fit, tmp_path / "fit.h5")
+
+        by_id = {p.peak_id: p for p in loaded.fitted_peaks}
+        assert by_id[0].peak_uid == 42
+        assert by_id[1].peak_uid is None
+
+    def test_legacy_file_without_column_loads_none(self, tmp_path):
+        """A file written before the ``peak_uid`` column existed loads with
+        ``None`` on every peak -- no error, backward-compatible, and no
+        identifier is backfilled from the fitted frequency."""
+        path = tmp_path / "fit.h5"
+        peak = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        win = _make_window_fit(0, [peak], audit=[], thaw_events=[])
+        fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
+        with h5py.File(path, "w") as h5f:
+            g = h5f.create_group("stage5_fitting")
+            save_spectrum_fit_to_hdf5(fit, g)
+            # Simulate a file that pre-dates the column.
+            del g["windows/window_0000/peaks/peak_uid"]
+        with h5py.File(path, "r") as h5f:
+            loaded = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+        assert loaded.fitted_peaks[0].peak_uid is None
+
+
+# ---------------------------------------------------------------------------
 # DoubletAlternativeInfo serialization
 # ---------------------------------------------------------------------------
 def _make_doublet_alt(

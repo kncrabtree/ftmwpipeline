@@ -11,6 +11,7 @@ See ``docs/source/stage6_review.rst``.
 
 from __future__ import annotations
 
+import json
 import math
 import shutil
 
@@ -210,6 +211,66 @@ def test_clock_lattice_carried_and_roundtrips(tmp_path):
         "320x6 (bb)",
         None,
     ]
+
+
+def test_peak_uid_carried_and_roundtrips(tmp_path):
+    fit = _synthetic_fit()
+    # One line was stamped with an identifier at birth; the other predates
+    # the field (an honest ``None``, never backfilled).
+    fit.fitted_peaks[0].peak_uid = 3_000_000_00
+    fit.fitted_peaks[1].peak_uid = None
+    fp = _build_final_products(
+        fit,
+        probe_freq_mhz=PROBE,
+        sideband=Sideband.LOWER,
+        calibration_state="rb_locked",
+        epsilon=0.0,
+        sigma_epsilon=0.0,
+        sigma_floor_khz=0.0,
+    )
+    assert [p.peak_uid for p in fp.peaks] == [3_000_000_00, None]
+
+    review = Stage6Review(final_products=fp)
+    out = tmp_path / "review.h5"
+    with h5py.File(out, "w") as h5f:
+        grp = h5f.create_group("stage6_review")
+        save_stage6_review_to_hdf5(review, grp)
+    with h5py.File(out, "r") as h5f:
+        loaded = load_stage6_review_from_hdf5(h5f["stage6_review"])
+    assert loaded.final_products is not None
+    assert [p.peak_uid for p in loaded.final_products.peaks] == [
+        3_000_000_00,
+        None,
+    ]
+
+
+def test_peak_uid_absent_json_key_loads_none(tmp_path):
+    """A table written before ``peak_uid`` existed has no such key in its
+    persisted JSON; loading it must not raise, and must not backfill an
+    identifier -- absent is the honest value."""
+    fp = _build_final_products(
+        _synthetic_fit(),
+        probe_freq_mhz=PROBE,
+        sideband=Sideband.LOWER,
+        calibration_state="rb_locked",
+        epsilon=0.0,
+        sigma_epsilon=0.0,
+        sigma_floor_khz=0.0,
+    )
+    review = Stage6Review(final_products=fp)
+    out = tmp_path / "review.h5"
+    with h5py.File(out, "w") as h5f:
+        grp = h5f.create_group("stage6_review")
+        save_stage6_review_to_hdf5(review, grp)
+    with h5py.File(out, "r+") as h5f:
+        raw = json.loads(str(h5f["stage6_review/final_products"].attrs["data"]))
+        for peak in raw["peaks"]:
+            peak.pop("peak_uid", None)
+        h5f["stage6_review/final_products"].attrs["data"] = json.dumps(raw)
+    with h5py.File(out, "r") as h5f:
+        loaded = load_stage6_review_from_hdf5(h5f["stage6_review"])
+    assert loaded.final_products is not None
+    assert all(p.peak_uid is None for p in loaded.final_products.peaks)
 
 
 # ---------------------------------------------------------------------------

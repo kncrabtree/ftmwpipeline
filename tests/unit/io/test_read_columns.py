@@ -118,6 +118,7 @@ def _fitted_peak(peak_id: int, window_id: int, freq_mhz: float) -> FittedPeak:
         origin="user" if peak_id == 2 else "auto",
         flat_decay=peak_id == 1,
         derivation=7 if peak_id == 2 else None,
+        peak_uid=4213 if peak_id == 0 else None,
     )
 
 
@@ -582,6 +583,16 @@ class TestReadFitPeakColumns:
         assert derivation[2] == 7
         assert derivation[1] == -1  # None -> -1, not None
 
+    def test_peak_uid_column_round_trips_and_absent_rows_are_sentinel(self, fit_file):
+        with h5py.File(fit_file, "r") as h5f:
+            cols = read_fit_peak_columns(
+                h5f["stage5_fitting"], columns=["peak_id", "peak_uid"]
+            )
+        peak_uid = dict(zip(cols["peak_id"], cols["peak_uid"]))
+        assert peak_uid[0] == 4213
+        assert peak_uid[1] == -1  # None -> -1, not None
+        assert peak_uid[2] == -1
+
     def test_column_selection_is_honored_in_order(self, fit_file):
         with h5py.File(fit_file, "r") as h5f:
             cols = read_fit_peak_columns(
@@ -641,6 +652,17 @@ class TestReadFitPeakColumns:
             fit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
         assert list(cols["derivation"]) == [-1, -1, -1]
         assert all(p.derivation is None for p in fit.fitted_peaks)
+
+    def test_absent_peak_uid_column_reads_back_as_none(self, fit_file):
+        """An older file with no ``peak_uid`` column reads as all -1 (None)."""
+        with h5py.File(fit_file, "a") as h5f:
+            for name in h5f["stage5_fitting/windows"]:
+                del h5f[f"stage5_fitting/windows/{name}/peaks/peak_uid"]
+        with h5py.File(fit_file, "r") as h5f:
+            cols = read_fit_peak_columns(h5f["stage5_fitting"], columns=["peak_uid"])
+            fit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+        assert list(cols["peak_uid"]) == [-1, -1, -1]
+        assert all(p.peak_uid is None for p in fit.fitted_peaks)
 
     def test_every_declared_column_is_readable(self, fit_file):
         with h5py.File(fit_file, "r") as h5f:

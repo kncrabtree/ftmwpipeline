@@ -774,6 +774,24 @@ class FittedPeak:
     log, so the tag is renumbered together with the log whenever ``review undo``
     replays from the automatic baseline."""
 
+    # Peak identity: the point-space position the peak was seeded at, stamped
+    # once at birth (a Stage 3 detection, a blend escalation, a curated add, a
+    # split/merge product, ...) and never re-derived from the fitted position.
+    peak_uid: Optional[int] = None
+    """Point-space identifier: the peak's seed frequency expressed in
+    hundredths of a point of the active FT (see
+    :func:`ftmwpipeline.fitting.active_ft.peak_uid_from_offset`), stamped once
+    when the peak was born and carried unchanged through every subsequent fit
+    and curation edit -- including a Stage 6 refit, where the fitted frequency
+    moves but this identifier does not. It has no mathematical relationship to
+    the fitted frequency and must never be recomputed from one.
+
+    Valid **only within one Stage 5 fit lineage** (the automatic fit plus every
+    Stage 6 edit and cascade applied to it); a fresh ``fit run`` issues new
+    identifiers and no cross-run meaning is promised or should be assumed.
+    ``None`` is the honest value for a fit produced before this field existed
+    -- it is never backfilled from a legacy file's fitted positions."""
+
     # Spur-review hint: set when the peak's frequency was a Stage-2b flat-cluster
     # nominee whose coherent decay was ambiguous (the ``flat_decay`` band, where
     # a real line and a CW tone are indistinguishable). The line was fit, not
@@ -1976,6 +1994,13 @@ class FinalPeak:
         ``None`` when off-lattice or no clock declaration was supplied. An
         on-lattice line is a candidate instrumental artifact that survived the
         spur gate; the report flags it for review but never removes it.
+    peak_uid : int or None
+        Point-space identifier, carried through unchanged from the Stage 5
+        :class:`FittedPeak`: the peak's seed frequency in hundredths of a
+        point of the active FT, stamped once at birth and never re-derived
+        from a fitted position. Valid only within the one Stage 5 fit lineage
+        this table was built from -- no cross-run meaning is promised.
+        ``None`` on a fit produced before this field existed.
     """
 
     frequency_mhz: float
@@ -1995,6 +2020,7 @@ class FinalPeak:
     snr_error: Optional[float] = None
     clock_lattice: Optional[str] = None
     derivation: Optional[int] = None
+    peak_uid: Optional[int] = None
 
 
 @dataclass

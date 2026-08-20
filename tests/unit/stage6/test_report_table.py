@@ -48,6 +48,7 @@ def _products() -> FinalProducts:
                 phase_error=0.02,
                 snr_error=4.0,
                 clock_lattice="320x6 (bb)",
+                peak_uid=778800,
             ),
             FinalPeak(
                 frequency_mhz=39000.019800,
@@ -132,6 +133,9 @@ def test_csv_structure(tmp_path):
     # The clock-lattice annotation: identity on-lattice, empty off-lattice.
     assert rows[0]["clock_lattice"] == "320x6 (bb)"
     assert rows[1]["clock_lattice"] == ""
+    # Peak identity: stamped value present, absent renders empty (not "None").
+    assert rows[0]["peak_uid"] == "778800"
+    assert rows[1]["peak_uid"] == ""
 
 
 def test_json_structure(tmp_path):
@@ -152,6 +156,8 @@ def test_json_structure(tmp_path):
     assert payload["peaks"][1]["amplitude_error"] is None
     assert p0["clock_lattice"] == "320x6 (bb)"
     assert payload["peaks"][1]["clock_lattice"] is None
+    assert p0["peak_uid"] == 778800
+    assert payload["peaks"][1]["peak_uid"] is None
 
 
 def test_latex_structure(tmp_path):

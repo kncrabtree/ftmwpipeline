@@ -1211,6 +1211,9 @@ def _reconstruct_frozen_peaks(
             "amplitude":         float,   # model_peak.amplitude (real)
             "phase":             float,   # model_peak.phase (radians)
             "freeze_eligible":   bool,
+            "peak_uid":          int,     # point-space identity, or None
+                                          # (absent key -> None; never
+                                          # re-derived from frequency_mhz)
         }
 
     The offset in the dependent window's baseband frame is derived from the
@@ -1228,10 +1231,12 @@ def _reconstruct_frozen_peaks(
         amplitude = float(_parse_complex_amplitude(entry["amplitude"]).real)
         phase = float(entry.get("phase", 0.0))
         offset_mhz = float(s * (freq_mhz - center_mhz))
+        peak_uid_raw = entry.get("peak_uid")
         model_peak = ModelPeak(
             amplitude=amplitude,
             offset_mhz=offset_mhz,
             phase=phase,
+            peak_uid=None if peak_uid_raw is None else int(peak_uid_raw),
         )
         frozen.append(
             FrozenPeak(
@@ -1728,6 +1733,7 @@ def refit_window_core(
                 amplitude=float(fp.amplitude),
                 offset_mhz=offset,
                 phase=float(fp.phase) if fp.phase is not None else 0.0,
+                peak_uid=fp.peak_uid,
             )
             frozen_peaks.append(
                 FrozenPeak(
@@ -1741,10 +1747,15 @@ def refit_window_core(
             )
             thawed_held_peaks.append(fp)
         else:
+            # Inherited-seed path: this window's own peaks warm-start the
+            # refit from their previously fitted position. This is a
+            # propagation, not a birth -- copy the identifier so it survives
+            # the refit even though the fitted frequency moves.
             mp = ModelPeak(
                 amplitude=float(fp.amplitude),
                 offset_mhz=offset,
                 phase=float(fp.phase) if fp.phase is not None else 0.0,
+                peak_uid=fp.peak_uid,
             )
             seed_peaks_with_origin.append((mp, fp.origin, fp.derivation))
 
@@ -6688,6 +6699,7 @@ def _build_final_products(
                 snr_error=snr_err,
                 clock_lattice=pk.clock_lattice,
                 derivation=pk.derivation,
+                peak_uid=pk.peak_uid,
             )
         )
 

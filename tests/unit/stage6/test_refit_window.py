@@ -160,6 +160,42 @@ class TestReconstructFrozenPeaks:
         assert len(result) == 1
         assert result[0].peak_index == 3
 
+    def test_peak_uid_carried_when_present(self):
+        from ftmwpipeline.core.data_structures import Sideband
+
+        fixed = {
+            "frozen_peak_7": {
+                "peak_index": 7,
+                "primary_window_id": 42,
+                "frequency_mhz": 30100.0,
+                "amplitude": 1234.5,
+                "phase": 0.5,
+                "freeze_eligible": True,
+                "peak_uid": 991,
+            }
+        }
+        result = _reconstruct_frozen_peaks(fixed, 30000.0, Sideband.LOWER)
+        assert result[0].model_peak.peak_uid == 991
+
+    def test_peak_uid_absent_key_reads_as_none(self):
+        """A ``fixed_parameters`` entry written before peak identity existed
+        has no ``peak_uid`` key at all; the reconstructed peak must read
+        ``None``, never a value derived from ``frequency_mhz``."""
+        from ftmwpipeline.core.data_structures import Sideband
+
+        fixed = {
+            "frozen_peak_3": {
+                "peak_index": 3,
+                "primary_window_id": 1,
+                "frequency_mhz": 30050.0,
+                "amplitude": 500.0,
+                "phase": 0.0,
+                "freeze_eligible": False,
+            },
+        }
+        result = _reconstruct_frozen_peaks(fixed, 30000.0, Sideband.UPPER)
+        assert result[0].model_peak.peak_uid is None
+
 
 # ---------------------------------------------------------------------------
 # Task 1: build_stage5_fit_context is reusable (spot-check on 2638)
@@ -995,4 +1031,147 @@ class TestThawedLineFreeze:
         assert not any(abs(f - thawed_freq) < 1e-4 for f in remaining_freqs), (
             f"Removed thawed peak at {thawed_freq:.4f} MHz still present; "
             f"remaining: {remaining_freqs}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# P4: a thawed peak's identifier survives the fixed_parameters round trip
+# ---------------------------------------------------------------------------
+
+
+class TestThawedPeakUidRoundTrip:
+    """A peak held out of the free NLS by an accepted thaw event becomes a
+    ``FrozenPeak`` for the duration of that refit (``stage6_impl.py``'s
+    ``_is_thawed`` branch) and is persisted as a ``fixed_parameters`` entry.
+    Its ``peak_uid`` must survive that whole trip: seed FittedPeak -> held-out
+    ModelPeak -> persisted ``frozen_peak_*`` JSON entry ->
+    ``_reconstruct_frozen_peaks``. Uses ``stage5_small_source`` rather than
+    the (absent-in-this-checkout) cross-fixture ``TestThawedLineFreeze``
+    relies on, so this does not depend on scratch artifacts.
+    """
+
+    def test_thawed_peak_uid_survives_persistence(self, stage5_small_source, tmp_path):
+        sf_orig = _load_spectrum_fit(stage5_small_source)
+        wf = next(
+            (w for w in sf_orig.window_fits if len(w.fitted_peaks) >= 2),
+            None,
+        )
+        if wf is None:
+            pytest.skip("No window with >=2 peaks in the small fixture")
+
+        peaks_sorted = sorted(wf.fitted_peaks, key=lambda p: p.frequency_mhz)
+        thawed_fp = peaks_sorted[0]
+        thawed_freq = float(thawed_fp.frequency_mhz)
+        assert thawed_fp.peak_uid is not None, (
+            "the automatic fit stamps every peak; this test needs a real "
+            "identifier to prove it survives, not an absent one"
+        )
+
+        path = tmp_path / "thaw_uid.ftmw"
+        shutil.copy(stage5_small_source, path)
+        _inject_synthetic_thaw(path, wf.window_id, thawed_freq)
+        refit_window_impl(str(path), wf.window_id)
+
+        sf_after = _load_spectrum_fit(path)
+        wf_after = next(w for w in sf_after.window_fits if w.window_id == wf.window_id)
+
+        frozen_entries = {
+            k: v
+            for k, v in wf_after.fixed_parameters.items()
+            if k.startswith("frozen_peak_")
+        }
+        matching = [
+            v
+            for v in frozen_entries.values()
+            if abs(float(v["frequency_mhz"]) - thawed_freq) < 1e-4
+        ]
+        assert len(matching) == 1, (
+            f"expected exactly one persisted frozen entry for the thawed peak "
+            f"at {thawed_freq:.4f} MHz; got {len(matching)}"
+        )
+        assert matching[0]["peak_uid"] == thawed_fp.peak_uid, (
+            "the thawed peak's identifier did not survive the "
+            "fixed_parameters persistence boundary"
+        )
+
+        # And the reconstruction helper reads it back the same way.
+        from ftmwpipeline.core.data_structures import Sideband as _Sideband
+
+        center_mhz = None
+        if wf_after.window is not None and wf_after.window.freq_range is not None:
+            lo, hi = wf_after.window.freq_range
+            center_mhz = (lo + hi) / 2.0
+        assert center_mhz is not None, "window must have a freq_range to reconstruct"
+        # Sideband only affects the reconstructed offset_mhz, not peak_uid or
+        # frequency_mhz (both stored/matched verbatim from the persisted
+        # entry), so any valid value is fine for what this assertion checks.
+        sideband = _Sideband.LOWER
+        frozen = _reconstruct_frozen_peaks(
+            wf_after.fixed_parameters, center_mhz, sideband
+        )
+        reconstructed = [
+            fp for fp in frozen if abs(fp.frequency_mhz - thawed_freq) < 1e-4
+        ]
+        assert len(reconstructed) == 1
+        assert reconstructed[0].model_peak.peak_uid == thawed_fp.peak_uid
+
+
+# ---------------------------------------------------------------------------
+# P4 headline test: peak_uid survives a Stage 6 refit
+# ---------------------------------------------------------------------------
+
+
+class TestPeakUidSurvivesRefit:
+    """The whole point of P4 (``scratch/peak-identity-plan.md``): a peak's
+    identifier must survive a Stage 6 refit of its window unchanged, even
+    though the fitted frequency moves. ``refit_window_core``'s inherited-seed
+    path (``stage6_impl.py``, the ``else`` branch that builds
+    ``seed_peaks_with_origin``) is the carry site under test -- it warm-starts
+    each free peak from its own previously fitted position, which is a
+    propagation, not a birth, and must copy ``peak_uid`` rather than leave it
+    to default to ``None``.
+    """
+
+    def test_uid_unchanged_while_frequency_moves(self, stage5_small_source, tmp_path):
+        sf_before = _load_spectrum_fit(stage5_small_source)
+
+        found_moved_pair = False
+        for wf_before in sf_before.window_fits:
+            wid = wf_before.window_id
+            if len(wf_before.fitted_peaks) == 0:
+                continue
+            # Every peak in the automatic fit must already carry an
+            # identifier: P3 stamps every birth site, and this fixture is
+            # built via the real ``fit_peaks`` pipeline (no hand-patching).
+            assert all(
+                p.peak_uid is not None for p in wf_before.fitted_peaks
+            ), f"window {wid}: automatic fit has an unstamped peak"
+
+            # Fresh copy per window so one refit cannot bleed into the next.
+            path = tmp_path / f"w{wid}.ftmw"
+            shutil.copy(stage5_small_source, path)
+            refit_window_impl(str(path), wid)
+            sf_after = _load_spectrum_fit(path)
+            wf_after = next(w for w in sf_after.window_fits if w.window_id == wid)
+
+            by_uid_before = {p.peak_uid: p for p in wf_before.fitted_peaks}
+            by_uid_after = {p.peak_uid: p for p in wf_after.fitted_peaks}
+
+            # A no-edit refit adds and removes nothing, so the identifier set
+            # itself must be exactly preserved -- the strongest form of "the
+            # uid survives the refit".
+            assert set(by_uid_before) == set(by_uid_after), (
+                f"window {wid}: peak_uid set changed on a no-edit refit "
+                f"({set(by_uid_before)} -> {set(by_uid_after)})"
+            )
+
+            for uid, pb in by_uid_before.items():
+                pa = by_uid_after[uid]
+                if float(pa.frequency_mhz) != float(pb.frequency_mhz):
+                    found_moved_pair = True
+
+        assert found_moved_pair, (
+            "no peak's fitted frequency moved on any window's refit in this "
+            "fixture, so this run cannot distinguish 'the uid was carried' "
+            "from 'nothing happened' -- the headline claim is unverified"
         )

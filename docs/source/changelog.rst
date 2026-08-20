@@ -32,6 +32,21 @@ had to reach into ``_internal`` or parse out of prose to obtain are now
 published, and the Stage 6 edit paths that carry them were collapsed onto one
 engine so they cannot answer differently.
 
+* **Every fitted peak carries a stable identifier.** ``FittedPeak`` /
+  ``FinalPeak`` now have a ``peak_uid``: the peak's point-space position in
+  the active FT (hundredths of a point), stamped once when the peak is born
+  (a Stage 3 detection, a blend escalation, a curated ``add``, a
+  ``split``/``merge`` product, ...) and carried unchanged through every
+  subsequent fit and Stage 6 edit -- including a refit, where the fitted
+  frequency moves but the identifier does not. It is never recomputed from a
+  fitted value, so it survives exactly the operations that make frequency
+  matching unreliable. Persisted in the Stage 5 HDF5 peak columns and exported
+  in the CSV/JSON final-products tables; ``None`` on a fit produced before
+  this field existed (no backfill). Valid only within the one Stage 5 fit
+  lineage it was stamped in -- a fresh ``fit run`` issues new identifiers, and
+  no cross-run meaning is promised. Curation verbs do not yet accept an
+  identifier in place of a frequency; that is a later step.
+
 * **``Pipeline`` methods let a typed error propagate instead of flattening it
   into ``RuntimeError``.** Eighteen methods (``compute_ft``, ``fit_peaks``,
   ``estimate_noise``, ``calibrate_tau``, ``calibrate_timebase``, and the rest
