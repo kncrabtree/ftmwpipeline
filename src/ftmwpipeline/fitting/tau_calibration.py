@@ -723,7 +723,7 @@ def _aicc(rss: np.ndarray, n: int, k: int) -> np.ndarray:
     size).
     """
     if n - k - 1 <= 0:
-        return cast(np.ndarray, np.full_like(rss, np.inf, dtype=float))
+        return np.full_like(rss, np.inf, dtype=float)
     correction = 2.0 * k * (k + 1) / (n - k - 1)
     rss_safe = np.where(rss > 0, rss, 1e-300)
     return cast(np.ndarray, n * np.log(rss_safe / n) + 2 * k + correction)
@@ -1346,7 +1346,7 @@ def _select_rss_for_gate(
             f"shape must be one of {sorted(_VALID_CLASSIFIER_SHAPES)}; "
             f"got {shape!r}"
         )
-    rss = cast(np.ndarray, np.where(np.isfinite(rss), rss, np.inf))
+    rss = np.where(np.isfinite(rss), rss, np.inf)
     return rss
 
 

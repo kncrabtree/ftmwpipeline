@@ -157,7 +157,7 @@ def _leakage_floor_amp(
     (zeros).
     """
     if k <= 0:
-        return cast(np.ndarray, np.zeros_like(sigma, dtype=float))
+        return np.zeros_like(sigma, dtype=float)
     scoh = active_edge_coherence(complex_spectrum, sigma, band_m=band_m)
     return cast(
         np.ndarray, k * (np.nan_to_num(scoh, nan=0.0) / np.sqrt(band_m)) * sigma

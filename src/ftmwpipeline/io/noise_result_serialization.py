@@ -14,7 +14,7 @@ _extract_signal_indices : Convert boolean noise_mask to signal indices
 _reconstruct_noise_mask : Reconstruct boolean noise_mask from signal indices
 """
 
-from typing import Any, Dict, cast
+from typing import Any, Dict
 
 import h5py
 import numpy as np
@@ -209,7 +209,7 @@ def _extract_signal_indices(noise_mask: np.ndarray) -> np.ndarray:
         Integer indices where noise_mask is False (signal points)
     """
     # Signal points are where noise_mask is False
-    signal_indices = cast(np.ndarray, np.where(~noise_mask)[0].astype(np.int32))
+    signal_indices = np.where(~noise_mask)[0].astype(np.int32)
     return signal_indices
 
 

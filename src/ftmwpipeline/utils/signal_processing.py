@@ -62,7 +62,7 @@ def make_apodization(
         w = width_us if width_us is not None else default_width_us
         if w is None or w <= 0:
             raise ValueError("exp apodization needs a positive width (--apodize-us)")
-        return cast(np.ndarray, np.exp(-t / float(w)))
+        return np.exp(-t / float(w))
     if ":" in key:
         parts = key.split(":")
         try:
@@ -107,8 +107,8 @@ def matched_filter_window(
     if tau_us <= 0:
         raise ValueError("matched-filter window needs a positive tau_us")
     if shape == "gaussian":
-        return cast(np.ndarray, np.exp(-((t / float(tau_us)) ** 2)))
-    return cast(np.ndarray, np.exp(-t / float(tau_us)))
+        return np.exp(-((t / float(tau_us)) ** 2))
+    return np.exp(-t / float(tau_us))
 
 
 def apodize_fid(

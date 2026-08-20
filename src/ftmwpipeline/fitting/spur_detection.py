@@ -313,9 +313,7 @@ class SpurSet:
 
     @property
     def centers_mhz(self) -> np.ndarray:
-        return cast(
-            np.ndarray, np.asarray([s.center_mhz for s in self.spurs], dtype=float)
-        )
+        return np.asarray([s.center_mhz for s in self.spurs], dtype=float)
 
     @property
     def mask_half_width_mhz(self) -> float:
@@ -640,11 +638,8 @@ def make_decay_probe(
 
     def _amps(f_bb_mhz: float) -> np.ndarray:
         y = seg * np.exp(-2j * np.pi * f_bb_mhz * t_us)
-        return cast(
-            np.ndarray,
-            np.asarray(
-                [np.abs(fr.mean()) for fr in np.array_split(y, n_frames)], dtype=float
-            ),
+        return np.asarray(
+            [np.abs(fr.mean()) for fr in np.array_split(y, n_frames)], dtype=float
         )
 
     def _to_bb(f_mol: float) -> float:

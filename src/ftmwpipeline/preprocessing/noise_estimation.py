@@ -353,7 +353,7 @@ def _gaussian_smooth_1d(
     """
     sigma = float(sigma)
     if sigma <= 0.0:
-        return cast(np.ndarray, np.asarray(x, dtype=float))
+        return np.asarray(x, dtype=float)
     radius = int(truncate * sigma + 0.5)
     offsets = np.arange(-radius, radius + 1)
     kernel = np.exp(-0.5 * (offsets / sigma) ** 2)

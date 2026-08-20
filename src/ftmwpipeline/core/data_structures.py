@@ -496,12 +496,12 @@ class ComplexFT:
     @property
     def real_spectrum(self) -> np.ndarray:
         """Real component of spectrum."""
-        return cast(np.ndarray, np.real(self.complex_spectrum))
+        return np.real(self.complex_spectrum)
 
     @property
     def imag_spectrum(self) -> np.ndarray:
         """Imaginary component of spectrum."""
-        return cast(np.ndarray, np.imag(self.complex_spectrum))
+        return np.imag(self.complex_spectrum)
 
     @property
     def freq_step(self) -> float:
@@ -856,12 +856,12 @@ class SpectralWindow:
     @property
     def real_spectrum(self) -> np.ndarray:
         """Real component."""
-        return cast(np.ndarray, np.real(self.complex_spectrum))
+        return np.real(self.complex_spectrum)
 
     @property
     def imag_spectrum(self) -> np.ndarray:
         """Imaginary component."""
-        return cast(np.ndarray, np.imag(self.complex_spectrum))
+        return np.imag(self.complex_spectrum)
 
     @property
     def n_points(self) -> int:
