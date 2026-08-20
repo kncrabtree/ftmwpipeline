@@ -59,7 +59,7 @@ class ResidualPeakCandidate:
         ``magnitude / sigma_c`` at the bin, with ``sigma_c = sigma / sqrt(2)``.
     prominence_sigma_c : float
         Prominence in units of the window's median ``sigma_c``.
-    nearest_existing_peak_id, nearest_existing_freq_mhz, nearest_existing_separation_mhz
+    nearest_existing_detection_index, nearest_existing_freq_mhz, nearest_existing_separation_mhz
         Bookkeeping for the nearest fitted/frozen peak (if any were supplied).
     near_existing : bool
         ``True`` when ``nearest_existing_separation_mhz <=
@@ -72,7 +72,7 @@ class ResidualPeakCandidate:
     magnitude: float
     snr: float
     prominence_sigma_c: float
-    nearest_existing_peak_id: Optional[int]
+    nearest_existing_detection_index: Optional[int]
     nearest_existing_freq_mhz: Optional[float]
     nearest_existing_separation_mhz: Optional[float]
     near_existing: bool
@@ -88,7 +88,7 @@ def find_residual_peaks(
     min_separation_mhz: Optional[float] = None,
     fwhm_mhz: Optional[float] = None,
     existing_freqs_mhz: Sequence[float] = (),
-    existing_peak_ids: Sequence[int] = (),
+    existing_detection_indices: Sequence[int] = (),
     near_separation_factor: float = 0.5,
 ) -> List[ResidualPeakCandidate]:
     """Detect ``|residual|`` peaks above a sigma-relative threshold.
@@ -121,10 +121,10 @@ def find_residual_peaks(
         Expected line FWHM (``1 / (pi * tau_us)`` for the local tau). Used
         for the default ``min_separation_mhz`` *and* the ``near_existing``
         flag.
-    existing_freqs_mhz, existing_peak_ids
+    existing_freqs_mhz, existing_detection_indices
         Currently fitted (or frozen) peaks in this window. Each candidate
         gets the nearest one attached. Lengths may differ -- positions
-        without ids leave ``nearest_existing_peak_id`` as ``None``.
+        without ids leave ``nearest_existing_detection_index`` as ``None``.
     near_separation_factor
         Multiplier on ``fwhm_mhz`` for the ``near_existing`` tag. Ignored
         when ``fwhm_mhz`` is missing.
@@ -186,8 +186,8 @@ def find_residual_peaks(
             near_sep = float(seps[j])
             if near_threshold > 0.0 and near_sep <= near_threshold:
                 near_flag = True
-                if j < len(existing_peak_ids):
-                    near_id = int(existing_peak_ids[j])
+                if j < len(existing_detection_indices):
+                    near_id = int(existing_detection_indices[j])
 
         candidates.append(
             ResidualPeakCandidate(
@@ -196,7 +196,7 @@ def find_residual_peaks(
                 magnitude=candidate_mag,
                 snr=candidate_snr,
                 prominence_sigma_c=candidate_prom,
-                nearest_existing_peak_id=near_id,
+                nearest_existing_detection_index=near_id,
                 nearest_existing_freq_mhz=near_freq,
                 nearest_existing_separation_mhz=near_sep,
                 near_existing=near_flag,

@@ -304,14 +304,14 @@ def cmd_review_show(args: argparse.Namespace) -> int:
         print(f"  Fitted peaks ({wf.n_peaks_fitted}):")
         if wf.fitted_peaks:
             print(
-                f"  {'peak_id':>8}  {'freq (MHz)':>14}  {'amp':>10}  "
+                f"  {'detection_index':>16}  {'freq (MHz)':>14}  {'amp':>10}  "
                 f"{'snr':>8}  {'origin':>6}"
             )
-            print("  " + "-" * 54)
+            print("  " + "-" * 62)
             for p in sorted(wf.fitted_peaks, key=lambda pk: pk.frequency_mhz):
                 snr_str = f"{p.snr:.1f}" if p.snr is not None else "  n/a"
                 print(
-                    f"  {str(p.peak_id):>8}  {_fmt_mhz(p.frequency_mhz):>14}  "
+                    f"  {str(p.detection_index):>16}  {_fmt_mhz(p.frequency_mhz):>14}  "
                     f"{p.amplitude:>10.3e}  {snr_str:>8}  {p.origin:>6}"
                 )
         else:

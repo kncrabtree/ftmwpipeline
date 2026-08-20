@@ -1737,7 +1737,11 @@ def refit_window_core(
             )
             frozen_peaks.append(
                 FrozenPeak(
-                    peak_index=int(fp.peak_id) if fp.peak_id is not None else -1,
+                    peak_index=(
+                        int(fp.detection_index)
+                        if fp.detection_index is not None
+                        else -1
+                    ),
                     primary_window_id=-1,
                     model_peak=mp,
                     frequency_mhz=freq_mhz,
@@ -1997,7 +2001,9 @@ def refit_window_core(
             frozen_peaks.append(
                 FrozenPeak(
                     peak_index=(
-                        int(src_fp.peak_id) if src_fp.peak_id is not None else -1
+                        int(src_fp.detection_index)
+                        if src_fp.detection_index is not None
+                        else -1
                     ),
                     primary_window_id=-1,
                     model_peak=mp,

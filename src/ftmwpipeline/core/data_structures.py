@@ -711,17 +711,20 @@ class FittedPeak:
 
     Represents the results of fitting a single peak, including fitted
     parameters, uncertainties, and quality metrics. The peak originates in one
-    Stage 4 fit window; its ``peak_id`` is the Stage 3 promoted-peak index that
-    seeded it, ``window_id`` is the originating fit window's id, and
-    ``knockout`` carries the per-peak validation result from the Stage 5
+    Stage 4 fit window; its ``detection_index`` is the Stage 3 promoted-peak
+    index that seeded it, ``window_id`` is the originating fit window's id,
+    and ``knockout`` carries the per-peak validation result from the Stage 5
     knockout test.
     """
 
-    peak_id: Union[str, int]
+    detection_index: Union[str, int]
     """Stage 3 promoted-peak index of the line (the entry in the persisted peak
     list that seeded this fit). For lines added by the blend-aware seeder
     without their own Stage 3 detection, this is the seeded peak's index --
-    multiple :class:`FittedPeak` s may share the same ``peak_id`` in a blend."""
+    multiple :class:`FittedPeak` s may share the same ``detection_index`` in a
+    blend. This is provenance, not identity: it is not unique across a fit's
+    peaks, and it is not what a consumer should key state on -- ``peak_uid``
+    is the identifier for that."""
     frequency_mhz: float
     amplitude: float
     decay_rate: Optional[float] = None
@@ -810,7 +813,7 @@ class FittedPeak:
             f"{self.frequency_error:.6f}" if self.frequency_error is not None else "?"
         )
         return (
-            f"FittedPeak(id={self.peak_id}, "
+            f"FittedPeak(id={self.detection_index}, "
             f"freq={self.frequency_mhz:.6f}±{ferr} MHz, "
             f"amp={self.amplitude:.2e})"
         )
@@ -1092,8 +1095,8 @@ class FittingResult:
         self.fitted_peaks: List[FittedPeak] = []
 
         # Global parameters (shared across peaks): tau and its error live here.
-        # Each entry has free-form keys (value, error, peak_ids, ...) so the
-        # inner-dict value type widens beyond float.
+        # Each entry has free-form keys (value, error, detection_indices, ...)
+        # so the inner-dict value type widens beyond float.
         self.shared_parameters: Dict[str, Dict[str, Any]] = {}
         # Frozen-contributor summaries used in the fit live here.
         self.fixed_parameters: Dict[str, Dict[str, Any]] = {}
@@ -1132,22 +1135,24 @@ class FittingResult:
         name: str,
         value: float,
         error: Optional[float] = None,
-        peak_ids: Optional[List] = None,
+        detection_indices: Optional[List] = None,
     ) -> None:
         """Set a parameter shared across multiple peaks."""
         self.shared_parameters[name] = {
             "value": value,
             "error": error,
-            "peak_ids": peak_ids or [p.peak_id for p in self.fitted_peaks],
+            "detection_indices": detection_indices
+            or [p.detection_index for p in self.fitted_peaks],
         }
 
     def set_fixed_parameter(
-        self, name: str, value: float, peak_ids: Optional[List] = None
+        self, name: str, value: float, detection_indices: Optional[List] = None
     ) -> None:
         """Set a parameter held fixed during fitting."""
         self.fixed_parameters[name] = {
             "value": value,
-            "peak_ids": peak_ids or [p.peak_id for p in self.fitted_peaks],
+            "detection_indices": detection_indices
+            or [p.detection_index for p in self.fitted_peaks],
         }
 
     @property

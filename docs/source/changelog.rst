@@ -47,6 +47,26 @@ engine so they cannot answer differently.
   no cross-run meaning is promised. Curation verbs do not yet accept an
   identifier in place of a frequency; that is a later step.
 
+* **``FittedPeak.peak_id`` is renamed to ``detection_index``.** The field is
+  provenance -- the index into the persisted Stage 3 promoted-peak list of the
+  detection nearest a fitted line -- and it is explicitly non-unique: several
+  fitted lines in a blend share one value. The old name read as an identifier,
+  which invited confusion with ``peak_uid`` above, the field that actually is
+  one. This is a rename only; the value and its non-uniqueness are unchanged.
+  The published ``fit_peaks`` read column and the ``review show`` column
+  header follow the same rename. A Stage 5 HDF5 file written before this
+  change still loads -- the old ``peak_id`` column is read as
+  ``detection_index`` -- but every file written from here on carries the new
+  column name only.
+
+  Two published methods change signature with it:
+  ``FittingResult.set_shared_parameter`` and
+  ``FittingResult.set_fixed_parameter`` took a ``peak_ids`` keyword and wrote a
+  ``peak_ids`` key, both now ``detection_indices``. Neither is called anywhere
+  in the package, and the key was never persisted -- ``shared_parameters`` is
+  rebuilt in memory on load rather than serialized -- so this reaches only a
+  caller that constructs a ``FittingResult`` by hand.
+
 * **``Pipeline`` methods let a typed error propagate instead of flattening it
   into ``RuntimeError``.** Eighteen methods (``compute_ft``, ``fit_peaks``,
   ``estimate_noise``, ``calibrate_tau``, ``calibrate_timebase``, and the rest

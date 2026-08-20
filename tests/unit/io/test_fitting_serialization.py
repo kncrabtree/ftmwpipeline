@@ -110,10 +110,10 @@ def _sample_window_thaw() -> list[ThawInfo]:
 
 
 def _sample_fitted_peak(
-    *, peak_id: int, window_id: int, freq_mhz: float, amplitude: float = 0.5
+    *, detection_index: int, window_id: int, freq_mhz: float, amplitude: float = 0.5
 ) -> FittedPeak:
     return FittedPeak(
-        peak_id=peak_id,
+        detection_index=detection_index,
         frequency_mhz=freq_mhz,
         amplitude=amplitude,
         decay_rate=0.2,
@@ -154,7 +154,7 @@ def _make_window_fit(
     fr.shared_parameters["tau_us"] = {
         "value": tau_us,
         "error": tau_error,
-        "peak_ids": [p.peak_id for p in fitted_peaks],
+        "detection_indices": [p.detection_index for p in fitted_peaks],
     }
     if window_id == 1:
         fr.fixed_parameters["frozen_peak_0"] = {
@@ -177,8 +177,12 @@ def _make_window_fit(
 
 
 def _sample_spectrum_fit() -> SpectrumFit:
-    win0_peaks = [_sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.012)]
-    win1_peaks = [_sample_fitted_peak(peak_id=1, window_id=1, freq_mhz=36110.045)]
+    win0_peaks = [
+        _sample_fitted_peak(detection_index=0, window_id=0, freq_mhz=36100.012)
+    ]
+    win1_peaks = [
+        _sample_fitted_peak(detection_index=1, window_id=1, freq_mhz=36110.045)
+    ]
     win0 = _make_window_fit(0, win0_peaks, audit=_sample_audit(), thaw_events=[])
     win1 = _make_window_fit(
         1, win1_peaks, audit=_sample_audit()[:1], thaw_events=_sample_window_thaw()
@@ -273,7 +277,7 @@ class TestRoundTrip:
         loaded = _roundtrip(fit, tmp_path / "fit.h5")
 
         for got, want in zip(loaded.fitted_peaks, fit.fitted_peaks):
-            assert got.peak_id == want.peak_id
+            assert got.detection_index == want.detection_index
             assert got.window_id == want.window_id
             assert got.frequency_mhz == pytest.approx(want.frequency_mhz)
             assert got.amplitude == pytest.approx(want.amplitude)
@@ -289,7 +293,7 @@ class TestRoundTrip:
     def test_none_uncertainties_round_trip_as_none(self, tmp_path):
         """``None`` optional fields are NaN-encoded and round-trip as None."""
         peak = FittedPeak(
-            peak_id=3,
+            detection_index=3,
             frequency_mhz=36120.0,
             amplitude=0.7,
             decay_rate=None,
@@ -308,7 +312,7 @@ class TestRoundTrip:
         loaded = _roundtrip(fit, tmp_path / "fit.h5")
 
         got = loaded.fitted_peaks[0]
-        assert got.peak_id == 3
+        assert got.detection_index == 3
         assert got.decay_rate is None
         assert got.phase is None
         assert got.frequency_error is None
@@ -338,7 +342,7 @@ class TestRoundTrip:
         """A FittingResult with an attached SpectralWindow round-trips the
         freq_range; the loaded window's arrays are empty (recomputable) but
         freq_range is preserved so visualization can locate the window."""
-        peak = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        peak = _sample_fitted_peak(detection_index=0, window_id=0, freq_mhz=36100.0)
         win = _make_window_fit(0, [peak], audit=[], thaw_events=[])
         win.window = SpectralWindow(
             parent_ft=None,
@@ -373,6 +377,53 @@ class TestRoundTrip:
             loaded = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
         assert loaded.n_windows == 1
         assert [w.window_id for w in loaded.window_fits] == [0]
+
+
+# ---------------------------------------------------------------------------
+# detection_index / peak_id back-compat (P5: peak_id renamed to
+# detection_index; the old column name still reads)
+# ---------------------------------------------------------------------------
+class TestDetectionIndexLegacyColumn:
+    def test_legacy_peak_id_column_loads_as_detection_index(self, tmp_path):
+        """A file written before the ``peak_id`` -> ``detection_index`` rename
+        stores the identical data under the old column name. It must still
+        load with no error and with ``detection_index`` populated correctly
+        on every peak -- the rename changed the name, not the semantics."""
+        path = tmp_path / "fit.h5"
+        fit = _sample_spectrum_fit()
+        with h5py.File(path, "w") as h5f:
+            g = h5f.create_group("stage5_fitting")
+            save_spectrum_fit_to_hdf5(fit, g)
+            # Simulate a file written before the rename: rename the on-disk
+            # column back to its pre-rename name in every window.
+            for window_name in g["windows"]:
+                peaks_group = g[f"windows/{window_name}/peaks"]
+                peaks_group.move("detection_index", "peak_id")
+
+        with h5py.File(path, "r") as h5f:
+            loaded = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+
+        want_by_freq = {p.frequency_mhz: p.detection_index for p in fit.fitted_peaks}
+        assert len(loaded.fitted_peaks) == len(fit.fitted_peaks)
+        for p in loaded.fitted_peaks:
+            assert p.detection_index == want_by_freq[p.frequency_mhz]
+
+    def test_legacy_file_missing_both_columns_raises_naming_detection_index(
+        self, tmp_path
+    ):
+        """Neither ``detection_index`` nor the legacy ``peak_id`` is present:
+        the loader must raise loudly, and the message must name the current
+        column so a reader chasing it finds the right name."""
+        path = tmp_path / "fit.h5"
+        fit = _sample_spectrum_fit()
+        with h5py.File(path, "w") as h5f:
+            g = h5f.create_group("stage5_fitting")
+            save_spectrum_fit_to_hdf5(fit, g)
+            del g["windows/window_0000/peaks/detection_index"]
+
+        with h5py.File(path, "r") as h5f:
+            with pytest.raises(ValueError, match="detection_index"):
+                load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
 
 
 # ---------------------------------------------------------------------------
@@ -751,8 +802,8 @@ class TestTauFittedRoundTrip:
         tau_error_0: float | None,
         tau_error_1: float | None,
     ) -> SpectrumFit:
-        peak0 = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.012)
-        peak1 = _sample_fitted_peak(peak_id=1, window_id=1, freq_mhz=36110.045)
+        peak0 = _sample_fitted_peak(detection_index=0, window_id=0, freq_mhz=36100.012)
+        peak1 = _sample_fitted_peak(detection_index=1, window_id=1, freq_mhz=36110.045)
         win0 = _make_window_fit(
             0, [peak0], audit=[], thaw_events=[], tau_error=tau_error_0
         )
@@ -828,7 +879,7 @@ class TestTauFittedRoundTrip:
         and re-saved) writes the -1 sentinel and reloads via the same
         backward-compat rule. Round-trip is idempotent on re-save.
         """
-        peak = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        peak = _sample_fitted_peak(detection_index=0, window_id=0, freq_mhz=36100.0)
         win = _make_window_fit(0, [peak], audit=[], thaw_events=[], tau_error=None)
         win.shared_parameters["tau_us"]["fitted"] = None
         fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
@@ -846,7 +897,7 @@ class TestClockLatticeRoundTrip:
 
     def test_annotated_peak_round_trips(self, tmp_path):
         """A peak with ``clock_lattice`` set survives save -> load unchanged."""
-        peak = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        peak = _sample_fitted_peak(detection_index=0, window_id=0, freq_mhz=36100.0)
         peak.clock_lattice = "320x6 (bb)"
         win = _make_window_fit(0, [peak], audit=[], thaw_events=[])
         fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
@@ -860,7 +911,7 @@ class TestClockLatticeRoundTrip:
 
     def test_unannotated_peak_round_trips_as_none(self, tmp_path):
         """A peak without a lattice annotation loads with ``clock_lattice=None``."""
-        peak = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        peak = _sample_fitted_peak(detection_index=0, window_id=0, freq_mhz=36100.0)
         assert peak.clock_lattice is None
         win = _make_window_fit(0, [peak], audit=[], thaw_events=[])
         fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
@@ -871,8 +922,8 @@ class TestClockLatticeRoundTrip:
 
     def test_mixed_annotation_in_one_window(self, tmp_path):
         """One annotated + one unannotated peak in the same window round-trips."""
-        pk_a = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
-        pk_b = _sample_fitted_peak(peak_id=1, window_id=0, freq_mhz=36105.0)
+        pk_a = _sample_fitted_peak(detection_index=0, window_id=0, freq_mhz=36100.0)
+        pk_b = _sample_fitted_peak(detection_index=1, window_id=0, freq_mhz=36105.0)
         pk_a.clock_lattice = "6250x3 (bb, drift)"
         # pk_b.clock_lattice stays None
         win = _make_window_fit(0, [pk_a, pk_b], audit=[], thaw_events=[])
@@ -880,7 +931,7 @@ class TestClockLatticeRoundTrip:
 
         loaded = _roundtrip(fit, tmp_path / "fit.h5")
 
-        by_id = {p.peak_id: p for p in loaded.fitted_peaks}
+        by_id = {p.detection_index: p for p in loaded.fitted_peaks}
         assert by_id[0].clock_lattice == "6250x3 (bb, drift)"
         assert by_id[1].clock_lattice is None
 
@@ -888,7 +939,7 @@ class TestClockLatticeRoundTrip:
         """A file written before the ``clock_lattice`` column existed loads
         with ``None`` on every peak -- no error, backward-compatible."""
         path = tmp_path / "fit.h5"
-        peak = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        peak = _sample_fitted_peak(detection_index=0, window_id=0, freq_mhz=36100.0)
         win = _make_window_fit(0, [peak], audit=[], thaw_events=[])
         fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
         with h5py.File(path, "w") as h5f:
@@ -909,12 +960,12 @@ class TestOriginRoundTrip:
 
     def test_default_origin_is_auto(self):
         """A freshly constructed FittedPeak carries origin='auto'."""
-        p = FittedPeak(peak_id=0, frequency_mhz=1.0, amplitude=1.0)
+        p = FittedPeak(detection_index=0, frequency_mhz=1.0, amplitude=1.0)
         assert p.origin == "auto"
 
     def test_auto_origin_round_trips(self, tmp_path):
         """A peak with the default ``origin='auto'`` survives save -> load."""
-        peak = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        peak = _sample_fitted_peak(detection_index=0, window_id=0, freq_mhz=36100.0)
         assert peak.origin == "auto"
         win = _make_window_fit(0, [peak], audit=[], thaw_events=[])
         fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
@@ -926,7 +977,7 @@ class TestOriginRoundTrip:
 
     def test_user_origin_round_trips(self, tmp_path):
         """A peak with ``origin='user'`` survives save -> load unchanged."""
-        peak = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        peak = _sample_fitted_peak(detection_index=0, window_id=0, freq_mhz=36100.0)
         peak.origin = "user"
         win = _make_window_fit(0, [peak], audit=[], thaw_events=[])
         fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
@@ -937,15 +988,15 @@ class TestOriginRoundTrip:
 
     def test_mixed_origins_in_one_window(self, tmp_path):
         """One 'auto' + one 'user' peak in the same window both round-trip."""
-        pk_a = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
-        pk_b = _sample_fitted_peak(peak_id=1, window_id=0, freq_mhz=36105.0)
+        pk_a = _sample_fitted_peak(detection_index=0, window_id=0, freq_mhz=36100.0)
+        pk_b = _sample_fitted_peak(detection_index=1, window_id=0, freq_mhz=36105.0)
         pk_b.origin = "user"
         win = _make_window_fit(0, [pk_a, pk_b], audit=[], thaw_events=[])
         fit = SpectrumFit(window_fits=[win], fitted_peaks=[pk_a, pk_b])
 
         loaded = _roundtrip(fit, tmp_path / "fit.h5")
 
-        by_id = {p.peak_id: p for p in loaded.fitted_peaks}
+        by_id = {p.detection_index: p for p in loaded.fitted_peaks}
         assert by_id[0].origin == "auto"
         assert by_id[1].origin == "user"
 
@@ -953,7 +1004,7 @@ class TestOriginRoundTrip:
         """A file written before the ``origin`` column existed loads with
         ``'auto'`` on every peak -- no error, backward-compatible."""
         path = tmp_path / "fit.h5"
-        peak = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        peak = _sample_fitted_peak(detection_index=0, window_id=0, freq_mhz=36100.0)
         win = _make_window_fit(0, [peak], audit=[], thaw_events=[])
         fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
         with h5py.File(path, "w") as h5f:
@@ -976,7 +1027,7 @@ class TestPeakUidRoundTrip:
 
     def test_stamped_peak_round_trips(self, tmp_path):
         """A peak with ``peak_uid`` set survives save -> load unchanged."""
-        peak = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        peak = _sample_fitted_peak(detection_index=0, window_id=0, freq_mhz=36100.0)
         peak.peak_uid = 361_000_00
         win = _make_window_fit(0, [peak], audit=[], thaw_events=[])
         fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
@@ -990,7 +1041,7 @@ class TestPeakUidRoundTrip:
 
     def test_unstamped_peak_round_trips_as_none(self, tmp_path):
         """A peak with no identifier loads with ``peak_uid=None``."""
-        peak = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        peak = _sample_fitted_peak(detection_index=0, window_id=0, freq_mhz=36100.0)
         assert peak.peak_uid is None
         win = _make_window_fit(0, [peak], audit=[], thaw_events=[])
         fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
@@ -1002,8 +1053,8 @@ class TestPeakUidRoundTrip:
     def test_mixed_identity_in_one_window(self, tmp_path):
         """One stamped + one unstamped peak in the same window both
         round-trip independently."""
-        pk_a = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
-        pk_b = _sample_fitted_peak(peak_id=1, window_id=0, freq_mhz=36105.0)
+        pk_a = _sample_fitted_peak(detection_index=0, window_id=0, freq_mhz=36100.0)
+        pk_b = _sample_fitted_peak(detection_index=1, window_id=0, freq_mhz=36105.0)
         pk_a.peak_uid = 42
         # pk_b.peak_uid stays None
         win = _make_window_fit(0, [pk_a, pk_b], audit=[], thaw_events=[])
@@ -1011,7 +1062,7 @@ class TestPeakUidRoundTrip:
 
         loaded = _roundtrip(fit, tmp_path / "fit.h5")
 
-        by_id = {p.peak_id: p for p in loaded.fitted_peaks}
+        by_id = {p.detection_index: p for p in loaded.fitted_peaks}
         assert by_id[0].peak_uid == 42
         assert by_id[1].peak_uid is None
 
@@ -1020,7 +1071,7 @@ class TestPeakUidRoundTrip:
         ``None`` on every peak -- no error, backward-compatible, and no
         identifier is backfilled from the fitted frequency."""
         path = tmp_path / "fit.h5"
-        peak = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        peak = _sample_fitted_peak(detection_index=0, window_id=0, freq_mhz=36100.0)
         win = _make_window_fit(0, [peak], audit=[], thaw_events=[])
         fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
         with h5py.File(path, "w") as h5f:
@@ -1068,7 +1119,7 @@ class TestDoubletAlternativeRoundTrip:
     def test_round_trip_with_successful_merge(self, tmp_path):
         """DoubletAlternativeInfo with a successful merge survives HDF5 round-trip."""
         alt = _make_doublet_alt(merged_success=True)
-        peak = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        peak = _sample_fitted_peak(detection_index=0, window_id=0, freq_mhz=36100.0)
         win = _make_window_fit(0, [peak], audit=[], thaw_events=[])
         win.doublet_alternatives = [alt]
         fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
@@ -1100,7 +1151,7 @@ class TestDoubletAlternativeRoundTrip:
         assert np.isnan(alt.chi2r_merged)
         assert np.isnan(alt.delta_chi2_raw)
 
-        peak = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        peak = _sample_fitted_peak(detection_index=0, window_id=0, freq_mhz=36100.0)
         win = _make_window_fit(0, [peak], audit=[], thaw_events=[])
         win.doublet_alternatives = [alt]
         fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
@@ -1114,7 +1165,7 @@ class TestDoubletAlternativeRoundTrip:
 
     def test_empty_doublet_alternatives_round_trips(self, tmp_path):
         """A window with no doublet alternatives saves and loads as an empty list."""
-        peak = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        peak = _sample_fitted_peak(detection_index=0, window_id=0, freq_mhz=36100.0)
         win = _make_window_fit(0, [peak], audit=[], thaw_events=[])
         assert win.doublet_alternatives == []
         fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
@@ -1126,7 +1177,7 @@ class TestDoubletAlternativeRoundTrip:
     def test_legacy_file_missing_attr_loads_as_empty(self, tmp_path):
         """Files written before doublet_alternatives existed load with an empty list."""
         path = tmp_path / "fit.h5"
-        peak = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        peak = _sample_fitted_peak(detection_index=0, window_id=0, freq_mhz=36100.0)
         win = _make_window_fit(0, [peak], audit=[], thaw_events=[])
         fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
         with h5py.File(path, "w") as h5f:
@@ -1143,7 +1194,7 @@ class TestDoubletAlternativeRoundTrip:
         """Multiple DoubletAlternativeInfo objects per window all survive."""
         alt1 = _make_doublet_alt(freq_a=36100.1, freq_b=36100.4, merged_success=True)
         alt2 = _make_doublet_alt(freq_a=36200.1, freq_b=36200.35, merged_success=False)
-        peak = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        peak = _sample_fitted_peak(detection_index=0, window_id=0, freq_mhz=36100.0)
         win = _make_window_fit(0, [peak], audit=[], thaw_events=[])
         win.doublet_alternatives = [alt1, alt2]
         fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
@@ -1172,7 +1223,9 @@ def _make_window_fit_with_covariance(
     from ftmwpipeline.fitting.result_conversion import build_covariance_param_labels
 
     peaks = [
-        _sample_fitted_peak(peak_id=i, window_id=window_id, freq_mhz=36100.0 + i * 0.5)
+        _sample_fitted_peak(
+            detection_index=i, window_id=window_id, freq_mhz=36100.0 + i * 0.5
+        )
         for i in range(n_peaks)
     ]
     labels = build_covariance_param_labels(
@@ -1214,7 +1267,7 @@ class TestCovarianceRoundTrip:
     def test_covariance_none_round_trips_as_none(self, tmp_path):
         """A FittingResult with no covariance writes no dataset and loads back
         as None (back-compat with older files that never had a covariance)."""
-        peak = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        peak = _sample_fitted_peak(detection_index=0, window_id=0, freq_mhz=36100.0)
         win = _make_window_fit(0, [peak], audit=[], thaw_events=[])
         assert win.covariance is None
         assert win.covariance_param_labels is None
@@ -1272,7 +1325,7 @@ class TestCovarianceRoundTrip:
 
     def test_malformed_covariance_non_square_raises(self, tmp_path):
         """A non-square covariance dataset raises ValueError on load."""
-        peak = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        peak = _sample_fitted_peak(detection_index=0, window_id=0, freq_mhz=36100.0)
         win = _make_window_fit(0, [peak], audit=[], thaw_events=[])
         fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
 
@@ -1292,7 +1345,7 @@ class TestCovarianceRoundTrip:
 
     def test_malformed_covariance_label_length_mismatch_raises(self, tmp_path):
         """Label list length != matrix dimension raises ValueError on load."""
-        peak = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        peak = _sample_fitted_peak(detection_index=0, window_id=0, freq_mhz=36100.0)
         win = _make_window_fit(0, [peak], audit=[], thaw_events=[])
         fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
 
@@ -1312,7 +1365,7 @@ class TestCovarianceRoundTrip:
 
     def test_malformed_covariance_amplitude_count_mismatch_raises(self, tmp_path):
         """amplitude_* label count != fitted_peaks count raises ValueError."""
-        peak = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        peak = _sample_fitted_peak(detection_index=0, window_id=0, freq_mhz=36100.0)
         win = _make_window_fit(0, [peak], audit=[], thaw_events=[])
         fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
 

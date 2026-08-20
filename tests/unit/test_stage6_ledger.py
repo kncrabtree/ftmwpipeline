@@ -358,7 +358,9 @@ class TestDeriveCandidateLedger:
         rnd = _make_rescue_round([installed, rejected])
         fr = _make_fitting_result(rescue_events=[rnd])
         # Upper sideband: the installed candidate's molecular freq is 36012.
-        fr.fitted_peaks = [FittedPeak(peak_id=0, frequency_mhz=36012.0, amplitude=6.0)]
+        fr.fitted_peaks = [
+            FittedPeak(detection_index=0, frequency_mhz=36012.0, amplitude=6.0)
+        ]
         result = derive_candidate_ledger(
             fr, center_mhz=_CENTER, sideband=_UPPER, bar=3.0
         )
@@ -701,7 +703,9 @@ class TestShapeErrorReach:
         cand = RescueCandidateInfo(frequency_mhz=5.4, magnitude=30.0, snr=30.0)
         fr = _make_fitting_result(rescue_events=[_make_rescue_round([cand])])
         fr.fitted_peaks = [
-            FittedPeak(peak_id=0, frequency_mhz=36005.0, amplitude=1.0, snr=30000.0)
+            FittedPeak(
+                detection_index=0, frequency_mhz=36005.0, amplitude=1.0, snr=30000.0
+            )
         ]
         # Reach = 0.2 * 30000 / 30 = 200 res >> 5 res -> dropped.
         result = derive_candidate_ledger(
@@ -720,7 +724,9 @@ class TestShapeErrorReach:
         cand = RescueCandidateInfo(frequency_mhz=2.24, magnitude=12.0, snr=12.0)
         fr = _make_fitting_result(rescue_events=[_make_rescue_round([cand])])
         fr.fitted_peaks = [
-            FittedPeak(peak_id=0, frequency_mhz=36008.0, amplitude=1.0, snr=20.0)
+            FittedPeak(
+                detection_index=0, frequency_mhz=36008.0, amplitude=1.0, snr=20.0
+            )
         ]
         # Reach = 0.2 * 20 / 12 = 0.33 res < 3 res -> kept.
         result = derive_candidate_ledger(
@@ -738,7 +744,9 @@ class TestShapeErrorReach:
         cand = RescueCandidateInfo(frequency_mhz=5.4, magnitude=30.0, snr=30.0)
         fr = _make_fitting_result(rescue_events=[_make_rescue_round([cand])])
         fr.fitted_peaks = [
-            FittedPeak(peak_id=0, frequency_mhz=36005.0, amplitude=1.0, snr=30000.0)
+            FittedPeak(
+                detection_index=0, frequency_mhz=36005.0, amplitude=1.0, snr=30000.0
+            )
         ]
         result = derive_candidate_ledger(
             fr, center_mhz=_CENTER, sideband=_LOWER, bar=0.0

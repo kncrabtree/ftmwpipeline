@@ -49,7 +49,7 @@ def _assert_fits_identical(a: SpectrumFit, b: SpectrumFit) -> None:
             assert x.frequency_mhz == y.frequency_mhz
             assert x.amplitude == y.amplitude
             assert x.window_id == y.window_id
-            assert x.peak_id == y.peak_id
+            assert x.detection_index == y.detection_index
 
 
 @pytest.fixture(scope="module")

@@ -53,7 +53,7 @@ def _make_result(freqs, *, fit_tau, baseline_order=None) -> FittingResult:
         p = labels.index(f"phase_{i}")
         peaks.append(
             FittedPeak(
-                peak_id=i,  # records the *seed* identity; survives the reorder
+                detection_index=i,  # records the *seed* identity; survives the reorder
                 frequency_mhz=float(f),
                 amplitude=1.0,
                 phase=0.0,
@@ -69,17 +69,17 @@ def _make_result(freqs, *, fit_tau, baseline_order=None) -> FittingResult:
 
 
 def _entry_by_identity(
-    fr: FittingResult, peak_id_a, kind_a, peak_id_b, kind_b
+    fr: FittingResult, detection_index_a, kind_a, detection_index_b, kind_b
 ) -> float:
     """Covariance entry between two parameters located by peak *identity*.
 
-    ``peak_id`` is the stable seed id carried on the FittedPeak, so the same
+    ``detection_index`` is the stable seed id carried on the FittedPeak, so the same
     physical parameter pair is found regardless of the current row order.
     """
     labels = list(fr.covariance_param_labels)
-    pos = {pk.peak_id: i for i, pk in enumerate(fr.fitted_peaks)}
-    ia = labels.index(f"{kind_a}_{pos[peak_id_a]}")
-    ib = labels.index(f"{kind_b}_{pos[peak_id_b]}")
+    pos = {pk.detection_index: i for i, pk in enumerate(fr.fitted_peaks)}
+    ia = labels.index(f"{kind_a}_{pos[detection_index_a]}")
+    ib = labels.index(f"{kind_b}_{pos[detection_index_b]}")
     return float(fr.covariance[ia, ib])
 
 
@@ -87,7 +87,7 @@ def test_sorts_peaks_and_preserves_each_peak_block():
     fr = _make_result([30.0, 10.0, 20.0], fit_tau=True)
     # Capture the diagonal-error correspondence by identity before the sort.
     before = {
-        pk.peak_id: (pk.amplitude_error, pk.frequency_error, pk.phase_error)
+        pk.detection_index: (pk.amplitude_error, pk.frequency_error, pk.phase_error)
         for pk in fr.fitted_peaks
     }
 
@@ -106,13 +106,13 @@ def test_sorts_peaks_and_preserves_each_peak_block():
         a = labels.index(f"amplitude_{pos}")
         o = labels.index(f"offset_{pos}")
         p = labels.index(f"phase_{pos}")
-        exp_a, exp_f, exp_p = before[pk.peak_id]
+        exp_a, exp_f, exp_p = before[pk.detection_index]
         assert np.sqrt(fr.covariance[a, a]) == exp_a
         assert np.sqrt(fr.covariance[o, o]) == exp_f
         assert np.sqrt(fr.covariance[p, p]) == exp_p
         # And the peak's own stored errors are untouched by the reorder.
         assert (pk.amplitude_error, pk.frequency_error, pk.phase_error) == before[
-            pk.peak_id
+            pk.detection_index
         ]
 
 

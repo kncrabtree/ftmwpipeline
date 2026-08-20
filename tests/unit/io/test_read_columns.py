@@ -97,11 +97,11 @@ from ftmwpipeline.io.window_serialization import (
 # ---------------------------------------------------------------------------
 # Fixture builders
 # ---------------------------------------------------------------------------
-def _fitted_peak(peak_id: int, window_id: int, freq_mhz: float) -> FittedPeak:
+def _fitted_peak(detection_index: int, window_id: int, freq_mhz: float) -> FittedPeak:
     return FittedPeak(
-        peak_id=peak_id,
+        detection_index=detection_index,
         frequency_mhz=freq_mhz,
-        amplitude=0.5 + 0.1 * peak_id,
+        amplitude=0.5 + 0.1 * detection_index,
         decay_rate=0.2,
         phase=0.3,
         frequency_error=1e-4,
@@ -114,11 +114,11 @@ def _fitted_peak(peak_id: int, window_id: int, freq_mhz: float) -> FittedPeak:
         knockout=KnockoutInfo(
             delta_chi2=80.0, expected_delta_chi2=75.0, supported=True
         ),
-        clock_lattice="320x6 (bb)" if peak_id == 0 else None,
-        origin="user" if peak_id == 2 else "auto",
-        flat_decay=peak_id == 1,
-        derivation=7 if peak_id == 2 else None,
-        peak_uid=4213 if peak_id == 0 else None,
+        clock_lattice="320x6 (bb)" if detection_index == 0 else None,
+        origin="user" if detection_index == 2 else "auto",
+        flat_decay=detection_index == 1,
+        derivation=7 if detection_index == 2 else None,
+        peak_uid=4213 if detection_index == 0 else None,
     )
 
 
@@ -155,7 +155,7 @@ def _window_fit(
         "value": tau_us,
         "error": 0.05,
         "fitted": True,
-        "peak_ids": [p.peak_id for p in peaks],
+        "detection_indices": [p.detection_index for p in peaks],
     }
     fr.quality_metrics = {
         "edge_coherence_low": 0.8,
@@ -489,8 +489,10 @@ class TestReadFitPeakColumns:
             fit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
 
         expected = fit.fitted_peaks
-        assert len(cols["peak_id"]) == len(expected)
-        np.testing.assert_array_equal(cols["peak_id"], [p.peak_id for p in expected])
+        assert len(cols["detection_index"]) == len(expected)
+        np.testing.assert_array_equal(
+            cols["detection_index"], [p.detection_index for p in expected]
+        )
         np.testing.assert_allclose(
             cols["frequency_mhz"], [p.frequency_mhz for p in expected]
         )
@@ -556,16 +558,18 @@ class TestReadFitPeakColumns:
 
         with h5py.File(fit_file, "r") as h5f:
             cols = read_fit_peak_columns(
-                h5f["stage5_fitting"], columns=["peak_id", "window_id"]
+                h5f["stage5_fitting"], columns=["detection_index", "window_id"]
             )
             fit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
 
         assert -1 not in set(cols["window_id"])
         # Grouping agrees with the loader's, which reads it off the group.
         loader_grouping = {
-            p.peak_id: wf.window_id for wf in fit.window_fits for p in wf.fitted_peaks
+            p.detection_index: wf.window_id
+            for wf in fit.window_fits
+            for p in wf.fitted_peaks
         }
-        assert dict(zip(cols["peak_id"], cols["window_id"])) == loader_grouping
+        assert dict(zip(cols["detection_index"], cols["window_id"])) == loader_grouping
         # And the loader's own per-peak field is backfilled the same way, so
         # the two never disagree regardless of which one a consumer reads.
         assert all(p.window_id is not None for p in fit.fitted_peaks)
@@ -574,24 +578,75 @@ class TestReadFitPeakColumns:
         with h5py.File(fit_file, "r") as h5f:
             cols = read_fit_peak_columns(
                 h5f["stage5_fitting"],
-                columns=["peak_id", "clock_lattice", "derivation"],
+                columns=["detection_index", "clock_lattice", "derivation"],
             )
-        by_id = dict(zip(cols["peak_id"], cols["clock_lattice"]))
+        by_id = dict(zip(cols["detection_index"], cols["clock_lattice"]))
         assert by_id[0] == "320x6 (bb)"
         assert by_id[1] == ""  # None -> empty string, not None
-        derivation = dict(zip(cols["peak_id"], cols["derivation"]))
+        derivation = dict(zip(cols["detection_index"], cols["derivation"]))
         assert derivation[2] == 7
         assert derivation[1] == -1  # None -> -1, not None
 
     def test_peak_uid_column_round_trips_and_absent_rows_are_sentinel(self, fit_file):
         with h5py.File(fit_file, "r") as h5f:
             cols = read_fit_peak_columns(
-                h5f["stage5_fitting"], columns=["peak_id", "peak_uid"]
+                h5f["stage5_fitting"], columns=["detection_index", "peak_uid"]
             )
-        peak_uid = dict(zip(cols["peak_id"], cols["peak_uid"]))
+        peak_uid = dict(zip(cols["detection_index"], cols["peak_uid"]))
         assert peak_uid[0] == 4213
         assert peak_uid[1] == -1  # None -> -1, not None
         assert peak_uid[2] == -1
+
+    def test_legacy_peak_id_column_reads_as_detection_index(self, fit_file):
+        """A file written before the ``peak_id`` -> ``detection_index`` rename
+        stores the identical data under the old column name; the tap must
+        still return it under the new one, with the same values the current
+        writer would have produced."""
+        with h5py.File(fit_file, "r") as h5f:
+            expected = read_fit_peak_columns(h5f["stage5_fitting"])
+
+        with h5py.File(fit_file, "r+") as h5f:
+            windows_group = h5f["stage5_fitting/windows"]
+            for name in windows_group:
+                peaks_group = windows_group[f"{name}/peaks"]
+                peaks_group.move("detection_index", "peak_id")
+
+        with h5py.File(fit_file, "r") as h5f:
+            cols = read_fit_peak_columns(h5f["stage5_fitting"])
+        assert "peak_id" not in cols
+        np.testing.assert_array_equal(
+            cols["detection_index"], expected["detection_index"]
+        )
+
+    def test_row_count_path_reads_the_legacy_column(self, fit_file):
+        """``n_peaks`` (derived from the row-count helper) works whether the
+        peaks subgroup carries ``detection_index`` or the pre-rename
+        ``peak_id``."""
+        with h5py.File(fit_file, "r") as h5f:
+            expected = read_fit_window_columns(
+                h5f["stage5_fitting"], columns=["n_peaks"]
+            )
+
+        with h5py.File(fit_file, "r+") as h5f:
+            windows_group = h5f["stage5_fitting/windows"]
+            for name in windows_group:
+                peaks_group = windows_group[f"{name}/peaks"]
+                peaks_group.move("detection_index", "peak_id")
+
+        with h5py.File(fit_file, "r") as h5f:
+            cols = read_fit_window_columns(h5f["stage5_fitting"], columns=["n_peaks"])
+        np.testing.assert_array_equal(cols["n_peaks"], expected["n_peaks"])
+
+    def test_row_count_raises_naming_detection_index_when_absent(self, fit_file):
+        """Neither ``detection_index`` nor ``peak_id`` present: the row-count
+        helper must raise, naming the current column name."""
+        with h5py.File(fit_file, "r+") as h5f:
+            peaks_group = h5f["stage5_fitting/windows/window_0000/peaks"]
+            peaks_group.move("detection_index", "something_else")
+
+        with h5py.File(fit_file, "r") as h5f:
+            with pytest.raises(ValueError, match="detection_index"):
+                read_fit_window_columns(h5f["stage5_fitting"], columns=["n_peaks"])
 
     def test_column_selection_is_honored_in_order(self, fit_file):
         with h5py.File(fit_file, "r") as h5f:
@@ -603,9 +658,13 @@ class TestReadFitPeakColumns:
     def test_selecting_without_frequency_still_orders_by_frequency(self, fit_file):
         """The ordering column is read even when the caller does not want it."""
         with h5py.File(fit_file, "r") as h5f:
-            selected = read_fit_peak_columns(h5f["stage5_fitting"], columns=["peak_id"])
+            selected = read_fit_peak_columns(
+                h5f["stage5_fitting"], columns=["detection_index"]
+            )
             everything = read_fit_peak_columns(h5f["stage5_fitting"])
-        np.testing.assert_array_equal(selected["peak_id"], everything["peak_id"])
+        np.testing.assert_array_equal(
+            selected["detection_index"], everything["detection_index"]
+        )
         assert "frequency_mhz" not in selected
 
     def test_unknown_column_raises(self, fit_file):

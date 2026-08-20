@@ -391,7 +391,7 @@ class TestPeakQualityScore:
         from ftmwpipeline.core.data_structures import FittedPeak
 
         return FittedPeak(
-            peak_id=0,
+            detection_index=0,
             frequency_mhz=freq,
             amplitude=amp,
             snr=snr,
@@ -435,7 +435,7 @@ class TestPeakQualityScore:
 
         # No errors/SNR: the margin, VIF, and position checks cannot pass; only
         # isolation (a lone line) passes.
-        pk = FittedPeak(peak_id=0, frequency_mhz=30000.0, amplitude=1.0)
+        pk = FittedPeak(detection_index=0, frequency_mhz=30000.0, amplitude=1.0)
         score = peak_quality_score(
             pk,
             peer_freqs_mhz=[30000.0],

@@ -52,7 +52,16 @@ HDF5 layout (under the caller-provided group, e.g. ``/stage5_fitting``)::
                 covariance_param_labels (JSON)  -- ordered label list, one per row/col;
                                                    present iff covariance dataset is
             peaks/
-                peak_id                          [i8]
+                detection_index                  [i8]    (Stage 3 promoted-peak
+                                                          index that seeded the
+                                                          line; provenance, not
+                                                          identity -- several
+                                                          peaks in a blend share
+                                                          one value. Older files
+                                                          store this under the
+                                                          column name
+                                                          ``peak_id``, still
+                                                          read.)
                 frequency_mhz                    [f8]
                 amplitude                        [f8]
                 phase                            [f8]
@@ -158,8 +167,11 @@ __all__ = [
 
 
 # --- peak column layout ----------------------------------------------------
+# ``detection_index`` is written under that name; a file written before this
+# rename stores the identical column under ``peak_id``, and the loader
+# accepts either (see ``_load_peak_columns``).
 _PEAK_COLUMNS = (
-    "peak_id",
+    "detection_index",
     "frequency_mhz",
     "amplitude",
     "phase",
@@ -186,6 +198,11 @@ _OPTIONAL_PEAK_COLUMNS = (
 # Optional string columns: absent in older files; load substitutes b"" (-> None)
 # for clock_lattice (None when absent) and "auto" for origin (default provenance).
 _OPTIONAL_PEAK_STR_COLUMNS = ("clock_lattice", "origin")
+
+#: On-disk name of ``detection_index`` before the rename. A file written by
+#: an older version stores the identical data under this name; every reader
+#: below tries ``detection_index`` first and falls back to this.
+_LEGACY_DETECTION_INDEX_COLUMN = "peak_id"
 
 _VALID_AUDIT_DECISIONS = {
     "seed",
@@ -440,14 +457,14 @@ def _json_to_doublet_alternative(
 # ---------------------------------------------------------------------------
 
 
-def _peak_id_to_int(peak_id: Any) -> int:
-    """Coerce the (Union[str, int]) ``peak_id`` to int for storage."""
+def _detection_index_to_int(detection_index: Any) -> int:
+    """Coerce the (Union[str, int]) ``detection_index`` to int for storage."""
     try:
-        return int(peak_id)
+        return int(detection_index)
     except (TypeError, ValueError) as exc:
         raise ValueError(
-            f"FittedPeak.peak_id must be int-coercible for HDF5 storage; "
-            f"got {peak_id!r}"
+            f"FittedPeak.detection_index must be int-coercible for HDF5 "
+            f"storage; got {detection_index!r}"
         ) from exc
 
 
@@ -583,7 +600,7 @@ def _save_peak_columns(
     """
     n = len(peaks)
     columns: Dict[str, np.ndarray] = {
-        "peak_id": np.empty(n, dtype="i8"),
+        "detection_index": np.empty(n, dtype="i8"),
         "frequency_mhz": np.empty(n, dtype="f8"),
         "amplitude": np.empty(n, dtype="f8"),
         "phase": np.empty(n, dtype="f8"),
@@ -610,7 +627,7 @@ def _save_peak_columns(
     derivation_col: np.ndarray = np.empty(n, dtype="i8")
     peak_uid_col: np.ndarray = np.empty(n, dtype="i8")
     for i, p in enumerate(peaks):
-        columns["peak_id"][i] = _peak_id_to_int(p.peak_id)
+        columns["detection_index"][i] = _detection_index_to_int(p.detection_index)
         columns["frequency_mhz"][i] = float(p.frequency_mhz)
         columns["amplitude"][i] = float(p.amplitude)
         columns["phase"][i] = nan_if_none(p.phase)
@@ -801,7 +818,7 @@ def _load_window_fit(wg: h5py.Group, where: str) -> FittingResult:
         "value": tau_us,
         "error": tau_error,
         "fitted": tau_fitted,
-        "peak_ids": [p.peak_id for p in fitted_peaks],
+        "detection_indices": [p.detection_index for p in fitted_peaks],
     }
     result.fixed_parameters = load_json_attr(
         wg, "fixed_parameters", {}, label="stage5_fitting"
@@ -890,13 +907,27 @@ def _load_peak_columns(
     ``window_id`` is the owning window group's id, used to backfill a stored
     ``-1`` (written by versions before the writer stamped the group's id). The
     peak is inside that window whatever its own column says, so the group wins.
+
+    ``detection_index`` is read under its current name, falling back to the
+    pre-rename ``peak_id`` column when that is what the file has -- both are
+    required (the row-count-defining anchor column), so exactly one of the two
+    names must be present.
     """
-    missing = [c for c in _PEAK_COLUMNS if c not in peaks_group]
+    required = [c for c in _PEAK_COLUMNS if c != "detection_index"]
+    missing = [c for c in required if c not in peaks_group]
     if missing:
         raise ValueError(f"{where} missing required peak column(s): {missing}")
-    cols = {c: peaks_group[c][:] for c in _PEAK_COLUMNS}
+    cols = {c: peaks_group[c][:] for c in required}
+    if "detection_index" in peaks_group:
+        cols["detection_index"] = peaks_group["detection_index"][:]
+    elif _LEGACY_DETECTION_INDEX_COLUMN in peaks_group:
+        cols["detection_index"] = peaks_group[_LEGACY_DETECTION_INDEX_COLUMN][:]
+    else:
+        raise ValueError(
+            f"{where} missing required peak column(s): ['detection_index']"
+        )
     # Optional numeric columns: silently default to NaN when absent (older files).
-    n_rows = len(cols["peak_id"])
+    n_rows = len(cols["detection_index"])
     for c in _OPTIONAL_PEAK_COLUMNS:
         if c in peaks_group:
             cols[c] = peaks_group[c][:]
@@ -972,7 +1003,7 @@ def _load_peak_columns(
             wid_raw = window_id
         peaks.append(
             FittedPeak(
-                peak_id=int(cols["peak_id"][i]),
+                detection_index=int(cols["detection_index"][i]),
                 frequency_mhz=float(cols["frequency_mhz"][i]),
                 amplitude=float(cols["amplitude"][i]),
                 phase=none_if_nan(float(cols["phase"][i])),
@@ -1022,13 +1053,17 @@ def _load_peak_columns(
 #: attribute -- the line shape is per window, and this column broadcasts it so a
 #: consumer needs no join.
 #:
+#: ``detection_index`` is read under its current name, falling back to the
+#: pre-rename ``peak_id`` column on a file written before this rename (see
+#: :func:`read_fit_peak_columns`).
+#:
 #: ``window_id`` has **no** absent case: a peak is stored inside a window group,
 #: so the group's id is always available and is backfilled over the ``-1`` that
 #: older files wrote for a peak whose own ``window_id`` was ``None``. It is
 #: always a real window id, and always the one the full loader groups the peak
 #: under.
 FIT_PEAK_COLUMN_SPECS: Dict[str, ColumnSpec] = {
-    "peak_id": ("i8", REQUIRED),
+    "detection_index": ("i8", REQUIRED),
     "window_id": ("i8", REQUIRED),
     "shape": ("str", "lorentzian"),  # derived from the window attr
     "frequency_mhz": ("f8", REQUIRED),
@@ -1098,11 +1133,17 @@ def _peaks_subgroup(wg: h5py.Group, where: str) -> h5py.Group:
 
 
 def _peak_row_count(peaks_group: h5py.Group, where: str) -> int:
-    """Row count of a peaks subgroup, from the required ``peak_id`` column."""
+    """Row count of a peaks subgroup, from the required ``detection_index``
+    column (or its pre-rename name, ``peak_id``, on an older file)."""
     try:
-        dataset = peaks_group["peak_id"]
+        dataset = peaks_group["detection_index"]
     except KeyError:
-        raise ValueError(f"{where} missing required column 'peak_id'") from None
+        try:
+            dataset = peaks_group[_LEGACY_DETECTION_INDEX_COLUMN]
+        except KeyError:
+            raise ValueError(
+                f"{where} missing required column 'detection_index'"
+            ) from None
     return int(dataset.shape[0])
 
 
@@ -1155,8 +1196,18 @@ def read_fit_peak_columns(
         # The anchor column defines the window's row count; the rest must agree.
         n: Optional[int] = None
         for col in to_read:
+            # detection_index: read under its current name, falling back to
+            # the pre-rename `peak_id` dataset on an older file.
+            dataset_name = col
+            if col == "detection_index" and col not in peaks_group:
+                dataset_name = _LEGACY_DETECTION_INDEX_COLUMN
             column = read_dataset_column(
-                peaks_group, col, FIT_PEAK_COLUMN_SPECS[col], n, where=where
+                peaks_group,
+                col,
+                FIT_PEAK_COLUMN_SPECS[col],
+                n,
+                where=where,
+                dataset=dataset_name,
             )
             if n is None:
                 n = len(column)

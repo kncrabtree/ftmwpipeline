@@ -35,7 +35,7 @@ def _wf(wid, peaks=(), frozen=()):
     wf = FittingResult(window_id=wid)
     wf.fitted_peaks = [
         FittedPeak(
-            peak_id=i,
+            detection_index=i,
             frequency_mhz=f,
             amplitude=a,
             phase=ph,

@@ -106,8 +106,10 @@ class TestReadMatchesFullLoaders:
         cols = ftmw.read_table(path, "fit_peaks")
         peaks = ftmw.load_fit(path).fitted_peaks
 
-        assert len(cols["peak_id"]) == len(peaks)
-        np.testing.assert_array_equal(cols["peak_id"], [p.peak_id for p in peaks])
+        assert len(cols["detection_index"]) == len(peaks)
+        np.testing.assert_array_equal(
+            cols["detection_index"], [p.detection_index for p in peaks]
+        )
         np.testing.assert_array_equal(
             cols["frequency_mhz"], [p.frequency_mhz for p in peaks]
         )

@@ -179,8 +179,9 @@ class TestPerPeakFrequencyMapping:
         assert abs(strong_fits[0].frequency_mhz - strong_freq) < 0.005
         assert abs(weak_fits[0].frequency_mhz - weak_freq) < 0.01
 
-    def test_peak_id_links_to_stage3_index(self):
-        """``peak_id`` is the Stage 3 promoted-peak index, not a generic counter."""
+    def test_detection_index_links_to_stage3_index(self):
+        """``detection_index`` is the Stage 3 promoted-peak index, not a
+        generic counter."""
         plan_outcome, plan, peak_freqs, *_ = _two_window_plan_outcome()
         fit = plan_fit_outcome_to_spectrum_fit(
             plan_outcome,
@@ -192,9 +193,9 @@ class TestPerPeakFrequencyMapping:
         # Window 0's free_peak_indices = [0]; window 1's = [1].
         for p in fit.fitted_peaks:
             if p.window_id == 0:
-                assert p.peak_id == 0
+                assert p.detection_index == 0
             elif p.window_id == 1:
-                assert p.peak_id == 1
+                assert p.detection_index == 1
 
     def test_decay_rate_and_error_propagated(self):
         """The persistent ``decay_rate = 1/tau`` and its error are derived
@@ -562,7 +563,7 @@ class TestMergedGlobalPeakList:
             assert len(from_merged) == len(from_per_window)
             for a, b in zip(from_merged, from_per_window):
                 assert a.frequency_mhz == b.frequency_mhz
-                assert a.peak_id == b.peak_id
+                assert a.detection_index == b.detection_index
 
 
 # ---------------------------------------------------------------------------

@@ -52,7 +52,7 @@ from ftmwpipeline.io.window_serialization import save_window_plan_to_hdf5
 
 def _fit() -> SpectrumFit:
     peak = FittedPeak(
-        peak_id=0,
+        detection_index=0,
         frequency_mhz=36100.012345678,
         amplitude=0.5,
         decay_rate=0.2,
@@ -81,7 +81,7 @@ def _fit() -> SpectrumFit:
         "value": 5.0,
         "error": 0.05,
         "fitted": True,
-        "peak_ids": [0],
+        "detection_indices": [0],
     }
     return SpectrumFit(
         window_fits=[window],
@@ -542,9 +542,11 @@ class TestFormatting:
         assert format_table_impl(table, "csv").splitlines()[1] == "true"
 
     def test_json_is_a_list_of_objects_with_null_for_non_finite(self, ftmw_file):
-        table = read_table_impl(ftmw_file, "fit_peaks", columns=["peak_id", "snr"])
+        table = read_table_impl(
+            ftmw_file, "fit_peaks", columns=["detection_index", "snr"]
+        )
         records = json.loads(format_table_impl(table, "json"))
-        assert records == [{"peak_id": 0, "snr": None}]
+        assert records == [{"detection_index": 0, "snr": None}]
 
     def test_unknown_format_raises(self, ftmw_file):
         table = read_table_impl(ftmw_file, "windows")

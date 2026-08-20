@@ -583,7 +583,7 @@ def window_outcome_to_fitting_result(
         )
         fitted_peaks.append(
             FittedPeak(
-                peak_id=peak_index,
+                detection_index=peak_index,
                 frequency_mhz=freq_mhz,
                 amplitude=float(peak.amplitude),
                 decay_rate=decay_rate,
@@ -665,7 +665,7 @@ def window_outcome_to_fitting_result(
             else None
         ),
         "fitted": fitted_flag,
-        "peak_ids": [p.peak_id for p in fitted_peaks],
+        "detection_indices": [p.detection_index for p in fitted_peaks],
     }
 
     # Fixed parameters: one entry per frozen ancestor line used in the fit. The

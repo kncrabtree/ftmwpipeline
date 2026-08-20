@@ -53,7 +53,7 @@ def _synthetic_fit() -> SpectrumFit:
     return SpectrumFit(
         fitted_peaks=[
             FittedPeak(
-                peak_id=0,
+                detection_index=0,
                 frequency_mhz=30000.0,
                 amplitude=1.0,
                 phase=0.5,
@@ -63,7 +63,7 @@ def _synthetic_fit() -> SpectrumFit:
                 origin="auto",
             ),
             FittedPeak(
-                peak_id=1,
+                detection_index=1,
                 frequency_mhz=39000.0,
                 amplitude=2.0,
                 phase=-0.3,

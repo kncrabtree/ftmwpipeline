@@ -67,7 +67,7 @@ def _assert_fits_equivalent(a: SpectrumFit, b: SpectrumFit) -> None:
             assert pa.frequency_mhz == pytest.approx(pb.frequency_mhz, abs=1e-6)
             assert pa.amplitude == pytest.approx(pb.amplitude, rel=1e-6, abs=1e-9)
             assert pa.window_id == pb.window_id
-            assert pa.peak_id == pb.peak_id
+            assert pa.detection_index == pb.detection_index
 
 
 def test_cross_interface_consistency(baseline_2638_stage4_small, temp_ftmw_dir):

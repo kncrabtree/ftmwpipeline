@@ -236,7 +236,7 @@ class TestAnnotateLatticeMatches:
 
         peaks = [
             FittedPeak(
-                peak_id=i,
+                detection_index=i,
                 frequency_mhz=float(f),
                 amplitude=1.0,
                 window_id=0,
@@ -248,7 +248,7 @@ class TestAnnotateLatticeMatches:
         fr.shared_parameters["tau_us"] = {
             "value": 3.0,
             "error": 0.1,
-            "peak_ids": [p.peak_id for p in peaks],
+            "detection_indices": [p.detection_index for p in peaks],
         }
         sf = SpectrumFit(window_fits=[fr], fitted_peaks=list(peaks))
         return sf

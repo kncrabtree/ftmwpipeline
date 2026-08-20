@@ -104,7 +104,7 @@ def _cpeak(
     window_id: int = 1,
 ) -> FittedPeak:
     return FittedPeak(
-        peak_id=0,
+        detection_index=0,
         frequency_mhz=freq,
         amplitude=amplitude,
         amplitude_error=amplitude_error,
