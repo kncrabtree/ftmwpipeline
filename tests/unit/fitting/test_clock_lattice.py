@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import math
-
 from ftmwpipeline.core.data_structures import Sideband
 from ftmwpipeline.core.stage_fit_settings import ClockSource
 from ftmwpipeline.fitting.clock_lattice import build_clock_lattice

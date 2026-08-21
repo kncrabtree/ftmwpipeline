@@ -6,8 +6,6 @@ session-scoped raw Stage 0+1 baseline and a fast, stable noise knob so no extra
 build cost is incurred.
 """
 
-from pathlib import Path
-
 import pytest
 
 import ftmwpipeline.api as ftmw

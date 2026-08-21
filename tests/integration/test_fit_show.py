@@ -9,12 +9,12 @@ import shutil
 import matplotlib
 
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import numpy as np
-import pytest
+import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
+import pytest  # noqa: E402
 
-import ftmwpipeline.api as ftmw
-from ftmwpipeline._internal.stage5_impl import (
+import ftmwpipeline.api as ftmw  # noqa: E402
+from ftmwpipeline._internal.stage5_impl import (  # noqa: E402
     _resolve_detail_bundle,
     fit_show_impl,
     load_fit_impl,
@@ -23,7 +23,7 @@ from ftmwpipeline._internal.stage5_impl import (
     render_windowed_view_impl,
     select_window_ids,
 )
-from ftmwpipeline.pipeline import Pipeline
+from ftmwpipeline.pipeline import Pipeline  # noqa: E402
 
 
 @pytest.fixture

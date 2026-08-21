@@ -9,12 +9,14 @@ no real spectrum. These replace two ex-integration tests that drove the full
 import matplotlib
 
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import numpy as np
-import pytest
+import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
+import pytest  # noqa: E402
 
-from ftmwpipeline.core.data_structures import Peak, PeakClassification
-from ftmwpipeline.visualization.peak_visualization import plot_peak_detection
+from ftmwpipeline.core.data_structures import Peak, PeakClassification  # noqa: E402
+from ftmwpipeline.visualization.peak_visualization import (  # noqa: E402
+    plot_peak_detection,
+)
 
 
 @pytest.fixture

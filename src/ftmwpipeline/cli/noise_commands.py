@@ -6,9 +6,7 @@ for Stage 2 noise estimation and diagnostic visualization.
 """
 
 import argparse
-import sys
 from pathlib import Path
-from typing import Optional
 
 # Import shared implementations
 from .._internal.stage2_impl import (
@@ -20,7 +18,6 @@ from ._argspec import add_settings_args, settings_from_namespace
 from .utils import (
     add_stage_object,
     print_error,
-    print_processing_params,
     setup_logging,
 )
 
@@ -101,14 +98,14 @@ def cmd_estimate_noise(args: argparse.Namespace) -> int:
         rms_min = noise_result.rms_noise.min()
         rms_max = noise_result.rms_noise.max()
 
-        print(f"\nRMS noise statistics:")
+        print("\nRMS noise statistics:")
         print(f"  Mean RMS: {rms_mean:.2e}")
         print(f"  Std deviation: {rms_std:.2e}")
         print(f"  Range: {rms_min:.2e} - {rms_max:.2e} ({rms_max/rms_min:.1f}x)")
 
         # Algorithm diagnostics
         bin_info = noise_result.bin_info
-        print(f"\nAlgorithm diagnostics:")
+        print("\nAlgorithm diagnostics:")
         print(f"  Strategy: {bin_info.get('algorithm', 'unknown')}")
         print(f"  Region windows: {bin_info.get('n_region_windows', 'unknown')}")
         print(f"  Line bins: {bin_info.get('n_line_bins', 'unknown')}")

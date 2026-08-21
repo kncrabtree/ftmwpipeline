@@ -27,7 +27,6 @@ from .settings_commands import register_settings_commands
 from .start_commands import register_start_commands
 from .tau_commands import register_tau_commands
 from .timebase_commands import register_timebase_commands
-from .utils import setup_logging
 from .window_commands import register_window_commands
 
 

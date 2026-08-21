@@ -17,8 +17,7 @@ import h5py
 import numpy as np
 import pytest
 
-from ftmwpipeline.core.data_structures import FID, ChirpWindow, Sideband
-from ftmwpipeline.file_manager import SourceMetadata, create_pipeline_file
+from ftmwpipeline.core.data_structures import ChirpWindow
 from ftmwpipeline.io.data_loaders.blackchirp import BlackChirpLoader
 from ftmwpipeline.io.data_loaders.keysight_mat import KeysightMatLoader
 from ftmwpipeline.io.stage_fit_settings_serialization import (

@@ -29,7 +29,6 @@ from ftmwpipeline.file_manager import (
 )
 from ftmwpipeline.io.acquisition_layout import (
     AcquisitionLayout,
-    SlicedRecord,
     apply_interleave_cleanup,
     estimate_interleave_pattern,
     slice_record,
@@ -39,7 +38,6 @@ from ftmwpipeline.io.data_loaders import detect_format
 from ftmwpipeline.io.data_loaders.keysight_mat import KeysightMatLoader
 from ftmwpipeline.io.fid_serialization import (
     load_acquisition_segments_from_hdf5,
-    load_fid_from_hdf5,
     save_fid_to_hdf5,
 )
 
@@ -528,8 +526,6 @@ class TestAcquisitionSegmentSerialization:
 
     def test_old_file_no_segments_loads_cleanly(self, tmp_path):
         """Files without acquisition_segments load without error."""
-        from ftmwpipeline.core.data_structures import FIDProcessingParameters
-
         fid = FID(
             data=np.zeros(1000),
             spacing=2e-11,
@@ -537,11 +533,6 @@ class TestAcquisitionSegmentSerialization:
             sideband=Sideband.UPPER,
         )
         pipeline_path = tmp_path / "old_format.ftmw"
-        src_meta = SourceMetadata(
-            source_path=tmp_path / "dummy.csv",
-            format_name="csv",
-            loader_parameters={},
-        )
         # Write using save_fid_to_hdf5 directly (no segments in metadata)
         with h5py.File(pipeline_path, "w") as h5f:
             grp = h5f.create_group("stage0_fid_data")
@@ -694,7 +685,6 @@ class TestInterleaveCleanupPureFunctions:
     def test_estimate_recovers_planted_pattern(self):
         """Per-phase means are recovered exactly from a pure-offset record."""
         m = 4
-        rng = np.random.default_rng(0)
         pattern_true = np.array([10.0, -20.0, 5.0, -3.0])
         n = 1000 * m
         # Record whose only content is the periodic offset (no noise)

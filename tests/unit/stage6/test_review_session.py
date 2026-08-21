@@ -743,7 +743,7 @@ class TestMutationProbeAlwaysMiss:
                 return orig(staged)
 
             session._persist_staged = spy
-            result = session.review_apply(cur, frame="raw")
+            session.review_apply(cur, frame="raw")
 
         assert calls["n"] == 0, "a permanently-missing fingerprint must never reuse"
         stats_session = _window_stats(sc_multi_file)

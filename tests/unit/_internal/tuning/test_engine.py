@@ -3,10 +3,7 @@ pipeline build is needed."""
 
 from pathlib import Path
 
-import pytest
-
 from ftmwpipeline._internal.tuning.engine import (
-    SweepRow,
     run_scan,
     run_scan_batch,
 )

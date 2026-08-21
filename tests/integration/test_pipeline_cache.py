@@ -20,26 +20,21 @@ Individual component serialization is tested separately in unit tests.
 Test files are written to tests/output/ with proper cleanup.
 """
 
-import shutil
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
 
 import h5py
 import numpy as np
 import pytest
 
-from ftmwpipeline.core.data_structures import FID, ComplexFT, FIDProcessingParameters
+from ftmwpipeline.core.data_structures import ComplexFT
 from ftmwpipeline.io.data_loaders import BlackChirpLoader
 from ftmwpipeline.io.fid_serialization import (
     load_fid_cache,
     save_fid_cache,
     update_fid_processing_defaults,
 )
-from ftmwpipeline.preprocessing.noise_estimation import (
-    NoiseResult,
-    estimate_noise_scatter,
-)
+from ftmwpipeline.preprocessing.noise_estimation import estimate_noise_scatter
 
 
 def _load_example_fid(experiment_path):
@@ -147,7 +142,7 @@ class TestStage0FIDCaching:
 
         # Simulate source files being moved/deleted by changing working directory
         # (Cache should still be loadable)
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with tempfile.TemporaryDirectory():
             # Try to load cache from a different working directory context
             cached_fid = load_fid_cache(cache_id, str(self.test_output_dir))
 
@@ -348,7 +343,7 @@ class TestStage1OnDemandComplexFT:
         # Per SERIALIZATION_STRATEGY.md: ~1 second for 750k points is typical
 
         # Log performance characteristics
-        print(f"\n=== Stage 1 Performance Characteristics ===")
+        print("\n=== Stage 1 Performance Characteristics ===")
         print(f"FID points: {cached_fid.n_points}")
         print(f"ComplexFT calculation time: {calculation_time:.3f}s")
         print(f"ComplexFT points: {complex_ft.n_points}")
@@ -464,7 +459,7 @@ class TestStage01WorkflowIntegration:
         # Estimate original FID size
         fid_data_size = original_fid.data.nbytes / 1024**2
 
-        print(f"\n=== Stage 0-1 Architecture Diagnostics (Experiment 2638) ===")
+        print("\n=== Stage 0-1 Architecture Diagnostics (Experiment 2638) ===")
         print(f"Original FID data size: {fid_data_size:.2f} MB")
         print(f"FID cache file size: {cache_file_size:.2f} MB")
         print(
@@ -474,7 +469,7 @@ class TestStage01WorkflowIntegration:
             f"ComplexFT size (temporary): {complex_ft_direct.complex_spectrum.nbytes / 1024**2:.2f} MB"
         )
         print(
-            f"Storage efficiency: FID cached once, unlimited ComplexFT parameter combinations"
+            "Storage efficiency: FID cached once, unlimited ComplexFT parameter combinations"
         )
         print("================================================================")
 
@@ -538,12 +533,12 @@ class TestStage01WorkflowIntegration:
         # Each ComplexFT calculation uses the same cached FID (storage efficient)
         # No permanent ComplexFT storage required (memory efficient)
         cache_file = self._get_cache_file("param_exploration")
-        print(f"\n=== Parameter Exploration Summary ===")
+        print("\n=== Parameter Exploration Summary ===")
         print(
             f"Single FID cache supports {len(exploration_params)} parameter combinations"
         )
         print(f"FID cache size: {cache_file.stat().st_size / 1024**2:.2f} MB")
-        print(f"No ComplexFT storage required (calculated on-demand)")
+        print("No ComplexFT storage required (calculated on-demand)")
         print("=====================================")
 
 

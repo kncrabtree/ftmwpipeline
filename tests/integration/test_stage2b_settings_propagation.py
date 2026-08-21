@@ -28,10 +28,6 @@ from ftmwpipeline._internal import (
     stage2b_impl,
 )
 from ftmwpipeline.core.tau_calibration_settings import (
-    AggregationSubSettings,
-    BandSubSettings,
-    GaussianSubSettings,
-    PolishSubSettings,
     RecommendationSubSettings,
     StftSubSettings,
     TauCalibrationSettings,

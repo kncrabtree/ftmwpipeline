@@ -364,7 +364,6 @@ class TestSettingsRoundTrip:
         from ftmwpipeline.core.stage_fit_settings import (
             PeakSurvivalSubSettings,
             StageFitSettings,
-            resolve,
         )
         from ftmwpipeline.io.stage_fit_settings_serialization import (
             load_stage_fit_settings_from_h5,
@@ -382,8 +381,8 @@ class TestSettingsRoundTrip:
         loaded = load_stage_fit_settings_from_h5(str(p))
         assert loaded is not None
         assert (
-            loaded.peak_survival.enabled == False
-        )  # noqa: E712 (np.False_ != is False)
+            loaded.peak_survival.enabled == False  # noqa: E712 (np.False_ != is False)
+        )
         assert loaded.peak_survival.snr_survival_floor == pytest.approx(5.0)
 
     def test_resolved_hdf5_round_trip(self, tmp_path):

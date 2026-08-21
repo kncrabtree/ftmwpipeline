@@ -6,16 +6,13 @@ formats and visualizing FID data for validation.
 """
 
 import argparse
-import sys
 from pathlib import Path
-from typing import Optional
 
 import h5py
 
 from .._internal.stage0_impl import (
     get_pipeline_info_impl,
     import_data_impl,
-    load_fid_from_pipeline_impl,
     visualize_fid_impl,
 )
 from ..io.data_loaders import get_format_info, list_formats
@@ -103,13 +100,13 @@ def cmd_data_load(args: argparse.Namespace) -> int:
         )
 
         # Display results
-        print(f"Data import completed successfully!")
+        print("Data import completed successfully!")
         print(f"Pipeline file: {result['pipeline_file']}")
         print(f"Source format: {result['format_name']}")
 
         # Show FID metadata
         fid_info = result["fid_metadata"]
-        print(f"FID Information:")
+        print("FID Information:")
         print(f"   Data points: {fid_info['n_points']:,}")
         print(f"   Duration: {fid_info['duration_us']:.1f} μs")
         print(f"   Probe freq: {fid_info['probe_freq_mhz']:.3f} MHz")
@@ -121,7 +118,7 @@ def cmd_data_load(args: argparse.Namespace) -> int:
         file_size_mb = pipeline_file.stat().st_size / (1024 * 1024)
         print(f"File size: {file_size_mb:.2f} MB")
 
-        print(f"\nNext steps:")
+        print("\nNext steps:")
         print(f"   • Visualize FID: ftmwpipeline data show {file_path}")
         print(f"   • Process FT: ftmwpipeline ft run {file_path}")
 
@@ -169,7 +166,7 @@ def cmd_data_visualize(args: argparse.Namespace) -> int:
 
                 plt.show()
 
-            print(f"FID visualization completed")
+            print("FID visualization completed")
             return 0
 
         except Exception as e:
@@ -180,7 +177,7 @@ def cmd_data_visualize(args: argparse.Namespace) -> int:
                     get_pipeline_info_impl(file_path)
                 )
 
-                print(f"\nFID Data Summary:")
+                print("\nFID Data Summary:")
                 print(f"   Data points: {fid.n_points:,}")
                 print(f"   Duration: {fid.duration_us:.1f} μs")
                 print(f"   Spacing: {fid.spacing:.4e} s")
@@ -202,7 +199,7 @@ def cmd_data_visualize(args: argparse.Namespace) -> int:
                                     else "avg"
                                 )
                                 has_frames = segs.frames is not None
-                                print(f"\nAcquisition Segments:")
+                                print("\nAcquisition Segments:")
                                 print(
                                     f"   Pre-record: {segs.pre_record_us:.2f} µs"
                                     f"  ({len(segs.pre_record):,} samples)"
@@ -219,7 +216,7 @@ def cmd_data_visualize(args: argparse.Namespace) -> int:
                     pass  # Segment display failure is non-fatal
 
                 if args.show_metadata:
-                    print(f"\nSource Metadata:")
+                    print("\nSource Metadata:")
                     print(f"   Source path: {source_metadata.source_path}")
                     print(f"   Format: {source_metadata.format_name}")
                     print(f"   Import time: {source_metadata.import_timestamp}")
@@ -268,10 +265,10 @@ def cmd_data_info(args: argparse.Namespace) -> int:
                         f"   Required parameters: {', '.join(info['required_parameters'])}"
                     )
                 else:
-                    print(f"   Required parameters: None")
+                    print("   Required parameters: None")
 
                 if info["optional_parameters"]:
-                    print(f"   Optional parameters:")
+                    print("   Optional parameters:")
                     for param, default in info["optional_parameters"].items():
                         print(f"     • {param} (default: {default})")
 
@@ -535,7 +532,7 @@ Examples:
 Examples:
   # List all available formats
   ftmwpipeline formats
-  
+
   # Show details about specific format
   ftmwpipeline formats --format blackchirp
         """,

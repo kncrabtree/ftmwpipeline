@@ -254,7 +254,6 @@ def test_attention_reasons_edge_boundary(stage5_small_source, tmp_path):
 
     # Move first peak to the window's lower edge.
     flo, fhi = target_wf.window.freq_range
-    original_freq = target_wf.fitted_peaks[0].frequency_mhz
     # Directly set the frequency to the edge.
     target_wf.fitted_peaks[0].frequency_mhz = flo
 
@@ -263,7 +262,7 @@ def test_attention_reasons_edge_boundary(stage5_small_source, tmp_path):
         grp = h5f.create_group("stage5_fitting")
         save_spectrum_fit_to_hdf5(sf, grp)
 
-    result = review_run_impl(str(fp))
+    review_run_impl(str(fp))
     review = load_stage6_review_from_file(str(fp))
 
     # The modified window must have an edge_boundary reason.

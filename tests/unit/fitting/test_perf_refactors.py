@@ -11,7 +11,6 @@ exactly equal to the baseline behavior.
 4. lazy cand_template in conservative_fit (debug_fringe_dump env-var gate)
 """
 
-import dataclasses
 import os
 
 import numpy as np
@@ -362,8 +361,6 @@ class TestLazyCandTemplate:
         (the no-env path) vs a real array (the env path) and confirming the file
         is only written with a template key when the array is present.
         """
-        import pathlib
-
         from ftmwpipeline.fitting import validation
 
         # Direct call to debug_fringe_dump: with template=None the key is absent.

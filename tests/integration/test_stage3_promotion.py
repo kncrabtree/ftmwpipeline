@@ -22,24 +22,23 @@ A module-scoped fixture runs detection once; individual tests reuse the result.
 """
 
 import matplotlib
-import numpy as np
 import pytest
 
 matplotlib.use("Agg")  # non-interactive backend for CI
 
-import h5py
+import h5py  # noqa: E402
 
-import ftmwpipeline.api as ftmw
-from ftmwpipeline._internal.stage0_impl import import_data_impl
-from ftmwpipeline._internal.stage3_impl import (
+import ftmwpipeline.api as ftmw  # noqa: E402
+from ftmwpipeline._internal.stage0_impl import import_data_impl  # noqa: E402
+from ftmwpipeline._internal.stage3_impl import (  # noqa: E402
     detect_peaks_impl,
     load_peaks_impl,
 )
-from ftmwpipeline.core.peak_detection_settings import (
+from ftmwpipeline.core.peak_detection_settings import (  # noqa: E402
     PeakDetectionSettings,
     PromotionSubSettings,
 )
-from ftmwpipeline.preprocessing.peak_detection import (
+from ftmwpipeline.preprocessing.peak_detection import (  # noqa: E402
     DEFAULT_INTERNAL_MIN_SNR,
     DEFAULT_MIN_SNR,
 )

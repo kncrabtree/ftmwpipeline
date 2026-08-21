@@ -5,8 +5,6 @@ These tests verify that the package can be imported correctly and that
 the basic API is accessible.
 """
 
-import pytest
-
 
 class TestPackageImports:
     """Test basic package import functionality."""

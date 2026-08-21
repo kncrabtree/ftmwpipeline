@@ -8,9 +8,7 @@ experimental formats with proper metadata preservation.
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
-
-import numpy as np
+from typing import TYPE_CHECKING, Any, Dict, List, Union
 
 if TYPE_CHECKING:
     from ...core.data_structures import FID

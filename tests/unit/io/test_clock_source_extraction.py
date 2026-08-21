@@ -25,7 +25,6 @@ from ftmwpipeline.core.stage_fit_settings import (
     StageFitSettings,
     coerce_clock_sources,
 )
-from ftmwpipeline.core.stage_fit_settings import resolve as resolve_stage_fit_settings
 from ftmwpipeline.io.data_loaders.blackchirp import BlackChirpLoader
 from ftmwpipeline.io.stage_fit_settings_serialization import (
     read_recommended_clock_sources,

@@ -5,7 +5,6 @@ Pipeline class, and CLI produces identical Stage 0 data (same FID array,
 same probe/sideband metadata, same acquisition segments).
 """
 
-import shutil
 import subprocess
 import sys
 from pathlib import Path

@@ -33,7 +33,6 @@ import h5py
 import pytest
 
 import ftmwpipeline.api as ftmw
-import ftmwpipeline.core.environment as envmod
 from ftmwpipeline.core.environment import (
     ANALYSIS_EPOCH,
     EnvironmentRecord,

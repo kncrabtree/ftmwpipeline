@@ -269,7 +269,7 @@ def test_per_window_covariance_persisted(baseline_2638_stage4_small, temp_ftmw_d
     fp = temp_ftmw_dir / "cov_check.ftmw"
     shutil.copy(baseline_2638_stage4_small, fp)
 
-    fit = ftmw.fit_peaks(fp)
+    ftmw.fit_peaks(fp)
     reloaded = ftmw.load_fit(fp)
 
     # Every window's peaks are ordered by ascending frequency (so the line list,

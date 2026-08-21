@@ -9,9 +9,8 @@ import json
 import shutil
 import subprocess
 import tempfile
-import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import pytest
@@ -20,7 +19,7 @@ import ftmwpipeline.api as ftmw
 
 # Import all interfaces for testing
 from ftmwpipeline import Pipeline
-from ftmwpipeline.core.data_structures import FID, ComplexFT
+from ftmwpipeline.core.data_structures import ComplexFT
 
 
 @pytest.fixture(scope="session")

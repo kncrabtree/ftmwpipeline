@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import h5py
 import numpy as np
-import pytest
 
 from ftmwpipeline.fitting.tau_calibration import (
     FrequencyThird,

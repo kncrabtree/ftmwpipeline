@@ -34,7 +34,7 @@ from ftmwpipeline._internal.stage6_impl import (
     parse_curation_file,
     review_preview_impl,
 )
-from ftmwpipeline.cli.review_commands import cmd_review_apply, cmd_review_preview
+from ftmwpipeline.cli.review_commands import cmd_review_apply
 from ftmwpipeline.core.data_structures import SpectrumFit
 from ftmwpipeline.core.stage_fit_settings import ClockSource
 from ftmwpipeline.fitting.timebase_calibration import TimebaseCalibrationResult
@@ -369,7 +369,6 @@ class TestHeaderEpsilonDrift:
         """Sanity: the SAME header, with NO intervening drift, must not be
         refused -- only a genuine mismatch triggers this."""
         cur, wid, f_raw = self._stage_calibrated_remove(sc_file, tmp_path)
-        n_before = len(_load_spectrum_fit(sc_file).window_fits[0].fitted_peaks)
         result = apply_curation_impl(str(sc_file), cur)
         assert result.applied == 1
         wf_after = next(

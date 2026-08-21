@@ -15,7 +15,6 @@ import pytest
 from ftmwpipeline.core.data_structures import Sideband
 from ftmwpipeline.io.data_loaders import detect_format, load_fid
 from ftmwpipeline.io.data_loaders.base import LoaderError
-from ftmwpipeline.io.data_loaders.csv import CSVLoader
 from ftmwpipeline.io.data_loaders.ftmw_hdf5 import FtmwHdf5Loader
 from ftmwpipeline.io.input_metadata import resolve_input_metadata
 

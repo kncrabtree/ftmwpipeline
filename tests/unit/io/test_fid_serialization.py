@@ -10,7 +10,6 @@ Tests functional FID storage and loading rather than interface pedantry, focusin
 
 import json
 import tempfile
-from datetime import datetime
 from pathlib import Path
 
 import h5py
@@ -21,7 +20,6 @@ from ftmwpipeline.core.data_structures import FID, FIDProcessingParameters, Side
 from ftmwpipeline.file_manager import (
     SourceMetadata,
     create_pipeline_file,
-    open_pipeline_file,
     update_processing_parameters,
 )
 from ftmwpipeline.io.fid_serialization import (
@@ -30,7 +28,6 @@ from ftmwpipeline.io.fid_serialization import (
     _serialize_optional_float,
     _serialize_optional_str,
     load_fid_from_hdf5,
-    save_fid_to_hdf5,
 )
 
 
@@ -326,7 +323,7 @@ class TestRealExperimentalDataIntegration:
                 "examples/blackchirp_data/2638", fid_index=0
             )
 
-            print(f"Experiment 2638 FID loaded:")
+            print("Experiment 2638 FID loaded:")
             print(f"  Points: {original_fid.n_points}")
             print(f"  Duration: {original_fid.duration_us:.1f} μs")
             print(f"  Spacing: {original_fid.spacing:.4e} s")

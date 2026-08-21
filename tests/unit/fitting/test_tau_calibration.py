@@ -18,12 +18,9 @@ from ftmwpipeline.fitting import tau_calibration as tau_calibration_module
 from ftmwpipeline.fitting.tau_calibration import (
     DEFAULT_N_SEG,
     DEFAULT_SIGMA_TAU_FLOOR_US,
-    DEFAULT_T_SIGMA,
     DEFAULT_TAU_G_BOUND_HI,
     BandMajority,
     ShapeRecommendation,
-    SpurCluster,
-    TauCalibrationResult,
     _aggregate_shape_verdict,
     _nls_polish_step,
     band_majority_for_frequency,

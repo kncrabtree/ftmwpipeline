@@ -134,7 +134,7 @@ _DEDUP_TOL_BINS: float = 0.25
 # add-from-convergence pass (one calibration, two consumers); see
 # :data:`ftmwpipeline.fitting.validation.SHAPE_ERROR_REACH_KAPPA`. Re-exported
 # here so the ledger filter and its tests keep their module-local name.
-from ..fitting.validation import SHAPE_ERROR_REACH_KAPPA
+from ..fitting.validation import SHAPE_ERROR_REACH_KAPPA  # noqa: E402
 
 # spur_adjacent tolerance. A *surviving* fitted line within this many resolution
 # elements of a gated clock-harmonic spur center is suspiciously coincident with

@@ -29,7 +29,6 @@ def test_active_edge_coherence_is_deramp_free():
     same arrays. A spurious turn-on ramp (which the active grid never carries) is
     therefore not corrected, and collapses the statistic.
     """
-    rng = np.random.default_rng(7)
     n = 512
     freq = np.linspace(30000.0, 30050.0, n)
     z = 0.3 * np.exp(1j * 0.4) * np.ones(n) + _complex_noise(n, 0.02, 1)

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional
 
 import h5py
 import numpy as np
@@ -21,7 +20,6 @@ from ftmwpipeline.core.data_structures import FID, ChirpWindow, Sideband
 from ftmwpipeline.core.start_detection_settings import StartDetectionSettings
 from ftmwpipeline.file_manager import SourceMetadata, create_pipeline_file
 from ftmwpipeline.io.stage_fit_settings_serialization import (
-    read_recommended_chirp_window,
     write_recommended_chirp_window,
 )
 

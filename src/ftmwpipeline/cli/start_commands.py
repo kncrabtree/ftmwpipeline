@@ -78,7 +78,7 @@ def cmd_detect_start(args: argparse.Namespace) -> int:
     if declared_end is not None:
         print(f"  chirp-end declared : {declared_end:.3f} us")
         print(f"  chirp-end detected : {out['chirp_end_detected_us']:.3f} us")
-        print(f"  source             : declaration")
+        print("  source             : declaration")
     else:
         print(f"  chirp-end          : {r.chirp_end_us:.3f} us")
     print(f"  recommended start  : {out['start_us']:.3f} us")

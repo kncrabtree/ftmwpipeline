@@ -19,14 +19,13 @@ import h5py
 import matplotlib
 
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import numpy as np
-import pytest
+import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
+import pytest  # noqa: E402
 
-import ftmwpipeline.api as ftmw
-from ftmwpipeline._internal.report_html_impl import (
+import ftmwpipeline.api as ftmw  # noqa: E402
+from ftmwpipeline._internal.report_html_impl import (  # noqa: E402
     _LIGHTBOX_JS,
-    _PANEL_ORDER,
     _STYLESHEET,
     _assemble_report_site,
     _covariance_block,
@@ -38,13 +37,16 @@ from ftmwpipeline._internal.report_html_impl import (
     _window_peak_table,
     report_full_impl,
 )
-from ftmwpipeline._internal.stage4_impl import load_windows_impl, save_window_plan_impl
-from ftmwpipeline._internal.stage6_impl import (
+from ftmwpipeline._internal.stage4_impl import (  # noqa: E402
+    load_windows_impl,
+    save_window_plan_impl,
+)
+from ftmwpipeline._internal.stage6_impl import (  # noqa: E402
     get_candidate_ledger_impl,
     review_run_impl,
 )
-from ftmwpipeline.core.data_structures import FinalPeak
-from ftmwpipeline.pipeline import Pipeline
+from ftmwpipeline.core.data_structures import FinalPeak  # noqa: E402
+from ftmwpipeline.pipeline import Pipeline  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Pure HTML-helper unit tests

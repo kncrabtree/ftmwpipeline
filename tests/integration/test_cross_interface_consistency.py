@@ -20,8 +20,6 @@ Performance strategy:
 
 import shutil
 import subprocess
-from pathlib import Path
-from typing import Any, Dict, Tuple
 
 import numpy as np
 import pytest

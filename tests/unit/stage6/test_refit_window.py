@@ -19,7 +19,6 @@ import shutil
 from pathlib import Path
 
 import h5py
-import numpy as np
 import pytest
 
 import ftmwpipeline.api as ftmw
@@ -34,7 +33,7 @@ from ftmwpipeline._internal.stage6_impl import (
     refit_window_impl,
 )
 from ftmwpipeline.core.data_structures import SpectrumFit
-from ftmwpipeline.fitting.peak_model import ModelPeak, sideband_sign
+from ftmwpipeline.fitting.peak_model import ModelPeak
 from ftmwpipeline.io.fitting_serialization import load_spectrum_fit_from_hdf5
 
 pytestmark = [pytest.mark.integration]
@@ -210,7 +209,6 @@ class TestBuildStage5FitContext:
         # the Stage 5 integration tests that passed after the refactor.
         from ftmwpipeline.core.stage_fit_settings import StageFitSettings
         from ftmwpipeline.core.stage_fit_settings import resolve as resolve_settings
-        from ftmwpipeline.fitting.peak_model import PeakShape
         from ftmwpipeline.io.stage_fit_settings_serialization import (
             load_stage_fit_settings_from_h5,
             read_recommended_clock_sources,

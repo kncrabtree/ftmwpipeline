@@ -8,9 +8,6 @@ Tests functional file operations rather than interface pedantry, focusing on:
 - Error handling and edge cases that would break user workflows
 """
 
-import json
-import os
-import shutil
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -27,7 +24,6 @@ from ftmwpipeline.file_manager import (
     PipelineCompatibilityError,
     PipelineCorruptionError,
     PipelineExistsError,
-    PipelineFileError,
     PipelineStageTracker,
     SourceMetadata,
     StageDependencyError,

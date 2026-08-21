@@ -22,7 +22,6 @@ from ..file_manager import (
 )
 from ..io.data_loaders import (
     detect_format,
-    get_format_info,
     list_formats,
     load_fid,
     validate_source,

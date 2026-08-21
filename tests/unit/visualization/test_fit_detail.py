@@ -3,11 +3,11 @@
 import matplotlib
 
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import numpy as np
-import pytest
+import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
+import pytest  # noqa: E402
 
-from ftmwpipeline.visualization.fit_detail import (
+from ftmwpipeline.visualization.fit_detail import (  # noqa: E402
     _format_spectroscopic,
     _format_spectroscopic_sci,
     _peak_labels,

@@ -32,7 +32,6 @@ import pytest
 import ftmwpipeline.api as ftmw
 from ftmwpipeline._internal.stage6_impl import (
     RefitWindowResult,
-    get_review_status_impl,
     merge_peaks_impl,
     refit_window_impl,
     review_accept_impl,

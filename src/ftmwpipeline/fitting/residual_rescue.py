@@ -817,7 +817,6 @@ def iterative_aicc_cleanup(
         aicc_k_raw = _aicc_k_for(None) if budget_keep is not None else aicc_k_budgeted
 
         worst_margin = 0.0
-        worst_aicc_km1 = float("inf")
         worst_idx = -1
         worst_refit: Optional[WindowFitResult] = None
         worst_is_null = False
@@ -859,7 +858,6 @@ def iterative_aicc_cleanup(
                     if escaped:
                         continue
                     worst_margin = aicc_km1 - aicc_k_i
-                    worst_aicc_km1 = aicc_km1
                     worst_idx = i
                     worst_refit = None
                     worst_is_null = True
@@ -940,7 +938,6 @@ def iterative_aicc_cleanup(
             )
             if margin_i < worst_margin:
                 worst_margin = margin_i
-                worst_aicc_km1 = aicc_km1
                 worst_idx = i
                 worst_refit = refit
                 worst_is_null = False

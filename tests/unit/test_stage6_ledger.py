@@ -8,17 +8,12 @@ trails and rescue events.  No file I/O is needed.
 
 from __future__ import annotations
 
-import math
-from typing import List
-
 import numpy as np
 import pytest
 
 from ftmwpipeline._internal.stage6_impl import (
     DEFAULT_DISPLAY_BAR,
-    _audit_step_candidates,
     _dedup_and_merge,
-    _rescue_round_candidates,
     _to_molecular,
     derive_candidate_ledger,
 )

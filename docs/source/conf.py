@@ -7,7 +7,6 @@ for the ftmwpipeline package.
 
 import os
 import sys
-from pathlib import Path
 
 # Add the source directory to the Python path
 sys.path.insert(0, os.path.abspath("../../src"))

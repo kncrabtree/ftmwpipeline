@@ -49,7 +49,6 @@ from matplotlib.ticker import ScalarFormatter
 from ..core.data_structures import FittedPeak, FittingResult, Sideband
 from ..fitting.peak_model import ModelPeak, model_spectrum, sideband_sign
 from ..fitting.validation import PEAK_QUALITY_MAX, peak_quality_score
-from ..utils.signal_processing import APODIZATION_EXAMPLES, make_apodization
 from .report_style import (
     AGGIE_GOLD,
     CABERNET,

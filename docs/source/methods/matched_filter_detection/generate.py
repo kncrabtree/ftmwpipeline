@@ -367,7 +367,6 @@ def make_figures(results: Dict[str, Any]) -> None:
     from ftmwpipeline.visualization.report_style import (
         AGGIE_BLUE,
         AGGIE_GOLD,
-        BRAND_CYCLE,
         POPPY,
         aggie_blue_cmap,
         apply_bare_style,

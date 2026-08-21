@@ -16,10 +16,6 @@ import pytest
 
 from ftmwpipeline.core.window_planning_settings import (
     _HARD_DEFAULTS,
-    ClusteringSubSettings,
-    CoherenceSubSettings,
-    ContributorSubSettings,
-    LeakageSubSettings,
     WindowPlanningSettings,
     from_attrs,
     from_yaml,

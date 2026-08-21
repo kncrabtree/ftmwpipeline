@@ -18,13 +18,10 @@ import json
 import logging
 
 import h5py
-import numpy as np
 import pytest
 
 import ftmwpipeline.api as ftmw
 from ftmwpipeline._internal.stage0_impl import import_data_impl
-from ftmwpipeline._internal.stage1_impl import compute_ft_impl
-from ftmwpipeline._internal.stage2_impl import compute_noise_estimation_impl
 from ftmwpipeline._internal.stage3_impl import detect_peaks_impl
 
 pytestmark = pytest.mark.integration

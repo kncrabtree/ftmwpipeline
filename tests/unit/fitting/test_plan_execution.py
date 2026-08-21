@@ -19,6 +19,8 @@ the production code will see.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 import pytest
 
@@ -41,9 +43,8 @@ from ftmwpipeline.fitting.peak_model import (
 from ftmwpipeline.fitting.plan_execution import (
     DEFAULT_RESIDUAL_EDGE_THRESHOLD,
     FrozenPeak,
+    RescueEvent,
     ReplanContext,
-    ReplanEvent,
-    ThawEvent,
     WindowOutcome,
     _window_center_mhz,
     attempt_thaw_round,
@@ -57,7 +58,9 @@ from ftmwpipeline.fitting.plan_execution import (
     subtract_frozen_background,
 )
 from ftmwpipeline.fitting.validation import feature_fwhm
-from ftmwpipeline.fitting.window_fit import conservative_fit
+
+if TYPE_CHECKING:
+    from ftmwpipeline.fitting.residual_screening import ResidualPeakCandidate
 
 # --- 2638-scale acquisition --------------------------------------------------
 T_US = 12.65
@@ -1602,11 +1605,9 @@ def _baseline_outcome(u, z, sigma, peaks, *, tau=TAU_US):
     measured on that residual so ``_apply_baseline_to_outcome`` reads a real
     trigger value.
     """
-    from ftmwpipeline.fitting.peak_model import model_spectrum
     from ftmwpipeline.fitting.plan_execution import residual_edge_coherence
     from ftmwpipeline.fitting.window_fit import (
         ConservativeFitResult,
-        WindowFitResult,
         fit_window,
     )
 

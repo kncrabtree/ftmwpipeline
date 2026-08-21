@@ -8,7 +8,6 @@ enabling visual validation of loaded data and assessment of signal quality.
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
-import matplotlib.pyplot as plt
 import numpy as np
 
 from ..core.data_structures import FID
@@ -64,15 +63,12 @@ def plot_fid(
     if time_units == "s":
         time_data = fid.time_array()
         time_label = "Time (s)"
-        time_scale = 1.0
     elif time_units == "ms":
         time_data = fid.time_array() * 1000
         time_label = "Time (ms)"
-        time_scale = 1000.0
     else:  # 'us'
         time_data = fid.time_array_us()
         time_label = "Time (μs)"
-        time_scale = 1e6
 
     voltage_data = fid.data
 

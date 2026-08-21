@@ -10,9 +10,7 @@ import pytest
 
 from ftmwpipeline.core.data_structures import Sideband
 from ftmwpipeline.fitting.spur_detection import (
-    GatedSpur,
     SpurMaskSpec,
-    SpurSet,
     build_spur_set,
     detect_active_ft_spurs,
 )
@@ -1471,8 +1469,6 @@ def test_off_comb_freq_unaffected_by_exclusion():
     still fires when appropriate.  And a CW tone at an off-comb frequency
     with a real pre-record signal is not incorrectly excluded.
     """
-    from ftmwpipeline.fitting.spur_detection import make_chirp_response_probe
-
     # Off-comb CW tone: pre-record is NOT nulled (it's a real CW signal).
     probe = _cx_probe(
         _CX_OFF_FREQ,

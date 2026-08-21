@@ -15,7 +15,6 @@ Uses experiment 2638 test data as specified in CLAUDE.md.
 import shutil
 import tempfile
 from pathlib import Path
-from unittest.mock import mock_open, patch
 
 import numpy as np
 import pandas as pd
@@ -289,7 +288,7 @@ class TestExperiment2638Integration:
         assert np.all(np.isreal(fid.data))
         assert fid.data.dtype in [np.float64, np.float32]
 
-        print(f"Experiment 2638 loaded successfully:")
+        print("Experiment 2638 loaded successfully:")
         print(f"  Points: {fid.n_points}")
         print(f"  Duration: {fid.duration_us:.1f} μs")
         print(f"  Spacing: {fid.spacing:.4e} s")  # Per refinement #2

@@ -52,8 +52,7 @@ from __future__ import annotations
 
 import logging
 import platform
-import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional
 
 logger = logging.getLogger(__name__)

@@ -104,7 +104,7 @@ logging.getLogger(__name__).addHandler(logging.NullHandler())
 
 # Optional imports with graceful fallbacks
 try:
-    import matplotlib
+    import matplotlib  # noqa: F401
 
     _HAS_MATPLOTLIB = True
 except ImportError:

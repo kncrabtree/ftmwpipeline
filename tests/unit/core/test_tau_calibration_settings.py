@@ -15,12 +15,6 @@ import pytest
 
 from ftmwpipeline.core.tau_calibration_settings import (
     _HARD_DEFAULTS,
-    AggregationSubSettings,
-    BandSubSettings,
-    GaussianSubSettings,
-    PolishSubSettings,
-    RecommendationSubSettings,
-    StftSubSettings,
     TauCalibrationSettings,
     from_attrs,
     from_yaml,

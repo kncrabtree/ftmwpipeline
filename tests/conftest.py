@@ -8,7 +8,6 @@ entire test suite.
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import pytest
@@ -184,7 +183,7 @@ def close_figures_left_open():
 def _has_matplotlib() -> bool:
     """Check if matplotlib is available."""
     try:
-        import matplotlib
+        import matplotlib  # noqa: F401
 
         return True
     except ImportError:
