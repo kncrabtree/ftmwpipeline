@@ -661,23 +661,23 @@ def test_undo_single_returns_to_baseline(stage5_small_source, tmp_path):
 
 
 @pytest.mark.integration
-def test_undo_one_of_two_replays_other(stage5_file, tmp_path):
-    by_w = _fitted_by_window(stage5_file)
+def test_undo_one_of_two_replays_other(stage5_multi_file, tmp_path):
+    by_w = _fitted_by_window(stage5_multi_file)
     wids = [w for w, f in by_w.items() if f]
     if len(wids) < 2:
         pytest.skip("Need two windows with peaks")
     wa, wb = wids[0], wids[1]
-    fa = by_w[wa][0] + 0.4
-    fb = by_w[wb][0] + 0.4
+    fa = _clear_add_freq(stage5_multi_file, wa)
+    fb = _clear_add_freq(stage5_multi_file, wb)
 
     # Reference: only the wb add applied to the automatic fit.
     ref = tmp_path / "ref.ftmw"
-    shutil.copy(stage5_file, ref)
+    shutil.copy(stage5_multi_file, ref)
     apply_curation_impl(ref, _write_curation(tmp_path, f"add,{wb},{fb},\n"))
 
     # Undone: both adds, then undo the wa add.
     both = tmp_path / "both.ftmw"
-    shutil.copy(stage5_file, both)
+    shutil.copy(stage5_multi_file, both)
     cur = tmp_path / "two.csv"
     cur.write_text(f"add,{wa},{fa},\nadd,{wb},{fb},\n")
     apply_curation_impl(both, cur)
