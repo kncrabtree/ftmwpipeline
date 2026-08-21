@@ -49,7 +49,7 @@ def _resolve_regions(
     default_n: int,
     auto_select: Any,
 ) -> List[Any]:
-    """Resolve the zoom regions for a region-based adapter, honouring the user's
+    """Resolve the zoom regions for a region-based adapter, honoring the user's
     ``PlotContext`` zoom controls.
 
     Explicit ``ctx.zoom_regions`` win verbatim (the user pinned the windows);

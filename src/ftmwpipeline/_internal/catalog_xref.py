@@ -149,7 +149,7 @@ def _split_row(row: str, comma: bool) -> List[str]:
 def _unc_scale_khz(header_name: str) -> float:
     """kHz-per-unit for an uncertainty column, inferred from its header name.
 
-    A header naming MHz (or Hz) is honoured; everything else (a bare
+    A header naming MHz (or Hz) is honored; everything else (a bare
     ``unc`` / ``sigma`` / ``err``, or a ``khz`` token) is taken as kHz.
     """
     key = header_name.lower()

@@ -74,7 +74,7 @@ class PlotContext:
     region-based adapters (Stage 3 peak detection, Stage 4 window planning):
     ``zoom_regions`` pins explicit ``(lo_mhz, hi_mhz)`` windows and overrides the
     adapter's divergence auto-selection; when it is empty the adapter
-    auto-selects as usual but honours ``n_zoom`` / ``zoom_width_mhz`` (when set)
+    auto-selects as usual but honors ``n_zoom`` / ``zoom_width_mhz`` (when set)
     for how many regions to pick and how wide each is. Adapters with no zoom
     panels ignore these.
     """
