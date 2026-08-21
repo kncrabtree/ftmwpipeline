@@ -533,7 +533,7 @@ def test_window_header_bar():
     assert 'data-act="accept"' in bar and 'data-act="accept-next"' in bar
     assert 'data-act="clear-window"' in bar
     assert "&#9873;" not in bar  # no flag icon
-    # Endpoints: no prev/next link when there is no neighbour.
+    # Endpoints: no prev/next link when there is no neighbor.
     first = _window_header_bar(0, None, 5)
     assert "&larr; window" not in first and "window 5 &rarr;" in first
 

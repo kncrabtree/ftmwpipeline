@@ -2505,7 +2505,7 @@ def _add_from_convergence(
     the existing free peaks at their fitted positions and add one new seed at
     the candidate's residual-peak offset.  The add is accepted only if the AICc
     knockout gate prefers the K+1 fit (``kout.supported``) AND the newly placed
-    peak does not collapse within ``min_sep`` of its nearest neighbour.
+    peak does not collapse within ``min_sep`` of its nearest neighbor.
 
     If the add is accepted, ``finalize_node`` is re-run so the window stays
     consistent with the per-node cleanup tail.  Candidates are tried in

@@ -2,7 +2,7 @@
 acquisition length.
 
 ``tests/unit/stage6/test_snap_tolerance_contract.py`` pins the *shape* of the
-surface (one definition, one derivation). This module pins the behaviour, and
+surface (one definition, one derivation). This module pins the behavior, and
 in particular the property that a suite at a single acquisition length cannot
 check: the snap tolerance is a count of active-FT bins, so **the same absolute
 offset must resolve differently on two files acquired at different lengths**.

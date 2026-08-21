@@ -1417,7 +1417,7 @@ def _overlay_created_windows(
     windows.extend(w for wid, w in sorted(overlay.items()) if wid not in known)
     windows.sort(key=lambda w: min(w.freq_range))
 
-    # A created window is a leaf: it reads its neighbours' frozen leakage and
+    # A created window is a leaf: it reads its neighbors' frozen leakage and
     # nothing reads it, so its edges are purely additive and cannot introduce a
     # cycle. Splice them in and put the new ids last in the fit order.
     edges = list(plan.dependency_edges)
@@ -3175,11 +3175,11 @@ def create_window_impl(
     is never renumbered, so a consumer partitioning peaks on ``window_id`` sees
     exactly the windows the edit touched.
 
-    **No cascade, in either direction.** The new window reads its neighbours'
+    **No cascade, in either direction.** The new window reads its neighbors'
     frozen leakage skirts inward; it contributes no outward dependency edge and
-    no neighbour is re-fit or thawed. A window created for a line the automatic
+    no neighbor is re-fit or thawed. A window created for a line the automatic
     pass missed holds, by construction, a line below the freeze bar, whose own
-    leakage into its neighbours is negligible -- which is what makes the whole
+    leakage into its neighbors is negligible -- which is what makes the whole
     operation purely additive in the stage DAG.
 
     Parameters

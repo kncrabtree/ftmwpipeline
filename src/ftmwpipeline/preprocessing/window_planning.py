@@ -1421,7 +1421,7 @@ def plan_stage6_window(
 
     Below that floor the proposal switches to ``mode="widened"``: the nearer
     adjacent window grows to absorb the anchor plus the floor margin, bounded by
-    the far neighbour so disjointness still holds. Its contributor set and
+    the far neighbor so disjointness still holds. Its contributor set and
     dependency edges are carried over untouched -- the widening adds grid points,
     it does not re-derive the plan.
 
@@ -1434,7 +1434,7 @@ def plan_stage6_window(
     inbound; the new window is a leaf, so no existing window acquires a
     dependency on it and none needs re-fitting. That is deliberate: a window
     created for a detection the automatic pass missed holds, by construction, a
-    line too weak to clear the freeze bar, whose own leakage into its neighbours
+    line too weak to clear the freeze bar, whose own leakage into its neighbors
     is negligible.
 
     Parameters
@@ -1714,12 +1714,12 @@ def _widen_for_stage6_anchor(
 
     Reached only when the gap cannot hold a window with ``floor`` grid points of
     margin each side of the anchor -- a line sitting in a narrow crack between
-    two windows. Widening beats creating a starved window: the neighbour already
+    two windows. Widening beats creating a starved window: the neighbor already
     has a converged fit and a contributor set covering this region.
 
     The target is the window whose edge is nearest the anchor (lower
     ``window_id`` breaks a tie, so the choice is deterministic). Its span grows
-    to reach ``floor`` points past the anchor, bounded by the *other* neighbour,
+    to reach ``floor`` points past the anchor, bounded by the *other* neighbor,
     so the plan stays disjoint. Contributors and dependency edges are carried
     over verbatim: this adds grid points to an existing window, it does not
     re-derive the plan.

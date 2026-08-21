@@ -87,7 +87,7 @@ engine so they cannot answer differently.
 
 * **A colliding ``peak_uid`` is disambiguated, not refused.** Two seeds can
   land on the same hundredth of a point: blend escalation pushes each
-  detection's seeds outward by about one point, so neighbouring detections'
+  detection's seeds outward by about one point, so neighboring detections'
   seed sets interleave, and the residual re-seed places a seed at the residual
   maximum, which nothing constrains. The earlier argument that this could not
   happen bounded the spacing between *detections*, not between the seeds those

@@ -206,17 +206,17 @@ to offer both as one gesture; the log still shows two.
 
 Three properties make the operation safe to build on:
 
-- **Additive.** The new window reads its neighbours' frozen leakage skirts inward and
+- **Additive.** The new window reads its neighbors' frozen leakage skirts inward and
   contributes no outward dependency edge, so no existing window is re-fit or thawed —
   a window created for a line the automatic pass missed holds, by construction, a line
-  below the freeze bar, whose own leakage into its neighbours is negligible.
+  below the freeze bar, whose own leakage into its neighbors is negligible.
 - **Ids are only appended.** No existing window is ever renumbered, so a consumer that
   partitions peaks on ``window_id`` sees exactly the windows an edit touched rather
   than the whole spectrum.
 - **Deterministic extent.** The window's bounds are a function of the anchor and the
   *base* Stage 4 plan — never of the current curated state — so replaying an edit set
   in order reproduces the same window. The window takes the plan's own margin each
-  side of the anchor, shifted (not shrunk) when the gap cannot centre it.
+  side of the anchor, shifted (not shrunk) when the gap cannot center it.
 
 Two boundary cases resolve rather than fail. An anchor that already falls inside a
 window is refused with a message pointing at ``review edit --add`` on that window —

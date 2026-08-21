@@ -2499,7 +2499,7 @@ def _frozen_incremental_seed(
     A single all-free :func:`fit_window` over many overlapping single-cosine
     primary seeds drops into a bad basin on dense / high-SNR clusters -- the
     tightly spaced lines collapse onto each other and a giant swamps its
-    neighbours (655 W245: 4 primaries up to snr 28650 collapse to ~1). The
+    neighbors (655 W245: 4 primaries up to snr 28650 collapse to ~1). The
     legacy seeder avoided this by adding each line to an already-converged
     model. This reproduces that stability for the trusted primary set: place
     the strongest primary, freeze it, fit the next against the residual, and so
@@ -2510,7 +2510,7 @@ def _frozen_incremental_seed(
     so an add is always kept (its support is judged later by the knockout).
     """
     # Strength order: strongest in-window |data| first, so the dominant line is
-    # placed before its weaker neighbours can be pulled into it.
+    # placed before its weaker neighbors can be pulled into it.
     u_grid = np.asarray(offset_grid_mhz, dtype=float)
     z = np.asarray(complex_spectrum, dtype=np.complex128)
     order = sorted(

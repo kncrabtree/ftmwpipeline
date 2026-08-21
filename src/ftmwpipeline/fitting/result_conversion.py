@@ -501,7 +501,7 @@ def _disambiguate_peak_uids(
     0.25`` keeps seeds ~25 units apart -- but that bounds the spacing between
     *detections*, not between the seeds those detections spawn. Blend
     escalation pushes seeds outward from each detection by a straddle of
-    roughly one point (100 units), so neighbouring detections' seed sets
+    roughly one point (100 units), so neighboring detections' seed sets
     interleave, and the residual re-seed places a seed at the residual
     maximum, which nothing constrains. Observed on 2638 window 170, where two
     detections' blends both minted 9153300.

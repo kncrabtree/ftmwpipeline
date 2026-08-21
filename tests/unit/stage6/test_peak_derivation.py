@@ -11,7 +11,7 @@ The contract these tests pin down:
 
 - an automatic fit tags nothing (every peak is identity-preserved);
 - an ``add`` tags exactly the created peak with the ``order_index`` of the
-  decision that created it, and leaves its neighbours in the window untagged;
+  decision that created it, and leaves its neighbors in the window untagged;
 - merge / split products carry the coarser decision's id;
 - the tag survives the HDF5 round trip and reaches ``FinalProducts``;
 - ``review undo`` renumbers the log and the tags together, so a tag always
