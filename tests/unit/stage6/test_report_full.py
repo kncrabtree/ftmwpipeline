@@ -1430,11 +1430,14 @@ def test_single_file_carries_curation_surface(full_report_single_file):
 
 def test_curation_cart_csv_self_declares_frame(full_report_single_file):
     """D0 regression: the cart's ``toCsv()`` export must self-declare its
-    frame. The cart deliberately emits raw Stage 5 model frequencies
-    (``fit_curation.rst``:126), and since ``faf8e6e`` omitting the frame on a
-    frequency-bearing curation call is a hard ``ValueError`` on a
-    ``self_calibrated`` file -- so without this header the cart's own export
-    could not be applied to such a file at all.
+    frame. The cart deliberately emits raw Stage 5 model frequencies (see
+    "Curating in the browser" in ``fit_curation.rst``), and since ``faf8e6e``
+    omitting the frame on a frequency-bearing curation call is a hard
+    ``ValueError`` on a ``self_calibrated`` file -- so without this header the
+    cart's own export could not be applied to such a file at all.
+
+    Still required now that a ``remove`` exports ``uid:N``: an ``add`` row
+    carries a frequency, so the header is not vestigial.
     """
     import re as _re
 

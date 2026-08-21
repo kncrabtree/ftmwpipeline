@@ -327,6 +327,50 @@ than persisted, it cannot go stale.
 .. autodata:: ftmwpipeline.core.calibration.CalibrationState
    :annotation:
 
+Curation operations
+-------------------
+
+The Stage 6 editing surface. Each is a module-level function taking a path and
+a matching :class:`~ftmwpipeline.pipeline.Pipeline` method; see
+:doc:`../fit_curation` for the narrative.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 34 66
+
+   * - Operation
+     - What it does
+   * - :func:`~ftmwpipeline.api.review_edit`
+     - Re-fit one window with ``add`` / ``remove`` edits. A ``remove`` token
+       may be a frequency or a ``"uid:N"`` identifier.
+   * - :func:`~ftmwpipeline.api.review_accept`
+     - Accept a window as reviewed, or revive a named ledger candidate.
+   * - :func:`~ftmwpipeline.api.review_create`
+     - Install a fit window for a line no window covers.
+   * - :func:`~ftmwpipeline.api.review_apply`
+     - Apply a curation file as one batch (``dry_run=True`` resolves the plan
+       without fitting or writing).
+   * - :func:`~ftmwpipeline.api.review_preview`
+     - Run a curation file's plan to completion in memory and report the
+       fitted outcome, writing nothing.
+   * - :func:`~ftmwpipeline.api.review_undo`
+     - Roll recorded decisions back by id, replaying the survivors from the
+       automatic baseline.
+   * - :func:`~ftmwpipeline.api.review_log`
+     - Read the persisted decision log.
+   * - :func:`~ftmwpipeline.api.refit_snap_tol_mhz`
+     - The MHz snap tolerance this file's curation verbs resolve to. Read it
+       rather than deriving it — see
+       :data:`~ftmwpipeline.core.curation.REFIT_SNAP_TOL_BINS`.
+
+For a worklist that issues many verbs against one file,
+:meth:`Pipeline.review_session <ftmwpipeline.pipeline.Pipeline.review_session>`
+builds the shared fit context once and reuses it across every verb, and lets a
+preview's outcome be persisted directly by an immediately following apply. The
+session it yields offers the same six verbs with the same signatures — it is
+obtained from the ``with`` block rather than imported, so it needs no name of
+its own — and is covered in :ref:`curation-sessions`.
+
 Curation vocabulary
 --------------------
 
@@ -343,6 +387,11 @@ copy. ``merge`` and ``split`` are not verbs; they are read from what an
 
 .. autodata:: ftmwpipeline.core.curation.REFIT_SNAP_TOL_BINS
    :annotation:
+
+.. autofunction:: ftmwpipeline.core.curation.parse_peak_token
+
+.. autoclass:: ftmwpipeline.core.curation.PeakUidToken
+   :members:
 
 Settings objects
 ----------------

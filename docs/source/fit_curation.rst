@@ -175,6 +175,129 @@ surface a ``review undo`` command alongside the ``review apply`` one:
 surviving decision, so undoing by id is exact and order-independent; the ids
 shown in the table are the ones to pass.
 
+.. _curation-frames:
+
+Frames: which frequency you are typing
+--------------------------------------
+
+Every curation verb resolves a frequency you supply against the lines already
+in the file. That only works if both sides agree on what the number *means*,
+and there are two frequencies for every line:
+
+``raw``
+   The frame the Stage 5 fit, the Stage 3 candidate ledger, and every persisted
+   value (the decision log, created windows) live in. Values are stored raw
+   permanently, because ``epsilon`` is recomputable and a stored calibrated
+   value would silently change meaning after a timebase re-run.
+
+``calibrated``
+   ``f_corr = probe + (f_raw - probe) / (1 + eps)`` — the frame the final
+   products table and the reports present.
+
+Every frequency-bearing entry point across the three interfaces — ``add`` /
+``remove``, ``accept``'s ``candidate_freq``, ``create``'s anchor, and a curation
+file's frequencies — takes a ``frame`` argument of type
+:data:`~ftmwpipeline.core.curation.Frame`, defaulting to ``"raw"``:
+
+.. code-block:: python
+
+   import ftmwpipeline.api as ftmw
+
+   # The same line of exp_2638, named in each frame
+   ftmw.review_edit("exp_2638.ftmw", 5, remove=[26879.5009], frame="raw")
+   ftmw.review_edit("exp_2638.ftmw", 5, remove=[26879.5317], frame="calibrated")
+
+On an ``rb_locked`` or ``uncalibrated`` file ``epsilon`` is ``0.0``, the two
+frames coincide, and ``frame`` is inert. On a ``self_calibrated`` file it is
+not — and the failure is a quiet one. A calibrated frequency submitted as raw
+still resolves, and to the *right* peak, but seeds or anchors it wrong by
+``probe_freq * eps/(1 + eps)``: under the snap tolerance, so it matches, and
+over the statistical σ, so the error shows up in the result without ever
+announcing itself.
+
+The two numbers above are 30.9 kHz apart, on a file whose snap tolerance is
+49.1 kHz (``epsilon`` = 2.19 × 10⁻⁶, probe 40960 MHz). Submitting the
+calibrated one as raw finds the same line — and then seeds it 30.9 kHz off.
+
+Because that mistake is invisible, **omitting ``frame`` on a frequency-bearing
+call is a hard error on a ``self_calibrated`` file** rather than a silent
+assumption:
+
+.. code-block:: text
+
+   ValueError: frame is required on a self_calibrated file: pass frame="raw"
+   or frame="calibrated" explicitly rather than relying on the default. A
+   calibrated frequency submitted as raw still resolves to the right peak, but
+   is wrong by probe_freq * eps/(1+eps) -- under the snap tolerance and over
+   the statistical uncertainty, so the mistake would be silent.
+
+Passing ``frame="raw"`` explicitly is never an error on any file, so a script
+that always declares its frame works everywhere. Use
+:func:`~ftmwpipeline.api.frequency_calibration` (or ``ftmwpipeline timebase
+state``) to read a file's calibration state and epsilon before deciding.
+
+A curation file declares its frame in the file itself, since it is the one
+place a calibrated frequency becomes a durable artifact — see
+:ref:`curation-file-header` below.
+
+One further safety net applies to a whole batch. If a plan's targets all
+resolve with a residual matching what *this* file's epsilon predicts for an
+omitted conversion — at least three matched targets, all displaced the same
+direction, each within 25 % of the predicted offset — ``review apply`` and
+``review preview`` emit an advisory naming the suspicion. It never blocks
+anything: it is a heuristic, and a heuristic that refused would be worse than
+none.
+
+.. _curation-snap-tolerance:
+
+The snap tolerance
+------------------
+
+A ``remove`` does not need the exact fitted frequency, and an ``add`` beside an
+existing line is read as a split of it. Both readings are governed by one
+constant, the **snap tolerance** — and it is defined in **active-FT bins**, not
+in MHz:
+
+.. code-block:: console
+
+   $ ftmwpipeline review snap-tolerance exp_2638.ftmw
+   snap tolerance: 0.049097 MHz (49.1 kHz)
+     0.625 active-FT bins @ df = 0.078555 MHz
+     T_active = 12.73000 us
+
+:data:`~ftmwpipeline.core.curation.REFIT_SNAP_TOL_BINS` is ``0.625`` bins, so
+the frequency it works out to is a property of one file rather than a fixed
+number: ~49 kHz at a 12.7 µs acquisition, but ~6.3 kHz at 100 µs. There is no
+such thing as "the" snap tolerance in MHz.
+
+**Read the resolved value; do not multiply the bin count by a spacing of your
+own.** Three reads give the same answer, all derived from the same active
+region the curation verbs themselves consult:
+
+.. code-block:: python
+
+   import ftmwpipeline.api as ftmw
+   from ftmwpipeline import Pipeline
+
+   ftmw.refit_snap_tol_mhz("exp_2638.ftmw")            # -> 0.049097...
+   Pipeline.open("exp_2638.ftmw").refit_snap_tol_mhz()  # the same value
+
+``ftmwpipeline review snap-tolerance --format json`` returns the same values
+plus the bin count, bin spacing, and ``T_active`` for a script to record.
+
+Within the tolerance a requested frequency resolves to the **nearest** fitted
+peak or ledger candidate; beyond it, ``remove`` is a hard error naming the
+closest peak and its distance, while ``add`` seeds a fresh line at the typed
+frequency — which is what a genuine new line wants anyway. The tolerance is
+deliberately looser than the 0.25-bin candidate-dedup window, so two fitted
+peaks *can* both fall inside it; that is resolved nearest-wins, and
+``review apply --dry-run`` reports the multi-match as an advisory so the
+ambiguity is visible before the batch runs. Addressing the line by
+``uid:N`` instead sidesteps the question entirely.
+
+Every verb's ``snap_tol_mhz`` parameter defaults to the resolved value for the
+file it is called on; passing your own overrides it for that call only, in MHz.
+
 Curation files
 --------------
 
@@ -223,6 +346,62 @@ time -- an identifier names a line that already exists, and ``add``,
      - Dismiss the window as reviewed with no change, or revive a named
        candidate.
      - ``candidate=F`` to revive
+
+.. _curation-file-header:
+
+Declaring the file's frame
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A curation file is the one place a calibrated frequency becomes a **durable**
+artifact — everywhere else ``frame`` is a per-call argument that leaves no
+trace. So the file declares its own frame, as a whole-line comment anywhere in
+it:
+
+.. code-block:: text
+
+   # frame: raw
+   action,window,freqs,params
+   remove,5,26879.5009,
+
+A ``# frame:`` directive declares the frame every frequency in that file is
+expressed in, which is what makes the file self-describing: it can be mailed to
+a colleague, committed to a repository, or replayed a year later without the
+frame having to be remembered separately. The browser cart writes
+``# frame: raw`` for exactly this reason, and a file carrying the directive
+needs no ``frame`` argument even on a ``self_calibrated`` file.
+
+The header and the ``frame`` argument do not override one another. Whichever is
+given alone decides; if both are given and **disagree**, the apply refuses
+rather than picking a winner, naming both. Both directives are optional — a
+file with no header falls back to the ordinary per-call resolution described in
+:ref:`curation-frames`.
+
+When the frame is ``calibrated``, the file **must** also stamp the epsilon it
+was written under:
+
+.. code-block:: text
+
+   # frame: calibrated
+   # epsilon: 2.2e-6
+
+That stamp is what lets a later apply or preview notice that the calibration
+has moved — a timebase re-run, say — and refuse rather than silently resolving
+against the wrong peaks:
+
+.. code-block:: text
+
+   ValueError: curation file frame drift: this file was staged
+   frame=calibrated at epsilon=2.200000e-06, but the target file's current
+   epsilon is 2.310000e-06. The calibration has changed since this file was
+   written (e.g. a timebase re-run) -- re-stage the curation file against the
+   current calibration rather than applying it as-is.
+
+``# epsilon:`` without ``# frame: calibrated`` is rejected at parse time: an
+epsilon stamp is meaningless with no calibrated-frame declaration to attach it
+to.
+
+Inferred actions
+~~~~~~~~~~~~~~~~
 
 ``merge`` and ``split`` are **not** row actions -- a file naming either is
 refused, at parse time, before anything is touched. Both are read from what an
@@ -372,3 +551,121 @@ same Python entry points are available on the functional API and the
 
    result = ftmw.review_apply("exp_2638.ftmw", "exp_2638_curation.csv")
    print(result.applied)   # number of actions refit
+
+.. _curation-preview:
+
+Previewing the fitted outcome
+-----------------------------
+
+``--dry-run`` answers "does this plan resolve against the file?" — it prints the
+coalesced actions and any resolution warnings, and stops there. It never fits
+anything, so it cannot tell you whether the edits *improve* the fit.
+
+``review preview`` answers that second question. It runs the resolved plan to
+completion in memory — every applier, the one combined cascade, and the same
+derive step a live apply's persist would have used — and reports the fitted
+outcome, without writing a byte:
+
+.. code-block:: console
+
+   $ ftmwpipeline review preview exp_2638.ftmw exp_2638_curation.csv
+   review preview (nothing written):
+     window    1  [  direct]  actions=2         peaks 2->3  chi2r 1.066->1.013
+     window    5  [  direct]  actions=1         peaks 4->3  chi2r 1.029->1.339
+
+Each row is one affected window, read *after* the cascade rather than
+per-action: which plan actions touched it, whether the batch reached it
+``direct`` (an action named it) or as a cascaded dependent, how its peak count
+changed, and χ²ᵣ before and after. Here the window 1 add improves the fit and
+the window 5 remove degrades it — the judgment the dry run cannot offer. A
+window this batch *created* has no "before", and prints ``-`` on that side
+rather than a ``0.000`` that would read as a perfect fit.
+
+A preview is not a weaker apply. It shares the appliers, so it raises the same
+per-action error on the same failures, and it is epoch-gated by the same check,
+so it cannot show you numbers whose apply is guaranteed to refuse. The one
+thing it does not do is take the undo baseline snapshot, because it writes
+nothing to snapshot against. A plan of nothing but bare ``accept`` rows touches
+no fit and previews as ``(no fit-mutating actions; nothing to preview)``.
+
+.. code-block:: python
+
+   import ftmwpipeline.api as ftmw
+
+   preview = ftmw.review_preview("exp_2638.ftmw", "exp_2638_curation.csv")
+   for wid, w in sorted(preview.windows.items()):
+       print(wid, w.n_peaks_before, "->", w.n_peaks_after, w.chi2r_after)
+
+The three form a ladder, each answering the next question: ``--dry-run`` —
+does the plan resolve? ``review preview`` — what does it fit to?
+``review apply`` — commit it.
+
+.. _curation-sessions:
+
+Review sessions
+---------------
+
+Every fit-mutating Stage 6 verb rebuilds the same active-FT context before it
+can do anything: roughly 420 ms of the ~516 ms an interactive single-window
+edit costs cold. Stepping through a worklist one window at a time pays that
+over and over.
+
+A **review session** builds it once and reuses it across every verb issued
+against the same file:
+
+.. code-block:: python
+
+   from ftmwpipeline import Pipeline
+
+   # worklist: [(window_id, "uid:N" of the line to drop), ...]
+   with Pipeline.open("exp_2638.ftmw").review_session() as session:
+       for wid, target in worklist:
+           result = session.review_edit(wid, remove=[target], frame="raw")
+           print(wid, result.chi2r_before, "->", result.chi2r_after)
+       session.review_accept(12)
+
+The session hosts the whole verb set — ``review_edit``, ``review_accept``,
+``review_create``, ``review_undo``, ``review_preview`` and ``review_apply`` —
+not just the batch door, since an interactive click otherwise pays the full
+price. Warm-up happens synchronously in ``__enter__``; the session retains
+about 26 MB of active-FT arrays for its lifetime, which is entirely yours to
+control. Use the ``with`` block, or call ``close()``. There is no module-level
+cache, so a session never opened costs nothing.
+
+**Correctness never depends on the reuse.** Before every verb the session
+re-reads a cheap on-disk fingerprint (~0.8 ms); if anything has moved — a
+foreign writer touched the file — it rebuilds from scratch, which is
+byte-for-byte the rebuild a sessionless caller gets on every call anyway. After
+each of the session's own writes the fingerprint is re-read from disk rather
+than predicted, so a foreign writer landing in the same instant is still caught
+on the next call. A session holds no lock and does not protect the file from a
+second writer: single-writer discipline per file is yours, exactly as it is
+without a session.
+
+Preview then apply
+~~~~~~~~~~~~~~~~~~
+
+Inside a session the preview above becomes more than advisory. ``review_preview``
+stages its finished, cascaded, never-persisted outcome, so an immediately
+following ``review_apply`` of the *identical* plan against an unmoved base
+persists that result directly instead of computing it a second time:
+
+.. code-block:: python
+
+   with Pipeline.open("exp_2638.ftmw").review_session() as session:
+       preview = session.review_preview("exp_2638_curation.csv")
+       fitted = [w.chi2r_after for w in preview.windows.values()
+                 if w.chi2r_after is not None]
+       if fitted and max(fitted) < 2.0:
+           result = session.review_apply("exp_2638_curation.csv")
+
+The bytes persisted are then guaranteed to be exactly the ones the preview
+showed, rather than a second computation trusted to agree with the first.
+
+The staging is dropped the moment it stops being valid: a different curation
+file, a different ``frame``, a resolved plan that differs, or a base that moved
+(a foreign write, or another mutating verb issued on the session in between).
+Any of those falls back to a full ordinary apply, identical to the sessionless
+one — nothing is lost but the saving. When a staged preview was dropped
+specifically because the base moved, the result's ``base_changed`` flag says
+so, which is the cue to re-run the preview and look again before trusting it.

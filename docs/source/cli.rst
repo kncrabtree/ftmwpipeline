@@ -252,12 +252,25 @@ the systematic frequency-accuracy floor folded into the σ\ :sub:`f` budget.
 (``--candidates``); ``review rank --by METRIC`` ranks windows worst-first by a
 persisted statistic. The editing verbs each re-fit the affected window and
 record the change in the decision log: ``edit`` (``--add`` / ``--remove``) and
-``accept``. There is no separate ``merge`` or ``split`` verb -- an ``--add``
+``accept``. ``--remove`` takes a molecular MHz frequency or a ``uid:N`` token
+naming the line by its ``peak_uid``, which addresses it exactly rather than by
+proximity; ``--add`` is frequency-only. There is no separate ``merge`` or
+``split`` verb -- an ``--add``
 within snap tolerance of a fitted peak is read as a split of it, and removing
 the mutually-close components of one feature while adding one frequency in
 their span is read as a merge. ``apply`` replays a curation CSV of batched
 edits; ``log`` lists the decision log; ``undo --id N`` rolls a decision back
 by replay-from-baseline. See :doc:`stage6_review`.
+
+Two read-only verbs support the editing ones. ``review preview`` runs a
+curation file's plan to completion in memory and reports the fitted outcome
+(peak counts and χ²ᵣ per affected window) without writing anything --- the
+question ``apply --dry-run`` cannot answer, since a dry run resolves the plan
+but never fits it. ``review snap-tolerance`` prints the MHz tolerance *this*
+file's curation verbs resolve to, with the bin count and bin spacing it came
+from (``--format json`` for a script); the tolerance is defined in active-FT
+bins, so it is a property of the file rather than a fixed frequency. Both are
+covered in :doc:`fit_curation`.
 
 ``report`` — finalized deliverables
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
