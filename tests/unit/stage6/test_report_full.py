@@ -467,11 +467,13 @@ def test_window_peak_table_curation_markup():
 
     # With a window id, every row gains data-window / data-freq (the RAW model
     # frequency, the value the edit verbs match on) and a trailing control cell.
+    # Only a Remove control lives there now: split/merge are inferred from an
+    # add, not typed at the row (see _peak_curation_cell).
     cur = _window_peak_table(peaks, "uV", 1e-6, window_id=217)
     assert 'data-window="217"' in cur
     assert 'data-freq="29148.001234"' in cur  # raw, not the calibrated 29148.0
-    assert 'data-act="remove"' in cur and 'data-act="split"' in cur
-    assert 'class="cur-merge"' in cur
+    assert 'data-act="remove"' in cur
+    assert 'data-act="split"' not in cur and 'class="cur-merge"' not in cur
     assert "cur-col-h" in cur  # the gated Curate header label
     # The curation column is the trailing cell (CSS hides it via :last-child).
     assert cur.rfind("cur-cell") > cur.rfind('class="badge')
@@ -505,8 +507,10 @@ def test_window_curation_controls():
 
     block = "\n".join(_window_curation_controls(24, 38449.0, 38451.0))
     assert 'class="cur-only cur-window-controls"' in block
-    assert 'data-act="merge-selected"' in block and 'data-window="24"' in block
+    # No merge-selected control: split/merge are inferred from add/remove.
+    assert 'data-act="merge-selected"' not in block
     assert 'data-act="add-typed"' in block and 'class="cur-addfreq"' in block
+    assert 'data-window="24"' in block
     assert "38449.0000" in block and "38451.0000" in block  # the window range
     # The accept / accept-next / clear verbs now live in the title bar, not here.
     assert 'data-act="accept"' not in block
@@ -1342,14 +1346,16 @@ def test_single_file_carries_curation_surface(full_report_single_file):
     assert "window.__stem=" in doc
     assert "curation-enabled" in doc  # the CSS gates on it; the toggle adds it
     assert 'class="cur-toggle"' in doc and 'class="cur-badge"' in doc
-    # Per-row controls + raw-frequency data attributes on fitted-line rows.
-    assert 'data-act="remove"' in doc and 'data-act="split"' in doc
+    # Per-row controls (Remove only -- split/merge are inferred from add) +
+    # raw-frequency data attributes on fitted-line rows.
+    assert 'data-act="remove"' in doc
+    assert 'data-act="split"' not in doc and 'data-act="merge-selected"' not in doc
     import re as _re
 
     assert _re.search(r'data-window="\d+" data-freq="[0-9.]+"', doc)
-    # Per-window controls (merge selected / add / mark reviewed) gated by cur-only.
+    # Per-window controls (add / mark reviewed) gated by cur-only.
     assert 'class="cur-only cur-window-controls"' in doc
-    assert 'data-act="merge-selected"' in doc and 'data-act="add-typed"' in doc
+    assert 'data-act="add-typed"' in doc
     # The curation CSS gating rule is present (single-class governance).
     assert "html:not(.curation-enabled)" in doc
     # Click-on-plot: the |X| panel carries its data-axes geometry so the overlay

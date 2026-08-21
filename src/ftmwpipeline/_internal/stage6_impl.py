@@ -1960,10 +1960,14 @@ def refit_window_core(
         # rather than left to the conversion path, which nudges an *automatic*
         # collision to the nearest free identifier and says nothing. Two lines
         # cannot be born at the same position: asking for one is asking for a
-        # second component of a line that is already there, which is what a
-        # split is. Note this compares the POST-snap seed -- the ledger snap
-        # above can move a seed by up to the snap tolerance, so a frequency
-        # clear of every peak on the plot can still resolve onto one.
+        # second component of a line that is already there, which is what
+        # curation-intent inference reads a nearby add as (a split), but two
+        # simultaneous adds at one identical, not-yet-fitted frequency have
+        # nothing to snap onto yet -- there is no existing fitted peak for
+        # either to read as a split of. Note this compares the POST-snap seed
+        # -- the ledger snap above can move a seed by up to the snap
+        # tolerance, so a frequency clear of every peak on the plot can still
+        # resolve onto one.
         if mp.peak_uid is not None:
             clash = next(
                 (
@@ -1980,8 +1984,11 @@ def refit_window_core(
                     f"{seed_freq_mhz:.4f} MHz, which is the birth position of "
                     f"the line already fitted at {clash_freq:.4f} MHz (both "
                     f"carry peak_uid={mp.peak_uid}). Two lines cannot be born "
-                    f"at the same position; to fit a second component there, "
-                    f"split that line instead."
+                    f"at the same position; apply one add on its own first, "
+                    f"then add the second frequency near the resulting fitted "
+                    f"line in a later edit -- an add within snap tolerance of "
+                    f"a fitted peak that is not itself being removed is read "
+                    f"as a split of it."
                 )
         add_derivation = (
             add_derivations[i]
@@ -3237,7 +3244,14 @@ def create_window_impl(
 # hand-editable, and independent of the report that may have authored it.
 # ---------------------------------------------------------------------------
 
-_CURATION_ACTIONS = ("add", "remove", "merge", "split", "accept", "create")
+_CURATION_ACTIONS = ("add", "remove", "accept", "create")
+"""Row actions a curation *file* may name. ``merge``/``split`` are not among
+them -- see :func:`parse_curation_file`'s refusal for those tokens -- even
+though :class:`CurationOp` and :class:`PlannedAction` still carry ``"merge"``/
+``"split"`` kinds internally: a decision-log replay (:func:`_decision_to_op`)
+can still produce one for a pre-existing, verb-recorded decision, and the
+inference path (:func:`_infer_curation_intent`) still resolves an add/remove
+combination to one. Only a hand-authored file's own row vocabulary shrank."""
 _CURATION_HEADER = ("action", "window", "freqs", "params")
 
 # ``create`` is the one action whose window id is normally an *output*, not an
@@ -3252,12 +3266,18 @@ _NEW_WINDOW_SENTINEL = -1
 
 @dataclass
 class CurationOp:
-    """One parsed row of a curation file (before coalescing).
+    """One parsed row of a curation file (before coalescing), or one op
+    :func:`_decision_to_op` reconstructs from a persisted decision-log entry
+    for undo replay.
 
     Attributes
     ----------
     action : str
-        One of ``add`` / ``remove`` / ``merge`` / ``split`` / ``accept``.
+        One of ``add`` / ``remove`` / ``accept`` / ``create`` for anything
+        :func:`parse_curation_file` produces. ``merge`` / ``split`` never come
+        from a file row (see that function's refusal) but can still appear
+        here when :func:`_decision_to_op` replays a pre-existing,
+        verb-recorded decision.
     window_id : int
         The target ``FitWindow.window_id``.
     freqs : list of float
@@ -3395,10 +3415,17 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
     """Parse a curation CSV into ordered :class:`CurationOp` rows, plus its
     optional file-level :class:`CurationFileHeader` (A3).
 
-    Columns are ``action,window,freqs,params``. Blank lines and ``#`` comments
-    are ignored; an optional header row (first cell ``action``) is skipped.
-    ``freqs`` is a ``;``-separated list of molecular MHz; ``params`` is a
-    ``;``-separated list of ``key=value`` modifiers.
+    Columns are ``action,window,freqs,params``, where ``action`` is one of
+    ``add`` / ``remove`` / ``accept`` / ``create``. Blank lines and ``#``
+    comments are ignored; an optional header row (first cell ``action``) is
+    skipped. ``freqs`` is a ``;``-separated list of molecular MHz; ``params``
+    is a ``;``-separated list of ``key=value`` modifiers.
+
+    ``split`` and ``merge`` are not row actions: both are read from what an
+    add/remove combination *does* to a window's peak set, not typed. A row
+    naming either is refused, with the add/remove spelling to write instead
+    (see :func:`_infer_curation_intent`, :func:`_batch_apply_split`,
+    :func:`_batch_apply_merge`).
 
     Two ``#``-comment directives are recognized anywhere in the file and
     collected onto the returned :class:`ParsedCurationFile`'s ``.header``
@@ -3461,6 +3488,21 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
         action = fields[0].lower()
         if action == "action":  # header row
             continue
+        if action == "split":
+            raise ValueError(
+                f"curation line {line_no}: 'split' is not a curation-file "
+                f"action; write an 'add' row instead, at the frequency of the "
+                f"new component -- an add within snap tolerance of a fitted "
+                f"peak that is not itself being removed is read as a split of "
+                f"that peak"
+            )
+        if action == "merge":
+            raise ValueError(
+                f"curation line {line_no}: 'merge' is not a curation-file "
+                f"action; write 'remove' rows for the mutually-close peaks to "
+                f"collapse, plus one 'add' row at a frequency in their span, "
+                f"instead -- that combination is read as a merge of them"
+            )
         if action not in _CURATION_ACTIONS:
             raise ValueError(
                 f"curation line {line_no}: unknown action {fields[0]!r}; "
@@ -3501,26 +3543,6 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                 raise ValueError(
                     f"curation line {line_no}: {action} takes no parameters"
                 )
-        elif action == "merge":
-            if len(freqs) < 2:
-                raise ValueError(
-                    f"curation line {line_no}: merge needs at least two frequencies"
-                )
-        elif action == "split":
-            if len(freqs) != 1:
-                raise ValueError(
-                    f"curation line {line_no}: split needs exactly one frequency"
-                )
-            if "into" in params:
-                try:
-                    into = int(params["into"])
-                except ValueError:
-                    raise ValueError(
-                        f"curation line {line_no}: into={params['into']!r} "
-                        f"is not an integer"
-                    ) from None
-                if into < 2:
-                    raise ValueError(f"curation line {line_no}: into must be >= 2")
         elif action == "create":
             if len(freqs) != 1:
                 raise ValueError(
@@ -4783,9 +4805,12 @@ def _batch_apply_merge(
 ) -> RefitWindowResult:
     """Collapse >= 2 fitted peaks into one, as one action.
 
-    The single implementation behind both ``review merge``, a ``merge`` row in
-    a curation file, and a merge inferred from an ``edit`` action by
-    :func:`_batch_apply_edit_action`. Sideband and window center come from the
+    The single implementation behind a merge inferred from an ``edit`` action
+    by :func:`_batch_apply_edit_action` (the only way a caller reaches this
+    today), and behind :func:`_decision_to_op` replaying a pre-existing,
+    verb-recorded merge decision from before curation-intent inference
+    existed -- ``merge`` is not a verb on the CLI/api/Pipeline surface or a
+    curation-file row any more. Sideband and window center come from the
     shared ``fit_ctx`` and the window's own persisted geometry, so this never
     needs a FID load of its own.
 
@@ -4949,10 +4974,13 @@ def _batch_apply_split(
 ) -> RefitWindowResult:
     """Replace one fitted peak with ``into`` peaks, as one action.
 
-    The single implementation behind both ``review split``, a ``split`` row in
-    a curation file, and a split inferred from an ``edit`` action by
-    :func:`_batch_apply_edit_action`. The resolution element uses the shared
-    ``fit_ctx.acquisition_us`` rather than a fresh FID load.
+    The single implementation behind :func:`split_peak_impl` (the internal
+    "verb path", reached only from :func:`_decision_to_op` replaying a
+    pre-existing, verb-recorded split decision -- ``split`` is not a verb on
+    the CLI/api/Pipeline surface or a curation-file row any more) and a split
+    inferred from an ``edit`` action by :func:`_batch_apply_edit_action`. The
+    resolution element uses the shared ``fit_ctx.acquisition_us`` rather than
+    a fresh FID load.
 
     ``positions`` overrides the default symmetric +/-0.5 resolution-element
     straddle with explicit product frequencies (``len(positions)`` must equal
@@ -6566,15 +6594,17 @@ def _compute_attention_reasons(
     # --- auto_merged_review: the end-of-Stage-5 pass merged a degenerate close
     # pair in this window. Prior-free, multiplicity is a high-bar claim, so the
     # default is to merge; this advisory (low severity) lets a user with catalog
-    # support find the merge and re-split it (``review split``). Not urgent --
+    # support find the merge and split it back out (an add near the merged
+    # line, read as a split of it by curation-intent inference). Not urgent --
     # the merge is the more-likely-correct call (~92% of the band is over-fits).
     if auto_merged:
         reasons.append(
             AttentionReason(
                 kind="auto_merged_review",
                 detail=(
-                    "a degenerate sub-resolution pair was auto-merged; "
-                    "re-split (review split) if catalog/model supports two lines"
+                    "a degenerate sub-resolution pair was auto-merged; add a "
+                    "second frequency near it (read as a split) if "
+                    "catalog/model supports two lines"
                 ),
                 severity=0.1,
                 locations=[float(f) for f in merged_freqs],
@@ -7406,9 +7436,9 @@ class ReviewSession:
     :class:`_SharedFitCtx` -- the ~420 ms active-FT reconstruction every
     fit-mutating Stage 6 verb otherwise rebuilds from scratch -- reused
     across every verb this session issues against the same file: ``edit``,
-    ``merge``, ``split``, ``accept``, ``create``, ``undo``, ``preview`` and
-    ``apply``. Hosting the whole verb set (not just preview/apply) is
-    deliberate: an interactive single-window edit costs ~516 ms cold,
+    ``accept``, ``create``, ``undo``, ``preview`` and ``apply``. Hosting the
+    whole verb set (not just preview/apply) is deliberate: an interactive
+    single-window edit costs ~516 ms cold,
     essentially all of it the same setup a batch amortizes, so a session that
     only sped up the batch door would leave every interactive click paying
     the full price.
@@ -7532,52 +7562,6 @@ class ReviewSession:
             window_id,
             add=add,
             remove=remove,
-            snap_tol_mhz=snap_tol_mhz,
-            frame=frame,
-            _shared=shared,
-        )
-        self._resync_after_write()
-        return result
-
-    def review_merge(
-        self,
-        window_id: int,
-        peaks: Sequence[float],
-        *,
-        snap_tol_mhz: Optional[float] = None,
-        frame: Optional[Frame] = None,
-    ) -> RefitWindowResult:
-        """Session-hosted :func:`merge_peaks_impl`."""
-        shared = self._sync()
-        self._drop_staged(base_changed=True)
-        result = merge_peaks_impl(
-            self._path,
-            window_id,
-            peaks,
-            snap_tol_mhz=snap_tol_mhz,
-            frame=frame,
-            _shared=shared,
-        )
-        self._resync_after_write()
-        return result
-
-    def review_split(
-        self,
-        window_id: int,
-        peak: float,
-        *,
-        into: int = 2,
-        snap_tol_mhz: Optional[float] = None,
-        frame: Optional[Frame] = None,
-    ) -> RefitWindowResult:
-        """Session-hosted :func:`split_peak_impl`."""
-        shared = self._sync()
-        self._drop_staged(base_changed=True)
-        result = split_peak_impl(
-            self._path,
-            window_id,
-            peak,
-            into=into,
             snap_tol_mhz=snap_tol_mhz,
             frame=frame,
             _shared=shared,

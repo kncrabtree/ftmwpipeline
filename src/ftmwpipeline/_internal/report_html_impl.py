@@ -464,14 +464,8 @@ html:not(.curation-enabled) table.ledger th:last-child { display: none; }
     cursor: pointer; }
 .cur-cell .cur-btn:hover, .cur-window-controls .cur-btn:hover,
 .win-header-bar .cur-btn:hover { background: #fff; }
-.cur-cell .cur-k { width: 3rem; font-size: 0.78rem; }
-.cur-mergebox { font-size: 0.78rem; color: #444; }
-.cur-splitbadge { display: inline-block; padding: 0.02rem 0.35rem;
-                  border-radius: 3px; background: #f0d9a8; color: #5a4300;
-                  font-size: 0.74rem; }
 /* Pending-edit feedback on the originating fitted-line rows. */
 tr.cur-removed > td { text-decoration: line-through; opacity: 0.5; }
-tr.cur-merge-grp > td { background: #fdeccb !important; }
 tr.cur-added > td { background: #d8efdc !important; }
 .cur-window-controls { display: flex; flex-wrap: wrap; align-items: center;
     gap: 0.6rem 1rem; margin: 0.25rem 0 1.25rem; font-size: 0.85rem; }
@@ -1864,8 +1858,8 @@ _CURATION_JS = r"""<script>
     ' title="collapse">Curation cart (<span class="cur-n">0</span>)</button></div>' +
     '<div class="cur-keys" title="hover the magnitude plot near a peak, then '
     + 'press a key">Plot keys: ' +
-    '<kbd>r</kbd> remove · <kbd>s</kbd> split · <kbd>m</kbd> merge nearest · ' +
-    '<kbd>a</kbd> arm add &nbsp;|&nbsp; <kbd>j</kbd>/<kbd>k</kbd> window · ' +
+    '<kbd>r</kbd> remove · <kbd>a</kbd> arm add &nbsp;|&nbsp; ' +
+    '<kbd>j</kbd>/<kbd>k</kbd> window · ' +
     '<kbd>J</kbd>/<kbd>K</kbd> flagged</div>' +
     '<div class="cur-cart-body"></div>' +
     '<div class="cur-cart-foot">' +
@@ -1963,56 +1957,15 @@ _CURATION_JS = r"""<script>
     });
     return best;
   }
-  // The fitted-line row closest in frequency to a given row (its neighbour).
-  function neighborPeakRow(w, tr) {
-    var f0 = parseFloat(tr.getAttribute('data-freq'));
-    var best = null, bestD = Infinity;
-    peakRowsIn(w).forEach(function (r) {
-      if (r === tr) return;
-      var f = parseFloat(r.getAttribute('data-freq'));
-      if (isNaN(f)) return;
-      var d = Math.abs(f - f0);
-      if (d < bestD) { bestD = d; best = r; }
-    });
-    return best;
-  }
-  // Queue a merge of two-or-more fitted lines in one window (shared by the
-  // "Merge selected" button and the plot `m` shortcut).
-  function queueMerge(w, fs) {
-    addOp({ action: 'merge', window: w, freqs: fs.join(';'), params: '',
-            label: 'merge ' + fs.join(' + ') });
-  }
-
   function refreshRows() {
     // Re-derive every row's pending state from the op list (idempotent).
     document.querySelectorAll('tr[data-freq]').forEach(function (tr) {
-      tr.classList.remove('cur-removed', 'cur-split', 'cur-merge-grp',
-                          'cur-added');
-      var b = tr.querySelector('.cur-splitbadge');
-      if (b) b.remove();
+      tr.classList.remove('cur-removed', 'cur-added');
     });
     ops.forEach(function (o) {
       if (o.action === 'remove') {
         rowsFor('peak-list', o.window, o.freqs).forEach(function (tr) {
           tr.classList.add('cur-removed');
-        });
-      } else if (o.action === 'split') {
-        rowsFor('peak-list', o.window, o.freqs).forEach(function (tr) {
-          tr.classList.add('cur-split');
-          var cell = tr.querySelector('.cur-cell');
-          if (cell && !cell.querySelector('.cur-splitbadge')) {
-            var k = (o.params || '').replace('into=', '') || '2';
-            var s = document.createElement('span');
-            s.className = 'cur-splitbadge';
-            s.textContent = '→' + k;
-            cell.appendChild(s);
-          }
-        });
-      } else if (o.action === 'merge') {
-        o.freqs.split(';').forEach(function (f) {
-          rowsFor('peak-list', o.window, f).forEach(function (tr) {
-            tr.classList.add('cur-merge-grp');
-          });
         });
       } else if (o.action === 'add') {
         rowsFor('ledger', o.window, o.freqs).forEach(function (tr) {
@@ -2027,8 +1980,7 @@ _CURATION_JS = r"""<script>
   // inverts. The SVG is click-transparent except the marker handles, so plot
   // clicks still reach the image; clicking a handle drops that edit.
   var SVGNS = 'http://www.w3.org/2000/svg';
-  var ACT_COLOR = { remove: '#c0392b', split: '#b9770e', add: '#1e8e3e',
-                    merge: '#7d3c98' };
+  var ACT_COLOR = { remove: '#c0392b', add: '#1e8e3e' };
   function renderMarkers() {
     document.querySelectorAll('.cur-plot-svg').forEach(function (svg) {
       while (svg.firstChild) svg.removeChild(svg.firstChild);
@@ -2242,20 +2194,6 @@ _CURATION_JS = r"""<script>
 
     if (!(t.classList && t.classList.contains('cur-btn'))) return;
     var act = t.getAttribute('data-act');
-    var sec = t.closest('section');
-    if (act === 'merge-selected') {
-      var w = t.getAttribute('data-window');
-      var boxes = sec ? sec.querySelectorAll('.cur-merge:checked') : [];
-      if (boxes.length < 2) { return; }
-      var fs = [];
-      Array.prototype.forEach.call(boxes, function (cb) {
-        var tr = cb.closest('tr');
-        fs.push(tr.getAttribute('data-freq'));
-        cb.checked = false;
-      });
-      queueMerge(w, fs);
-      return;
-    }
     if (act === 'add-typed') {
       var w2 = t.getAttribute('data-window');
       var inp = t.parentNode.querySelector('.cur-addfreq');
@@ -2300,7 +2238,7 @@ _CURATION_JS = r"""<script>
       return;
     }
 
-    // Per-row remove / split / ledger add: key off the closest row.
+    // Per-row remove / ledger add: key off the closest row.
     var row = t.closest('tr');
     if (!row) return;
     var win = row.getAttribute('data-window');
@@ -2311,20 +2249,6 @@ _CURATION_JS = r"""<script>
       if (idx >= 0) { dropOp(idx); }
       else { addOp({ action: 'remove', window: win, freqs: freq, params: '',
                      label: 'remove ' + freq }); }
-      return;
-    }
-    if (act === 'split') {
-      var kin = row.querySelector('.cur-k');
-      var kk = kin && kin.value ? String(parseInt(kin.value, 10) || 2) : '2';
-      var params = 'into=' + kk;
-      var existing = -1;
-      for (var i = 0; i < ops.length; i++) {
-        if (ops[i].action === 'split' && ops[i].window === win &&
-            ops[i].freqs === freq) { existing = i; break; }
-      }
-      if (existing >= 0) { dropOp(existing); }
-      else { addOp({ action: 'split', window: win, freqs: freq,
-                     params: params, label: 'split ' + freq + ' → ' + kk }); }
       return;
     }
     if (act === 'add') {  // ledger candidate add
@@ -2339,10 +2263,9 @@ _CURATION_JS = r"""<script>
 
   // Keyboard shortcuts (curation mode only): act on the magnitude plot the
   // pointer is over -- consistent with click-to-add. Hover near a peak, then
-  // r = remove it, s = split it (into 2), m = merge it with its nearest
-  // neighbour, a = arm/disarm click-to-add on this plot. r/s reuse the row's own
-  // buttons and m reuses queueMerge, so cart state stays identical to clicking;
-  // the affected row(s) flash and an on-plot marker appears as feedback.
+  // r = remove it, a = arm/disarm click-to-add on this plot. r reuses the
+  // row's own button, so cart state stays identical to clicking; the
+  // affected row flashes and an on-plot marker appears as feedback.
   var hoverWin = null, hoverMhz = null;
   document.addEventListener('mousemove', function (e) {
     if (!root.classList.contains('curation-enabled')) return;
@@ -2363,20 +2286,11 @@ _CURATION_JS = r"""<script>
       if (arm) { arm.click(); e.preventDefault(); }
       return;
     }
-    if (e.key !== 'r' && e.key !== 's' && e.key !== 'm') return;
+    if (e.key !== 'r') return;
     if (!hoverWin || hoverMhz == null) return;
     var tr = nearestPeakRow(hoverWin, hoverMhz);
     if (!tr) return;
-    if (e.key === 'm') {
-      var nb = neighborPeakRow(hoverWin, tr);
-      if (!nb) return;  // nothing to merge with
-      queueMerge(hoverWin,
-        [tr.getAttribute('data-freq'), nb.getAttribute('data-freq')]);
-      flashRow(tr); flashRow(nb); e.preventDefault();
-      return;
-    }
-    var btn = tr.querySelector(
-      e.key === 'r' ? '[data-act="remove"]' : '[data-act="split"]');
+    var btn = tr.querySelector('[data-act="remove"]');
     if (btn) { btn.click(); flashRow(tr); e.preventDefault(); }
   });
 
@@ -2605,7 +2519,7 @@ def _window_peak_table(
     When *window_id* is supplied, each row carries ``data-window`` /
     ``data-freq`` (the **raw** Stage-5 model frequency, the value the edit verbs
     match on -- not the &epsilon;-calibrated display value), and a trailing
-    curation control column (Remove / Split / merge-checkbox) is appended. The
+    curation control column (Remove) is appended. The
     column and attributes are inert markup; the in-report curation script reads
     them, and the curation-only column is CSS-hidden outside curation mode. The
     no-window-id form (used by the pure unit tests) emits neither.
@@ -2662,7 +2576,12 @@ def _window_peak_table(
 
 
 def _peak_curation_cell() -> str:
-    """The trailing per-row curation control cell (Remove / Split / merge).
+    """The trailing per-row curation control cell (Remove).
+
+    Split and merge are not their own controls: an ``Add`` near an existing
+    peak (the per-window typed add, or a click on the armed plot) is read as
+    a split of it, and removes plus an add in their span read as a merge --
+    see :func:`_window_curation_controls`.
 
     Pure inert markup -- the curation script wires it by event delegation off the
     ``cur-btn`` class and the row's ``data-window`` / ``data-freq``. The whole
@@ -2671,11 +2590,6 @@ def _peak_curation_cell() -> str:
     return (
         '<span class="cur-cell">'
         '<button type="button" class="cur-btn" data-act="remove">Remove</button>'
-        '<button type="button" class="cur-btn" data-act="split">Split</button>'
-        '<input type="number" class="cur-k" min="2" value="2" '
-        'title="split into K" aria-label="split into K">'
-        '<label class="cur-mergebox" title="select to merge">'
-        '<input type="checkbox" class="cur-merge"> merge</label>'
         "</span>"
     )
 
@@ -2731,18 +2645,18 @@ def _window_header_bar(
 def _window_curation_controls(window_id: int, lo: float, hi: float) -> List[str]:
     """The per-window curation controls under the fitted-lines table.
 
-    The merge-selected button and a typed ``+ Add peak at <MHz>`` input (the
-    accept / accept-next / clear verbs live in the title bar, see
-    :func:`_window_header_bar`). Wrapped in ``cur-only`` so the block is
-    CSS-hidden outside curation mode; the curation script binds them by
-    ``data-act`` and the enclosing ``<section>`` (which scopes the merge selection
-    to this one window).
+    A typed ``+ Add peak at <MHz>`` input (the accept / accept-next / clear
+    verbs live in the title bar, see :func:`_window_header_bar`). This is also
+    where a split or merge is reached: an add near an existing peak reads as a
+    split of it, and a remove on each of >= 2 mutually-close peaks plus an add
+    in their span reads as a merge -- both inferred from the add/remove
+    combination, not typed as their own verb. Wrapped in ``cur-only`` so the
+    block is CSS-hidden outside curation mode; the curation script binds it by
+    ``data-act``.
     """
     rng = f"{lo:.4f}&ndash;{hi:.4f} MHz"
     return [
         '<div class="cur-only cur-window-controls">',
-        f'<button type="button" class="cur-btn" data-act="merge-selected" '
-        f'data-window="{window_id}">Merge selected</button>',
         '<label class="cur-add">+ Add peak at '
         '<input type="number" class="cur-addfreq" step="0.0001" '
         f'placeholder="MHz"> '
@@ -3468,8 +3382,7 @@ def _fit_panels_block(
         g = mag_geom
         attrs = (
             f' class="cur-plot" data-window="{window_id}"'
-            ' title="curate: hover near a peak, then r remove / s split /'
-            ' m merge nearest / a arm add"'
+            ' title="curate: hover near a peak, then r remove / a arm add"'
             f' data-axes-x0="{g["x0"]:.2f}" data-axes-x1="{g["x1"]:.2f}"'
             f' data-axes-y0="{g["y0"]:.2f}" data-axes-y1="{g["y1"]:.2f}"'
             f' data-axes-w="{g["w"]:.2f}" data-axes-h="{g["h"]:.2f}"'

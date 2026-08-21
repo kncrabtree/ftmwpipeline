@@ -39,9 +39,9 @@ re-run. ``"calibrated"`` is ``f_corr = probe + (f_raw - probe) / (1 + eps)``,
 the frame the final-products table and the reports present.
 
 Every caller-supplied frequency across the three interfaces (``add``/
-``remove``, ``candidate_freq``, merge peak sets, split peak, create anchor,
-and a curation file's frequencies) takes a ``frame`` parameter of this type,
-default ``"raw"`` -- matching the undocumented behavior every caller already
+``remove``, ``candidate_freq``, create anchor, and a curation file's
+frequencies) takes a ``frame`` parameter of this type, default ``"raw"`` --
+matching the undocumented behavior every caller already
 depends on. On an ``rb_locked``/``uncalibrated`` file (``epsilon == 0``) the
 two frames coincide, so omitting ``frame`` is inert. On a ``self_calibrated``
 file it is not: a calibrated candidate submitted as raw still resolves, and to
@@ -57,12 +57,17 @@ REFIT_SNAP_TOL_BINS: float = 0.625
 """Tolerance for matching a requested frequency to an existing peak, as a
 multiple of the active-FT bin spacing.
 
-Every Stage 6 curation verb -- ``review edit`` / ``create`` / ``merge`` /
-``split`` / ``accept``, and every action inside ``review apply`` -- resolves a
-requested ``add`` / ``remove`` / anchor / candidate frequency to the nearest
-fitted peak or ledger candidate within this tolerance, and treats anything
-beyond it as a miss (a hard error for ``remove``, a fresh seed at the requested
-frequency for ``add``).
+Every Stage 6 curation verb -- ``review edit`` / ``create`` / ``accept``, and
+every action inside ``review apply`` -- resolves a requested ``add`` /
+``remove`` / anchor / candidate frequency to the nearest fitted peak or ledger
+candidate within this tolerance, and treats anything beyond it as a miss (a
+hard error for ``remove``, a fresh seed at the requested frequency for
+``add``). It is also the tolerance curation-intent inference reads an ``add``
+against: within it of a fitted peak that is not itself being removed, the add
+is applied as a split of that peak; removing >= 2 mutually-close peaks (within
+this tolerance of each other) while adding one frequency in their span is
+applied as a merge. ``merge``/``split`` are not verbs a caller types -- see
+:func:`ftmwpipeline._internal.stage6_impl.parse_curation_file`.
 
 **Read the resolved MHz value; do not multiply this by a spacing of your own.**
 ``0.625 / T_active`` is 49.4 kHz at the 12.65 us reference acquisition and

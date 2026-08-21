@@ -1,9 +1,12 @@
 """
 Tests for the amortized Stage 6 review session (Task D,
 ``scratch/preview-session-plan.md``): D1 (the fingerprint), D3
-(``Pipeline.review_session()`` / ``ReviewSession``, hosting the whole review
-verb set), D4 (staged-preview reuse on an immediately-following apply), and
-D5 (bounded, caller-controlled memory -- no module-level cache).
+(``Pipeline.review_session()`` / ``ReviewSession``, hosting the review verb
+set -- ``edit``, ``accept``, ``create``, ``undo``, ``preview``, ``apply``;
+``merge``/``split`` are not verbs anywhere, session included, since
+curation-intent inference reads them from add/remove), D4 (staged-preview
+reuse on an immediately-following apply), and D5 (bounded, caller-controlled
+memory -- no module-level cache).
 
 The contract this whole module is built to prove
 (``scratch/bq-correspondence/reply-preview-execute.md`` section 4): "A miss
@@ -44,10 +47,8 @@ from ftmwpipeline._internal.stage6_impl import (
     apply_curation_impl,
     create_window_impl,
     get_final_products_impl,
-    merge_peaks_impl,
     refit_window_impl,
     review_accept_impl,
-    split_peak_impl,
 )
 from ftmwpipeline.core.environment import ANALYSIS_EPOCH, capture_environment
 from ftmwpipeline.core.stage_fit_settings import ClockSource
@@ -461,55 +462,24 @@ class TestSessionMatchesSessionless:
             assert n_s == n_p
             assert chi_s == pytest.approx(chi_p, rel=1e-9)
 
-    def test_merge_split_accept_create_all_match_sessionless(
+    def test_accept_create_match_sessionless(
         self, sc_multi_file: Path, tmp_path: Path
     ) -> None:
-        """Runs the whole single-window verb set through one session and an
+        """Runs ``accept`` and ``create`` through one session and an
         independent sessionless sequence, on independent windows so the
-        actions do not interact, and checks agreement window by window."""
+        actions do not interact, and checks agreement window by window.
+
+        ``merge``/``split`` are covered by :func:`merge_peaks_impl` /
+        :func:`split_peak_impl` directly in ``test_review_verbs.py`` --
+        ``ReviewSession`` does not host them (they are not verbs anywhere;
+        curation-intent inference reads them from add/remove), so there is no
+        session-hosted counterpart to compare here."""
         wids = _fitted_window_ids(sc_multi_file)
-        # Need a window with >= 2 peaks for merge and >= 1 for split; fall
-        # back gracefully if the fixture does not offer one of each.
-        with h5py.File(sc_multi_file, "r") as f:
-            sf = load_spectrum_fit_from_hdf5(f["stage5_fitting"])
-        multi_peak = [
-            int(wf.window_id)
-            for wf in sf.window_fits
-            if wf.window_id is not None and len(wf.fitted_peaks) >= 2
-        ]
-        single_peak = [
-            int(wf.window_id)
-            for wf in sf.window_fits
-            if wf.window_id is not None and len(wf.fitted_peaks) >= 1
-        ]
-        if not multi_peak or len(single_peak) < 2:
-            pytest.skip("fixture does not offer the window shapes this test needs")
-
-        w_merge = multi_peak[0]
-        remaining_single = [w for w in single_peak if w != w_merge]
-        w_split = remaining_single[0]
-        w_accept = wids[0] if wids[0] not in (w_merge, w_split) else wids[-1]
-
-        with h5py.File(sc_multi_file, "r") as f:
-            sf = load_spectrum_fit_from_hdf5(f["stage5_fitting"])
-        merge_freqs = sorted(
-            float(p.frequency_mhz)
-            for wf in sf.window_fits
-            if wf.window_id == w_merge
-            for p in wf.fitted_peaks
-        )[:2]
-        split_freq = next(
-            float(p.frequency_mhz)
-            for wf in sf.window_fits
-            if wf.window_id == w_split
-            for p in wf.fitted_peaks
-        )
+        w_accept = wids[0]
         accept_anchor = _clear_add_freq(sc_multi_file, w_accept)
 
         plain = tmp_path / "plain.ftmw"
         shutil.copy(sc_multi_file, plain)
-        merge_peaks_impl(str(plain), w_merge, merge_freqs, frame="raw")
-        split_peak_impl(str(plain), w_split, split_freq, frame="raw")
         review_accept_impl(
             str(plain), w_accept, candidate_freq=accept_anchor, frame="raw"
         )
@@ -517,14 +487,12 @@ class TestSessionMatchesSessionless:
         create_window_impl(str(plain), anchor, frame="raw")
 
         with Pipeline.open(sc_multi_file).review_session() as session:
-            session.review_merge(w_merge, merge_freqs, frame="raw")
-            session.review_split(w_split, split_freq, frame="raw")
             session.review_accept(w_accept, candidate_freq=accept_anchor, frame="raw")
             session.review_create(_free_anchor(sc_multi_file), frame="raw")
 
         stats_session = _window_stats(sc_multi_file)
         stats_plain = _window_stats(plain)
-        for w in (w_merge, w_split, w_accept):
+        for w in (w_accept,):
             assert stats_session[w][0] == stats_plain[w][0]
             assert stats_session[w][1] == pytest.approx(stats_plain[w][1], rel=1e-9)
 

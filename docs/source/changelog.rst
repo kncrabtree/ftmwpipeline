@@ -32,6 +32,31 @@ had to reach into ``_internal`` or parse out of prose to obtain are now
 published, and the Stage 6 edit paths that carry them were collapsed onto one
 engine so they cannot answer differently.
 
+* **Breaking: ``split`` and ``merge`` are removed from every input surface.**
+  A curation action is now read by what it does to a window's peak set, not
+  by the verb typed: an ``add`` within snap tolerance of a fitted peak that is
+  not itself being removed is applied as a split of that peak, seeded at (the
+  parent's position, the requested position); removing >= 2 mutually-close
+  peaks while adding one frequency in their span is applied as a merge,
+  seeded at the requested frequency. Both stamp ``inferred`` and the
+  requested frequency on the decision's evidence, so the log reports what was
+  read. Since both are now reachable through ``add``/``remove`` alone,
+  ``split``/``merge`` stop being verbs a caller types: ``api.review_merge``,
+  ``api.review_split``, ``Pipeline.review_merge``, and ``Pipeline.review_split``
+  are removed (call ``api.review_edit`` / ``Pipeline.review_edit`` with
+  ``add``/``remove`` instead); the CLI ``review merge`` and ``review split``
+  subcommands are removed (use ``review edit --add`` / ``--remove``); a
+  curation-file row naming ``merge`` or ``split`` is now refused at parse
+  time, with the add/remove spelling to write instead named in the refusal;
+  and the report cart's per-row Split button, ``into=K`` field, per-row merge
+  checkbox, "Merge selected" button, and their ``m``/``s`` plot shortcuts are
+  removed -- the cart's Add control (typed, or a click on the armed plot)
+  reaches both, since a click that lands near an existing peak is exactly the
+  add curation-intent inference reads as a split. A decision recorded before
+  this change, and ``review undo``'s replay of it, are unaffected: the
+  decision log and the internal appliers still carry ``"merge"``/``"split"``
+  kinds regardless of how a decision was produced.
+
 * **Every fitted peak carries a stable identifier.** ``FittedPeak`` /
   ``FinalPeak`` now have a ``peak_uid``: the peak's point-space position in
   the active FT (hundredths of a point), stamped once when the peak is born
@@ -45,12 +70,17 @@ engine so they cannot answer differently.
   this field existed (no backfill). Valid only within the one Stage 5 fit
   lineage it was stamped in -- a fresh ``fit run`` issues new identifiers, and
   no cross-run meaning is promised. Curation verbs do not yet accept an
-  identifier in place of a frequency; that is a later step. ``review undo``
-  replays the surviving decisions from the automatic baseline, so the
-  identifiers afterward are exactly those a fresh apply of those decisions
-  would produce -- undoing everything restores the automatic fit's
-  identifiers exactly, and a peak the replay re-creates reissues its old
-  identifier only if the replay seed is unchanged.
+  identifier in place of a frequency; that is a later step. What ``review
+  undo`` promises is replay equivalence: it replays the surviving decisions
+  from the automatic baseline, each as its own action against the state the
+  previous ones left, so the identifiers afterward are exactly those that
+  sequence produces. That is deliberately **not** the same as a fresh
+  curation file naming the same surviving frequencies, which coalesces a run
+  of add/remove rows into one action. Undoing everything restores the
+  automatic fit's identifiers exactly, and a peak the replay re-creates
+  reissues its old identifier only if the replay seed is unchanged -- so a
+  matching identifier across an undo is not by itself proof that it is the
+  same peak; ``derivation`` is.
 
 * **A colliding ``peak_uid`` is disambiguated, not refused.** Two seeds can
   land on the same hundredth of a point: blend escalation pushes each
@@ -64,11 +94,14 @@ engine so they cannot answer differently.
   idempotent across a refit, since the warm-started set is already distinct.
   Uniqueness is the property the field exists to provide; treat a recomputed
   point position as agreeing with an identifier to within a unit or two rather
-  than exactly. A *curated* ``add`` that lands on an existing peak's birth
-  position is still refused, because that one has a meaningful answer -- it is
-  a request for a second component of a line that is already there -- but it
+  than exactly. A *curated* ``add`` landing on a birth position is still
+  refused rather than nudged, because that one has a meaningful answer, and it
   now raises ``ValueError`` from the add path, naming both identifiers, rather
-  than ``RuntimeError`` from the conversion path.
+  than ``RuntimeError`` from the conversion path. (Curation-intent inference,
+  above, has since narrowed what reaches that refusal: an add beside an existing
+  *fitted* peak is read as a split of it, so what is left is two simultaneous
+  adds at one identical, not-yet-fitted frequency -- neither has an existing
+  peak to be read as a split of.)
 
 * **``FittedPeak.peak_id`` is renamed to ``detection_index``.** The field is
   provenance -- the index into the persisted Stage 3 promoted-peak list of the

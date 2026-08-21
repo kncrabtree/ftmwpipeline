@@ -41,9 +41,11 @@ distinction is worth fixing early, because it is easy to conflate:
 
 - **``review run``** builds the worklist and the final-products table. It reads the
   existing fit and changes **no peaks** — it does not refit anything.
-- **``review edit`` / ``merge`` / ``split``**, ``accept --candidate``, and
-  **``review apply``** are what *refit*: each applies a decision and re-runs the
-  window's least-squares fit in place.
+- **``review edit``**, ``accept --candidate``, and **``review apply``** are what
+  *refit*: each applies a decision and re-runs the window's least-squares fit in
+  place. A split or merge is not a separate verb here — it is what an ``edit``'s
+  add/remove is read as when it changes the peak set that way (see :ref:`below
+  <stage6-edit>`).
 - **``review create``** is neither: it adds a *window* where the automatic pass
   left none, installing structure without touching any peak.
 
@@ -158,18 +160,28 @@ worklist and products but refits nothing.)
   snaps to the nearest ledger candidate within tolerance (reviving its recorded seed)
   or seeds a fresh line at ``F``; ``--remove`` snaps to the nearest fitted peak. Both
   flags repeat, and a run of adds and removes on one window resolves into one refit.
-- ``review merge --window N --peaks F1,F2`` — collapse a set of lines to one
-  (amplitudes summed, frequency the signal-to-noise-weighted mean). When the set
-  matches a pair for which the observation-only doublet pass already recorded a
-  merged-single alternative, ``merge`` snaps to that recorded seed.
-- ``review split --window N --peak F [--into K]`` — replace one line with ``K``
-  (default 2) straddling ``F`` by a fraction of a resolution element.
 - ``review accept --window N`` — the "looked, no change" dismissal (the window becomes
   ``reviewed``); the fit is untouched. With ``--candidate F`` it instead revives a
   ledger candidate, which *does* refit.
 
-``merge`` and ``split`` are physics-aware-reseed sugar over add-plus-remove. All edits
-carry ``user`` provenance.
+``add`` and ``remove`` are the whole grammar; there is no separate ``merge`` or
+``split`` verb. An edit is read by what it does to the window's peak set, not by which
+flags were typed:
+
+- An ``add`` within snap tolerance of a fitted peak that is **not itself being
+  removed** asks for a second component there, and is applied as a **split** of that
+  peak into two, seeded at (the existing peak's position, the requested position).
+- Removing two or more peaks that are mutually within snap tolerance — the components
+  of one feature — while adding exactly one frequency inside their span is applied as
+  a **merge**, seeded at the requested frequency (or at a recorded doublet-alternative
+  seed, when the removed pair matches one).
+
+Both readings require the peak set to actually change shape (a split raises the count,
+a merge lowers it); an ordinary add or remove that does not match either shape is
+applied exactly as typed. The decision log reports which reading was used
+(``kind="split"``/``"merge"``) and stamps the request that was inferred from, so a
+consumer of the log sees a physics-aware reseed rather than a literal add/remove pair.
+All edits carry ``user`` provenance.
 
 ``review edit --add`` requires that the frequency lie inside the named window. A
 frequency **no window covers** is a different situation, and it has its own verb.

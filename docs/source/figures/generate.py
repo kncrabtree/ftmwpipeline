@@ -38,9 +38,9 @@ into the committed ``docs/source/figures`` directory:
 * ``stage6_review.png`` -- the Stage 6 report's full-spectrum index overview: the
   finalized active spectrum with the review-flagged (attention) windows shaded.
 * ``fit_curation_annotations.png`` -- two windows' report magnitude panels (rendered
-  through the report's own per-window painter) overlaid with a curation cart: two
-  merges over over-split close pairs and a missed-line add on one window, two splits
-  on another (Concepts / fit curation).
+  through the report's own per-window painter) overlaid with a curation cart: an add
+  for a line the detector missed on one window, a remove of a faint line the reviewer
+  declines to claim on the other (Concepts / fit curation).
 
 The timebase self-calibration figures (``clock_timebase.png`` /
 ``clock_phase_ramp.png``) are built by the methods note's own harness,
@@ -275,22 +275,31 @@ def make_figures() -> None:
         _save(fig6, "stage6_review.png")
 
         # Concepts / fit curation: two report magnitude panels overlaid with a
-        # real curation cart (merges, an add, splits), in the report's color code.
+        # real curation cart, in the report's color code. Add and remove are
+        # the cart's whole grammar.
         fig_cur = _plot_curation_annotations(bundle, np)
         _save(fig_cur, "fit_curation_annotations.png")
 
 
-# A curation cart captured from the browser report on the 2638 example: on
-# window 120 a weak line is split into two and a missed line is added between the
-# pair; on window 265 a resolved close pair is merged back into one. Frequencies
-# are the raw Stage 5 model values the edit verbs match on (the values the cart
-# emits), so the figure annotates the real fitted peaks by frequency.
+# A curation cart captured from the browser report on the 2638 example. Add
+# and remove are the cart's whole grammar, and each marker here has a reason a
+# reader can check against the panel it sits on:
+#
+# * window 111 holds two faint lines (SNR 5.9 and 4.1) with a clear gap between
+#   them; the add seeds a line the detector missed there.
+# * window 23 holds an SNR 5.2 line 2.9 MHz from the window's bright line (SNR
+#   93); the remove is the reviewer declining to claim a feature that weak. It
+#   is deliberately not framed as the bright line's artifact -- at 2.9 MHz it is
+#   far outside the sidelobe prune's 2.5-resolution-element reach.
+#
+# The window ids are incidental -- ``_window_for`` resolves each panel by
+# frequency, because the ids renumber whenever the fit changes. Frequencies are
+# the raw Stage 5 model values the edit verbs match on (the values the cart
+# emits), so the figure annotates the real fitted peaks.
 _CURATION_DEMO = (
-    (120, "split", (31076.184844,)),
-    (120, "add", (31074.2667,)),
-    (265, "merge", (36147.043509, 36147.138722)),
+    (111, "add", (31074.2667,)),
+    (23, "remove", (27549.325860,)),
 )
-_CURATION_INTO = 2  # the demo splits each line into two
 
 
 def _plot_curation_annotations(bundle: Any, np: Any) -> Any:
@@ -301,10 +310,10 @@ def _plot_curation_annotations(bundle: Any, np: Any) -> Any:
     (:func:`~ftmwpipeline.visualization.fit_detail.draw_component`, on the 2x
     zero-padded display grid with the fitted model and the absolute-frequency
     axis), then overlays the cart's queued edits exactly as the browser does: a
-    vertical marker per frequency, colored by action. Window 120 carries a split
-    of a weak line and a missed-line add between the pair; window 265 carries a
-    merge over a resolved close pair. The markers are queued intentions, not
-    applied edits.
+    vertical marker per frequency, colored by action. Add and remove are the
+    cart's whole grammar; see :data:`_CURATION_DEMO` for what each marker in
+    this figure is doing and why. The markers are queued intentions, not
+    applied edits -- nothing is refit until ``review apply`` runs.
     """
     import matplotlib.pyplot as plt
 
@@ -313,14 +322,9 @@ def _plot_curation_annotations(bundle: Any, np: Any) -> Any:
         draw_component,
         prepare_window_panels,
     )
-    from ftmwpipeline.visualization.report_style import (
-        DOUBLE_DECKER,
-        PINOT,
-        POPPY,
-        QUAD,
-    )
+    from ftmwpipeline.visualization.report_style import DOUBLE_DECKER, QUAD
 
-    colors = {"remove": DOUBLE_DECKER, "add": QUAD, "merge": PINOT, "split": POPPY}
+    colors = {"remove": DOUBLE_DECKER, "add": QUAD}
 
     # Resolve each cart group's panel by frequency, not window id: the ids are
     # incidental (and renumber when the fit changes), but the lines persist.
@@ -376,9 +380,8 @@ def _plot_curation_annotations(bundle: Any, np: Any) -> Any:
                     zorder=6,
                 )
                 ax_data.plot([fc], [y_hi], marker="o", color=color, ms=6, zorder=7)
-            text = f"split →{_CURATION_INTO}" if action == "split" else action
             ax_data.annotate(
-                text,
+                action,
                 (0.5 * (fs[0] + fs[-1]), y_hi),
                 textcoords="offset points",
                 xytext=(0, 6),

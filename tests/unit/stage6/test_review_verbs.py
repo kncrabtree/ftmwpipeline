@@ -1,10 +1,19 @@
 """
-Unit / integration tests for Stage 6 review verbs: edit, merge, split.
+Unit / integration tests for the Stage 6 ``review edit`` verb, plus the
+internal ``merge_peaks_impl`` / ``split_peak_impl`` appliers that back
+curation-intent inference (an add near a fitted peak reads as a split; removes
+plus an add in their span reads as a merge -- see
+``dev-docs/SCIENCE_STRATEGY.md`` and ``stage6_impl._infer_curation_intent``).
+``merge`` and ``split`` are not verbs on the CLI/api/Pipeline surface; the two
+appliers below are reached only through inference or through
+:func:`ftmwpipeline._internal.stage6_impl._decision_to_op` replaying a
+pre-existing, verb-recorded decision.
 
 Tests cover:
 - review edit: add + remove, origin="user" stamping, persistence round-trip
-- review merge: 2→1 count drop, origin="user" on product, doublet-alt snap
-- review split: 1→K count rise, products origin="user", resolution-element spacing
+- merge_peaks_impl: 2→1 count drop, origin="user" on product, doublet-alt snap
+- split_peak_impl: 1→K count rise, products origin="user", resolution-element
+  spacing
 - Provenance persistence: origin round-trips through HDF5
 - Other-window isolation: refitting one window leaves others unchanged
 - Cross-interface consistency: api.review_edit and Pipeline.review_edit
@@ -206,7 +215,11 @@ class TestReviewEditVerb:
 
 
 class TestReviewMergeVerb:
-    """merge_peaks_impl: two peaks collapse into one, product origin='user'."""
+    """merge_peaks_impl: two peaks collapse into one, product origin='user'.
+
+    ``merge`` is not a CLI/api/Pipeline verb -- this exercises the internal
+    applier directly, the same one curation-intent inference and decision-log
+    replay call."""
 
     @pytest.fixture(autouse=True)
     def _setup(self, stage5_multi_peak_file, tmp_path):
@@ -272,37 +285,6 @@ class TestReviewMergeVerb:
         wf_reloaded = next(w for w in sf_reloaded.window_fits if w.window_id == wid)
         user_peaks = [p for p in wf_reloaded.fitted_peaks if p.origin == "user"]
         assert len(user_peaks) >= 1, "merge user origin not preserved in HDF5"
-
-    def test_merge_pipeline_interface(self):
-        """Pipeline.review_merge produces the same merge result."""
-        if self.wf is None:
-            pytest.skip("No window with >=2 peaks")
-        wid = self.wf.window_id
-        sorted_peaks = sorted(self.wf.fitted_peaks, key=lambda p: p.frequency_mhz)
-        freqs = [
-            float(sorted_peaks[0].frequency_mhz),
-            float(sorted_peaks[1].frequency_mhz),
-        ]
-
-        pip = Pipeline.open(self.path)
-        result = pip.review_merge(wid, freqs)
-        assert isinstance(result, RefitWindowResult)
-        assert result.n_peaks_after <= len(self.wf.fitted_peaks) - 1
-
-    def test_merge_api_interface(self):
-        """api.review_merge: call goes through without error."""
-        if self.wf is None:
-            pytest.skip("No window with >=2 peaks")
-        wid = self.wf.window_id
-        sorted_peaks = sorted(self.wf.fitted_peaks, key=lambda p: p.frequency_mhz)
-        freqs = [
-            float(sorted_peaks[0].frequency_mhz),
-            float(sorted_peaks[1].frequency_mhz),
-        ]
-
-        result = ftmw.review_merge(self.path, wid, freqs)
-        assert isinstance(result, RefitWindowResult)
-        assert result.window_id == wid
 
     def test_merge_fewer_than_two_raises(self):
         """Merging fewer than 2 frequencies must raise ValueError."""
@@ -389,7 +371,11 @@ class TestReviewMergeVerb:
 
 
 class TestReviewSplitVerb:
-    """split_peak_impl: one peak replaced by K peaks, all origin='user'."""
+    """split_peak_impl: one peak replaced by K peaks, all origin='user'.
+
+    ``split`` is not a CLI/api/Pipeline verb -- this exercises the internal
+    applier directly, the same one curation-intent inference and decision-log
+    replay call."""
 
     @pytest.fixture(autouse=True)
     def _setup(self, stage5_small_source, tmp_path):
@@ -451,33 +437,6 @@ class TestReviewSplitVerb:
         wf_reloaded = next(w for w in sf_reloaded.window_fits if w.window_id == wid)
         user_peaks = [p for p in wf_reloaded.fitted_peaks if p.origin == "user"]
         assert len(user_peaks) >= 1, "split user origin not preserved in HDF5"
-
-    def test_split_pipeline_interface(self):
-        """Pipeline.review_split completes without error."""
-        if self.wf is None:
-            pytest.skip("No window with peaks")
-        wid = self.wf.window_id
-        target_freq = float(
-            sorted(self.wf.fitted_peaks, key=lambda p: p.frequency_mhz)[0].frequency_mhz
-        )
-
-        pip = Pipeline.open(self.path)
-        result = pip.review_split(wid, target_freq, into=2)
-        assert isinstance(result, RefitWindowResult)
-        assert result.window_id == wid
-
-    def test_split_api_interface(self):
-        """api.review_split completes without error."""
-        if self.wf is None:
-            pytest.skip("No window with peaks")
-        wid = self.wf.window_id
-        target_freq = float(
-            sorted(self.wf.fitted_peaks, key=lambda p: p.frequency_mhz)[0].frequency_mhz
-        )
-
-        result = ftmw.review_split(self.path, wid, target_freq, into=2)
-        assert isinstance(result, RefitWindowResult)
-        assert result.window_id == wid
 
     def test_split_into_less_than_two_raises(self):
         """into < 2 must raise ValueError."""
@@ -588,3 +547,47 @@ class TestReviewEditCrossInterface:
                 f"Cross-interface origin mismatch: "
                 f"api={pa.origin!r}, pipeline={pb.origin!r}"
             )
+
+
+# ---------------------------------------------------------------------------
+# The removed input surface
+# ---------------------------------------------------------------------------
+
+
+class TestSplitMergeAreNotVerbs:
+    """``split``/``merge`` are gone from all three input surfaces at once.
+
+    This is the dual-interface invariant (``AGENTS.md``) stated negatively.
+    Every other test in this file exercises what the two internal appliers
+    still do, and would keep passing if a later patch re-exposed one of them
+    on a single interface -- leaving the CLI, the class API and the functional
+    API disagreeing about what the grammar is. The curation-*file* half of the
+    same removal is pinned in ``test_curation.py``
+    (``test_parse_{split,merge}_row_is_refused_with_replacement_spelling``).
+    """
+
+    @pytest.mark.parametrize("name", ["review_merge", "review_split"])
+    def test_absent_from_functional_api(self, name):
+        assert not hasattr(ftmw, name)
+
+    @pytest.mark.parametrize("name", ["review_merge", "review_split"])
+    def test_absent_from_pipeline_class(self, name):
+        assert not hasattr(Pipeline, name)
+
+    @pytest.mark.parametrize("name", ["review_merge", "review_split"])
+    def test_absent_from_review_session(self, name):
+        """The session is a pure mirror of ``Pipeline``'s verb set, so a verb
+        ``Pipeline`` does not have must not survive here either
+        (``dev-docs/API_STRATEGY.md``, "Amortized sessions": a session
+        "never changes what a verb returns or persists" -- it wraps a
+        sessionless method, and there is no longer one to wrap)."""
+        from ftmwpipeline._internal.stage6_impl import ReviewSession
+
+        assert not hasattr(ReviewSession, name)
+
+    @pytest.mark.parametrize("verb", ["merge", "split"])
+    def test_absent_from_cli(self, verb):
+        from ftmwpipeline.cli.main import create_parser
+
+        with pytest.raises(SystemExit):
+            create_parser().parse_args(["review", verb, "f.ftmw", "--window", "0"])

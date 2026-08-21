@@ -167,8 +167,14 @@ class TestEveryEntryPointIsGated:
 
         return {
             "review_edit": lambda: ftmw.review_edit(p, wid, remove=[freqs[0]]),
-            "review_merge": lambda: ftmw.review_merge(p, wid, freqs[:2]),
-            "review_split": lambda: ftmw.review_split(p, wid, freqs[0]),
+            # merge_peaks_impl / split_peak_impl are not CLI/api/Pipeline verbs
+            # any more (curation-intent inference and decision-log replay are
+            # the only callers left), but they are still listed
+            # ENGINE_ENTRY_POINTS and so must still be independently gated --
+            # called directly against the internal impl rather than through
+            # ftmw.review_merge/review_split, which no longer exist.
+            "merge_peaks_impl": lambda: stage6_impl.merge_peaks_impl(p, wid, freqs[:2]),
+            "split_peak_impl": lambda: stage6_impl.split_peak_impl(p, wid, freqs[0]),
             "review_accept_candidate": lambda: ftmw.review_accept(
                 p, wid, candidate_freq=freqs[0]
             ),
@@ -222,8 +228,14 @@ class TestArgumentChecksPrecedeAnyWrite:
     @pytest.mark.parametrize(
         "name,call",
         [
-            ("merge_needs_two", lambda p, w: ftmw.review_merge(p, w, [1.0])),
-            ("split_needs_two", lambda p, w: ftmw.review_split(p, w, 1.0, into=1)),
+            (
+                "merge_needs_two",
+                lambda p, w: stage6_impl.merge_peaks_impl(p, w, [1.0]),
+            ),
+            (
+                "split_needs_two",
+                lambda p, w: stage6_impl.split_peak_impl(p, w, 1.0, into=1),
+            ),
         ],
     )
     def test_bad_arity_writes_nothing(self, fitted, name, call):

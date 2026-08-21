@@ -331,9 +331,12 @@ Curation vocabulary
 --------------------
 
 Public vocabulary shared by every Stage 6 curation verb (``review edit`` /
-``create`` / ``merge`` / ``split`` / ``accept``, and ``review apply``), defined
-in :mod:`ftmwpipeline.core.curation` so an external tool can pair against the
-exact values the pipeline itself uses rather than a separately maintained copy.
+``create`` / ``accept``, and ``review apply``), defined in
+:mod:`ftmwpipeline.core.curation` so an external tool can pair against the
+exact values the pipeline itself uses rather than a separately maintained
+copy. ``merge`` and ``split`` are not verbs; they are read from what an
+``edit``'s ``add``/``remove`` does to a window's peak set (see
+:doc:`../stage6_review`).
 
 .. autodata:: ftmwpipeline.core.curation.Frame
    :annotation:

@@ -113,12 +113,13 @@ marker on its window plot, color-coded by action and removable with a click:
    The report's own magnitude panels for two windows, overlaid with a curation
    cart exported from the browser (the marker colors match the in-report
    controls). Each panel shows the fitted model on the display grid above a
-   residual strip, with the per-peak labels the report assigns. On the left
-   window, a **split** marker (orange) divides a weak line in two and an **add**
-   (green) seeds a missed line in the gap beside it; on the right window, a
-   **merge** marker (purple) collapses a resolved close pair into one. The
-   markers are queued intentions, not yet applied: exporting the cart writes them
-   to a curation file that ``review apply`` refits.
+   residual strip, with the per-peak labels the report assigns. Add and remove
+   are the cart's whole grammar. On the left window, an **add** (green, solid)
+   seeds a line the detector missed in the gap between two faint fitted lines;
+   on the right, a **remove** (red, dashed) drops an SNR 5.2 line the reviewer
+   declines to claim, well away from the window's bright line. The markers are
+   queued intentions, not yet applied: exporting the cart writes them to a
+   curation file that ``review apply`` refits.
 
 The cart's **Download .csv** and **Copy** controls export the queued edits as a
 **curation file** (``<stem>_curation.csv``) and print the ``review apply``
@@ -138,9 +139,17 @@ sync. A cart entry is clickable — it scrolls to its originating window and fla
 the row. In curation mode the
 magnitude plots take keyboard shortcuts that act on the peak nearest the pointer,
 mirroring click-to-add: hover the plot near a line, then press ``r`` to remove
-it, ``s`` to split it in two, or ``m`` to merge it with its nearest neighbour;
-``a`` arms (and disarms) click-to-add on that plot. The affected line flashes and
-its marker appears on the plot. The cart lists these keys for reference.
+it; ``a`` arms (and disarms) click-to-add on that plot. The affected line flashes
+and its marker appears on the plot. The cart lists these keys for reference.
+
+There is no separate split or merge control, in the row, on the plot, or on the
+keyboard: the cart's whole grammar is add and remove. Clicking a point on the
+armed plot near an existing line queues an add there, and that add reads as a
+split of the line once ``review apply`` runs it (see :ref:`stage6-edit` on the
+Stage 6 page) — which is deliberately the common path, since a reader will more
+often point at a plot than type a frequency. Checking two close lines' rows and
+removing both, then adding one frequency in their span, reads as a merge the
+same way.
 
 Applied edits and rollback
 --------------------------
@@ -193,20 +202,29 @@ is optional.
      - one
      - Drop the fitted line nearest the frequency.
      - none
-   * - ``merge``
-     - two or more
-     - Collapse the named lines to one (amplitudes summed, frequency the
-       signal-to-noise-weighted mean).
-     - none
-   * - ``split``
-     - one
-     - Replace the named line with ``K`` straddling it.
-     - ``into=K`` (default ``2``)
    * - ``accept``
      - none
      - Dismiss the window as reviewed with no change, or revive a named
        candidate.
      - ``candidate=F`` to revive
+
+``merge`` and ``split`` are **not** row actions -- a file naming either is
+refused, at parse time, before anything is touched. Both are read from what an
+``add``/``remove`` combination does to a window's peak set, not typed:
+
+- An ``add`` within snap tolerance of a fitted peak that is **not itself being
+  removed** is applied as a **split** of that peak into two, seeded at (the
+  existing peak's position, the requested position).
+- Removing two or more mutually-close fitted peaks (within snap tolerance of
+  each other -- the components of one feature) while adding exactly one
+  frequency inside their span is applied as a **merge**, seeded at the
+  requested frequency (or at a recorded doublet-alternative seed, when the
+  removed pair matches one).
+
+The decision log records which reading was used (``kind="split"``/``"merge"``)
+and stamps the frequency that was requested, so the log reports the
+reinterpretation rather than hiding it. See :ref:`stage6-edit` on the Stage 6
+page for the exact rule.
 
 A representative curation file:
 
@@ -215,17 +233,29 @@ A representative curation file:
    action,window,freqs,params
    remove,42,26613.6131,
    add,42,26614.20,
-   merge,17,9001.10;9001.18,
-   split,5,12000.50,into=3
+   remove,17,9001.100,
+   add,5,12000.4875,
+   remove,17,9001.130,
+   add,17,9001.115,
    accept,8,,candidate=15001.4
 
+Window 42's ``add`` seeds a fresh line clear of its other peaks, an ordinary
+add. Window 5's ``add`` is unrelated, interleaved between window 17's rows.
+Window 17's two ``remove`` rows and its ``add`` between them remove a pair of
+lines 30 kHz apart -- mutually inside a 49.4 kHz snap tolerance, so the two
+components of one feature -- and add one frequency in their span, which is read
+as a merge. The interleaved window 5 row does not break that run, because
+coalescing tracks each window independently.
+
 Edits on one window are **coalesced** before they are applied. A maximal run of
-``add`` and ``remove`` rows on the same window collapses into a single refit
-rather than one refit per row, so the two rows for window 42 above become one
-edit. A ``merge``, ``split``, or ``accept`` on a window flushes that window's
-pending edit first, because each carries its own physics-aware seeding. Windows
-are independent, so an edit interleaved on another window does not break the
-coalescing of a pending group.
+``add`` and ``remove`` rows on one window collapses into a single refit rather
+than one refit per row, so the two rows for window 42 become one edit, the
+three (non-adjacent) rows for window 17 become one edit, and window 5's row
+becomes its own edit -- three edits from six add/remove rows. An ``accept``
+(or ``create``) on a window flushes that window's pending edit first, since
+it changes the file in its own right; a plain add/remove never does, even
+when curation-intent inference will read the coalesced result as a split or a
+merge once the batch actually runs.
 
 Applying a curation file
 ------------------------
@@ -243,10 +273,10 @@ it — and the revised state the whole edit set produces. The set is applied in
 one canonical order rather than the order the rows happen to be written in.
 ``create`` rows run first, since they install the structure later rows name, and
 the remaining actions run grouped by ascending window id. Within a single window
-the specified order is preserved, because a ``merge`` or ``split`` composes on
-the peak set a preceding ``add`` or ``remove`` left behind. Two curation files
-listing the same per-window edits in different row orders reach the same fitted
-state and the same decision log.
+the specified order is preserved, because an ``accept`` composes on the peak set
+a preceding coalesced add/remove group left behind. Two curation files listing
+the same per-window edits in different row orders reach the same fitted state
+and the same decision log.
 
 That end state is what the guarantee covers. The batch reproduces the *result*
 of running the resolved plan by hand, not its sequence of intermediate refits;
@@ -256,24 +286,27 @@ applied on its own. Edits are reproducible together, not independent of each
 other.
 
 ``--dry-run`` prints the resolved, coalesced plan in the file's own row order,
-along with any frequency-resolution warnings, without touching the file:
+along with any frequency-resolution warnings, without touching the file. The
+plan is pre-inference — every coalesced add/remove group prints as ``edit``,
+even one that will read as a split or a merge once the batch actually runs, so
+this preview shows what was typed, not yet the reinterpretation:
 
 .. code-block:: console
 
    $ ftmwpipeline review apply exp_2638.ftmw exp_2638_curation.csv --dry-run
    review apply (dry run): resolved plan
        1. edit window 42: add 26614.2000; remove 26613.6131
-       2. merge window 17: peaks 9001.1000, 9001.1800
-       3. split window 5: peak 12000.5000 into 3
+       2. edit window 17: add 9001.1150; remove 9001.1000, 9001.1300
+       3. edit window 5: add 12000.4875
        4. accept window 8: candidate 15001.4000
    4 action(s) would be applied (nothing written).
 
 The warnings catch the ways an action fails to resolve against the file. For
-``remove``, ``merge`` and ``split`` that is the target frequency: one that
-matches no fitted peak within tolerance (the edit would fail), or one that sits
-within tolerance of more than one peak (the nearest is taken, which may not be
-the intended line). An ``add`` creates its peak and so has no target to match,
-but it does name a *window*, and that is what goes stale — window ids are
+``remove`` that is the target frequency: one that matches no fitted peak within
+tolerance (the edit would fail), or one that sits within tolerance of more than
+one peak (the nearest is taken, which may not be the intended line). An ``add``
+creates its peak and so has no target to match, but it does name a *window*,
+and that is what goes stale — window ids are
 reassigned whenever Stage 4 re-plans, and a plan window whose peaks all failed
 their Stage 5 gate carries no fit to edit at all. So an ``add`` is checked for
 the two conditions the refit will enforce: the window is live, and the frequency
@@ -300,8 +333,12 @@ Dropping ``--dry-run`` applies the plan, refitting each affected window in place
 Each applied edit appends an anchored entry to the
 :ref:`Stage 6 decision log <stage6-decisions>`, exactly as the interactive verbs
 do, so a curation file's effects carry their provenance and survive re-running
-an upstream stage. The same Python entry points are available on the functional
-API and the ``Pipeline`` class:
+an upstream stage. This is where a split or merge reading actually shows up —
+the plan printed above and by ``--dry-run`` is pre-inference, but ``review
+log`` afterward reports window 17's coalesced edit as ``kind=merge`` and
+window 5's as ``kind=split``, each with the frequency that was requested. The
+same Python entry points are available on the functional API and the
+``Pipeline`` class:
 
 .. code-block:: python
 

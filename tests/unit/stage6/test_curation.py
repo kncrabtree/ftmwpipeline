@@ -22,6 +22,7 @@ import ftmwpipeline.api as ftmw
 from ftmwpipeline._internal import stage6_impl as s6
 from ftmwpipeline._internal.stage6_impl import (
     STAGE5_BASELINE_GROUP,
+    CurationOp,
     PlannedAction,
     _decision_to_op,
     _resolve_curation_plan,
@@ -59,8 +60,6 @@ def test_parse_basic_rows(tmp_path):
             tmp_path,
             "remove,217,38450.123,\n"
             "add,217,38451.0,\n"
-            "merge,438,38450.10;38450.40,\n"
-            "split,24,38449.9,into=3\n"
             "accept,84,,\n"
             "accept,309,,candidate=38502.7\n",
         )
@@ -68,14 +67,32 @@ def test_parse_basic_rows(tmp_path):
     assert [o.action for o in ops] == [
         "remove",
         "add",
-        "merge",
-        "split",
         "accept",
         "accept",
     ]
-    assert ops[2].freqs == [38450.10, 38450.40]
-    assert ops[3].params == {"into": "3"}
-    assert ops[5].params == {"candidate": "38502.7"}
+    assert ops[3].params == {"candidate": "38502.7"}
+
+
+def test_parse_split_row_is_refused_with_replacement_spelling(tmp_path):
+    """``split`` is not a curation-file action; the refusal names the add
+    spelling to write instead (see ``_infer_curation_intent``)."""
+    with pytest.raises(ValueError) as excinfo:
+        parse_curation_file(_write(tmp_path, "split,24,38449.9,into=3\n"))
+    msg = str(excinfo.value)
+    assert "line 1" in msg
+    assert "not a curation-file action" in msg
+    assert "add" in msg
+
+
+def test_parse_merge_row_is_refused_with_replacement_spelling(tmp_path):
+    """``merge`` is not a curation-file action; the refusal names the
+    remove-plus-add spelling to write instead."""
+    with pytest.raises(ValueError) as excinfo:
+        parse_curation_file(_write(tmp_path, "merge,438,38450.10;38450.40,\n"))
+    msg = str(excinfo.value)
+    assert "line 1" in msg
+    assert "not a curation-file action" in msg
+    assert "remove" in msg and "add" in msg
 
 
 def test_parse_skips_comments_blanks_and_header(tmp_path):
@@ -114,18 +131,6 @@ def test_parse_add_requires_one_frequency(tmp_path):
         parse_curation_file(_write(tmp_path, "add,5,100.0;101.0,\n"))
 
 
-def test_parse_merge_requires_two(tmp_path):
-    with pytest.raises(ValueError, match="merge needs at least two"):
-        parse_curation_file(_write(tmp_path, "merge,5,100.0,\n"))
-
-
-def test_parse_split_bad_into(tmp_path):
-    with pytest.raises(ValueError, match="into must be >= 2"):
-        parse_curation_file(_write(tmp_path, "split,5,100.0,into=1\n"))
-    with pytest.raises(ValueError, match="into=.*is not an integer"):
-        parse_curation_file(_write(tmp_path, "split,5,100.0,into=x\n"))
-
-
 def test_parse_accept_rejects_frequency_column(tmp_path):
     with pytest.raises(ValueError, match="accept takes no frequency column"):
         parse_curation_file(_write(tmp_path, "accept,5,100.0,\n"))
@@ -133,7 +138,7 @@ def test_parse_accept_rejects_frequency_column(tmp_path):
 
 def test_parse_malformed_param(tmp_path):
     with pytest.raises(ValueError, match="malformed parameter"):
-        parse_curation_file(_write(tmp_path, "split,5,100.0,into\n"))
+        parse_curation_file(_write(tmp_path, "add,5,100.0,into\n"))
 
 
 # ---------------------------------------------------------------------------
@@ -155,14 +160,25 @@ def test_resolve_coalesces_consecutive_same_window(tmp_path):
     assert a.add == [100.0, 102.0] and a.remove == [101.0]
 
 
-def test_resolve_same_window_barrier_flushes(tmp_path):
+def test_resolve_same_window_barrier_flushes():
     # split on the SAME window splits the edit into before/after groups.
-    ops = parse_curation_file(
-        _write(
-            tmp_path,
-            "add,5,100.0,\nsplit,5,200.0,into=2\nadd,5,300.0,\n",
-        )
-    )
+    # Built directly as CurationOp, not via parse_curation_file (which now
+    # refuses a 'split' row -- see test_parse_split_row_is_refused_with_
+    # replacement_spelling): _resolve_curation_plan's barrier behavior for
+    # merge/split still matters, because _decision_to_op can still hand it a
+    # non-inferred merge/split op when replaying a pre-existing,
+    # verb-recorded decision.
+    ops = [
+        CurationOp(action="add", window_id=5, freqs=[100.0], params={}, line_no=1),
+        CurationOp(
+            action="split",
+            window_id=5,
+            freqs=[200.0],
+            params={"into": "2"},
+            line_no=2,
+        ),
+        CurationOp(action="add", window_id=5, freqs=[300.0], params={}, line_no=3),
+    ]
     plan = _resolve_curation_plan(ops)
     assert [a.kind for a in plan] == ["edit", "split", "edit"]
     assert plan[0].add == [100.0]
@@ -170,15 +186,15 @@ def test_resolve_same_window_barrier_flushes(tmp_path):
     assert plan[2].add == [300.0]
 
 
-def test_resolve_other_window_barrier_does_not_flush(tmp_path):
+def test_resolve_other_window_barrier_does_not_flush():
     # A merge on window 8 does not flush window 5's pending edit; window 5's
-    # two adds stay coalesced (windows are independent).
-    ops = parse_curation_file(
-        _write(
-            tmp_path,
-            "add,5,100.0,\nmerge,8,1.0;2.0,\nadd,5,300.0,\n",
-        )
-    )
+    # two adds stay coalesced (windows are independent). Built directly as
+    # CurationOp -- see test_resolve_same_window_barrier_flushes above.
+    ops = [
+        CurationOp(action="add", window_id=5, freqs=[100.0], params={}, line_no=1),
+        CurationOp(action="merge", window_id=8, freqs=[1.0, 2.0], params={}, line_no=2),
+        CurationOp(action="add", window_id=5, freqs=[300.0], params={}, line_no=3),
+    ]
     plan = _resolve_curation_plan(ops)
     kinds = [a.kind for a in plan]
     assert kinds.count("edit") == 1 and "merge" in kinds
@@ -1309,10 +1325,18 @@ def test_apply_cross_interface_multiwindow_batch(stage5_multi_file, tmp_path):
 
 @pytest.mark.integration
 def test_apply_merge_via_batch_matches_direct_call(stage5_multi_file, tmp_path):
-    """A ``merge`` action replayed through the batch engine
-    (``_batch_apply_merge``) reaches the same state as calling
-    ``merge_peaks_impl`` directly -- batch-of-one is indistinguishable from the
-    interactive path for merge, not just for add/remove."""
+    """A ``merge`` action executed through the batch engine
+    (``_execute_curation_batch`` -> ``_batch_apply_merge``) reaches the same
+    state as calling ``merge_peaks_impl`` directly -- batch-of-one is
+    indistinguishable from the interactive path for merge, not just for
+    add/remove.
+
+    ``merge`` is not a curation-*file* action any more (see the refusal tests
+    below and ``test_curation_intent.py``'s inference coverage), but the
+    engine itself still executes a ``PlannedAction(kind="merge")`` when a
+    decision-log replay hands it one (``_decision_to_op``, for a
+    pre-existing, verb-recorded decision). This drives that plan directly,
+    bypassing the file parser, to keep pinning the engine-level behavior."""
     from ftmwpipeline._internal.stage6_impl import merge_peaks_impl
 
     by_w = _fitted_by_window(stage5_multi_file)
@@ -1328,9 +1352,9 @@ def test_apply_merge_via_batch_matches_direct_call(stage5_multi_file, tmp_path):
 
     merge_peaks_impl(str(direct), wid, freqs)
 
-    cur = tmp_path / "merge.csv"
-    cur.write_text(f"merge,{wid},{freqs[0]};{freqs[1]},\n")
-    apply_curation_impl(batched, cur)
+    plan = [PlannedAction(kind="merge", window_id=wid, peaks=list(freqs))]
+    snap_tol = s6.resolve_snap_tol_mhz(str(batched), None)
+    s6._execute_curation_batch(str(batched), plan, snap_tol_mhz=snap_tol)
 
     assert _fitted_by_window(direct) == _fitted_by_window(batched)
     assert [e.kind for e in review_log_impl(batched)] == ["merge"]
@@ -1338,9 +1362,14 @@ def test_apply_merge_via_batch_matches_direct_call(stage5_multi_file, tmp_path):
 
 @pytest.mark.integration
 def test_apply_split_via_batch_matches_direct_call(stage5_multi_file, tmp_path):
-    """A ``split`` action replayed through the batch engine
-    (``_batch_apply_split``) reaches the same state as calling
-    ``split_peak_impl`` directly."""
+    """A ``split`` action executed through the batch engine
+    (``_execute_curation_batch`` -> ``_batch_apply_split``) reaches the same
+    state as calling ``split_peak_impl`` directly.
+
+    ``split`` is not a curation-*file* action any more; see
+    ``test_apply_merge_via_batch_matches_direct_call`` above for why this
+    drives a hand-built ``PlannedAction`` at the engine instead of a CSV
+    row."""
     from ftmwpipeline._internal.stage6_impl import split_peak_impl
 
     wid, freq = _a_peak(stage5_multi_file)
@@ -1352,9 +1381,9 @@ def test_apply_split_via_batch_matches_direct_call(stage5_multi_file, tmp_path):
 
     split_peak_impl(str(direct), wid, freq, into=2)
 
-    cur = tmp_path / "split.csv"
-    cur.write_text(f"split,{wid},{freq},into=2\n")
-    apply_curation_impl(batched, cur)
+    plan = [PlannedAction(kind="split", window_id=wid, peak=freq, into=2)]
+    snap_tol = s6.resolve_snap_tol_mhz(str(batched), None)
+    s6._execute_curation_batch(str(batched), plan, snap_tol_mhz=snap_tol)
 
     assert _fitted_by_window(direct) == _fitted_by_window(batched)
     assert [e.kind for e in review_log_impl(batched)] == ["split"]

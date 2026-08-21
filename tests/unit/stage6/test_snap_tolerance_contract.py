@@ -40,11 +40,14 @@ from ftmwpipeline.file_manager import StageDependencyError
 pytestmark = [pytest.mark.unit]
 
 # Every public verb that resolves a user-supplied frequency against the file.
+# ``merge``/``split`` are deliberately absent: they are not verbs on
+# Pipeline/api/CLI (curation-intent inference reads them from add/remove), so
+# there is no such public surface to check here. The impl-level functions
+# (still gated the same way) are covered in
+# test_boundary_impls_defer_and_engines_require below.
 _VERBS = (
     "review_edit",
     "review_create",
-    "review_merge",
-    "review_split",
     "review_accept",
 )
 
@@ -230,24 +233,6 @@ _CLI_WIRING = {
         "refit_window_impl",
     ),
     "create": (["review", "create", "f.ftmw", "--at", "26622.0"], "create_window_impl"),
-    "merge": (
-        [
-            "review",
-            "merge",
-            "f.ftmw",
-            "--window",
-            "0",
-            "--peaks",
-            "1.0",
-            "--peaks",
-            "2.0",
-        ],
-        "merge_peaks_impl",
-    ),
-    "split": (
-        ["review", "split", "f.ftmw", "--window", "0", "--peak", "1.0"],
-        "split_peak_impl",
-    ),
     "accept": (
         ["review", "accept", "f.ftmw", "--window", "0", "--candidate", "1.0"],
         "review_accept_impl",
@@ -283,18 +268,6 @@ def test_cli_flag_defaults_to_the_file(verb):
         {
             "edit": ["review", "edit", "f.ftmw", "--window", "0"],
             "create": ["review", "create", "f.ftmw", "--at", "26622.0"],
-            "merge": [
-                "review",
-                "merge",
-                "f.ftmw",
-                "--window",
-                "0",
-                "--peaks",
-                "1.0",
-                "--peaks",
-                "2.0",
-            ],
-            "split": ["review", "split", "f.ftmw", "--window", "0", "--peak", "1.0"],
             "accept": ["review", "accept", "f.ftmw", "--window", "0"],
         }[verb]
     )

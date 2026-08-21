@@ -88,8 +88,8 @@ Command summary
      - ``run``, ``show``, ``check``
      - Fit lines; assess the fit
    * - ``review`` (``stage6``)
-     - | ``run``, ``show``, ``rank``, ``edit``, ``merge``,
-       | ``split``, ``accept``, ``apply``, ``log``, ``undo``
+     - | ``run``, ``show``, ``rank``, ``edit``,
+       | ``accept``, ``apply``, ``log``, ``undo``
      - Curate the fitted model
    * - ``report``
      - ``table``, ``run``
@@ -251,11 +251,13 @@ the systematic frequency-accuracy floor folded into the σ\ :sub:`f` budget.
 ``review show`` lists per-window summaries or the candidate ledger
 (``--candidates``); ``review rank --by METRIC`` ranks windows worst-first by a
 persisted statistic. The editing verbs each re-fit the affected window and
-record the change in the decision log: ``edit`` (``--add`` / ``--remove``),
-``merge`` (``--peaks``), ``split`` (``--peak`` / ``--into``), and ``accept``.
-``apply`` replays a curation CSV of batched edits; ``log`` lists the decision
-log; ``undo --id N`` rolls a decision back by replay-from-baseline. See
-:doc:`stage6_review`.
+record the change in the decision log: ``edit`` (``--add`` / ``--remove``) and
+``accept``. There is no separate ``merge`` or ``split`` verb -- an ``--add``
+within snap tolerance of a fitted peak is read as a split of it, and removing
+the mutually-close components of one feature while adding one frequency in
+their span is read as a merge. ``apply`` replays a curation CSV of batched
+edits; ``log`` lists the decision log; ``undo --id N`` rolls a decision back
+by replay-from-baseline. See :doc:`stage6_review`.
 
 ``report`` — finalized deliverables
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

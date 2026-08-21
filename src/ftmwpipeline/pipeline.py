@@ -92,7 +92,6 @@ from ._internal.stage6_impl import (
     get_candidate_ledger_impl,
     get_final_products_impl,
     get_review_status_impl,
-    merge_peaks_impl,
     rank_windows_impl,
     refit_window_impl,
     review_accept_impl,
@@ -101,7 +100,6 @@ from ._internal.stage6_impl import (
     review_run_impl,
     review_undo_impl,
     set_sigma_floor_impl,
-    split_peak_impl,
 )
 from ._internal.start_detection_impl import detect_start_time_impl
 from ._internal.timebase_impl import (
@@ -1732,98 +1730,6 @@ class Pipeline:
             frame=frame,
         )
 
-    def review_merge(
-        self,
-        window_id: int,
-        peaks: Sequence[float],
-        *,
-        snap_tol_mhz: Optional[float] = None,
-        frame: Optional[Frame] = None,
-    ) -> RefitWindowResult:
-        """Collapse ≥2 fitted peaks in a window into one (Stage 6 ``review merge``).
-
-        Removes the named peaks and adds one replacement seeded at their
-        SNR-weighted centroid (or amplitude-weighted centroid when SNR is
-        unavailable).  When the pair matches a persisted doublet-alternative
-        record with a successful merged refit, the recorded merged seed is
-        used instead of the centroid.  All products carry ``origin="user"``.
-
-        Parameters
-        ----------
-        window_id :
-            The window containing the peaks to merge.
-        peaks :
-            Molecular frequencies (MHz) of the peaks to collapse (≥2).
-        snap_tol_mhz :
-            Maximum distance (MHz) for frequency snapping to fitted peaks.
-        frame :
-            The frame ``peaks`` is expressed in. Omitting it is an error on a
-            ``self_calibrated`` file (see
-            :data:`~ftmwpipeline.core.curation.Frame`).
-
-        Returns
-        -------
-        RefitWindowResult
-            Old vs new peak count, χ²ᵣ before/after, and the new fitted peaks
-            (both frames).
-
-        Requires Stage 5 completed.
-        """
-        return merge_peaks_impl(
-            self.filepath,
-            window_id,
-            peaks,
-            snap_tol_mhz=snap_tol_mhz,
-            frame=frame,
-        )
-
-    def review_split(
-        self,
-        window_id: int,
-        peak: float,
-        *,
-        into: int = 2,
-        snap_tol_mhz: Optional[float] = None,
-        frame: Optional[Frame] = None,
-    ) -> RefitWindowResult:
-        """Replace one fitted peak with ``into`` peaks (Stage 6 ``review split``).
-
-        Removes the named peak and adds ``into`` replacements spread
-        symmetrically about it by ±½ of one Fourier resolution element
-        (``1 / acquisition_us`` MHz).  All products carry ``origin="user"``.
-
-        Parameters
-        ----------
-        window_id :
-            The window containing the peak to split.
-        peak :
-            Molecular frequency (MHz) of the peak to split.
-        into :
-            Number of replacement peaks (≥2, default 2).
-        snap_tol_mhz :
-            Maximum distance (MHz) for frequency snapping to fitted peaks.
-        frame :
-            The frame ``peak`` is expressed in. Omitting it is an error on a
-            ``self_calibrated`` file (see
-            :data:`~ftmwpipeline.core.curation.Frame`).
-
-        Returns
-        -------
-        RefitWindowResult
-            Old vs new peak count, χ²ᵣ before/after, and the new fitted peaks
-            (both frames).
-
-        Requires Stage 5 completed.
-        """
-        return split_peak_impl(
-            self.filepath,
-            window_id,
-            peak,
-            into=into,
-            snap_tol_mhz=snap_tol_mhz,
-            frame=frame,
-        )
-
     def review_run(
         self,
         *,
@@ -2168,9 +2074,9 @@ class Pipeline:
 
         A context manager holding one shared active-FT fit context, reused
         across every review verb issued through it -- ``review_edit``/
-        ``review_merge``/``review_split``/``review_accept``/``review_create``/
-        ``review_undo``/``review_preview``/``review_apply`` -- instead of each
-        call rebuilding it from scratch (~420 ms of the ~516 ms an interactive
+        ``review_accept``/``review_create``/``review_undo``/
+        ``review_preview``/``review_apply`` -- instead of each call rebuilding
+        it from scratch (~420 ms of the ~516 ms an interactive
         single-window verb otherwise costs cold). A ``review_preview`` followed
         by a ``review_apply`` of the identical plan against an unchanged file
         persists the preview's already-computed outcome rather than
