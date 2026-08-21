@@ -40,7 +40,6 @@ from ftmwpipeline.cli.review_commands import (
 )
 from ftmwpipeline.core.data_structures import DecisionLogEntry
 from ftmwpipeline.io.fitting_serialization import load_spectrum_fit_from_hdf5
-from ftmwpipeline.io.stage6_review_serialization import load_stage6_review_from_file
 from ftmwpipeline.pipeline import Pipeline
 
 # ---------------------------------------------------------------------------
@@ -52,66 +51,6 @@ def _write(tmp_path: Path, text: str) -> str:
     p = tmp_path / "curation.csv"
     p.write_text(text)
     return str(p)
-
-
-# ---------------------------------------------------------------------------
-# A wider multi-window fixture for the batch-engine tests further down. The
-# shared 3-window build (conftest.py) keeps only the first 3 dependency-free
-# windows in topological order, and on this slice of 2638 most of those don't
-# clear Stage 5's gate -- typically only one window survives with an actual
-# fit. The batch engine's guarantees are specifically about MULTIPLE windows,
-# so those tests need a build that reliably keeps several live ones.
-# ---------------------------------------------------------------------------
-
-
-def _build_stage5_multi(dest: Path, data_path: str) -> None:
-    from ftmwpipeline._internal.stage4_impl import (
-        load_windows_impl,
-        save_window_plan_impl,
-    )
-
-    ftmw.import_data(dest, source=data_path)
-    ftmw.compute_ft(dest, trim=(26500, 40000))
-    ftmw.estimate_noise(dest)
-    ftmw.detect_peaks(dest)
-    ftmw.assign_windows(dest)
-
-    plan = load_windows_impl(str(dest))["plan"]
-    candidates: List[int] = []
-    for wid in plan.topological_order:
-        deps = [(a, b) for (a, b) in plan.dependency_edges if a == wid or b == wid]
-        if all(a in candidates or a == wid for (a, _) in deps) and all(
-            b in candidates or b == wid for (_, b) in deps
-        ):
-            candidates.append(wid)
-        if len(candidates) >= 12:
-            break
-    keep = set(candidates)
-    plan.windows = [w for w in plan.windows if w.window_id in keep]
-    plan.topological_order = [w for w in plan.topological_order if w in keep]
-    plan.dependency_edges = [
-        (a, b) for (a, b) in plan.dependency_edges if a in keep and b in keep
-    ]
-    save_window_plan_impl(str(dest), plan)
-
-    ftmw.fit_peaks(str(dest))
-
-
-@pytest.fixture(scope="session")
-def _stage5_multi_built(exp_2638_data_path, tmp_path_factory) -> Path:
-    """The shared wider post-fit build -- read-only, built once."""
-    fp = tmp_path_factory.mktemp("stage6_curation_multi") / "stage5_multi.ftmw"
-    _build_stage5_multi(fp, exp_2638_data_path)
-    return fp
-
-
-@pytest.fixture
-def stage5_multi_file(_stage5_multi_built, tmp_path) -> Path:
-    """A fresh writable copy of the wider fixture, which reliably keeps
-    several live (fitted) windows -- used by the batch-engine tests below."""
-    fp = tmp_path / "stage5_multi.ftmw"
-    shutil.copy(_stage5_multi_built, fp)
-    return fp
 
 
 def test_parse_basic_rows(tmp_path):
@@ -634,6 +573,128 @@ def test_undo_one_of_two_replays_other(stage5_file, tmp_path):
     review_undo_impl(both, [wa_id])
 
     assert _fitted_by_window(both) == _fitted_by_window(ref)
+
+
+def _uids_by_window(path: Path) -> Dict[int, List[tuple]]:
+    """Per-window sorted ``(peak_uid, frequency)`` pairs.
+
+    Like ``_fitted_by_window`` but keyed on identifier as well as frequency,
+    for tests that need to know whether an undo reproduced the same
+    ``peak_uid`` values, not just the same fitted positions. Ordered by
+    frequency rather than by the tuple, so a legacy peak whose ``peak_uid`` is
+    ``None`` sorts alongside stamped ones instead of raising.
+    """
+    with h5py.File(str(path), "r") as h5f:
+        sf = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+    return {
+        int(wf.window_id): sorted(
+            ((p.peak_uid, round(float(p.frequency_mhz), 6)) for p in wf.fitted_peaks),
+            key=lambda t: t[1],
+        )
+        for wf in sf.window_fits
+        if wf.window_id is not None
+    }
+
+
+@pytest.mark.integration
+def test_undo_all_restores_baseline_identifiers(stage5_small_source, tmp_path):
+    """Undoing every decision restores ``/stage5_fitting`` from the baseline
+    snapshot verbatim (a whole-group ``h5f.copy``), so the identifiers must
+    come back exactly as the automatic fit stamped them, not merely the
+    fitted frequencies."""
+    fp = tmp_path / "u_ids_all.ftmw"
+    shutil.copy(stage5_small_source, fp)
+    baseline = _uids_by_window(fp)
+    assert any(
+        uid is not None for freqs in baseline.values() for uid, _ in freqs
+    ), "fixture has no stamped peak_uid to compare against"
+
+    wid, _ = _a_peak(fp)
+    add_freq = _clear_add_freq(fp, wid)
+    apply_curation_impl(fp, _write_curation(tmp_path, f"add,{wid},{add_freq},\n"))
+    assert _uids_by_window(fp) != baseline  # the add changed the window
+
+    log = review_log_impl(fp)
+    review_undo_impl(fp, [e.order_index for e in log])
+    assert _uids_by_window(fp) == baseline  # identifiers restored exactly
+
+
+@pytest.mark.integration
+def test_undo_one_of_two_replays_other_identifiers(stage5_multi_file, tmp_path):
+    """The normative promise: the identifiers after undoing one of two
+    decisions are exactly those a fresh apply of the surviving decision alone
+    would have produced onto the automatic baseline. Mirrors
+    ``test_undo_one_of_two_replays_other`` but compares ``peak_uid``, not just
+    frequency.
+
+    On the wider fixture deliberately: the shared 3-window build usually keeps
+    only one window with an actual fit, so the mirrored test above skips there
+    and a copy of it would pin nothing.
+    """
+    wa, wb, _ = _three_window_ids(stage5_multi_file)
+    fa = _clear_add_freq(stage5_multi_file, wa)
+    fb = _clear_add_freq(stage5_multi_file, wb)
+
+    # Reference: only the wb add applied to the automatic fit.
+    ref = tmp_path / "ref_ids.ftmw"
+    shutil.copy(stage5_multi_file, ref)
+    apply_curation_impl(ref, _write_curation(tmp_path, f"add,{wb},{fb},\n"))
+    ref_uids = _uids_by_window(ref)
+    assert any(
+        uid is not None for freqs in ref_uids.values() for uid, _ in freqs
+    ), "fixture has no stamped peak_uid to compare against"
+
+    # Both adds (on the fixture's own private copy), then undo the wa add.
+    both = stage5_multi_file
+    cur = tmp_path / "two_ids.csv"
+    cur.write_text(f"add,{wa},{fa},\nadd,{wb},{fb},\n")
+    apply_curation_impl(both, cur)
+    log = review_log_impl(both)
+    wa_id = next(e.order_index for e in log if e.window_id == wa and e.kind == "add")
+    review_undo_impl(both, [wa_id])
+
+    assert _uids_by_window(both) == ref_uids
+
+
+@pytest.mark.integration
+def test_undo_replayed_add_reissues_identifier(stage5_multi_file, tmp_path):
+    """A replayed ``add`` restamps from its seed, and that seed is the exact
+    frequency recorded in the decision log (``_decision_to_op`` replays
+    ``add``/``remove`` from ``entry.frequency_mhz``) -- so a peak the replay
+    re-creates comes back with the SAME ``peak_uid`` it held before the undo.
+
+    This is the design, not an accident: a ``peak_uid`` names a birth
+    *position*, not a birth *event*. A later reader must not "fix" this
+    apparent non-uniqueness by salting the stamp with a decision id or a
+    replay counter -- that would break the replay-equivalence promise this
+    identifier exists to support.
+    """
+    wa, wb, _ = _three_window_ids(stage5_multi_file)
+    fa = _clear_add_freq(stage5_multi_file, wa)
+    fb = _clear_add_freq(stage5_multi_file, wb)
+
+    fp = stage5_multi_file
+    cur = tmp_path / "reissue.csv"
+    cur.write_text(f"add,{wa},{fa},\nadd,{wb},{fb},\n")
+    apply_curation_impl(fp, cur)
+
+    # The fitted frequency moves off the seed during the NLS, so identify the
+    # added peak by proximity to its seed rather than exact equality.
+    before = _uids_by_window(fp)
+    uid_before = min(before[wa], key=lambda t: abs(t[1] - fa))[0]
+    assert uid_before is not None
+
+    # Undo the OTHER window's add; wa's add survives and is replayed.
+    log = review_log_impl(fp)
+    wb_id = next(e.order_index for e in log if e.window_id == wb and e.kind == "add")
+    review_undo_impl(fp, [wb_id])
+
+    after = _uids_by_window(fp)
+    uid_after = min(after[wa], key=lambda t: abs(t[1] - fa))[0]
+    assert uid_after == uid_before
+    # The whole window, not just the replayed birth: every peak wa carried
+    # through the replay keeps its identifier too.
+    assert {uid for uid, _ in after[wa]} == {uid for uid, _ in before[wa]}
 
 
 @pytest.mark.integration

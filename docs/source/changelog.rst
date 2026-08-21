@@ -45,7 +45,12 @@ engine so they cannot answer differently.
   this field existed (no backfill). Valid only within the one Stage 5 fit
   lineage it was stamped in -- a fresh ``fit run`` issues new identifiers, and
   no cross-run meaning is promised. Curation verbs do not yet accept an
-  identifier in place of a frequency; that is a later step.
+  identifier in place of a frequency; that is a later step. ``review undo``
+  replays the surviving decisions from the automatic baseline, so the
+  identifiers afterward are exactly those a fresh apply of those decisions
+  would produce -- undoing everything restores the automatic fit's
+  identifiers exactly, and a peak the replay re-creates reissues its old
+  identifier only if the replay seed is unchanged.
 
 * **``FittedPeak.peak_id`` is renamed to ``detection_index``.** The field is
   provenance -- the index into the persisted Stage 3 promoted-peak list of the

@@ -793,7 +793,12 @@ class FittedPeak:
     Stage 6 edit and cascade applied to it); a fresh ``fit run`` issues new
     identifiers and no cross-run meaning is promised or should be assumed.
     ``None`` is the honest value for a fit produced before this field existed
-    -- it is never backfilled from a legacy file's fitted positions."""
+    -- it is never backfilled from a legacy file's fitted positions.
+
+    ``review undo`` replays the surviving decisions from the automatic
+    baseline, so the identifiers after an undo are the replay's rather than
+    the pre-undo file's -- re-read them, exactly as a ``derivation`` tag has
+    to be re-read once the decision log is renumbered."""
 
     # Spur-review hint: set when the peak's frequency was a Stage-2b flat-cluster
     # nominee whose coherent decay was ambiguous (the ``flat_decay`` band, where

@@ -153,3 +153,63 @@ def stage5_reviewed_file(_stage5_reviewed_built, tmp_path) -> Path:
 def stage5_file(stage5_small_file) -> Path:
     """Name alias for the post-fit small fixture (used by test_curation)."""
     return stage5_small_file
+
+
+# ---------------------------------------------------------------------------
+# A wider multi-window fixture, for tests whose guarantees are specifically
+# about MULTIPLE live windows. The 3-window build above keeps only the first 3
+# dependency-free windows in topological order, and on this slice of 2638 most
+# of those don't clear Stage 5's gate -- typically only one window survives with
+# an actual fit, which is not enough for the batch engine, the cascade, or a
+# whole-fit invariant.
+# ---------------------------------------------------------------------------
+
+
+def _build_stage5_multi(dest: Path, data_path: str) -> None:
+    from ftmwpipeline._internal.stage4_impl import (
+        load_windows_impl,
+        save_window_plan_impl,
+    )
+
+    ftmw.import_data(dest, source=data_path)
+    ftmw.compute_ft(dest, trim=(26500, 40000))
+    ftmw.estimate_noise(dest)
+    ftmw.detect_peaks(dest)
+    ftmw.assign_windows(dest)
+
+    plan = load_windows_impl(str(dest))["plan"]
+    candidates: List[int] = []
+    for wid in plan.topological_order:
+        deps = [(a, b) for (a, b) in plan.dependency_edges if a == wid or b == wid]
+        if all(a in candidates or a == wid for (a, _) in deps) and all(
+            b in candidates or b == wid for (_, b) in deps
+        ):
+            candidates.append(wid)
+        if len(candidates) >= 12:
+            break
+    keep = set(candidates)
+    plan.windows = [w for w in plan.windows if w.window_id in keep]
+    plan.topological_order = [w for w in plan.topological_order if w in keep]
+    plan.dependency_edges = [
+        (a, b) for (a, b) in plan.dependency_edges if a in keep and b in keep
+    ]
+    save_window_plan_impl(str(dest), plan)
+
+    ftmw.fit_peaks(str(dest))
+
+
+@pytest.fixture(scope="session")
+def _stage5_multi_built(exp_2638_data_path, tmp_path_factory) -> Path:
+    """The shared wider post-fit build -- read-only, built once."""
+    fp = tmp_path_factory.mktemp("stage6_curation_multi") / "stage5_multi.ftmw"
+    _build_stage5_multi(fp, exp_2638_data_path)
+    return fp
+
+
+@pytest.fixture
+def stage5_multi_file(_stage5_multi_built, tmp_path) -> Path:
+    """A fresh writable copy of the wider fixture, which reliably keeps
+    several live (fitted) windows."""
+    fp = tmp_path / "stage5_multi.ftmw"
+    shutil.copy(_stage5_multi_built, fp)
+    return fp

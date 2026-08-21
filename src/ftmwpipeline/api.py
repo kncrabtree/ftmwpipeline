@@ -1975,7 +1975,9 @@ def review_undo(
 
     Equivalent to :meth:`Pipeline.review_undo`.  Restores the automatic Stage 5
     fit and re-applies every surviving decision (ids are renumbered afterward);
-    ``dry_run`` previews without writing.
+    ``dry_run`` previews without writing.  The ``peak_uid`` values afterward
+    are the replay's, not the pre-undo file's -- re-read them, as you would a
+    decision id.
 
     Parameters
     ----------

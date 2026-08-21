@@ -2226,7 +2226,9 @@ class Pipeline:
         Restores the automatic Stage 5 fit (snapshotted before the first edit),
         rebuilds the review from it, and re-applies every surviving decision, so
         decision ids are renumbered afterward.  ``dry_run`` previews the removed/
-        surviving split and the replay plan without writing.
+        surviving split and the replay plan without writing.  The ``peak_uid``
+        values afterward are the replay's, not the pre-undo file's: replay
+        equivalence, not per-peak stability, is what an undo promises.
 
         Parameters
         ----------

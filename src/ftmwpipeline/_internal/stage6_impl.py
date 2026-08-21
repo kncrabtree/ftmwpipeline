@@ -6013,6 +6013,20 @@ def review_undo_impl(
     Raises ``ValueError`` if an id is unknown, there are no decisions, or the
     automatic-fit baseline is unavailable while fit-mutating decisions exist
     (e.g. Stage 5 was re-run after editing -- rebuild and re-edit instead).
+
+    What undo promises for ``peak_uid`` is replay equivalence: the identifiers
+    afterward are exactly those a fresh apply of the surviving decisions onto
+    the automatic baseline would produce. A peak restored from the baseline
+    snapshot carries the baseline's identifier verbatim (the restore is a
+    whole-group ``h5f.copy``); a peak the replay re-creates is stamped fresh
+    from its replay seed, which reissues the same identifier when that seed
+    is unchanged and a different one when it moved -- ``split``'s reseed off
+    its parent's *fitted* position is the case where an undo that shifts the
+    parent legitimately renumbers the products. Per-peak stability is
+    therefore a consequence of an unchanged seed, not a guarantee. Undoing
+    every decision restores the automatic fit's identifiers exactly.
+    Identifiers must be re-read after an undo, the same way decision ids and
+    ``derivation`` tags are renumbered.
     """
     path = str(file_path)
     review = load_stage6_review_from_file(path)
