@@ -481,6 +481,28 @@ def test_window_peak_table_curation_markup():
     assert cur.rfind("cur-cell") > cur.rfind('class="badge')
 
 
+def test_window_peak_table_emits_peak_uid():
+    """A curation row carries ``data-uid`` when the peak has an identifier.
+
+    The cart exports it as a ``uid:N`` remove token, which addresses the peak
+    exactly rather than by proximity. A peak from a fit predating ``peak_uid``
+    carries no attribute at all, so the cart falls back to the frequency --
+    the two cases must stay distinguishable in the markup.
+    """
+    stamped = _final_peak(29148.0, frequency_raw_mhz=29148.001234, peak_uid=15425022)
+    cur = _window_peak_table([stamped], "uV", 1e-6, window_id=217)
+    assert 'data-freq="29148.001234" data-uid="15425022"' in cur
+
+    legacy = _final_peak(29148.0, frequency_raw_mhz=29148.001234)
+    assert legacy.peak_uid is None
+    old = _window_peak_table([legacy], "uV", 1e-6, window_id=217)
+    assert "data-uid" not in old
+    assert 'data-freq="29148.001234"' in old  # still addressable by frequency
+
+    # Never emitted outside curation mode -- the read-only document stays clean.
+    assert "data-uid" not in _window_peak_table([stamped], "uV", 1e-6)
+
+
 def test_ledger_block_curation_add():
     from ftmwpipeline._internal.report_html_impl import _ledger_block
     from ftmwpipeline.core.data_structures import LedgerCandidate
@@ -1425,6 +1447,33 @@ def test_curation_cart_csv_self_declares_frame(full_report_single_file):
     assert _re.search(r"\[\s*'# frame: raw'\s*,\s*'action,window,freqs,params'", body)
 
 
+def test_curation_cart_exports_uid_for_remove(full_report_single_file):
+    """A remove exports the peak's identifier, not its frequency, when the fit
+    carries one.
+
+    ``uid:N`` addresses the peak exactly, so a neighbor inside the snap
+    tolerance cannot be matched instead and the frame is irrelevant to it --
+    which is the whole reason ``review edit --remove`` accepts the token. The
+    fallback (no ``data-uid``, i.e. a fit predating ``peak_uid``) must stay a
+    plain frequency, and the ``# frame: raw`` header must stay unconditional
+    because ``add`` rows still carry frequencies.
+    """
+    import re as _re
+
+    doc = full_report_single_file.doc
+    m = _re.search(r"function csvFreqs\(o\) \{(.*?)\n  \}", doc, _re.S)
+    assert m, "csvFreqs() not found in the emitted report script"
+    body = m.group(1)
+    assert "o.action === 'remove' && o.uid" in body
+    assert "'uid:' + o.uid" in body
+    assert "return csvCell(o.freqs);" in body  # the no-uid fallback
+
+    # The remove control reads the attribute the table now emits, and keeps the
+    # frequency in freqs so the display wiring is unchanged.
+    assert "var uid = row.getAttribute('data-uid');" in doc
+    assert "action: 'remove', window: win, freqs: freq, uid: uid," in doc
+
+
 def _peak_list_row(doc: str):
     """Return ``(window_id, raw_freq_str)`` of one fitted-line row in the report."""
     import re as _re
@@ -1468,6 +1517,63 @@ def test_curation_emitted_frequency_resolves(
     after = _window_raw_freqs(target)
     # That specific peak is gone; the refit did not simply re-add it.
     assert round(float(freq), 6) not in after
+    assert len(after) == len(before) - 1
+
+
+@pytest.mark.integration
+def test_curation_emitted_uid_resolves(
+    stage5_small_file, full_report_single_file, tmp_path
+):
+    """The uid a control emits removes the intended peak when fed straight to
+    ``review apply`` -- the uid half of the rule above.
+
+    This is what makes the report's Remove button meaningful: without it the
+    cart could export a ``uid:N`` the pipeline cannot resolve, and the failure
+    would surface only at apply time on the user's file.
+    """
+    import re as _re
+
+    from ftmwpipeline._internal.stage6_impl import apply_curation_impl
+    from ftmwpipeline.io.fitting_serialization import load_spectrum_fit_from_hdf5
+
+    doc = full_report_single_file.doc
+    m = None
+    for tbl in _re.findall(r'<table class="peak-list">.*?</table>', doc, _re.S):
+        m = _re.search(
+            r'data-window="(\d+)" data-freq="([0-9.]+)" data-uid="(\d+)"', tbl
+        )
+        if m:
+            break
+    # A hard failure, not a skip: every fitted peak in a current build carries a
+    # peak_uid, so an absent attribute means the report stopped emitting it.
+    assert m, "no fitted-line row in the report carries data-uid"
+    wid, freq, uid = int(m.group(1)), m.group(2), int(m.group(3))
+
+    def _window_peaks(fp):
+        with h5py.File(str(fp), "r") as h5f:
+            sf = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+        for wf in sf.window_fits:
+            if int(wf.window_id) == wid:
+                return [
+                    (p.peak_uid, round(float(p.frequency_mhz), 6))
+                    for p in wf.fitted_peaks
+                ]
+        return []
+
+    target = tmp_path / "uid.ftmw"
+    shutil.copy(stage5_small_file, target)
+    before = _window_peaks(target)
+    # The emitted attribute pair names one real peak, consistently.
+    assert (uid, round(float(freq), 6)) in before
+
+    cur = tmp_path / "remove_uid.csv"
+    cur.write_text(
+        f"# frame: raw\naction,window,freqs,params\nremove,{wid},uid:{uid},\n"
+    )
+    apply_curation_impl(str(target), str(cur))
+
+    after = _window_peaks(target)
+    assert uid not in [u for u, _ in after]
     assert len(after) == len(before) - 1
 
 

@@ -67,6 +67,19 @@ engine so they cannot answer differently.
   message naming it (``Error: ...``, exit 1) instead of by ``argparse``
   (exit 2).
 
+* **The HTML report's curation cart exports a remove by identifier.** Clicking
+  **Remove** on a fitted line now queues that peak's ``peak_uid``, and the
+  cart's **Download .csv** / **Copy** export writes it as a ``uid:N`` token
+  rather than a frequency -- so the report's own export addresses the peak
+  exactly, and a neighboring line inside the snap tolerance can no longer be
+  matched instead. Fitted-line rows carry the identifier as a ``data-uid``
+  attribute beside the existing ``data-freq``; the two are kept side by side
+  deliberately, since every in-page display path (the queued-edit
+  strikethrough, the on-plot markers, jump-to-edit) still keys on the
+  frequency. A peak from a fit predating ``peak_uid`` carries no ``data-uid``
+  and exports a frequency exactly as before, and the export's ``# frame: raw``
+  header stays unconditional because ``add`` rows still carry frequencies.
+
 * **Breaking: ``split`` and ``merge`` are removed from every input surface.**
   A curation action is now read by what it does to a window's peak set, not
   by the verb typed: an ``add`` within snap tolerance of a fitted peak that is

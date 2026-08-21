@@ -1843,7 +1843,11 @@ _LIGHTBOX_JS = """<script>
 # ``action,window,freqs,params`` curation CSV that ``review apply`` consumes.
 # The frequency a control emits is the row's raw Stage-5 model frequency
 # (``data-freq``), which is what the edit verbs match on -- not the calibrated
-# display value. Vanilla JS only, in the spirit of the compact toggle above.
+# display value. A remove additionally exports the peak's identifier
+# (``data-uid``) as a ``uid:N`` token when the fit carries one, which names
+# that peak exactly instead of by proximity; the frequency is still what every
+# in-page display path keys on, so the two are carried side by side.
+# Vanilla JS only, in the spirit of the compact toggle above.
 _CURATION_JS = r"""<script>
 (function () {
   var root = document.documentElement;
@@ -1895,14 +1899,26 @@ _CURATION_JS = r"""<script>
     return parts.join('\n');
   }
   function csvCell(s) { return (s == null) ? '' : String(s); }
+  // What a row exports in the freqs column: a remove naming a peak that
+  // carries a peak_uid exports 'uid:N', which addresses that peak exactly
+  // rather than by proximity -- so a neighbor inside the snap tolerance
+  // cannot be matched instead, and the frame is irrelevant to it. Everything
+  // else (adds, and removes on a fit predating peak_uid) exports the raw
+  // Stage 5 model frequency, as it always has.
+  function csvFreqs(o) {
+    if (o.action === 'remove' && o.uid) return 'uid:' + o.uid;
+    return csvCell(o.freqs);
+  }
   function toCsv() {
-    // The cart exports raw Stage 5 model frequencies (see fit_curation.rst),
+    // Adds still export raw Stage 5 model frequencies (see fit_curation.rst),
     // so the file must self-declare that frame -- otherwise applying it to a
-    // self_calibrated file is a hard error (frame is required there).
+    // self_calibrated file is a hard error (frame is required there). The
+    // header is unconditional: a uid ignores it, and a cart holding only uid
+    // removes today may hold an add the next click.
     var lines = ['# frame: raw', 'action,window,freqs,params'];
     ops.forEach(function (o) {
       if (o.action === 'undo') return;  // not a curation-file op
-      lines.push([o.action, o.window, csvCell(o.freqs),
+      lines.push([o.action, o.window, csvFreqs(o),
                   csvCell(o.params)].join(','));
     });
     return lines.join('\n') + '\n';
@@ -2247,8 +2263,15 @@ _CURATION_JS = r"""<script>
       var k = 'remove|' + win + '|' + freq + '|';
       var idx = findKey(k);
       if (idx >= 0) { dropOp(idx); }
-      else { addOp({ action: 'remove', window: win, freqs: freq, params: '',
-                     label: 'remove ' + freq }); }
+      else {
+        // The uid, when the fit carries one, is what the CSV exports; freqs
+        // stays the frequency so every display path (rows, markers, jump)
+        // works the same for a uid-bearing and a legacy peak alike.
+        var uid = row.getAttribute('data-uid');
+        addOp({ action: 'remove', window: win, freqs: freq, uid: uid,
+                params: '',
+                label: 'remove ' + freq + (uid ? ' (uid:' + uid + ')' : '') });
+      }
       return;
     }
     if (act === 'add') {  // ledger candidate add
@@ -2518,11 +2541,19 @@ def _window_peak_table(
 
     When *window_id* is supplied, each row carries ``data-window`` /
     ``data-freq`` (the **raw** Stage-5 model frequency, the value the edit verbs
-    match on -- not the &epsilon;-calibrated display value), and a trailing
-    curation control column (Remove) is appended. The
+    match on -- not the &epsilon;-calibrated display value), plus ``data-uid``
+    when the peak carries a
+    :attr:`~ftmwpipeline.core.data_structures.FittedPeak.peak_uid`, and a
+    trailing curation control column (Remove) is appended. The
     column and attributes are inert markup; the in-report curation script reads
     them, and the curation-only column is CSS-hidden outside curation mode. The
     no-window-id form (used by the pure unit tests) emits neither.
+
+    ``data-freq`` and ``data-uid`` are not redundant: the script keys all of
+    its *display* wiring (row strikethrough, on-plot markers, jump-to-edit) on
+    the frequency, and emits the uid into the exported curation CSV, where it
+    names the peak exactly rather than by proximity. A fit predating
+    ``peak_uid`` simply omits ``data-uid`` and exports frequencies as before.
     """
     from ..visualization.fit_detail import frequency_sorted_labels
 
@@ -2553,7 +2584,10 @@ def _window_peak_table(
         if curate:
             row.append(_peak_curation_cell())
             raw = _freq(p.frequency_raw_mhz)
-            row_attrs.append(f' data-window="{window_id}" data-freq="{_esc(raw)}"')
+            attrs = f' data-window="{window_id}" data-freq="{_esc(raw)}"'
+            if p.peak_uid is not None:
+                attrs += f' data-uid="{int(p.peak_uid)}"'
+            row_attrs.append(attrs)
         rows.append(row)
     head = [
         "Peak",
@@ -2584,8 +2618,9 @@ def _peak_curation_cell() -> str:
     see :func:`_window_curation_controls`.
 
     Pure inert markup -- the curation script wires it by event delegation off the
-    ``cur-btn`` class and the row's ``data-window`` / ``data-freq``. The whole
-    column is CSS-hidden when the report is not in curation mode.
+    ``cur-btn`` class and the row's ``data-window`` / ``data-freq`` /
+    ``data-uid``. The whole column is CSS-hidden when the report is not in
+    curation mode.
     """
     return (
         '<span class="cur-cell">'
