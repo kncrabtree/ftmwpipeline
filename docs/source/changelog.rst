@@ -68,10 +68,13 @@ engine so they cannot answer differently.
   matching unreliable. Persisted in the Stage 5 HDF5 peak columns and exported
   in the CSV/JSON final-products tables; ``None`` on a fit produced before
   this field existed (no backfill). Valid only within the one Stage 5 fit
-  lineage it was stamped in -- a fresh ``fit run`` issues new identifiers, and
-  no cross-run meaning is promised. Curation verbs do not yet accept an
-  identifier in place of a frequency; that is a later step. What ``review
-  undo`` promises is replay equivalence: it replays the surviving decisions
+  lineage it was stamped in: tracking a peak's identity across Stage 6
+  curation is the entire purpose of the field and its only supported use. A
+  fresh ``fit run`` re-stamps every identifier, and any upstream change that
+  moves a seed or the active-FT geometry moves the identifiers with it, so no
+  cross-run meaning is promised. Curation verbs do not yet accept an
+  identifier in place of a frequency; that is a later step. What
+  ``review undo`` promises is replay equivalence: it replays the surviving decisions
   from the automatic baseline, each as its own action against the state the
   previous ones left, so the identifiers afterward are exactly those that
   sequence produces. That is deliberately **not** the same as a fresh

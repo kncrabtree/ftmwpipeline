@@ -790,10 +790,14 @@ class FittedPeak:
     the fitted frequency and must never be recomputed from one.
 
     Valid **only within one Stage 5 fit lineage** (the automatic fit plus every
-    Stage 6 edit and cascade applied to it); a fresh ``fit run`` issues new
-    identifiers and no cross-run meaning is promised or should be assumed.
-    ``None`` is the honest value for a fit produced before this field existed
-    -- it is never backfilled from a legacy file's fitted positions.
+    Stage 6 edit and cascade applied to it). Tracking a peak's identity across
+    Stage 6 curation is the entire purpose of this field and its only
+    supported use. A fresh ``fit run`` re-stamps every identifier, and any
+    upstream change that moves a seed or the active-FT geometry moves the
+    identifiers with it, so no cross-run meaning is promised or should be
+    assumed. ``None`` is the honest value for a fit produced before this
+    field existed -- it is never backfilled from a legacy file's fitted
+    positions.
 
     ``review undo`` replays the surviving decisions from the automatic
     baseline, so the identifiers after an undo are the replay's rather than
