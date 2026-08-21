@@ -30,13 +30,11 @@ from ftmwpipeline.core.data_structures import (
     ReplanInfo,
     Sideband,
     SpectralWindow,
-    SpectrumFit,
     ThawInfo,
     WindowPlan,
 )
 from ftmwpipeline.fitting.peak_model import ModelPeak, molecular_frequency
 from ftmwpipeline.fitting.plan_execution import (
-    DEFAULT_RESIDUAL_EDGE_THRESHOLD,
     FrozenPeak,
     ReplanContext,
     attempt_thaw_round,
@@ -53,7 +51,6 @@ from ftmwpipeline.fitting.result_conversion import (
 from tests.unit.fitting.test_plan_execution import (
     _STAGE4_PARAMS,
     DF_MHZ,
-    PROBE_MHZ,
     SEED,
     SIDEBAND,
     T_US,
@@ -819,39 +816,52 @@ class TestDuplicatePeakUidRefusal:
         )
         return out, plan, [f0, f1]
 
-    def test_duplicate_nonnull_uid_raises(self):
+    def _convert(self, outcome, plan, peak_freqs):
+        return window_outcome_to_fitting_result(
+            outcome,
+            plan.window(0),
+            sideband=SIDEBAND,
+            peak_frequencies_mhz=peak_freqs,
+            acquisition_us=T_US,
+        )
+
+    def test_duplicate_nonnull_uid_is_nudged_not_refused(self):
+        """Two seeds really can land on the same hundredth of a point (2638
+        window 170: two detections' blends both minted 9153300), so a
+        collision is disambiguated rather than refused -- uniqueness is the
+        property the field exists to provide."""
         out, plan, peak_freqs = self._two_peak_window()
         outcome = out.window_outcomes[0]
         assert len(outcome.fit.fit.peaks) == 2
         for p in outcome.fit.fit.peaks:
             p.peak_uid = 4242
-        with pytest.raises(RuntimeError, match=r"duplicate peak_uid=4242"):
-            window_outcome_to_fitting_result(
-                outcome,
-                plan.window(0),
-                sideband=SIDEBAND,
-                peak_frequencies_mhz=peak_freqs,
-                acquisition_us=T_US,
-            )
 
-    def test_error_names_window_and_both_frequencies(self):
+        result = self._convert(outcome, plan, peak_freqs)
+
+        uids = [p.peak_uid for p in result.fitted_peaks]
+        assert len(set(uids)) == len(uids), f"still collided: {uids}"
+        # The first peak in list order keeps the contested value; the later one
+        # takes the nearest free identifier, so the nudge is one unit, not a
+        # fresh number unrelated to where the peak was born.
+        assert sorted(uids) == [4241, 4242] or sorted(uids) == [4242, 4243]
+
+    def test_disambiguation_is_idempotent(self):
+        """A refit warm-starts from the already-distinct set, so nothing moves
+        a second time -- the identifiers are stable, not re-derived."""
         out, plan, peak_freqs = self._two_peak_window()
         outcome = out.window_outcomes[0]
         for p in outcome.fit.fit.peaks:
-            p.peak_uid = 777
-        with pytest.raises(RuntimeError) as excinfo:
-            window_outcome_to_fitting_result(
-                outcome,
-                plan.window(0),
-                sideband=SIDEBAND,
-                peak_frequencies_mhz=peak_freqs,
-                acquisition_us=T_US,
-            )
-        msg = str(excinfo.value)
-        assert "777" in msg
-        assert "window" in msg.lower()
-        assert "0" in msg  # window_id
-        assert "invariant" in msg.lower()
+            p.peak_uid = 4242
+
+        first = [
+            p.peak_uid for p in self._convert(outcome, plan, peak_freqs).fitted_peaks
+        ]
+        # The conversion mutates the outcome's peaks in place, so converting
+        # the same outcome again is exactly the warm-start case.
+        second = [
+            p.peak_uid for p in self._convert(outcome, plan, peak_freqs).fitted_peaks
+        ]
+        assert first == second
 
     def test_none_uids_do_not_collide(self):
         """Any number of unstamped (peak_uid=None) peaks may coexist."""

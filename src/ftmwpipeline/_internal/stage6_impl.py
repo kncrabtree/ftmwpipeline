@@ -1955,6 +1955,34 @@ def refit_window_core(
                 f"the frequency, or -- if no window does -- create one with "
                 f"'review create' first."
             )
+        # A curated add that lands on an existing seed's identity is a
+        # user-input error with a meaningful answer, so it is refused here
+        # rather than left to the conversion path, which nudges an *automatic*
+        # collision to the nearest free identifier and says nothing. Two lines
+        # cannot be born at the same position: asking for one is asking for a
+        # second component of a line that is already there, which is what a
+        # split is. Note this compares the POST-snap seed -- the ledger snap
+        # above can move a seed by up to the snap tolerance, so a frequency
+        # clear of every peak on the plot can still resolve onto one.
+        if mp.peak_uid is not None:
+            clash = next(
+                (
+                    prior
+                    for prior, _, _ in seed_peaks_with_origin
+                    if prior.peak_uid == mp.peak_uid
+                ),
+                None,
+            )
+            if clash is not None:
+                clash_freq = float(center_mhz + s * clash.offset_mhz)
+                raise ValueError(
+                    f"add={float(add_freq):.4f} MHz seeds at "
+                    f"{seed_freq_mhz:.4f} MHz, which is the birth position of "
+                    f"the line already fitted at {clash_freq:.4f} MHz (both "
+                    f"carry peak_uid={mp.peak_uid}). Two lines cannot be born "
+                    f"at the same position; to fit a second component there, "
+                    f"split that line instead."
+                )
         add_derivation = (
             add_derivations[i]
             if add_derivations is not None and i < len(add_derivations)

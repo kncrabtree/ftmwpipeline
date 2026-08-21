@@ -204,7 +204,8 @@ def _clear_add_freq(path: Path, wid: int) -> float:
     seeded it, so the center is the *birth position* of the peak already fitted
     there. An ``add`` at the center therefore asks for a second peak at an
     existing peak's exact identity -- both are stamped with the same
-    ``peak_uid`` and the refit is refused as a duplicate identifier. (Resolving
+    ``peak_uid`` and the add is refused (a ``ValueError`` from the
+    seed-building path -- two lines cannot be born at one position). (Resolving
     a blend is what ``split`` is for.) Pick the in-window position furthest
     from every fitted peak instead, which is what "add a line the detector
     missed" actually means.

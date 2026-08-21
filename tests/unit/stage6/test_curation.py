@@ -816,7 +816,8 @@ def _clear_add_freq(path: Path, wid: int) -> float:
     seeded it, so the center is the *birth position* of the peak already fitted
     there. An ``add`` at the center therefore asks for a second peak at an
     existing peak's exact identity -- both are stamped with the same
-    ``peak_uid`` and the refit is refused as a duplicate identifier. (Resolving
+    ``peak_uid`` and the add is refused (a ``ValueError`` from the
+    seed-building path -- two lines cannot be born at one position). (Resolving
     a blend is what ``split`` is for.) Pick the in-window position furthest
     from every fitted peak instead, which is what "add a line the detector
     missed" actually means.
@@ -1198,3 +1199,52 @@ def test_split_products_peak_uid_survives_the_nls(stage5_multi_file, monkeypatch
     pre_conversion_peaks = converted[-1]
     tail = {p.peak_uid for p in pre_conversion_peaks[-2:]}
     assert tail == set(stamp_calls)
+
+
+# ---------------------------------------------------------------------------
+# A curated add that lands on an existing seed's identity
+#
+# The conversion path nudges an AUTOMATIC uid collision to the nearest free
+# identifier (two detections' blend seeds really can coincide -- 2638 window
+# 170). A curated add is different: it is user input with a meaningful answer,
+# so it is refused where the seed is built, before conversion ever sees it.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_add_twice_at_one_frequency_is_refused(stage5_multi_file, tmp_path):
+    """Two adds at the same frequency ask for two lines born at one position.
+
+    Identical frequencies seed identical offsets and therefore identical
+    identifiers, so the second add collides with the first by construction --
+    no fixture-specific geometry required. The refusal names both the
+    identifier and what to do instead.
+    """
+    wid = _three_window_ids(stage5_multi_file)[0]
+    freq = _clear_add_freq(stage5_multi_file, wid)
+
+    cur = tmp_path / "twice.csv"
+    cur.write_text(f"add,{wid},{freq},\nadd,{wid},{freq},\n")
+
+    with pytest.raises(ValueError) as excinfo:
+        apply_curation_impl(stage5_multi_file, cur)
+
+    msg = str(excinfo.value)
+    assert "peak_uid=" in msg
+    assert "born at the same position" in msg
+    assert "split" in msg
+
+
+@pytest.mark.integration
+def test_one_add_at_that_frequency_still_works(stage5_multi_file, tmp_path):
+    """The guard above must not refuse the ordinary single add -- otherwise the
+    refusal would read as 'adds are broken' rather than 'that one is'."""
+    wid = _three_window_ids(stage5_multi_file)[0]
+    freq = _clear_add_freq(stage5_multi_file, wid)
+    n_before = len(_fitted_by_window(stage5_multi_file)[wid])
+
+    cur = tmp_path / "once.csv"
+    cur.write_text(f"add,{wid},{freq},\n")
+    apply_curation_impl(stage5_multi_file, cur)
+
+    assert len(_fitted_by_window(stage5_multi_file)[wid]) == n_before + 1

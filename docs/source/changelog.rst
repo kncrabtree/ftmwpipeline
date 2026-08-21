@@ -52,6 +52,24 @@ engine so they cannot answer differently.
   identifiers exactly, and a peak the replay re-creates reissues its old
   identifier only if the replay seed is unchanged.
 
+* **A colliding ``peak_uid`` is disambiguated, not refused.** Two seeds can
+  land on the same hundredth of a point: blend escalation pushes each
+  detection's seeds outward by about one point, so neighbouring detections'
+  seed sets interleave, and the residual re-seed places a seed at the residual
+  maximum, which nothing constrains. The earlier argument that this could not
+  happen bounded the spacing between *detections*, not between the seeds those
+  detections spawn, and a collision aborted the whole fit with an "invariant
+  violation". A window's fitted peaks are now made distinct by moving the later
+  of two colliding peaks to the nearest free identifier -- deterministic, and
+  idempotent across a refit, since the warm-started set is already distinct.
+  Uniqueness is the property the field exists to provide; treat a recomputed
+  point position as agreeing with an identifier to within a unit or two rather
+  than exactly. A *curated* ``add`` that lands on an existing peak's birth
+  position is still refused, because that one has a meaningful answer -- it is
+  a request for a second component of a line that is already there -- but it
+  now raises ``ValueError`` from the add path, naming both identifiers, rather
+  than ``RuntimeError`` from the conversion path.
+
 * **``FittedPeak.peak_id`` is renamed to ``detection_index``.** The field is
   provenance -- the index into the persisted Stage 3 promoted-peak list of the
   detection nearest a fitted line -- and it is explicitly non-unique: several

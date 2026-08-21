@@ -38,8 +38,11 @@ region it is fit over.
 
 from __future__ import annotations
 
+import logging
+import math
 from collections.abc import Sequence
-from typing import List, Optional, Union
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Union
 
 import numpy as np
 
@@ -72,6 +75,8 @@ from .plan_execution import (
 from .residual_screening import ResidualPeakCandidate
 from .window_fit import AddStep, KnockoutResult
 
+logger = logging.getLogger(__name__)
+
 __all__ = [
     "build_covariance_param_labels",
     "sort_fitting_result_by_frequency",
@@ -88,8 +93,6 @@ SidebandLike = Union[Sideband, str]
 # ---------------------------------------------------------------------------
 # Shared fitted-line view (DRY: one decision surface for the cleanup)
 # ---------------------------------------------------------------------------
-import math
-from dataclasses import dataclass
 
 
 @dataclass
@@ -459,10 +462,31 @@ def _match_free_peak_index(
     return int(best_idx)
 
 
-def _check_no_duplicate_peak_uids(
+# How far the collision search will walk before it concludes the stamp set is
+# corrupt rather than merely collided. A uid is hundredths of a point and a
+# window holds a handful of peaks, so a free slot is always within a few units.
+_UID_COLLISION_SEARCH_LIMIT = 1000
+
+
+def _nearest_free_uid(uid: int, taken: Dict[int, FittedPeak]) -> int:
+    """The unused identifier closest to ``uid``, preferring the larger side on
+    a tie so the choice is deterministic rather than merely arbitrary."""
+    for delta in range(1, _UID_COLLISION_SEARCH_LIMIT + 1):
+        for candidate in (uid + delta, uid - delta):
+            if candidate not in taken:
+                return candidate
+    raise RuntimeError(
+        f"cannot disambiguate peak_uid={uid}: every identifier within "
+        f"{_UID_COLLISION_SEARCH_LIMIT} units of it is already taken, which "
+        "means the stamp set is corrupt, not merely collided."
+    )
+
+
+def _disambiguate_peak_uids(
     fitted_peaks: Sequence[FittedPeak], *, window_id: Optional[int]
 ) -> None:
-    """Refuse a window whose fitted peaks carry a duplicated ``peak_uid``.
+    """Give every fitted peak in a window a distinct ``peak_uid``, nudging a
+    collision to the nearest free value. Mutates the peaks in place.
 
     Scoped to the free/fitted peak set that becomes :class:`FittedPeak` --
     never the frozen/fixed background, which legitimately shares a uid with
@@ -472,29 +496,51 @@ def _check_no_duplicate_peak_uids(
     compared; ``None`` is the absence of a value, not a value, so any number
     of unstamped peaks may coexist.
 
-    Seeds are separated by at least ~25 hundredths of a point at worst case
-    (see ``scratch/peak-identity-plan.md``), so a genuine collision among
-    fitted peaks means something is structurally wrong upstream -- this is
-    an invariant violation, not a user-input problem, and the run should
-    stop rather than persist a duplicated identifier to exactly the
-    consumers the identifier exists to serve.
+    **Two seeds really can land on the same hundredth of a point.** This used
+    to refuse instead, on the argument that Stage 3's ``_DEDUP_TOL_BINS =
+    0.25`` keeps seeds ~25 units apart -- but that bounds the spacing between
+    *detections*, not between the seeds those detections spawn. Blend
+    escalation pushes seeds outward from each detection by a straddle of
+    roughly one point (100 units), so neighbouring detections' seed sets
+    interleave, and the residual re-seed places a seed at the residual
+    maximum, which nothing constrains. Observed on 2638 window 170, where two
+    detections' blends both minted 9153300.
+
+    Uniqueness is the property this field exists to provide, so uniqueness
+    wins: the first peak in list order keeps the contested value and the later
+    one moves, which makes the outcome deterministic and idempotent (a refit
+    warm-starts from the already-distinct set and nudges nothing). Exact
+    positional derivability is not sacrificed by much, and was never exact
+    anyway -- a curated add snaps to a ledger candidate up to 62.5 units away
+    and is stamped from the snapped position. Treat a recomputed point
+    position as agreeing with the identifier to within a unit or two.
+
+    A *curated* add that lands on an existing peak's identity is refused
+    before it reaches here (``stage6_impl.refit_window_core``): that one is a
+    user-input error with a meaningful answer, not an automatic collision to
+    paper over.
     """
-    seen: dict[int, FittedPeak] = {}
+    seen: Dict[int, FittedPeak] = {}
     for peak in fitted_peaks:
         uid = peak.peak_uid
         if uid is None:
             continue
-        prior = seen.get(uid)
-        if prior is not None:
-            raise RuntimeError(
-                f"Invariant violation: duplicate peak_uid={uid} in window "
-                f"{window_id!r} -- fitted peaks at {prior.frequency_mhz!r} MHz "
-                f"and {peak.frequency_mhz!r} MHz both carry this identifier. "
-                "Two distinct fitted peaks must never share a peak_uid; this "
-                "indicates a structural bug in the stamping path, not a "
-                "user-input problem."
-            )
-        seen[uid] = peak
+        if uid not in seen:
+            seen[uid] = peak
+            continue
+        prior = seen[uid]
+        new_uid = _nearest_free_uid(uid, seen)
+        logger.debug(
+            "window %r: peak_uid %d collided (fitted peaks at %r and %r MHz); "
+            "moved the later peak to %d",
+            window_id,
+            uid,
+            prior.frequency_mhz,
+            peak.frequency_mhz,
+            new_uid,
+        )
+        peak.peak_uid = new_uid
+        seen[new_uid] = peak
 
 
 # ---------------------------------------------------------------------------
@@ -638,7 +684,7 @@ def window_outcome_to_fitting_result(
             )
         )
 
-    _check_no_duplicate_peak_uids(fitted_peaks, window_id=fit_window.window_id)
+    _disambiguate_peak_uids(fitted_peaks, window_id=fit_window.window_id)
 
     shape_attr = inner.shape
     shape_str = shape_attr.value if hasattr(shape_attr, "value") else str(shape_attr)
