@@ -14,7 +14,7 @@ span, is read as one -- see ``review edit``'s description and
 
 import argparse
 import json
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Union
 
 import h5py
 
@@ -465,6 +465,18 @@ def _print_candidate_table(cands: List[LedgerCandidate], indent: int = 0) -> Non
         )
 
 
+def _fmt_edit_token(token: str) -> str:
+    """Render one ``--add``/``--remove`` CLI token for a summary line: a
+    ``uid:N`` identifier is shown as typed, a numeric token is shown to 4
+    decimal places, matching every other frequency this CLI prints."""
+    if token.strip().lower().startswith("uid:"):
+        return token.strip()
+    try:
+        return f"{float(token):.4f}"
+    except ValueError:
+        return token
+
+
 def cmd_review_edit(args: argparse.Namespace) -> int:
     """Re-fit one window with user-directed add/remove edits.
 
@@ -474,8 +486,8 @@ def cmd_review_edit(args: argparse.Namespace) -> int:
     setup_logging(getattr(args, "verbose", False))
     file_path = _ensure_ftmw(args.file_path)
     window_id: int = args.window
-    add_freqs: List[float] = list(args.add or [])
-    remove_freqs: List[float] = list(args.remove or [])
+    add_freqs: List[Union[float, str]] = list(args.add or [])
+    remove_freqs: List[Union[float, str]] = list(args.remove or [])
 
     if not add_freqs and not remove_freqs:
         print(
@@ -504,9 +516,15 @@ def cmd_review_edit(args: argparse.Namespace) -> int:
         f"chi2r {result.chi2r_before:.4g} → {result.chi2r_after:.4g}"
     )
     if add_freqs:
-        print(f"  Added seeds ({len(add_freqs)}): {[f'{f:.4f}' for f in add_freqs]}")
+        print(
+            f"  Added seeds ({len(add_freqs)}): "
+            f"{[_fmt_edit_token(str(f)) for f in add_freqs]}"
+        )
     if remove_freqs:
-        print(f"  Removed ({len(remove_freqs)}): {[f'{f:.4f}' for f in remove_freqs]}")
+        print(
+            f"  Removed ({len(remove_freqs)}): "
+            f"{[_fmt_edit_token(str(f)) for f in remove_freqs]}"
+        )
     if result.fitted_peaks:
         print(f"  {'freq (MHz)':>14}  {'amp':>10}  {'snr':>8}  {'origin':>6}")
         print("  " + "-" * 46)
@@ -1322,25 +1340,28 @@ def register_review_commands(subparsers: Any) -> None:
     p_edit.add_argument(
         "--add",
         dest="add",
-        type=float,
+        type=str,
         action="append",
         default=None,
         metavar="F",
         help=(
-            "Molecular MHz frequency of a peak to add. "
-            "Repeat the flag for several: --add F1 --add F2 ..."
+            "Molecular MHz frequency of a peak to add. Frequency-only -- a "
+            "'uid:N' identifier is refused, since add creates a peak that "
+            "does not exist yet. Repeat the flag for several: "
+            "--add F1 --add F2 ..."
         ),
     )
     p_edit.add_argument(
         "--remove",
         dest="remove",
-        type=float,
+        type=str,
         action="append",
         default=None,
         metavar="F",
         help=(
-            "Molecular MHz frequency of a fitted peak to remove. "
-            "Repeat the flag for several: --remove F1 --remove F2 ..."
+            "Molecular MHz frequency of a fitted peak to remove, or a "
+            "'uid:N' token naming it by its peak_uid. "
+            "Repeat the flag for several: --remove F1 --remove uid:N ..."
         ),
     )
     p_edit.add_argument(

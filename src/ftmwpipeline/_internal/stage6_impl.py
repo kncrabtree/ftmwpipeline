@@ -38,6 +38,7 @@ from typing import (
     List,
     Optional,
     Sequence,
+    Set,
     Tuple,
     TypeVar,
     Union,
@@ -47,7 +48,7 @@ import h5py
 import numpy as np
 
 from ..core.calibration import CalibrationStamp, CalibrationState
-from ..core.curation import REFIT_SNAP_TOL_BINS, Frame
+from ..core.curation import REFIT_SNAP_TOL_BINS, Frame, PeakUidToken, parse_peak_token
 from ..core.data_structures import (
     AttentionReason,
     AuditStep,
@@ -2479,8 +2480,8 @@ def refit_window_impl(
     file_path: Union[Path, str],
     window_id: int,
     *,
-    add: Sequence[float] = (),
-    remove: Sequence[float] = (),
+    add: Sequence[Union[float, str]] = (),
+    remove: Sequence[Union[float, str]] = (),
     add_seeds: Optional[List[ModelPeak]] = None,
     snap_tol_mhz: Optional[float] = None,
     frame: Optional[Frame] = None,
@@ -2520,19 +2521,30 @@ def refit_window_impl(
     window_id :
         The ``FitWindow.window_id`` / ``FittingResult.window_id`` to refit.
     add :
-        Molecular frequencies (MHz) of peaks to add.  Each is snapped to the
-        nearest ledger candidate within ``snap_tol_mhz`` (to reuse the
-        recorded seed offset/amplitude) or seeded fresh at the given
-        frequency.  User-added peaks carry ``origin="user"`` and are stamped
-        with the ``order_index`` of the decision that added them
+        Molecular frequencies (MHz) of peaks to add, as ``float`` or a numeric
+        ``str`` (the CLI passes strings).  Each is snapped to the nearest
+        ledger candidate within ``snap_tol_mhz`` (to reuse the recorded seed
+        offset/amplitude) or seeded fresh at the given frequency.  User-added
+        peaks carry ``origin="user"`` and are stamped with the
+        ``order_index`` of the decision that added them
         (:attr:`~ftmwpipeline.core.data_structures.FittedPeak.derivation`).
         The post-snap frequency must lie inside the window's own
         ``freq_range``; a frequency no window covers needs
-        :func:`create_window_impl` first.
+        :func:`create_window_impl` first.  ``add`` is frequency-only: a
+        ``"uid:N"`` token is refused (see :func:`~ftmwpipeline.core.curation.
+        parse_peak_token`) -- a uid names a peak that already exists, and
+        ``add`` has none.
     remove :
-        Molecular frequencies (MHz) of fitted peaks to remove.  Each is
-        matched to the nearest fitted peak within ``snap_tol_mhz`` and dropped
-        from the seed set before the NLS.
+        Frequencies (MHz, ``float`` or numeric ``str``) or ``"uid:N"``
+        identifier tokens of fitted peaks to remove; the two may be mixed in
+        one call.  A frequency is matched to the nearest fitted peak within
+        ``snap_tol_mhz``.  A ``"uid:N"`` token is resolved to the fitted peak
+        in this window whose
+        :attr:`~ftmwpipeline.core.data_structures.FittedPeak.peak_uid`
+        equals ``N`` -- frame-independent, and always an exact match rather
+        than a snap (see :func:`~ftmwpipeline.core.curation.parse_peak_token`
+        for the grammar). Either way the matched peak is dropped from the
+        seed set before the NLS.
     add_seeds :
         Optional explicit :class:`~ftmwpipeline.fitting.peak_model.ModelPeak`
         seeds (in the window's baseband-offset frame) for the added peaks.
@@ -2566,8 +2578,10 @@ def refit_window_impl(
     ValueError
         When Stage 5 has not been run, the ``window_id`` is not found,
         ``len(add_seeds) != len(add)``, any ``remove`` frequency does not
-        match a fitted peak within ``snap_tol_mhz``, any ``add`` frequency
-        falls outside the named window's ``freq_range`` after snapping, or
+        match a fitted peak within ``snap_tol_mhz``, any ``remove`` uid
+        matches no fitted peak in the window, any ``add`` token is malformed
+        or names a ``"uid:N"`` identifier, any ``add`` frequency falls
+        outside the named window's ``freq_range`` after snapping, or
         ``frame`` is omitted on a ``self_calibrated`` file with a non-empty
         ``add``/``remove``.
     """
@@ -2577,12 +2591,31 @@ def refit_window_impl(
     _check_add_seeds_arity(add, add_seeds)
     path = str(file_path)
     snap_tol = resolve_snap_tol_mhz(path, snap_tol_mhz)
-    add_raw, remove_raw = list(add), list(remove)
+
+    add_raw: List[float] = []
+    for tok in add:
+        parsed = parse_peak_token(tok)
+        if isinstance(parsed, PeakUidToken):
+            raise ValueError(
+                f"add takes a frequency (MHz), not a peak identifier "
+                f"('uid:{parsed.uid}'): a uid names a peak that already "
+                f"exists, but add creates a new one"
+            )
+        add_raw.append(parsed)
+    remove_raw: List[Union[float, PeakUidToken]] = [
+        parse_peak_token(tok) for tok in remove
+    ]
+
     if add_raw or remove_raw:
         resolved_frame, stamp = _resolve_frame(path, frame)
         add_raw = [_frame_to_raw(f, frame=resolved_frame, stamp=stamp) for f in add_raw]
         remove_raw = [
-            _frame_to_raw(f, frame=resolved_frame, stamp=stamp) for f in remove_raw
+            (
+                t
+                if isinstance(t, PeakUidToken)
+                else _frame_to_raw(t, frame=resolved_frame, stamp=stamp)
+            )
+            for t in remove_raw
         ]
     return _run_single_action(
         path,
@@ -3280,8 +3313,14 @@ class CurationOp:
         verb-recorded decision.
     window_id : int
         The target ``FitWindow.window_id``.
-    freqs : list of float
-        Molecular MHz frequencies the row carries (empty for a bare accept).
+    freqs : list of float or PeakUidToken
+        Molecular MHz frequencies (or, on a ``remove`` row only, ``"uid:N"``
+        peak-identifier tokens -- see
+        :func:`~ftmwpipeline.core.curation.parse_peak_token`) the row
+        carries; empty for a bare accept. Every action other than ``remove``
+        is frequency-only -- :func:`parse_curation_file` refuses a
+        ``PeakUidToken`` anywhere else, so this list holds plain ``float``
+        for every action but ``remove``.
     params : dict
         ``key=value`` modifiers (``into`` for split, ``candidate`` for accept).
     line_no : int
@@ -3290,7 +3329,7 @@ class CurationOp:
 
     action: str
     window_id: int
-    freqs: List[float]
+    freqs: List[Union[float, PeakUidToken]]
     params: Dict[str, str]
     line_no: int
 
@@ -3346,12 +3385,16 @@ class PlannedAction:
     (with the coalesced ``add`` / ``remove`` sets), ``merge`` ->
     :func:`merge_peaks_impl`, ``split`` -> :func:`split_peak_impl`, ``accept``
     -> :func:`review_accept_impl`.
+
+    ``remove`` may hold ``PeakUidToken`` entries (from a ``"uid:N"`` row
+    token); every other frequency-bearing field is plain ``float`` -- see
+    :class:`CurationOp`.
     """
 
     kind: str
     window_id: int
     add: List[float] = field(default_factory=list)
-    remove: List[float] = field(default_factory=list)
+    remove: List[Union[float, PeakUidToken]] = field(default_factory=list)
     peaks: List[float] = field(default_factory=list)
     peak: Optional[float] = None
     into: int = 2
@@ -3419,7 +3462,17 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
     ``add`` / ``remove`` / ``accept`` / ``create``. Blank lines and ``#``
     comments are ignored; an optional header row (first cell ``action``) is
     skipped. ``freqs`` is a ``;``-separated list of molecular MHz; ``params``
-    is a ``;``-separated list of ``key=value`` modifiers.
+    is a ``;``-separated list of ``key=value`` modifiers. ``add`` and
+    ``remove`` each need exactly one token per row -- a run of ``add``/
+    ``remove`` rows on one window coalesces into a single refit (see
+    :func:`_resolve_curation_plan`), so naming several peaks is a matter of
+    writing several rows, not a longer ``freqs`` column. ``remove``'s one
+    token may instead be a ``"uid:N"`` peak-identifier token (see
+    :func:`~ftmwpipeline.core.curation.parse_peak_token`) -- ``remove,12,
+    uid:15425022,`` removes a peak by identifier. ``add``/``create``/
+    ``accept``'s ``candidate=`` are frequency-only; a ``"uid:N"`` token there
+    is refused (a uid names a peak that already exists, and none of those
+    targets one).
 
     ``split`` and ``merge`` are not row actions: both are read from what an
     add/remove combination *does* to a window's peak set, not typed. A row
@@ -3525,12 +3578,22 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                 ) from None
         freqs_raw = fields[2] if len(fields) > 2 else ""
         params_raw = fields[3] if len(fields) > 3 else ""
-        try:
-            freqs = [float(x) for x in freqs_raw.split(";") if x.strip()]
-        except ValueError:
-            raise ValueError(
-                f"curation line {line_no}: non-numeric frequency in {freqs_raw!r}"
-            ) from None
+        freq_tokens = [x for x in freqs_raw.split(";") if x.strip()]
+        freqs: List[Union[float, PeakUidToken]]
+        if action == "remove":
+            # The one action whose single token may be a "uid:N"
+            # peak-identifier instead of a frequency -- see parse_peak_token.
+            try:
+                freqs = [parse_peak_token(x) for x in freq_tokens]
+            except ValueError as exc:
+                raise ValueError(f"curation line {line_no}: {exc}") from None
+        else:
+            try:
+                freqs = [float(x) for x in freq_tokens]
+            except ValueError:
+                raise ValueError(
+                    f"curation line {line_no}: non-numeric frequency in {freqs_raw!r}"
+                ) from None
         params = _parse_curation_params(params_raw, line_no)
 
         # Per-action arity / parameter validation.
@@ -3595,6 +3658,23 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
     return ParsedCurationFile(ops, header)
 
 
+def _assert_plain_freq(token: Union[float, PeakUidToken]) -> float:
+    """Narrow a :class:`CurationOp` token to a plain frequency.
+
+    Every action but ``remove`` is frequency-only by construction --
+    :func:`parse_curation_file` only ever produces a ``PeakUidToken`` on a
+    ``remove`` row, and :func:`_decision_to_op` only ever hand-builds plain
+    floats. This both proves that invariant to mypy at each non-``remove``
+    call site below and guards it at runtime, matching this module's
+    preference for guards enforced by structure over a remembered
+    convention.
+    """
+    assert isinstance(
+        token, float
+    ), f"expected a plain frequency, got a peak identifier: {token!r}"
+    return token
+
+
 def _resolve_curation_plan(ops: Sequence[CurationOp]) -> List[PlannedAction]:
     """Coalesce parsed ops into the delegated action plan.
 
@@ -3621,7 +3701,11 @@ def _resolve_curation_plan(ops: Sequence[CurationOp]) -> List[PlannedAction]:
     for op in ops:
         wid = op.window_id
         if op.action == "create":
-            plan.append(PlannedAction(kind="create", window_id=wid, anchor=op.freqs[0]))
+            plan.append(
+                PlannedAction(
+                    kind="create", window_id=wid, anchor=_assert_plain_freq(op.freqs[0])
+                )
+            )
             continue
         if op.action in ("add", "remove"):
             pa = pending.get(wid)
@@ -3630,22 +3714,29 @@ def _resolve_curation_plan(ops: Sequence[CurationOp]) -> List[PlannedAction]:
                 pending[wid] = pa
                 pending_order.append(wid)
             if op.action == "add":
-                pa.add.append(op.freqs[0])
+                pa.add.append(_assert_plain_freq(op.freqs[0]))
             else:
+                # remove's one token per row may be a plain frequency or a
+                # PeakUidToken (see CurationOp.freqs); either becomes this
+                # row's removal target.
                 pa.remove.append(op.freqs[0])
             continue
         # Barrier for this window.
         flush(wid)
         if op.action == "merge":
             plan.append(
-                PlannedAction(kind="merge", window_id=wid, peaks=list(op.freqs))
+                PlannedAction(
+                    kind="merge",
+                    window_id=wid,
+                    peaks=[_assert_plain_freq(f) for f in op.freqs],
+                )
             )
         elif op.action == "split":
             plan.append(
                 PlannedAction(
                     kind="split",
                     window_id=wid,
-                    peak=op.freqs[0],
+                    peak=_assert_plain_freq(op.freqs[0]),
                     into=int(op.params.get("into", 2)),
                 )
             )
@@ -3663,6 +3754,11 @@ def _resolve_curation_plan(ops: Sequence[CurationOp]) -> List[PlannedAction]:
     return plan
 
 
+def _fmt_remove_token(token: Union[float, PeakUidToken]) -> str:
+    """Render one ``remove`` target for a human-readable summary."""
+    return f"uid:{token.uid}" if isinstance(token, PeakUidToken) else f"{token:.4f}"
+
+
 def describe_planned_action(action: PlannedAction) -> str:
     """Render one :class:`PlannedAction` as a one-line human-readable summary."""
     wid = action.window_id
@@ -3674,7 +3770,9 @@ def describe_planned_action(action: PlannedAction) -> str:
         if action.add:
             parts.append("add " + ", ".join(f"{f:.4f}" for f in action.add))
         if action.remove:
-            parts.append("remove " + ", ".join(f"{f:.4f}" for f in action.remove))
+            parts.append(
+                "remove " + ", ".join(_fmt_remove_token(t) for t in action.remove)
+            )
         return f"edit window {wid}: " + "; ".join(parts)
     if action.kind == "merge":
         return f"merge window {wid}: peaks " + ", ".join(
@@ -3703,6 +3801,30 @@ def _fitted_freqs_by_window(path: str) -> Dict[int, List[float]]:
     return out
 
 
+def _fitted_uids_by_window(path: str) -> Dict[int, Set[int]]:
+    """``peak_uid`` of each window's persisted fitted peaks (empty if no fit).
+
+    Parallels :func:`_fitted_freqs_by_window` -- a separate accessor rather
+    than folding this into it, since most callers of that one want only
+    frequencies. A peak from a fit predating ``peak_uid`` (``peak_uid is
+    None``) contributes nothing to its window's set, which is what makes a
+    ``"uid:N"`` dry-run check against such a window correctly report the uid
+    as unmatched rather than crashing on ``None``.
+    """
+    out: Dict[int, Set[int]] = {}
+    with h5py.File(path, "r") as h5f:
+        if "stage5_fitting" not in h5f:
+            return out
+        spectrum_fit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+    for wf in spectrum_fit.window_fits:
+        if wf.window_id is None:
+            continue
+        out[int(wf.window_id)] = {
+            int(p.peak_uid) for p in wf.fitted_peaks if p.peak_uid is not None
+        }
+    return out
+
+
 def _planned_window_ranges(path: str) -> Dict[int, Tuple[float, float]]:
     """``freq_range`` of every window in the effective plan, low bound first.
 
@@ -3728,7 +3850,10 @@ def _curation_ambiguity_warnings(
 
     ``remove`` / ``split`` / ``merge`` match an *existing* fitted peak by nearest
     frequency within ``snap_tol_mhz``; if two peaks sit within tolerance the
-    matcher's pick is ambiguous, and if none do the edit will fail.
+    matcher's pick is ambiguous, and if none do the edit will fail. A
+    ``remove``'s ``"uid:N"`` token instead needs an *exact* ``peak_uid`` match
+    in the named window -- no snap, no ambiguity, just present or absent --
+    and is checked accordingly.
 
     ``add`` creates a peak, so it has no target to match -- but it does have a
     target *window*, and that is exactly what goes stale: window ids are
@@ -3746,6 +3871,15 @@ def _curation_ambiguity_warnings(
     failures a live apply would hit instead of only some of them.
     """
     by_window = _fitted_freqs_by_window(path)
+    # Only opened when the plan actually carries a "uid:N" remove target --
+    # most callers never do, and this keeps a plan of plain frequencies from
+    # paying (or requiring) a second file read.
+    has_uid_target = any(
+        action.kind == "edit"
+        and any(isinstance(t, PeakUidToken) for t in action.remove)
+        for action in plan
+    )
+    by_uid: Dict[int, Set[int]] = _fitted_uids_by_window(path) if has_uid_target else {}
     planned_ranges = _planned_window_ranges(path)
     warnings: List[str] = []
 
@@ -3808,10 +3942,27 @@ def _curation_ambiguity_warnings(
                 f"({near_str}); the nearest is taken"
             )
 
+    def check_uid(wid: int, uid: int, what: str) -> None:
+        fitted_uids = by_uid.get(wid)
+        if not fitted_uids:
+            warnings.append(f"{what}: window {wid} has no fitted peaks")
+            return
+        if uid not in fitted_uids:
+            warnings.append(
+                f"{what}: no fitted peak with peak_uid={uid} in window {wid} "
+                f"(the edit will fail)"
+            )
+
     for action in plan:
         wid = action.window_id
         if action.kind == "edit":
             for f in action.remove:
+                if isinstance(f, PeakUidToken):
+                    # Exact peak_uid match, not a nearest-frequency snap --
+                    # checked by identity rather than by check()'s tolerance
+                    # logic.
+                    check_uid(wid, f.uid, f"remove uid:{f.uid}")
+                    continue
                 check(wid, f, f"remove {f:.4f}")
             for f in action.add:
                 check_add(wid, f, f"add {f:.4f}")
@@ -3943,7 +4094,10 @@ def _frame_mismatch_warnings(
         wid = action.window_id
         targets: List[float] = []
         if action.kind == "edit":
-            targets.extend(action.remove)
+            # A PeakUidToken carries no frequency of its own -- it always
+            # matches its named peak exactly regardless of frame, so it has
+            # no residual to contribute to this heuristic and is excluded.
+            targets.extend(f for f in action.remove if isinstance(f, float))
         elif action.kind == "merge":
             targets.extend(action.peaks)
         elif action.kind == "split" and action.peak is not None:
@@ -4054,11 +4208,19 @@ def _execute_planned_action(path: str, action: PlannedAction) -> None:
         )
         return
     if action.kind == "edit":
+        # action.remove may carry PeakUidToken entries; refit_window_impl's
+        # public signature takes float/str tokens, so a uid is re-spelled as
+        # its "uid:N" string and re-parsed on the way in (this path is only
+        # ever reached for a bare-accept-only plan today -- see
+        # _execute_curation_batch -- so it is exercised defensively).
+        remove_tokens: List[Union[float, str]] = [
+            f"uid:{t.uid}" if isinstance(t, PeakUidToken) else t for t in action.remove
+        ]
         refit_window_impl(
             path,
             action.window_id,
             add=action.add,
-            remove=action.remove,
+            remove=remove_tokens,
             frame="raw",
         )
     elif action.kind == "merge":
@@ -4625,11 +4787,47 @@ def _infer_curation_intent(
     return merge_removes, merge_add, splits, residual_add, working_remove
 
 
+def _resolve_remove_uid_tokens(
+    ctx: _BatchCtx,
+    window_id: int,
+    tokens: Sequence[Union[float, PeakUidToken]],
+) -> List[float]:
+    """Resolve a ``remove`` list's ``PeakUidToken`` entries to the current
+    ``frequency_mhz`` of the fitted peak they name in ``window_id``, leaving
+    every plain frequency untouched.
+
+    This is the entire uid-addressing mechanism: once resolved, the result is
+    an ordinary frequency list, and every downstream consumer --
+    :func:`_infer_curation_intent`, :func:`_batch_apply_edit_plain`, decision
+    recording -- runs completely unaware a uid was ever involved. It is safe
+    because the resolved frequency is the *fitted* peak's own position, at
+    distance exactly 0 from itself, so the existing nearest-match snap always
+    picks that peak back out again.
+    """
+    if not any(isinstance(t, PeakUidToken) for t in tokens):
+        return [float(t) for t in tokens]  # type: ignore[arg-type]
+    wf = _batch_lookup_wf(ctx, window_id)
+    resolved: List[float] = []
+    for t in tokens:
+        if isinstance(t, PeakUidToken):
+            match = next((p for p in wf.fitted_peaks if p.peak_uid == t.uid), None)
+            if match is None:
+                raise ValueError(
+                    f"window {window_id} has no fitted peak with "
+                    f"peak_uid={t.uid} to remove (already removed, from a "
+                    f"fit predating peak_uid, or the identifier is wrong)"
+                )
+            resolved.append(float(match.frequency_mhz))
+        else:
+            resolved.append(float(t))
+    return resolved
+
+
 def _batch_apply_edit_action(
     ctx: _BatchCtx,
     window_id: int,
     add: Sequence[float],
-    remove: Sequence[float],
+    remove: Sequence[Union[float, PeakUidToken]],
     *,
     add_seeds: Optional[List[ModelPeak]] = None,
     record_decisions: bool = True,
@@ -4651,8 +4849,15 @@ def _batch_apply_edit_action(
     is the caller's own placement decision, not ours to reinterpret), nor
     when the action carries no ``add``/``remove`` at all (an identity refit
     has nothing to reinterpret).
+
+    ``remove`` entries carrying a ``PeakUidToken`` (from a ``"uid:N"`` token
+    on any of the three interfaces, or a curation file's ``remove`` row) are
+    resolved to that peak's current frequency first
+    (:func:`_resolve_remove_uid_tokens`), so everything below this point sees
+    only plain frequencies.
     """
     _check_add_seeds_arity(add, add_seeds)
+    remove = _resolve_remove_uid_tokens(ctx, window_id, remove)
 
     if add_seeds is None and (add or remove):
         wf0 = _batch_lookup_wf(ctx, window_id)
@@ -5544,7 +5749,7 @@ def _persist_batch_review(ctx: _BatchCtx, path: str) -> None:
 
 
 def _check_add_seeds_arity(
-    add: Sequence[float], add_seeds: Optional[Sequence[ModelPeak]]
+    add: Sequence[object], add_seeds: Optional[Sequence[ModelPeak]]
 ) -> None:
     """Explicit seeds are positional: one per added frequency, or none at all."""
     if add_seeds is not None and len(add_seeds) != len(add):
@@ -5852,10 +6057,16 @@ def _planned_action_to_raw(
     def conv(f: float) -> float:
         return _frame_to_raw(f, frame=frame, stamp=stamp)
 
+    def conv_remove(t: Union[float, PeakUidToken]) -> Union[float, PeakUidToken]:
+        # A PeakUidToken is frame-independent (core.curation.PeakUidToken):
+        # it carries no frequency of its own to convert, and is resolved to
+        # one downstream, against the raw-frame fitted peaks directly.
+        return t if isinstance(t, PeakUidToken) else conv(t)
+
     return replace(
         action,
         add=[conv(f) for f in action.add],
-        remove=[conv(f) for f in action.remove],
+        remove=[conv_remove(t) for t in action.remove],
         peaks=[conv(f) for f in action.peaks],
         peak=None if action.peak is None else conv(action.peak),
         candidate=None if action.candidate is None else conv(action.candidate),
@@ -7547,8 +7758,8 @@ class ReviewSession:
         self,
         window_id: int,
         *,
-        add: Sequence[float] = (),
-        remove: Sequence[float] = (),
+        add: Sequence[Union[float, str]] = (),
+        remove: Sequence[Union[float, str]] = (),
         snap_tol_mhz: Optional[float] = None,
         frame: Optional[Frame] = None,
     ) -> RefitWindowResult:

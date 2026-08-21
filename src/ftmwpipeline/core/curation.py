@@ -22,11 +22,18 @@ the same discipline :mod:`ftmwpipeline.core.settings` documents for itself, so
 it can be imported anywhere without a cycle.  That is also why the *resolved*
 value lives behind an accessor rather than here: resolving it means opening a
 file.
+
+It also holds :func:`parse_peak_token`, the ``uid:N`` addressing grammar every
+``add``/``remove`` token (from any of the three interfaces, or a curation
+file's ``freqs`` column) is read through -- published for the same reason as
+the tolerance above: an external tool addressing a peak by identifier should
+parse the same grammar the pipeline does, not reimplement the prefix.
 """
 
-from typing import Literal
+from dataclasses import dataclass
+from typing import Literal, Union
 
-__all__ = ["REFIT_SNAP_TOL_BINS", "Frame"]
+__all__ = ["REFIT_SNAP_TOL_BINS", "Frame", "PeakUidToken", "parse_peak_token"]
 
 Frame = Literal["raw", "calibrated"]
 """The frame a caller-supplied or caller-returned frequency is expressed in.
@@ -101,3 +108,79 @@ Every public verb's ``snap_tol_mhz`` parameter defaults to the resolved value
 for the file it is called on; a caller that passes its own overrides it for
 that call only, in MHz.
 """
+
+_UID_TOKEN_PREFIX = "uid:"
+
+
+@dataclass(frozen=True)
+class PeakUidToken:
+    """A parsed ``uid:N`` addressing token.
+
+    Names a peak by its
+    :attr:`~ftmwpipeline.core.data_structures.FittedPeak.peak_uid` rather than
+    by frequency. This class only carries the parsed integer -- resolving it
+    to an actual peak (the fitted peak in one particular window whose
+    ``peak_uid`` equals :attr:`uid`) is downstream of this module, since that
+    requires the window's persisted fit, which this dependency-free module
+    never opens. Frame-independent: :data:`Frame` has no bearing on a token
+    that never carries a frequency of its own.
+    """
+
+    uid: int
+
+
+def parse_peak_token(token: Union[float, str]) -> Union[float, PeakUidToken]:
+    """Parse one caller-supplied ``add``/``remove`` token into a frequency
+    (MHz) or a :class:`PeakUidToken`.
+
+    Grammar: a string prefixed ``"uid:"`` addresses a peak by identifier --
+    ``N`` must be a non-negative integer, e.g. ``"uid:15425022"``. Anything
+    else (a ``float``, or a ``str`` without that prefix) is a molecular
+    frequency in MHz, exactly as every curation verb has always accepted; a
+    plain numeric string (``"27549.3259"``) parses the same as the float
+    ``27549.3259``, since the CLI passes strings anyway.
+
+    Every public verb that resolves the result decides for itself whether a
+    :class:`PeakUidToken` is acceptable there -- ``remove`` on ``review edit``
+    and a curation file's ``remove`` row accept one; ``add`` and
+    ``accept --candidate`` refuse one with their own message, since a uid
+    names a peak that already exists and neither of those verbs addresses an
+    existing peak.
+
+    Raises
+    ------
+    ValueError
+        When the token is prefixed ``"uid:"`` but what follows is not a
+        non-negative integer (``"uid:"``, ``"uid:abc"``, ``"uid:-3"``,
+        ``"uid:1.5"`` all raise), or when an un-prefixed token is not a valid
+        MHz value. The offending token is always named in the message.
+    """
+    if isinstance(token, str):
+        text = token.strip()
+        if text.startswith(_UID_TOKEN_PREFIX):
+            digits = text[len(_UID_TOKEN_PREFIX) :]
+            if not digits:
+                raise ValueError(
+                    f"malformed peak identifier {token!r}: nothing follows "
+                    f"{_UID_TOKEN_PREFIX!r}"
+                )
+            try:
+                uid = int(digits)
+            except ValueError:
+                raise ValueError(
+                    f"malformed peak identifier {token!r}: {digits!r} is not "
+                    f"an integer"
+                ) from None
+            if uid < 0:
+                raise ValueError(
+                    f"malformed peak identifier {token!r}: uid must be "
+                    f"non-negative, got {uid}"
+                )
+            return PeakUidToken(uid)
+        try:
+            return float(text)
+        except ValueError:
+            raise ValueError(
+                f"malformed frequency {token!r}: not a valid MHz value"
+            ) from None
+    return float(token)

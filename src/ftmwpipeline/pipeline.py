@@ -1598,8 +1598,8 @@ class Pipeline:
         self,
         window_id: int,
         *,
-        add: Sequence[float] = (),
-        remove: Sequence[float] = (),
+        add: Sequence[Union[float, str]] = (),
+        remove: Sequence[Union[float, str]] = (),
         snap_tol_mhz: Optional[float] = None,
         frame: Optional[Frame] = None,
     ) -> RefitWindowResult:
@@ -1616,12 +1616,17 @@ class Pipeline:
         window_id :
             The window to refit.
         add :
-            Molecular frequencies (MHz) of peaks to add.  Snapped to the
-            nearest ledger candidate within ``snap_tol_mhz`` or seeded fresh
-            at F.
+            Molecular frequencies (MHz) of peaks to add, as ``float`` or a
+            numeric ``str``.  Snapped to the nearest ledger candidate within
+            ``snap_tol_mhz`` or seeded fresh at F.
         remove :
-            Molecular frequencies (MHz) of fitted peaks to remove.  Snapped
-            to the nearest fitted peak within ``snap_tol_mhz``.
+            Frequencies (MHz, ``float`` or numeric ``str``) or ``"uid:N"``
+            peak-identifier tokens of fitted peaks to remove -- the two may
+            be mixed in one call.  A frequency is snapped to the nearest
+            fitted peak within ``snap_tol_mhz``; a uid resolves to the fitted
+            peak in this window whose ``peak_uid`` equals ``N`` (see
+            :attr:`~ftmwpipeline.core.data_structures.FittedPeak.peak_uid`).
+            ``add`` is frequency-only and refuses a ``"uid:N"`` token.
         snap_tol_mhz :
             Snap tolerance for ``add``/``remove`` (MHz).  ``None`` (the
             default) resolves this file's own

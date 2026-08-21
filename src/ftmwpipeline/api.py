@@ -1448,8 +1448,8 @@ def review_edit(
     file_path: Union[str, Path],
     window_id: int,
     *,
-    add: Sequence[float] = (),
-    remove: Sequence[float] = (),
+    add: Sequence[Union[float, str]] = (),
+    remove: Sequence[Union[float, str]] = (),
     snap_tol_mhz: Optional[float] = None,
     frame: Optional[Frame] = None,
 ) -> RefitWindowResult:
@@ -1468,9 +1468,17 @@ def review_edit(
     window_id :
         The window to refit.
     add :
-        Molecular frequencies (MHz) of peaks to add.
+        Molecular frequencies (MHz) of peaks to add, as ``float`` or a
+        numeric ``str``.
     remove :
-        Molecular frequencies (MHz) of fitted peaks to remove.
+        Frequencies (MHz, ``float`` or numeric ``str``) or ``"uid:N"``
+        peak-identifier tokens of fitted peaks to remove; the two may be
+        mixed in one call, e.g. ``remove=["uid:15425022", 27549.3259]``. A
+        uid resolves to the fitted peak in ``window_id`` whose ``peak_uid``
+        equals ``N`` (see
+        :attr:`~ftmwpipeline.core.data_structures.FittedPeak.peak_uid` and
+        :func:`~ftmwpipeline.core.curation.parse_peak_token`); ``add`` is
+        frequency-only and refuses a ``"uid:N"`` token.
     snap_tol_mhz :
         Snap tolerance for ``add``/``remove`` (MHz).  ``None`` (the default)
         resolves this file's own

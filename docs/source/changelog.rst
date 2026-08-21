@@ -32,6 +32,41 @@ had to reach into ``_internal`` or parse out of prose to obtain are now
 published, and the Stage 6 edit paths that carry them were collapsed onto one
 engine so they cannot answer differently.
 
+* **A curation verb can address a peak by its ``peak_uid``.** ``remove`` on
+  ``review edit`` -- through ``api.review_edit``, ``Pipeline.review_edit``,
+  ``ReviewSession.review_edit``, and the CLI's ``--remove`` -- and a curation
+  file's ``remove`` row now accept a ``"uid:N"`` token wherever they
+  previously took only a molecular frequency. The Python ``add``/``remove``
+  signatures widen to ``Sequence[Union[float, str]]`` so a frequency (as
+  ``float`` or a numeric ``str``) and a ``"uid:N"`` identifier may be mixed
+  freely in one call, e.g. ``remove=["uid:15425022", 27549.3259]``; a curation
+  file's ``remove`` row keeps its existing one-token-per-row grammar (shared
+  with ``add``, unchanged) and that one token may now be ``"uid:N"``, e.g.
+  ``remove,12,uid:15425022,`` -- a run of ``remove`` rows on one window still
+  coalesces into a single edit, exactly as a run of frequencies always has.
+  Resolution is a substitution, not a second matching path: a uid is looked
+  up against the named window's fitted peaks and replaced with that peak's
+  own current ``frequency_mhz`` before the existing nearest-fitted-peak snap
+  ever runs, so it is always an exact match at distance 0 -- including when
+  another fitted peak sits inside the ordinary snap tolerance of it, which
+  frequency addressing alone cannot disambiguate. An unmatched uid raises
+  ``ValueError`` naming both the identifier and the window, both live and
+  from ``review apply --dry-run``'s preview, which checks a ``"uid:N"``
+  target for existence in its window exactly as it already checked a
+  frequency target for a snap match; a fit predating ``peak_uid`` (every peak
+  ``None``) hits the same refusal, since nothing there can match. ``add`` and
+  ``accept --candidate`` stay frequency-only -- a ``"uid:N"`` token passed to
+  ``add`` is refused outright, since a uid names a peak that already exists
+  and ``add`` has none, and ``LedgerCandidate`` (what ``accept`` resolves
+  against) carries no ``peak_uid`` at all. The token grammar itself
+  (``ftmwpipeline.core.curation.parse_peak_token``) is published alongside
+  ``Frame`` and ``REFIT_SNAP_TOL_BINS`` so an external tool parses the same
+  ``"uid:N"`` prefix the pipeline does rather than reimplementing it. One
+  consequence on the CLI: ``--add`` and ``--remove`` now take a string rather
+  than a ``float``, so a malformed token is refused by the pipeline with a
+  message naming it (``Error: ...``, exit 1) instead of by ``argparse``
+  (exit 2).
+
 * **Breaking: ``split`` and ``merge`` are removed from every input surface.**
   A curation action is now read by what it does to a window's peak set, not
   by the verb typed: an ``add`` within snap tolerance of a fitted peak that is
@@ -72,8 +107,9 @@ engine so they cannot answer differently.
   curation is the entire purpose of the field and its only supported use. A
   fresh ``fit run`` re-stamps every identifier, and any upstream change that
   moves a seed or the active-FT geometry moves the identifiers with it, so no
-  cross-run meaning is promised. Curation verbs do not yet accept an
-  identifier in place of a frequency; that is a later step. What
+  cross-run meaning is promised. ``review edit --remove`` (and a curation
+  file's ``remove`` row) now accepts one in place of a frequency -- see above;
+  ``add`` and ``accept --candidate`` stay frequency-only. What
   ``review undo`` promises is replay equivalence: it replays the surviving decisions
   from the automatic baseline, each as its own action against the state the
   previous ones left, so the identifiers afterward are exactly those that
