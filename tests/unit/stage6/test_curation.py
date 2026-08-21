@@ -362,10 +362,15 @@ def test_apply_matches_handtyped_sequence(stage5_small_source, tmp_path):
     shutil.copy(stage5_small_source, a)
     shutil.copy(stage5_small_source, b)
 
-    wid, freq = _a_peak(a)
+    wid, _freq = _a_peak(a)
     # Two add rows on one window coalesce into one refit; assert apply matches a
-    # single hand-typed refit with the union of edits.
-    f1, f2 = freq + 0.3, freq + 0.6
+    # single hand-typed refit with the union of edits. Both targets must stay
+    # clear of every fitted peak in the window (not just the one _a_peak named)
+    # -- curation-intent inference (see test_curation_intent.py) reads an add
+    # within snap tolerance of ANY fitted peak as a split, and this test is
+    # about plain-add coalescing, not that reinterpretation.
+    f1 = _clear_add_freq(a, wid)
+    f2 = f1 - 0.05
     cur = tmp_path / "c.csv"
     cur.write_text(f"add,{wid},{f1},\nadd,{wid},{f2},\n")
 
@@ -488,27 +493,119 @@ def _entry(order, wid, kind, freq, evidence=None):
 
 
 def test_decision_to_op_add_remove_accept():
-    assert _decision_to_op(_entry(0, 5, "add", 100.0)).action == "add"
-    assert _decision_to_op(_entry(1, 5, "remove", 101.0)).freqs == [101.0]
-    acc = _decision_to_op(_entry(2, 5, "accept", 0.0))
+    assert _decision_to_op(_entry(0, 5, "add", 100.0))[0].action == "add"
+    assert _decision_to_op(_entry(1, 5, "remove", 101.0))[0].freqs == [101.0]
+    acc = _decision_to_op(_entry(2, 5, "accept", 0.0))[0]
     assert acc.action == "accept" and acc.freqs == []
 
 
 def test_decision_to_op_merge_uses_merged_from():
-    op = _decision_to_op(
+    ops = _decision_to_op(
         _entry(0, 7, "merge", 50.2, evidence={"merged_from": [50.1, 50.3]})
     )
-    assert op.action == "merge" and op.freqs == [50.1, 50.3]
+    assert len(ops) == 1
+    assert ops[0].action == "merge" and ops[0].freqs == [50.1, 50.3]
 
 
 def test_decision_to_op_split_uses_into():
-    op = _decision_to_op(_entry(0, 7, "split", 50.0, evidence={"split_into": 3}))
+    ops = _decision_to_op(_entry(0, 7, "split", 50.0, evidence={"split_into": 3}))
+    assert len(ops) == 1
+    op = ops[0]
     assert op.action == "split" and op.freqs == [50.0] and op.params == {"into": "3"}
 
 
 def test_decision_to_op_merge_without_peaks_raises():
     with pytest.raises(ValueError, match="missing its 'merged_from'"):
         _decision_to_op(_entry(0, 7, "merge", 50.2))
+
+
+def test_decision_to_op_inferred_split_replays_as_one_add():
+    """An inferred split (``evidence['inferred']``) replays as the add the
+    user actually typed, not the split verb's symmetric-straddle default --
+    see the curation-intent design in ``_infer_curation_intent``."""
+    ops = _decision_to_op(
+        _entry(
+            0,
+            7,
+            "split",
+            50.05,
+            evidence={"split_into": 2, "inferred": True, "requested_freq_mhz": 50.10},
+        )
+    )
+    assert [(o.action, o.window_id, o.freqs) for o in ops] == [("add", 7, [50.10])]
+
+
+def test_decision_to_op_inferred_split_missing_requested_freq_raises():
+    with pytest.raises(ValueError, match="missing its 'requested_freq_mhz'"):
+        _decision_to_op(
+            _entry(0, 7, "split", 50.05, evidence={"split_into": 2, "inferred": True})
+        )
+
+
+def test_decision_to_op_inferred_merge_replays_as_removes_then_add():
+    """An inferred merge replays as one remove per merged frequency plus one
+    add at the requested frequency -- the exact edit the user typed, which
+    ``_resolve_curation_plan`` re-coalesces into the one action inference
+    read the first time."""
+    ops = _decision_to_op(
+        _entry(
+            0,
+            7,
+            "merge",
+            50.2,
+            evidence={
+                "merged_from": [50.1, 50.3],
+                "inferred": True,
+                "requested_freq_mhz": 50.2,
+            },
+        )
+    )
+    assert [(o.action, o.window_id, o.freqs) for o in ops] == [
+        ("remove", 7, [50.1]),
+        ("remove", 7, [50.3]),
+        ("add", 7, [50.2]),
+    ]
+
+
+def test_decision_to_op_inferred_merge_missing_requested_freq_raises():
+    with pytest.raises(ValueError, match="missing its 'requested_freq_mhz'"):
+        _decision_to_op(
+            _entry(
+                0,
+                7,
+                "merge",
+                50.2,
+                evidence={"merged_from": [50.1, 50.3], "inferred": True},
+            )
+        )
+
+
+def test_decision_to_op_merge_ops_still_coalesce_into_one_action():
+    """Coalescing WITHIN one decision's own emitted ops still applies -- an
+    inferred merge's remove/remove/add must resolve to exactly one ``edit``
+    action (what lets ``_infer_curation_intent`` see the whole thing and
+    re-derive the merge on replay), even though ``review_undo_impl`` now
+    resolves each decision independently rather than resolving the whole
+    surviving set as one flat op list."""
+    ops = _decision_to_op(
+        _entry(
+            0,
+            7,
+            "merge",
+            50.2,
+            evidence={
+                "merged_from": [50.1, 50.3],
+                "inferred": True,
+                "requested_freq_mhz": 50.2,
+            },
+        )
+    )
+    plan = _resolve_curation_plan(ops)
+    assert len(plan) == 1
+    action = plan[0]
+    assert action.kind == "edit" and action.window_id == 7
+    assert action.remove == [50.1, 50.3]
+    assert action.add == [50.2]
 
 
 # ---------------------------------------------------------------------------
@@ -654,6 +751,185 @@ def test_undo_one_of_two_replays_other_identifiers(stage5_multi_file, tmp_path):
     review_undo_impl(both, [wa_id])
 
     assert _uids_by_window(both) == ref_uids
+
+
+@pytest.mark.integration
+def test_undo_replays_inferred_split_identifiers_exactly(stage5_multi_file, tmp_path):
+    """An inferred split seeds at (parent position, requested position), not
+    the verb path's symmetric straddle -- so its replay must reconstruct
+    THAT action (an add at the requested frequency), not the split verb's
+    default reseed. Probes the gap ``_decision_to_op`` used to have: undoing
+    an unrelated decision in ANOTHER window must not silently reseed and
+    renumber a window it never touched.
+    """
+    wa, freq = _a_peak(stage5_multi_file)
+    wb = next(w for w in _three_window_ids(stage5_multi_file) if w != wa)
+    fb = _clear_add_freq(stage5_multi_file, wb)
+
+    snap_tol = s6.refit_snap_tol_mhz_impl(str(stage5_multi_file))
+    requested_a = freq + 0.3 * snap_tol
+
+    # Reference: only the inferred split in wa, ever applied.
+    ref = tmp_path / "ref_split.ftmw"
+    shutil.copy(stage5_multi_file, ref)
+    apply_curation_impl(ref, _write_curation(tmp_path, f"add,{wa},{requested_a},\n"))
+    assert any(
+        e.window_id == wa and e.kind == "split" for e in review_log_impl(ref)
+    ), "test setup must actually produce an inferred split"
+    ref_uids_a = _uids_by_window(ref)[wa]
+
+    # Both the split and an unrelated add elsewhere, then undo only the
+    # unrelated one.
+    both = stage5_multi_file
+    cur = tmp_path / "split_and_unrelated.csv"
+    cur.write_text(f"add,{wa},{requested_a},\nadd,{wb},{fb},\n")
+    apply_curation_impl(both, cur)
+    log = review_log_impl(both)
+    assert any(e.window_id == wa and e.kind == "split" for e in log)
+    wb_id = next(e.order_index for e in log if e.window_id == wb and e.kind == "add")
+    review_undo_impl(both, [wb_id])
+
+    assert _uids_by_window(both)[wa] == ref_uids_a
+
+
+@pytest.mark.integration
+def test_undo_replays_inferred_merge_identifiers_exactly(stage5_multi_file, tmp_path):
+    """Same probe as the split test above, for an inferred merge whose pair
+    has no recorded doublet alternative: it seeds at the user's requested
+    frequency, not the SNR-weighted centroid, so replay must reconstruct
+    that action rather than the merge verb's default reseed.
+    """
+    wa, freq = _a_peak(stage5_multi_file)
+    wb = next(w for w in _three_window_ids(stage5_multi_file) if w != wa)
+    fb_clear = _clear_add_freq(stage5_multi_file, wb)
+    snap_tol = s6.refit_snap_tol_mhz_impl(str(stage5_multi_file))
+    split_add = freq + 0.2 * snap_tol
+
+    # Manufacture a genuine close pair via a real inferred split first: its
+    # two products are components of one real spectral feature at this site,
+    # so they converge within snap tolerance of each other regardless of the
+    # small seed offset chosen (not a knife-edge coincidence of one number).
+    probe = tmp_path / "probe.ftmw"
+    shutil.copy(stage5_multi_file, probe)
+    refit_window_impl(str(probe), wa, add=[split_add])
+    near = sorted(
+        (f for _, f in _uids_by_window(probe)[wa]), key=lambda f: abs(f - freq)
+    )[:2]
+    fa, fb_pair = sorted(near)
+    if (fb_pair - fa) > snap_tol:
+        pytest.skip("split products did not converge within snap tolerance here")
+    between = 0.5 * (fa + fb_pair)
+
+    def _split_then_merge(path):
+        refit_window_impl(str(path), wa, add=[split_add])
+        refit_window_impl(str(path), wa, add=[between], remove=[fa, fb_pair])
+
+    # Reference: only the split + merge sequence in wa, ever applied.
+    ref = tmp_path / "ref_merge.ftmw"
+    shutil.copy(stage5_multi_file, ref)
+    _split_then_merge(ref)
+    merge_log = [
+        e for e in review_log_impl(ref) if e.window_id == wa and e.kind == "merge"
+    ]
+    assert len(merge_log) == 1
+    ev = merge_log[0].evidence
+    assert ev.get("inferred") is True
+    assert ev["requested_freq_mhz"] == pytest.approx(between)
+    assert merge_log[0].frequency_mhz == pytest.approx(
+        between
+    ), "no doublet alternative should have won this merge's seed"
+    ref_uids_a = _uids_by_window(ref)[wa]
+
+    # Both the split+merge sequence and an unrelated add elsewhere, then undo
+    # only the unrelated one.
+    both = stage5_multi_file
+    _split_then_merge(both)
+    apply_curation_impl(both, _write_curation(tmp_path, f"add,{wb},{fb_clear},\n"))
+    log = review_log_impl(both)
+    wb_id = next(e.order_index for e in log if e.window_id == wb and e.kind == "add")
+    review_undo_impl(both, [wb_id])
+
+    assert _uids_by_window(both)[wa] == ref_uids_a
+
+
+@pytest.mark.integration
+def test_undo_replays_two_dependent_inferred_decisions_without_coalescing(
+    stage5_multi_file, tmp_path
+):
+    """An ordinary workflow: split a line, then merge it back -- two inferred
+    decisions on ONE window where the second (merge) touches peaks the first
+    (split) created -- plus an unrelated decision elsewhere. Undoing the
+    unrelated one must succeed and must not disturb the edited window.
+
+    Resolving the surviving decisions as one flat op list would let
+    ``_resolve_curation_plan`` coalesce the split's ``add`` and the merge's
+    ``remove``/``add`` into a single action, evaluated against the window's
+    PRE-split state -- the merge's removes then match nothing and the whole
+    replay fails, rolling the file back to the automatic fit with the
+    surviving decisions lost. This is the scenario ``review_undo_impl``'s
+    per-decision ``plan`` construction exists to keep resolvable, without a
+    ``review accept`` (or any other) barrier between the two decisions.
+    """
+    wa, freq = _a_peak(stage5_multi_file)
+    wb = next(w for w in _three_window_ids(stage5_multi_file) if w != wa)
+    fb_clear = _clear_add_freq(stage5_multi_file, wb)
+    snap_tol = s6.refit_snap_tol_mhz_impl(str(stage5_multi_file))
+    split_add = freq + 0.2 * snap_tol
+
+    probe = tmp_path / "probe.ftmw"
+    shutil.copy(stage5_multi_file, probe)
+    refit_window_impl(str(probe), wa, add=[split_add])
+    near = sorted(
+        (f for _, f in _uids_by_window(probe)[wa]), key=lambda f: abs(f - freq)
+    )[:2]
+    fa, fb_pair = sorted(near)
+    if (fb_pair - fa) > snap_tol:
+        pytest.skip("split products did not converge within snap tolerance here")
+    between = 0.5 * (fa + fb_pair)
+
+    both = stage5_multi_file
+    refit_window_impl(str(both), wa, add=[split_add])
+    refit_window_impl(str(both), wa, add=[between], remove=[fa, fb_pair])
+    before_undo = _uids_by_window(both)[wa]
+
+    apply_curation_impl(both, _write_curation(tmp_path, f"add,{wb},{fb_clear},\n"))
+    log = review_log_impl(both)
+    assert [e.kind for e in log if e.window_id == wa] == ["split", "merge"]
+    wb_id = next(e.order_index for e in log if e.window_id == wb and e.kind == "add")
+
+    review_undo_impl(both, [wb_id])  # must not raise
+
+    assert _uids_by_window(both)[wa] == before_undo
+
+
+@pytest.mark.integration
+def test_undo_replays_verb_split_via_straddle_unchanged(stage5_multi_file, tmp_path):
+    """A **verb-path** split (no inference: ``split_peak_impl`` directly, no
+    ``evidence['inferred']`` key) must keep replaying as the ``split`` verb --
+    the symmetric straddle -- exactly as before curation-intent inference
+    existed. Regression guard for "do not change that path"."""
+    from ftmwpipeline._internal.stage6_impl import split_peak_impl
+
+    wa, freq = _a_peak(stage5_multi_file)
+    wb = next(w for w in _three_window_ids(stage5_multi_file) if w != wa)
+    fb = _clear_add_freq(stage5_multi_file, wb)
+
+    ref = tmp_path / "ref_verb_split.ftmw"
+    shutil.copy(stage5_multi_file, ref)
+    split_peak_impl(str(ref), wa, freq, into=2)
+    ref_uids_a = _uids_by_window(ref)[wa]
+
+    both = stage5_multi_file
+    split_peak_impl(str(both), wa, freq, into=2)
+    apply_curation_impl(both, _write_curation(tmp_path, f"add,{wb},{fb},\n"))
+    log = review_log_impl(both)
+    split_entries = [e for e in log if e.window_id == wa and e.kind == "split"]
+    assert len(split_entries) == 1
+    assert "inferred" not in split_entries[0].evidence
+    wb_id = next(e.order_index for e in log if e.window_id == wb and e.kind == "add")
+    review_undo_impl(both, [wb_id])
+
+    assert _uids_by_window(both)[wa] == ref_uids_a
 
 
 @pytest.mark.integration

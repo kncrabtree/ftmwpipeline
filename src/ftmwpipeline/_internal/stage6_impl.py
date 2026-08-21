@@ -4447,6 +4447,162 @@ def _batch_apply_edit_core(
     return new_wf
 
 
+def _seed_uid_for_freq(
+    ctx: "_BatchCtx", wf: FittingResult, freq_mhz: float
+) -> Optional[int]:
+    """The ``peak_uid`` a peak seeded at *freq_mhz* in *wf*'s own window frame
+    would be stamped with, or ``None`` when the window carries no
+    ``freq_range`` to anchor a frame to.
+
+    Mirrors the frame construction ``_batch_apply_merge`` / ``_batch_apply_split``
+    already use to stamp a birth-site identifier -- this is the same
+    computation, used here only to *compare* a would-be identifier, never to
+    stamp one (nothing born here)."""
+    if wf.window is None or wf.window.freq_range is None:
+        return None
+    lo, hi = wf.window.freq_range
+    if lo > hi:
+        lo, hi = hi, lo
+    center_mhz = (lo + hi) / 2.0
+    sideband = ctx.shared.fit_ctx.sideband
+    s = sideband_sign(sideband)
+    offset_mhz = float(s * (float(freq_mhz) - center_mhz))
+    return peak_uid_from_offset(
+        offset_mhz,
+        center_mhz,
+        sideband,
+        ctx.shared.fit_ctx.probe_freq_mhz,
+        ctx.shared.fit_ctx.active_ft.n_active,
+        ctx.shared.fit_ctx.sample_dt_us,
+    )
+
+
+def _infer_curation_intent(
+    ctx: "_BatchCtx",
+    wf: FittingResult,
+    add: List[float],
+    remove: List[float],
+    snap_tol_mhz: float,
+) -> Tuple[
+    Optional[List[float]],
+    Optional[float],
+    List[Tuple[float, float, Optional[List[float]]]],
+    List[float],
+    List[float],
+]:
+    """Decompose one coalesced ``edit`` action's ``add``/``remove`` lists,
+    against *wf*'s current fitted peaks, into an inferred merge, zero or more
+    inferred splits, and whatever is left over for a plain residual edit.
+
+    A curation action is read by the change it makes to the peak set, not the
+    verb the user typed: an add beside an existing peak is a split of that
+    peak into two, and removing the components of one blend while adding
+    their replacement is a merge (see ``_batch_apply_edit_action``, whose
+    only caller this is).
+
+    Returns
+    -------
+    tuple
+        ``(merge_removes, merge_add, splits, residual_add, residual_remove)``:
+
+        * ``merge_removes`` -- the raw ``remove`` frequencies forming the
+          inferred merge (``None`` when no merge was found).
+        * ``merge_add`` -- the one ``add`` frequency the merge consumed
+          (``None`` iff ``merge_removes`` is).
+        * ``splits`` -- one ``(parent_freq, requested_freq, positions)`` per
+          inferred split, in the order their ``add`` frequencies appeared.
+          ``positions`` is ``[parent_freq, requested_freq]`` to seed at the
+          user's requested position, or ``None`` when that position is within
+          1 uid unit of the parent's own seed position (the two products
+          would be born identical), falling back to the symmetric straddle.
+        * ``residual_add`` / ``residual_remove`` -- whatever ``add`` / ``remove``
+          entries no merge or split consumed, for a plain edit (empty when
+          nothing is left).
+    """
+    fitted = list(wf.fitted_peaks)
+
+    def nearest(freq: float) -> Tuple[Optional[FittedPeak], float]:
+        best: Optional[FittedPeak] = None
+        best_dist = float("inf")
+        for fp in fitted:
+            d = abs(float(fp.frequency_mhz) - freq)
+            if d < best_dist:
+                best_dist = d
+                best = fp
+        return best, best_dist
+
+    # --- merge: the WHOLE remove list, when it forms one tight cluster
+    # (every pair mutually within snap_tol_mhz -- on a line, equivalent to
+    # max - min <= snap_tol_mhz) with exactly one add in its widened span. ---
+    merge_removes: Optional[List[float]] = None
+    merge_add: Optional[float] = None
+    working_add = list(add)
+    working_remove = list(remove)
+    if len(remove) >= 2:
+        matched: List[FittedPeak] = []
+        all_matched = True
+        for r in remove:
+            fp, d = nearest(r)
+            if fp is None or d > snap_tol_mhz:
+                all_matched = False
+                break
+            matched.append(fp)
+        if all_matched:
+            freqs = [float(fp.frequency_mhz) for fp in matched]
+            if max(freqs) - min(freqs) <= snap_tol_mhz:
+                lo = min(freqs) - snap_tol_mhz
+                hi = max(freqs) + snap_tol_mhz
+                qualifying = [a for a in add if lo <= a <= hi]
+                if len(qualifying) == 1:
+                    merge_removes = list(remove)
+                    merge_add = qualifying[0]
+                    working_remove = []
+                    working_add = [a for a in add if a != merge_add]
+
+    # A fitted peak this action is removing -- whether or not it ended up
+    # consumed by the merge above -- can never be a split's parent: decision
+    # 1's exception ("that is not itself being removed in the same action").
+    removed_targets: List[FittedPeak] = []
+    for r in remove:
+        fp, d = nearest(r)
+        if fp is not None and d <= snap_tol_mhz:
+            removed_targets.append(fp)
+
+    # --- splits: each remaining add within snap_tol of a fitted peak that is
+    # neither being removed nor already claimed by an earlier split in this
+    # same action (so two adds cannot both split the same parent). ---
+    splits: List[Tuple[float, float, Optional[List[float]]]] = []
+    claimed: List[FittedPeak] = []
+    residual_add: List[float] = []
+    for a in working_add:
+        fp, d = nearest(a)
+        is_removed = fp is not None and any(fp is r for r in removed_targets)
+        is_claimed = fp is not None and any(fp is c for c in claimed)
+        if fp is not None and d <= snap_tol_mhz and not is_removed and not is_claimed:
+            parent_freq = float(fp.frequency_mhz)
+            requested_freq = float(a)
+            parent_uid = fp.peak_uid
+            requested_uid = _seed_uid_for_freq(ctx, wf, requested_freq)
+            positions: Optional[List[float]]
+            if (
+                parent_uid is not None
+                and requested_uid is not None
+                and abs(int(requested_uid) - int(parent_uid)) <= 1
+            ):
+                # The requested position is (near enough) the parent's own
+                # birth position that the two products would be born
+                # identical -- fall back to the symmetric straddle.
+                positions = None
+            else:
+                positions = [parent_freq, requested_freq]
+            splits.append((parent_freq, requested_freq, positions))
+            claimed.append(fp)
+        else:
+            residual_add.append(a)
+
+    return merge_removes, merge_add, splits, residual_add, working_remove
+
+
 def _batch_apply_edit_action(
     ctx: _BatchCtx,
     window_id: int,
@@ -4457,14 +4613,103 @@ def _batch_apply_edit_action(
     record_decisions: bool = True,
     snap_tol_mhz: float,
 ) -> RefitWindowResult:
-    """The add/remove edit, as one action: refit, then one decision per
-    frequency (adds, then removes), all sharing one evidence dict.
+    """The add/remove edit, as one action, reinterpreted by the change it
+    makes to the peak set rather than the verb the user typed.
 
-    The single implementation behind both ``review edit`` and an ``edit`` row in
-    a curation file. ``record_decisions=False`` suppresses the per-frequency
-    entries for a composing caller (merge / split) that records its own coarser
-    one; the peaks are still stamped with the composing decision's id through
-    ``ctx.changeset.next_decision_index``.
+    The single implementation behind both ``review edit`` and an ``edit`` row
+    in a curation file (both reach this function; see the module's curation-
+    intent design). Before refitting, resolves the coalesced ``add``/``remove``
+    lists against the window's current fitted peaks into, in order: at most
+    one inferred merge (:func:`_batch_apply_merge`), zero or more inferred
+    splits (:func:`_batch_apply_split`), and one residual plain edit
+    (:func:`_batch_apply_edit_plain`) with whatever is left -- skipped
+    entirely when nothing remains. Each is applied through its own existing
+    applier, so each records its own decision and stamps its own seeds; no
+    inference runs when ``add_seeds`` is given explicitly (an explicit seed
+    is the caller's own placement decision, not ours to reinterpret), nor
+    when the action carries no ``add``/``remove`` at all (an identity refit
+    has nothing to reinterpret).
+    """
+    _check_add_seeds_arity(add, add_seeds)
+
+    if add_seeds is None and (add or remove):
+        wf0 = _batch_lookup_wf(ctx, window_id)
+        merge_removes, merge_add, splits, residual_add, residual_remove = (
+            _infer_curation_intent(ctx, wf0, list(add), list(remove), snap_tol_mhz)
+        )
+        if merge_removes is not None or splits:
+            chi2r_before = float(wf0.reduced_chi2)
+            n_before = len(wf0.fitted_peaks)
+            last: Optional[RefitWindowResult] = None
+            if merge_removes is not None:
+                assert merge_add is not None
+                last = _batch_apply_merge(
+                    ctx,
+                    window_id,
+                    merge_removes,
+                    snap_tol_mhz=snap_tol_mhz,
+                    requested_freq=merge_add,
+                )
+            for parent_freq, requested_freq, positions in splits:
+                last = _batch_apply_split(
+                    ctx,
+                    window_id,
+                    parent_freq,
+                    2,
+                    positions=positions,
+                    snap_tol_mhz=snap_tol_mhz,
+                    inferred_requested_freq=requested_freq,
+                )
+            if residual_add or residual_remove:
+                last = _batch_apply_edit_plain(
+                    ctx,
+                    window_id,
+                    residual_add,
+                    residual_remove,
+                    record_decisions=record_decisions,
+                    snap_tol_mhz=snap_tol_mhz,
+                )
+            assert last is not None
+            return _make_refit_result(
+                ctx,
+                window_id=window_id,
+                n_peaks_before=n_before,
+                n_peaks_after=last.n_peaks_after,
+                chi2r_before=chi2r_before,
+                chi2r_after=last.chi2r_after,
+                fitted_peaks=last.fitted_peaks,
+            )
+
+    return _batch_apply_edit_plain(
+        ctx,
+        window_id,
+        add,
+        remove,
+        add_seeds=add_seeds,
+        record_decisions=record_decisions,
+        snap_tol_mhz=snap_tol_mhz,
+    )
+
+
+def _batch_apply_edit_plain(
+    ctx: _BatchCtx,
+    window_id: int,
+    add: Sequence[float],
+    remove: Sequence[float],
+    *,
+    add_seeds: Optional[List[ModelPeak]] = None,
+    record_decisions: bool = True,
+    snap_tol_mhz: float,
+) -> RefitWindowResult:
+    """The uninferred add/remove edit, as one action: refit, then one decision
+    per frequency (adds, then removes), all sharing one evidence dict.
+
+    The plain fallback :func:`_batch_apply_edit_action` delegates to once
+    curation-intent inference finds no merge or split to pull out (or has
+    leftovers after pulling one out). ``record_decisions=False`` suppresses
+    the per-frequency entries for a composing caller that records its own
+    coarser one; the peaks are still stamped with the composing decision's id
+    through ``ctx.changeset.next_decision_index``.
     """
     _check_add_seeds_arity(add, add_seeds)
 
@@ -4534,13 +4779,22 @@ def _batch_apply_merge(
     peaks: Sequence[float],
     *,
     snap_tol_mhz: float,
+    requested_freq: Optional[float] = None,
 ) -> RefitWindowResult:
     """Collapse >= 2 fitted peaks into one, as one action.
 
-    The single implementation behind both ``review merge`` and a ``merge`` row
-    in a curation file. Sideband and window center come from the shared
-    ``fit_ctx`` and the window's own persisted geometry, so this never needs a
-    FID load of its own.
+    The single implementation behind both ``review merge``, a ``merge`` row in
+    a curation file, and a merge inferred from an ``edit`` action by
+    :func:`_batch_apply_edit_action`. Sideband and window center come from the
+    shared ``fit_ctx`` and the window's own persisted geometry, so this never
+    needs a FID load of its own.
+
+    ``requested_freq`` is set only by the inference path: it is the add
+    frequency the user actually typed, which seeds the merge when no
+    recorded doublet-alternative applies (in preference to the SNR-weighted
+    centroid used otherwise), and is always recorded on the decision's
+    evidence when given, so the log is honest about the reinterpretation even
+    when a doublet alternative ends up winning the seed.
     """
     _check_merge_arity(peaks)
     wf = _batch_lookup_wf(ctx, window_id)
@@ -4579,6 +4833,7 @@ def _batch_apply_merge(
 
     merge_freq = centroid_freq
     merge_amp = centroid_amp
+    used_doublet_alt = False
     if len(matched) == 2:
         fa = float(matched[0].frequency_mhz)
         fb = float(matched[1].frequency_mhz)
@@ -4601,7 +4856,14 @@ def _batch_apply_merge(
                     if not math.isnan(float(da.merged_amplitude))
                     else centroid_amp
                 )
+                used_doublet_alt = True
                 break
+    if not used_doublet_alt and requested_freq is not None:
+        # Inferred merge, no recorded doublet alternative: the user said
+        # where they want the single line, so seed there rather than at the
+        # SNR-weighted centroid (the verb path, with no requested position,
+        # keeps the centroid).
+        merge_freq = float(requested_freq)
 
     remove_freqs = [float(fp.frequency_mhz) for fp in matched]
 
@@ -4652,6 +4914,9 @@ def _batch_apply_merge(
         "n_peaks_after": n_after,
         "merged_from": [float(f) for f in peaks],
     }
+    if requested_freq is not None:
+        evidence["inferred"] = True
+        evidence["requested_freq_mhz"] = float(requested_freq)
     ctx.changeset.decisions.append(
         {
             "window_id": window_id,
@@ -4678,13 +4943,26 @@ def _batch_apply_split(
     peak: float,
     into: int,
     *,
+    positions: Optional[Sequence[float]] = None,
     snap_tol_mhz: float,
+    inferred_requested_freq: Optional[float] = None,
 ) -> RefitWindowResult:
     """Replace one fitted peak with ``into`` peaks, as one action.
 
-    The single implementation behind both ``review split`` and a ``split`` row
-    in a curation file. The resolution element uses the shared
+    The single implementation behind both ``review split``, a ``split`` row in
+    a curation file, and a split inferred from an ``edit`` action by
+    :func:`_batch_apply_edit_action`. The resolution element uses the shared
     ``fit_ctx.acquisition_us`` rather than a fresh FID load.
+
+    ``positions`` overrides the default symmetric +/-0.5 resolution-element
+    straddle with explicit product frequencies (``len(positions)`` must equal
+    ``into``) -- the inference path uses this to seed at (the parent's own
+    position, the user's requested add position) instead. ``None`` (the verb
+    path's default) keeps today's symmetric behavior.
+
+    ``inferred_requested_freq`` is set only by the inference path (the add
+    frequency the user actually typed) and is recorded on the decision's
+    evidence when given, so the log is honest about the reinterpretation.
     """
     _check_split_arity(into)
     wf = _batch_lookup_wf(ctx, window_id)
@@ -4705,16 +4983,25 @@ def _batch_apply_split(
     matched_freq = float(best.frequency_mhz)
     matched_amp = float(best.amplitude)
 
-    acquisition_us = float(ctx.shared.fit_ctx.acquisition_us)
-    resolution_mhz = 1.0 / acquisition_us if acquisition_us > 0 else 0.1
-
-    if into == 2:
-        offsets = [-0.5 * resolution_mhz, 0.5 * resolution_mhz]
+    if positions is not None:
+        if len(positions) != into:
+            raise ValueError(
+                f"split: len(positions)={len(positions)} must equal into={into}"
+            )
+        add_freqs = [float(p) for p in positions]
     else:
-        half_span = 0.5 * resolution_mhz
-        offsets = [-half_span + i * resolution_mhz / (into - 1) for i in range(into)]
+        acquisition_us = float(ctx.shared.fit_ctx.acquisition_us)
+        resolution_mhz = 1.0 / acquisition_us if acquisition_us > 0 else 0.1
 
-    add_freqs = [matched_freq + off for off in offsets]
+        if into == 2:
+            offsets = [-0.5 * resolution_mhz, 0.5 * resolution_mhz]
+        else:
+            half_span = 0.5 * resolution_mhz
+            offsets = [
+                -half_span + i * resolution_mhz / (into - 1) for i in range(into)
+            ]
+
+        add_freqs = [matched_freq + off for off in offsets]
     per_peak_amp = matched_amp / into
 
     sideband = ctx.shared.fit_ctx.sideband
@@ -4767,6 +5054,9 @@ def _batch_apply_split(
         "n_peaks_after": n_after,
         "split_into": into,
     }
+    if inferred_requested_freq is not None:
+        evidence["inferred"] = True
+        evidence["requested_freq_mhz"] = float(inferred_requested_freq)
     ctx.changeset.decisions.append(
         {
             "window_id": window_id,
@@ -5979,23 +6269,42 @@ class UndoResult:
     dry_run: bool
 
 
-def _decision_to_op(entry: DecisionLogEntry) -> CurationOp:
-    """Convert a decision-log entry back into a replayable curation op.
+def _decision_to_op(entry: DecisionLogEntry) -> List[CurationOp]:
+    """Convert a decision-log entry back into the replayable curation op(s)
+    that reproduce it.
 
-    Add/remove/accept replay from the entry alone; merge replays from the
-    recorded ``merged_from`` peak set and split from ``split_into`` (both stamped
-    by their impls at record time), so the decision log is loss-free for replay.
+    Add/remove/accept replay from the entry alone. A **non-inferred** merge
+    replays from the recorded ``merged_from`` peak set and a non-inferred
+    split from ``split_into`` (both stamped by their impls at record time) --
+    the verb-path seeding (SNR-weighted centroid / symmetric straddle) is
+    then deterministic from those inputs alone, so the decision log is
+    loss-free for replay.
+
+    An **inferred** merge/split (``evidence["inferred"]`` is ``True``) was
+    seeded from the user's actual requested frequency
+    (``evidence["requested_freq_mhz"]``), not the verb path's default --
+    replaying it as a bare ``merge``/``split`` op would reseed it differently
+    (the SNR-weighted centroid, or the symmetric straddle), silently
+    reissuing different identifiers for a window the undo never touched (see
+    the "Identifiers" paragraph on :func:`review_undo_impl`). Instead, this
+    replays the add/remove combination the user actually typed -- coalesced
+    by :func:`_resolve_curation_plan` into the same one ``edit`` action
+    :func:`_infer_curation_intent` read the first time -- so inference
+    reaches the same interpretation deterministically and reproduces the
+    original seeds exactly. A decision recorded before this inference existed
+    carries no ``inferred`` key at all, so it is unaffected and keeps
+    replaying through the verb form exactly as it always has.
     """
     wid = entry.window_id
     kind = entry.kind
     if kind in ("add", "remove"):
-        return CurationOp(kind, wid, [float(entry.frequency_mhz)], {}, 0)
+        return [CurationOp(kind, wid, [float(entry.frequency_mhz)], {}, 0)]
     if kind == "create_window":
         # Carry the id the original create produced: replay re-derives the
         # geometry from the anchor and the base plan but pins the label, so the
         # rows keyed on that id (and any peaks a consumer bound to it) still
         # refer to the same window.
-        return CurationOp("create", wid, [float(entry.frequency_mhz)], {}, 0)
+        return [CurationOp("create", wid, [float(entry.frequency_mhz)], {}, 0)]
     if kind == "merge":
         merged_from = entry.evidence.get("merged_from")
         if not merged_from or len(merged_from) < 2:
@@ -6003,14 +6312,34 @@ def _decision_to_op(entry: DecisionLogEntry) -> CurationOp:
                 f"cannot replay merge on window {wid}: the decision log is "
                 f"missing its 'merged_from' peak set"
             )
-        return CurationOp("merge", wid, [float(f) for f in merged_from], {}, 0)
+        if entry.evidence.get("inferred"):
+            requested = entry.evidence.get("requested_freq_mhz")
+            if requested is None:
+                raise ValueError(
+                    f"cannot replay inferred merge on window {wid}: the "
+                    f"decision log is missing its 'requested_freq_mhz'"
+                )
+            return [
+                CurationOp("remove", wid, [float(f)], {}, 0) for f in merged_from
+            ] + [CurationOp("add", wid, [float(requested)], {}, 0)]
+        return [CurationOp("merge", wid, [float(f) for f in merged_from], {}, 0)]
     if kind == "split":
+        if entry.evidence.get("inferred"):
+            requested = entry.evidence.get("requested_freq_mhz")
+            if requested is None:
+                raise ValueError(
+                    f"cannot replay inferred split on window {wid}: the "
+                    f"decision log is missing its 'requested_freq_mhz'"
+                )
+            return [CurationOp("add", wid, [float(requested)], {}, 0)]
         into = int(entry.evidence.get("split_into", 2))
-        return CurationOp(
-            "split", wid, [float(entry.frequency_mhz)], {"into": str(into)}, 0
-        )
+        return [
+            CurationOp(
+                "split", wid, [float(entry.frequency_mhz)], {"into": str(into)}, 0
+            )
+        ]
     if kind == "accept":
-        return CurationOp("accept", wid, [], {}, 0)
+        return [CurationOp("accept", wid, [], {}, 0)]
     raise ValueError(f"cannot replay decision of unknown kind {kind!r}")
 
 
@@ -6042,19 +6371,26 @@ def review_undo_impl(
     automatic-fit baseline is unavailable while fit-mutating decisions exist
     (e.g. Stage 5 was re-run after editing -- rebuild and re-edit instead).
 
-    What undo promises for ``peak_uid`` is replay equivalence: the identifiers
-    afterward are exactly those a fresh apply of the surviving decisions onto
-    the automatic baseline would produce. A peak restored from the baseline
-    snapshot carries the baseline's identifier verbatim (the restore is a
-    whole-group ``h5f.copy``); a peak the replay re-creates is stamped fresh
-    from its replay seed, which reissues the same identifier when that seed
-    is unchanged and a different one when it moved -- ``split``'s reseed off
-    its parent's *fitted* position is the case where an undo that shifts the
-    parent legitimately renumbers the products. Per-peak stability is
-    therefore a consequence of an unchanged seed, not a guarantee. Undoing
-    every decision restores the automatic fit's identifiers exactly.
-    Identifiers must be re-read after an undo, the same way decision ids and
-    ``derivation`` tags are renumbered.
+    What undo promises for ``peak_uid`` is replay equivalence: the surviving
+    decisions are replayed in order, each as its own action against the state
+    the previous ones left -- exactly the sequence the original apply(s)
+    produced, with the undone entries removed -- so the identifiers afterward
+    are exactly those that sequence produces. This is deliberately NOT the
+    same as a fresh curation file naming the same surviving frequencies: a
+    file coalesces a run of add/remove rows into one action, which is wrong
+    here whenever a later decision touches peaks an earlier one created (see
+    :func:`_decision_to_op` and this function's ``plan`` construction below).
+
+    A peak restored from the baseline snapshot carries the baseline's
+    identifier verbatim (the restore is a whole-group ``h5f.copy``); a peak
+    the replay re-creates is stamped fresh from its replay seed, which
+    reissues the same identifier when that seed is unchanged and a different
+    one when it moved -- ``split``'s reseed off its parent's *fitted* position
+    is the case where an undo that shifts the parent legitimately renumbers
+    the products. Per-peak stability is therefore a consequence of an
+    unchanged seed, not a guarantee. Undoing every decision restores the
+    automatic fit's identifiers exactly. Identifiers must be re-read after an
+    undo, the same way decision ids and ``derivation`` tags are renumbered.
     """
     path = str(file_path)
     review = load_stage6_review_from_file(path)
@@ -6099,8 +6435,20 @@ def review_undo_impl(
             "have been re-run after editing). Rebuild from the source and re-edit."
         )
 
-    ops = [_decision_to_op(e) for e in surviving]
-    plan = _resolve_curation_plan(ops)
+    # Each decision was originally applied as its own action, against the
+    # state the previous decisions left. Resolving the whole surviving set as
+    # one flat op list would let _resolve_curation_plan coalesce add/remove
+    # ops from DIFFERENT decisions on the same window into one action -- wrong
+    # whenever a later decision touches peaks an earlier one created (an
+    # inferred split followed by an inferred merge on that split's own
+    # products, say): the combined action would be evaluated against the
+    # window's PRE-split state and fail to resolve, or -- worse -- silently
+    # seed differently. Resolving each decision independently and
+    # concatenating keeps the per-decision action boundary the original apply
+    # had, while still coalescing the ops *within* one decision (a merge's own
+    # remove/remove/add) into the one action _infer_curation_intent needs to
+    # see whole.
+    plan = [a for e in surviving for a in _resolve_curation_plan(_decision_to_op(e))]
 
     # Undo is restore-then-replay, so the restore happens before any replayed
     # edit could hit the epoch gate. Check first: otherwise a refusal partway
