@@ -352,10 +352,11 @@ class TestReviewMergeVerb:
             "support_bins": 20,
         }
 
-        # Inject the record into the window group's doublet_alternatives attr.
-        wg_key = f"stage5_fitting/windows/window_{wid:04d}"
+        # Inject the record into the window row's doublet_alternatives cell.
         with h5py.File(str(path2), "a") as h5f:
-            h5f[wg_key].attrs["doublet_alternatives"] = json.dumps([da_record])
+            windows = h5f["stage5_fitting/windows"]
+            row = [int(v) for v in windows["window_id"][:]].index(int(wid))
+            windows["doublet_alternatives"][row] = json.dumps([da_record])
 
         # Run merge — it should snap to the recorded seed.
         result = merge_peaks_impl(str(path2), wid, [fa, fb])

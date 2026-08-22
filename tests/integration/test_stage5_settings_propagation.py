@@ -463,11 +463,9 @@ def test_tau_penalty_lambda_drives_real_fit(
         rows: list[tuple[int, float]] = []
         with h5py.File(variant, "r") as h5:
             windows = h5["/stage5_fitting/windows"]
-            for name in sorted(windows.keys()):
-                wg = windows[name]
-                rows.append(
-                    (int(wg.attrs["window_id"]), float(wg.attrs["reduced_chi2"]))
-                )
+            ids = [int(v) for v in windows["window_id"][:]]
+            chi2 = [float(v) for v in windows["reduced_chi2"][:]]
+        rows = sorted(zip(ids, chi2))
         return rows
 
     rows_low = _fit("lam_0", 0.0)

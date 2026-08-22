@@ -222,9 +222,13 @@ def test_serialization_round_trip_and_hand_edit(
         pytest.skip("first window has no fitted peaks; cannot exercise hand-edit")
     wid = first_window.window_id
     with h5py.File(fp, "a") as h5f:
-        arr = h5f[f"stage5_fitting/windows/window_{wid:04d}/peaks/frequency_mhz"]
-        original = float(arr[0])
-        arr[0] = original + 0.001  # nudge +1 kHz
+        # One flat peak table; the window's rows are its own slice of it.
+        windows = h5f["stage5_fitting/windows"]
+        row = [int(v) for v in windows["window_id"][:]].index(int(wid))
+        start = int(windows["peak_offset"][row])
+        arr = h5f["stage5_fitting/peaks/frequency_mhz"]
+        original = float(arr[start])
+        arr[start] = original + 0.001  # nudge +1 kHz
     again = ftmw.load_fit(fp)
     edited_peak = again.window_fit(wid).fitted_peaks[0]
     assert edited_peak.frequency_mhz == pytest.approx(original + 0.001)
@@ -434,16 +438,16 @@ def test_fit_peaks_gaussian_cross_interface(
                 root_shape_str == "gaussian"
             ), f"{fp.name}: /stage5_fitting shape attr is {root_shape_str!r}"
             windows_group = h5f["stage5_fitting/windows"]
-            for wname in windows_group:
-                w_shape = windows_group[wname].attrs.get("shape", "lorentzian")
+            for row, raw_shape in enumerate(windows_group["shape"][:]):
                 w_shape_str = (
-                    w_shape.decode("utf-8")
-                    if isinstance(w_shape, bytes)
-                    else str(w_shape)
+                    raw_shape.decode("utf-8")
+                    if isinstance(raw_shape, bytes)
+                    else str(raw_shape)
                 )
+                wid = int(windows_group["window_id"][row])
                 assert (
                     w_shape_str == "gaussian"
-                ), f"{fp.name}/{wname} shape attr is {w_shape_str!r}"
+                ), f"{fp.name}/window {wid} shape is {w_shape_str!r}"
 
 
 def test_fit_peaks_gaussian_persists_and_loads_shape(

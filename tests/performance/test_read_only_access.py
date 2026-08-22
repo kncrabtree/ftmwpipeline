@@ -25,8 +25,10 @@ What is asserted here is:
 
 from __future__ import annotations
 
+import copy
 import shutil
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable, List, Tuple
 
@@ -91,24 +93,61 @@ def _measure(label: str, fn: Callable[[], object], total: Callable[[], int]) -> 
 
 
 def _multiply_windows(path: Path, factor: int) -> None:
-    """Grow a file's window count *factor*-fold by cloning its window groups.
+    """Grow a file's window count *factor*-fold by cloning its windows.
 
-    Duplicating the persisted groups is the cheapest way to get two files that
-    differ only in how many windows they hold, which is what lets a test assert
-    that a read's cost does or does not follow the window count. The clones are
-    byte-identical apart from their ids, so nothing else about the file changes.
+    Two files that differ only in how many windows they hold is what lets a
+    test assert that a read's cost does or does not follow the window count.
+    The clones are identical apart from their ids, so nothing else about the
+    file changes.
+
+    Done by loading and re-saving through the production serializers rather
+    than by copying HDF5 objects: under the flat layout a window is a row in
+    a table plus a slice of two others, so cloning on disk would mean
+    rewriting every offset by hand. Going through the writers keeps this
+    correct by construction, and it cannot drift from the layout again.
     """
+    from ftmwpipeline.io.window_serialization import (
+        load_window_plan_from_hdf5,
+        save_window_plan_to_hdf5,
+    )
+
     with h5py.File(path, "a") as h5f:
-        for stage in ("stage4_windows", "stage5_fitting"):
-            group = h5f[f"{stage}/windows"]
-            names = list(group)
-            next_id = max(int(name.split("_")[1]) for name in names) + 1
-            for _ in range(factor - 1):
-                for name in names:
-                    clone = f"window_{next_id:04d}"
-                    group.copy(name, clone)
-                    group[clone].attrs["window_id"] = next_id
-                    next_id += 1
+        plan = load_window_plan_from_hdf5(h5f["stage4_windows"])
+        fit = fserial.load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+
+    next_id = (
+        max(
+            [int(w.window_id) for w in plan.windows]
+            + [int(wf.window_id) for wf in fit.window_fits if wf.window_id is not None]
+        )
+        + 1
+    )
+
+    plan_windows = list(plan.windows)
+    fit_windows = list(fit.window_fits)
+    for _ in range(factor - 1):
+        for w in list(plan.windows):
+            plan_windows.append(replace(w, window_id=next_id))
+            for wf in list(fit.window_fits):
+                if int(wf.window_id) != int(w.window_id):
+                    continue
+                clone = copy.deepcopy(wf)
+                clone.window_id = next_id
+                for peak in clone.fitted_peaks:
+                    peak.window_id = next_id
+                fit_windows.append(clone)
+            next_id += 1
+
+    new_plan = replace(plan, windows=plan_windows)
+    fit.window_fits = fit_windows
+    fit.fitted_peaks = sorted(
+        (p for wf in fit_windows for p in wf.fitted_peaks),
+        key=lambda p: p.frequency_mhz,
+    )
+
+    with h5py.File(path, "a") as h5f:
+        save_window_plan_to_hdf5(new_plan, h5f["stage4_windows"])
+        fserial.save_spectrum_fit_to_hdf5(fit, h5f["stage5_fitting"])
 
 
 def test_narrow_read_costs_a_fraction_of_the_full_loader(
@@ -192,18 +231,18 @@ def test_read_cost_is_linear_in_the_columns_requested(
 def test_narrow_read_never_deserializes_the_record(
     built_pipeline: BuiltPipeline, monkeypatch
 ) -> None:
-    """``_load_peak_columns`` fires once per window per *full* deserialization.
+    """``_peaks_from_rows`` fires once per window per *full* deserialization.
 
     The read path must never reach it -- that is the whole point of the surface.
     """
     calls = {"n": 0}
-    original = fserial._load_peak_columns
+    original = fserial._peaks_from_rows
 
     def counting(*args, **kwargs):
         calls["n"] += 1
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(fserial, "_load_peak_columns", counting)
+    monkeypatch.setattr(fserial, "_peaks_from_rows", counting)
 
     path = str(built_pipeline.path)
     ftmw.read_table(path, "fit_peaks", NARROW_FIT_COLUMNS)
@@ -255,6 +294,14 @@ def test_metadata_read_does_not_scale_with_the_window_count(
     protecting (a regression that reached into the fit for ``acquisition_us``
     would make it O(N)), and unlike an access ceiling it needs no revision when
     a new scalar section is added.
+
+    The sensitivity control is a *wider column selection*, not a bigger file.
+    It used to be the latter -- a per-window read on the 4x clone had to cost
+    more -- but under the flat layout no read scales with the window count in
+    h5py accesses at all: a column is one dataset read whether the table has
+    three rows or three hundred. That is the whole point of the layout, so the
+    old control can no longer fire, and the counter has to be proven live some
+    other way.
     """
     small = built_pipeline.path
     large = tmp_path / "more_windows.ftmw"
@@ -268,6 +315,27 @@ def test_metadata_read_does_not_scale_with_the_window_count(
     large_meta = _measure(
         "read_metadata (4x windows)", lambda: ftmw.read_metadata(str(large)), total
     )
+    one_column = _measure(
+        "read fit_windows (1 column)",
+        lambda: ftmw.read_table(str(large), "fit_windows", ["window_id"]),
+        total,
+    )
+    many_columns = _measure(
+        "read fit_windows (4 columns)",
+        lambda: ftmw.read_table(
+            str(large), "fit_windows", ["window_id", "freq_min", "freq_max", "cost"]
+        ),
+        total,
+    )
+
+    # The counter must be sensitive to *something*, or "unchanged" below would
+    # prove nothing. Columns are what a table read scales with now.
+    assert many_columns > one_column, (
+        "asking for four columns cost no more than one; the counter this test "
+        "rests on is not wired up"
+    )
+    # And the flat layout's own claim, worth stating where it is measured: a
+    # per-window read does NOT grow with the window count.
     small_table = _measure(
         "read fit_windows (1x windows)",
         lambda: ftmw.read_table(str(small), "fit_windows", ["window_id"]),
@@ -278,12 +346,10 @@ def test_metadata_read_does_not_scale_with_the_window_count(
         lambda: ftmw.read_table(str(large), "fit_windows", ["window_id"]),
         total,
     )
-
-    # The counter must be sensitive to the window count, or "unchanged" below
-    # would prove nothing.
-    assert large_table > small_table, (
-        "cloning the window groups did not make a per-window read more "
-        "expensive; the differential this test rests on is not working"
+    assert large_table == small_table, (
+        f"a one-column window read cost {small_table} accesses on the original "
+        f"file and {large_table} on a clone with 4x the windows; the flat table "
+        f"should make it independent of the row count"
     )
     assert large_meta == small_meta, (
         f"read_metadata cost {small_meta} accesses on the original file and "

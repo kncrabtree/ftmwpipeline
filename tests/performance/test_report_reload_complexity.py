@@ -8,7 +8,7 @@ ledger derivation so the report deserializes the fit a bounded number of times
 regardless of window count.
 
 This guards that win deterministically: count the per-window peak-column loader
-(``_load_peak_columns``, which fires exactly once per window per full fit
+(``_peaks_from_rows``, which fires exactly once per window per full fit
 deserialization) across one ``report_run`` and assert the implied number of full
 deserializations stays a small constant. The regression makes it scale with the
 window count, so total calls would jump from ~k*N to ~N^2.
@@ -25,7 +25,7 @@ from .conftest import BuiltPipeline
 
 pytestmark = [pytest.mark.performance, pytest.mark.slow]
 
-# A full fit deserialization calls _load_peak_columns once per window. The report
+# A full fit deserialization calls _peaks_from_rows once per window. The report
 # loads the fit a small constant number of times (measured: 2 -- table + HTML).
 # The O(N^2) regression reloads per window, so deserializations ~ N. This ceiling
 # sits clear of the constant and well under N for any non-trivial fit.
@@ -39,16 +39,16 @@ def test_report_reload_is_linear_in_windows(
     assert n_windows > 1, "fixture must fit more than one window to be meaningful"
 
     calls = {"n": 0}
-    original = fserial._load_peak_columns
+    original = fserial._peaks_from_rows
 
     def counting(*args, **kwargs):
         calls["n"] += 1
         return original(*args, **kwargs)
 
     # Same-module call site: load_spectrum_fit_from_hdf5 resolves
-    # _load_peak_columns through the module namespace, so every deserialization
+    # _peaks_from_rows through the module namespace, so every deserialization
     # path is counted regardless of which module imported the loader.
-    monkeypatch.setattr(fserial, "_load_peak_columns", counting)
+    monkeypatch.setattr(fserial, "_peaks_from_rows", counting)
 
     out_dir = tmp_path / "report"
     out_dir.mkdir()
@@ -56,7 +56,7 @@ def test_report_reload_is_linear_in_windows(
 
     deserializations = calls["n"] / n_windows
     print(
-        f"\nreport _load_peak_columns calls: {calls['n']} over {n_windows} windows "
+        f"\nreport _peaks_from_rows calls: {calls['n']} over {n_windows} windows "
         f"=> {deserializations:.2f} full fit deserializations "
         f"(N^2 regression would be ~{n_windows * n_windows})"
     )
