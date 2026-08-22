@@ -47,13 +47,10 @@ from ..core.data_structures import (
 from ._hdf5_helpers import (
     REQUIRED,
     ColumnSpec,
-    build_columns,
     load_json_attr,
-    read_attr_value,
     read_dataset_column,
     reset_group,
     resolve_column_selection,
-    stack_columns,
     stamp_stage_header,
 )
 
@@ -76,9 +73,79 @@ _FIXED_COLUMNS = (
     "fixed_freeze_eligible",
 )
 
+#: Window-table columns and their on-disk dtypes. ``"str"`` is a
+#: variable-length UTF-8 column. ``free_offset``/``free_count`` and
+#: ``fixed_offset``/``fixed_count`` address each window's rows in the two
+#: long tables.
+_PLAN_WINDOW_COLUMNS: Dict[str, str] = {
+    "window_id": "i8",
+    "freq_min": "f8",
+    "freq_max": "f8",
+    "batch": "i8",
+    "free_offset": "i8",
+    "free_count": "i8",
+    "fixed_offset": "i8",
+    "fixed_count": "i8",
+    "diagnostics": "str",
+}
+
+#: The fixed-contributor long table, one row per (window, contributor).
+_PLAN_CONTRIBUTOR_COLUMNS: Dict[str, str] = {
+    "peak_index": "i8",
+    "primary_window_id": "i8",
+    "frequency_mhz": "f8",
+    "freeze_eligible": "i1",
+    "edge_free": "i1",
+}
+
+
+def _plan_column(values: List[Any], dtype: str) -> np.ndarray:
+    """One plan-table column, vlen-UTF-8 for the string columns."""
+    if dtype == "str":
+        column = np.empty(len(values), dtype=object)
+        for i, value in enumerate(values):
+            column[i] = value
+        return column
+    return np.asarray(values, dtype=dtype)
+
+
+def _write_plan_table(group: h5py.Group, columns: Dict[str, np.ndarray]) -> None:
+    """Write *columns* as equal-length datasets, resizing in place if present.
+
+    Chunked with an unbounded ``maxshape`` so a rewrite resizes rather than
+    deletes: HDF5 never reclaims a deleted object's space.
+    """
+    for name, data in columns.items():
+        if name in group:
+            dataset = group[name]
+            if dataset.shape[0] != len(data):
+                dataset.resize((len(data),))
+            if len(data):
+                dataset[...] = data
+            continue
+        dtype = (
+            h5py.string_dtype(encoding="utf-8")
+            if getattr(data, "dtype", None) == object
+            else None
+        )
+        group.create_dataset(
+            name,
+            data=data,
+            dtype=dtype,
+            maxshape=(None,),
+            chunks=(max(len(data), 1),),
+        )
+
 
 def save_window_plan_to_hdf5(plan: WindowPlan, h5_group: h5py.Group) -> None:
     """Write a :class:`WindowPlan` to an HDF5 group.
+
+    One row per window in ``windows/``, one row per (window, free peak) in
+    ``free_peaks/``, and one row per (window, fixed contributor) in
+    ``contributors/``. Windows are stored ascending by ``window_id``, and
+    each window's rows in the two long tables are contiguous and in its own
+    list order, addressed by ``free_offset``/``free_count`` and
+    ``fixed_offset``/``fixed_count``.
 
     Parameters
     ----------
@@ -97,56 +164,106 @@ def save_window_plan_to_hdf5(plan: WindowPlan, h5_group: h5py.Group) -> None:
     h5_group.attrs["topological_order"] = json.dumps(list(plan.topological_order))
     h5_group.attrs["diagnostics"] = json.dumps(plan.diagnostics, default=str)
 
-    windows_group = h5_group.create_group("windows")
-    for w in plan.windows:
-        wg = windows_group.create_group(f"window_{w.window_id:04d}")
-        wg.attrs["window_id"] = int(w.window_id)
-        wg.attrs["freq_min"] = float(w.freq_range[0])
-        wg.attrs["freq_max"] = float(w.freq_range[1])
-        wg.attrs["batch"] = int(w.batch)
-        wg.attrs["diagnostics"] = json.dumps(w.diagnostics, default=str)
+    windows = sorted(plan.windows, key=lambda w: int(w.window_id))
+    rows: Dict[str, List[Any]] = {name: [] for name in _PLAN_WINDOW_COLUMNS}
+    free_indices: List[int] = []
+    contributors: List[FixedContributor] = []
+    free_offset = 0
+    fixed_offset = 0
 
-        wg.create_dataset(
-            "free_peak_indices",
-            data=np.asarray(w.free_peak_indices, dtype="i8"),
-        )
-        fc = w.fixed_contributors
-        wg.create_dataset(
-            "fixed_peak_index",
-            data=np.asarray([c.peak_index for c in fc], dtype="i8"),
-        )
-        wg.create_dataset(
-            "fixed_primary_window_id",
-            data=np.asarray([c.primary_window_id for c in fc], dtype="i8"),
-        )
-        wg.create_dataset(
-            "fixed_frequency_mhz",
-            data=np.asarray([c.frequency_mhz for c in fc], dtype="f8"),
-        )
-        wg.create_dataset(
-            "fixed_freeze_eligible",
-            data=np.asarray([c.freeze_eligible for c in fc], dtype="i1"),
-        )
-        # Edge-free flag. Written unconditionally; legacy files predating it
-        # load with the back-compat default False (see load_window_plan).
-        wg.create_dataset(
-            "fixed_edge_free",
-            data=np.asarray([c.edge_free for c in fc], dtype="i1"),
-        )
+    for w in windows:
+        fc = list(w.fixed_contributors)
+        rows["window_id"].append(int(w.window_id))
+        rows["freq_min"].append(float(w.freq_range[0]))
+        rows["freq_max"].append(float(w.freq_range[1]))
+        rows["batch"].append(int(w.batch))
+        rows["free_offset"].append(free_offset)
+        rows["free_count"].append(len(w.free_peak_indices))
+        rows["fixed_offset"].append(fixed_offset)
+        rows["fixed_count"].append(len(fc))
+        rows["diagnostics"].append(json.dumps(w.diagnostics, default=str))
+        free_indices.extend(int(x) for x in w.free_peak_indices)
+        contributors.extend(fc)
+        free_offset += len(w.free_peak_indices)
+        fixed_offset += len(fc)
+
+    _write_plan_table(
+        h5_group.require_group("windows"),
+        {
+            name: _plan_column(rows[name], dtype)
+            for name, dtype in _PLAN_WINDOW_COLUMNS.items()
+        },
+    )
+    _write_plan_table(
+        h5_group.require_group("free_peaks"),
+        {"peak_index": np.asarray(free_indices, dtype="i8")},
+    )
+    _write_plan_table(
+        h5_group.require_group("contributors"),
+        {
+            "peak_index": np.asarray([c.peak_index for c in contributors], dtype="i8"),
+            "primary_window_id": np.asarray(
+                [c.primary_window_id for c in contributors], dtype="i8"
+            ),
+            "frequency_mhz": np.asarray(
+                [c.frequency_mhz for c in contributors], dtype="f8"
+            ),
+            "freeze_eligible": np.asarray(
+                [1 if c.freeze_eligible else 0 for c in contributors], dtype="i1"
+            ),
+            "edge_free": np.asarray(
+                [1 if c.edge_free else 0 for c in contributors], dtype="i1"
+            ),
+        },
+    )
+
+
+#: What a reader is told when it opens a plan written in the pre-1.0 layout.
+LEGACY_PLAN_LAYOUT_MESSAGE = (
+    "this file's Stage 4 window plan uses the pre-1.0 per-window layout "
+    "(stage4_windows/windows/window_NNNN/), which this version cannot read. "
+    "Re-run 'windows run' to rebuild the plan in the current layout; "
+    "anything downstream of it (the Stage 5 fit, Stage 6 curation) must be "
+    "re-run too."
+)
+
+
+def _plan_windows_group(h5_group: h5py.Group) -> h5py.Group:
+    if "windows" not in h5_group:
+        raise ValueError("stage4_windows group missing required 'windows' table")
+    windows = h5_group["windows"]
+    if "window_id" not in windows:
+        # The flat layout always has that column. Its absence is either a
+        # corrupt table or a plan from before the layout changed, where
+        # `windows` held one subgroup per window. Both end in a refusal;
+        # only one of them tells the reader what to do about it.
+        if any(isinstance(windows.get(name), h5py.Group) for name in windows):
+            raise ValueError(LEGACY_PLAN_LAYOUT_MESSAGE)
+        raise ValueError("stage4_windows windows table missing column 'window_id'")
+    return windows
+
+
+def _plan_decode(value: Any) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8")
+    return str(value)
 
 
 def load_window_plan_from_hdf5(h5_group: h5py.Group) -> WindowPlan:
     """Load a :class:`WindowPlan` from an HDF5 group, validating loudly.
 
+    Reads the three tables whole -- a handful of dataset reads whatever the
+    window count -- and slices each window's free-peak indices and fixed
+    contributors out of the two long tables by offset and count.
+
     Raises
     ------
     ValueError
-        If the ``windows`` subgroup is missing, a window subgroup lacks a
-        required attribute/dataset, or the fixed-contributor columns have
-        mismatched lengths.
+        If a table or a required column is missing, the columns within a
+        table have mismatched lengths, or a window's slice of either long
+        table does not lie inside it.
     """
-    if "windows" not in h5_group:
-        raise ValueError("stage4_windows group missing required 'windows' subgroup")
+    windows_group = _plan_windows_group(h5_group)
 
     parameters = load_json_attr(h5_group, "parameters", {})
     diagnostics = load_json_attr(h5_group, "diagnostics", {})
@@ -156,60 +273,98 @@ def load_window_plan_from_hdf5(h5_group: h5py.Group) -> WindowPlan:
         int(x) for x in load_json_attr(h5_group, "topological_order", [])
     ]
 
-    windows_group = h5_group["windows"]
+    missing = [c for c in _PLAN_WINDOW_COLUMNS if c not in windows_group]
+    if missing:
+        raise ValueError(f"stage4_windows windows table missing column(s): {missing}")
+    columns = {c: windows_group[c][:] for c in _PLAN_WINDOW_COLUMNS}
+    lengths = {c: len(v) for c, v in columns.items()}
+    if len(set(lengths.values())) != 1:
+        raise ValueError(
+            f"stage4_windows windows table columns have mismatched lengths: {lengths}"
+        )
+
+    if "free_peaks" not in h5_group:
+        raise ValueError("stage4_windows group missing required 'free_peaks' table")
+    if "peak_index" not in h5_group["free_peaks"]:
+        raise ValueError("stage4_windows free_peaks table missing column 'peak_index'")
+    free_indices = np.asarray(h5_group["free_peaks"]["peak_index"][:], dtype="i8")
+
+    if "contributors" not in h5_group:
+        raise ValueError("stage4_windows group missing required 'contributors' table")
+    contributors_group = h5_group["contributors"]
+    # `edge_free` is a late addition. The layout is fixed, but a column added
+    # after a plan was written may still be absent from it, and False -- "not
+    # known to be edge-free" -- is the honest default rather than a refusal.
+    # This matches the column spec the bulk reader resolves it through.
+    required = [c for c in _PLAN_CONTRIBUTOR_COLUMNS if c != "edge_free"]
+    missing = [c for c in required if c not in contributors_group]
+    if missing:
+        raise ValueError(
+            f"stage4_windows contributors table missing column(s): {missing}"
+        )
+    contributor_columns = {c: contributors_group[c][:] for c in required}
+    n_contributor_rows = len(contributor_columns["peak_index"])
+    contributor_columns["edge_free"] = (
+        contributors_group["edge_free"][:]
+        if "edge_free" in contributors_group
+        else np.zeros(n_contributor_rows, dtype="i1")
+    )
+    contributor_lengths = {c: len(v) for c, v in contributor_columns.items()}
+    if len(set(contributor_lengths.values())) != 1:
+        raise ValueError(
+            f"stage4_windows contributors table columns have mismatched lengths: "
+            f"{contributor_lengths}"
+        )
+    n_contributors = next(iter(contributor_lengths.values()))
+
     windows: List[FitWindow] = []
-    for name in sorted(windows_group.keys()):
-        wg = windows_group[name]
-        for attr in ("window_id", "freq_min", "freq_max", "batch"):
-            if attr not in wg.attrs:
-                raise ValueError(f"window {name!r} missing required attribute {attr!r}")
-
-        for col in ("free_peak_indices", *_FIXED_COLUMNS):
-            if col not in wg:
-                raise ValueError(f"window {name!r} missing required dataset {col!r}")
-        fixed_lengths = {c: len(wg[c]) for c in _FIXED_COLUMNS}
-        if len(set(fixed_lengths.values())) != 1:
+    for row in range(len(columns["window_id"])):
+        wid = int(columns["window_id"][row])
+        free_start = int(columns["free_offset"][row])
+        free_stop = free_start + int(columns["free_count"][row])
+        if free_start < 0 or free_stop > free_indices.size:
             raise ValueError(
-                f"window {name!r} fixed-contributor columns have mismatched "
-                f"lengths: {fixed_lengths}"
+                f"window {wid} free-peak slice [{free_start}, {free_stop}) does "
+                f"not lie inside the {free_indices.size}-row free_peaks table"
+            )
+        fixed_start = int(columns["fixed_offset"][row])
+        fixed_stop = fixed_start + int(columns["fixed_count"][row])
+        if fixed_start < 0 or fixed_stop > n_contributors:
+            raise ValueError(
+                f"window {wid} contributor slice [{fixed_start}, {fixed_stop}) does "
+                f"not lie inside the {n_contributors}-row contributors table"
             )
 
-        fixed_idx = wg["fixed_peak_index"][:]
-        fixed_pw = wg["fixed_primary_window_id"][:]
-        fixed_f = wg["fixed_frequency_mhz"][:]
-        fixed_fe = wg["fixed_freeze_eligible"][:]
-        # Optional column: legacy plans predate the edge-free attachment and
-        # carry no such dataset, so default it to all-False.
-        if "fixed_edge_free" in wg:
-            fixed_ef = wg["fixed_edge_free"][:]
-            if len(fixed_ef) != len(fixed_idx):
-                raise ValueError(
-                    f"window {name!r} fixed_edge_free length {len(fixed_ef)} "
-                    f"!= fixed_peak_index length {len(fixed_idx)}"
-                )
-        else:
-            fixed_ef = np.zeros(len(fixed_idx), dtype="i1")
-        fixed_contributors = [
-            FixedContributor(
-                peak_index=int(fixed_idx[i]),
-                primary_window_id=int(fixed_pw[i]),
-                frequency_mhz=float(fixed_f[i]),
-                freeze_eligible=bool(fixed_fe[i]),
-                edge_free=bool(fixed_ef[i]),
-            )
-            for i in range(len(fixed_idx))
-        ]
-
-        win_diag = load_json_attr(wg, "diagnostics", {})
+        raw_diagnostics = _plan_decode(columns["diagnostics"][row])
+        try:
+            window_diagnostics = json.loads(raw_diagnostics) if raw_diagnostics else {}
+        except (json.JSONDecodeError, TypeError):
+            window_diagnostics = {}
 
         windows.append(
             FitWindow(
-                window_id=int(wg.attrs["window_id"]),
-                freq_range=(float(wg.attrs["freq_min"]), float(wg.attrs["freq_max"])),
-                free_peak_indices=[int(x) for x in wg["free_peak_indices"][:]],
-                fixed_contributors=fixed_contributors,
-                batch=int(wg.attrs["batch"]),
-                diagnostics=win_diag,
+                window_id=wid,
+                freq_range=(
+                    float(columns["freq_min"][row]),
+                    float(columns["freq_max"][row]),
+                ),
+                free_peak_indices=[int(x) for x in free_indices[free_start:free_stop]],
+                fixed_contributors=[
+                    FixedContributor(
+                        peak_index=int(contributor_columns["peak_index"][i]),
+                        primary_window_id=int(
+                            contributor_columns["primary_window_id"][i]
+                        ),
+                        frequency_mhz=float(contributor_columns["frequency_mhz"][i]),
+                        freeze_eligible=bool(
+                            int(contributor_columns["freeze_eligible"][i])
+                        ),
+                        edge_free=bool(int(contributor_columns["edge_free"][i])),
+                    )
+                    for i in range(fixed_start, fixed_stop)
+                ],
+                batch=int(columns["batch"][row]),
+                diagnostics=window_diagnostics,
             )
         )
 
@@ -247,10 +402,12 @@ WINDOW_PLAN_COLUMN_SPECS: Dict[str, ColumnSpec] = {
 
 _WINDOW_PLAN_DERIVED = ("n_free_peaks", "n_fixed_contributors")
 
-#: Dataset whose length backs each derived count column.
-_COUNT_SOURCE = {
-    "n_free_peaks": "free_peak_indices",
-    "n_fixed_contributors": "fixed_peak_index",
+#: Window-table column holding each derived count. Under the flat layout a
+#: window's row count in a long table IS a stored column, so these are reads
+#: rather than dataset-length probes.
+_DERIVED_COUNT_COLUMN = {
+    "n_free_peaks": "free_count",
+    "n_fixed_contributors": "fixed_count",
 }
 
 
@@ -260,47 +417,43 @@ def read_window_plan_columns(
 ) -> Dict[str, np.ndarray]:
     """Read per-window plan columns from a ``stage4_windows`` group in bulk.
 
-    One attribute read per window per requested column; the free-peak indices,
-    the fixed-contributor columns, and the per-window JSON diagnostics are never
-    read. Rows are ordered by ascending ``window_id``, matching
-    :attr:`WindowPlan.windows`.
+    One whole-dataset read per requested column against the flat window
+    table; the free-peak indices, the fixed-contributor columns and the
+    per-window JSON diagnostics are never read. Rows are ordered by ascending
+    ``window_id``, matching :attr:`WindowPlan.windows`.
 
     See :data:`WINDOW_PLAN_COLUMN_SPECS` for the available columns.
     """
     requested = resolve_column_selection(
         columns, list(WINDOW_PLAN_COLUMN_SPECS), table="windows"
     )
-    if "windows" not in h5_group:
-        raise ValueError("stage4_windows group missing required 'windows' subgroup")
-    windows_group = h5_group["windows"]
+    windows_group = _plan_windows_group(h5_group)
+    n_rows = int(np.asarray(windows_group["window_id"]).shape[0])
 
     # window_id always read: it defines the row order.
-    attr_cols = [c for c in requested if c not in _WINDOW_PLAN_DERIVED]
-    to_read = list(dict.fromkeys(["window_id", *attr_cols]))
-    derived = [c for c in _WINDOW_PLAN_DERIVED if c in requested]
-    rows: Dict[str, List[Any]] = {c: [] for c in (*to_read, *derived)}
+    stored = [c for c in requested if c not in _WINDOW_PLAN_DERIVED]
+    to_read = list(dict.fromkeys(["window_id", *stored]))
 
-    for name in sorted(windows_group.keys()):
-        wg = windows_group[name]
-        where = f"window {name!r}"
-        for col in to_read:
-            rows[col].append(
-                read_attr_value(wg, col, WINDOW_PLAN_COLUMN_SPECS[col], where=where)
-            )
-        for col in derived:
-            name_of = _COUNT_SOURCE[col]
-            try:
-                dataset = wg[name_of]
-            except KeyError:
-                raise ValueError(
-                    f"{where} missing required dataset {name_of!r}"
-                ) from None
-            rows[col].append(int(dataset.shape[0]))
+    built: Dict[str, np.ndarray] = {}
+    for col in to_read:
+        built[col] = read_dataset_column(
+            windows_group,
+            col,
+            WINDOW_PLAN_COLUMN_SPECS[col],
+            n_rows,
+            where="stage4_windows windows",
+        )
+    for col in _WINDOW_PLAN_DERIVED:
+        if col not in requested:
+            continue
+        # A window's count is the length of its slice of the long table.
+        source = _DERIVED_COUNT_COLUMN[col]
+        if source not in windows_group:
+            raise ValueError(f"stage4_windows windows table missing column {source!r}")
+        built[col] = np.asarray(windows_group[source][:], dtype="i8")
 
-    keep = [*to_read, *derived]
-    built = build_columns(rows, WINDOW_PLAN_COLUMN_SPECS, keep)
     order = np.argsort(built["window_id"], kind="stable")
-    return {c: built[c][order] for c in requested}
+    return {c: np.asarray(built[c])[order] for c in requested}
 
 
 #: One row per (window, free peak): which Stage 3 peaks a window fits freely.
@@ -324,7 +477,9 @@ WINDOW_CONTRIBUTOR_COLUMN_SPECS: Dict[str, ColumnSpec] = {
     "edge_free": ("bool", False),
 }
 
-#: On-disk dataset backing each contributor column (the writer prefixes them).
+#: Retained for reference: the pre-1.0 per-window datasets each contributor
+#: column used to live in. The flat ``contributors`` table stores them under
+#: their column names directly.
 _CONTRIBUTOR_DATASETS = {
     "peak_index": "fixed_peak_index",
     "primary_window_id": "fixed_primary_window_id",
@@ -340,51 +495,44 @@ def _read_long_window_table(
     columns: Optional[Sequence[str]],
     *,
     table: str,
-    anchor: str,
-    dataset_names: Dict[str, str],
+    subgroup: str,
+    count_column: str,
 ) -> Dict[str, np.ndarray]:
-    """Concatenate a per-window ragged column set into one long table.
+    """Read one of the two long tables, tagged by owning ``window_id``.
 
-    *anchor* is the dataset whose length gives each window's row count; it is
-    read whether or not the caller asked for it, since without it there is no
-    way to know how many rows a window contributes. Windows are visited in
-    ascending ``window_id``, so the result is grouped by window.
+    The table is already in long form on disk and already grouped by window
+    in ascending ``window_id`` order, so this is a straight column read plus
+    -- when the caller wants it -- a ``window_id`` column expanded from the
+    window table's per-window counts.
     """
     requested = resolve_column_selection(columns, list(specs), table=table)
-    if "windows" not in h5_group:
-        raise ValueError("stage4_windows group missing required 'windows' subgroup")
-    windows_group = h5_group["windows"]
-
+    if subgroup not in h5_group:
+        raise ValueError(f"stage4_windows group missing required {subgroup!r} table")
+    long_group = h5_group[subgroup]
     data_cols = [c for c in requested if c != "window_id"]
-    to_read = list(dict.fromkeys([anchor, *data_cols]))
-    chunks: Dict[str, List[np.ndarray]] = {c: [] for c in (*to_read, "window_id")}
 
-    want_window_id = "window_id" in requested
-    for name in sorted(windows_group.keys()):
-        wg = windows_group[name]
-        where = f"window {name!r}"
-        n: Optional[int] = None
-        for col in to_read:
-            column = read_dataset_column(
-                wg,
-                col,
-                specs[col],
-                n,
-                where=where,
-                dataset=dataset_names.get(col, col),
-            )
-            if n is None:
-                n = len(column)
-            chunks[col].append(column)
-        if want_window_id:
-            assert n is not None  # the anchor column is always read first
-            window_id = read_attr_value(
-                wg, "window_id", WINDOW_PLAN_COLUMN_SPECS["window_id"], where=where
-            )
-            chunks["window_id"].append(np.full(n, window_id, dtype="i8"))
+    n_rows: Optional[int] = None
+    built: Dict[str, np.ndarray] = {}
+    for col in data_cols:
+        column = read_dataset_column(
+            long_group, col, specs[col], n_rows, where=f"stage4_windows {subgroup}"
+        )
+        if n_rows is None:
+            n_rows = len(column)
+        built[col] = column
 
-    keep = [*to_read, *(["window_id"] if want_window_id else [])]
-    built = stack_columns(chunks, specs, keep)
+    if "window_id" in requested:
+        windows_group = _plan_windows_group(h5_group)
+        ids = np.asarray(windows_group["window_id"][:], dtype="i8")
+        counts = np.asarray(windows_group[count_column][:], dtype="i8")
+        order = np.argsort(ids, kind="stable")
+        built["window_id"] = np.repeat(ids[order], counts[order])
+        if n_rows is not None and built["window_id"].size != n_rows:
+            raise ValueError(
+                f"stage4_windows {subgroup} has {n_rows} row(s) but the window "
+                f"table's {count_column} sums to {built['window_id'].size}"
+            )
+
     return {c: built[c] for c in requested}
 
 
@@ -401,8 +549,8 @@ def read_window_free_peak_columns(
         WINDOW_FREE_PEAK_COLUMN_SPECS,
         columns,
         table="window_free_peaks",
-        anchor="peak_index",
-        dataset_names={"peak_index": "free_peak_indices"},
+        subgroup="free_peaks",
+        count_column="free_count",
     )
 
 
@@ -419,8 +567,8 @@ def read_window_contributor_columns(
         WINDOW_CONTRIBUTOR_COLUMN_SPECS,
         columns,
         table="window_contributors",
-        anchor="peak_index",
-        dataset_names=_CONTRIBUTOR_DATASETS,
+        subgroup="contributors",
+        count_column="fixed_count",
     )
 
 

@@ -968,16 +968,16 @@ class TestReadWindowPlanColumns:
 
     def test_missing_required_attr_raises(self, plan_file):
         with h5py.File(plan_file, "a") as h5f:
-            del h5f["stage4_windows/windows/window_0001"].attrs["batch"]
+            del h5f["stage4_windows/windows/batch"]
         with h5py.File(plan_file, "r") as h5f:
-            with pytest.raises(ValueError, match="missing required attribute 'batch'"):
+            with pytest.raises(ValueError, match="missing required column 'batch'"):
                 read_window_plan_columns(h5f["stage4_windows"])
 
     def test_missing_count_dataset_raises(self, plan_file):
         with h5py.File(plan_file, "a") as h5f:
-            del h5f["stage4_windows/windows/window_0000/free_peak_indices"]
+            del h5f["stage4_windows/windows/free_count"]
         with h5py.File(plan_file, "r") as h5f:
-            with pytest.raises(ValueError, match="free_peak_indices"):
+            with pytest.raises(ValueError, match="free_count"):
                 read_window_plan_columns(
                     h5f["stage4_windows"], columns=["n_free_peaks"]
                 )
@@ -1055,8 +1055,7 @@ class TestReadWindowLongTables:
     def test_absent_edge_free_column_reads_as_its_fill(self, plan_file):
         """Legacy plans predate the edge-free attachment; it defaults False."""
         with h5py.File(plan_file, "a") as h5f:
-            for name in h5f["stage4_windows/windows"]:
-                del h5f[f"stage4_windows/windows/{name}/fixed_edge_free"]
+            del h5f["stage4_windows/contributors/edge_free"]
         with h5py.File(plan_file, "r") as h5f:
             cols = read_window_contributor_columns(h5f["stage4_windows"])
         assert not cols["edge_free"].any()
