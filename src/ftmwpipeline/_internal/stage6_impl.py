@@ -4529,9 +4529,25 @@ def _curation_ambiguity_warnings(
             )
 
     def check_uid(wid: int, uid: int, what: str) -> None:
-        fitted_uids = by_uid.get(wid)
+        # Three different situations reach here, and an empty uid set cannot
+        # tell them apart on its own -- the frequency map is what separates
+        # "no peaks" from "peaks, but none carrying an identifier". Saying
+        # the window has no fitted peaks when it is full of them sends the
+        # reader looking for the wrong problem.
+        fitted = by_window.get(wid)
+        if not fitted:
+            warnings.append(
+                f"{what}: window {wid} has no fitted peaks (the edit will fail)"
+            )
+            return
+        fitted_uids = by_uid.get(wid) or set()
         if not fitted_uids:
-            warnings.append(f"{what}: window {wid} has no fitted peaks")
+            warnings.append(
+                f"{what}: window {wid}'s {len(fitted)} fitted peak(s) carry no "
+                f"peak_uid, so no uid can match (the edit will fail); this fit "
+                f"predates peak identity -- address the peak by frequency, or "
+                f"re-run 'fit run' to stamp identifiers"
+            )
             return
         if uid not in fitted_uids:
             warnings.append(

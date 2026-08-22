@@ -267,6 +267,27 @@ def test_uid_readers_tolerate_a_file_without_the_column(stage5_multi_file):
     assert any(row.freq_range is not None for row in coverage)
 
 
+def test_an_empty_window_still_reports_no_fitted_peaks(stage5_multi_file, tmp_path):
+    """The other branch of the same check, so the two cannot collapse.
+
+    A window that really has no fitted peaks must keep saying so -- the
+    peak_uid-less wording is more specific, not a replacement.
+    """
+    wid, _freq, uid = _a_fitted_peak(stage5_multi_file)
+    # Empty the window: keep the rows, drop them from this window's slice.
+    with h5py.File(str(stage5_multi_file), "r+") as h5f:
+        windows = h5f["stage5_fitting"]["windows"]
+        ids = [int(v) for v in windows["window_id"][:]]
+        row = ids.index(wid)
+        windows["peak_count"][row] = 0
+
+    curation = _write_curation(tmp_path, f"remove,{wid},uid:{uid},\n")
+    preview = apply_curation_impl(stage5_multi_file, curation, dry_run=True)
+
+    (advisory,) = [w for w in preview.warnings if f"uid:{uid}" in w]
+    assert "has no fitted peaks" in advisory, advisory
+
+
 def test_uid_target_against_a_file_without_the_column_is_unmatched(
     stage5_multi_file, tmp_path
 ):
@@ -285,12 +306,13 @@ def test_uid_target_against_a_file_without_the_column_is_unmatched(
     preview = apply_curation_impl(stage5_multi_file, curation, dry_run=True)
 
     assert preview.applied == 0
-    # The advisory names the target it could not resolve. Its wording on this
-    # file is "window N has no fitted peaks" -- the window does have fitted
-    # peaks, it has no *uids*, an inaccuracy inherited from the empty-set
-    # representation and left alone here; what this test pins is that the uid
-    # is named and the edit is flagged, not the phrasing.
-    assert any(f"uid:{uid}" in w for w in preview.warnings), preview.warnings
+    # The advisory must say what is actually wrong: the window is full of
+    # fitted peaks, they just carry no identifiers. An empty uid set alone
+    # cannot distinguish that from an empty window, and reporting "no fitted
+    # peaks" here sends the reader after the wrong problem.
+    (advisory,) = [w for w in preview.warnings if f"uid:{uid}" in w]
+    assert "carry no peak_uid" in advisory, advisory
+    assert "has no fitted peaks" not in advisory, advisory
 
     with pytest.raises(ValueError) as excinfo:
         apply_curation_impl(stage5_multi_file, curation)
