@@ -540,8 +540,12 @@ class TestReadFitPeakColumns:
         with h5py.File(path, "w") as h5f:
             save_spectrum_fit_to_hdf5(fit, h5f.create_group("stage5_fitting"))
         with h5py.File(path, "r") as h5f:
-            stored = h5f["stage5_fitting/windows/window_0000/peaks/window_id"][:]
-        assert list(stored) == [0]
+            stored = h5f["stage5_fitting/peaks/window_id"][:]
+            offsets = h5f["stage5_fitting/windows/peak_offset"][:]
+            counts = h5f["stage5_fitting/windows/peak_count"][:]
+        # Window 0's slice of the shared peak table -- the orphan row.
+        start, count = int(offsets[0]), int(counts[0])
+        assert list(stored[start : start + count]) == [0]
 
     def test_a_stored_minus_one_window_id_is_backfilled_from_the_group(self, fit_file):
         """Files written before the writer stamped the group's id still group.
@@ -554,7 +558,7 @@ class TestReadFitPeakColumns:
         # Reach behind the writer to recreate the on-disk state an older
         # version produced for a peak whose own window_id was None.
         with h5py.File(fit_file, "r+") as h5f:
-            h5f["stage5_fitting/windows/window_0000/peaks/window_id"][0] = -1
+            h5f["stage5_fitting/peaks/window_id"][0] = -1
 
         with h5py.File(fit_file, "r") as h5f:
             cols = read_fit_peak_columns(
@@ -597,56 +601,15 @@ class TestReadFitPeakColumns:
         assert peak_uid[1] == -1  # None -> -1, not None
         assert peak_uid[2] == -1
 
-    def test_legacy_peak_id_column_reads_as_detection_index(self, fit_file):
-        """A file written before the ``peak_id`` -> ``detection_index`` rename
-        stores the identical data under the old column name; the tap must
-        still return it under the new one, with the same values the current
-        writer would have produced."""
-        with h5py.File(fit_file, "r") as h5f:
-            expected = read_fit_peak_columns(h5f["stage5_fitting"])
-
-        with h5py.File(fit_file, "r+") as h5f:
-            windows_group = h5f["stage5_fitting/windows"]
-            for name in windows_group:
-                peaks_group = windows_group[f"{name}/peaks"]
-                peaks_group.move("detection_index", "peak_id")
-
-        with h5py.File(fit_file, "r") as h5f:
-            cols = read_fit_peak_columns(h5f["stage5_fitting"])
-        assert "peak_id" not in cols
-        np.testing.assert_array_equal(
-            cols["detection_index"], expected["detection_index"]
-        )
-
-    def test_row_count_path_reads_the_legacy_column(self, fit_file):
-        """``n_peaks`` (derived from the row-count helper) works whether the
-        peaks subgroup carries ``detection_index`` or the pre-rename
-        ``peak_id``."""
-        with h5py.File(fit_file, "r") as h5f:
-            expected = read_fit_window_columns(
-                h5f["stage5_fitting"], columns=["n_peaks"]
-            )
-
-        with h5py.File(fit_file, "r+") as h5f:
-            windows_group = h5f["stage5_fitting/windows"]
-            for name in windows_group:
-                peaks_group = windows_group[f"{name}/peaks"]
-                peaks_group.move("detection_index", "peak_id")
-
-        with h5py.File(fit_file, "r") as h5f:
-            cols = read_fit_window_columns(h5f["stage5_fitting"], columns=["n_peaks"])
-        np.testing.assert_array_equal(cols["n_peaks"], expected["n_peaks"])
-
     def test_row_count_raises_naming_detection_index_when_absent(self, fit_file):
         """Neither ``detection_index`` nor ``peak_id`` present: the row-count
         helper must raise, naming the current column name."""
         with h5py.File(fit_file, "r+") as h5f:
-            peaks_group = h5f["stage5_fitting/windows/window_0000/peaks"]
-            peaks_group.move("detection_index", "something_else")
+            h5f["stage5_fitting/peaks"].move("detection_index", "something_else")
 
         with h5py.File(fit_file, "r") as h5f:
             with pytest.raises(ValueError, match="detection_index"):
-                read_fit_window_columns(h5f["stage5_fitting"], columns=["n_peaks"])
+                read_fit_peak_columns(h5f["stage5_fitting"])
 
     def test_column_selection_is_honored_in_order(self, fit_file):
         with h5py.File(fit_file, "r") as h5f:
@@ -683,29 +646,28 @@ class TestReadFitPeakColumns:
             h5f.create_group("stage5_fitting")
         with h5py.File(path, "r") as h5f:
             with pytest.raises(ValueError, match="missing required 'windows'"):
-                read_fit_peak_columns(h5f["stage5_fitting"])
+                read_fit_window_columns(h5f["stage5_fitting"])
 
     def test_missing_required_column_raises(self, fit_file):
         with h5py.File(fit_file, "a") as h5f:
-            del h5f["stage5_fitting/windows/window_0000/peaks/amplitude"]
+            del h5f["stage5_fitting/peaks/amplitude"]
         with h5py.File(fit_file, "r") as h5f:
             with pytest.raises(ValueError, match="missing required column 'amplitude'"):
                 read_fit_peak_columns(h5f["stage5_fitting"])
 
     def test_mismatched_column_length_raises(self, fit_file):
         with h5py.File(fit_file, "a") as h5f:
-            group = h5f["stage5_fitting/windows/window_0000/peaks"]
+            group = h5f["stage5_fitting/peaks"]
             del group["snr"]
             group.create_dataset("snr", data=np.array([1.0], dtype="f8"))
         with h5py.File(fit_file, "r") as h5f:
-            with pytest.raises(ValueError, match="has length 1, expected 2"):
+            with pytest.raises(ValueError, match="has length 1, expected"):
                 read_fit_peak_columns(h5f["stage5_fitting"])
 
     def test_absent_optional_column_reads_back_as_its_fill(self, fit_file):
         """An older file with no ``derivation`` column reads as all -1 (None)."""
         with h5py.File(fit_file, "a") as h5f:
-            for name in h5f["stage5_fitting/windows"]:
-                del h5f[f"stage5_fitting/windows/{name}/peaks/derivation"]
+            del h5f["stage5_fitting/peaks/derivation"]
         with h5py.File(fit_file, "r") as h5f:
             cols = read_fit_peak_columns(h5f["stage5_fitting"], columns=["derivation"])
             fit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
@@ -715,8 +677,7 @@ class TestReadFitPeakColumns:
     def test_absent_peak_uid_column_reads_back_as_none(self, fit_file):
         """An older file with no ``peak_uid`` column reads as all -1 (None)."""
         with h5py.File(fit_file, "a") as h5f:
-            for name in h5f["stage5_fitting/windows"]:
-                del h5f[f"stage5_fitting/windows/{name}/peaks/peak_uid"]
+            del h5f["stage5_fitting/peaks/peak_uid"]
         with h5py.File(fit_file, "r") as h5f:
             cols = read_fit_peak_columns(h5f["stage5_fitting"], columns=["peak_uid"])
             fit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
@@ -779,9 +740,9 @@ class TestReadFitWindowColumns:
 
     def test_missing_required_attr_raises(self, fit_file):
         with h5py.File(fit_file, "a") as h5f:
-            del h5f["stage5_fitting/windows/window_0000"].attrs["tau_us"]
+            del h5f["stage5_fitting/windows/tau_us"]
         with h5py.File(fit_file, "r") as h5f:
-            with pytest.raises(ValueError, match="missing required attribute 'tau_us'"):
+            with pytest.raises(ValueError, match="missing required column 'tau_us'"):
                 read_fit_window_columns(h5f["stage5_fitting"])
 
     def test_every_declared_column_is_readable(self, fit_file):
@@ -851,12 +812,15 @@ class TestReadFitEventLogs:
         """An older record that omits a field reads back as its documented fill."""
         with h5py.File(fit_file, "a") as h5f:
             windows = h5f["stage5_fitting/windows"]
-            for name in windows:
-                blobs = json.loads(windows[name].attrs["doublet_alternatives"])
+            for row in range(windows["doublet_alternatives"].shape[0]):
+                raw = windows["doublet_alternatives"][row]
+                if isinstance(raw, bytes):
+                    raw = raw.decode("utf-8")
+                blobs = json.loads(raw) if raw else []
                 for blob in blobs:
                     del blob["chi2r_merged"]
                     del blob["support_bins"]
-                windows[name].attrs["doublet_alternatives"] = json.dumps(blobs)
+                windows["doublet_alternatives"][row] = json.dumps(blobs)
         with h5py.File(fit_file, "r") as h5f:
             cols = read_fit_doublet_columns(h5f["stage5_fitting"])
         assert np.isnan(cols["chi2r_merged"]).all()

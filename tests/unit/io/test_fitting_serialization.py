@@ -383,30 +383,70 @@ class TestRoundTrip:
 # detection_index / peak_id back-compat (P5: peak_id renamed to
 # detection_index; the old column name still reads)
 # ---------------------------------------------------------------------------
-class TestDetectionIndexLegacyColumn:
-    def test_legacy_peak_id_column_loads_as_detection_index(self, tmp_path):
-        """A file written before the ``peak_id`` -> ``detection_index`` rename
-        stores the identical data under the old column name. It must still
-        load with no error and with ``detection_index`` populated correctly
-        on every peak -- the rename changed the name, not the semantics."""
-        path = tmp_path / "fit.h5"
+class TestLegacyLayoutRefusal:
+    """A fit in the pre-1.0 per-window layout is refused by name.
+
+    The old layout is gone, not supported-with-a-warning, so the only thing
+    left to get right is the refusal: a reader who opens an old file should
+    be told what happened and what to do, not handed a KeyError from three
+    frames deep in h5py.
+    """
+
+    @staticmethod
+    def _write_legacy_layout(path):
+        """The shape the pre-1.0 writer produced: one subgroup per window."""
+        with h5py.File(path, "w") as h5f:
+            g = h5f.create_group("stage5_fitting")
+            windows = g.create_group("windows")
+            wg = windows.create_group("window_0000")
+            wg.attrs["window_id"] = 0
+            wg.attrs["success"] = True
+            wg.create_group("peaks").create_dataset(
+                "detection_index", data=np.zeros(1, dtype="i8")
+            )
+
+    def test_load_names_the_layout_and_the_fix(self, tmp_path):
+        path = tmp_path / "legacy.h5"
+        self._write_legacy_layout(path)
+        with h5py.File(path, "r") as h5f:
+            with pytest.raises(ValueError, match="pre-1.0 per-window layout"):
+                load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+
+    def test_the_message_says_to_re_run_the_fit(self, tmp_path):
+        path = tmp_path / "legacy.h5"
+        self._write_legacy_layout(path)
+        with h5py.File(path, "r") as h5f:
+            with pytest.raises(ValueError) as excinfo:
+                load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+        message = str(excinfo.value)
+        assert "fit run" in message
+        assert "curation" in message
+
+    def test_a_merely_corrupt_table_is_not_blamed_on_the_layout(self, tmp_path):
+        """``window_id`` missing from a flat table is a different fault.
+
+        The legacy message must not become the catch-all for every damaged
+        windows table -- it names a cause, and naming the wrong one sends a
+        reader to re-run a fit that was not the problem.
+        """
+        path = tmp_path / "corrupt.h5"
         fit = _sample_spectrum_fit()
         with h5py.File(path, "w") as h5f:
             g = h5f.create_group("stage5_fitting")
             save_spectrum_fit_to_hdf5(fit, g)
-            # Simulate a file written before the rename: rename the on-disk
-            # column back to its pre-rename name in every window.
-            for window_name in g["windows"]:
-                peaks_group = g[f"windows/{window_name}/peaks"]
-                peaks_group.move("detection_index", "peak_id")
-
+            del g["windows/window_id"]
         with h5py.File(path, "r") as h5f:
-            loaded = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+            with pytest.raises(ValueError, match="missing column 'window_id'"):
+                load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
 
-        want_by_freq = {p.frequency_mhz: p.detection_index for p in fit.fitted_peaks}
-        assert len(loaded.fitted_peaks) == len(fit.fitted_peaks)
-        for p in loaded.fitted_peaks:
-            assert p.detection_index == want_by_freq[p.frequency_mhz]
+
+class TestDetectionIndexColumn:
+    """``detection_index`` anchors the peak table's row count.
+
+    The pre-rename ``peak_id`` fallback went away with the per-window layout:
+    a file old enough to carry that name is one the flat reader cannot read
+    at all, so there is nothing left for the fallback to rescue.
+    """
 
     def test_legacy_file_missing_both_columns_raises_naming_detection_index(
         self, tmp_path
@@ -419,7 +459,7 @@ class TestDetectionIndexLegacyColumn:
         with h5py.File(path, "w") as h5f:
             g = h5f.create_group("stage5_fitting")
             save_spectrum_fit_to_hdf5(fit, g)
-            del g["windows/window_0000/peaks/detection_index"]
+            del g["peaks/detection_index"]
 
         with h5py.File(path, "r") as h5f:
             with pytest.raises(ValueError, match="detection_index"):
@@ -439,7 +479,7 @@ class TestHandEdit:
             save_spectrum_fit_to_hdf5(fit, g)
         # Hand-edit window 0's only peak.
         with h5py.File(path, "a") as h5f:
-            arr = h5f["stage5_fitting/windows/window_0000/peaks/frequency_mhz"]
+            arr = h5f["stage5_fitting/peaks/frequency_mhz"]
             arr[0] = 36100.250  # nudge +238 kHz
         with h5py.File(path, "r") as h5f:
             loaded = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
@@ -489,9 +529,9 @@ class TestValidation:
         with h5py.File(path, "w") as h5f:
             g = h5f.create_group("stage5_fitting")
             save_spectrum_fit_to_hdf5(fit, g)
-            del g["windows/window_0000"].attrs["aic"]
+            del g["windows/aic"]
         with h5py.File(path, "r") as h5f:
-            with pytest.raises(ValueError, match="missing required attribute 'aic'"):
+            with pytest.raises(ValueError, match="missing column"):
                 load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
 
     def test_missing_peak_column_raises(self, tmp_path):
@@ -500,9 +540,9 @@ class TestValidation:
         with h5py.File(path, "w") as h5f:
             g = h5f.create_group("stage5_fitting")
             save_spectrum_fit_to_hdf5(fit, g)
-            del g["windows/window_0000/peaks/snr"]
+            del g["peaks/snr"]
         with h5py.File(path, "r") as h5f:
-            with pytest.raises(ValueError, match="missing required peak column"):
+            with pytest.raises(ValueError, match="peaks table missing column"):
                 load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
 
     def test_mismatched_peak_column_lengths_raises(self, tmp_path):
@@ -511,7 +551,7 @@ class TestValidation:
         with h5py.File(path, "w") as h5f:
             g = h5f.create_group("stage5_fitting")
             save_spectrum_fit_to_hdf5(fit, g)
-            peaks_group = g["windows/window_0000/peaks"]
+            peaks_group = g["peaks"]
             # Replace one column with a wrong-length array.
             del peaks_group["snr"]
             peaks_group.create_dataset("snr", data=np.zeros(3))
@@ -540,7 +580,7 @@ class TestValidation:
                     "reason": "",
                 }
             ]
-            g["windows/window_0000"].attrs["audit_trail"] = json.dumps(bad)
+            g["windows/audit_trail"][0] = json.dumps(bad)
         with h5py.File(path, "r") as h5f:
             with pytest.raises(ValueError, match="unknown decision"):
                 load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
@@ -862,11 +902,9 @@ class TestTauFittedRoundTrip:
         with h5py.File(path, "w") as h5f:
             g = h5f.create_group("stage5_fitting")
             save_spectrum_fit_to_hdf5(fit, g)
-            # Simulate a pre-flag file: strip tau_fitted from each window.
-            for name in g["windows"]:
-                wg = g[f"windows/{name}"]
-                if "tau_fitted" in wg.attrs:
-                    del wg.attrs["tau_fitted"]
+            # "Unknown", the state a pre-flag file loaded as: the column
+            # exists in the flat layout, and -1 is its don't-know sentinel.
+            g["windows/tau_fitted"][:] = -1
         with h5py.File(path, "r") as h5f:
             loaded = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
         # Window 0 had finite tau_error -> backward-compat infers fitted=True.
@@ -946,7 +984,7 @@ class TestClockLatticeRoundTrip:
             g = h5f.create_group("stage5_fitting")
             save_spectrum_fit_to_hdf5(fit, g)
             # Simulate a file that pre-dates the column.
-            del g["windows/window_0000/peaks/clock_lattice"]
+            del g["peaks/clock_lattice"]
         with h5py.File(path, "r") as h5f:
             loaded = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
         assert loaded.fitted_peaks[0].clock_lattice is None
@@ -1011,7 +1049,7 @@ class TestOriginRoundTrip:
             g = h5f.create_group("stage5_fitting")
             save_spectrum_fit_to_hdf5(fit, g)
             # Simulate a file that pre-dates the column.
-            del g["windows/window_0000/peaks/origin"]
+            del g["peaks/origin"]
         with h5py.File(path, "r") as h5f:
             loaded = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
         assert loaded.fitted_peaks[0].origin == "auto"
@@ -1078,7 +1116,7 @@ class TestPeakUidRoundTrip:
             g = h5f.create_group("stage5_fitting")
             save_spectrum_fit_to_hdf5(fit, g)
             # Simulate a file that pre-dates the column.
-            del g["windows/window_0000/peaks/peak_uid"]
+            del g["peaks/peak_uid"]
         with h5py.File(path, "r") as h5f:
             loaded = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
         assert loaded.fitted_peaks[0].peak_uid is None
@@ -1183,9 +1221,8 @@ class TestDoubletAlternativeRoundTrip:
         with h5py.File(path, "w") as h5f:
             g = h5f.create_group("stage5_fitting")
             save_spectrum_fit_to_hdf5(fit, g)
-            # Simulate a file written before the attr existed.
-            if "doublet_alternatives" in g["windows/window_0000"].attrs:
-                del g["windows/window_0000"].attrs["doublet_alternatives"]
+            # An empty cell is what "no alternatives recorded" looks like.
+            g["windows/doublet_alternatives"][0] = ""
         with h5py.File(path, "r") as h5f:
             loaded = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
         assert loaded.window_fits[0].doublet_alternatives == []
@@ -1243,6 +1280,15 @@ def _make_window_fit_with_covariance(
     return fr
 
 
+def _install_covariance(g, matrix):
+    """Give window row 0 a covariance block in the flat layout."""
+    flat = np.asarray(matrix, dtype="f8").reshape(-1)
+    del g["covariance"]
+    g.create_dataset("covariance", data=flat, maxshape=(None,), chunks=(len(flat),))
+    g["windows/covariance_offset"][0] = 0
+    g["windows/covariance_dim"][0] = int(np.asarray(matrix).shape[0])
+
+
 class TestCovarianceRoundTrip:
     def test_covariance_round_trips(self, tmp_path):
         """A FittingResult with a covariance matrix persists and loads back
@@ -1276,9 +1322,10 @@ class TestCovarianceRoundTrip:
         path = tmp_path / "fit.h5"
         loaded = _roundtrip(fit, path)
 
-        # No dataset written.
+        # No covariance rows claimed by the window.
         with h5py.File(path, "r") as h5f:
-            assert "covariance" not in h5f["stage5_fitting/windows/window_0000"]
+            assert int(h5f["stage5_fitting/windows/covariance_dim"][0]) == 0
+            assert h5f["stage5_fitting/covariance"].shape[0] == 0
 
         wf = loaded.window_fits[0]
         assert wf.covariance is None
@@ -1323,8 +1370,14 @@ class TestCovarianceRoundTrip:
             "baseline_im_2",
         ]
 
-    def test_malformed_covariance_non_square_raises(self, tmp_path):
-        """A non-square covariance dataset raises ValueError on load."""
+    def test_covariance_slice_outside_the_dataset_raises(self, tmp_path):
+        """A window claiming more covariance than exists raises on load.
+
+        The flat layout cannot express a non-square matrix -- each window
+        stores dim*dim values addressed by
+        ``covariance_offset``/``covariance_dim`` -- so the corruption that
+        replaces the old "not square" case is a slice running off the end.
+        """
         peak = _sample_fitted_peak(detection_index=0, window_id=0, freq_mhz=36100.0)
         win = _make_window_fit(0, [peak], audit=[], thaw_events=[])
         fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
@@ -1333,14 +1386,15 @@ class TestCovarianceRoundTrip:
         with h5py.File(path, "w") as h5f:
             g = h5f.create_group("stage5_fitting")
             save_spectrum_fit_to_hdf5(fit, g)
-            wg = g["windows/window_0000"]
-            # Inject a non-square matrix and a matching-length label list.
-            wg.create_dataset("covariance", data=np.zeros((3, 4), dtype="f8"))
-            wg.attrs["covariance_param_labels"] = json.dumps(
+            # Claim a 3x3 block that the (empty) covariance dataset
+            # cannot supply.
+            g["windows/covariance_dim"][0] = 3
+            g["windows/covariance_offset"][0] = 0
+            g["windows/covariance_labels"][0] = json.dumps(
                 ["amplitude_0", "offset_0", "phase_0"]
             )
         with h5py.File(path, "r") as h5f:
-            with pytest.raises(ValueError, match="not square"):
+            with pytest.raises(ValueError, match="does not lie inside"):
                 load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
 
     def test_malformed_covariance_label_length_mismatch_raises(self, tmp_path):
@@ -1353,12 +1407,9 @@ class TestCovarianceRoundTrip:
         with h5py.File(path, "w") as h5f:
             g = h5f.create_group("stage5_fitting")
             save_spectrum_fit_to_hdf5(fit, g)
-            wg = g["windows/window_0000"]
-            wg.create_dataset("covariance", data=np.eye(3, dtype="f8"))
+            _install_covariance(g, np.eye(3, dtype="f8"))
             # Wrong number of labels (2 instead of 3).
-            wg.attrs["covariance_param_labels"] = json.dumps(
-                ["amplitude_0", "offset_0"]
-            )
+            g["windows/covariance_labels"][0] = json.dumps(["amplitude_0", "offset_0"])
         with h5py.File(path, "r") as h5f:
             with pytest.raises(ValueError, match="label count"):
                 load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
@@ -1373,7 +1424,6 @@ class TestCovarianceRoundTrip:
         with h5py.File(path, "w") as h5f:
             g = h5f.create_group("stage5_fitting")
             save_spectrum_fit_to_hdf5(fit, g)
-            wg = g["windows/window_0000"]
             # 2 peaks worth of labels but only 1 fitted peak.
             labels_2peaks = [
                 "amplitude_0",
@@ -1383,8 +1433,8 @@ class TestCovarianceRoundTrip:
                 "offset_1",
                 "phase_1",
             ]
-            wg.create_dataset("covariance", data=np.eye(6, dtype="f8"))
-            wg.attrs["covariance_param_labels"] = json.dumps(labels_2peaks)
+            _install_covariance(g, np.eye(6, dtype="f8"))
+            g["windows/covariance_labels"][0] = json.dumps(labels_2peaks)
         with h5py.File(path, "r") as h5f:
             with pytest.raises(ValueError, match="amplitude label"):
                 load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])

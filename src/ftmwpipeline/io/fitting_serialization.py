@@ -146,12 +146,10 @@ from ._hdf5_helpers import (
     load_json_attr,
     nan_if_none,
     none_if_nan,
-    read_attr_value,
     read_dataset_column,
     record_row,
     reset_group,
     resolve_column_selection,
-    stack_columns,
     stamp_stage_header,
 )
 
@@ -178,9 +176,90 @@ __all__ = [
     "read_fit_peak_frequencies_by_window",
     "read_fit_peak_uids_by_window",
     "read_fit_peak_freqs_and_uids_by_window",
+    "LEGACY_FIT_LAYOUT_MESSAGE",
     "FitWindowCoverage",
     "read_fit_window_coverage",
 ]
+
+
+# --- the flat table layout -------------------------------------------------
+#
+# One row per window in ``windows/``, one row per fitted peak in ``peaks/``,
+# and a single ``covariance`` dataset holding every window's matrix
+# end to end. A window addresses its own rows through
+# ``peak_offset``/``peak_count`` and ``covariance_offset``/``covariance_dim``.
+#
+# Both tables are stored ascending by ``window_id``, and within a window the
+# peak rows keep the order of its ``fitted_peaks`` list. Readers depend on
+# both facts: the window order is what makes a coverage scan first-match-wins,
+# and the row order is what a caller breaking a tie with ``min()`` matches
+# against the full loader on.
+
+#: Window-table columns and their on-disk dtypes. ``"str"`` means a
+#: variable-length UTF-8 column.
+_WINDOW_TABLE_COLUMNS: Dict[str, str] = {
+    "window_id": "i8",
+    "success": "i1",
+    "cost": "f8",
+    "iterations": "i8",
+    "aic": "f8",
+    "reduced_chi2": "f8",
+    "tau_us": "f8",
+    "tau_error": "f8",
+    "tau_fitted": "i1",
+    "freq_min": "f8",
+    "freq_max": "f8",
+    "edge_coherence_low": "f8",
+    "edge_coherence_high": "f8",
+    "peak_offset": "i8",
+    "peak_count": "i8",
+    "covariance_offset": "i8",
+    "covariance_dim": "i8",
+    "shape": "str",
+    "fixed_parameters": "str",
+    "quality_metrics": "str",
+    "audit_trail": "str",
+    "thaw_events": "str",
+    "rescue_events": "str",
+    "doublet_alternatives": "str",
+    "covariance_labels": "str",
+}
+
+#: Peak columns a fit may legitimately lack, and the sentinel that stands in.
+#: The *layout* is fixed, but a column can still be absent: ``peak_uid`` is
+#: missing from a fit produced before peak identity existed, and the honest
+#: value there is "no identifier", not a refusal to load.
+_DEFAULTED_PEAK_COLUMNS: Dict[str, int] = {
+    "flat_decay": 0,
+    "derivation": -1,
+    "peak_uid": -1,
+}
+
+#: The numeric half of the peak table (the two string columns,
+#: ``clock_lattice`` and ``origin``, are built separately).
+_PEAK_TABLE_NUMERIC: Dict[str, str] = {
+    "detection_index": "i8",
+    "frequency_mhz": "f8",
+    "amplitude": "f8",
+    "phase": "f8",
+    "decay_rate": "f8",
+    "frequency_error": "f8",
+    "amplitude_error": "f8",
+    "phase_error": "f8",
+    "decay_rate_error": "f8",
+    "snr": "f8",
+    "chi_squared": "f8",
+    "window_id": "i8",
+    "knockout_delta_chi2": "f8",
+    "knockout_expected_delta_chi2": "f8",
+    "knockout_supported": "i1",
+    "knockout_p_value": "f8",
+    "knockout_n_eff": "f8",
+    "knockout_aicc_delta": "f8",
+    "flat_decay": "i1",
+    "derivation": "i8",
+    "peak_uid": "i8",
+}
 
 
 # --- peak column layout ----------------------------------------------------
@@ -489,74 +568,55 @@ def _detection_index_to_int(detection_index: Any) -> int:
 # Save
 # ---------------------------------------------------------------------------
 def save_spectrum_fit_to_hdf5(fit: SpectrumFit, h5_group: h5py.Group) -> None:
-    """Write a :class:`SpectrumFit` to an HDF5 group.
+    """Write a :class:`SpectrumFit` to an HDF5 group, replacing its contents.
 
     Parameters
     ----------
     fit : SpectrumFit
         The persistent fit aggregate. The merged global ``fitted_peaks``
-        list is rebuilt on load from the per-window peaks; it is *not*
-        stored independently here.
+        list is rebuilt on load from the peak table; it is *not* stored
+        independently here.
     h5_group : h5py.Group
         Destination group; any existing fit content is overwritten.
     """
     reset_group(h5_group)
-
-    stamp_stage_header(
-        h5_group,
-        "stage5_fitting",
-        n_windows=fit.n_windows,
-        n_fitted_peaks=fit.n_fitted_peaks,
-    )
-    h5_group.attrs["final_plan_revision"] = int(fit.final_plan_revision)
-    h5_group.attrs["parameters"] = json.dumps(fit.parameters, default=str)
-    h5_group.attrs["diagnostics"] = json.dumps(fit.diagnostics, default=str)
-    h5_group.attrs["thaw_history"] = json.dumps(
-        [_thaw_info_to_json(e) for e in fit.thaw_history]
-    )
-    h5_group.attrs["replan_history"] = json.dumps(
-        [_replan_info_to_json(e) for e in fit.replan_history]
-    )
-    h5_group.attrs["rescue_history"] = json.dumps(
-        [_rescue_round_to_json(e) for e in fit.rescue_history]
-    )
-
-    windows_group = h5_group.create_group("windows")
-    for window_fit in fit.window_fits:
-        if window_fit.window_id is None:
-            raise ValueError(
-                "FittingResult.window_id is required for serialization "
-                "(the active-FT slice cannot be reconstructed without it)"
-            )
-        wid = int(window_fit.window_id)
-        wg = windows_group.create_group(f"window_{wid:04d}")
-        _save_window_fit(window_fit, wg)
+    _write_fit_header(fit, h5_group)
+    window_columns, peak_columns, covariance = _fit_tables(fit)
+    _write_table(h5_group.require_group("windows"), window_columns)
+    _write_table(h5_group.require_group("peaks"), peak_columns)
+    _write_table(h5_group, {"covariance": covariance})
 
 
 def update_spectrum_fit_windows_in_hdf5(
     fit: SpectrumFit, h5_group: h5py.Group, window_ids: Iterable[int]
 ) -> None:
-    """Rewrite only *window_ids*' subgroups of an already-persisted fit.
+    """Rewrite an already-persisted fit in place, without deleting anything.
 
-    The incremental counterpart to :func:`save_spectrum_fit_to_hdf5`, for the
-    curation engine's single write point. A batch that edited one window used
-    to delete ``/stage5_fitting`` and rewrite the whole thing, which costs the
-    entire table (404 ms on a 251-window build) and -- because HDF5 does not
-    reclaim a deleted group's space -- grew the file by ~919 kB on *every*
-    curation write. Rewriting only what changed costs ~1.7 ms and ~6 kB.
+    The incremental counterpart to :func:`save_spectrum_fit_to_hdf5` for the
+    curation engine's one write point (S4). ``window_ids`` names the windows
+    the batch changed; under the flat layout it is advisory only -- the two
+    tables are contiguous, so a window whose peak count changed shifts every
+    row after it, and rewriting the tables whole is both simpler and cheaper
+    than splicing them. Writing ~30 columns of a few hundred rows costs
+    single-digit milliseconds, against the 404 ms the per-window-group layout
+    charged for the same edit.
 
-    Everything group-level (the header counts, ``parameters``,
-    ``diagnostics``, and the three history blobs) is rewritten
-    unconditionally. They are small, and any of them can move without naming
-    a window.
-
-    The window-group **set** is reconciled against ``fit`` rather than taken
-    from ``window_ids``: a group on disk whose window is no longer in the fit
-    is deleted, and a window in the fit with no group on disk is written,
-    named or not. Only the *contents* of an already-correct group are taken
-    on the caller's word. So an under-reported id leaves a window holding its
-    previous values -- never an orphaned group, and never a missing one.
+    What matters here is *how* the rewrite happens: every dataset is chunked
+    and resizable, and is resized and overwritten rather than deleted and
+    recreated. HDF5 does not reclaim a deleted object's space, so the
+    delete-and-recreate this replaced grew the file by the size of the whole
+    fit on every curation write. In-place assignment does not.
     """
+    del window_ids  # advisory under the flat layout; see the docstring
+    _write_fit_header(fit, h5_group)
+    window_columns, peak_columns, covariance = _fit_tables(fit)
+    _write_table(h5_group.require_group("windows"), window_columns)
+    _write_table(h5_group.require_group("peaks"), peak_columns)
+    _write_table(h5_group, {"covariance": covariance})
+
+
+def _write_fit_header(fit: SpectrumFit, h5_group: h5py.Group) -> None:
+    """The group-level attrs: counts, parameters, diagnostics, histories."""
     stamp_stage_header(
         h5_group,
         "stage5_fitting",
@@ -576,142 +636,193 @@ def update_spectrum_fit_windows_in_hdf5(
         [_rescue_round_to_json(e) for e in fit.rescue_history]
     )
 
-    if "windows" not in h5_group:
-        h5_group.create_group("windows")
-    windows_group = h5_group["windows"]
 
-    expected: Dict[str, FittingResult] = {}
-    for window_fit in fit.window_fits:
+def _write_table(group: h5py.Group, columns: Dict[str, np.ndarray]) -> None:
+    """Write *columns* as equal-length datasets, resizing in place if they
+    already exist.
+
+    Every dataset is created chunked with an unbounded ``maxshape`` so a
+    later write can resize it rather than delete it -- see
+    :func:`update_spectrum_fit_windows_in_hdf5` for why that matters.
+    """
+    for name, data in columns.items():
+        if name in group:
+            dataset = group[name]
+            if dataset.shape[0] != len(data):
+                dataset.resize((len(data),))
+            if len(data):
+                dataset[...] = data
+            continue
+        # An object array is a vlen-UTF-8 column. The dtype is passed
+        # explicitly rather than inferred: h5py can infer it from a populated
+        # object array but not from an empty one, and a fit with no windows
+        # writes every string column empty.
+        dtype = (
+            h5py.string_dtype(encoding="utf-8")
+            if getattr(data, "dtype", None) == object
+            else None
+        )
+        group.create_dataset(
+            name,
+            data=data,
+            dtype=dtype,
+            maxshape=(None,),
+            chunks=(max(len(data), 1),),
+        )
+
+
+def _fit_tables(
+    fit: SpectrumFit,
+) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray], np.ndarray]:
+    """Flatten a :class:`SpectrumFit` into ``(windows, peaks, covariance)``.
+
+    Windows come out ascending by ``window_id`` -- the order the loader and
+    every column reader rely on. Peaks come out grouped by window in that
+    same order, each window's rows keeping the order they have in its
+    ``fitted_peaks`` list, which is what lets ``peak_offset``/``peak_count``
+    address them and what preserves the per-window row order the column
+    readers document.
+
+    Each window's covariance matrix is flattened row-major into one shared
+    1-D dataset, addressed by ``covariance_offset``/``covariance_dim``; a
+    window without one contributes nothing and carries ``covariance_dim``
+    of 0.
+    """
+    window_fits = sorted(
+        fit.window_fits,
+        key=lambda wf: (wf.window_id if wf.window_id is not None else -1),
+    )
+    for window_fit in window_fits:
         if window_fit.window_id is None:
             raise ValueError(
                 "FittingResult.window_id is required for serialization "
                 "(the active-FT slice cannot be reconstructed without it)"
             )
-        expected[f"window_{int(window_fit.window_id):04d}"] = window_fit
 
-    for name in list(windows_group.keys()):
-        if name not in expected:
-            del windows_group[name]
+    rows: Dict[str, List[Any]] = {name: [] for name in _WINDOW_TABLE_COLUMNS}
+    ordered_peaks: List[FittedPeak] = []
+    peak_window_ids: List[int] = []
+    covariance_blocks: List[np.ndarray] = []
+    peak_offset = 0
+    covariance_offset = 0
 
-    named = {f"window_{int(wid):04d}" for wid in window_ids}
-    for name, window_fit in expected.items():
-        if name not in named and name in windows_group:
-            continue
-        if name in windows_group:
-            del windows_group[name]
-        _save_window_fit(window_fit, windows_group.create_group(name))
+    for window_fit in window_fits:
+        wid = int(window_fit.window_id)  # type: ignore[arg-type]
+        tau_entry = window_fit.shared_parameters.get("tau_us") or {}
+        tau_fitted_val = tau_entry.get("fitted")
+        window = window_fit.window
+        quality = window_fit.quality_metrics
 
+        cov = getattr(window_fit, "covariance", None)
+        labels = getattr(window_fit, "covariance_param_labels", None)
+        if cov is not None and labels is not None:
+            block = np.asarray(cov, dtype="f8")
+            covariance_blocks.append(block.reshape(-1))
+            cov_dim = int(block.shape[0])
+            cov_labels = json.dumps(list(labels))
+        else:
+            cov_dim = 0
+            cov_labels = ""
 
-def _save_window_fit(window_fit: FittingResult, wg: h5py.Group) -> None:
-    """Write one :class:`FittingResult` to its window subgroup."""
-    assert window_fit.window_id is not None  # guarded by caller
-    tau_entry = window_fit.shared_parameters.get("tau_us") or {}
-    tau_us = float(tau_entry.get("value", float("nan")))
-    tau_error = nan_if_none(tau_entry.get("error"))
-    tau_fitted_val = tau_entry.get("fitted")
+        rows["window_id"].append(wid)
+        rows["success"].append(1 if bool(window_fit.success) else 0)
+        rows["cost"].append(float(window_fit.cost))
+        rows["iterations"].append(int(window_fit.iterations))
+        rows["aic"].append(float(window_fit.aic))
+        rows["reduced_chi2"].append(float(window_fit.reduced_chi2))
+        rows["tau_us"].append(float(tau_entry.get("value", float("nan"))))
+        rows["tau_error"].append(nan_if_none(tau_entry.get("error")))
+        rows["tau_fitted"].append(
+            -1 if tau_fitted_val is None else (1 if bool(tau_fitted_val) else 0)
+        )
+        # freq_range is persisted so visualization can place the window
+        # without the Stage 4 plan; the spectrum slice stays recomputable.
+        rows["freq_min"].append(
+            float("nan") if window is None else float(window.freq_range[0])
+        )
+        rows["freq_max"].append(
+            float("nan") if window is None else float(window.freq_range[1])
+        )
+        rows["edge_coherence_low"].append(
+            float(quality.get("edge_coherence_low", float("nan")))
+        )
+        rows["edge_coherence_high"].append(
+            float(quality.get("edge_coherence_high", float("nan")))
+        )
+        rows["peak_offset"].append(peak_offset)
+        rows["peak_count"].append(len(window_fit.fitted_peaks))
+        rows["covariance_offset"].append(covariance_offset)
+        rows["covariance_dim"].append(cov_dim)
+        rows["shape"].append(str(getattr(window_fit, "shape", "lorentzian")))
+        rows["fixed_parameters"].append(
+            json.dumps(window_fit.fixed_parameters, default=str)
+        )
+        rows["quality_metrics"].append(json.dumps(quality, default=str))
+        rows["audit_trail"].append(
+            json.dumps([_audit_step_to_json(s) for s in window_fit.audit_trail])
+        )
+        rows["thaw_events"].append(
+            json.dumps([_thaw_info_to_json(e) for e in window_fit.thaw_events])
+        )
+        rows["rescue_events"].append(
+            json.dumps([_rescue_round_to_json(e) for e in window_fit.rescue_events])
+        )
+        rows["doublet_alternatives"].append(
+            json.dumps(
+                [
+                    _doublet_alternative_to_json(d)
+                    for d in getattr(window_fit, "doublet_alternatives", [])
+                ]
+            )
+        )
+        rows["covariance_labels"].append(cov_labels)
 
-    wg.attrs["window_id"] = int(window_fit.window_id)
-    wg.attrs["success"] = bool(window_fit.success)
-    wg.attrs["cost"] = float(window_fit.cost)
-    wg.attrs["iterations"] = int(window_fit.iterations)
-    wg.attrs["aic"] = float(window_fit.aic)
-    wg.attrs["reduced_chi2"] = float(window_fit.reduced_chi2)
-    wg.attrs["shape"] = str(getattr(window_fit, "shape", "lorentzian"))
-    wg.attrs["tau_us"] = tau_us
-    wg.attrs["tau_error"] = tau_error
-    # tau_fitted: 1 if tau was a free LSQ parameter, 0 if held at tau0_us,
-    # -1 if unknown (only emitted by older files predating this flag).
-    if tau_fitted_val is None:
-        wg.attrs["tau_fitted"] = np.int8(-1)
-    else:
-        wg.attrs["tau_fitted"] = np.int8(1 if bool(tau_fitted_val) else 0)
-    # Persist the window's molecular freq_range so visualization can
-    # locate the window on the persisted spectrum without needing the
-    # Stage 4 plan back. The complex spectrum slice itself stays
-    # recomputable from the FID + active-FT.
-    if window_fit.window is not None:
-        wg.attrs["freq_min"] = float(window_fit.window.freq_range[0])
-        wg.attrs["freq_max"] = float(window_fit.window.freq_range[1])
-    else:
-        wg.attrs["freq_min"] = float("nan")
-        wg.attrs["freq_max"] = float("nan")
-    wg.attrs["edge_coherence_low"] = float(
-        window_fit.quality_metrics.get("edge_coherence_low", float("nan"))
+        ordered_peaks.extend(window_fit.fitted_peaks)
+        peak_window_ids.extend([wid] * len(window_fit.fitted_peaks))
+        peak_offset += len(window_fit.fitted_peaks)
+        covariance_offset += cov_dim * cov_dim
+
+    window_columns = {
+        name: _as_column(rows[name], dtype)
+        for name, dtype in _WINDOW_TABLE_COLUMNS.items()
+    }
+    peak_columns = _peak_table(ordered_peaks, peak_window_ids)
+    covariance = (
+        np.concatenate(covariance_blocks)
+        if covariance_blocks
+        else np.empty(0, dtype="f8")
     )
-    wg.attrs["edge_coherence_high"] = float(
-        window_fit.quality_metrics.get("edge_coherence_high", float("nan"))
-    )
-    wg.attrs["fixed_parameters"] = json.dumps(window_fit.fixed_parameters, default=str)
-    wg.attrs["quality_metrics"] = json.dumps(window_fit.quality_metrics, default=str)
-    wg.attrs["audit_trail"] = json.dumps(
-        [_audit_step_to_json(s) for s in window_fit.audit_trail]
-    )
-    wg.attrs["thaw_events"] = json.dumps(
-        [_thaw_info_to_json(e) for e in window_fit.thaw_events]
-    )
-    wg.attrs["rescue_events"] = json.dumps(
-        [_rescue_round_to_json(e) for e in window_fit.rescue_events]
-    )
-    wg.attrs["doublet_alternatives"] = json.dumps(
-        [
-            _doublet_alternative_to_json(d)
-            for d in getattr(window_fit, "doublet_alternatives", [])
-        ]
-    )
-
-    # Per-window parameter covariance (omitted when singular / unavailable).
-    cov = getattr(window_fit, "covariance", None)
-    labels = getattr(window_fit, "covariance_param_labels", None)
-    if cov is not None and labels is not None:
-        wg.create_dataset("covariance", data=np.asarray(cov, dtype="f8"))
-        wg.attrs["covariance_param_labels"] = json.dumps(list(labels))
-
-    peaks_group = wg.create_group("peaks")
-    _save_peak_columns(
-        window_fit.fitted_peaks, peaks_group, window_id=int(window_fit.window_id)
-    )
+    return window_columns, peak_columns, covariance
 
 
-def _save_peak_columns(
-    peaks: List[FittedPeak], peaks_group: h5py.Group, *, window_id: int
-) -> None:
-    """Write a fitted-peak list as parallel arrays under ``peaks_group``.
+def _as_column(values: List[Any], dtype: str) -> np.ndarray:
+    """One table column as a numpy array, vlen-UTF-8 for the string columns."""
+    if dtype == "str":
+        column = np.empty(len(values), dtype=object)
+        for i, value in enumerate(values):
+            column[i] = value
+        return column
+    return np.asarray(values, dtype=dtype)
 
-    ``window_id`` is the owning window group's id. A peak whose own
+
+def _peak_table(
+    peaks: List[FittedPeak], window_ids: List[int]
+) -> Dict[str, np.ndarray]:
+    """The peak table's columns, one row per peak, in the given order.
+
+    ``window_ids`` is the owning window's id per row. A peak whose own
     ``window_id`` is ``None`` is stamped with it rather than with a ``-1``
-    sentinel: the peak is stored *inside* that window, so the group already
-    answers the grouping question, and a column that disagreed with the group
-    would let a reader that trusts the column drop the row out of its window
-    silently.
+    sentinel: it belongs to that window whatever its own field says, and a
+    column that disagreed would let a reader that trusts the column drop the
+    row out of its window silently.
     """
     n = len(peaks)
     columns: Dict[str, np.ndarray] = {
-        "detection_index": np.empty(n, dtype="i8"),
-        "frequency_mhz": np.empty(n, dtype="f8"),
-        "amplitude": np.empty(n, dtype="f8"),
-        "phase": np.empty(n, dtype="f8"),
-        "decay_rate": np.empty(n, dtype="f8"),
-        "frequency_error": np.empty(n, dtype="f8"),
-        "amplitude_error": np.empty(n, dtype="f8"),
-        "phase_error": np.empty(n, dtype="f8"),
-        "decay_rate_error": np.empty(n, dtype="f8"),
-        "snr": np.empty(n, dtype="f8"),
-        "chi_squared": np.empty(n, dtype="f8"),
-        "window_id": np.empty(n, dtype="i8"),
-        "knockout_delta_chi2": np.empty(n, dtype="f8"),
-        "knockout_expected_delta_chi2": np.empty(n, dtype="f8"),
-        "knockout_supported": np.empty(n, dtype="i1"),
-        "knockout_p_value": np.empty(n, dtype="f8"),
-        "knockout_n_eff": np.empty(n, dtype="f8"),
-        "knockout_aicc_delta": np.empty(n, dtype="f8"),
+        name: np.empty(n, dtype=dtype) for name, dtype in _PEAK_TABLE_NUMERIC.items()
     }
-    # Variable-length UTF-8 string type for string columns.
-    _vlen_str = h5py.string_dtype(encoding="utf-8")
     clock_lattice_col: np.ndarray = np.empty(n, dtype=object)
     origin_col: np.ndarray = np.empty(n, dtype=object)
-    flat_decay_col: np.ndarray = np.empty(n, dtype="i1")
-    derivation_col: np.ndarray = np.empty(n, dtype="i8")
-    peak_uid_col: np.ndarray = np.empty(n, dtype="i8")
+
     for i, p in enumerate(peaks):
         columns["detection_index"][i] = _detection_index_to_int(p.detection_index)
         columns["frequency_mhz"][i] = float(p.frequency_mhz)
@@ -724,7 +835,9 @@ def _save_peak_columns(
         columns["decay_rate_error"][i] = nan_if_none(p.decay_rate_error)
         columns["snr"][i] = nan_if_none(p.snr)
         columns["chi_squared"][i] = nan_if_none(p.chi_squared)
-        columns["window_id"][i] = window_id if p.window_id is None else int(p.window_id)
+        columns["window_id"][i] = (
+            window_ids[i] if p.window_id is None else int(p.window_id)
+        )
         if p.knockout is None:
             columns["knockout_delta_chi2"][i] = float("nan")
             columns["knockout_expected_delta_chi2"][i] = float("nan")
@@ -741,26 +854,15 @@ def _save_peak_columns(
             columns["knockout_p_value"][i] = float(p.knockout.p_value)
             columns["knockout_n_eff"][i] = float(p.knockout.n_eff)
             columns["knockout_aicc_delta"][i] = float(p.knockout.aicc_delta)
-        # clock_lattice: empty string when absent (None), identity string when set.
-        clock_lattice_col[i] = p.clock_lattice if p.clock_lattice is not None else ""
-        # origin: always a non-empty string; default "auto" for every pipeline peak.
-        origin_col[i] = p.origin
-        # flat_decay: review hint, 0 for every peak unless the spur gate flagged it.
-        flat_decay_col[i] = 1 if p.flat_decay else 0
-        # derivation: Stage-6 decision id that created/altered the peak; -1
-        # encodes None ("carried through the refit unchanged").
-        derivation_col[i] = -1 if p.derivation is None else int(p.derivation)
-        # peak_uid: point-space identity stamped at birth; -1 encodes None
-        # (absent, or a fit produced before this field existed).
-        peak_uid_col[i] = -1 if p.peak_uid is None else int(p.peak_uid)
-    for name, data in columns.items():
-        peaks_group.create_dataset(name, data=data)
-    # String columns stored as variable-length UTF-8 datasets.
-    peaks_group.create_dataset("clock_lattice", data=clock_lattice_col, dtype=_vlen_str)
-    peaks_group.create_dataset("origin", data=origin_col, dtype=_vlen_str)
-    peaks_group.create_dataset("flat_decay", data=flat_decay_col)
-    peaks_group.create_dataset("derivation", data=derivation_col)
-    peaks_group.create_dataset("peak_uid", data=peak_uid_col)
+        columns["flat_decay"][i] = 1 if bool(p.flat_decay) else 0
+        columns["derivation"][i] = -1 if p.derivation is None else int(p.derivation)
+        columns["peak_uid"][i] = -1 if p.peak_uid is None else int(p.peak_uid)
+        clock_lattice_col[i] = p.clock_lattice or ""
+        origin_col[i] = p.origin or "auto"
+
+    columns["clock_lattice"] = clock_lattice_col
+    columns["origin"] = origin_col
+    return columns
 
 
 # ---------------------------------------------------------------------------
@@ -769,22 +871,25 @@ def _save_peak_columns(
 def load_spectrum_fit_from_hdf5(h5_group: h5py.Group) -> SpectrumFit:
     """Load a :class:`SpectrumFit` from an HDF5 group, validating loudly.
 
-    The merged global :attr:`SpectrumFit.fitted_peaks` list is rebuilt from
-    the per-window peaks, sorted ascending by molecular frequency.
+    Reads the two flat tables whole -- roughly thirty dataset reads,
+    regardless of how many windows the fit has -- and slices each window's
+    peaks out of the peak table by ``peak_offset``/``peak_count``. The
+    merged global :attr:`SpectrumFit.fitted_peaks` list is rebuilt from those
+    rows, sorted ascending by molecular frequency.
 
     Raises
     ------
     ValueError
-        If the ``windows`` subgroup is missing, a window subgroup lacks a
-        required attribute, the peak columns are missing or mismatched, or
-        a JSON-encoded audit/thaw/replan entry has an invalid
-        ``decision``/``edge_side`` label.
+        If the ``windows`` or ``peaks`` table is missing, a required column
+        is absent, the columns have mismatched lengths, a window's peak or
+        covariance slice does not lie inside the table, or a JSON-encoded
+        audit/thaw/replan entry has an invalid ``decision``/``edge_side``
+        label.
     """
-    if "windows" not in h5_group:
-        raise ValueError("stage5_fitting group missing required 'windows' subgroup")
+    windows_group = _windows_group(h5_group)
+    peaks_group = _peaks_table(h5_group)
 
-    final_revision_attr = h5_group.attrs.get("final_plan_revision", 0)
-    final_plan_revision = int(final_revision_attr)
+    final_plan_revision = int(h5_group.attrs.get("final_plan_revision", 0))
     parameters = load_json_attr(h5_group, "parameters", {}, label="stage5_fitting")
     diagnostics = load_json_attr(h5_group, "diagnostics", {}, label="stage5_fitting")
 
@@ -804,15 +909,29 @@ def load_spectrum_fit_from_hdf5(h5_group: h5py.Group) -> SpectrumFit:
         for i, blob in enumerate(raw_rescue)
     ]
 
-    windows_group = h5_group["windows"]
+    window_columns = _read_window_table(windows_group)
+    peak_columns = _read_peak_table(peaks_group)
+    covariance_flat = (
+        np.asarray(h5_group["covariance"][:], dtype="f8")
+        if "covariance" in h5_group
+        else np.empty(0, dtype="f8")
+    )
+    n_peak_rows = len(peak_columns["detection_index"])
+
     window_fits: List[FittingResult] = []
-    for name in sorted(windows_group.keys()):
-        wg = windows_group[name]
-        window_fits.append(_load_window_fit(wg, name))
+    for row in range(len(window_columns["window_id"])):
+        window_fits.append(
+            _window_fit_from_row(
+                window_columns,
+                peak_columns,
+                covariance_flat,
+                row=row,
+                n_peak_rows=n_peak_rows,
+            )
+        )
 
     window_fits.sort(key=lambda wf: (wf.window_id if wf.window_id is not None else -1))
 
-    # Rebuild the merged global peak list from per-window peaks.
     fitted_peaks: List[FittedPeak] = []
     for wf in window_fits:
         fitted_peaks.extend(wf.fitted_peaks)
@@ -830,283 +949,266 @@ def load_spectrum_fit_from_hdf5(h5_group: h5py.Group) -> SpectrumFit:
     )
 
 
-def _load_window_fit(wg: h5py.Group, where: str) -> FittingResult:
-    """Load one :class:`FittingResult` from a window subgroup."""
-    required = (
-        "window_id",
-        "success",
-        "cost",
-        "iterations",
-        "aic",
-        "reduced_chi2",
-        "tau_us",
-    )
-    for attr in required:
-        if attr not in wg.attrs:
-            raise ValueError(f"window {where!r} missing required attribute {attr!r}")
-    if "peaks" not in wg:
-        raise ValueError(f"window {where!r} missing required 'peaks' subgroup")
+def _decode(value: Any) -> str:
+    """One vlen-UTF-8 cell as ``str``."""
+    if isinstance(value, bytes):
+        return value.decode("utf-8")
+    return str(value)
 
-    # Reconstruct a lightweight SpectralWindow from the persisted freq_range
-    # (the complex spectrum slice stays recomputable from the FID + active-FT;
-    # what visualizations need from `window` is its freq_range).
-    freq_min = float(wg.attrs.get("freq_min", float("nan")))
-    freq_max = float(wg.attrs.get("freq_max", float("nan")))
+
+def _read_window_table(windows_group: h5py.Group) -> Dict[str, np.ndarray]:
+    """Every window column, validated for presence and equal length."""
+    missing = [c for c in _WINDOW_TABLE_COLUMNS if c not in windows_group]
+    if missing:
+        raise ValueError(f"stage5_fitting windows table missing column(s): {missing}")
+    columns = {c: windows_group[c][:] for c in _WINDOW_TABLE_COLUMNS}
+    lengths = {c: len(v) for c, v in columns.items()}
+    if len(set(lengths.values())) != 1:
+        raise ValueError(
+            f"stage5_fitting windows table columns have mismatched lengths: {lengths}"
+        )
+    return columns
+
+
+def _read_peak_table(peaks_group: h5py.Group) -> Dict[str, np.ndarray]:
+    """Every peak column, with the optional ones defaulted when absent.
+
+    The layout is fixed, but individual columns are still allowed to be
+    missing: ``peak_uid`` is absent from a fit produced before peak identity
+    existed, and the honest value there is "no identifier", not a refusal.
+    """
+    required = [
+        c
+        for c in _PEAK_TABLE_NUMERIC
+        if c not in _OPTIONAL_PEAK_COLUMNS and c not in _DEFAULTED_PEAK_COLUMNS
+    ]
+    missing = [c for c in required if c not in peaks_group]
+    if missing:
+        raise ValueError(f"stage5_fitting peaks table missing column(s): {missing}")
+
+    columns: Dict[str, np.ndarray] = {c: peaks_group[c][:] for c in required}
+    n_rows = len(columns["detection_index"])
+    for name, fill in _DEFAULTED_PEAK_COLUMNS.items():
+        if name in peaks_group:
+            columns[name] = peaks_group[name][:]
+        else:
+            columns[name] = np.full(n_rows, fill, dtype=_PEAK_TABLE_NUMERIC[name])
+    for name in _OPTIONAL_PEAK_COLUMNS:
+        if name in peaks_group:
+            columns[name] = peaks_group[name][:]
+        else:
+            columns[name] = np.full(n_rows, float("nan"), dtype="f8")
+
+    lengths = {c: len(v) for c, v in columns.items()}
+    if len(set(lengths.values())) != 1:
+        raise ValueError(
+            f"stage5_fitting peaks table columns have mismatched lengths: {lengths}"
+        )
+
+    if "clock_lattice" in peaks_group:
+        columns["clock_lattice"] = peaks_group["clock_lattice"][:]
+    else:
+        columns["clock_lattice"] = np.array([""] * n_rows, dtype=object)
+    if "origin" in peaks_group:
+        columns["origin"] = peaks_group["origin"][:]
+    else:
+        columns["origin"] = np.array(["auto"] * n_rows, dtype=object)
+    return columns
+
+
+def _window_fit_from_row(
+    window_columns: Dict[str, np.ndarray],
+    peak_columns: Dict[str, np.ndarray],
+    covariance_flat: np.ndarray,
+    *,
+    row: int,
+    n_peak_rows: int,
+) -> FittingResult:
+    """Rebuild one :class:`FittingResult` from its row of the window table."""
+    wid = int(window_columns["window_id"][row])
+    where = f"window {wid}"
+
+    freq_min = float(window_columns["freq_min"][row])
+    freq_max = float(window_columns["freq_max"][row])
     window_obj: Optional[SpectralWindow]
     if np.isnan(freq_min) or np.isnan(freq_max):
         window_obj = None
     else:
+        # A lightweight SpectralWindow: what visualization needs from
+        # ``window`` is its freq_range, and the complex spectrum slice stays
+        # recomputable from the FID + active FT.
         window_obj = SpectralWindow(
             parent_ft=None,
             freq_array=np.array([], dtype=float),
             complex_spectrum=np.array([], dtype=np.complex128),
             freq_range=(freq_min, freq_max),
-            window_id=int(wg.attrs["window_id"]),
+            window_id=wid,
         )
 
-    # Files that pre-date the shape attribute were Lorentzian-only.
-    shape_attr_raw = wg.attrs.get("shape", "lorentzian")
-    if isinstance(shape_attr_raw, bytes):
-        shape_attr_raw = shape_attr_raw.decode("utf-8")
-    shape_str = str(shape_attr_raw)
     result = FittingResult(
-        success=bool(wg.attrs["success"]),
+        success=bool(window_columns["success"][row]),
         fitted_spectrum=None,  # recomputed on demand
-        cost=float(wg.attrs["cost"]),
-        iterations=int(wg.attrs["iterations"]),
-        aic=float(wg.attrs["aic"]),
-        reduced_chi2=float(wg.attrs["reduced_chi2"]),
+        cost=float(window_columns["cost"][row]),
+        iterations=int(window_columns["iterations"][row]),
+        aic=float(window_columns["aic"][row]),
+        reduced_chi2=float(window_columns["reduced_chi2"][row]),
         window=window_obj,
-        window_id=int(wg.attrs["window_id"]),
-        shape=shape_str,
+        window_id=wid,
+        shape=_decode(window_columns["shape"][row]),
     )
 
-    tau_us = float(wg.attrs["tau_us"])
-    tau_error = none_if_nan(float(wg.attrs.get("tau_error", float("nan"))))
-    # tau_fitted: 1 -> True, 0 -> False, -1 or absent -> backward-compat
-    # best-effort (finite tau_error implies tau was fit; otherwise unknown).
+    start = int(window_columns["peak_offset"][row])
+    count = int(window_columns["peak_count"][row])
+    if start < 0 or count < 0 or start + count > n_peak_rows:
+        raise ValueError(
+            f"{where} peak slice [{start}, {start + count}) does not lie inside "
+            f"the {n_peak_rows}-row peaks table"
+        )
+    fitted_peaks = _peaks_from_rows(peak_columns, start, start + count, window_id=wid)
+    result.fitted_peaks = fitted_peaks
+
+    tau_error = none_if_nan(float(window_columns["tau_error"][row]))
+    # tau_fitted: 1 -> True, 0 -> False, -1 -> unknown, inferred from whether
+    # an error was estimated (a finite error implies tau was fit).
+    raw_tau_fitted = int(window_columns["tau_fitted"][row])
     tau_fitted: Optional[bool]
-    if "tau_fitted" in wg.attrs:
-        raw = int(wg.attrs["tau_fitted"])
-        if raw == 1:
-            tau_fitted = True
-        elif raw == 0:
-            tau_fitted = False
-        else:
-            tau_fitted = True if tau_error is not None else None
+    if raw_tau_fitted == 1:
+        tau_fitted = True
+    elif raw_tau_fitted == 0:
+        tau_fitted = False
     else:
         tau_fitted = True if tau_error is not None else None
-    fitted_peaks = _load_peak_columns(
-        wg["peaks"], where=f"{where}/peaks", window_id=int(wg.attrs["window_id"])
-    )
-    result.fitted_peaks = fitted_peaks
     result.shared_parameters["tau_us"] = {
-        "value": tau_us,
+        "value": float(window_columns["tau_us"][row]),
         "error": tau_error,
         "fitted": tau_fitted,
         "detection_indices": [p.detection_index for p in fitted_peaks],
     }
-    result.fixed_parameters = load_json_attr(
-        wg, "fixed_parameters", {}, label="stage5_fitting"
-    )
-    result.quality_metrics = load_json_attr(
-        wg, "quality_metrics", {}, label="stage5_fitting"
-    )
-    # Ensure edge-coherence scalar attrs make it back into quality_metrics
-    # even if a hand-edit nuked the JSON attribute -- the scalar attrs are
-    # canonical.
-    if "edge_coherence_low" in wg.attrs:
-        result.quality_metrics["edge_coherence_low"] = float(
-            wg.attrs["edge_coherence_low"]
-        )
-    if "edge_coherence_high" in wg.attrs:
-        result.quality_metrics["edge_coherence_high"] = float(
-            wg.attrs["edge_coherence_high"]
-        )
 
-    raw_audit = load_json_attr(wg, "audit_trail", [], label="stage5_fitting")
+    result.fixed_parameters = _row_json(window_columns, "fixed_parameters", row, {})
+    result.quality_metrics = _row_json(window_columns, "quality_metrics", row, {})
+    # The scalar edge-coherence columns are canonical: they make it back into
+    # quality_metrics even if a hand-edit nuked the JSON cell.
+    result.quality_metrics["edge_coherence_low"] = float(
+        window_columns["edge_coherence_low"][row]
+    )
+    result.quality_metrics["edge_coherence_high"] = float(
+        window_columns["edge_coherence_high"][row]
+    )
+
     result.audit_trail = [
         _json_to_audit_step(blob, f"{where}/audit_trail[{i}]")
-        for i, blob in enumerate(raw_audit)
+        for i, blob in enumerate(_row_json(window_columns, "audit_trail", row, []))
     ]
-    raw_thaw = load_json_attr(wg, "thaw_events", [], label="stage5_fitting")
     result.thaw_events = [
         _json_to_thaw_info(blob, f"{where}/thaw_events[{i}]")
-        for i, blob in enumerate(raw_thaw)
+        for i, blob in enumerate(_row_json(window_columns, "thaw_events", row, []))
     ]
-    raw_rescue = load_json_attr(wg, "rescue_events", [], label="stage5_fitting")
     result.rescue_events = [
         _json_to_rescue_round(blob, f"{where}/rescue_events[{i}]")
-        for i, blob in enumerate(raw_rescue)
+        for i, blob in enumerate(_row_json(window_columns, "rescue_events", row, []))
     ]
-    # Tolerate missing attr (older files predating the doublet-alternative pass).
-    raw_doublet = load_json_attr(wg, "doublet_alternatives", [], label="stage5_fitting")
     result.doublet_alternatives = [
         _json_to_doublet_alternative(blob, f"{where}/doublet_alternatives[{i}]")
-        for i, blob in enumerate(raw_doublet)
+        for i, blob in enumerate(
+            _row_json(window_columns, "doublet_alternatives", row, [])
+        )
     ]
 
-    # Per-window parameter covariance: omitted in older files and when JᵀJ
-    # was singular; both cases round-trip as None.
-    if "covariance" in wg:
-        cov_arr = np.asarray(wg["covariance"], dtype="f8")
-        raw_labels = wg.attrs.get("covariance_param_labels")
-        if raw_labels is None:
+    # Covariance: omitted when JtJ was singular, which round-trips as
+    # covariance_dim == 0 -> None.
+    dim = int(window_columns["covariance_dim"][row])
+    if dim > 0:
+        offset = int(window_columns["covariance_offset"][row])
+        if offset < 0 or offset + dim * dim > len(covariance_flat):
             raise ValueError(
-                f"window {where!r} has 'covariance' dataset but is missing "
-                "the 'covariance_param_labels' attribute"
+                f"{where} covariance slice [{offset}, {offset + dim * dim}) does "
+                f"not lie inside the {len(covariance_flat)}-element covariance "
+                f"dataset"
             )
+        labels_raw = _decode(window_columns["covariance_labels"][row])
         try:
-            labels_loaded: List[str] = json.loads(raw_labels)
+            labels_loaded: List[str] = json.loads(labels_raw)
         except (json.JSONDecodeError, TypeError) as exc:
+            raise ValueError(f"{where} 'covariance_labels' is not valid JSON") from exc
+        if len(labels_loaded) != dim:
             raise ValueError(
-                f"window {where!r} 'covariance_param_labels' is not valid JSON"
-            ) from exc
-        if cov_arr.ndim != 2 or cov_arr.shape[0] != cov_arr.shape[1]:
-            raise ValueError(
-                f"window {where!r} covariance matrix is not square: "
-                f"shape {cov_arr.shape}"
-            )
-        if len(labels_loaded) != cov_arr.shape[0]:
-            raise ValueError(
-                f"window {where!r} covariance label count ({len(labels_loaded)}) "
-                f"does not match matrix dimension ({cov_arr.shape[0]})"
+                f"{where} covariance label count ({len(labels_loaded)}) does not "
+                f"match matrix dimension ({dim})"
             )
         n_amp_labels = sum(1 for lbl in labels_loaded if lbl.startswith("amplitude_"))
-        n_fitted_peaks = len(result.fitted_peaks)
-        if n_amp_labels != n_fitted_peaks:
+        if n_amp_labels != len(fitted_peaks):
             raise ValueError(
-                f"window {where!r} covariance has {n_amp_labels} amplitude "
-                f"label(s) but {n_fitted_peaks} fitted peak(s)"
+                f"{where} covariance has {n_amp_labels} amplitude label(s) but "
+                f"{len(fitted_peaks)} fitted peak(s)"
             )
-        result.covariance = cov_arr
+        result.covariance = covariance_flat[offset : offset + dim * dim].reshape(
+            dim, dim
+        )
         result.covariance_param_labels = labels_loaded
 
     return result
 
 
-def _load_peak_columns(
-    peaks_group: h5py.Group, *, where: str, window_id: Optional[int] = None
+def _row_json(columns: Dict[str, np.ndarray], name: str, row: int, default: Any) -> Any:
+    """One JSON-encoded table cell, decoded; *default* when it is empty."""
+    raw = _decode(columns[name][row])
+    if not raw:
+        return default
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return default
+
+
+def _peaks_from_rows(
+    columns: Dict[str, np.ndarray], start: int, stop: int, *, window_id: int
 ) -> List[FittedPeak]:
-    """Load fitted peaks from parallel-array columns under ``peaks_group``.
+    """Rebuild ``[start, stop)`` of the peak table as :class:`FittedPeak`.
 
-    ``window_id`` is the owning window group's id, used to backfill a stored
-    ``-1`` (written by versions before the writer stamped the group's id). The
-    peak is inside that window whatever its own column says, so the group wins.
-
-    ``detection_index`` is read under its current name, falling back to the
-    pre-rename ``peak_id`` column when that is what the file has -- both are
-    required (the row-count-defining anchor column), so exactly one of the two
-    names must be present.
+    ``window_id`` backfills a stored ``-1``: the peak lies in that window's
+    slice whatever its own column says, so the slice wins.
     """
-    required = [c for c in _PEAK_COLUMNS if c != "detection_index"]
-    missing = [c for c in required if c not in peaks_group]
-    if missing:
-        raise ValueError(f"{where} missing required peak column(s): {missing}")
-    cols = {c: peaks_group[c][:] for c in required}
-    if "detection_index" in peaks_group:
-        cols["detection_index"] = peaks_group["detection_index"][:]
-    elif _LEGACY_DETECTION_INDEX_COLUMN in peaks_group:
-        cols["detection_index"] = peaks_group[_LEGACY_DETECTION_INDEX_COLUMN][:]
-    else:
-        raise ValueError(
-            f"{where} missing required peak column(s): ['detection_index']"
-        )
-    # Optional numeric columns: silently default to NaN when absent (older files).
-    n_rows = len(cols["detection_index"])
-    for c in _OPTIONAL_PEAK_COLUMNS:
-        if c in peaks_group:
-            cols[c] = peaks_group[c][:]
-        else:
-            cols[c] = np.full(n_rows, float("nan"), dtype="f8")
-    lengths = {c: len(v) for c, v in cols.items()}
-    if len(set(lengths.values())) != 1:
-        raise ValueError(f"{where} peak columns have mismatched lengths: {lengths}")
-    n = next(iter(lengths.values()))
-    # Optional string column: absent in files written before clock-lattice annotation.
-    # An empty string encodes a None (unannotated peak).
-    if "clock_lattice" in peaks_group:
-        raw_cl = peaks_group["clock_lattice"][:]
-        clock_lattice_vals = [
-            (v.decode("utf-8") if isinstance(v, bytes) else str(v)) or None
-            for v in raw_cl
-        ]
-    else:
-        clock_lattice_vals = [None] * n
-    # Optional string column: absent in files written before Stage-6 provenance was
-    # added.  An absent column or an empty string both default to "auto" so that
-    # every pipeline-produced peak carries the correct provenance on load.
-    if "origin" in peaks_group:
-        raw_orig = peaks_group["origin"][:]
-        origin_vals = [
-            (v.decode("utf-8") if isinstance(v, bytes) else str(v)) or "auto"
-            for v in raw_orig
-        ]
-    else:
-        origin_vals = ["auto"] * n
-    # Optional numeric column: absent in files written before the spur-review
-    # flag; default False (no peak flagged) for back-compat.
-    if "flat_decay" in peaks_group:
-        flat_decay_vals = [bool(int(v)) for v in peaks_group["flat_decay"][:]]
-    else:
-        flat_decay_vals = [False] * n
-    # Optional numeric column: absent in files written before the Stage-6
-    # derivation tag. -1 (and an absent column) decode to None -- "carried
-    # through unchanged", which is the correct reading for every peak in a file
-    # that predates curation.
-    if "derivation" in peaks_group:
-        derivation_vals: List[Optional[int]] = [
-            (None if int(v) < 0 else int(v)) for v in peaks_group["derivation"][:]
-        ]
-    else:
-        derivation_vals = [None] * n
-    # Optional numeric column: absent in files written before peak identity.
-    # -1 (and an absent column) decode to None -- no identifier is the honest
-    # value for a fit produced before this field existed.
-    if "peak_uid" in peaks_group:
-        peak_uid_vals: List[Optional[int]] = [
-            (None if int(v) < 0 else int(v)) for v in peaks_group["peak_uid"][:]
-        ]
-    else:
-        peak_uid_vals = [None] * n
     peaks: List[FittedPeak] = []
-    for i in range(n):
-        ko_supported_raw = int(cols["knockout_supported"][i])
-        ko_delta = float(cols["knockout_delta_chi2"][i])
+    for i in range(start, stop):
+        ko_supported_raw = int(columns["knockout_supported"][i])
+        ko_delta = float(columns["knockout_delta_chi2"][i])
         if ko_supported_raw < 0 or np.isnan(ko_delta):
             knockout: Optional[KnockoutInfo] = None
         else:
             knockout = KnockoutInfo(
                 delta_chi2=ko_delta,
-                expected_delta_chi2=float(cols["knockout_expected_delta_chi2"][i]),
+                expected_delta_chi2=float(columns["knockout_expected_delta_chi2"][i]),
                 supported=bool(ko_supported_raw),
-                p_value=float(cols["knockout_p_value"][i]),
-                n_eff=float(cols["knockout_n_eff"][i]),
-                aicc_delta=float(cols["knockout_aicc_delta"][i]),
+                p_value=float(columns["knockout_p_value"][i]),
+                n_eff=float(columns["knockout_n_eff"][i]),
+                aicc_delta=float(columns["knockout_aicc_delta"][i]),
             )
-        wid_raw = int(cols["window_id"][i])
-        if wid_raw < 0 and window_id is not None:
+        wid_raw = int(columns["window_id"][i])
+        if wid_raw < 0:
             wid_raw = window_id
+        derivation_raw = int(columns["derivation"][i])
+        uid_raw = int(columns["peak_uid"][i])
         peaks.append(
             FittedPeak(
-                detection_index=int(cols["detection_index"][i]),
-                frequency_mhz=float(cols["frequency_mhz"][i]),
-                amplitude=float(cols["amplitude"][i]),
-                phase=none_if_nan(float(cols["phase"][i])),
-                decay_rate=none_if_nan(float(cols["decay_rate"][i])),
-                frequency_error=none_if_nan(float(cols["frequency_error"][i])),
-                amplitude_error=none_if_nan(float(cols["amplitude_error"][i])),
-                phase_error=none_if_nan(float(cols["phase_error"][i])),
-                decay_rate_error=none_if_nan(float(cols["decay_rate_error"][i])),
-                snr=none_if_nan(float(cols["snr"][i])),
-                chi_squared=none_if_nan(float(cols["chi_squared"][i])),
+                detection_index=int(columns["detection_index"][i]),
+                frequency_mhz=float(columns["frequency_mhz"][i]),
+                amplitude=float(columns["amplitude"][i]),
+                phase=none_if_nan(float(columns["phase"][i])),
+                decay_rate=none_if_nan(float(columns["decay_rate"][i])),
+                frequency_error=none_if_nan(float(columns["frequency_error"][i])),
+                amplitude_error=none_if_nan(float(columns["amplitude_error"][i])),
+                phase_error=none_if_nan(float(columns["phase_error"][i])),
+                decay_rate_error=none_if_nan(float(columns["decay_rate_error"][i])),
+                snr=none_if_nan(float(columns["snr"][i])),
+                chi_squared=none_if_nan(float(columns["chi_squared"][i])),
                 window_id=None if wid_raw < 0 else wid_raw,
                 knockout=knockout,
-                clock_lattice=clock_lattice_vals[i],
-                origin=origin_vals[i],
-                flat_decay=flat_decay_vals[i],
-                derivation=derivation_vals[i],
-                peak_uid=peak_uid_vals[i],
+                clock_lattice=_decode(columns["clock_lattice"][i]) or None,
+                origin=_decode(columns["origin"][i]) or "auto",
+                flat_decay=bool(int(columns["flat_decay"][i])),
+                derivation=None if derivation_raw < 0 else derivation_raw,
+                peak_uid=None if uid_raw < 0 else uid_raw,
             )
         )
     return peaks
@@ -1205,32 +1307,46 @@ FIT_WINDOW_COLUMN_SPECS: Dict[str, ColumnSpec] = {
 _FIT_WINDOW_DERIVED = ("n_peaks",)
 
 
+#: What a reader is told when it opens a fit written in the pre-1.0 layout.
+LEGACY_FIT_LAYOUT_MESSAGE = (
+    "this file's Stage 5 fit uses the pre-1.0 per-window layout "
+    "(stage5_fitting/windows/window_NNNN/), which this version cannot read. "
+    "Re-run 'fit run' to rebuild the fit in the current layout. Any Stage 6 "
+    "curation on it must be re-applied."
+)
+
+
 def _windows_group(h5_group: h5py.Group) -> h5py.Group:
     if "windows" not in h5_group:
-        raise ValueError("stage5_fitting group missing required 'windows' subgroup")
-    return h5_group["windows"]
+        raise ValueError("stage5_fitting group missing required 'windows' table")
+    windows = h5_group["windows"]
+    if "window_id" not in windows:
+        # The flat layout always has that column. Its absence is either a
+        # corrupt table or -- far more likely, and worth saying out loud --
+        # a file from before the layout changed, where `windows` held one
+        # subgroup per window instead of one dataset per column. Guessing
+        # wrong here costs nothing: both readings end in a refusal, and only
+        # one of them tells the reader what to do about it.
+        if any(isinstance(windows.get(name), h5py.Group) for name in windows):
+            raise ValueError(LEGACY_FIT_LAYOUT_MESSAGE)
+        raise ValueError("stage5_fitting windows table missing column 'window_id'")
+    return windows
 
 
-def _peaks_subgroup(wg: h5py.Group, where: str) -> h5py.Group:
+def _peaks_table(h5_group: h5py.Group) -> h5py.Group:
+    if "peaks" not in h5_group:
+        raise ValueError("stage5_fitting group missing required 'peaks' table")
+    return h5_group["peaks"]
+
+
+def _peak_anchor(peaks_group: h5py.Group) -> h5py.Dataset:
+    """The peak table's row-count-defining column."""
     try:
-        return wg["peaks"]
+        return peaks_group["detection_index"]
     except KeyError:
-        raise ValueError(f"{where} missing required 'peaks' subgroup") from None
-
-
-def _peak_row_count(peaks_group: h5py.Group, where: str) -> int:
-    """Row count of a peaks subgroup, from the required ``detection_index``
-    column (or its pre-rename name, ``peak_id``, on an older file)."""
-    try:
-        dataset = peaks_group["detection_index"]
-    except KeyError:
-        try:
-            dataset = peaks_group[_LEGACY_DETECTION_INDEX_COLUMN]
-        except KeyError:
-            raise ValueError(
-                f"{where} missing required column 'detection_index'"
-            ) from None
-    return int(dataset.shape[0])
+        raise ValueError(
+            "stage5_fitting peaks table missing required column " "'detection_index'"
+        ) from None
 
 
 def read_fit_peak_columns(
@@ -1239,14 +1355,13 @@ def read_fit_peak_columns(
 ) -> Dict[str, np.ndarray]:
     """Read fitted-peak columns from a ``stage5_fitting`` group in bulk.
 
-    Every window's ``peaks`` subgroup contributes its rows; each requested
-    column is one whole-dataset read per window and nothing else in the window
-    group (audit trail, thaw/rescue events, doublet alternatives, covariance)
-    is touched.
+    One whole-dataset read per requested column against the flat peak table
+    -- no per-window traversal, and nothing else in the fit (audit trails,
+    thaw/rescue events, doublet alternatives, covariance) is touched.
 
     Rows are ordered by ascending molecular frequency, matching
-    :attr:`SpectrumFit.fitted_peaks`, so a consumer can substitute this for the
-    full loader row-for-row.
+    :attr:`SpectrumFit.fitted_peaks`, so a consumer can substitute this for
+    the full loader row-for-row.
 
     Parameters
     ----------
@@ -1265,66 +1380,49 @@ def read_fit_peak_columns(
     requested = resolve_column_selection(
         columns, list(FIT_PEAK_COLUMN_SPECS), table="fit_peaks"
     )
-    windows_group = _windows_group(h5_group)
+    peaks_group = _peaks_table(h5_group)
+    n_rows = int(_peak_anchor(peaks_group).shape[0])
 
     # frequency_mhz always read: it defines the row order.
     stored = [c for c in requested if c not in _FIT_PEAK_DERIVED]
     to_read = list(dict.fromkeys(["frequency_mhz", *stored]))
-    chunks: Dict[str, List[np.ndarray]] = {
-        c: [] for c in (*to_read, *_FIT_PEAK_DERIVED)
-    }
 
-    want_shape = "shape" in requested
-    for name in sorted(windows_group.keys()):
-        wg = windows_group[name]
-        where = f"window {name!r} peaks"
-        peaks_group = _peaks_subgroup(wg, f"window {name!r}")
-        # The anchor column defines the window's row count; the rest must agree.
-        n: Optional[int] = None
-        for col in to_read:
-            # detection_index: read under its current name, falling back to
-            # the pre-rename `peak_id` dataset on an older file.
-            dataset_name = col
-            if col == "detection_index" and col not in peaks_group:
-                dataset_name = _LEGACY_DETECTION_INDEX_COLUMN
-            column = read_dataset_column(
-                peaks_group,
-                col,
-                FIT_PEAK_COLUMN_SPECS[col],
-                n,
-                where=where,
-                dataset=dataset_name,
+    read: Dict[str, np.ndarray] = {}
+    for col in to_read:
+        read[col] = read_dataset_column(
+            peaks_group,
+            col,
+            FIT_PEAK_COLUMN_SPECS[col],
+            n_rows,
+            where="stage5_fitting peaks",
+        )
+
+    if "window_id" in read or "shape" in requested:
+        window_ids = np.asarray(_windows_group(h5_group)["window_id"][:], dtype="i8")
+        offsets = np.asarray(_windows_group(h5_group)["peak_offset"][:], dtype="i8")
+        counts = np.asarray(_windows_group(h5_group)["peak_count"][:], dtype="i8")
+        # The row's slice is the authority on which window owns it, exactly as
+        # the owning group used to be: a peak stored under a window belongs to
+        # it whatever its own column says, and backfilling here keeps this tap
+        # and the full loader agreeing rather than silently ungrouping a row.
+        owner = np.full(n_rows, -1, dtype="i8")
+        for wid, start_row, count in zip(window_ids, offsets, counts):
+            owner[int(start_row) : int(start_row) + int(count)] = int(wid)
+        if "window_id" in read:
+            read["window_id"] = np.where(
+                read["window_id"] < 0, owner, read["window_id"]
             )
-            if n is None:
-                n = len(column)
-            if col == "window_id":
-                # The owning group is the authority on grouping, exactly as it
-                # is for `shape`. Files written before the writer stamped the
-                # group's id carry -1 for a peak whose own window_id was None;
-                # backfilling here keeps the tap and the full loader agreeing
-                # by construction, rather than silently ungrouping the row.
-                wid_attr = read_attr_value(
-                    wg,
-                    "window_id",
-                    FIT_WINDOW_COLUMN_SPECS["window_id"],
-                    where=f"window {name!r}",
+        if "shape" in requested:
+            shapes = _windows_group(h5_group)["shape"][:]
+            per_row = np.empty(n_rows, dtype=object)
+            for shape_value, start_row, count in zip(shapes, offsets, counts):
+                per_row[int(start_row) : int(start_row) + int(count)] = _decode(
+                    shape_value
                 )
-                column = np.where(column < 0, np.int64(wid_attr), column)
-            chunks[col].append(column)
-        if want_shape:
-            assert n is not None  # to_read always carries the anchor column
-            shape_str = read_attr_value(
-                wg, "shape", FIT_PEAK_COLUMN_SPECS["shape"], where=f"window {name!r}"
-            )
-            chunks["shape"].append(np.full(n, shape_str, dtype=object))
+            read["shape"] = per_row
 
-    read = stack_columns(
-        chunks,
-        FIT_PEAK_COLUMN_SPECS,
-        [*to_read, *(c for c in _FIT_PEAK_DERIVED if c in requested)],
-    )
     order = np.argsort(read["frequency_mhz"], kind="stable")
-    return {c: read[c][order] for c in requested}
+    return {c: np.asarray(read[c])[order] for c in requested}
 
 
 def read_fit_window_columns(
@@ -1333,9 +1431,9 @@ def read_fit_window_columns(
 ) -> Dict[str, np.ndarray]:
     """Read per-window fit scalars from a ``stage5_fitting`` group in bulk.
 
-    One attribute read per window per requested column; the JSON-encoded
-    audit/thaw/rescue/doublet blobs on the window group are never parsed. Rows
-    are ordered by ascending ``window_id``, matching
+    One whole-dataset read per requested column against the flat window
+    table; the JSON-encoded audit/thaw/rescue/doublet cells are never parsed.
+    Rows are ordered by ascending ``window_id``, matching
     :attr:`SpectrumFit.window_fits`.
 
     See :data:`FIT_WINDOW_COLUMN_SPECS` for the available columns and their
@@ -1345,28 +1443,27 @@ def read_fit_window_columns(
         columns, list(FIT_WINDOW_COLUMN_SPECS), table="fit_windows"
     )
     windows_group = _windows_group(h5_group)
+    n_rows = int(np.asarray(windows_group["window_id"]).shape[0])
 
     # window_id always read: it defines the row order.
-    attr_cols = [c for c in requested if c not in _FIT_WINDOW_DERIVED]
-    to_read = list(dict.fromkeys(["window_id", *attr_cols]))
-    rows: Dict[str, List[Any]] = {c: [] for c in (*to_read, *_FIT_WINDOW_DERIVED)}
+    stored = [c for c in requested if c not in _FIT_WINDOW_DERIVED]
+    to_read = list(dict.fromkeys(["window_id", *stored]))
 
-    want_n_peaks = "n_peaks" in requested
-    for name in sorted(windows_group.keys()):
-        wg = windows_group[name]
-        where = f"window {name!r}"
-        for col in to_read:
-            rows[col].append(
-                read_attr_value(wg, col, FIT_WINDOW_COLUMN_SPECS[col], where=where)
-            )
-        if want_n_peaks:
-            peaks_group = _peaks_subgroup(wg, where)
-            rows["n_peaks"].append(_peak_row_count(peaks_group, f"{where} peaks"))
+    built: Dict[str, np.ndarray] = {}
+    for col in to_read:
+        built[col] = read_dataset_column(
+            windows_group,
+            col,
+            FIT_WINDOW_COLUMN_SPECS[col],
+            n_rows,
+            where="stage5_fitting windows",
+        )
+    if "n_peaks" in requested:
+        # A window's row count is the length of its slice of the peak table.
+        built["n_peaks"] = np.asarray(windows_group["peak_count"][:], dtype="i8")
 
-    keep = [*to_read, *(c for c in _FIT_WINDOW_DERIVED if c in requested)]
-    built = build_columns(rows, FIT_WINDOW_COLUMN_SPECS, keep)
     order = np.argsort(built["window_id"], kind="stable")
-    return {c: built[c][order] for c in requested}
+    return {c: np.asarray(built[c])[order] for c in requested}
 
 
 def read_fit_scalars(h5_group: h5py.Group) -> Dict[str, Any]:
@@ -1412,41 +1509,56 @@ def read_fit_parameters(h5_group: h5py.Group) -> Dict[str, Any]:
     return parameters
 
 
+def _window_slices(h5_group: h5py.Group) -> List[Tuple[int, int, int]]:
+    """``(window_id, start, stop)`` per window, ascending by ``window_id``.
+
+    The join between the two tables, read once: three integer columns, no
+    dataset of peak values touched. Ascending ``window_id`` is the order the
+    coverage resolvers scan in (first match wins) and the order the full
+    loader sorts ``window_fits`` into.
+    """
+    windows_group = _windows_group(h5_group)
+    for column in ("window_id", "peak_offset", "peak_count"):
+        if column not in windows_group:
+            raise ValueError(f"stage5_fitting windows table missing column {column!r}")
+    ids = np.asarray(windows_group["window_id"][:], dtype="i8")
+    offsets = np.asarray(windows_group["peak_offset"][:], dtype="i8")
+    counts = np.asarray(windows_group["peak_count"][:], dtype="i8")
+    rows = [
+        (int(wid), int(off), int(off) + int(count))
+        for wid, off, count in zip(ids, offsets, counts)
+    ]
+    rows.sort(key=lambda r: r[0])
+    return rows
+
+
 def read_fit_peak_frequencies_by_window(h5_group: h5py.Group) -> Dict[int, List[float]]:
     """Cheap substitute for grouping the full loader's fitted peaks by window.
 
     Equivalent to ``{wf.window_id: [p.frequency_mhz for p in wf.fitted_peaks]
-    for wf in load_spectrum_fit_from_hdf5(h5_group).window_fits}``, but reads
-    only each window's ``window_id`` attribute and its
-    ``peaks/frequency_mhz`` dataset -- none of the other ~30 attrs/datasets
-    the full loader pulls per window.
+    for wf in load_spectrum_fit_from_hdf5(h5_group).window_fits}``, but
+    reading the ``frequency_mhz`` column and the three join columns -- four
+    datasets in total, whatever the window count -- and none of the ~20 other
+    columns the full loader pulls.
 
-    Each window's list preserves its ``peaks`` subgroup row order -- NOT the
-    full loader's separately (and globally) frequency-sorted
+    Each window's list preserves its slice's row order -- NOT the full
+    loader's separately (and globally) frequency-sorted
     ``SpectrumFit.fitted_peaks`` list. A caller that breaks a tie with
-    ``min(fitted, key=...)`` depends on this per-window order to match the
-    full loader's result exactly.
+    ``min(fitted, key=...)`` depends on this order to match the full loader's
+    result exactly.
     """
-    windows_group = _windows_group(h5_group)
-    out: Dict[int, List[float]] = {}
-    for name in sorted(windows_group.keys()):
-        wg = windows_group[name]
-        where = f"window {name!r}"
-        wid = int(
-            read_attr_value(
-                wg, "window_id", FIT_WINDOW_COLUMN_SPECS["window_id"], where=where
-            )
-        )
-        peaks_group = _peaks_subgroup(wg, where)
-        freqs = read_dataset_column(
-            peaks_group,
-            "frequency_mhz",
-            FIT_PEAK_COLUMN_SPECS["frequency_mhz"],
-            None,
-            where=f"{where} peaks",
-        )
-        out[wid] = [float(v) for v in freqs]
-    return out
+    slices = _window_slices(h5_group)
+    peaks_group = _peaks_table(h5_group)
+    freqs = np.asarray(peaks_group["frequency_mhz"][:], dtype="f8")
+    return {wid: [float(v) for v in freqs[start:stop]] for wid, start, stop in slices}
+
+
+def _uid_column(h5_group: h5py.Group) -> Optional[np.ndarray]:
+    """The ``peak_uid`` column, or ``None`` on a fit predating peak identity."""
+    peaks_group = _peaks_table(h5_group)
+    if "peak_uid" not in peaks_group:
+        return None
+    return np.asarray(peaks_group["peak_uid"][:], dtype="i8")
 
 
 def read_fit_peak_uids_by_window(h5_group: h5py.Group) -> Dict[int, Set[int]]:
@@ -1455,73 +1567,50 @@ def read_fit_peak_uids_by_window(h5_group: h5py.Group) -> Dict[int, Set[int]]:
 
     Equivalent to ``{wf.window_id: {p.peak_uid for p in wf.fitted_peaks if
     p.peak_uid is not None} for wf in
-    load_spectrum_fit_from_hdf5(h5_group).window_fits}``, but reads only each
-    window's ``window_id`` attribute and its ``peaks/peak_uid`` dataset.
+    load_spectrum_fit_from_hdf5(h5_group).window_fits}``, reading the
+    ``peak_uid`` column and the three join columns.
 
-    A window whose ``peaks`` subgroup has no ``peak_uid`` dataset (a file
-    predating peak identity) maps to an empty set -- the same "contributes
-    nothing to its window's set" result the full loader produces, since every
-    row's ``peak_uid`` would decode to ``None`` (absent column, or a stored
-    ``-1`` sentinel) and the full loader's set comprehension drops those.
+    A fit predating peak identity has no ``peak_uid`` column and maps every
+    window to an empty set -- the same "contributes nothing to its window's
+    set" result the full loader produces, since every row's ``peak_uid``
+    would decode to ``None`` and the full loader's set comprehension drops
+    those.
     """
-    windows_group = _windows_group(h5_group)
-    out: Dict[int, Set[int]] = {}
-    for name in sorted(windows_group.keys()):
-        wg = windows_group[name]
-        where = f"window {name!r}"
-        wid = int(
-            read_attr_value(
-                wg, "window_id", FIT_WINDOW_COLUMN_SPECS["window_id"], where=where
-            )
-        )
-        peaks_group = _peaks_subgroup(wg, where)
-        if "peak_uid" in peaks_group:
-            out[wid] = {int(v) for v in peaks_group["peak_uid"][:] if int(v) >= 0}
-        else:
-            out[wid] = set()
-    return out
+    slices = _window_slices(h5_group)
+    uids = _uid_column(h5_group)
+    if uids is None:
+        return {wid: set() for wid, _start, _stop in slices}
+    return {
+        wid: {int(v) for v in uids[start:stop] if int(v) >= 0}
+        for wid, start, stop in slices
+    }
 
 
 def read_fit_peak_freqs_and_uids_by_window(
     h5_group: h5py.Group,
 ) -> Tuple[Dict[int, List[float]], Dict[int, Set[int]]]:
-    """Both per-window peak maps in ONE walk of the window groups.
+    """Both per-window peak maps, reading the join columns once.
 
     Returns exactly ``(read_fit_peak_frequencies_by_window(h5_group),
     read_fit_peak_uids_by_window(h5_group))`` -- same values, same per-window
-    row order, same empty-set treatment of a file predating ``peak_uid`` --
-    but resolving each window group, its ``window_id`` attribute and its
-    ``peaks`` subgroup once instead of twice.
+    row order, same empty-set treatment of a fit predating ``peak_uid``.
 
     For the caller that needs both (the curation advisory pass, when a batch
     carries a ``"uid:N"`` target). A caller wanting one of them should keep
     calling the single-column reader: this one always reads the
     ``frequency_mhz`` column, so it is not a free superset.
     """
-    windows_group = _windows_group(h5_group)
+    slices = _window_slices(h5_group)
+    peaks_group = _peaks_table(h5_group)
+    freqs = np.asarray(peaks_group["frequency_mhz"][:], dtype="f8")
+    uids = _uid_column(h5_group)
     freqs_out: Dict[int, List[float]] = {}
     uids_out: Dict[int, Set[int]] = {}
-    for name in sorted(windows_group.keys()):
-        wg = windows_group[name]
-        where = f"window {name!r}"
-        wid = int(
-            read_attr_value(
-                wg, "window_id", FIT_WINDOW_COLUMN_SPECS["window_id"], where=where
-            )
+    for wid, start, stop in slices:
+        freqs_out[wid] = [float(v) for v in freqs[start:stop]]
+        uids_out[wid] = (
+            set() if uids is None else {int(v) for v in uids[start:stop] if int(v) >= 0}
         )
-        peaks_group = _peaks_subgroup(wg, where)
-        freqs = read_dataset_column(
-            peaks_group,
-            "frequency_mhz",
-            FIT_PEAK_COLUMN_SPECS["frequency_mhz"],
-            None,
-            where=f"{where} peaks",
-        )
-        freqs_out[wid] = [float(v) for v in freqs]
-        if "peak_uid" in peaks_group:
-            uids_out[wid] = {int(v) for v in peaks_group["peak_uid"][:] if int(v) >= 0}
-        else:
-            uids_out[wid] = set()
     return freqs_out, uids_out
 
 
@@ -1531,10 +1620,9 @@ class FitWindowCoverage(NamedTuple):
     ``SpectrumFit.window_fits``.
 
     ``freq_range`` is ``None`` exactly when the full loader's
-    ``FittingResult.window`` would be ``None`` (either bound NaN or absent --
-    see ``_load_window_fit``). ``peak_uids`` is the set of non-``None``
-    ``peak_uid`` values among the window's fitted peaks (empty on a file
-    predating peak identity).
+    ``FittingResult.window`` would be ``None`` (either bound NaN).
+    ``peak_uids`` is the set of non-``None`` ``peak_uid`` values among the
+    window's fitted peaks (empty on a fit predating peak identity).
     """
 
     window_id: int
@@ -1544,49 +1632,34 @@ class FitWindowCoverage(NamedTuple):
 
 def read_fit_window_coverage(h5_group: h5py.Group) -> List[FitWindowCoverage]:
     """Cheap substitute for the per-window coverage data
-    :func:`~ftmwpipeline._internal.stage5_impl._window_for_freq` and
-    :func:`~ftmwpipeline._internal.stage6_impl._window_for_curation_token`
-    resolve a curation target against.
+    :func:`~ftmwpipeline._internal.stage5_impl.window_covering_freq` resolves
+    a curation target against.
 
     Equivalent to building, for each ``wf`` in
     ``load_spectrum_fit_from_hdf5(h5_group).window_fits``, the triple
     ``(wf.window_id, wf.window.freq_range if wf.window is not None else
     None, {p.peak_uid for p in wf.fitted_peaks if p.peak_uid is not None})``
-    -- but reading only each window's ``window_id``, ``freq_min``,
-    ``freq_max`` attributes and its ``peaks/peak_uid`` dataset. The result is
-    sorted ascending by ``window_id``, the order those two resolvers iterate
-    (first match wins), matching the full loader's own explicit sort.
+    -- but reading five columns and nothing else. The result is sorted
+    ascending by ``window_id``, the order those resolvers iterate in (first
+    match wins), matching the full loader's own explicit sort.
     """
     windows_group = _windows_group(h5_group)
+    for column in ("freq_min", "freq_max"):
+        if column not in windows_group:
+            raise ValueError(f"stage5_fitting windows table missing column {column!r}")
+    ids = np.asarray(windows_group["window_id"][:], dtype="i8")
+    freq_min = np.asarray(windows_group["freq_min"][:], dtype="f8")
+    freq_max = np.asarray(windows_group["freq_max"][:], dtype="f8")
+    bounds = {
+        int(wid): (float(lo), float(hi)) for wid, lo, hi in zip(ids, freq_min, freq_max)
+    }
+    uids_by_window = read_fit_peak_uids_by_window(h5_group)
+
     rows: List[FitWindowCoverage] = []
-    for name in sorted(windows_group.keys()):
-        wg = windows_group[name]
-        where = f"window {name!r}"
-        wid = int(
-            read_attr_value(
-                wg, "window_id", FIT_WINDOW_COLUMN_SPECS["window_id"], where=where
-            )
-        )
-        freq_min = float(
-            read_attr_value(
-                wg, "freq_min", FIT_WINDOW_COLUMN_SPECS["freq_min"], where=where
-            )
-        )
-        freq_max = float(
-            read_attr_value(
-                wg, "freq_max", FIT_WINDOW_COLUMN_SPECS["freq_max"], where=where
-            )
-        )
-        freq_range = (
-            None if (np.isnan(freq_min) or np.isnan(freq_max)) else (freq_min, freq_max)
-        )
-        peaks_group = _peaks_subgroup(wg, where)
-        if "peak_uid" in peaks_group:
-            peak_uids = {int(v) for v in peaks_group["peak_uid"][:] if int(v) >= 0}
-        else:
-            peak_uids = set()
-        rows.append(FitWindowCoverage(wid, freq_range, peak_uids))
-    rows.sort(key=lambda r: r.window_id)
+    for wid, _start, _stop in _window_slices(h5_group):
+        lo, hi = bounds[wid]
+        freq_range = None if (np.isnan(lo) or np.isnan(hi)) else (lo, hi)
+        rows.append(FitWindowCoverage(wid, freq_range, uids_by_window[wid]))
     return rows
 
 
@@ -1736,19 +1809,19 @@ def _read_window_log(
     """
     requested = resolve_column_selection(columns, list(specs), table=table)
     windows_group = _windows_group(h5_group)
+    if attr not in windows_group:
+        raise ValueError(f"stage5_fitting windows table missing column {attr!r}")
     rows: Dict[str, List[Any]] = {c: [] for c in requested}
 
-    for name in sorted(windows_group.keys()):
-        wg = windows_group[name]
-        window_id = read_attr_value(
-            wg,
-            "window_id",
-            FIT_WINDOW_COLUMN_SPECS["window_id"],
-            where=f"window {name!r}",
-        )
-        records = load_json_attr(wg, attr, [], label="stage5_fitting")
+    ids = np.asarray(windows_group["window_id"][:], dtype="i8")
+    cells = windows_group[attr][:]
+    # Ascending window id, so the table stays grouped by window and ordered
+    # within it -- the same order the per-window groups used to be visited in.
+    for window_id, cell in sorted(zip(ids, cells), key=lambda pair: int(pair[0])):
+        raw = _decode(cell)
+        records = json.loads(raw) if raw else []
         for i, record in enumerate(records):
-            extra: Dict[str, Any] = {"window_id": window_id}
+            extra: Dict[str, Any] = {"window_id": int(window_id)}
             if index_column is not None:
                 extra[index_column] = i
             record_row(
@@ -1756,7 +1829,7 @@ def _read_window_log(
                 specs,
                 requested,
                 rows,
-                where=f"window {name!r} {attr}[{i}]",
+                where=f"window {int(window_id)} {attr}[{i}]",
                 extra=extra,
             )
 

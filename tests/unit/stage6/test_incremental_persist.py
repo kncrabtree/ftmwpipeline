@@ -226,7 +226,7 @@ def test_create_persists_what_a_full_rewrite_would(
         f"create,new,{anchor:.6f},\n",
     )
     _assert_same(incremental, full)
-    assert any(k.startswith("attr:windows/") for k in incremental)
+    assert any(k.startswith("data:windows/") for k in incremental)
 
 
 def _free_anchor(path: Path) -> float:
@@ -299,30 +299,30 @@ def _datasets(group: h5py.Group) -> List[h5py.Dataset]:
     return found
 
 
-def test_a_window_dropped_from_the_fit_loses_its_group(
+def test_a_window_dropped_from_the_fit_loses_its_row(
     stage5_multi_file, tmp_path, monkeypatch
 ):
-    """The group set is reconciled against the fit, not against the caller.
+    """The tables are reconciled against the fit, not against the caller.
 
     ``update_spectrum_fit_windows_in_hdf5`` is called directly here with an
     EMPTY named set, which is the under-reporting case the trust model has to
-    survive: a window absent from the fit must still lose its group, and a
-    window present in the fit must still gain one, whether or not the caller
-    named it.
+    survive: a window absent from the fit must lose its row and its peaks,
+    whether or not the caller named it.
     """
     target = tmp_path / "dropped.ftmw"
     shutil.copy(stage5_multi_file, target)
 
-    with h5py.File(str(target), "r") as h5f:
+    with h5py.File(str(target), "r+") as h5f:
         fit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
-    keep = [wf for wf in fit.window_fits if wf.window_id is not None][:-1]
-    dropped = [wf for wf in fit.window_fits if wf.window_id is not None][-1]
-    trimmed = type(fit)(**{**fit.__dict__, "window_fits": keep})
-
-    with h5py.File(str(target), "a") as h5f:
+        live = [wf for wf in fit.window_fits if wf.window_id is not None]
+        keep, dropped = live[:-1], live[-1]
+        trimmed = type(fit)(**{**fit.__dict__, "window_fits": keep})
         fitser.update_spectrum_fit_windows_in_hdf5(trimmed, h5f["stage5_fitting"], [])
 
     with h5py.File(str(target), "r") as h5f:
-        names = set(h5f["stage5_fitting"]["windows"].keys())
-    assert f"window_{int(dropped.window_id):04d}" not in names
-    assert len(names) == len(keep)
+        ids = [int(v) for v in h5f["stage5_fitting/windows/window_id"][:]]
+        n_peak_rows = h5f["stage5_fitting/peaks/frequency_mhz"].shape[0]
+
+    assert int(dropped.window_id) not in ids
+    assert len(ids) == len(keep)
+    assert n_peak_rows == sum(len(wf.fitted_peaks) for wf in keep)

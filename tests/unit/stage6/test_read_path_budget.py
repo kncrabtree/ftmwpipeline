@@ -129,11 +129,9 @@ def _write_curation(tmp_path: Path, text: str) -> str:
 def _strip_peak_uid_column(path: Path) -> None:
     """Make *path* look like a fit written before ``peak_uid`` existed."""
     with h5py.File(str(path), "r+") as h5f:
-        windows = h5f["stage5_fitting"]["windows"]
-        for name in windows:
-            peaks = windows[name]["peaks"]
-            if "peak_uid" in peaks:
-                del peaks["peak_uid"]
+        peaks = h5f["stage5_fitting"]["peaks"]
+        if "peak_uid" in peaks:
+            del peaks["peak_uid"]
 
 
 # ---------------------------------------------------------------------------

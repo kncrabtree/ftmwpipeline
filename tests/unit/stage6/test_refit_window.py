@@ -863,11 +863,12 @@ def _inject_synthetic_thaw(path: Path, window_id: int, thawed_freq_mhz: float) -
         "reason": "synthetic test injection",
     }
     with h5py.File(str(path), "a") as h5f:
-        # Window groups are stored under stage5_fitting/windows/window_XXXX
-        # (4-digit zero-padded).
-        wg_key = f"stage5_fitting/windows/window_{window_id:04d}"
-        wg = h5f[wg_key]
-        wg.attrs["thaw_events"] = json.dumps([thaw_record])
+        # One row per window in the flat windows table; `thaw_events` is that
+        # row's JSON cell.
+        windows = h5f["stage5_fitting/windows"]
+        ids = [int(v) for v in windows["window_id"][:]]
+        row = ids.index(int(window_id))
+        windows["thaw_events"][row] = json.dumps([thaw_record])
 
 
 _CROSS_FIXTURE_2638 = Path("scratch/issue3-cross-fixture/2638/exp_2638.ftmw")
