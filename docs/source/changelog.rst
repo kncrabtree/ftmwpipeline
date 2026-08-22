@@ -107,6 +107,21 @@ engine so they cannot answer differently.
   2638 fit contains no such configuration (the nearest is 40x the tolerance
   away).
 
+* **``ReviewPreviewResult`` gains ``created_windows``.** ``review preview``
+  computed the list of windows its plan installs or grows and then dropped it,
+  so only ``review apply`` (dry run or live) published it. It is now on the
+  preview result too, carrying exactly what ``CurationApplyResult.created_windows``
+  carries -- window id, anchor, mode, extent, grid point count, contributor
+  count, ``depends_on`` -- for a plan run to completion in memory. Additive
+  field; nothing else changes. The per-window ``created_window_*`` fields on
+  ``PreviewWindowResult`` are unaffected and remain the right read when you
+  have a window id in hand; what they cannot carry is the **anchor**, which is
+  a property of the row that implied the create rather than of the window it
+  landed in -- and with coalescing one created window can hold two ``add``
+  rows, so extent containment marks both while the anchor marks the one that
+  caused it. A session staging a preview as an apply now reads the same list
+  rather than a second copy of it.
+
 * **Two omitted-window ``add`` rows in one gap, within a single curation
   plan, no longer refuse each other.** Each row resolves against *live*
   windows only, so two adds in one window-free gap used to each imply their

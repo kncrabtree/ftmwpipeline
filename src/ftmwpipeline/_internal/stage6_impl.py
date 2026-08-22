@@ -7334,11 +7334,28 @@ class ReviewPreviewResult:
         frame-mismatch diagnostic (:func:`_frame_mismatch_warnings`). Empty
         for a plan that touches no fit, since the diagnostic needs matched
         candidates to compare.
+    created_windows : list of PlannedWindowResult
+        Every window this preview's batch installed or grew, ascending by
+        window id -- the same list, in the same shape, that
+        :class:`CurationApplyResult` publishes for a dry run and for a live
+        apply, so the three rungs of the ladder report one structure rather
+        than three.
+
+        Not redundant with :attr:`PreviewWindowResult.created_window_mode`
+        and its siblings, which carry the same structure keyed by the window
+        it landed in: those cannot carry the **anchor**, and with W3.1
+        coalescing one created window can hold two ``add`` rows, so extent
+        containment marks both while the anchor marks the one that implied
+        the create -- the same call the decision log makes by putting the
+        ``created_window`` evidence on the first add's entry.
+
+        Empty for a plan that installs nothing.
     """
 
     windows: Dict[int, PreviewWindowResult] = field(default_factory=dict)
     plan: List["PlannedAction"] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
+    created_windows: List[PlannedWindowResult] = field(default_factory=list)
 
 
 @dataclass
@@ -7357,12 +7374,6 @@ class _PreviewRun:
     ctx: Optional[_BatchCtx] = None
     cascaded_wids: List[int] = field(default_factory=list)
     review: Optional[Stage6Review] = None
-    created_windows: List[PlannedWindowResult] = field(default_factory=list)
-    """Every window this preview's batch installed or grew, in the shape
-    :class:`CurationApplyResult` publishes -- so a session persisting this
-    staged preview as an apply reports the same structure a sessionless apply
-    would, without re-deriving it from the per-window results (which carry the
-    extent but not the anchor it was resolved for)."""
 
 
 def _run_review_preview(
@@ -7626,16 +7637,24 @@ def _run_review_preview(
             ),
         )
 
-    result = ReviewPreviewResult(windows=windows, plan=plan, warnings=warnings)
+    result = ReviewPreviewResult(
+        windows=windows,
+        plan=plan,
+        warnings=warnings,
+        # Published on the result rather than kept internal: a session
+        # staging this preview as an apply, and a caller reading it directly,
+        # must see the SAME list -- deriving it twice is how two rungs of the
+        # ladder come to disagree about what a plan installs.
+        created_windows=[
+            _window_structure_from_create(created)
+            for _, created in sorted(created_facts.items())
+        ],
+    )
     return _PreviewRun(
         result=result,
         ctx=ctx,
         cascaded_wids=sorted(cascaded_wids),
         review=review,
-        created_windows=[
-            _window_structure_from_create(created)
-            for _, created in sorted(created_facts.items())
-        ],
     )
 
 
@@ -9152,7 +9171,7 @@ class ReviewSession:
                 ctx=run.ctx,
                 cascaded_wids=list(run.cascaded_wids),
                 review=run.review,
-                created_windows=list(run.created_windows),
+                created_windows=list(run.result.created_windows),
             )
         else:
             self._staged = None

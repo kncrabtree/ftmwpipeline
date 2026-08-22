@@ -422,6 +422,73 @@ def test_dry_run_reports_what_the_preview_reports(stage5_multi_file, tmp_path):
     assert review_log_impl(path) == []
 
 
+def test_preview_publishes_created_windows_like_the_dry_run(
+    stage5_multi_file, tmp_path
+):
+    """``ReviewPreviewResult.created_windows`` is the dry run's own list.
+
+    The per-window ``created_window_*`` fields cannot carry the ANCHOR --
+    they are keyed by the window the create landed in, and the anchor is a
+    property of the row that implied it. This is the field a client reads to
+    say WHICH add creates the window.
+    """
+    path = stage5_multi_file
+    freq = _gap_anchor(path)
+    cur = _write_curation(tmp_path, "implied.csv", f"add,,{freq},\n")
+
+    dry = apply_curation_impl(path, cur, dry_run=True)
+    preview = review_preview_impl(path, cur)
+
+    assert len(preview.created_windows) == 1
+    assert [_structure_of(pw) for pw in preview.created_windows] == [
+        _structure_of(pw) for pw in dry.created_windows
+    ]
+    assert preview.created_windows[0].anchor_mhz == pytest.approx(freq)
+    assert review_log_impl(path) == []
+
+
+def test_preview_created_windows_is_empty_without_a_create(stage5_multi_file, tmp_path):
+    """A plan that installs nothing reports nothing -- not a stale list."""
+    path = stage5_multi_file
+    wid, _detection_index = _first_peak(path)
+    lo, hi = [(w_lo, w_hi) for w, w_lo, w_hi in _live_ranges(path) if w == wid][0]
+    add_freq = lo + 0.25 * (hi - lo)
+    cur = _write_curation(tmp_path, "plain.csv", f"add,{wid},{add_freq},\n")
+
+    preview = review_preview_impl(path, cur)
+    assert preview.created_windows == []
+
+
+def test_preview_created_windows_carries_one_entry_for_a_coalesced_pair(
+    stage5_multi_file, tmp_path
+):
+    """W3.1: two adds sharing one created window report ONE entry, anchored
+    at the add that implied the create -- the same call the decision log
+    makes by putting ``created_window`` on the first add's entry."""
+    path = stage5_multi_file
+    freq1 = _gap_anchor(path)
+    probe = apply_curation_impl(
+        path,
+        _write_curation(tmp_path, "probe.csv", f"add,,{freq1},\n"),
+        dry_run=True,
+    )
+    win_lo, win_hi = probe.created_windows[0].freq_range
+    freq2 = win_lo + 0.15 * (win_hi - win_lo)
+
+    cur = _write_curation(tmp_path, "pair.csv", f"add,,{freq1},\nadd,,{freq2},\n")
+    preview = review_preview_impl(path, cur)
+
+    assert len(preview.created_windows) == 1
+    pw = preview.created_windows[0]
+    # The anchor names the FIRST add, not the second and not the midpoint --
+    # extent containment would mark both, which is exactly why the anchor is
+    # the field a client needs.
+    assert pw.anchor_mhz == pytest.approx(freq1)
+    assert pw.freq_range[0] <= freq2 <= pw.freq_range[1]
+    # Both adds landed in that one window.
+    assert preview.windows[pw.window_id].n_peaks_after == 2
+
+
 def test_dry_run_reports_what_the_apply_installs(stage5_multi_file, tmp_path):
     """The prediction is checked against what actually lands, on an
     independent copy of the same base -- never against a hard-coded extent."""

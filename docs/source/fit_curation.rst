@@ -642,7 +642,12 @@ explicitly names) a create, and so does a live ``review apply`` for the window
 it just installed — both on ``CurationApplyResult.created_windows``, one entry
 per window the plan installs or grows, carrying that same mode, extent, grid
 point count, contributor count and dependency list, plus the anchor it was
-resolved for. The dry run gets them from the window planner directly rather
+resolved for. ``ReviewPreviewResult.created_windows`` carries that identical
+list for a preview, so all three rungs report one structure. Prefer it over
+the per-window fields when you need the **anchor**: the anchor belongs to the
+row that implied the create, not to the window it landed in, and two ``add``
+rows coalescing into one created window are both inside its extent while only
+one of them caused it. The dry run gets them from the window planner directly rather
 than by fitting, so it pays for the proposal and not for a preview; the live
 apply reads them off the create that actually ran. Because the proposal is the
 apply's own, a dry run also refuses what the apply would refuse — an anchor
