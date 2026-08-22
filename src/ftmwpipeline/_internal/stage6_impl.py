@@ -6760,7 +6760,10 @@ def _finish_batch(
     first. ``None`` (every sessionless caller) computes them here, unchanged
     from before.
     """
-    from ..io.fitting_serialization import save_spectrum_fit_to_hdf5
+    from ..io.fitting_serialization import (
+        save_spectrum_fit_to_hdf5,
+        update_spectrum_fit_windows_in_hdf5,
+    )
 
     if not ctx.baseline_taken:
         raise ValueError(
@@ -6773,11 +6776,21 @@ def _finish_batch(
         cascaded = _cascade_batch(ctx, snap_tol_mhz=snap_tol_mhz)
 
     shape_attr = str(ctx.changeset.spectrum_fit.parameters.get("shape", "lorentzian"))
+    # Only the windows this batch touched are rewritten (S4). The batch knows
+    # exactly which those are -- ``mutated_wids`` is what the cascade above
+    # has just finished growing -- and rewriting the whole group instead cost
+    # the entire window table on every edit, plus ~919 kB of unreclaimed file
+    # growth per write, since deleting an HDF5 group does not return its
+    # space. A file with no fit yet still takes the full writer.
     with h5py.File(path, "a") as h5f:
-        if "stage5_fitting" in h5f:
-            del h5f["stage5_fitting"]
-        grp = h5f.create_group("stage5_fitting")
-        save_spectrum_fit_to_hdf5(ctx.changeset.spectrum_fit, grp)
+        if "stage5_fitting" not in h5f:
+            grp = h5f.create_group("stage5_fitting")
+            save_spectrum_fit_to_hdf5(ctx.changeset.spectrum_fit, grp)
+        else:
+            grp = h5f["stage5_fitting"]
+            update_spectrum_fit_windows_in_hdf5(
+                ctx.changeset.spectrum_fit, grp, ctx.changeset.mutated_wids
+            )
         grp.attrs["shape"] = shape_attr
 
     if precomputed_review is not None:

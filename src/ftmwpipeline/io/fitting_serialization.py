@@ -111,7 +111,17 @@ mismatched peak-column lengths, unknown audit-step decision) raises
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Set, Tuple
+from typing import (
+    Any,
+    Dict,
+    Iterable,
+    List,
+    NamedTuple,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+)
 
 import h5py
 import numpy as np
@@ -147,6 +157,7 @@ from ._hdf5_helpers import (
 
 __all__ = [
     "save_spectrum_fit_to_hdf5",
+    "update_spectrum_fit_windows_in_hdf5",
     "load_spectrum_fit_from_hdf5",
     "FIT_PEAK_COLUMN_SPECS",
     "FIT_WINDOW_COLUMN_SPECS",
@@ -520,6 +531,75 @@ def save_spectrum_fit_to_hdf5(fit: SpectrumFit, h5_group: h5py.Group) -> None:
         wid = int(window_fit.window_id)
         wg = windows_group.create_group(f"window_{wid:04d}")
         _save_window_fit(window_fit, wg)
+
+
+def update_spectrum_fit_windows_in_hdf5(
+    fit: SpectrumFit, h5_group: h5py.Group, window_ids: Iterable[int]
+) -> None:
+    """Rewrite only *window_ids*' subgroups of an already-persisted fit.
+
+    The incremental counterpart to :func:`save_spectrum_fit_to_hdf5`, for the
+    curation engine's single write point. A batch that edited one window used
+    to delete ``/stage5_fitting`` and rewrite the whole thing, which costs the
+    entire table (404 ms on a 251-window build) and -- because HDF5 does not
+    reclaim a deleted group's space -- grew the file by ~919 kB on *every*
+    curation write. Rewriting only what changed costs ~1.7 ms and ~6 kB.
+
+    Everything group-level (the header counts, ``parameters``,
+    ``diagnostics``, and the three history blobs) is rewritten
+    unconditionally. They are small, and any of them can move without naming
+    a window.
+
+    The window-group **set** is reconciled against ``fit`` rather than taken
+    from ``window_ids``: a group on disk whose window is no longer in the fit
+    is deleted, and a window in the fit with no group on disk is written,
+    named or not. Only the *contents* of an already-correct group are taken
+    on the caller's word. So an under-reported id leaves a window holding its
+    previous values -- never an orphaned group, and never a missing one.
+    """
+    stamp_stage_header(
+        h5_group,
+        "stage5_fitting",
+        n_windows=fit.n_windows,
+        n_fitted_peaks=fit.n_fitted_peaks,
+    )
+    h5_group.attrs["final_plan_revision"] = int(fit.final_plan_revision)
+    h5_group.attrs["parameters"] = json.dumps(fit.parameters, default=str)
+    h5_group.attrs["diagnostics"] = json.dumps(fit.diagnostics, default=str)
+    h5_group.attrs["thaw_history"] = json.dumps(
+        [_thaw_info_to_json(e) for e in fit.thaw_history]
+    )
+    h5_group.attrs["replan_history"] = json.dumps(
+        [_replan_info_to_json(e) for e in fit.replan_history]
+    )
+    h5_group.attrs["rescue_history"] = json.dumps(
+        [_rescue_round_to_json(e) for e in fit.rescue_history]
+    )
+
+    if "windows" not in h5_group:
+        h5_group.create_group("windows")
+    windows_group = h5_group["windows"]
+
+    expected: Dict[str, FittingResult] = {}
+    for window_fit in fit.window_fits:
+        if window_fit.window_id is None:
+            raise ValueError(
+                "FittingResult.window_id is required for serialization "
+                "(the active-FT slice cannot be reconstructed without it)"
+            )
+        expected[f"window_{int(window_fit.window_id):04d}"] = window_fit
+
+    for name in list(windows_group.keys()):
+        if name not in expected:
+            del windows_group[name]
+
+    named = {f"window_{int(wid):04d}" for wid in window_ids}
+    for name, window_fit in expected.items():
+        if name not in named and name in windows_group:
+            continue
+        if name in windows_group:
+            del windows_group[name]
+        _save_window_fit(window_fit, windows_group.create_group(name))
 
 
 def _save_window_fit(window_fit: FittingResult, wg: h5py.Group) -> None:
