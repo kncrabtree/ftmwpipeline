@@ -1446,7 +1446,7 @@ def get_candidate_ledger(
 
 def review_edit(
     file_path: Union[str, Path],
-    window_id: int,
+    window_id: Optional[int] = None,
     *,
     add: Sequence[Union[float, str]] = (),
     remove: Sequence[Union[float, str]] = (),
@@ -1466,7 +1466,13 @@ def review_edit(
     file_path :
         Path to the ``.ftmw`` pipeline file (read-write).
     window_id :
-        The window to refit.
+        The window to refit. Optional (``None``, the default) when ``add``
+        or ``remove`` is non-empty: the window is then derived from the
+        target frequencies (or ``"uid:N"`` identifiers) by live-window
+        coverage -- a frequency no live window covers is an error. A bare
+        edit (``add`` and ``remove`` both empty -- an identity refit) still
+        REQUIRES ``window_id`` explicitly; a *named* window is still
+        checked (naming the wrong one is still an error).
     add :
         Molecular frequencies (MHz) of peaks to add, as ``float`` or a
         numeric ``str``.

@@ -1596,7 +1596,7 @@ class Pipeline:
 
     def review_edit(
         self,
-        window_id: int,
+        window_id: Optional[int] = None,
         *,
         add: Sequence[Union[float, str]] = (),
         remove: Sequence[Union[float, str]] = (),
@@ -1614,7 +1614,14 @@ class Pipeline:
         Parameters
         ----------
         window_id :
-            The window to refit.
+            The window to refit. Optional (``None``, the default) when
+            ``add`` or ``remove`` is non-empty: the window is then derived
+            from the target frequencies (or ``"uid:N"`` identifiers) by
+            live-window coverage -- a frequency no live window covers is an
+            error. A bare edit (``add`` and ``remove`` both empty -- an
+            identity refit) still REQUIRES ``window_id`` explicitly; a
+            *named* window is still checked (naming the wrong one is still
+            an error).
         add :
             Molecular frequencies (MHz) of peaks to add, as ``float`` or a
             numeric ``str``.  Snapped to the nearest ledger candidate within

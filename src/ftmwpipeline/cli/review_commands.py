@@ -480,16 +480,21 @@ def _fmt_edit_token(token: str) -> str:
 def cmd_review_edit(args: argparse.Namespace) -> int:
     """Re-fit one window with user-directed add/remove edits.
 
+    ``--window`` is optional when ``--add``/``--remove`` is given: the window
+    is then derived from the target frequencies (or ``uid:N`` identifiers) by
+    live-window coverage. A bare edit (no ``--add``/``--remove`` -- an
+    identity refit) still requires ``--window`` explicitly.
+
     Prints a before/after summary: peak counts, χ²ᵣ, which peaks were added
     or removed, and the origin of each resulting peak.
     """
     setup_logging(getattr(args, "verbose", False))
     file_path = _ensure_ftmw(args.file_path)
-    window_id: int = args.window
+    window_id: Optional[int] = args.window
     add_freqs: List[Union[float, str]] = list(args.add or [])
     remove_freqs: List[Union[float, str]] = list(args.remove or [])
 
-    if not add_freqs and not remove_freqs:
+    if not add_freqs and not remove_freqs and window_id is not None:
         print(
             "Warning: no --add or --remove frequencies given; "
             "performing identity refit (no-op edit)."
@@ -1333,9 +1338,14 @@ def register_review_commands(subparsers: Any) -> None:
         "--window",
         dest="window",
         type=int,
-        required=True,
+        default=None,
         metavar="N",
-        help="window_id to refit.",
+        help=(
+            "window_id to refit. Optional when --add/--remove is given: the "
+            "window is then derived from the target frequency (or 'uid:N') "
+            "by live-window coverage. Required for a bare edit (no --add/"
+            "--remove -- an identity refit)."
+        ),
     )
     p_edit.add_argument(
         "--add",

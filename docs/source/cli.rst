@@ -254,7 +254,13 @@ persisted statistic. The editing verbs each re-fit the affected window and
 record the change in the decision log: ``edit`` (``--add`` / ``--remove``) and
 ``accept``. ``--remove`` takes a molecular MHz frequency or a ``uid:N`` token
 naming the line by its ``peak_uid``, which addresses it exactly rather than by
-proximity; ``--add`` is frequency-only. There is no separate ``merge`` or
+proximity; ``--add`` is frequency-only. ``edit --window`` is optional when
+``--add``/``--remove`` is given: the window is then derived from the target
+frequency (or ``uid:N``) by live-window coverage, and a frequency no live
+window covers is an error rather than a silent no-op. A bare ``edit`` (no
+``--add``/``--remove`` -- an identity refit) still requires ``--window``
+explicitly, and naming ``--window`` explicitly on any edit is still checked --
+naming the wrong one is still an error. There is no separate ``merge`` or
 ``split`` verb -- an ``--add``
 within snap tolerance of a fitted peak is read as a split of it, and removing
 the mutually-close components of one feature while adding one frequency in

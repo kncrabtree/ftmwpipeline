@@ -32,6 +32,35 @@ had to reach into ``_internal`` or parse out of prose to obtain are now
 published, and the Stage 6 edit paths that carry them were collapsed onto one
 engine so they cannot answer differently.
 
+* **A curation edit's window is now derived, not required.** ``window_id`` on
+  the ``add``/``remove`` targets of ``review edit`` -- ``api.review_edit``,
+  ``Pipeline.review_edit``, ``ReviewSession.review_edit``, and the CLI's
+  ``review edit --window`` -- and a curation file's ``add``/``remove`` rows is
+  now optional: the Python signatures take ``window_id: Optional[int] = None``
+  (the last positional, so this is backward compatible), ``--window`` is no
+  longer ``required=True``, and a curation-file row's window column accepts
+  the tokens already reserved for an unpinned ``create`` (``new`` / ``auto`` /
+  ``-`` / an empty cell). Omitting the window derives it from the target's own
+  frequency (or ``uid:N``) by live-window coverage: windows are disjoint (a
+  hard Stage 4 invariant), so a frequency covers at most one live window and
+  the derivation is total and unambiguous. Resolution runs at plan time, before
+  a curation file's rows are coalesced by window id, so a run of several
+  omitted-window rows for the same window still collapses into one refit
+  instead of costing one per row; ``ReviewPreviewResult.plan`` and
+  ``review apply --dry-run`` show the resolved window id. A *named* window is
+  still checked -- naming the wrong one is still an error exactly as before --
+  and the bounded, snap-tolerance-limited match once a window is settled on
+  (named or derived) is completely unchanged: deriving the window never widens
+  a search. A frequency no live window covers is an error naming it and
+  pointing at ``review create``; for ``remove`` this is permanent, since a
+  remove never implies creating a window. A bare ``review edit`` with no
+  ``add``/``remove`` (an identity refit) still requires ``window_id``
+  explicitly, as do ``review accept`` and ``review create``, since in all
+  three the window is the operand rather than a coordinate for something
+  else. Several omitted-window targets resolving to different windows within
+  one ``review edit`` call is refused, naming both, since one call is scoped
+  to one window's refit.
+
 * **A widened window now cascades to its dependents.** ``plan_stage6_window``
   returns ``mode="widened"`` rather than ``mode="created"`` when a gap cannot
   hold ``DEFAULT_STAGE6_MIN_WINDOW_HALF_WIDTH_POINTS`` (8) points of new

@@ -2476,9 +2476,133 @@ def _cascade_refit_dependents(
     return cascaded
 
 
+# ---------------------------------------------------------------------------
+# Window derivation (W2): the window is optional where it is a COORDINATE
+# (an add/remove target), never where it is the SUBJECT (accept, create, a
+# bare identity edit). Windows are disjoint (FitWindow's docstring), so a
+# frequency covers at most one live window and the derivation is total.
+#
+# THE RULE THAT MUST NOT BE VIOLATED: deriving the window never widens a
+# search. Resolution is always (1) find which live window covers the
+# frequency, THEN (2) run the existing, unchanged, snap-tolerance-bounded
+# match inside that one window. There is no global nearest-peak search
+# anywhere, for any verb, at any point. A frequency no live window covers is
+# an error -- for ``remove`` this is permanent (a remove never implies a
+# create).
+# ---------------------------------------------------------------------------
+
+
+def _load_current_spectrum_fit(path: str) -> SpectrumFit:
+    """Load the currently-persisted Stage 5 fit, fresh from disk.
+
+    Used only to resolve a derived window id *before* any batch opens (see
+    :func:`_window_for_curation_token`) -- the batch engine reloads its own
+    fresh copy afterward (:func:`_build_batch_changeset`), so this is not a
+    staleness risk, only an extra cheap read.
+    """
+    with h5py.File(path, "r") as h5f:
+        if "stage5_fitting" not in h5f:
+            raise ValueError("No Stage 5 fit found in this file. Run 'fit run' first.")
+        return load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+
+
+def _window_for_curation_token(
+    fit: SpectrumFit, token: Union[float, PeakUidToken]
+) -> Optional[int]:
+    """Resolve one add/remove target to the live window that covers it.
+
+    Live windows only, no snap (THE RULE above): a plain frequency resolves
+    through :func:`~.stage5_impl._window_for_freq` -- the window whose
+    ``freq_range`` contains it, promoted and shared here rather than
+    reimplemented, so a curation-file row and a ``review edit`` call cannot
+    disagree about which window a frequency covers. A ``"uid:N"`` token
+    resolves to the window whose fitted peaks include that ``peak_uid`` -- an
+    EXACT match, no snap, since a ``peak_uid`` is unique across the whole fit.
+
+    Returns ``None`` when nothing resolves; callers phrase their own error,
+    since ``review edit`` and a curation file's rows need different wording.
+    """
+    from .stage5_impl import _window_for_freq
+
+    if isinstance(token, PeakUidToken):
+        for wf in fit.window_fits:
+            if wf.window_id is None:
+                continue
+            if any(p.peak_uid == token.uid for p in wf.fitted_peaks):
+                return int(wf.window_id)
+        return None
+    return _window_for_freq(fit, float(token))
+
+
+def _derive_review_edit_window_id(
+    path: str,
+    add: Sequence[float],
+    remove: Sequence[Union[float, PeakUidToken]],
+) -> int:
+    """Derive the single live window every ``add``/``remove`` target in one
+    ``review edit`` call resolves to.
+
+    ``window_id`` stays REQUIRED for a bare edit (``add`` and ``remove`` both
+    empty -- an identity refit names the window it re-converges; it is the
+    operand, not a coordinate for something else).
+
+    Every target must resolve to the SAME window: a single edit call is
+    scoped to one window's refit (``RefitWindowResult`` is a per-window
+    result, and the intent inference reads one window's peak set), so two
+    targets resolving to two different windows is an error naming both
+    rather than a silent pick -- issue separate calls instead.
+    """
+    if not add and not remove:
+        raise ValueError(
+            "window_id is required when add and remove are both empty (an "
+            "identity refit names the window it re-converges); pass a "
+            "window id explicitly"
+        )
+    fit = _load_current_spectrum_fit(path)
+    resolutions: List[Tuple[str, int]] = []
+    for f in add:
+        wid = _window_for_curation_token(fit, f)
+        if wid is None:
+            raise ValueError(
+                f"add={float(f):.4f} MHz is not covered by any live window "
+                f"(windows are disjoint); create a window at this "
+                f"frequency first with 'review create', or name the window "
+                f"explicitly"
+            )
+        resolutions.append((f"add={float(f):.4f}", wid))
+    for t in remove:
+        wid = _window_for_curation_token(fit, t)
+        if wid is None:
+            if isinstance(t, PeakUidToken):
+                raise ValueError(
+                    f"remove=uid:{t.uid}: no fitted peak with "
+                    f"peak_uid={t.uid} in any window (already removed, from "
+                    f"a fit predating peak_uid, or the identifier is wrong)"
+                )
+            raise ValueError(
+                f"remove={float(t):.4f} MHz is not covered by any live "
+                f"window (windows are disjoint); nothing to remove there"
+            )
+        label = (
+            f"remove=uid:{t.uid}"
+            if isinstance(t, PeakUidToken)
+            else f"remove={float(t):.4f}"
+        )
+        resolutions.append((label, wid))
+    wids = {wid for _, wid in resolutions}
+    if len(wids) > 1:
+        detail = "; ".join(f"{label} -> window {wid}" for label, wid in resolutions)
+        raise ValueError(
+            f"add/remove targets in this edit resolve to different windows "
+            f"({detail}); issue separate 'review edit' calls, one per "
+            f"window, or pass a window id explicitly"
+        )
+    return next(iter(wids))
+
+
 def refit_window_impl(
     file_path: Union[Path, str],
-    window_id: int,
+    window_id: Optional[int] = None,
     *,
     add: Sequence[Union[float, str]] = (),
     remove: Sequence[Union[float, str]] = (),
@@ -2520,6 +2644,14 @@ def refit_window_impl(
         Path to the ``.ftmw`` pipeline file (read-write).
     window_id :
         The ``FitWindow.window_id`` / ``FittingResult.window_id`` to refit.
+        Optional (``None``, the default) when ``add`` or ``remove`` is
+        non-empty: the window is then derived from the target frequencies
+        (or ``"uid:N"`` identifiers) by live-window coverage -- see
+        :func:`_derive_review_edit_window_id`. A bare edit (``add`` and
+        ``remove`` both empty -- an identity refit) still REQUIRES it
+        explicitly, since there the window is the operand, not a coordinate
+        for something else. A *named* window is still checked: naming the
+        wrong one is still an error, exactly as before.
     add :
         Molecular frequencies (MHz) of peaks to add, as ``float`` or a numeric
         ``str`` (the CLI passes strings).  Each is snapped to the nearest
@@ -2581,9 +2713,12 @@ def refit_window_impl(
         match a fitted peak within ``snap_tol_mhz``, any ``remove`` uid
         matches no fitted peak in the window, any ``add`` token is malformed
         or names a ``"uid:N"`` identifier, any ``add`` frequency falls
-        outside the named window's ``freq_range`` after snapping, or
+        outside the named window's ``freq_range`` after snapping,
         ``frame`` is omitted on a ``self_calibrated`` file with a non-empty
-        ``add``/``remove``.
+        ``add``/``remove``, ``window_id`` is omitted with ``add`` and
+        ``remove`` both empty, an omitted ``window_id``'s target frequency
+        (or ``"uid:N"``) is not covered by any live window, or several
+        omitted-window targets in one call resolve to different windows.
     """
     # Checked before the batch opens so a malformed call cannot even take the
     # undo baseline: a refused edit must leave the file untouched. The applier
@@ -2617,11 +2752,17 @@ def refit_window_impl(
             )
             for t in remove_raw
         ]
+
+    resolved_window_id: int = (
+        window_id
+        if window_id is not None
+        else _derive_review_edit_window_id(path, add_raw, remove_raw)
+    )
     return _run_single_action(
         path,
         lambda ctx: _batch_apply_edit_action(
             ctx,
-            window_id,
+            resolved_window_id,
             add_raw,
             remove_raw,
             add_seeds=add_seeds,
@@ -3298,8 +3439,20 @@ _CURATION_HEADER = ("action", "window", "freqs", "params")
 # be". A named id instead *pins* the id the create takes -- which is what a file
 # generated from the decision log writes, so the window keeps its identity
 # across a replay even if an earlier create was dropped from the edit set.
+#
+# W2 reuses the SAME token set on an ``add``/``remove`` row's window column,
+# meaning something different there: the window is a COORDINATE derived from
+# the row's own frequency (or "uid:N") by live-window coverage, not an output
+# to mint -- see ``_DERIVE_WINDOW_SENTINEL`` and ``_resolve_curation_window_ids``.
+# Deliberately the same spellings rather than inventing new ones: "the window
+# column is omitted" reads the same way regardless of which action it is on.
 _CURATION_NEW_WINDOW_TOKENS = ("new", "auto", "-", "")
 _NEW_WINDOW_SENTINEL = -1
+_DERIVE_WINDOW_SENTINEL = -2
+"""Parsed in place of an add/remove row's omitted window token (W2); resolved
+to a concrete live-window id by :func:`_resolve_curation_window_ids` before
+:func:`_resolve_curation_plan` ever sees it -- unlike ``_NEW_WINDOW_SENTINEL``,
+this value never reaches a :class:`PlannedAction` or the decision log."""
 
 
 @dataclass
@@ -3479,6 +3632,20 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
     is refused (a uid names a peak that already exists, and none of those
     targets one).
 
+    The window column is REQUIRED on ``accept`` and ``create`` (the window is
+    the operand there, not a coordinate). On ``add`` / ``remove`` it is
+    OPTIONAL (W2): the same tokens ``create`` reserves for an unpinned window
+    (``"new"`` / ``"auto"`` / ``"-"`` / an empty cell) mean "derive it from
+    this row's own frequency (or ``uid:N``)" -- the live window whose
+    ``freq_range`` covers it (windows are disjoint, so this is total and
+    unambiguous), resolved by :func:`_resolve_curation_window_ids` before
+    :func:`_resolve_curation_plan` coalesces by window id, so a run of
+    omitted-window rows for the same window still coalesces into one edit. A
+    frequency no live window covers is an error naming it, both in a live
+    apply and a ``--dry-run`` preview. A *named* window is still checked: it
+    is an assertion, and naming the wrong one is still an error exactly as
+    before -- only an omitted window is derived.
+
     ``split`` and ``merge`` are not row actions: both are read from what an
     add/remove combination *does* to a window's peak set, not typed. A row
     naming either is refused, with the add/remove spelling to write instead
@@ -3567,10 +3734,17 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                 f"choose one of {_CURATION_ACTIONS}"
             )
         raw_window = fields[1] if len(fields) > 1 else ""
-        if action == "create" and raw_window.strip().lower() in (
-            _CURATION_NEW_WINDOW_TOKENS
-        ):
+        window_token = raw_window.strip().lower()
+        if action == "create" and window_token in _CURATION_NEW_WINDOW_TOKENS:
             window_id = _NEW_WINDOW_SENTINEL
+        elif (
+            action in ("add", "remove") and window_token in _CURATION_NEW_WINDOW_TOKENS
+        ):
+            # W2: the window is a coordinate on add/remove, derived from the
+            # row's own frequency (or "uid:N") by live-window coverage --
+            # see _resolve_curation_window_ids, run between this parse and
+            # _resolve_curation_plan's coalescing.
+            window_id = _DERIVE_WINDOW_SENTINEL
         elif len(fields) < 2 or not fields[1]:
             raise ValueError(f"curation line {line_no}: missing window id")
         else:
@@ -3661,6 +3835,78 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
         )
 
     return ParsedCurationFile(ops, header)
+
+
+def _curation_ops_have_freq(ops: Sequence[CurationOp]) -> bool:
+    """Whether any parsed row carries a frequency needing frame resolution.
+
+    Mirrors :func:`_planned_action_has_freq`'s predicate, but at the
+    pre-coalesce ``CurationOp`` level: window derivation (W2) needs the raw
+    frame (window ranges are stored raw) and must run *before*
+    :func:`_resolve_curation_plan` coalesces, so the frame has to be resolved
+    this early too.
+    """
+    return any(
+        op.freqs or (op.action == "accept" and "candidate" in op.params) for op in ops
+    )
+
+
+def _resolve_curation_window_ids(
+    ops: Sequence[CurationOp],
+    path: str,
+    *,
+    frame: Frame,
+    stamp: Optional[_CalibrationStamp],
+) -> List[CurationOp]:
+    """Resolve every add/remove row's omitted window token (parsed to
+    :data:`_DERIVE_WINDOW_SENTINEL`) to the live window its frequency (or
+    ``"uid:N"`` identifier) resolves to.
+
+    Runs BEFORE :func:`_resolve_curation_plan`, which coalesces a run of
+    add/remove rows *by window id* -- resolving after coalescing would leave
+    several same-window, omitted-window rows ungrouped (they would not share
+    a window id to coalesce on), costing one refit per row instead of one for
+    the run. See :func:`_window_for_curation_token` for the shared,
+    live-windows-only resolver (THE RULE: never a global nearest-peak
+    search). A frequency (converted to the raw frame first, since window
+    ranges are stored raw) that no live window covers is an error naming the
+    frequency and line, pointing at ``review create``; a ``"uid:N"`` token
+    unmatched in any window is an error naming the uid and line. A row that
+    already names a window -- including a ``"new"``/``"auto"`` token on a
+    ``create`` row, which is the unrelated :data:`_NEW_WINDOW_SENTINEL` --
+    is returned unchanged.
+    """
+    if not any(op.window_id == _DERIVE_WINDOW_SENTINEL for op in ops):
+        return list(ops)
+    fit = _load_current_spectrum_fit(path)
+    resolved: List[CurationOp] = []
+    for op in ops:
+        if op.window_id != _DERIVE_WINDOW_SENTINEL:
+            resolved.append(op)
+            continue
+        token = op.freqs[0]
+        if isinstance(token, PeakUidToken):
+            wid = _window_for_curation_token(fit, token)
+            if wid is None:
+                raise ValueError(
+                    f"curation line {op.line_no}: no fitted peak with "
+                    f"peak_uid={token.uid} in any window (already removed, "
+                    f"from a fit predating peak_uid, or the identifier is "
+                    f"wrong)"
+                )
+        else:
+            freq_raw = _frame_to_raw(float(token), frame=frame, stamp=stamp)
+            wid = _window_for_curation_token(fit, freq_raw)
+            if wid is None:
+                raise ValueError(
+                    f"curation line {op.line_no}: {op.action} "
+                    f"{float(token):.4f} MHz is not covered by any live "
+                    f"window (windows are disjoint); create a window at "
+                    f"this frequency first with 'review create', or name "
+                    f"the window explicitly"
+                )
+        resolved.append(replace(op, window_id=wid))
+    return resolved
 
 
 def _assert_plain_freq(token: Union[float, PeakUidToken]) -> float:
@@ -6105,11 +6351,14 @@ def apply_curation_impl(
 ) -> CurationApplyResult:
     """Apply a curation file to *file_path*, delegating to the edit impls.
 
-    Parses the curation CSV, coalesces it into a delegated action plan (one
-    refit per window for runs of add/remove; merge/split/accept stand alone),
-    converts every frequency on the resolved plan to raw (before ambiguity
-    resolution, before any snapping), and -- unless ``dry_run`` -- applies the
-    whole plan as one batch (:func:`_execute_curation_batch`): the Stage 5 fit
+    Parses the curation CSV, derives any omitted add/remove window id by
+    live-window coverage (W2 -- see :func:`_resolve_curation_window_ids`;
+    ``accept``/``create`` still require the window named), coalesces it into
+    a delegated action plan (one refit per window for runs of add/remove;
+    merge/split/accept stand alone), converts every frequency on the resolved
+    plan to raw (before ambiguity resolution, before any snapping), and --
+    unless ``dry_run`` -- applies the whole plan as one batch
+    (:func:`_execute_curation_batch`): the Stage 5 fit
     context is built once, every action is applied to an in-memory
     ``SpectrumFit`` in a canonical cross-window order (ascending window id,
     independent of the file's row order), the dependents of every
@@ -6129,24 +6378,18 @@ def apply_curation_impl(
     calibrated header whose stamped epsilon no longer matches the file's
     current one is refused -- never silently resolved with either value.
 
-    Raises ``ValueError`` on a malformed curation file or when an action fails
-    to resolve (e.g. a ``remove`` frequency matches no fitted peak), tagged with
-    the offending action; a failure leaves the file untouched (nothing is
-    persisted until every action in the plan has succeeded).
+    Raises ``ValueError`` on a malformed curation file, an omitted-window
+    add/remove target no live window covers or whose ``"uid:N"`` matches no
+    fitted peak (raised unconditionally -- including on ``dry_run``, since
+    there is no window id to put in the plan at all), or when an action fails
+    to resolve (e.g. a ``remove`` frequency matches no fitted peak), tagged
+    with the offending action; a failure leaves the file untouched (nothing
+    is persisted until every action in the plan has succeeded).
 
     ``_shared`` is internal -- see :func:`refit_window_impl`.
     """
     path = str(file_path)
-    ops = parse_curation_file(curation_path)
-    plan = _resolve_curation_plan(ops)
-
-    resolved_frame: Frame = "raw"
-    stamp: Optional[_CalibrationStamp] = None
-    if any(_planned_action_has_freq(a) for a in plan):
-        resolved_frame, stamp = _resolve_curation_frame(path, ops.header, frame)
-        plan = [
-            _planned_action_to_raw(a, frame=resolved_frame, stamp=stamp) for a in plan
-        ]
+    plan, resolved_frame, stamp = _resolve_curation_call(path, curation_path, frame)
 
     snap_tol = resolve_snap_tol_mhz(path, None)
     warnings = _curation_ambiguity_warnings(path, plan, snap_tol_mhz=snap_tol)
@@ -6305,10 +6548,12 @@ def _run_review_preview(
     plus the internal state (D4) a :class:`ReviewSession` needs to persist a
     following accept without recomputing.
 
-    Mirrors :func:`apply_curation_impl`'s parse / resolve / frame-convert
-    prologue exactly, including the curation file's optional frame header
-    (A3) and the A5 frame-mismatch advisory, then instead of delegating to
-    :func:`_execute_curation_batch` (which persists), runs the same
+    Shares :func:`apply_curation_impl`'s parse / derive-window / coalesce /
+    frame-convert prologue exactly (:func:`_resolve_curation_call`),
+    including the curation file's optional frame header (A3), W2's
+    omitted-window derivation, and the A5 frame-mismatch advisory, then
+    instead of delegating to :func:`_execute_curation_batch` (which
+    persists), runs the same
     canonicalized action sequence against the same appliers, the same one
     combined cascade (:func:`_cascade_batch`), and the same derive-without-
     write step (:func:`_derive_batch_review`) that a live apply's persist
@@ -6337,16 +6582,7 @@ def _run_review_preview(
     """
     path = str(file_path)
     snap_tol = resolve_snap_tol_mhz(path, snap_tol_mhz)
-    ops = parse_curation_file(curation_path)
-    plan = _resolve_curation_plan(ops)
-
-    resolved_frame: Frame = "raw"
-    stamp: Optional[_CalibrationStamp] = None
-    if any(_planned_action_has_freq(a) for a in plan):
-        resolved_frame, stamp = _resolve_curation_frame(path, ops.header, frame)
-        plan = [
-            _planned_action_to_raw(a, frame=resolved_frame, stamp=stamp) for a in plan
-        ]
+    plan, resolved_frame, stamp = _resolve_curation_call(path, curation_path, frame)
 
     warnings = _frame_mismatch_warnings(
         path, plan, resolved_frame=resolved_frame, stamp=stamp
@@ -7618,19 +7854,32 @@ def _compute_fit_ctx_fingerprint(path: str) -> _FitCtxFingerprint:
 def _resolve_curation_call(
     path: str, curation_path: Union[Path, str], frame: Optional[Frame]
 ) -> Tuple[List["PlannedAction"], Frame, Optional[_CalibrationStamp]]:
-    """Parse + resolve + frame-convert a curation file into the ready-to-run
-    plan -- the shared prologue :func:`apply_curation_impl` and
-    :func:`_run_review_preview` each already inline for themselves. A THIRD
-    inlined copy for :class:`ReviewSession`'s staged-plan comparison would
-    make three, so it is factored out here instead (used only by new D3/D4
-    code; the two existing inlined copies are left as they are).
+    """Parse + derive omitted add/remove window ids (W2, live-window
+    coverage -- see :func:`_resolve_curation_window_ids`) + coalesce + frame-
+    convert a curation file into the ready-to-run plan.
+
+    The single prologue :func:`apply_curation_impl`, :func:`_run_review_preview`,
+    and :class:`ReviewSession`'s staged-plan comparison all call, so a change
+    to window derivation or frame resolution reaches every curation-file
+    entry point at once -- exactly the "two resolvers that can disagree"
+    failure mode W2 has to avoid. (Originally factored out only for D3/D4, to
+    avoid a third inlined copy; W2's window derivation is the reason the two
+    pre-existing inlined copies were folded into calling this too.)
+
+    Frame resolution happens before window derivation (derivation needs the
+    raw frame, since window ranges are stored raw) and is reused for the
+    final plan-level conversion, so it runs exactly once per call.
     """
     ops = parse_curation_file(curation_path)
-    plan = _resolve_curation_plan(ops)
     resolved_frame: Frame = "raw"
     stamp: Optional[_CalibrationStamp] = None
-    if any(_planned_action_has_freq(a) for a in plan):
+    if _curation_ops_have_freq(ops):
         resolved_frame, stamp = _resolve_curation_frame(path, ops.header, frame)
+    resolved_ops = _resolve_curation_window_ids(
+        ops, path, frame=resolved_frame, stamp=stamp
+    )
+    plan = _resolve_curation_plan(resolved_ops)
+    if any(_planned_action_has_freq(a) for a in plan):
         plan = [
             _planned_action_to_raw(a, frame=resolved_frame, stamp=stamp) for a in plan
         ]
@@ -7796,7 +8045,7 @@ class ReviewSession:
 
     def review_edit(
         self,
-        window_id: int,
+        window_id: Optional[int] = None,
         *,
         add: Sequence[Union[float, str]] = (),
         remove: Sequence[Union[float, str]] = (),
