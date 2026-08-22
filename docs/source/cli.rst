@@ -284,12 +284,14 @@ create (an uncovered ``add``) or an explicit ``create`` row -- ``review
 preview`` prints an extra line with the extent it was built (or widened) to,
 its grid points, and its frozen-contributor count: the typo guard for letting
 an ``add`` mint structure on its own. ``review apply --dry-run`` prints the
-same for a plan that implies or names a create. This is the one thing a dry
-run cannot get from resolution alone -- a window's extent comes from the
-planner, not the plan -- so it runs the in-memory preview once, purely to
-report it, and only when the plan actually contains a create. A dry run of a
-plan without one is unchanged and costs nothing extra; a dry run *with* one
-costs what a preview costs. ``review snap-tolerance`` prints the MHz tolerance
+same for a plan that implies or names a create, and ``review apply`` itself
+prints it for the window it just installed. A window's extent comes from the
+planner rather than from the plan, so a dry run cannot read it off its own
+resolved-plan echo: it asks the planner directly, which costs the window
+proposal and no fit at all. A dry run of a plan without a create never opens
+the engine and costs nothing extra. Because the proposal is the apply's own,
+a dry run also *refuses* what the apply would refuse -- an anchor outside the
+analysis band, a create whose window cannot be placed. ``review snap-tolerance`` prints the MHz tolerance
 *this* file's curation verbs resolve to, with the bin count and bin spacing it
 came from (``--format json`` for a script); the tolerance is defined in
 active-FT bins, so it is a property of the file rather than a fixed

@@ -88,6 +88,7 @@ if TYPE_CHECKING:  # annotation-only imports (PEP 563 lazy)
     from ..core.environment import EnvironmentRecord
     from ..core.stage_fit_settings import StageFitSettings
     from ..fitting.peak_model import PeakShape
+    from ..preprocessing.window_planning import Stage6WindowProposal
     from .stage5_impl import Stage5FitContext
 
 logger = logging.getLogger(__name__)
@@ -3708,6 +3709,54 @@ class PlannedAction:
 
 
 @dataclass
+class PlannedWindowResult:
+    """One window a curation plan installs or grows, as
+    :class:`CurationApplyResult` reports it.
+
+    The same five structural facts :class:`CreateWindowResult`,
+    ``PreviewWindowResult.created_window_*`` and the ``created_window``
+    decision evidence all carry (W4) -- mode, extent, grid points, frozen
+    contributors, dependencies -- plus the anchor they were resolved for, and
+    nothing that requires the window to have been fit. That is what lets a
+    dry run fill this in from :func:`_plan_batch_create` alone while a live
+    apply fills it from the create that actually ran, with both agreeing
+    field for field.
+
+    Attributes
+    ----------
+    window_id : int
+        The window installed (``mode="created"``) or grown
+        (``mode="widened"``). On a dry run this is the id the apply *would*
+        mint, resolved the same way the apply resolves it.
+    anchor_mhz : float
+        The frequency the window was resolved to cover, raw frame -- an
+        explicit ``create`` row's anchor, or the uncovered ``add`` frequency
+        that implied it (W3).
+    mode : str
+        ``"created"`` (a new window in a gap) or ``"widened"`` (the gap was
+        too narrow, so a neighbor absorbed the anchor).
+    freq_range : tuple of float
+        The installed or grown window's ``(min_mhz, max_mhz)`` extent, raw
+        frame.
+    n_points : int
+        Active-FT grid points the window covers.
+    n_contributors : int
+        Frozen leakage contributors attached to it.
+    depends_on : list of int
+        Window ids it reads frozen leakage from (``[]`` for a widening, whose
+        edges are unchanged).
+    """
+
+    window_id: int
+    anchor_mhz: float
+    mode: str
+    freq_range: Tuple[float, float]
+    n_points: int
+    n_contributors: int
+    depends_on: List[int]
+
+
+@dataclass
 class CurationApplyResult:
     """Outcome of :func:`apply_curation_impl`.
 
@@ -3724,6 +3773,16 @@ class CurationApplyResult:
         Number of actions executed (``0`` for a dry run).
     dry_run : bool
         Whether the file was previewed without mutating.
+    created_windows : list of PlannedWindowResult
+        Every window this plan installs or grows, ascending by window id --
+        empty for the common plan that creates none. Filled on a dry run
+        *and* on a live apply, from the same five structural facts either
+        way (see :class:`PlannedWindowResult`): a dry run resolves them with
+        :func:`_plan_batch_create`, without fitting anything; a live apply
+        reads them off the create it ran. This is BlackQuill's typo guard for
+        implicit window creation (W3/W4) on the cheap rung of the
+        dry-run -> preview -> apply ladder -- a caller sees "this add would
+        create a window at A-B MHz" without paying for a preview.
     base_changed : bool
         D4. ``True`` only when a :class:`ReviewSession` had a staged preview
         for this exact plan that it had to drop and recompute because the
@@ -3737,6 +3796,7 @@ class CurationApplyResult:
     warnings: List[str]
     applied: int
     dry_run: bool
+    created_windows: List[PlannedWindowResult] = field(default_factory=list)
     base_changed: bool = False
 
 
@@ -5842,42 +5902,72 @@ def _batch_apply_accept(
     return None
 
 
-def _batch_apply_create(
-    ctx: _BatchCtx,
-    anchor_mhz: float,
-    *,
-    replay_window_id: Optional[int],
-    snap_tol_mhz: float,
-    record_decision: bool = True,
-) -> CreateWindowResult:
-    """Batch equivalent of :func:`create_window_impl`. Recomputes the effective
-    plan (:func:`_batch_effective_plan`) so a second create in the same batch
-    sees the first one, but never rebuilds ``fit_ctx``.
+def _created_window_extent(
+    fit_win: "FitWindow",
+) -> Tuple[Tuple[float, float], int]:
+    """A created or widened window's ``(min_mhz, max_mhz)`` extent and its
+    grid-point count, read off the window itself.
 
-    ``mode="created"`` mints a leaf window with no outbound dependency edge, so
-    it is added to ``mutated_wids`` but never ``dirty_wids`` -- no cascade.
-    ``mode="widened"`` instead grows an existing window and refits its
-    existing peak set on the wider grid, so it is added to *both*: its
-    dependents may have frozen on a leakage skirt that widening just removed,
-    and the cascade must reach them.
-
-    ``record_decision=False`` (W3) suppresses this create's own
-    ``"create_window"`` decision entry -- for an IMPLIED create, whose caller
-    (:func:`_finish_implied_create_edit`) records ONE ``"add"`` entry for the
-    whole create+edit pair instead, carrying the structural consequence on
-    its own evidence rather than a separate entry. ``True`` (the default) is
-    every other caller, unaffected.
+    One reader for both, so the number a dry run predicts and the number an
+    apply records cannot drift apart. The span is read from the window's own
+    ``diagnostics`` rather than recounted against the grid -- that is where
+    the planner put it.
     """
-    from ..fitting.result_conversion import sort_fitting_result_by_frequency
-    from .active_ft_support import default_tau0_us
+    lo, hi = fit_win.freq_range
+    grid_span = fit_win.diagnostics.get("grid_span", [0, -1])
+    n_points = int(grid_span[1]) - int(grid_span[0]) + 1
+    return (min(lo, hi), max(lo, hi)), n_points
 
-    anchor = float(anchor_mhz)
-    plan = _batch_effective_plan(ctx)
-    fit_map: Dict[int, FittingResult] = {
+
+def _batch_live_fit_map(ctx: _BatchCtx) -> Dict[int, FittingResult]:
+    """This batch's live windows -- the ones carrying a Stage 5 fit *right
+    now*, including any window the batch itself has already created.
+
+    Both halves of a create read it: the planner is told which ranges are
+    genuinely occupied (Stage 5 drops a window whose peaks all fail their
+    gates, and a dropped window is neither a widening target nor an obstacle
+    -- see ``plan_stage6_window``'s ``live_window_ids``), and the fitting
+    half reads the frozen contributors' own fits out of it.
+    """
+    return {
         int(wf.window_id): wf
         for wf in ctx.changeset.spectrum_fit.window_fits
         if wf.window_id is not None
     }
+
+
+def _plan_batch_create(
+    ctx: _BatchCtx,
+    anchor_mhz: float,
+    *,
+    replay_window_id: Optional[int],
+) -> "Stage6WindowProposal":
+    """Decide WHICH window an anchor gets, without fitting it.
+
+    The planning half of :func:`_batch_apply_create`: the analysis-band
+    refusal, the
+    :func:`~ftmwpipeline.preprocessing.window_planning.plan_stage6_window`
+    proposal against the batch's effective plan (base + this batch's own
+    creates so far) and its live windows, and the replay-id resolution.
+    Everything :func:`_batch_apply_create` does after this is the *fit* of the
+    window returned here.
+
+    Split out for ``review apply --dry-run``
+    (:func:`_resolve_created_window_structure`), which has to report the
+    structure a plan would install and nothing else: the extent comes from the
+    planner rather than from plan resolution, so before this split the only way
+    to learn it was to run the whole in-memory preview a second time -- the
+    follow-up ``scratch/intent-driven-windowing-plan.md`` left open after W4.
+
+    Mutates nothing on *ctx*, so a caller that wants only the geometry leaves
+    no state to unwind. Every refusal here is one the apply itself would
+    raise, which is what lets the dry run raise them as its own.
+    """
+    from ..preprocessing.window_planning import plan_stage6_window
+
+    anchor = float(anchor_mhz)
+    plan = _batch_effective_plan(ctx)
+    fit_map = _batch_live_fit_map(ctx)
 
     if ctx.shared.fit_ctx.trim_range is not None:
         t_lo, t_hi = (
@@ -5890,8 +5980,6 @@ def _batch_apply_create(
                 f"[{t_lo:.4f}, {t_hi:.4f}] MHz. Re-run 'ft run' with a trim "
                 f"that covers it (which rebuilds the fit) if the line is real."
             )
-
-    from ..preprocessing.window_planning import plan_stage6_window
 
     params = plan.parameters
     proposal = plan_stage6_window(
@@ -5913,8 +6001,7 @@ def _batch_apply_create(
         ),
         live_window_ids=sorted(fit_map),
     )
-    fit_win = proposal.window
-    new_wid = int(fit_win.window_id)
+    new_wid = int(proposal.window.window_id)
 
     if replay_window_id is not None and int(replay_window_id) != new_wid:
         want = int(replay_window_id)
@@ -5931,8 +6018,46 @@ def _batch_apply_create(
                 f"{want}, which is already in use; the base plan or the "
                 f"surviving edit set has changed"
             )
-        fit_win.window_id = want
-        new_wid = want
+        proposal.window.window_id = want
+
+    return proposal
+
+
+def _batch_apply_create(
+    ctx: _BatchCtx,
+    anchor_mhz: float,
+    *,
+    replay_window_id: Optional[int],
+    snap_tol_mhz: float,
+    record_decision: bool = True,
+) -> CreateWindowResult:
+    """Batch equivalent of :func:`create_window_impl`. Plans the window with
+    :func:`_plan_batch_create` -- which recomputes the effective plan, so a
+    second create in the same batch sees the first one -- then fits it,
+    without ever rebuilding ``fit_ctx``.
+
+    ``mode="created"`` mints a leaf window with no outbound dependency edge, so
+    it is added to ``mutated_wids`` but never ``dirty_wids`` -- no cascade.
+    ``mode="widened"`` instead grows an existing window and refits its
+    existing peak set on the wider grid, so it is added to *both*: its
+    dependents may have frozen on a leakage skirt that widening just removed,
+    and the cascade must reach them.
+
+    ``record_decision=False`` (W3) suppresses this create's own
+    ``"create_window"`` decision entry -- for an IMPLIED create, whose caller
+    (:func:`_finish_implied_create_edit`) records ONE ``"add"`` entry for the
+    whole create+edit pair instead, carrying the structural consequence on
+    its own evidence rather than a separate entry. ``True`` (the default) is
+    every other caller, unaffected.
+    """
+    from ..fitting.result_conversion import sort_fitting_result_by_frequency
+    from .active_ft_support import default_tau0_us
+
+    anchor = float(anchor_mhz)
+    fit_map = _batch_live_fit_map(ctx)
+    proposal = _plan_batch_create(ctx, anchor, replay_window_id=replay_window_id)
+    fit_win = proposal.window
+    new_wid = int(fit_win.window_id)
 
     if proposal.mode == "created":
         tau_maj_us, sigma_tau_us = _resolve_refit_window_tau(
@@ -6000,10 +6125,7 @@ def _batch_apply_create(
         # blanket ``dirty_wids.add(new_wid)`` for both modes.
         ctx.changeset.dirty_wids.add(new_wid)
 
-    lo, hi = fit_win.freq_range
-    lo, hi = min(lo, hi), max(lo, hi)
-    grid_span = fit_win.diagnostics.get("grid_span", [0, -1])
-    n_points = int(grid_span[1]) - int(grid_span[0]) + 1
+    (lo, hi), n_points = _created_window_extent(fit_win)
 
     if record_decision:
         ctx.changeset.decisions.append(
@@ -6394,10 +6516,12 @@ def _open_batch(
     -- opens its work here, so the epoch gate and the undo baseline are enforced
     structurally rather than remembered at each call site.
 
-    ``snapshot=False`` is for :func:`review_preview_impl` alone: a preview
-    must be epoch-gated exactly like a real batch, but it may never take the
-    undo baseline, because that is a write and a preview writes nothing. The
-    call stays textually inside this function either way, so
+    ``snapshot=False`` is for the two read-only openers --
+    :func:`review_preview_impl` and :func:`_resolve_created_window_structure`
+    (``apply --dry-run``'s structural report): both must be epoch-gated
+    exactly like a real batch, but neither may take the undo baseline,
+    because that is a write and neither writes anything. The call stays
+    textually inside this function either way, so
     ``test_only_open_batch_takes_the_undo_baseline`` still holds: the
     baseline is taken in exactly one place, just not on every call.
 
@@ -6537,13 +6661,29 @@ def _run_single_action(
     return result
 
 
+@dataclass
+class _BatchOutcome:
+    """What one executed curation batch reports back to its caller.
+
+    ``applied`` is the action count; ``created_windows`` is the structure any
+    ``create`` in the batch installed, narrowed to the facts
+    :class:`CurationApplyResult` publishes. The second field is why this is a
+    dataclass rather than the bare ``int`` it used to be: a live apply reports
+    the window it built in the same shape a dry run predicts it, so a caller
+    reads one field either way.
+    """
+
+    applied: int
+    created_windows: List[PlannedWindowResult] = field(default_factory=list)
+
+
 def _execute_curation_batch(
     path: str,
     plan: List[PlannedAction],
     *,
     snap_tol_mhz: float,
     shared: Optional[_SharedFitCtx] = None,
-) -> int:
+) -> _BatchOutcome:
     """Execute a resolved curation plan as one batch: shared context, one
     combined cascade, one persist of ``/stage5_fitting`` and one of
     ``/stage6_review``. Falls back to the cheap per-action path
@@ -6559,10 +6699,12 @@ def _execute_curation_batch(
 
     Returns the number of actions applied (``len(plan)`` on success; a failure
     raises before this returns and leaves the file untouched, since nothing is
-    persisted until every action in the batch has succeeded).
+    persisted until every action in the batch has succeeded) together with the
+    structure every ``create`` among them installed -- see
+    :class:`_BatchOutcome`.
     """
     if not plan:
-        return 0
+        return _BatchOutcome(applied=0)
 
     needs_fit = any(a.kind != "accept" or a.candidate is not None for a in plan)
     if not needs_fit:
@@ -6576,7 +6718,8 @@ def _execute_curation_batch(
                     f"failed: {exc}"
                 ) from exc
             applied += 1
-        return applied
+        # A bare-accept plan carries no create by construction.
+        return _BatchOutcome(applied=applied)
 
     # Gate + snapshot + context, exactly as a single-window verb does: the
     # engine enforces them itself rather than trusting its callers. An
@@ -6595,6 +6738,11 @@ def _execute_curation_batch(
     # implied-create's real window id (e.g. a plain edit on the same window
     # from a different decision) falls through to the ordinary path.
     implied_creates: Dict[int, CreateWindowResult] = {}
+    # Every create this batch runs -- implied or explicit -- keyed by the REAL
+    # (minted or widened) window id, for the caller's report. Keyed rather than
+    # appended so a widening named twice in one batch reports once, with the
+    # extent it ended up at.
+    created_facts: Dict[int, CreateWindowResult] = {}
     for original_index, action in _canonicalize_batch_plan(plan):
         try:
             if action.kind == "create":
@@ -6612,6 +6760,7 @@ def _execute_curation_batch(
                     snap_tol_mhz=snap_tol_mhz,
                     record_decision=not action.implied_create,
                 )
+                created_facts[created.window_id] = created
                 if action.implied_create:
                     implied_creates[action.window_id] = created
             elif action.kind == "edit":
@@ -6668,7 +6817,13 @@ def _execute_curation_batch(
 
     _finish_batch(ctx, path, snap_tol_mhz=snap_tol_mhz)
 
-    return applied
+    return _BatchOutcome(
+        applied=applied,
+        created_windows=[
+            _window_structure_from_create(created)
+            for _, created in sorted(created_facts.items())
+        ],
+    )
 
 
 def _planned_action_has_freq(action: PlannedAction) -> bool:
@@ -6710,6 +6865,115 @@ def _planned_action_to_raw(
     )
 
 
+def _window_structure_from_create(created: CreateWindowResult) -> PlannedWindowResult:
+    """Narrow an executed create's result to the structural facts
+    :class:`CurationApplyResult` reports (:class:`PlannedWindowResult`) --
+    dropping what only a fit can know (``n_peaks``) and the calibrated
+    restatements, which belong to the create verb's own result.
+    """
+    return PlannedWindowResult(
+        window_id=created.window_id,
+        anchor_mhz=created.anchor_mhz,
+        mode=created.mode,
+        freq_range=created.freq_range,
+        n_points=created.n_points,
+        n_contributors=created.n_contributors,
+        depends_on=list(created.depends_on),
+    )
+
+
+def _resolve_created_window_structure(
+    path: str,
+    plan: Sequence[PlannedAction],
+    *,
+    snap_tol_mhz: float,
+    shared: Optional[_SharedFitCtx] = None,
+) -> List[PlannedWindowResult]:
+    """Resolve every window a plan would install or grow -- WITHOUT fitting
+    any of them. ``review apply --dry-run``'s structural report.
+
+    A window's extent comes from the planner, not from plan resolution, so a
+    dry run cannot read it off the resolved plan: it only knows a create is
+    implied, not where it lands. Before this, the CLI answered that by running
+    the whole in-memory preview a second time, which made a dry run *with* a
+    create cost what a preview costs and blurred the cheap first rung of the
+    dry-run -> preview -> apply ladder. This pays for the proposal alone:
+    :func:`_plan_batch_create` per create, and no ``refit_window_core`` call
+    at all.
+
+    Returns ascending by window id, and ``[]`` for a plan with no create at
+    all -- the common case, which never opens the engine and so pays nothing.
+
+    Creates are walked in :func:`_canonicalize_batch_plan`'s order (creates
+    first, in plan order), and each proposal is folded into the batch state
+    the next one plans against, exactly as :func:`_batch_apply_create` folds
+    its own: a second create in the same gap must see the first. A created
+    window is spliced in carrying an EMPTY ``FittingResult`` -- the minimum
+    that makes it live (:func:`_batch_live_fit_map`) for the next proposal,
+    since nothing here fits it. That state is local to this call and is
+    discarded on return; no file is touched.
+
+    Refusals are the apply's own, raised here with the apply's own per-action
+    attribution: if this returns, every create in the plan resolves. Opened
+    through :func:`_open_batch` with ``snapshot=False``, so an epoch-mismatched
+    file refuses here exactly as it does for the preview this replaces, and
+    the undo baseline is not taken.
+    """
+    creates = [(i, a) for i, a in _canonicalize_batch_plan(plan) if a.kind == "create"]
+    if not creates:
+        return []
+
+    ctx = _open_batch(path, snap_tol_mhz=snap_tol_mhz, snapshot=False, shared=shared)
+    structures: List[PlannedWindowResult] = []
+    for original_index, action in creates:
+        try:
+            if action.anchor is None:
+                raise ValueError("create action requires an anchor frequency")
+            proposal = _plan_batch_create(
+                ctx,
+                action.anchor,
+                replay_window_id=(
+                    None
+                    if action.window_id == _NEW_WINDOW_SENTINEL
+                    or _is_implied_window_id(action.window_id)
+                    else action.window_id
+                ),
+            )
+        except (ValueError, KeyError) as exc:
+            raise ValueError(
+                f"curation action {original_index + 1} "
+                f"({describe_planned_action(action)}) failed: {exc}"
+            ) from exc
+
+        fit_win = proposal.window
+        new_wid = int(fit_win.window_id)
+        (lo, hi), n_points = _created_window_extent(fit_win)
+        structures.append(
+            PlannedWindowResult(
+                window_id=new_wid,
+                anchor_mhz=float(action.anchor),
+                mode=proposal.mode,
+                freq_range=(lo, hi),
+                n_points=n_points,
+                n_contributors=len(fit_win.fixed_contributors),
+                depends_on=[int(d) for d in proposal.depends_on],
+            )
+        )
+
+        ctx.changeset.created_windows = [
+            w for w in ctx.changeset.created_windows if int(w.window_id) != new_wid
+        ] + [fit_win]
+        if proposal.mode == "created":
+            _splice_new_window_fit(
+                ctx.changeset.spectrum_fit,
+                new_wid,
+                FittingResult(window_id=new_wid, shape=ctx.shared.shape_enum.value),
+            )
+
+    structures.sort(key=lambda pw: pw.window_id)
+    return structures
+
+
 def apply_curation_impl(
     file_path: Union[Path, str],
     curation_path: Union[Path, str],
@@ -6735,7 +6999,15 @@ def apply_curation_impl(
     once. This is an equivalence of *outcome*, not of per-row execution -- see
     :func:`_execute_curation_batch` for the exact ordering contract.
     ``dry_run`` returns the resolved (raw-converted) plan and
-    frequency-resolution warnings without mutating the file.
+    frequency-resolution warnings without mutating the file. It also resolves
+    the structure the plan would install -- see
+    :func:`_resolve_created_window_structure`, which costs the window
+    proposal alone rather than a full in-memory preview, and which refuses
+    what the apply would refuse of a CREATE (an anchor outside the analysis
+    band, a window that cannot be placed): if a dry run returns, every create
+    in the plan resolves. It still does not run the edits, so an edit-side
+    failure is a warning at most here and an error at apply --
+    :func:`review_preview_impl` is the rung that runs them.
 
     ``frame`` applies uniformly to every frequency the curation file carries
     -- there is no per-row frame column. The file's own optional header (A3,
@@ -6750,10 +7022,12 @@ def apply_curation_impl(
     Raises ``ValueError`` on a malformed curation file, an omitted-window
     add/remove target no live window covers or whose ``"uid:N"`` matches no
     fitted peak (raised unconditionally -- including on ``dry_run``, since
-    there is no window id to put in the plan at all), or when an action fails
-    to resolve (e.g. a ``remove`` frequency matches no fitted peak), tagged
-    with the offending action; a failure leaves the file untouched (nothing
-    is persisted until every action in the plan has succeeded).
+    there is no window id to put in the plan at all), a ``create`` whose
+    window cannot be placed (likewise raised on ``dry_run``), or when an
+    action fails to resolve (e.g. a ``remove`` frequency matches no fitted
+    peak), tagged with the offending action; a failure leaves the file
+    untouched (nothing is persisted until every action in the plan has
+    succeeded).
 
     ``_shared`` is internal -- see :func:`refit_window_impl`.
     """
@@ -6772,13 +7046,23 @@ def apply_curation_impl(
     # would have to duplicate to get right.
     if dry_run:
         return CurationApplyResult(
-            plan=plan, warnings=warnings, applied=0, dry_run=True
+            plan=plan,
+            warnings=warnings,
+            applied=0,
+            dry_run=True,
+            created_windows=_resolve_created_window_structure(
+                path, plan, snap_tol_mhz=snap_tol, shared=_shared
+            ),
         )
 
-    applied = _execute_curation_batch(path, plan, snap_tol_mhz=snap_tol, shared=_shared)
+    outcome = _execute_curation_batch(path, plan, snap_tol_mhz=snap_tol, shared=_shared)
 
     return CurationApplyResult(
-        plan=plan, warnings=warnings, applied=applied, dry_run=False
+        plan=plan,
+        warnings=warnings,
+        applied=outcome.applied,
+        dry_run=False,
+        created_windows=outcome.created_windows,
     )
 
 
@@ -6932,6 +7216,12 @@ class _PreviewRun:
     ctx: Optional[_BatchCtx] = None
     cascaded_wids: List[int] = field(default_factory=list)
     review: Optional[Stage6Review] = None
+    created_windows: List[PlannedWindowResult] = field(default_factory=list)
+    """Every window this preview's batch installed or grew, in the shape
+    :class:`CurationApplyResult` publishes -- so a session persisting this
+    staged preview as an apply reports the same structure a sessionless apply
+    would, without re-deriving it from the per-window results (which carry the
+    extent but not the anchor it was resolved for)."""
 
 
 def _run_review_preview(
@@ -7162,7 +7452,14 @@ def _run_review_preview(
 
     result = ReviewPreviewResult(windows=windows, plan=plan, warnings=warnings)
     return _PreviewRun(
-        result=result, ctx=ctx, cascaded_wids=sorted(cascaded_wids), review=review
+        result=result,
+        ctx=ctx,
+        cascaded_wids=sorted(cascaded_wids),
+        review=review,
+        created_windows=[
+            _window_structure_from_create(created)
+            for _, created in sorted(created_facts.items())
+        ],
     )
 
 
@@ -7462,7 +7759,7 @@ def review_undo_impl(
         if "stage6_review" in h5f:
             del h5f["stage6_review"]
     review_run_impl(path)
-    applied = _execute_curation_batch(
+    outcome = _execute_curation_batch(
         path, plan, snap_tol_mhz=resolve_snap_tol_mhz(path, None), shared=_shared
     )
 
@@ -7470,7 +7767,7 @@ def review_undo_impl(
         removed=removed,
         surviving=surviving,
         plan=plan,
-        applied=applied,
+        applied=outcome.applied,
         dry_run=False,
     )
 
@@ -8403,6 +8700,9 @@ class _StagedPreview:
     ctx: _BatchCtx
     cascaded_wids: List[int]
     review: Stage6Review
+    created_windows: List[PlannedWindowResult] = field(default_factory=list)
+    """The structure this preview's batch installed, carried so that
+    persisting it as an apply reports exactly what the preview reported."""
 
 
 class ReviewSession:
@@ -8676,6 +8976,7 @@ class ReviewSession:
                 ctx=run.ctx,
                 cascaded_wids=list(run.cascaded_wids),
                 review=run.review,
+                created_windows=list(run.created_windows),
             )
         else:
             self._staged = None
@@ -8749,6 +9050,7 @@ class ReviewSession:
                         warnings=staged.warnings,
                         applied=len(plan),
                         dry_run=False,
+                        created_windows=list(staged.created_windows),
                         base_changed=base_changed,
                     )
             # Staged, but it does not match this call -- irrelevant now.

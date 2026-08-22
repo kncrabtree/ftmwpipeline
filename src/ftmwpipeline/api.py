@@ -1811,6 +1811,14 @@ def review_apply(
     resolved plan and frequency-resolution warnings are returned without
     modifying the file.
 
+    Either way the result's ``created_windows`` reports every window the plan
+    installs or grows -- an explicit ``create`` row, or the window an
+    uncovered ``add`` implies -- with its mode, extent, grid points, frozen
+    contributors and dependencies.  A dry run resolves that from the window
+    planner alone (no fitting), so it refuses exactly what the apply would
+    refuse: an anchor outside the analysis band, or a create whose window
+    cannot be placed.
+
     Parameters
     ----------
     file_path :
@@ -1830,6 +1838,8 @@ def review_apply(
     Returns
     -------
     CurationApplyResult
+        The resolved plan, warnings, the number applied, and the windows the
+        plan installs or grows.
 
     Requires Stage 5 completed.
     """

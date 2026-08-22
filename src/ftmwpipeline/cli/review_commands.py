@@ -772,38 +772,22 @@ def cmd_review_apply(args: argparse.Namespace) -> int:
         print("warnings:")
         for w in result.warnings:
             print(f"  - {w}")
-    if dry_run and any(action.kind == "create" for action in result.plan):
-        # W4: apply_curation_impl's own dry run resolves the plan without
-        # running it, so it cannot know a create's actual extent (that needs
-        # the fit engine, per plan_stage6_window) -- only whether one is
-        # implied. Run the (side-effect-free) in-memory preview once more,
-        # purely to report it, exactly as review_preview would show it; the
-        # plan echo above is unaffected. Gated on an actual create in the
-        # plan so an ordinary dry run (the common case) pays nothing extra.
-        try:
-            preview = review_preview_impl(file_path, args.curation_file, frame=frame)
-        except (ValueError, KeyError, OSError) as exc:
-            print(f"  (could not preview the implied window structure: {exc})")
-        else:
-            created_windows = sorted(
-                (
-                    pw
-                    for pw in preview.windows.values()
-                    if pw.created_window_mode is not None
-                ),
-                key=lambda pw: pw.window_id,
+    if result.created_windows:
+        # W4's typo guard: the structure this plan installs (or grows), read
+        # straight off the result. On a dry run these come from the window
+        # planner alone -- no fit, and no second in-memory preview, which is
+        # what the earlier rendering here cost; on a live apply they are the
+        # creates that just ran, reported in the same shape.
+        print("this would install:" if dry_run else "installed:")
+        for pw in result.created_windows:
+            _print_created_window(
+                pw.window_id,
+                pw.mode,
+                pw.freq_range,
+                pw.n_points,
+                pw.n_contributors,
+                pw.depends_on,
             )
-            if created_windows:
-                print("this would install:")
-                for pw in created_windows:
-                    _print_created_window(
-                        pw.window_id,
-                        pw.created_window_mode,
-                        pw.created_window_freq_range,
-                        pw.created_window_n_points,
-                        pw.created_window_n_contributors,
-                        pw.created_window_depends_on,
-                    )
     if dry_run:
         print(f"{len(result.plan)} action(s) would be applied (nothing written).")
     else:

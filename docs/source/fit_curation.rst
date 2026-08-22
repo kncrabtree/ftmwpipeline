@@ -582,8 +582,9 @@ Previewing the fitted outcome
 -----------------------------
 
 ``--dry-run`` answers "does this plan resolve against the file?" — it prints the
-coalesced actions and any resolution warnings, and stops there. It never fits
-anything, so it cannot tell you whether the edits *improve* the fit.
+coalesced actions, any resolution warnings, and the structure any ``create``
+in the plan would install, and stops there. It never fits anything, so it
+cannot tell you whether the edits *improve* the fit.
 
 ``review preview`` answers that second question. It runs the resolved plan to
 completion in memory — every applier, the one combined cascade, and the same
@@ -630,8 +631,16 @@ split, accepted, or cascaded into. When present, ``created_window_freq_range``
 off the create that ran in memory — a UI can render "this add creates a
 window at A–B MHz" from these fields alone, without re-deriving anything.
 ``review apply --dry-run`` reports the same facts for a plan that implies (or
-explicitly names) a create, since its own resolved-plan echo cannot know a
-create's extent without running it.
+explicitly names) a create, and so does a live ``review apply`` for the window
+it just installed — both on ``CurationApplyResult.created_windows``, one entry
+per window the plan installs or grows, carrying that same mode, extent, grid
+point count, contributor count and dependency list, plus the anchor it was
+resolved for. The dry run gets them from the window planner directly rather
+than by fitting, so it pays for the proposal and not for a preview; the live
+apply reads them off the create that actually ran. Because the proposal is the
+apply's own, a dry run also refuses what the apply would refuse — an anchor
+outside the analysis band, or a create whose window cannot be placed — so a
+dry run that returns is a pre-flight rather than a plan echo.
 
 A preview is not a weaker apply. It shares the appliers, so it raises the same
 per-action error on the same failures, and it is epoch-gated by the same check,

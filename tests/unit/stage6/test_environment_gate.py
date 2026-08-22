@@ -235,8 +235,30 @@ class TestSpliceGate:
         assert "fit run" in msg
         assert "acknowledge-environment" in msg
 
+    @staticmethod
+    def _just_past_a_live_window(path: Path) -> float:
+        """A frequency two active-FT bins above the highest live window's upper
+        edge -- inside the analysis band, covered by no live window."""
+        from ftmwpipeline._internal.stage4_impl import load_windows_impl
+        from ftmwpipeline.io.fitting_serialization import load_spectrum_fit_from_hdf5
+
+        with h5py.File(path, "r") as f:
+            sf = load_spectrum_fit_from_hdf5(f["stage5_fitting"])
+        live = {int(w.window_id) for w in sf.window_fits if w.window_id is not None}
+        plan = load_windows_impl(str(path))["plan"]
+        windows = [w for w in plan.windows if int(w.window_id) in live]
+        top = max(windows, key=lambda w: max(w.freq_range))
+        lo, hi = min(top.freq_range), max(top.freq_range)
+        span = top.diagnostics["grid_span"]
+        bin_mhz = (hi - lo) / (int(span[1]) - int(span[0]))
+        return hi + 2 * bin_mhz
+
     def test_dry_run_apply_is_not_gated(self, fitted, tmp_path):
-        """A preview writes nothing, so it is a read and must never be gated."""
+        """A dry run of a plan that resolves without touching the engine is a
+        pure read -- it never opens a batch, so it is never gated. (A plan
+        containing a create is the one exception, below: resolving a create's
+        extent needs the engine, and that is gated like every other opener.)
+        """
         wid, freq = self._a_fitted_peak(fitted)
         cf = tmp_path / "cur.csv"
         cf.write_text(f"remove,{wid},{freq:.6f},\n")
@@ -245,6 +267,32 @@ class TestSpliceGate:
         result = ftmw.review_apply(str(fitted), cf, dry_run=True)
         assert result.applied == 0
         assert result.plan
+        assert result.created_windows == []
+
+    def test_dry_run_apply_with_a_create_is_gated(self, fitted, tmp_path):
+        """The exception, pinned as a decision rather than left an accident.
+
+        Reporting the structure a create would install means resolving it
+        through the apply's own planner, which opens the engine -- so it
+        refuses across an epoch change exactly as ``review preview`` does,
+        for the same reason: it must not show structure whose apply is
+        guaranteed to refuse. It still writes nothing, baseline included.
+        """
+        cf = tmp_path / "cur.csv"
+        # An anchor just past the last live window's upper edge: covered by no
+        # live window, so it implies a create (W3) -- which is what pulls the
+        # engine in. Derived from the file rather than offset from a peak,
+        # since a peak's own window is wide enough to swallow any fixed
+        # offset small enough to stay in band.
+        cf.write_text(f"add,,{self._just_past_a_live_window(fitted):.6f},\n")
+        _force_fit_epoch(fitted, ANALYSIS_EPOCH + 1)
+
+        with pytest.raises(ValueError, match="analysis epoch"):
+            ftmw.review_apply(str(fitted), cf, dry_run=True)
+
+        with h5py.File(fitted, "r") as f:
+            assert "stage5_fitting_baseline" not in f
+        assert ftmw.review_log(str(fitted)) == []
 
     def test_acknowledgement_is_surfaced_in_info_and_the_table(self, fitted, tmp_path):
         _force_fit_epoch(fitted, ANALYSIS_EPOCH + 1)

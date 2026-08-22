@@ -37,6 +37,7 @@ import h5py
 import pytest
 
 from ftmwpipeline._internal.stage4_impl import load_windows_impl
+from ftmwpipeline._internal import stage6_impl as s6
 from ftmwpipeline._internal.stage6_impl import (
     apply_curation_impl,
     refit_window_impl,
@@ -371,3 +372,238 @@ def test_cli_review_apply_dry_run_without_a_create_prints_nothing_extra(
     out = capsys.readouterr().out
     assert "created" not in out
     assert "widened" not in out
+
+
+# ---------------------------------------------------------------------------
+# The dry run resolves the structure itself -- W4's follow-up
+# (scratch/intent-driven-windowing-plan.md): the extent comes from the window
+# planner, not from plan resolution, so reporting it used to cost a second
+# full in-memory preview. It now costs the proposal alone, and rides on
+# CurationApplyResult so all three interfaces carry it rather than only the
+# CLI's own rendering.
+# ---------------------------------------------------------------------------
+
+
+def _structure_of(pw) -> Tuple:
+    """A PlannedWindowResult reduced to the five facts every other surface
+    reports, for comparison against a preview / a decision-log entry."""
+    return (
+        pw.window_id,
+        pw.mode,
+        pw.freq_range,
+        pw.n_points,
+        pw.n_contributors,
+        pw.depends_on,
+    )
+
+
+def test_dry_run_reports_what_the_preview_reports(stage5_multi_file, tmp_path):
+    """The typo guard is the same guard on both rungs of the ladder."""
+    path = stage5_multi_file
+    freq = _gap_anchor(path)
+    cur = _write_curation(tmp_path, "implied.csv", f"add,,{freq},\n")
+
+    dry = apply_curation_impl(path, cur, dry_run=True)
+    preview = review_preview_impl(path, cur)
+
+    assert len(dry.created_windows) == 1
+    pw = dry.created_windows[0]
+    w = preview.windows[pw.window_id]
+    assert _structure_of(pw) == (
+        pw.window_id,
+        w.created_window_mode,
+        w.created_window_freq_range,
+        w.created_window_n_points,
+        w.created_window_n_contributors,
+        w.created_window_depends_on,
+    )
+    assert pw.anchor_mhz == pytest.approx(freq)
+    # Neither wrote anything.
+    assert review_log_impl(path) == []
+
+
+def test_dry_run_reports_what_the_apply_installs(stage5_multi_file, tmp_path):
+    """The prediction is checked against what actually lands, on an
+    independent copy of the same base -- never against a hard-coded extent."""
+    base = stage5_multi_file
+    freq = _gap_anchor(base)
+    cur = _write_curation(tmp_path, "implied.csv", f"add,,{freq},\n")
+
+    dry = apply_curation_impl(base, cur, dry_run=True)
+    assert len(dry.created_windows) == 1
+    pw = dry.created_windows[0]
+
+    applied_path = tmp_path / "applied.ftmw"
+    shutil.copy(base, applied_path)
+    live = apply_curation_impl(applied_path, cur)
+
+    # The live apply reports the same shape (question 2 of this work item):
+    # created_windows means the same thing in both modes.
+    assert [_structure_of(x) for x in live.created_windows] == [_structure_of(pw)]
+
+    log = review_log_impl(applied_path)
+    assert len(log) == 1
+    created = log[0].evidence["created_window"]
+    assert log[0].window_id == pw.window_id
+    assert created["mode"] == pw.mode
+    assert (created["freq_min_mhz"], created["freq_max_mhz"]) == pw.freq_range
+    assert created["n_points"] == pw.n_points
+    assert created["n_contributors"] == pw.n_contributors
+    assert created["depends_on"] == pw.depends_on
+
+
+def test_dry_run_predicts_a_widening_too(stage5_multi_file, tmp_path):
+    """``mode="widened"`` is the other half of the prediction: a gap too
+    narrow to hold a window grows a neighbor instead, and the dry run has to
+    say which neighbor and how far."""
+    base = stage5_multi_file
+    step = _bin_width_mhz(base)
+    wid, _lo, hi = _live_ranges(base)[-1]
+    anchor = hi + 2 * step
+    cur = _write_curation(tmp_path, "widen.csv", f"add,,{anchor},\n")
+
+    dry = apply_curation_impl(base, cur, dry_run=True)
+    assert len(dry.created_windows) == 1
+    pw = dry.created_windows[0]
+    assert pw.mode == "widened"
+    assert pw.window_id == wid
+
+    applied_path = tmp_path / "applied.ftmw"
+    shutil.copy(base, applied_path)
+    live = apply_curation_impl(applied_path, cur)
+    assert [_structure_of(x) for x in live.created_windows] == [_structure_of(pw)]
+
+
+def test_dry_run_does_not_fit_anything(stage5_multi_file, tmp_path, monkeypatch):
+    """The point of the change: the structural report costs the window
+    proposal, not a fit. ``refit_window_core`` is the engine's only fitter --
+    a dry run that reaches it has paid what a preview pays."""
+    path = stage5_multi_file
+    freq = _gap_anchor(path)
+    cur = _write_curation(tmp_path, "implied.csv", f"add,,{freq},\n")
+
+    def no_fitting(*args, **kwargs):
+        raise AssertionError("a dry run must not fit")
+
+    monkeypatch.setattr(s6, "refit_window_core", no_fitting)
+
+    result = apply_curation_impl(path, cur, dry_run=True)
+    assert len(result.created_windows) == 1
+    assert result.created_windows[0].mode == "created"
+
+
+def test_dry_run_without_a_create_opens_no_engine(
+    stage5_multi_file, tmp_path, monkeypatch
+):
+    """And a plan with no create pays nothing at all -- not even the
+    active-FT rebuild, which is the expensive half of opening the engine."""
+    path = stage5_multi_file
+    wid, uid = _first_peak(path)
+    cur = _write_curation(tmp_path, "ordinary.csv", f"remove,{wid},uid:{uid},\n")
+
+    def no_engine(*args, **kwargs):
+        raise AssertionError("an ordinary dry run must not open the engine")
+
+    monkeypatch.setattr(s6, "_build_shared_fit_ctx", no_engine)
+
+    result = apply_curation_impl(path, cur, dry_run=True)
+    assert result.created_windows == []
+    assert len(result.plan) == 1
+
+
+def test_dry_run_refuses_a_create_the_apply_would_refuse(stage5_multi_file, tmp_path):
+    """A dry run that returns is a pre-flight, not a plan echo: an anchor
+    outside the analysis band is the apply's refusal, raised by the dry run
+    with the same per-action attribution -- and still writing nothing."""
+    path = stage5_multi_file
+    cur = _write_curation(tmp_path, "offband.csv", "add,,1000.0,\n")
+
+    with pytest.raises(ValueError, match="outside the analysis band"):
+        apply_curation_impl(path, cur, dry_run=True)
+    with pytest.raises(ValueError, match="outside the analysis band"):
+        apply_curation_impl(path, cur)
+
+    assert review_log_impl(path) == []
+
+
+def test_dry_run_chains_two_creates_in_one_plan(stage5_multi_file, tmp_path):
+    """Each proposal is folded into the state the next one plans against,
+    exactly as the apply folds its own. Without that, both creates mint the
+    same id (one past the base plan's highest) and the dry run predicts a
+    collision that never happens."""
+    base = stage5_multi_file
+    plan = load_windows_impl(str(base))["plan"]
+    spans = sorted((min(w.freq_range), max(w.freq_range)) for w in plan.windows)
+    gap = None
+    for (_lo1, hi1), (lo2, _hi2) in zip(spans, spans[1:]):
+        if lo2 - hi1 > 8.0:
+            gap = (hi1, lo2)
+            break
+    if gap is None:
+        pytest.skip("no gap wide enough to create into twice")
+    lo, hi = gap
+    a1, a2 = lo + 0.25 * (hi - lo), lo + 0.75 * (hi - lo)
+    cur = _write_curation(tmp_path, "two.csv", f"add,,{a1},\nadd,,{a2},\n")
+
+    dry = apply_curation_impl(base, cur, dry_run=True)
+    assert len(dry.created_windows) == 2
+    first, second = dry.created_windows
+    assert first.window_id != second.window_id
+    assert {first.mode, second.mode} == {"created"}
+    # Disjointness, predicted rather than assumed.
+    assert first.freq_range[1] < second.freq_range[0]
+
+    applied_path = tmp_path / "applied.ftmw"
+    shutil.copy(base, applied_path)
+    live = apply_curation_impl(applied_path, cur)
+    assert [_structure_of(x) for x in live.created_windows] == [
+        _structure_of(first),
+        _structure_of(second),
+    ]
+
+
+def test_session_staged_apply_reports_the_structure_too(stage5_multi_file, tmp_path):
+    """The staged fast path persists a preview instead of running the batch,
+    so it has to carry the structure across rather than re-deriving it."""
+    path = stage5_multi_file
+    freq = _gap_anchor(path)
+    cur = _write_curation(tmp_path, "implied.csv", f"add,,{freq},\n")
+
+    with Pipeline.open(path).review_session() as session:
+        preview = session.review_preview(cur)
+        wid = next(iter(preview.windows))
+        result = session.review_apply(cur)
+
+    assert [_structure_of(x) for x in result.created_windows] == [
+        (
+            wid,
+            preview.windows[wid].created_window_mode,
+            preview.windows[wid].created_window_freq_range,
+            preview.windows[wid].created_window_n_points,
+            preview.windows[wid].created_window_n_contributors,
+            preview.windows[wid].created_window_depends_on,
+        )
+    ]
+    assert result.created_windows[0].anchor_mhz == pytest.approx(freq)
+
+
+def test_cli_live_apply_prints_the_installed_structure(
+    stage5_multi_file, tmp_path, capsys
+):
+    """A live apply used to install a window silently; it now renders the
+    same block the dry run does, in the past tense."""
+    path = stage5_multi_file
+    freq = _gap_anchor(path)
+    cur = _write_curation(tmp_path, "implied.csv", f"add,,{freq},\n")
+
+    rc = cmd_review_apply(
+        argparse.Namespace(file_path=str(path), curation_file=cur, dry_run=False)
+    )
+    assert rc == 0
+
+    out = capsys.readouterr().out
+    assert "installed:" in out
+    assert "created" in out
+    log = review_log_impl(path)
+    created = log[0].evidence["created_window"]
+    assert f"{created['freq_min_mhz']:.4f}" in out

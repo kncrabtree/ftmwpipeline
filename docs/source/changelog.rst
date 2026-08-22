@@ -48,10 +48,21 @@ engine so they cannot answer differently.
   built (or widened), and where, from the result it already holds rather than
   only from the preview. ``review preview`` and ``review apply --dry-run``
   print the extent, grid points, and frozen-contributor count for any window
-  a plan created or widened; ``review apply --dry-run`` runs the in-memory
-  preview once more purely to report this (its own resolved-plan echo cannot
-  know a create's extent without running it), and only when the plan actually
-  contains one, so an ordinary dry run pays nothing extra. ``review edit``
+  a plan created or widened, and so does a live ``review apply`` for the
+  window it just installed -- which was previously silent about it.
+  ``CurationApplyResult`` gains ``created_windows``, one entry per window the
+  plan installs or grows (mode, extent, grid points, contributors,
+  dependencies, and the anchor it was resolved for), filled on a dry run and
+  on a live apply alike, so all three interfaces carry the facts the CLI
+  renders rather than only the CLI. A dry run resolves them from the window
+  planner directly -- the extent comes from the planner rather than from plan
+  resolution, and asking it costs the proposal alone, with no fit and no
+  second in-memory pass -- and only when the plan actually contains a create,
+  so an ordinary dry run never opens the engine at all. Because that proposal
+  is the apply's own, a dry run now *refuses* what the apply would refuse (an
+  anchor outside the analysis band, a create whose window cannot be placed),
+  with the same per-action attribution: a dry run that returns is a pre-flight
+  rather than a plan echo. ``review edit``
   prints the same when the call it services implied a create. The
   preview-then-apply staged-reuse guarantee on a :class:`ReviewSession`
   already covered a plan containing an implied create -- the resolved plan

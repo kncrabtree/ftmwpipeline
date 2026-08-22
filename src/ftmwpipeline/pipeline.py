@@ -2017,6 +2017,14 @@ class Pipeline:
         intermediate refits.  With ``dry_run`` the resolved plan and any
         frequency-resolution warnings are returned without modifying the file.
 
+        Either way the result's ``created_windows`` reports every window the
+        plan installs or grows -- an explicit ``create`` row, or the window an
+        uncovered ``add`` implies -- with its mode, extent, grid points,
+        frozen contributors and dependencies.  A dry run resolves that from
+        the window planner alone (no fitting), so it refuses exactly what the
+        apply would refuse: an anchor outside the analysis band, or a create
+        whose window cannot be placed.
+
         Parameters
         ----------
         curation_path :
@@ -2036,7 +2044,8 @@ class Pipeline:
         -------
         CurationApplyResult
             The resolved action plan, warnings (including a possible
-            frame-mismatch advisory), and the number applied.
+            frame-mismatch advisory), the number applied, and the windows
+            the plan installs or grows.
         """
         return apply_curation_impl(
             self.filepath, curation_path, dry_run=dry_run, frame=frame
