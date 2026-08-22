@@ -6044,6 +6044,48 @@ def _plan_batch_create(
     return proposal
 
 
+def _batch_implied_create_target(ctx: _BatchCtx, anchor_mhz: float) -> Optional[int]:
+    """W3.1: the live window, in this batch's CURRENT state, that already
+    covers *anchor_mhz* -- the coalescing check a FRESH implied create runs
+    before minting a second window into a gap a PRIOR action in the same
+    batch already filled.
+
+    Two omitted-window ``add`` rows in one gap each resolve against live
+    windows only at *parse* time (:func:`_resolve_curation_window_ids`), so
+    both read as uncovered and both mint their own correlation id. By the
+    time the SECOND one's ``create`` action actually runs, the first one's
+    create has already installed a window that may well cover the second's
+    anchor too -- exactly what :func:`_plan_batch_create` /
+    :func:`plan_stage6_window` would otherwise refuse as "anchor already
+    falls inside window N", unfollowable advice from inside a batch since
+    that window does not exist until the first action applies.
+
+    Builds the identical inputs :func:`_plan_batch_create` hands the planner --
+    :func:`_batch_effective_plan` (base plan + this batch's own creates so
+    far) and this batch's live window ids
+    (:func:`_batch_live_fit_map`) -- so the answer this returns is the
+    planner's own answer, asked one step earlier:
+    :func:`~ftmwpipeline.preprocessing.window_planning.live_window_covering_anchor`
+    is the exact predicate :func:`plan_stage6_window` uses for its refusal,
+    extracted so there is exactly one copy of the rule. This is NOT a search:
+    no tolerance, no nearest-peak, no radius -- only "is this anchor, on the
+    planner's own grid, already inside a live window's span."
+
+    Returns ``None`` when nothing covers the anchor yet, in which case the
+    caller mints (or widens) a window for it exactly as before.
+    """
+    from ..preprocessing.window_planning import live_window_covering_anchor
+
+    plan = _batch_effective_plan(ctx)
+    fit_map = _batch_live_fit_map(ctx)
+    return live_window_covering_anchor(
+        plan,
+        ctx.shared.fit_ctx.active_ft.freq_mhz,
+        float(anchor_mhz),
+        live_window_ids=sorted(fit_map),
+    )
+
+
 def _batch_apply_create(
     ctx: _BatchCtx,
     anchor_mhz: float,
@@ -6313,25 +6355,46 @@ def _canonicalize_batch_plan(
     W3, deliberately UNCHANGED: an implied edit's ``window_id`` is either a
     fresh negative correlation id (:data:`_FIRST_IMPLIED_WINDOW_ID`, a fresh
     fit) or a real pinned id (a decision-log replay) -- neither is "not yet
-    known" from this function's point of view, so the existing sort key
-    (``window_id`` itself) still orders it deterministically; it just sorts
-    a correlation id ahead of every real, non-negative window id, clustering
-    same-batch implied edits together ahead of ordinary ones. That is safe
-    because "creates first" (above) already guarantees every ``create`` --
-    implied or not -- has run, and so every correlation id is resolvable to
-    its real window, before ANY ``rest`` action executes; and because windows
-    are independent, so the exact relative order among different-window edits
-    in ``rest`` affects the decision log's presentation order, never a fit's
-    numerical outcome. What genuinely could not be known here is the real
-    window an implied create MINTS -- that late binding is resolved at
-    execution time (:func:`_execute_curation_batch`, :func:`_run_review_preview`),
-    not by this function, which only ever schedules.
+    known" from this function's point of view, so a correlation id still
+    sorts ahead of every real, non-negative window id, clustering same-batch
+    implied edits together ahead of ordinary ones. That is safe because
+    "creates first" (above) already guarantees every ``create`` -- implied or
+    not -- has run, and so every correlation id is resolvable to its real
+    window, before ANY ``rest`` action executes; and because windows are
+    independent, so the exact relative order among DIFFERENT-window edits in
+    ``rest`` affects the decision log's presentation order, never a fit's
+    numerical outcome (:func:`test_apply_row_order_independent` pins exactly
+    this for two ordinary, differently-named windows). What genuinely could
+    not be known here is the real window an implied create MINTS -- that late
+    binding is resolved at execution time (:func:`_execute_curation_batch`,
+    :func:`_run_review_preview`), not by this function, which only ever
+    schedules.
+
+    Within the negative (correlation-id) group specifically, the sort key is
+    ``-window_id`` rather than ``window_id`` itself: correlation ids are
+    minted in a DECREASING sequence (:data:`_FIRST_IMPLIED_WINDOW_ID`, then
+    one lower per further implied create in the same plan), so a plain
+    ascending sort on ``window_id`` would replay them in the REVERSE of the
+    order their rows were written. That reversal is harmless while every
+    implied create mints its own distinct window -- "presentation order only"
+    as above -- but W3.1 coalescing (:func:`_batch_implied_create_target`) can
+    now land two implied edits on the SAME real window within one plan, and
+    at that point relative order stops being cosmetic: it decides which of
+    the two edits the decision log shows first, which must match row order to
+    agree with the identical edits applied sequentially (the first row's
+    implied create is the one that actually minted the window and so is the
+    one that carries ``created_window`` evidence). Real, non-negative window
+    ids are untouched -- their ascending-by-id order is the existing, tested
+    behavior.
     """
+
+    def _rest_key(item: Tuple[int, PlannedAction]) -> Tuple[int, int]:
+        wid = item[1].window_id
+        return (0, -wid) if wid < 0 else (1, wid)
+
     indexed = list(enumerate(plan))
     creates = [t for t in indexed if t[1].kind == "create"]
-    rest = sorted(
-        (t for t in indexed if t[1].kind != "create"), key=lambda t: t[1].window_id
-    )
+    rest = sorted((t for t in indexed if t[1].kind != "create"), key=_rest_key)
     return creates + rest
 
 
@@ -6759,47 +6822,86 @@ def _execute_curation_batch(
     # implied-create's real window id (e.g. a plain edit on the same window
     # from a different decision) falls through to the ordinary path.
     implied_creates: Dict[int, CreateWindowResult] = {}
+    # W3.1: correlation id -> real window id, for a FRESH implied create
+    # whose anchor a PRIOR action in this same batch already covers
+    # (:func:`_batch_implied_create_target`). Nothing is installed for that
+    # create -- no fit, no created_facts entry -- so the paired edit below
+    # must resolve here first and, if found, apply as an ORDINARY edit into
+    # the real window instead of via `implied_creates`/
+    # `_finish_implied_create_edit`: the window this correlation id names was
+    # never actually built, so there is no create-side evidence for its edit
+    # to carry. Popped as consumed, same discipline as `implied_creates`.
+    coalesced_creates: Dict[int, int] = {}
     # Every create this batch runs -- implied or explicit -- keyed by the REAL
     # (minted or widened) window id, for the caller's report. Keyed rather than
     # appended so a widening named twice in one batch reports once, with the
-    # extent it ended up at.
+    # extent it ended up at. A COALESCED implied create installs nothing, so
+    # it never appears here -- the plan installed one window, not two, and
+    # this is what the caller's report reads.
     created_facts: Dict[int, CreateWindowResult] = {}
     for original_index, action in _canonicalize_batch_plan(plan):
         try:
             if action.kind == "create":
                 if action.anchor is None:
                     raise ValueError("create action requires an anchor frequency")
-                created = _batch_apply_create(
-                    ctx,
-                    action.anchor,
-                    replay_window_id=(
-                        None
-                        if action.window_id == _NEW_WINDOW_SENTINEL
-                        or _is_implied_window_id(action.window_id)
-                        else action.window_id
-                    ),
-                    snap_tol_mhz=snap_tol_mhz,
-                    record_decision=not action.implied_create,
+                # W3.1: only a FRESH implied create (a not-yet-real
+                # correlation id) can coalesce. An EXPLICIT create keeps
+                # today's refusal (it asserts a window is needed), and a
+                # REPLAYED implied create already carries the real, pinned id
+                # from the decision log, so it is never seen here as "fresh"
+                # -- see _is_implied_window_id.
+                fresh_implied = action.implied_create and _is_implied_window_id(
+                    action.window_id
                 )
-                created_facts[created.window_id] = created
-                if action.implied_create:
-                    implied_creates[action.window_id] = created
+                coalesce_target = (
+                    _batch_implied_create_target(ctx, action.anchor)
+                    if fresh_implied
+                    else None
+                )
+                if coalesce_target is not None:
+                    coalesced_creates[action.window_id] = coalesce_target
+                else:
+                    created = _batch_apply_create(
+                        ctx,
+                        action.anchor,
+                        replay_window_id=(
+                            None
+                            if action.window_id == _NEW_WINDOW_SENTINEL
+                            or _is_implied_window_id(action.window_id)
+                            else action.window_id
+                        ),
+                        snap_tol_mhz=snap_tol_mhz,
+                        record_decision=not action.implied_create,
+                    )
+                    created_facts[created.window_id] = created
+                    if action.implied_create:
+                        implied_creates[action.window_id] = created
             elif action.kind == "edit":
                 if action.implied_create:
-                    implied = implied_creates.pop(action.window_id, None)
-                    if implied is None:
-                        raise ValueError(
-                            f"internal: no matching implied create for "
-                            f"window {action.window_id} (canonicalization "
-                            f"should always run creates first)"
+                    coalesced_wid = coalesced_creates.pop(action.window_id, None)
+                    if coalesced_wid is not None:
+                        _batch_apply_edit_action(
+                            ctx,
+                            coalesced_wid,
+                            action.add,
+                            action.remove,
+                            snap_tol_mhz=snap_tol_mhz,
                         )
-                    _finish_implied_create_edit(
-                        ctx,
-                        implied,
-                        action.add,
-                        action.remove,
-                        snap_tol_mhz=snap_tol_mhz,
-                    )
+                    else:
+                        implied = implied_creates.pop(action.window_id, None)
+                        if implied is None:
+                            raise ValueError(
+                                f"internal: no matching implied create for "
+                                f"window {action.window_id} (canonicalization "
+                                f"should always run creates first)"
+                            )
+                        _finish_implied_create_edit(
+                            ctx,
+                            implied,
+                            action.add,
+                            action.remove,
+                            snap_tol_mhz=snap_tol_mhz,
+                        )
                 else:
                     _batch_apply_edit_action(
                         ctx,
@@ -6947,24 +7049,42 @@ def _resolve_created_window_structure(
     ctx = _open_batch(path, snap_tol_mhz=snap_tol_mhz, snapshot=False, shared=shared)
     structures: List[PlannedWindowResult] = []
     for original_index, action in creates:
+        proposal: Optional["Stage6WindowProposal"] = None
         try:
             if action.anchor is None:
                 raise ValueError("create action requires an anchor frequency")
-            proposal = _plan_batch_create(
-                ctx,
-                action.anchor,
-                replay_window_id=(
-                    None
-                    if action.window_id == _NEW_WINDOW_SENTINEL
-                    or _is_implied_window_id(action.window_id)
-                    else action.window_id
-                ),
+            # W3.1: only a FRESH implied create can coalesce -- see the
+            # matching comment in _execute_curation_batch. A coalesced create
+            # installs nothing, so it contributes no PlannedWindowResult: the
+            # plan installs one window, not two, and this structural report
+            # must say so.
+            fresh_implied = action.implied_create and _is_implied_window_id(
+                action.window_id
             )
+            coalesce_target = (
+                _batch_implied_create_target(ctx, action.anchor)
+                if fresh_implied
+                else None
+            )
+            if coalesce_target is None:
+                proposal = _plan_batch_create(
+                    ctx,
+                    action.anchor,
+                    replay_window_id=(
+                        None
+                        if action.window_id == _NEW_WINDOW_SENTINEL
+                        or _is_implied_window_id(action.window_id)
+                        else action.window_id
+                    ),
+                )
         except (ValueError, KeyError) as exc:
             raise ValueError(
                 f"curation action {original_index + 1} "
                 f"({describe_planned_action(action)}) failed: {exc}"
             ) from exc
+
+        if proposal is None:
+            continue
 
         fit_win = proposal.window
         new_wid = int(fit_win.window_id)
@@ -7325,51 +7445,86 @@ def _run_review_preview(
     # tracks and why it is safe to key by action.window_id in both the
     # fresh (correlation id) and replayed (real pinned id) cases.
     implied_creates: Dict[int, CreateWindowResult] = {}
+    # W3.1: see the matching dict in _execute_curation_batch. A coalesced
+    # implied create's action index is still recorded (below) against the
+    # real target window, same as a genuine create's -- the action ran and
+    # touched that window, even though it installed nothing new.
+    coalesced_creates: Dict[int, int] = {}
     # W4: every _batch_apply_create result this batch produces, keyed by the
     # REAL (minted or widened) window id -- unlike implied_creates above,
     # never popped, and populated for an EXPLICIT create too (the plan's
     # scope covers both). This is what PreviewWindowResult's
     # created_window_* fields read from below; a window absent here leaves
-    # them None.
+    # them None. A COALESCED implied create installs nothing, so it never
+    # appears here -- one window, not two.
     created_facts: Dict[int, CreateWindowResult] = {}
     for original_index, action in _canonicalize_batch_plan(plan):
         try:
             if action.kind == "create":
                 if action.anchor is None:
                     raise ValueError("create action requires an anchor frequency")
-                created = _batch_apply_create(
-                    ctx,
-                    action.anchor,
-                    replay_window_id=(
-                        None
-                        if action.window_id == _NEW_WINDOW_SENTINEL
-                        or _is_implied_window_id(action.window_id)
-                        else action.window_id
-                    ),
-                    snap_tol_mhz=snap_tol,
-                    record_decision=not action.implied_create,
+                # W3.1: only a FRESH implied create can coalesce -- see the
+                # matching comment in _execute_curation_batch.
+                fresh_implied = action.implied_create and _is_implied_window_id(
+                    action.window_id
                 )
-                action_indices.setdefault(created.window_id, []).append(original_index)
-                created_facts[created.window_id] = created
-                if action.implied_create:
-                    implied_creates[action.window_id] = created
+                coalesce_target = (
+                    _batch_implied_create_target(ctx, action.anchor)
+                    if fresh_implied
+                    else None
+                )
+                if coalesce_target is not None:
+                    coalesced_creates[action.window_id] = coalesce_target
+                    action_indices.setdefault(coalesce_target, []).append(
+                        original_index
+                    )
+                else:
+                    created = _batch_apply_create(
+                        ctx,
+                        action.anchor,
+                        replay_window_id=(
+                            None
+                            if action.window_id == _NEW_WINDOW_SENTINEL
+                            or _is_implied_window_id(action.window_id)
+                            else action.window_id
+                        ),
+                        snap_tol_mhz=snap_tol,
+                        record_decision=not action.implied_create,
+                    )
+                    action_indices.setdefault(created.window_id, []).append(
+                        original_index
+                    )
+                    created_facts[created.window_id] = created
+                    if action.implied_create:
+                        implied_creates[action.window_id] = created
             elif action.kind == "edit":
                 if action.implied_create:
-                    implied = implied_creates.pop(action.window_id, None)
-                    if implied is None:
-                        raise ValueError(
-                            f"internal: no matching implied create for "
-                            f"window {action.window_id} (canonicalization "
-                            f"should always run creates first)"
+                    coalesced_wid = coalesced_creates.pop(action.window_id, None)
+                    if coalesced_wid is not None:
+                        _batch_apply_edit_action(
+                            ctx,
+                            coalesced_wid,
+                            action.add,
+                            action.remove,
+                            snap_tol_mhz=snap_tol,
                         )
-                    _finish_implied_create_edit(
-                        ctx,
-                        implied,
-                        action.add,
-                        action.remove,
-                        snap_tol_mhz=snap_tol,
-                    )
-                    target_wid = implied.window_id
+                        target_wid = coalesced_wid
+                    else:
+                        implied = implied_creates.pop(action.window_id, None)
+                        if implied is None:
+                            raise ValueError(
+                                f"internal: no matching implied create for "
+                                f"window {action.window_id} (canonicalization "
+                                f"should always run creates first)"
+                            )
+                        _finish_implied_create_edit(
+                            ctx,
+                            implied,
+                            action.add,
+                            action.remove,
+                            snap_tol_mhz=snap_tol,
+                        )
+                        target_wid = implied.window_id
                 else:
                     _batch_apply_edit_action(
                         ctx,

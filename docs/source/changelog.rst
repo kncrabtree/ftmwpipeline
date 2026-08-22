@@ -107,6 +107,28 @@ engine so they cannot answer differently.
   2638 fit contains no such configuration (the nearest is 40x the tolerance
   away).
 
+* **Two omitted-window ``add`` rows in one gap, within a single curation
+  plan, no longer refuse each other.** Each row resolves against *live*
+  windows only, so two adds in one window-free gap used to each imply their
+  own create; the second create's anchor then fell inside the first create's
+  just-minted window, and the whole plan refused -- dry run and live apply
+  alike -- even though the identical edits applied sequentially (two separate
+  ``review edit`` calls) already succeeded. Now, before a fresh implied
+  create mints anything, it is checked against the batch's own state so far
+  (this batch's earlier creates included); a hit coalesces it away entirely
+  -- no second window, nothing installed -- and its paired ``add`` applies as
+  an ordinary edit into the window the earlier create already built, which is
+  exactly the log shape (one ``add`` carrying ``created_window`` evidence,
+  the other an ordinary ``add``) the sequential path already produced. This
+  is not a search: the coalescing check reuses the window planner's own
+  live-window-coverage predicate -- the same one ``plan_stage6_window``
+  refuses on, extracted so there is one copy of the rule -- asked one step
+  earlier, with no tolerance, nearest-peak search, or radius of its own. Only a FRESH
+  implied create coalesces -- a *replayed* implied create (undo/redo
+  reconstructing a decision-log entry) and an *explicit* ``create`` row both
+  keep the original refusal, since both name a specific window rather than
+  merely deriving one.
+
 * **A curation edit's window is now derived, not required.** ``window_id`` on
   the ``add``/``remove`` targets of ``review edit`` -- ``api.review_edit``,
   ``Pipeline.review_edit``, ``ReviewSession.review_edit``, and the CLI's

@@ -47,7 +47,7 @@ Outline (the plan's eight steps):
 
 import math
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
 
@@ -1384,6 +1384,79 @@ def _grid_span_of(
     return lo, hi
 
 
+def _grid_index_covering_window(
+    spans: List[Tuple[int, int, int]], grid_index: int
+) -> Optional[int]:
+    """Return the id of the ``(lo, hi, wid)`` span in ``spans`` covering
+    ``grid_index``, or ``None``.
+
+    The single definition of "does a live window already cover this grid
+    index" -- shared by :func:`plan_stage6_window` (which raises on a hit)
+    and :func:`live_window_covering_anchor` (which answers the same question
+    without raising, for a caller deciding whether a create is even needed).
+    ``spans`` need not be sorted; the first covering span wins, and the caller
+    invariant (plan windows are disjoint) means there is at most one.
+    """
+    for lo, hi, wid in spans:
+        if lo <= grid_index <= hi:
+            return wid
+    return None
+
+
+def live_window_covering_anchor(
+    plan: WindowPlan,
+    freqs: np.ndarray,
+    anchor_mhz: float,
+    *,
+    live_window_ids: Optional[Iterable[int]] = None,
+) -> Optional[int]:
+    """Return the id of the live window that already covers ``anchor_mhz``.
+
+    Uses the identical coverage predicate :func:`plan_stage6_window` uses to
+    refuse a create -- the anchor is snapped to the nearest active-FT grid
+    index (:func:`_nearest_grid_index`) and compared against each live
+    window's grid span (:func:`_grid_span_of`), not a plain MHz-range test.
+    This is *not* a search: it asks the planner's own containment question
+    once, after the fact, for a caller (an implied-create resolver) deciding
+    whether deriving a window is even necessary before calling
+    :func:`plan_stage6_window` at all.
+
+    Parameters
+    ----------
+    plan :
+        The base :class:`WindowPlan` to check coverage against.
+    freqs :
+        The active-FT frequency axis (any order; sorted internally, exactly
+        as :func:`plan_stage6_window` sorts its spectrum arrays).
+    anchor_mhz :
+        The candidate frequency, in MHz.
+    live_window_ids :
+        Restrict the check to these window ids (Stage 5's live set).
+        ``None`` treats every plan window as live.
+
+    Returns
+    -------
+    Optional[int]
+        The covering window's id, or ``None`` if the anchor lies outside the
+        analysis band or inside no live window.
+    """
+    ordered = np.sort(np.asarray(freqs, dtype=float))
+    if ordered.size == 0:
+        return None
+    anchor = float(anchor_mhz)
+    if anchor < float(ordered[0]) or anchor > float(ordered[-1]):
+        return None
+    gi = _nearest_grid_index(ordered, anchor)
+    live: Optional[Set[int]] = (
+        None if live_window_ids is None else {int(w) for w in live_window_ids}
+    )
+    candidates = [w for w in plan.windows if live is None or int(w.window_id) in live]
+    spans = [
+        (*_grid_span_of(ordered, w.freq_range), int(w.window_id)) for w in candidates
+    ]
+    return _grid_index_covering_window(spans, gi)
+
+
 def plan_stage6_window(
     plan: WindowPlan,
     peaks: List[Peak],
@@ -1522,16 +1595,16 @@ def plan_stage6_window(
         ((*_grid_span_of(ofreqs, w.freq_range), int(w.window_id)) for w in candidates),
         key=lambda t: (t[0], t[1]),
     )
-    for lo, hi, wid in spans:
-        if lo <= gi <= hi:
-            wlo, whi = plan.window(wid).freq_range
-            raise ValueError(
-                f"anchor {anchor:.4f} MHz already falls inside window {wid} "
-                f"([{min(wlo, whi):.4f}, {max(wlo, whi):.4f}] MHz). Add the peak "
-                f"to that window with 'review edit --window {wid} --add "
-                f"{anchor:.4f}' instead; window creation is for a frequency no "
-                f"window covers."
-            )
+    covering_wid = _grid_index_covering_window(spans, gi)
+    if covering_wid is not None:
+        wlo, whi = plan.window(covering_wid).freq_range
+        raise ValueError(
+            f"anchor {anchor:.4f} MHz already falls inside window {covering_wid} "
+            f"([{min(wlo, whi):.4f}, {max(wlo, whi):.4f}] MHz). Add the peak "
+            f"to that window with 'review edit --window {covering_wid} --add "
+            f"{anchor:.4f}' instead; window creation is for a frequency no "
+            f"window covers."
+        )
 
     below = [(lo, hi, wid) for lo, hi, wid in spans if hi < gi]
     above = [(lo, hi, wid) for lo, hi, wid in spans if lo > gi]

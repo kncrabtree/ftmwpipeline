@@ -329,8 +329,15 @@ window explicitly is still an assertion, and naming one whose range does not
 cover the row's frequency is still an error even if some other live window
 would have. A run of several omitted-window rows that resolve to the same
 EXISTING live window still coalesces into one edit, exactly as a run of
-explicitly-named rows does; each row whose frequency implies its own create
-gets its own window and its own edit, even when two such rows are adjacent.
+explicitly-named rows does. Two omitted-window ``add`` rows in the same
+window-free gap each imply their own create when resolved independently, but
+within one plan the second is checked against the window the first one's
+create is about to install: if that window would already cover the second
+row's frequency, no second window is minted -- the second row instead becomes
+an ordinary ``add`` into the window the first row's create just built, giving
+the same one-window, two-decision outcome as running the two edits
+sequentially. Two rows whose frequencies land in different gaps (or too far
+apart in the same gap to share one window) still each get their own create.
 ``accept`` and ``create`` still require the window column: there it names the
 window being acted on (or, for ``create``, may take the same blank/``new``/
 ``auto``/``-`` tokens to mean "mint a new one"), not a coordinate derived from
