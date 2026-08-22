@@ -206,6 +206,17 @@ def _stage5_multi_built(exp_2638_data_path, tmp_path_factory) -> Path:
     return fp
 
 
+@pytest.fixture(scope="session")
+def stage5_multi_source(_stage5_multi_built) -> Path:
+    """The shared wider post-fit build, for a read-only test.
+
+    Session-scoped, so a module-scoped fixture can depend on it. See
+    :func:`stage5_small_source` for why a read-only test should take this
+    rather than the per-test copy.
+    """
+    return _stage5_multi_built
+
+
 @pytest.fixture
 def stage5_multi_file(_stage5_multi_built, tmp_path) -> Path:
     """A fresh writable copy of the wider fixture, which reliably keeps

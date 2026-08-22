@@ -1316,30 +1316,64 @@ def build_stage5_fit_context(
     )
 
     scatter_knobs = _persisted_scatter_knobs(file_path)
-    active_rms = np.asarray(
-        estimate_active_ft_noise(
-            active_ft.freq_mhz,
-            active_ft.complex_spectrum,
-            **scatter_knobs,
-        ).rms_noise,
-        dtype=float,
-    )
-    rms_for_fit = active_rms
+    spur_cfg = resolved.spur
+    spur_enabled = True if spur_cfg.enabled is None else bool(spur_cfg.enabled)
+    # The spur detector is the ONLY consumer of noise outside the analysis
+    # band, and it runs only on a first fit -- a replay reinstates the
+    # persisted catalog without probing (see the spur block below). Nothing
+    # else reads out there: `Stage5FitContext.active_rms` has no reader at
+    # all, and `rms_for_fit` is only ever sliced by a window's freq_range
+    # (`materialize_window`), while Stage 4 plans windows on the TRIMMED
+    # grid so none of them can reach outside it.
+    #
+    # Worth being precise about, because the two grids differ: the *user* FT
+    # is trimmed to the analysis band, but the *active* FT is not -- on 2638
+    # it spans 15960-40960 MHz against a 26500-40000 MHz band, so 46% of its
+    # bins lie outside, and estimating noise over them costs more than the
+    # in-band estimate it is thrown away for.
+    needs_out_of_band_noise = spur_enabled and replay_spur_catalog is None
+
+    freq_arr = np.asarray(active_ft.freq_mhz, dtype=float)
+    in_band: Optional[np.ndarray] = None
     if trim_range is not None:
-        freq_arr = np.asarray(active_ft.freq_mhz, dtype=float)
-        in_band = (freq_arr >= float(min(trim_range))) & (
+        candidate = (freq_arr >= float(min(trim_range))) & (
             freq_arr <= float(max(trim_range))
         )
-        if bool(in_band.any()) and not bool(in_band.all()):
+        # An all-in or all-out band leaves nothing to refine separately.
+        if bool(candidate.any()) and not bool(candidate.all()):
+            in_band = candidate
+
+    def _in_band_noise(mask: np.ndarray) -> np.ndarray:
+        return np.asarray(
+            estimate_active_ft_noise(
+                freq_arr[mask],
+                np.asarray(active_ft.complex_spectrum)[mask],
+                **scatter_knobs,
+            ).rms_noise,
+            dtype=float,
+        )
+
+    if in_band is not None and not needs_out_of_band_noise:
+        # Estimate only what will be read. Out of band stays NaN rather than
+        # 0.0: nothing should index it, and a NaN says so if anything ever
+        # does, where a plausible-looking zero would quietly become an
+        # infinite weight.
+        rms_for_fit = np.full(freq_arr.size, np.nan, dtype=float)
+        rms_for_fit[in_band] = _in_band_noise(in_band)
+        active_rms = rms_for_fit
+    else:
+        active_rms = np.asarray(
+            estimate_active_ft_noise(
+                active_ft.freq_mhz,
+                active_ft.complex_spectrum,
+                **scatter_knobs,
+            ).rms_noise,
+            dtype=float,
+        )
+        rms_for_fit = active_rms
+        if in_band is not None:
             rms_for_fit = active_rms.copy()
-            rms_for_fit[in_band] = np.asarray(
-                estimate_active_ft_noise(
-                    freq_arr[in_band],
-                    np.asarray(active_ft.complex_spectrum)[in_band],
-                    **scatter_knobs,
-                ).rms_noise,
-                dtype=float,
-            )
+            rms_for_fit[in_band] = _in_band_noise(in_band)
 
     sort_idx = np.argsort(active_ft.freq_mhz)
     sorted_freq = np.ascontiguousarray(active_ft.freq_mhz[sort_idx])
@@ -1347,8 +1381,6 @@ def build_stage5_fit_context(
     # --- Spur gating (optional) ------------------------------------------
     spur_set: Optional[Any] = None
     clock_lattice: Optional[Any] = None
-    spur_cfg = resolved.spur
-    spur_enabled = True if spur_cfg.enabled is None else bool(spur_cfg.enabled)
     if spur_enabled and replay_spur_catalog is not None:
         # Replay the persisted Stage 5 gated catalog verbatim (no detection):
         # the catalog is a Stage 5 product, so a later-stage refit reproduces
