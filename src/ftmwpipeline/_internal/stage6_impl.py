@@ -70,7 +70,14 @@ from ..fitting.peak_model import ModelPeak
 from ..fitting.peak_model import molecular_frequency as _molecular_frequency
 from ..fitting.peak_model import sideband_sign
 from ..fitting.validation import DEFAULT_CHI2R_NOISE_FLOOR, DEFAULT_SHAPE_ERROR_KAPPA
-from ..io.fitting_serialization import load_spectrum_fit_from_hdf5
+from ..io.fitting_serialization import (
+    FitWindowCoverage,
+    load_spectrum_fit_from_hdf5,
+    read_fit_parameters,
+    read_fit_peak_frequencies_by_window,
+    read_fit_peak_uids_by_window,
+    read_fit_window_coverage,
+)
 from ..io.frequency_calibration_serialization import (
     load_frequency_calibration_from_hdf5,
     save_frequency_calibration_to_hdf5,
@@ -2521,46 +2528,55 @@ def _cascade_refit_dependents(
 # ---------------------------------------------------------------------------
 
 
-def _load_current_spectrum_fit(path: str) -> SpectrumFit:
-    """Load the currently-persisted Stage 5 fit, fresh from disk.
+def _load_curation_window_index(path: str) -> List[FitWindowCoverage]:
+    """Load the cheap per-window coverage data used to resolve a derived
+    window id, fresh from disk.
 
     Used only to resolve a derived window id *before* any batch opens (see
     :func:`_window_for_curation_token`) -- the batch engine reloads its own
-    fresh copy afterward (:func:`_build_batch_changeset`), so this is not a
-    staleness risk, only an extra cheap read.
+    fresh full fit afterward (:func:`_build_batch_changeset`), so this is not
+    a staleness risk, only an extra cheap read. Reads each window's
+    ``window_id``, ``freq_min``/``freq_max`` attrs and its ``peak_uid``
+    column -- not the ~30 attrs/datasets per window a full fit load pulls
+    (see :func:`~ftmwpipeline.io.fitting_serialization.read_fit_window_coverage`).
     """
     with h5py.File(path, "r") as h5f:
         if "stage5_fitting" not in h5f:
             raise ValueError("No Stage 5 fit found in this file. Run 'fit run' first.")
-        return load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+        return read_fit_window_coverage(h5f["stage5_fitting"])
 
 
 def _window_for_curation_token(
-    fit: SpectrumFit, token: Union[float, PeakUidToken]
+    coverage: Sequence[FitWindowCoverage], token: Union[float, PeakUidToken]
 ) -> Optional[int]:
     """Resolve one add/remove target to the live window that covers it.
 
     Live windows only, no snap (THE RULE above): a plain frequency resolves
-    through :func:`~.stage5_impl._window_for_freq` -- the window whose
-    ``freq_range`` contains it, promoted and shared here rather than
+    through :func:`~.stage5_impl.window_covering_freq` -- the window whose
+    ``freq_range`` contains it, shared with the full-fit caller rather than
     reimplemented, so a curation-file row and a ``review edit`` call cannot
-    disagree about which window a frequency covers. A ``"uid:N"`` token
-    resolves to the window whose fitted peaks include that ``peak_uid`` -- an
-    EXACT match, no snap, since a ``peak_uid`` is unique across the whole fit.
+    disagree about which window a frequency covers. ``coverage`` is the cheap
+    column read that stands in for a full fit here
+    (:func:`~ftmwpipeline.io.fitting_serialization.read_fit_window_coverage`),
+    already ``window_id``-ascending, which is the order the coverage rule
+    matches in. A ``"uid:N"`` token resolves to the window whose fitted peaks
+    include that ``peak_uid`` -- an EXACT match, no snap, since a
+    ``peak_uid`` is unique across the whole fit.
 
     Returns ``None`` when nothing resolves; callers phrase their own error,
     since ``review edit`` and a curation file's rows need different wording.
     """
-    from .stage5_impl import _window_for_freq
+    from .stage5_impl import window_covering_freq
 
     if isinstance(token, PeakUidToken):
-        for wf in fit.window_fits:
-            if wf.window_id is None:
-                continue
-            if any(p.peak_uid == token.uid for p in wf.fitted_peaks):
-                return int(wf.window_id)
+        for w in coverage:
+            if token.uid in w.peak_uids:
+                return w.window_id
         return None
-    return _window_for_freq(fit, float(token))
+    return window_covering_freq(
+        ((w.window_id, w.freq_range) for w in coverage if w.freq_range is not None),
+        float(token),
+    )
 
 
 def _derive_review_edit_window_id(
@@ -2603,10 +2619,10 @@ def _derive_review_edit_window_id(
     # unambiguous single window to bind an implied create to -- see the
     # docstring above.
     eligible_for_implied_create = len(add) == 1 and not remove
-    fit = _load_current_spectrum_fit(path)
+    coverage = _load_curation_window_index(path)
     resolutions: List[Tuple[str, int]] = []
     for f in add:
-        wid = _window_for_curation_token(fit, f)
+        wid = _window_for_curation_token(coverage, f)
         if wid is None:
             if eligible_for_implied_create:
                 return None, float(f)
@@ -2618,7 +2634,7 @@ def _derive_review_edit_window_id(
             )
         resolutions.append((f"add={float(f):.4f}", wid))
     for t in remove:
-        wid = _window_for_curation_token(fit, t)
+        wid = _window_for_curation_token(coverage, t)
         if wid is None:
             if isinstance(t, PeakUidToken):
                 raise ValueError(
@@ -4098,7 +4114,7 @@ def _resolve_curation_window_ids(
     """
     if not any(op.window_id == _DERIVE_WINDOW_SENTINEL for op in ops):
         return list(ops)
-    fit = _load_current_spectrum_fit(path)
+    coverage = _load_curation_window_index(path)
     resolved: List[CurationOp] = []
     next_implied_id = _FIRST_IMPLIED_WINDOW_ID
     for op in ops:
@@ -4107,7 +4123,7 @@ def _resolve_curation_window_ids(
             continue
         token = op.freqs[0]
         if isinstance(token, PeakUidToken):
-            wid = _window_for_curation_token(fit, token)
+            wid = _window_for_curation_token(coverage, token)
             if wid is None:
                 raise ValueError(
                     f"curation line {op.line_no}: no fitted peak with "
@@ -4118,7 +4134,7 @@ def _resolve_curation_window_ids(
             resolved.append(replace(op, window_id=wid))
             continue
         freq_raw = _frame_to_raw(float(token), frame=frame, stamp=stamp)
-        wid = _window_for_curation_token(fit, freq_raw)
+        wid = _window_for_curation_token(coverage, freq_raw)
         if wid is None:
             if op.action != "add":
                 raise ValueError(
@@ -4301,17 +4317,19 @@ def describe_planned_action(action: PlannedAction) -> str:
 
 
 def _fitted_freqs_by_window(path: str) -> Dict[int, List[float]]:
-    """Molecular MHz of each window's persisted fitted peaks (empty if no fit)."""
-    out: Dict[int, List[float]] = {}
+    """Molecular MHz of each window's persisted fitted peaks (empty if no fit).
+
+    A cheap per-window column read (see
+    :func:`~ftmwpipeline.io.fitting_serialization.read_fit_peak_frequencies_by_window`)
+    rather than a full fit load -- window_id is always set on a persisted
+    ``FittingResult`` (it is a required on-disk attribute), so the full
+    loader's now-unreachable-in-practice ``wf.window_id is None`` skip has no
+    cheap-path equivalent to reproduce.
+    """
     with h5py.File(path, "r") as h5f:
         if "stage5_fitting" not in h5f:
-            return out
-        spectrum_fit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
-    for wf in spectrum_fit.window_fits:
-        if wf.window_id is None:
-            continue
-        out[int(wf.window_id)] = [float(p.frequency_mhz) for p in wf.fitted_peaks]
-    return out
+            return {}
+        return read_fit_peak_frequencies_by_window(h5f["stage5_fitting"])
 
 
 def _fitted_uids_by_window(path: str) -> Dict[int, Set[int]]:
@@ -4322,20 +4340,14 @@ def _fitted_uids_by_window(path: str) -> Dict[int, Set[int]]:
     frequencies. A peak from a fit predating ``peak_uid`` (``peak_uid is
     None``) contributes nothing to its window's set, which is what makes a
     ``"uid:N"`` dry-run check against such a window correctly report the uid
-    as unmatched rather than crashing on ``None``.
+    as unmatched rather than crashing on ``None``. Reads only the
+    ``peak_uid`` column per window (see
+    :func:`~ftmwpipeline.io.fitting_serialization.read_fit_peak_uids_by_window`).
     """
-    out: Dict[int, Set[int]] = {}
     with h5py.File(path, "r") as h5f:
         if "stage5_fitting" not in h5f:
-            return out
-        spectrum_fit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
-    for wf in spectrum_fit.window_fits:
-        if wf.window_id is None:
-            continue
-        out[int(wf.window_id)] = {
-            int(p.peak_uid) for p in wf.fitted_peaks if p.peak_uid is not None
-        }
-    return out
+            return {}
+        return read_fit_peak_uids_by_window(h5f["stage5_fitting"])
 
 
 def _planned_window_ranges(path: str) -> Dict[int, Tuple[float, float]]:
@@ -4533,12 +4545,19 @@ def _persisted_acquisition_us(path: str) -> float:
     """Persisted Stage 5 active-region acquisition length (us), or 0.0 absent
     a fit. The active-FT bin spacing every spectral-distance tolerance in
     this module resolves against is ``1 / acquisition_us``
-    (:func:`~ftmwpipeline.fitting.active_ft.active_ft_bin_spacing_mhz`)."""
+    (:func:`~ftmwpipeline.fitting.active_ft.active_ft_bin_spacing_mhz`).
+
+    Reads only the ``parameters`` JSON attr on ``/stage5_fitting`` (via
+    :func:`~ftmwpipeline.io.fitting_serialization.read_fit_parameters`)
+    rather than the whole persisted fit -- this is the one value out of the
+    ~30 attrs/datasets per window a full load would pull that this function
+    ever looks at.
+    """
     with h5py.File(path, "r") as h5f:
         if "stage5_fitting" not in h5f:
             return 0.0
-        spectrum_fit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
-    return float(spectrum_fit.parameters.get("acquisition_us", 0.0))
+        parameters = read_fit_parameters(h5f["stage5_fitting"])
+    return float(parameters.get("acquisition_us", 0.0))
 
 
 def _frame_mismatch_warnings(
@@ -4903,12 +4922,14 @@ def _build_shared_fit_ctx(path: str) -> _SharedFitCtx:
     with h5py.File(path, "r") as h5f:
         if "stage5_fitting" not in h5f:
             raise ValueError("No Stage 5 fit found in this file. Run 'fit run' first.")
-        # Loaded only to seed the spur-catalog replay below -- deliberately
-        # not returned. ``spectrum_fit`` is per-batch state (see
-        # ``_BatchChangeset``); the spur catalog in its ``parameters`` is a
-        # Stage 5 product that Stage 6 never rewrites, so reading it here,
-        # once, is not a staleness risk the way retaining the fit would be.
-        spectrum_fit: SpectrumFit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+        # The ``parameters`` attr alone, read only to seed the spur-catalog
+        # replay below -- never the whole fit, which is per-batch state that
+        # each batch reloads for itself (see ``_BatchChangeset``) and which
+        # this function has always deliberately declined to return. The spur
+        # catalog inside ``parameters`` is a Stage 5 product Stage 6 never
+        # rewrites, so reading it here, once, is not the staleness risk that
+        # retaining the fit would be.
+        fit_parameters: Dict[str, Any] = read_fit_parameters(h5f["stage5_fitting"])
 
     base_plan: "WindowPlan" = load_windows_impl(path)["plan"]
 
@@ -4962,7 +4983,7 @@ def _build_shared_fit_ctx(path: str) -> _SharedFitCtx:
         resolved,
         persisted_cal,
         shape_enum,
-        replay_spur_catalog=spectrum_fit.parameters,
+        replay_spur_catalog=fit_parameters,
     )
 
     min_freeze_snr = float(

@@ -29,6 +29,7 @@ from typing import (
     TYPE_CHECKING,
     Any,
     Dict,
+    Iterable,
     List,
     Mapping,
     Optional,
@@ -2828,15 +2829,36 @@ def _resolve_detail_bundle(file_path: str) -> _DetailBundle:
     )
 
 
+def window_covering_freq(
+    ranges: Iterable[Tuple[int, Tuple[float, float]]], freq_mhz: float
+) -> Optional[int]:
+    """THE coverage rule: first window whose fit range contains ``freq_mhz``.
+
+    Takes ``(window_id, freq_range)`` pairs rather than a whole
+    :class:`SpectrumFit` so that the callers holding a full fit
+    (:func:`_window_for_freq`) and the ones holding only a cheap column read
+    (Stage 6's ``_window_for_curation_token``) resolve through the same loop
+    and cannot disagree about which window covers a frequency. Each caller
+    drops its own rangeless windows and supplies the pairs in the order it
+    wants matched -- both supply them ``window_id``-ascending, and windows are
+    disjoint, so first-match is the only match.
+    """
+    for wid, (lo, hi) in ranges:
+        if min(lo, hi) <= freq_mhz <= max(lo, hi):
+            return int(wid)
+    return None
+
+
 def _window_for_freq(fit: SpectrumFit, freq_mhz: float) -> Optional[int]:
     """Window id whose fit range contains ``freq_mhz`` (windows are disjoint)."""
-    for wf in fit.window_fits:
-        if wf.window is None:
-            continue
-        lo, hi = wf.window.freq_range
-        if min(lo, hi) <= freq_mhz <= max(lo, hi):
-            return int(cast(int, wf.window_id))
-    return None
+    return window_covering_freq(
+        (
+            (int(wf.window_id), wf.window.freq_range)
+            for wf in fit.window_fits
+            if wf.window is not None and wf.window_id is not None
+        ),
+        freq_mhz,
+    )
 
 
 def _windows_by_peak_snr(fit: SpectrumFit) -> list[int]:

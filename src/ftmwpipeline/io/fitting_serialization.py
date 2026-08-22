@@ -111,7 +111,7 @@ mismatched peak-column lengths, unknown audit-step decision) raises
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Set, Tuple
 
 import h5py
 import numpy as np
@@ -163,6 +163,11 @@ __all__ = [
     "read_fit_replan_columns",
     "read_fit_rescue_columns",
     "read_fit_scalars",
+    "read_fit_parameters",
+    "read_fit_peak_frequencies_by_window",
+    "read_fit_peak_uids_by_window",
+    "FitWindowCoverage",
+    "read_fit_window_coverage",
 ]
 
 
@@ -1309,6 +1314,156 @@ def read_fit_scalars(h5_group: h5py.Group) -> Dict[str, Any]:
         "acquisition_us": None if acquisition is None else float(acquisition),
         "creation_time": str(creation),
     }
+
+
+def read_fit_parameters(h5_group: h5py.Group) -> Dict[str, Any]:
+    """Cheap substitute for ``load_spectrum_fit_from_hdf5(h5_group).parameters``.
+
+    Reads only the ``parameters`` JSON attribute on ``h5_group`` itself --
+    the full loader's ``SpectrumFit.parameters`` is built from exactly this
+    attribute and nothing else (see :func:`load_spectrum_fit_from_hdf5`), so
+    this is the identical value without walking any window group. Returns
+    ``{}`` when the attribute is absent, matching the full loader's default.
+    """
+    parameters: Dict[str, Any] = load_json_attr(
+        h5_group, "parameters", {}, label="stage5_fitting"
+    )
+    return parameters
+
+
+def read_fit_peak_frequencies_by_window(h5_group: h5py.Group) -> Dict[int, List[float]]:
+    """Cheap substitute for grouping the full loader's fitted peaks by window.
+
+    Equivalent to ``{wf.window_id: [p.frequency_mhz for p in wf.fitted_peaks]
+    for wf in load_spectrum_fit_from_hdf5(h5_group).window_fits}``, but reads
+    only each window's ``window_id`` attribute and its
+    ``peaks/frequency_mhz`` dataset -- none of the other ~30 attrs/datasets
+    the full loader pulls per window.
+
+    Each window's list preserves its ``peaks`` subgroup row order -- NOT the
+    full loader's separately (and globally) frequency-sorted
+    ``SpectrumFit.fitted_peaks`` list. A caller that breaks a tie with
+    ``min(fitted, key=...)`` depends on this per-window order to match the
+    full loader's result exactly.
+    """
+    windows_group = _windows_group(h5_group)
+    out: Dict[int, List[float]] = {}
+    for name in sorted(windows_group.keys()):
+        wg = windows_group[name]
+        where = f"window {name!r}"
+        wid = int(
+            read_attr_value(
+                wg, "window_id", FIT_WINDOW_COLUMN_SPECS["window_id"], where=where
+            )
+        )
+        peaks_group = _peaks_subgroup(wg, where)
+        freqs = read_dataset_column(
+            peaks_group,
+            "frequency_mhz",
+            FIT_PEAK_COLUMN_SPECS["frequency_mhz"],
+            None,
+            where=f"{where} peaks",
+        )
+        out[wid] = [float(v) for v in freqs]
+    return out
+
+
+def read_fit_peak_uids_by_window(h5_group: h5py.Group) -> Dict[int, Set[int]]:
+    """Cheap substitute for grouping the full loader's fitted peaks' uids by
+    window.
+
+    Equivalent to ``{wf.window_id: {p.peak_uid for p in wf.fitted_peaks if
+    p.peak_uid is not None} for wf in
+    load_spectrum_fit_from_hdf5(h5_group).window_fits}``, but reads only each
+    window's ``window_id`` attribute and its ``peaks/peak_uid`` dataset.
+
+    A window whose ``peaks`` subgroup has no ``peak_uid`` dataset (a file
+    predating peak identity) maps to an empty set -- the same "contributes
+    nothing to its window's set" result the full loader produces, since every
+    row's ``peak_uid`` would decode to ``None`` (absent column, or a stored
+    ``-1`` sentinel) and the full loader's set comprehension drops those.
+    """
+    windows_group = _windows_group(h5_group)
+    out: Dict[int, Set[int]] = {}
+    for name in sorted(windows_group.keys()):
+        wg = windows_group[name]
+        where = f"window {name!r}"
+        wid = int(
+            read_attr_value(
+                wg, "window_id", FIT_WINDOW_COLUMN_SPECS["window_id"], where=where
+            )
+        )
+        peaks_group = _peaks_subgroup(wg, where)
+        if "peak_uid" in peaks_group:
+            out[wid] = {int(v) for v in peaks_group["peak_uid"][:] if int(v) >= 0}
+        else:
+            out[wid] = set()
+    return out
+
+
+class FitWindowCoverage(NamedTuple):
+    """One window's cheap-resolution data, ordered ascending by ``window_id``
+    to match :func:`load_spectrum_fit_from_hdf5`'s explicit sort of
+    ``SpectrumFit.window_fits``.
+
+    ``freq_range`` is ``None`` exactly when the full loader's
+    ``FittingResult.window`` would be ``None`` (either bound NaN or absent --
+    see ``_load_window_fit``). ``peak_uids`` is the set of non-``None``
+    ``peak_uid`` values among the window's fitted peaks (empty on a file
+    predating peak identity).
+    """
+
+    window_id: int
+    freq_range: Optional[Tuple[float, float]]
+    peak_uids: Set[int]
+
+
+def read_fit_window_coverage(h5_group: h5py.Group) -> List[FitWindowCoverage]:
+    """Cheap substitute for the per-window coverage data
+    :func:`~ftmwpipeline._internal.stage5_impl._window_for_freq` and
+    :func:`~ftmwpipeline._internal.stage6_impl._window_for_curation_token`
+    resolve a curation target against.
+
+    Equivalent to building, for each ``wf`` in
+    ``load_spectrum_fit_from_hdf5(h5_group).window_fits``, the triple
+    ``(wf.window_id, wf.window.freq_range if wf.window is not None else
+    None, {p.peak_uid for p in wf.fitted_peaks if p.peak_uid is not None})``
+    -- but reading only each window's ``window_id``, ``freq_min``,
+    ``freq_max`` attributes and its ``peaks/peak_uid`` dataset. The result is
+    sorted ascending by ``window_id``, the order those two resolvers iterate
+    (first match wins), matching the full loader's own explicit sort.
+    """
+    windows_group = _windows_group(h5_group)
+    rows: List[FitWindowCoverage] = []
+    for name in sorted(windows_group.keys()):
+        wg = windows_group[name]
+        where = f"window {name!r}"
+        wid = int(
+            read_attr_value(
+                wg, "window_id", FIT_WINDOW_COLUMN_SPECS["window_id"], where=where
+            )
+        )
+        freq_min = float(
+            read_attr_value(
+                wg, "freq_min", FIT_WINDOW_COLUMN_SPECS["freq_min"], where=where
+            )
+        )
+        freq_max = float(
+            read_attr_value(
+                wg, "freq_max", FIT_WINDOW_COLUMN_SPECS["freq_max"], where=where
+            )
+        )
+        freq_range = (
+            None if (np.isnan(freq_min) or np.isnan(freq_max)) else (freq_min, freq_max)
+        )
+        peaks_group = _peaks_subgroup(wg, where)
+        if "peak_uid" in peaks_group:
+            peak_uids = {int(v) for v in peaks_group["peak_uid"][:] if int(v) >= 0}
+        else:
+            peak_uids = set()
+        rows.append(FitWindowCoverage(wid, freq_range, peak_uids))
+    rows.sort(key=lambda r: r.window_id)
+    return rows
 
 
 # ---------------------------------------------------------------------------
