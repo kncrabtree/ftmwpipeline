@@ -367,9 +367,26 @@ For a worklist that issues many verbs against one file,
 :meth:`Pipeline.review_session <ftmwpipeline.pipeline.Pipeline.review_session>`
 builds the shared fit context once and reuses it across every verb, and lets a
 preview's outcome be persisted directly by an immediately following apply. The
-session it yields offers the same six verbs with the same signatures — it is
-obtained from the ``with`` block rather than imported, so it needs no name of
-its own — and is covered in :ref:`curation-sessions`.
+:class:`~ftmwpipeline.ReviewSession` it yields offers the same six verbs with
+the same signatures, and is covered in :ref:`curation-sessions`.
+
+Review sessions
+---------------
+
+The object :meth:`Pipeline.review_session
+<ftmwpipeline.pipeline.Pipeline.review_session>` yields. It is obtained from
+that method, never constructed directly, but the class is exported at the
+package top level so a caller can annotate it::
+
+    from ftmwpipeline import Pipeline, ReviewSession
+
+    def drain(session: ReviewSession, worklist) -> None:
+        for wid, target in worklist:
+            session.review_edit(wid, remove=[target], frame="raw")
+
+.. autoclass:: ftmwpipeline.ReviewSession
+   :members:
+   :member-order: bysource
 
 Curation vocabulary
 --------------------

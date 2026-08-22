@@ -7643,40 +7643,54 @@ class _StagedPreview:
 
 
 class ReviewSession:
-    """Amortized Stage 6 review session (D3): a context manager holding one
-    :class:`_SharedFitCtx` -- the ~420 ms active-FT reconstruction every
-    fit-mutating Stage 6 verb otherwise rebuilds from scratch -- reused
-    across every verb this session issues against the same file: ``edit``,
-    ``accept``, ``create``, ``undo``, ``preview`` and ``apply``. Hosting the
-    whole verb set (not just preview/apply) is deliberate: an interactive
-    single-window edit costs ~516 ms cold,
-    essentially all of it the same setup a batch amortizes, so a session that
-    only sped up the batch door would leave every interactive click paying
-    the full price.
+    """An amortized Stage 6 review session bound to one ``.ftmw`` file.
 
-    Opened via :meth:`Pipeline.review_session`. Warm-up (building the shared
-    context) is synchronous and happens in :meth:`__enter__`, blocking --
-    there is no thread inside the library (settled decision 7 in
-    ``scratch/preview-session-plan.md``).
+    Obtained from :meth:`Pipeline.review_session
+    <ftmwpipeline.pipeline.Pipeline.review_session>` and used as a context
+    manager; it is never constructed directly. The class is exported at the
+    package top level (``from ftmwpipeline import ReviewSession``) so a
+    caller can name the type of the object the ``with`` block yields.
 
-    **Correctness never depends on reuse.** Every verb re-validates a cheap
-    on-disk fingerprint (:func:`_compute_fit_ctx_fingerprint`, ~0.8 ms)
-    before doing any work; a mismatch (a foreign writer touched the file, or
-    this is the session's first use) rebuilds the shared context from
-    scratch -- identically to what the sessionless functions this class
-    wraps do on their own when no ``shared`` is passed. After each of the
-    session's OWN writes, the fingerprint is RE-READ from disk, never
-    predicted, so a foreign writer landing in the same instant is still
-    caught on the session's next use.
+    The session holds one shared active-FT fit context -- the ~420 ms
+    reconstruction every fit-mutating Stage 6 verb otherwise rebuilds from
+    scratch -- and reuses it across every verb issued through it:
+    :meth:`review_edit`, :meth:`review_accept`, :meth:`review_create`,
+    :meth:`review_undo`, :meth:`review_preview` and :meth:`review_apply`.
+    Hosting the whole verb set rather than only the batch door is
+    deliberate: an interactive single-window edit costs ~516 ms cold,
+    essentially all of it that same setup, so a session that sped up only
+    the batch would leave every interactive click paying full price.
 
-    Retains ~26 MB of active-FT arrays for its lifetime (D5); lifetime is
-    entirely caller-controlled (``with`` block, or explicit :meth:`close`) --
-    there is no module-level cache, so a session that is never opened, or one
-    that is closed, costs nothing beyond the object itself.
+    Warm-up -- building the shared context -- is synchronous and happens on
+    entry, blocking. There is no thread inside the library, so a caller that
+    wants the warm-up off its own critical path must arrange that itself.
+
+    **Correctness never depends on the reuse.** Every verb re-validates a
+    cheap on-disk fingerprint (~0.8 ms) before doing any work; on a mismatch
+    -- a foreign writer touched the file, or this is the session's first use
+    -- it rebuilds the shared context from scratch, identically to what the
+    sessionless :class:`~ftmwpipeline.pipeline.Pipeline` methods do on every
+    call. After each of the session's own writes the fingerprint is re-read
+    from disk, never predicted, so a foreign writer landing in the very same
+    instant is still caught on the session's next use. Results are identical
+    with or without a session; only latency differs.
+
+    The session retains roughly 26 MB of active-FT arrays for its lifetime,
+    and that lifetime is entirely caller-controlled -- the ``with`` block, or
+    an explicit :meth:`close`. There is no module-level cache, so a session
+    that is never opened, or one that is closed, costs nothing beyond the
+    object itself.
 
     Not thread-safe, holds no lock, and does not protect the file from a
-    second writer (settled decision 7): single-writer discipline per file is
-    the caller's, exactly as it is for every sessionless verb.
+    second writer: single-writer discipline per file is the caller's, exactly
+    as it is for every sessionless verb.
+
+    Usage::
+
+        with Pipeline.open("exp_2638.ftmw").review_session() as session:
+            session.review_edit(12, remove=["uid:41"], frame="raw")
+            preview = session.review_preview("edits.csv")
+            session.review_apply("edits.csv")  # persists the preview's result
     """
 
     def __init__(self, path: Union[str, Path]) -> None:
@@ -7699,7 +7713,12 @@ class ReviewSession:
         self.close()
 
     def close(self) -> None:
-        """Release the retained shared context (D5). Idempotent."""
+        """Release the retained shared context. Idempotent.
+
+        Called automatically when the ``with`` block exits. Once closed, any
+        further verb on this session raises ``ValueError``; open a new
+        session to continue.
+        """
         self._shared = None
         self._fingerprint = None
         self._staged = None
@@ -7763,9 +7782,14 @@ class ReviewSession:
         snap_tol_mhz: Optional[float] = None,
         frame: Optional[Frame] = None,
     ) -> RefitWindowResult:
-        """Session-hosted :func:`refit_window_impl`. See its docstring for
-        the full contract; identical here except the shared fit context is
-        reused (validated fresh first) rather than rebuilt."""
+        """Re-fit one window with ``add`` / ``remove`` edits.
+
+        Identical in arguments, return value and persisted effect to
+        :meth:`Pipeline.review_edit
+        <ftmwpipeline.pipeline.Pipeline.review_edit>`, which documents the
+        full contract; the only difference is that this session's shared fit
+        context is reused -- validated fresh first -- rather than rebuilt.
+        """
         shared = self._sync()
         self._drop_staged(base_changed=True)
         result = refit_window_impl(
@@ -7788,7 +7812,13 @@ class ReviewSession:
         snap_tol_mhz: Optional[float] = None,
         frame: Optional[Frame] = None,
     ) -> Optional[RefitWindowResult]:
-        """Session-hosted :func:`review_accept_impl`."""
+        """Accept a window as reviewed, or revive a named ledger candidate.
+
+        Identical in arguments, return value and persisted effect to
+        :meth:`Pipeline.review_accept
+        <ftmwpipeline.pipeline.Pipeline.review_accept>`, reusing this
+        session's shared fit context.
+        """
         shared = self._sync()
         self._drop_staged(base_changed=True)
         result = review_accept_impl(
@@ -7809,7 +7839,13 @@ class ReviewSession:
         snap_tol_mhz: Optional[float] = None,
         frame: Optional[Frame] = None,
     ) -> CreateWindowResult:
-        """Session-hosted :func:`create_window_impl`."""
+        """Install a fit window for a line no window covers.
+
+        Identical in arguments, return value and persisted effect to
+        :meth:`Pipeline.review_create
+        <ftmwpipeline.pipeline.Pipeline.review_create>`, reusing this
+        session's shared fit context.
+        """
         shared = self._sync()
         self._drop_staged(base_changed=True)
         result = create_window_impl(
@@ -7828,7 +7864,13 @@ class ReviewSession:
         *,
         dry_run: bool = False,
     ) -> UndoResult:
-        """Session-hosted :func:`review_undo_impl`."""
+        """Roll recorded decisions back by id, replaying the survivors.
+
+        Identical in arguments, return value and persisted effect to
+        :meth:`Pipeline.review_undo
+        <ftmwpipeline.pipeline.Pipeline.review_undo>`, reusing this
+        session's shared fit context.
+        """
         shared = self._sync()
         if not dry_run:
             self._drop_staged(base_changed=True)
@@ -7845,10 +7887,16 @@ class ReviewSession:
         *,
         frame: Optional[Frame] = None,
     ) -> ReviewPreviewResult:
-        """Session-hosted :func:`review_preview_impl`. Stages its finished,
-        cascaded, in-memory outcome (D4) so an immediately-following
-        :meth:`review_apply` of the identical plan against an unchanged base
-        can persist it directly rather than recomputing -- see that method.
+        """Run a curation file's plan to completion in memory and report the
+        fitted outcome, writing nothing.
+
+        Identical in arguments and return value to
+        :meth:`Pipeline.review_preview
+        <ftmwpipeline.pipeline.Pipeline.review_preview>`, with one addition:
+        the finished, cascaded, never-persisted outcome is *staged* on this
+        session, so an immediately-following :meth:`review_apply` of the
+        identical plan against an unchanged base can persist it directly
+        rather than computing it a second time. See that method.
         """
         shared = self._sync()
         # A fresh preview supersedes any earlier drift note.
@@ -7896,15 +7944,20 @@ class ReviewSession:
         *,
         frame: Optional[Frame] = None,
     ) -> CurationApplyResult:
-        """Session-hosted :func:`apply_curation_impl`, with D4's staged
-        reuse: when an immediately-preceding :meth:`review_preview` staged
-        the identical plan (same curation file, same ``frame``, same
-        resolved actions) against a base that has not moved since (the
-        fingerprint captured at preview time still matches), this persists
-        that finished result directly instead of re-running the appliers,
-        the cascade, and the review derivation. Any mismatch -- a different
-        plan, or a base that moved -- falls back to a full, ordinary apply,
-        identical to the sessionless :func:`apply_curation_impl`.
+        """Apply a curation file as one batch.
+
+        Identical in arguments, return value and persisted effect to
+        :meth:`Pipeline.review_apply
+        <ftmwpipeline.pipeline.Pipeline.review_apply>`, with one addition:
+        when an immediately-preceding :meth:`review_preview` staged the
+        identical plan -- same curation file, same ``frame``, same resolved
+        actions -- against a base that has not moved since, this persists
+        that already-computed result directly instead of re-running the
+        appliers, the cascade and the review derivation. The bytes persisted
+        are then guaranteed to be exactly the ones the preview showed rather
+        than a second computation trusted to agree with the first. Any
+        mismatch -- a different plan, or a base that moved -- falls back to a
+        full, ordinary apply, identical to the sessionless one.
 
         ``base_changed`` on the result is ``True`` only when a staged preview
         existed but had to be dropped because the base moved out from under

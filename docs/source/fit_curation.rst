@@ -627,7 +627,11 @@ against the same file:
 The session hosts the whole verb set — ``review_edit``, ``review_accept``,
 ``review_create``, ``review_undo``, ``review_preview`` and ``review_apply`` —
 not just the batch door, since an interactive click otherwise pays the full
-price. Warm-up happens synchronously in ``__enter__``; the session retains
+price. Each takes the same arguments and returns the same result as the
+``Pipeline`` method of the same name. The session is always obtained from
+``review_session()``, never constructed, but its class is exported as
+:class:`ftmwpipeline.ReviewSession` so you can annotate a function that takes
+one. Warm-up happens synchronously in ``__enter__``; the session retains
 about 26 MB of active-FT arrays for its lifetime, which is entirely yours to
 control. Use the ``with`` block, or call ``close()``. There is no module-level
 cache, so a session never opened costs nothing.

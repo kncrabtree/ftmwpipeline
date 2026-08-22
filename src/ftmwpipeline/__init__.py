@@ -59,6 +59,12 @@ from ftmwpipeline.file_manager import (
 # Main pipeline interface
 from ftmwpipeline.pipeline import Pipeline
 
+# The amortized Stage 6 review session yielded by ``Pipeline.review_session()``.
+# Published because its methods are a public contract and a caller has to be
+# able to name the type; it is never constructed directly, so the canonical
+# implementation stays in ``_internal`` alongside the verbs it hosts.
+from ftmwpipeline._internal.stage6_impl import ReviewSession
+
 __all__ = [
     # Version info
     "__version__",
@@ -92,6 +98,7 @@ __all__ = [
     "AnalysisEpochMismatchError",
     # Main pipeline interface
     "Pipeline",
+    "ReviewSession",
     # Functional API module
     "api",
 ]

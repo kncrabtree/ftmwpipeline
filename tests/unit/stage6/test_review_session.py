@@ -40,6 +40,7 @@ from typing import Dict, List, Tuple
 import h5py
 import pytest
 
+import ftmwpipeline
 import ftmwpipeline.api as ftmw
 from ftmwpipeline._internal import stage6_impl as s6
 from ftmwpipeline._internal.stage4_impl import load_windows_impl, save_window_plan_impl
@@ -270,6 +271,61 @@ def test_fixture_is_actually_self_calibrated(sc_multi_file: Path) -> None:
 
 def test_fixture_has_at_least_two_live_windows(sc_multi_file: Path) -> None:
     assert len(_fitted_window_ids(sc_multi_file)) >= 2
+
+
+# ---------------------------------------------------------------------------
+# The published name. The session's METHODS were always a public contract --
+# the changelog names them and API_STRATEGY.md specifies the surface -- while
+# the class itself had no public name, so a caller writing a type annotation
+# for the object the ``with`` block yields had to import from ``_internal``.
+# ---------------------------------------------------------------------------
+
+
+class TestPublishedName:
+    """``ftmwpipeline.ReviewSession`` is the exported class itself."""
+
+    def test_exported_at_the_package_top_level(self) -> None:
+        assert ftmwpipeline.ReviewSession is s6.ReviewSession
+        assert "ReviewSession" in ftmwpipeline.__all__
+
+    def test_the_yielded_object_is_an_instance_of_the_published_name(
+        self, sc_multi_file: Path
+    ) -> None:
+        """The point of publishing the name: an annotation or an isinstance
+        check written against it must hold for what a session hands back."""
+        with Pipeline.open(sc_multi_file).review_session() as session:
+            assert isinstance(session, ftmwpipeline.ReviewSession)
+
+    def test_the_published_name_carries_the_whole_verb_set(self) -> None:
+        for verb in (
+            "review_edit",
+            "review_accept",
+            "review_create",
+            "review_undo",
+            "review_preview",
+            "review_apply",
+            "close",
+        ):
+            assert hasattr(ftmwpipeline.ReviewSession, verb), verb
+
+    def test_rendered_docstrings_cite_nothing_that_is_not_shipped(self) -> None:
+        """The class is autodoc'd on the public API page now, so everything
+        autodoc renders -- the class docstring and every public method's --
+        must stand on its own. ``scratch/`` is gitignored and the ``*_impl``
+        functions are private: a reader who followed either reference would
+        be sent somewhere they cannot go. Engineering notes belong on the
+        private helpers, which autodoc does not render.
+        """
+        rendered = [ftmwpipeline.ReviewSession]
+        rendered += [
+            getattr(ftmwpipeline.ReviewSession, name)
+            for name in vars(s6.ReviewSession)
+            if not name.startswith("_") and callable(getattr(s6.ReviewSession, name))
+        ]
+        for obj in rendered:
+            doc = inspect.getdoc(obj) or ""
+            assert "scratch/" not in doc, obj
+            assert "_impl`" not in doc, obj
 
 
 # ---------------------------------------------------------------------------

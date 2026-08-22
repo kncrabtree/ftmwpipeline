@@ -2085,8 +2085,8 @@ class Pipeline:
         single-window verb otherwise costs cold). A ``review_preview`` followed
         by a ``review_apply`` of the identical plan against an unchanged file
         persists the preview's already-computed outcome rather than
-        recomputing it (D4); see :class:`~ftmwpipeline._internal.stage6_impl.
-        ReviewSession` for the full contract.
+        recomputing it (D4); see :class:`~ftmwpipeline.ReviewSession` for the
+        full contract.
 
         Opening the session (entering the ``with`` block) builds the shared
         context synchronously and blocks -- there is no thread inside the
@@ -2113,6 +2113,9 @@ class Pipeline:
         Returns
         -------
         ReviewSession
+            The open session. Exported as ``ftmwpipeline.ReviewSession`` for
+            callers that need to name the type; it is obtained here, never
+            constructed directly.
         """
         return ReviewSession(self.filepath)
 

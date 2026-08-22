@@ -32,6 +32,42 @@ had to reach into ``_internal`` or parse out of prose to obtain are now
 published, and the Stage 6 edit paths that carry them were collapsed onto one
 engine so they cannot answer differently.
 
+* **Stage 6 offers an amortized review session, and its type is published.**
+  Every fit-mutating Stage 6 verb rebuilds the same active-FT fit context
+  before it can do anything -- about 420 ms of the ~516 ms an interactive
+  single-window edit costs cold -- so stepping through a worklist one window
+  at a time paid that over and over.
+  :meth:`Pipeline.review_session <ftmwpipeline.pipeline.Pipeline.review_session>`
+  builds it once and reuses it across every verb issued through the session:
+  ``review_edit``, ``review_accept``, ``review_create``, ``review_undo``,
+  ``review_preview`` and ``review_apply``. Hosting the whole verb set rather
+  than only the batch door is the point -- a session that sped up only
+  ``apply`` would leave every interactive click paying full price. Inside a
+  session, a ``review_preview`` followed by a ``review_apply`` of the
+  identical plan against an unmoved base persists the preview's
+  already-cascaded outcome directly instead of computing it a second time, so
+  the bytes written are the ones the preview showed rather than a second
+  computation trusted to agree with the first; any mismatch falls back to a
+  full ordinary apply, and ``CurationApplyResult.base_changed`` says when a
+  staged preview was dropped because the base moved. Correctness never
+  depends on any of the reuse: every verb re-validates a cheap on-disk
+  fingerprint first and rebuilds from scratch on a mismatch, which is
+  byte-for-byte the rebuild a sessionless caller gets on every call anyway,
+  and the fingerprint is re-read from disk after each of the session's own
+  writes rather than predicted from them. **The class is now exported as**
+  ``ftmwpipeline.ReviewSession``. It was reachable only as the return of
+  ``Pipeline.review_session()`` while its methods were already a public
+  contract -- named in this changelog and specified in ``API_STRATEGY.md`` --
+  so a caller writing a type annotation for the session object had to import
+  from ``_internal``, which is exactly the reach the export exists to
+  prevent. The name is for annotating and isinstance-checking the object the
+  ``with`` block yields; the session is still obtained from
+  ``Pipeline.review_session()`` and never constructed directly. This remains
+  a ``Pipeline``-class-only surface: the functional API is stateless by
+  contract and a CLI invocation is a fresh process, so neither has a
+  process-lifetime handle to hold open. That is not a cross-interface
+  divergence -- a session changes latency, never results.
+
 * **A curation verb can address a peak by its ``peak_uid``.** ``remove`` on
   ``review edit`` -- through ``api.review_edit``, ``Pipeline.review_edit``,
   ``ReviewSession.review_edit``, and the CLI's ``--remove`` -- and a curation

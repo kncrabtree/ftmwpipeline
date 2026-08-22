@@ -114,6 +114,15 @@ re-validates a cheap on-disk fingerprint before trusting the cached context
 and transparently rebuilds it, exactly like the sessionless method it wraps,
 on any mismatch. Only latency differs; results are identical either way.
 
+The session object's own methods are a public contract, so its **class is
+published** — exported at the package top level — even though the session is
+obtained from the `Pipeline` method and never constructed directly. A caller
+that must name the type (a type annotation, an `isinstance` check) would
+otherwise have to import from `_internal`, which no public contract may
+require. Publishing the name does not make the constructor a supported entry
+point: the class is documented as obtained from its `Pipeline` method, and the
+implementation stays wherever the verbs it hosts live.
+
 **This is deliberately a `Pipeline`-class-only surface**, not mirrored on the
 functional API or the CLI:
 
