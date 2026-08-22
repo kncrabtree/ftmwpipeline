@@ -166,6 +166,7 @@ __all__ = [
     "read_fit_parameters",
     "read_fit_peak_frequencies_by_window",
     "read_fit_peak_uids_by_window",
+    "read_fit_peak_freqs_and_uids_by_window",
     "FitWindowCoverage",
     "read_fit_window_coverage",
 ]
@@ -1399,6 +1400,49 @@ def read_fit_peak_uids_by_window(h5_group: h5py.Group) -> Dict[int, Set[int]]:
         else:
             out[wid] = set()
     return out
+
+
+def read_fit_peak_freqs_and_uids_by_window(
+    h5_group: h5py.Group,
+) -> Tuple[Dict[int, List[float]], Dict[int, Set[int]]]:
+    """Both per-window peak maps in ONE walk of the window groups.
+
+    Returns exactly ``(read_fit_peak_frequencies_by_window(h5_group),
+    read_fit_peak_uids_by_window(h5_group))`` -- same values, same per-window
+    row order, same empty-set treatment of a file predating ``peak_uid`` --
+    but resolving each window group, its ``window_id`` attribute and its
+    ``peaks`` subgroup once instead of twice.
+
+    For the caller that needs both (the curation advisory pass, when a batch
+    carries a ``"uid:N"`` target). A caller wanting one of them should keep
+    calling the single-column reader: this one always reads the
+    ``frequency_mhz`` column, so it is not a free superset.
+    """
+    windows_group = _windows_group(h5_group)
+    freqs_out: Dict[int, List[float]] = {}
+    uids_out: Dict[int, Set[int]] = {}
+    for name in sorted(windows_group.keys()):
+        wg = windows_group[name]
+        where = f"window {name!r}"
+        wid = int(
+            read_attr_value(
+                wg, "window_id", FIT_WINDOW_COLUMN_SPECS["window_id"], where=where
+            )
+        )
+        peaks_group = _peaks_subgroup(wg, where)
+        freqs = read_dataset_column(
+            peaks_group,
+            "frequency_mhz",
+            FIT_PEAK_COLUMN_SPECS["frequency_mhz"],
+            None,
+            where=f"{where} peaks",
+        )
+        freqs_out[wid] = [float(v) for v in freqs]
+        if "peak_uid" in peaks_group:
+            uids_out[wid] = {int(v) for v in peaks_group["peak_uid"][:] if int(v) >= 0}
+        else:
+            uids_out[wid] = set()
+    return freqs_out, uids_out
 
 
 class FitWindowCoverage(NamedTuple):

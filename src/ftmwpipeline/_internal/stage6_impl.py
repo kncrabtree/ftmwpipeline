@@ -74,6 +74,7 @@ from ..io.fitting_serialization import (
     FitWindowCoverage,
     load_spectrum_fit_from_hdf5,
     read_fit_parameters,
+    read_fit_peak_freqs_and_uids_by_window,
     read_fit_peak_frequencies_by_window,
     read_fit_peak_uids_by_window,
     read_fit_window_coverage,
@@ -87,6 +88,7 @@ from ..io.stage6_review_serialization import (
     load_stage6_review_from_hdf5,
     save_stage6_review_to_hdf5,
 )
+from ..io.window_serialization import read_window_plan_columns
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage2_impl import _update_stage_completion
 
@@ -4350,19 +4352,80 @@ def _fitted_uids_by_window(path: str) -> Dict[int, Set[int]]:
         return read_fit_peak_uids_by_window(h5f["stage5_fitting"])
 
 
+def _fitted_peak_index(
+    path: str, plan: Sequence[PlannedAction]
+) -> Tuple[Dict[int, List[float]], Dict[int, Set[int]]]:
+    """The per-window fitted frequencies, and the uids only if *plan* needs them.
+
+    One place decides how much of the peak table a batch's advisories have to
+    read, so the two consumers of that decision -- the ambiguity pass and the
+    frame-mismatch diagnostic -- cannot each pay for their own walk of the
+    window groups.
+
+    A ``"uid:N"`` remove target is the only thing that needs the ``peak_uid``
+    column; most plans carry none, and those get the frequency column alone
+    and an empty uid map. A plan that does carry one gets both columns from a
+    single walk (:func:`~ftmwpipeline.io.fitting_serialization.read_fit_peak_freqs_and_uids_by_window`)
+    rather than one walk each -- the values are identical either way.
+    """
+    has_uid_target = any(
+        action.kind == "edit"
+        and any(isinstance(t, PeakUidToken) for t in action.remove)
+        for action in plan
+    )
+    if not has_uid_target:
+        return _fitted_freqs_by_window(path), {}
+    with h5py.File(path, "r") as h5f:
+        if "stage5_fitting" not in h5f:
+            return {}, {}
+        return read_fit_peak_freqs_and_uids_by_window(h5f["stage5_fitting"])
+
+
 def _planned_window_ranges(path: str) -> Dict[int, Tuple[float, float]]:
     """``freq_range`` of every window in the effective plan, low bound first.
+
+    A three-attribute-per-window read plus the Stage 6 created-window overlay,
+    rather than :func:`effective_window_plan` -- a full plan load also
+    materializes every window's free-peak index list, its fixed-contributor
+    objects and its per-window JSON diagnostics, which is 120 ms of the 124
+    this used to cost on 2638 and none of which a bounds map reads.
+
+    Applying the overlay by dict update is what makes this equal to the full
+    path: :func:`_overlay_created_windows` *replaces* a base window carrying
+    the same id and *appends* a fresh one, and keyed by ``window_id`` those
+    two cases are the same assignment. The rest of what the overlay computes
+    -- plan ordering, the spliced dependency edges, the topological order --
+    does not survive into a bounds map, so it is not built here.
+
+    Like the cheap fit readers this validates only what it reads, where the
+    full loader validated every window's datasets and column lengths; a plan
+    group the full loader would refuse can yield ranges here. That divergence
+    is the same one those readers took knowingly.
 
     Best-effort: a file without a Stage 4 plan yields an empty map rather than
     raising, so the advisory pass degrades to the checks it can still make.
     """
     try:
-        plan = effective_window_plan(path)
+        with h5py.File(path, "r") as h5f:
+            if "stage4_windows" not in h5f:
+                return {}
+            columns = read_window_plan_columns(
+                h5f["stage4_windows"], ["window_id", "freq_min", "freq_max"]
+            )
+        ranges = {
+            int(wid): (min(float(lo), float(hi)), max(float(lo), float(hi)))
+            for wid, lo, hi in zip(
+                columns["window_id"], columns["freq_min"], columns["freq_max"]
+            )
+        }
+        for created in load_stage6_review_from_file(path).created_windows:
+            ranges[int(created.window_id)] = (
+                min(created.freq_range),
+                max(created.freq_range),
+            )
+        return ranges
     except Exception:  # pragma: no cover - advisory only, never fatal
         return {}
-    return {
-        int(w.window_id): (min(w.freq_range), max(w.freq_range)) for w in plan.windows
-    }
 
 
 def _curation_ambiguity_warnings(
@@ -4370,6 +4433,7 @@ def _curation_ambiguity_warnings(
     plan: Sequence[PlannedAction],
     *,
     snap_tol_mhz: float,
+    index: Optional[Tuple[Dict[int, List[float]], Dict[int, Set[int]]]] = None,
 ) -> List[str]:
     """Advisories where a curation action will not resolve against the file.
 
@@ -4394,17 +4458,14 @@ def _curation_ambiguity_warnings(
 
     All of this is advisory. It exists so that ``--dry-run`` previews the
     failures a live apply would hit instead of only some of them.
+
+    ``index`` is the ``(frequencies, uids)`` pair from
+    :func:`_fitted_peak_index`, which a caller that also runs the
+    frame-mismatch diagnostic passes in so the two passes share one read.
+    Omitted, it is built here -- the uid half only when the plan carries a
+    ``"uid:N"`` target, which most do not.
     """
-    by_window = _fitted_freqs_by_window(path)
-    # Only opened when the plan actually carries a "uid:N" remove target --
-    # most callers never do, and this keeps a plan of plain frequencies from
-    # paying (or requiring) a second file read.
-    has_uid_target = any(
-        action.kind == "edit"
-        and any(isinstance(t, PeakUidToken) for t in action.remove)
-        for action in plan
-    )
-    by_uid: Dict[int, Set[int]] = _fitted_uids_by_window(path) if has_uid_target else {}
+    by_window, by_uid = _fitted_peak_index(path, plan) if index is None else index
     planned_ranges = _planned_window_ranges(path)
     warnings: List[str] = []
 
@@ -4566,6 +4627,7 @@ def _frame_mismatch_warnings(
     *,
     resolved_frame: Frame,
     stamp: Optional[_CalibrationStamp],
+    fitted_freqs: Optional[Dict[int, List[float]]] = None,
 ) -> List[str]:
     """Advisory-only diagnostic (A5): flag a batch whose candidates all
     resolve with a residual consistent with a calibrated-frame curation file
@@ -4592,6 +4654,13 @@ def _frame_mismatch_warnings(
     - every one of those residuals shares the same sign -- a real omitted
       conversion pushes every candidate the same direction; independently
       mistyped or mis-snapped frequencies would not.
+
+    ``fitted_freqs`` is :func:`_fitted_freqs_by_window`'s map, threaded in by
+    a caller that already built it (the apply path builds it for the
+    ambiguity pass moments earlier). Omitted -- the preview path, which runs
+    no ambiguity pass -- it is read here, and only after the cheap
+    disqualifying checks above have failed to return, so an inert diagnostic
+    still reads nothing.
     """
     if resolved_frame != "raw" or stamp is None:
         return []
@@ -4609,7 +4678,7 @@ def _frame_mismatch_warnings(
     # its own would diagnose a batch nobody is going to run.
     snap_tol_mhz = REFIT_SNAP_TOL_BINS * bin_spacing_mhz
 
-    by_window = _fitted_freqs_by_window(path)
+    by_window = _fitted_freqs_by_window(path) if fitted_freqs is None else fitted_freqs
 
     def nearest(wid: int, freq: float) -> Optional[float]:
         fitted = by_window.get(wid)
@@ -7176,9 +7245,19 @@ def apply_curation_impl(
     plan, resolved_frame, stamp = _resolve_curation_call(path, curation_path, frame)
 
     snap_tol = resolve_snap_tol_mhz(path, None)
-    warnings = _curation_ambiguity_warnings(path, plan, snap_tol_mhz=snap_tol)
+    # One read of the fitted peak columns for both advisory passes: the
+    # ambiguity pass needs it unconditionally, and the frame diagnostic used
+    # to rebuild the identical map moments later in the same call.
+    peak_index = _fitted_peak_index(path, plan)
+    warnings = _curation_ambiguity_warnings(
+        path, plan, snap_tol_mhz=snap_tol, index=peak_index
+    )
     warnings += _frame_mismatch_warnings(
-        path, plan, resolved_frame=resolved_frame, stamp=stamp
+        path,
+        plan,
+        resolved_frame=resolved_frame,
+        stamp=stamp,
+        fitted_freqs=peak_index[0],
     )
 
     # No epoch pre-check here: _execute_curation_batch gates itself before it
