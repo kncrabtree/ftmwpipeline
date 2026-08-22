@@ -1036,3 +1036,162 @@ class TestEngineInvariantsStillHold:
                 precomputed_review=s6.Stage6Review(),
             )
         assert _digest(sc_multi_file) == before
+
+
+class TestFitCache:
+    """S5: the session carries its working ``SpectrumFit`` between verbs.
+
+    The saving is a full-table read per verb, so the tests that matter are
+    the ones about *not* reusing it: a fit that outlives the file state it
+    describes is a correctness bug, not a slow path, and it would produce
+    plausible wrong numbers rather than an error.
+
+    Every verb used here is ``review_edit``. A bare ``review_accept`` never
+    opens the engine at all (it adds no ``mutated_wids``, so it takes the
+    cheap path), which would make a load-count assertion pass without
+    exercising anything.
+    """
+
+    @staticmethod
+    def _count_changeset_loads(monkeypatch) -> List[str]:
+        """Record every full ``SpectrumFit`` load, by calling frame."""
+        seen: List[str] = []
+        real = s6.load_spectrum_fit_from_hdf5
+
+        def counted(h5_group):
+            import sys
+
+            seen.append(sys._getframe(1).f_code.co_name)
+            return real(h5_group)
+
+        monkeypatch.setattr(s6, "load_spectrum_fit_from_hdf5", counted)
+        return seen
+
+    @staticmethod
+    def _edit(session, path: Path, wid: int) -> None:
+        session.review_edit(wid, add=[_clear_add_freq(path, wid)], frame="raw")
+
+    def test_a_second_verb_reuses_the_first_verb_s_fit(
+        self, sc_multi_file, monkeypatch
+    ):
+        wids = _fitted_window_ids(sc_multi_file)
+        seen = self._count_changeset_loads(monkeypatch)
+
+        with Pipeline.open(sc_multi_file).review_session() as session:
+            self._edit(session, sc_multi_file, wids[0])
+            after_first = seen.count("_build_batch_changeset")
+            self._edit(session, sc_multi_file, wids[1])
+            after_second = seen.count("_build_batch_changeset")
+
+        assert after_first == 1, "the first verb must read the fit"
+        assert after_second == 1, (
+            f"the second verb re-read the whole fit table ({after_second} "
+            f"reads total) instead of reusing what the first had persisted"
+        )
+
+    def test_a_foreign_write_is_not_reused(self, sc_multi_file, monkeypatch):
+        """A writer outside the session invalidates the cached fit."""
+        wids = _fitted_window_ids(sc_multi_file)
+        with Pipeline.open(sc_multi_file).review_session() as session:
+            self._edit(session, sc_multi_file, wids[0])
+
+            # A sessionless edit on the same file, from outside.
+            ftmw.review_edit(
+                str(sc_multi_file),
+                wids[1],
+                add=[_clear_add_freq(sc_multi_file, wids[1])],
+                frame="raw",
+            )
+            foreign_stats = _window_stats(sc_multi_file)
+
+            seen = self._count_changeset_loads(monkeypatch)
+            self._edit(session, sc_multi_file, wids[2])
+
+        assert (
+            "_build_batch_changeset" in seen
+        ), "the session reused a fit that a foreign writer had superseded"
+        after = _window_stats(sc_multi_file)
+        assert (
+            after[wids[1]] == foreign_stats[wids[1]]
+        ), "the foreign edit was overwritten by a stale cached fit"
+
+    def test_undo_does_not_replay_against_a_superseded_fit(self, sc_multi_file):
+        """The hazard the cache's self-validation exists for.
+
+        ``review undo`` restores ``/stage5_fitting`` by an HDF5 group copy,
+        outside ``_finish_batch`` entirely, and then replays the surviving
+        decisions through ordinary batches. Those batches must not pick up
+        the fit the edits left behind -- the restore has just superseded it.
+        """
+        wids = _fitted_window_ids(sc_multi_file)
+        sessionless = sc_multi_file.parent / "sessionless.ftmw"
+        shutil.copy(sc_multi_file, sessionless)
+
+        with Pipeline.open(sc_multi_file).review_session() as session:
+            self._edit(session, sc_multi_file, wids[0])
+            self._edit(session, sc_multi_file, wids[1])
+            after_edits = _window_stats(sc_multi_file)
+            session.review_undo([0])
+            in_session = _window_stats(sc_multi_file)
+
+        # The same two edits and the same undo, with no session anywhere.
+        ftmw.review_edit(
+            str(sessionless),
+            wids[0],
+            add=[_clear_add_freq(sessionless, wids[0])],
+            frame="raw",
+        )
+        ftmw.review_edit(
+            str(sessionless),
+            wids[1],
+            add=[_clear_add_freq(sessionless, wids[1])],
+            frame="raw",
+        )
+        ftmw.review_undo(str(sessionless), [0])
+
+        assert in_session != after_edits, "undo did not change the fit at all"
+        assert in_session == _window_stats(sessionless), (
+            "undo inside a session left different fitted state than the same "
+            "undo without one -- the replay used a superseded fit"
+        )
+
+    def test_a_failed_verb_leaves_nothing_cached(self, sc_multi_file, monkeypatch):
+        """A batch that raised never staged a fit, so nothing survives it."""
+        wids = _fitted_window_ids(sc_multi_file)
+        with Pipeline.open(sc_multi_file).review_session() as session:
+            self._edit(session, sc_multi_file, wids[0])
+            with pytest.raises(ValueError):
+                # A remove no fitted peak can match: the batch fails after
+                # the changeset has taken the cached fit.
+                session.review_edit(wids[0], remove=[1.0], frame="raw")
+
+            seen = self._count_changeset_loads(monkeypatch)
+            self._edit(session, sc_multi_file, wids[1])
+
+        assert "_build_batch_changeset" in seen, (
+            "a verb after a failed one reused a fit that no successful write "
+            "had published"
+        )
+
+    def test_a_sessionless_caller_never_caches(self, sc_multi_file, monkeypatch):
+        """Outside a session the cache is always empty, by construction.
+
+        Each sessionless call builds its own ``_SharedFitCtx``, so it builds
+        its own empty cache -- the S5 path cannot change sessionless
+        behavior or timing even by accident.
+        """
+        wids = _fitted_window_ids(sc_multi_file)
+        seen = self._count_changeset_loads(monkeypatch)
+
+        for wid in (wids[0], wids[1]):
+            ftmw.review_edit(
+                str(sc_multi_file),
+                wid,
+                add=[_clear_add_freq(sc_multi_file, wid)],
+                frame="raw",
+            )
+
+        assert seen.count("_build_batch_changeset") == 2, (
+            f"expected one fit read per sessionless call, got "
+            f"{seen.count('_build_batch_changeset')}"
+        )

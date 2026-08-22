@@ -4867,6 +4867,95 @@ def _execute_planned_action(path: str, action: PlannedAction) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _fit_group_fingerprint(path: str) -> Optional[Tuple[str, int, int]]:
+    """A cheap stamp identifying the exact contents of ``/stage5_fitting``.
+
+    ``(creation_time, n_windows, n_fitted_peaks)``, three attrs on the group
+    itself -- no window walk, no dataset read.
+    :func:`~ftmwpipeline.io._hdf5_helpers.stamp_stage_header` re-stamps
+    ``creation_time`` on *every* write of the fit, whether the full writer or
+    the incremental one, so any rewrite changes this; the two counts
+    corroborate it.
+
+    Deliberately scoped to the fit group rather than to the file. The
+    file-level fingerprint :class:`ReviewSession` uses cannot serve here: the
+    undo-baseline snapshot opens the file in append mode before a batch reads
+    the fit, which moves the file's mtime without changing the fit at all,
+    and a whole-file stamp would therefore never match twice in a row.
+
+    ``None`` when the file carries no fit -- never equal to itself, so a
+    cache stamped against it can never be reused.
+    """
+    with h5py.File(path, "r") as h5f:
+        if "stage5_fitting" not in h5f:
+            return None
+        attrs = h5f["stage5_fitting"].attrs
+        raw_time = attrs.get("creation_time", "")
+        if isinstance(raw_time, bytes):
+            raw_time = raw_time.decode("utf-8")
+        return (
+            str(raw_time),
+            int(attrs.get("n_windows", -1)),
+            int(attrs.get("n_fitted_peaks", -1)),
+        )
+
+
+@dataclass
+class _FitCache:
+    """A working :class:`SpectrumFit` carried across a session's verbs (S5).
+
+    Every batch used to reload the whole fit from disk (415 ms on a
+    251-window build) even when the previous verb in the same session had
+    just written that exact object. This holds it instead. It rides on
+    :class:`_SharedFitCtx` because their lifetimes are identical: a
+    sessionless caller builds a fresh shared context per call and therefore
+    always finds this empty, so nothing outside a session changes behavior
+    or timing.
+
+    **The cache validates itself; nobody has to remember to invalidate it.**
+    :meth:`take` re-reads :func:`_fit_group_fingerprint` and refuses the
+    cached fit unless the fit on disk is still the one that was cached. That
+    is not belt-and-braces: ``review undo`` restores ``/stage5_fitting`` by
+    an HDF5 group copy (:func:`_restore_stage5_baseline`), nowhere near
+    :func:`_finish_batch`, and then replays the surviving decisions through
+    ordinary batches -- the first of which would otherwise take a fit the
+    restore had just superseded. The copy brings the baseline's own
+    ``creation_time`` with it, so the stamp catches that with no special
+    case, and would catch the next such writer too.
+
+    Ownership transfers on :meth:`take`: the caller mutates the object it
+    receives, so the cache drops its own reference at the same moment. A
+    batch that then fails, or one that is never persisted (a preview),
+    simply leaves the cache empty and the next verb reloads -- the stale
+    object cannot come back.
+    """
+
+    _fit: Optional[SpectrumFit] = None
+    _fingerprint: Optional[Tuple[str, int, int]] = None
+
+    def take(self, path: str) -> Optional[SpectrumFit]:
+        """The cached fit if ``/stage5_fitting`` is still the one it was
+        cached from, else ``None``. Always clears the cache either way.
+        """
+        fit, fingerprint = self._fit, self._fingerprint
+        self._fit = None
+        self._fingerprint = None
+        if fit is None or fingerprint is None:
+            return None
+        if _fit_group_fingerprint(path) != fingerprint:
+            return None
+        return fit
+
+    def install(self, fit: SpectrumFit, path: str) -> None:
+        """Cache *fit* as the contents of ``/stage5_fitting`` as of now.
+
+        Called immediately after the fit has been written, while the stamp
+        on disk is still the one that write left.
+        """
+        self._fit = fit
+        self._fingerprint = _fit_group_fingerprint(path)
+
+
 @dataclass
 class _SharedFitCtx:
     """Batch-invariant state derived from the file: resolved settings,
@@ -4902,6 +4991,12 @@ class _SharedFitCtx:
     ``calibration_state == \"self_calibrated\"``)."""
     sigma_epsilon: float
     """1-sigma uncertainty on :attr:`epsilon` (``0.0`` when inapplicable)."""
+    fit_cache: _FitCache = field(default_factory=_FitCache)
+    """The one mutable slot on this object (S5), and deliberately so: it
+    holds no *derived* state, only a copy of what is already on disk, and
+    every read of it is gated on a fingerprint read fresh from the file.
+    Everything else here is still built once and never touched again. It is
+    last in the field order because it is the only one with a default."""
 
 
 @dataclass
@@ -5088,16 +5183,27 @@ def _build_shared_fit_ctx(path: str) -> _SharedFitCtx:
 
 def _build_batch_changeset(path: str, shared: _SharedFitCtx) -> _BatchChangeset:
     """Load-or-reset everything one batch's actions accumulate: the current
-    ``spectrum_fit`` (reloaded fresh -- never reused across batches), the
-    review's ``created_windows`` overlay and the ``fit_window_map`` derived
-    from it, and the next decision-log index. Called once per batch,
-    regardless of whether ``shared`` was just built or is being reused from an
-    earlier batch.
+    ``spectrum_fit``, the review's ``created_windows`` overlay and the
+    ``fit_window_map`` derived from it, and the next decision-log index.
+    Called once per batch, regardless of whether ``shared`` was just built or
+    is being reused from an earlier batch.
+
+    The fit comes from ``shared.fit_cache`` when a previous verb in this same
+    session persisted it and nothing has touched the file since (S5);
+    otherwise it is read from disk exactly as before. The cache decides that
+    for itself against a freshly-read fingerprint -- see :class:`_FitCache`
+    -- and hands over ownership, so what this batch mutates is never
+    something the cache still holds. A sessionless caller's ``shared`` is
+    built per call and its cache is always empty, so it always reads.
     """
-    with h5py.File(path, "r") as h5f:
-        if "stage5_fitting" not in h5f:
-            raise ValueError("No Stage 5 fit found in this file. Run 'fit run' first.")
-        spectrum_fit: SpectrumFit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+    spectrum_fit: Optional[SpectrumFit] = shared.fit_cache.take(path)
+    if spectrum_fit is None:
+        with h5py.File(path, "r") as h5f:
+            if "stage5_fitting" not in h5f:
+                raise ValueError(
+                    "No Stage 5 fit found in this file. Run 'fit run' first."
+                )
+            spectrum_fit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
 
     review = load_stage6_review_from_file(path)
     created_windows = list(review.created_windows)
@@ -6797,6 +6903,11 @@ def _finish_batch(
         _write_stage6_review_only(precomputed_review, path)
     else:
         _persist_batch_review(ctx, path)
+
+    # S5: publish the just-persisted fit for the next batch in this same
+    # session, stamped with the fit group's write stamp so the next batch can
+    # tell whether anything has rewritten it since.
+    ctx.shared.fit_cache.install(ctx.changeset.spectrum_fit, path)
     return cascaded
 
 
@@ -9118,6 +9229,10 @@ class ReviewSession:
         disk, not computed from what was just written, so a foreign writer
         that landed in the very same instant is still caught on the NEXT
         verb call's :meth:`_sync`.
+
+        The session's working-fit cache (S5) needs nothing from here: it
+        stamps itself against ``/stage5_fitting`` at the moment of the write
+        and re-checks that stamp on its own -- see :class:`_FitCache`.
         """
         self._fingerprint = _compute_fit_ctx_fingerprint(self._path)
 
