@@ -39,6 +39,7 @@ import h5py
 import pytest
 
 import ftmwpipeline.api as ftmw
+from ftmwpipeline._internal import stage6_impl as s6
 from ftmwpipeline._internal.stage4_impl import load_windows_impl
 from ftmwpipeline._internal.stage6_impl import (
     CreateWindowResult,
@@ -381,6 +382,33 @@ class TestNarrowGapWidens:
 
         assert result.n_peaks == n_before
 
+    def test_widening_keeps_the_windows_peak_uids(self, working_file):
+        """A stronger form of ``test_widening_keeps_the_windows_peaks``: not
+        just the peak COUNT survives a widening, but each peak's own
+        ``peak_uid`` -- stamped once at birth and never re-derived
+        (``peak_uid`` is the identity a downstream consumer tracks a peak by
+        across an edit, not its frequency or index)."""
+        step = self._bin_width_mhz(working_file)
+        wid, lo, hi = _live_ranges(working_file)[-1]
+        sf = _load_spectrum_fit(working_file)
+        uids_before = {
+            p.peak_uid
+            for p in next(
+                w for w in sf.window_fits if int(w.window_id) == wid
+            ).fitted_peaks
+        }
+
+        create_window_impl(str(working_file), hi + 2 * step)
+
+        sf_after = _load_spectrum_fit(working_file)
+        uids_after = {
+            p.peak_uid
+            for p in next(
+                w for w in sf_after.window_fits if int(w.window_id) == wid
+            ).fitted_peaks
+        }
+        assert uids_after == uids_before
+
     def test_widening_records_its_mode_in_the_log(self, working_file):
         step = self._bin_width_mhz(working_file)
         wid, lo, hi = _live_ranges(working_file)[-1]
@@ -399,6 +427,113 @@ class TestNarrowGapWidens:
 
         refit = refit_window_impl(str(working_file), result.window_id, add=[anchor])
         assert refit.n_peaks_after == refit.n_peaks_before + 1
+
+
+# ---------------------------------------------------------------------------
+# 6a. A widened window cascades; a created one still doesn't (W1)
+#
+# 2638 (the fixture this whole file builds from) has zero ``frozen_peak_``
+# entries, so no window is ever a real freeze source for another and
+# ``_cascade_succs`` returns an empty graph -- a cascade edge cannot occur
+# naturally here. Both tests below fake one, exactly as
+# ``test_curation.py::test_cascade_downstream_of_two_edits_refit_once`` does:
+# wrap ``_cascade_succs`` to inject a dependent, and spy on
+# ``refit_window_core`` to see which windows actually got refit.
+# ---------------------------------------------------------------------------
+
+
+class TestWidenedWindowCascades:
+    def _bin_width_mhz(self, path: Path) -> float:
+        plan = load_windows_impl(str(path))["plan"]
+        w = next(
+            w
+            for w in plan.windows
+            if "grid_span" in w.diagnostics
+            and w.diagnostics["grid_span"][1] > w.diagnostics["grid_span"][0]
+        )
+        lo, hi = w.freq_range
+        span = w.diagnostics["grid_span"]
+        return abs(hi - lo) / (int(span[1]) - int(span[0]))
+
+    def test_widened_windows_dependent_is_refit(self, working_file, monkeypatch):
+        """The new behavior: a widened window's fit just moved on the wider
+        grid, so a (faked) dependent that froze on its old leakage skirt gets
+        refit in the same combined cascade.
+
+        ``working_file`` carries only one live (Stage-5-fitted) window, so a
+        second one is minted first (a plain create, well clear of the
+        widening anchor below) to serve as the fake dependent -- the widen
+        itself still targets the original window's edge, exactly as
+        ``test_anchor_hugging_an_edge_widens_that_window`` does.
+        """
+        step = self._bin_width_mhz(working_file)
+        wid, lo, hi = _live_ranges(working_file)[-1]
+        dep_anchor = _free_anchor(working_file)
+        dep_wid = create_window_impl(str(working_file), dep_anchor).window_id
+
+        orig_succs = s6._cascade_succs
+
+        def fake_succs(window_fits, fit_window_map):
+            d = orig_succs(window_fits, fit_window_map)
+            d.setdefault(wid, set()).add(dep_wid)
+            return d
+
+        monkeypatch.setattr(s6, "_cascade_succs", fake_succs)
+
+        orig_core = s6.refit_window_core
+        calls: List[int] = []
+
+        def spy_core(fit_ctx, fit_win, wf, **kwargs):
+            calls.append(int(fit_win.window_id))
+            return orig_core(fit_ctx, fit_win, wf, **kwargs)
+
+        monkeypatch.setattr(s6, "refit_window_core", spy_core)
+
+        result = create_window_impl(str(working_file), hi + 2 * step)
+
+        assert result.mode == "widened"
+        assert dep_wid in calls
+
+    def test_created_windows_dependent_is_not_refit(self, working_file, monkeypatch):
+        """The guard this fix must not swallow: a freshly created window is a
+        leaf with no outbound dependency edge, so it stays mutated-but-not-
+        dirty and no cascade runs for it -- even when the (faked) graph says
+        one of its neighbors would otherwise be reachable. This is what pins
+        the created/widened distinction against a later "simplification" into
+        a blanket ``dirty_wids.add`` for both modes: were that regression
+        introduced, the newly created window's id would land in
+        ``dirty_wids``, the fake edge below would be found, and this
+        assertion would fail."""
+        anchor = _free_anchor(working_file)
+        live = _live_ranges(working_file)
+        dep_wid = live[0][0]
+
+        orig_succs = s6._cascade_succs
+
+        def fake_succs(window_fits, fit_window_map):
+            d = orig_succs(window_fits, fit_window_map)
+            # The new window's id isn't known ahead of time, so point EVERY
+            # live window (including whatever the create mints) at dep_wid.
+            for wf in window_fits:
+                if wf.window_id is not None:
+                    d.setdefault(int(wf.window_id), set()).add(dep_wid)
+            return d
+
+        monkeypatch.setattr(s6, "_cascade_succs", fake_succs)
+
+        orig_core = s6.refit_window_core
+        calls: List[int] = []
+
+        def spy_core(fit_ctx, fit_win, wf, **kwargs):
+            calls.append(int(fit_win.window_id))
+            return orig_core(fit_ctx, fit_win, wf, **kwargs)
+
+        monkeypatch.setattr(s6, "refit_window_core", spy_core)
+
+        result = create_window_impl(str(working_file), anchor)
+
+        assert result.mode == "created"
+        assert dep_wid not in calls
 
 
 # ---------------------------------------------------------------------------

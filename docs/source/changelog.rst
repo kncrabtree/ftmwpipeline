@@ -32,6 +32,22 @@ had to reach into ``_internal`` or parse out of prose to obtain are now
 published, and the Stage 6 edit paths that carry them were collapsed onto one
 engine so they cannot answer differently.
 
+* **A widened window now cascades to its dependents.** ``plan_stage6_window``
+  returns ``mode="widened"`` rather than ``mode="created"`` when a gap cannot
+  hold ``DEFAULT_STAGE6_MIN_WINDOW_HALF_WIDTH_POINTS`` (8) points of new
+  window a side: an *existing* Stage 4 window grows instead, and its existing
+  peak set is refit on the wider grid. ``_batch_apply_create`` marked that
+  window mutated but never dirty, so the combined-cascade pass never touched
+  it -- correct for ``mode="created"``, where a fresh window is a leaf with no
+  outbound dependency edge onto any neighbor, but wrong for ``mode="widened"``,
+  where the window is an established one that can be a freeze source for its
+  neighbors and whose fit just moved on the wider grid. A widened window is
+  now added to ``dirty_wids`` alongside ``mutated_wids`` so the same batch's
+  cascade reaches any dependent that had frozen on the leakage skirt the
+  widening just removed; a created window is unchanged -- mutated but not
+  dirty, still no cascade. ``create_window_impl``'s "No cascade, in either
+  direction" documentation now says this is true of ``mode="created"`` only.
+
 * **Stage 6 offers an amortized review session, and its type is published.**
   Every fit-mutating Stage 6 verb rebuilds the same active-FT fit context
   before it can do anything -- about 420 ms of the ~516 ms an interactive

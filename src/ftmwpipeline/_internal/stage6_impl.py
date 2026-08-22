@@ -3208,12 +3208,17 @@ def create_window_impl(
     is never renumbered, so a consumer partitioning peaks on ``window_id`` sees
     exactly the windows the edit touched.
 
-    **No cascade, in either direction.** The new window reads its neighbors'
-    frozen leakage skirts inward; it contributes no outward dependency edge and
-    no neighbor is re-fit or thawed. A window created for a line the automatic
-    pass missed holds, by construction, a line below the freeze bar, whose own
-    leakage into its neighbors is negligible -- which is what makes the whole
-    operation purely additive in the stage DAG.
+    **No cascade, in either direction -- when a window is actually created.**
+    The new window reads its neighbors' frozen leakage skirts inward; it
+    contributes no outward dependency edge and no neighbor is re-fit or
+    thawed. A window created for a line the automatic pass missed holds, by
+    construction, a line below the freeze bar, whose own leakage into its
+    neighbors is negligible -- which is what makes the whole operation purely
+    additive in the stage DAG. That argument is specific to ``mode="created"``:
+    when the requested anchor instead falls in a gap too narrow to hold a new
+    window and an existing neighbor is widened in its place
+    (``mode="widened"``), that neighbor is an established window whose fit
+    just moved on the wider grid, so it *does* cascade to its dependents.
 
     Parameters
     ----------
@@ -5398,7 +5403,15 @@ def _batch_apply_create(
 ) -> CreateWindowResult:
     """Batch equivalent of :func:`create_window_impl`. Recomputes the effective
     plan (:func:`_batch_effective_plan`) so a second create in the same batch
-    sees the first one, but never rebuilds ``fit_ctx``."""
+    sees the first one, but never rebuilds ``fit_ctx``.
+
+    ``mode="created"`` mints a leaf window with no outbound dependency edge, so
+    it is added to ``mutated_wids`` but never ``dirty_wids`` -- no cascade.
+    ``mode="widened"`` instead grows an existing window and refits its
+    existing peak set on the wider grid, so it is added to *both*: its
+    dependents may have frozen on a leakage skirt that widening just removed,
+    and the cascade must reach them.
+    """
     from ..fitting.result_conversion import sort_fitting_result_by_frequency
     from .active_ft_support import default_tau0_us
 
@@ -5522,6 +5535,14 @@ def _batch_apply_create(
         w.window_id: w for w in _batch_effective_plan(ctx).windows
     }
     ctx.changeset.mutated_wids.add(new_wid)
+    if proposal.mode == "widened":
+        # An existing window whose fit just moved: its dependents may have
+        # frozen on the leakage skirt it no longer has, so it must join the
+        # cascade. A freshly *created* window is a leaf with no outbound
+        # dependency edge (see create_window_impl's "No cascade" paragraph),
+        # so it stays mutated-but-not-dirty -- do NOT collapse this into a
+        # blanket ``dirty_wids.add(new_wid)`` for both modes.
+        ctx.changeset.dirty_wids.add(new_wid)
 
     lo, hi = fit_win.freq_range
     lo, hi = min(lo, hi), max(lo, hi)
