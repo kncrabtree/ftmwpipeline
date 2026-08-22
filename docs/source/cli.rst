@@ -256,12 +256,17 @@ record the change in the decision log: ``edit`` (``--add`` / ``--remove``) and
 naming the line by its ``peak_uid``, which addresses it exactly rather than by
 proximity; ``--add`` is frequency-only. ``edit --window`` is optional when
 ``--add``/``--remove`` is given: the window is then derived from the target
-frequency (or ``uid:N``) by live-window coverage, and a frequency no live
-window covers is an error rather than a silent no-op. A bare ``edit`` (no
-``--add``/``--remove`` -- an identity refit) still requires ``--window``
-explicitly, and naming ``--window`` explicitly on any edit is still checked --
-naming the wrong one is still an error. There is no separate ``merge`` or
-``split`` verb -- an ``--add``
+frequency (or ``uid:N``) by live-window coverage. A ``--remove`` frequency (or
+uid) no live window covers is an error rather than a silent no-op -- a remove
+never implies a create. An ``--add`` frequency no live window covers instead
+**mints the window it needs** (or widens an adjacent one, when the gap is too
+narrow), records it and the add as ONE decision, and applies -- this only
+fires when ``--window`` was omitted; naming ``--window`` and having it not
+cover the frequency is still an error. A bare ``edit`` (no ``--add``/
+``--remove`` -- an identity refit) still requires ``--window`` explicitly, and
+naming ``--window`` explicitly on any edit is still checked -- naming the
+wrong one is still an error. There is no separate ``merge`` or ``split``
+verb -- an ``--add``
 within snap tolerance of a fitted peak is read as a split of it, and removing
 the mutually-close components of one feature while adding one frequency in
 their span is read as a merge. ``apply`` replays a curation CSV of batched

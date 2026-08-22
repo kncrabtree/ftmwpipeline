@@ -32,6 +32,45 @@ had to reach into ``_internal`` or parse out of prose to obtain are now
 published, and the Stage 6 edit paths that carry them were collapsed onto one
 engine so they cannot answer differently.
 
+* **An ``add`` whose frequency no live window covers now implies a create,
+  instead of erroring.** Building directly on the window-derivation above: an
+  ``add`` -- through ``review edit``, its ``api``/``Pipeline``/CLI forms, or a
+  curation file's ``add`` row -- that resolves to no live window now mints the
+  window it needs (or widens an adjacent one, when the gap is too narrow to
+  hold a new one) and applies the add into it, in one call. This only fires
+  when the window was OMITTED; a *named* window that does not cover the
+  frequency is still an error, exactly as before. ``remove`` is unchanged and
+  permanent: a remove never implies a create. Recorded as **ONE** decision-log
+  entry (the ``add`` the caller actually asked for), not a separate
+  ``create_window`` entry plus an ``add`` -- the create is a mechanism the
+  engine chose, not a user decision, and the structural consequence (``mode``,
+  the installed range, its contributors and dependencies) rides on the add's
+  own evidence instead. Undoing that one entry therefore removes the peak
+  *and* the window it implied together, leaving no stray empty window behind
+  -- the reason this shape was chosen over a two-entry alternative. A later,
+  unrelated decision that also lands in the implied window (e.g. a second
+  ``add`` the coverage check now routes into it) is protected by the same
+  orphan guard ``review undo`` already enforces for an explicit
+  ``create_window``: undoing the implying entry without the dependent one is
+  refused, naming both. A resolved plan shows the pending create explicitly
+  (``ReviewPreviewResult.plan`` / ``review apply --dry-run``) via a late-bound
+  placeholder id the execution engine resolves to the create's real minted id
+  before anything is recorded. An implied create that resolves to
+  ``mode="widened"`` cascades to its dependents exactly as an explicit one now
+  does (the entry above); an anchor outside the analysis band still refuses.
+  One case is refused rather than recorded: if the implying ``add`` is
+  reinterpreted against the window it landed in as an inferred merge or split,
+  that applier records its own decision, which carries no record of the create
+  -- and replaying it would add into the window at its pre-widening width.
+  Since an implied create must always be reconstructible from its one log
+  entry, that combination raises, naming the window and pointing at the
+  explicit ``review create`` plus ``review edit`` spelling. Reaching it needs
+  the anchor within snap tolerance of an existing peak in the very window a
+  too-narrow gap just widened; the default window margin is ~51x the snap
+  tolerance, so a peak sits far inside its own window's edge, and the real
+  2638 fit contains no such configuration (the nearest is 40x the tolerance
+  away).
+
 * **A curation edit's window is now derived, not required.** ``window_id`` on
   the ``add``/``remove`` targets of ``review edit`` -- ``api.review_edit``,
   ``Pipeline.review_edit``, ``ReviewSession.review_edit``, and the CLI's

@@ -183,13 +183,21 @@ applied exactly as typed. The decision log reports which reading was used
 consumer of the log sees a physics-aware reseed rather than a literal add/remove pair.
 All edits carry ``user`` provenance.
 
-``review edit --add`` requires that the frequency lie inside the named window. A
-frequency **no window covers** is a different situation, and it has its own verb.
+``review edit --add`` requires the frequency to lie inside the window when you
+*name* one — naming the wrong window is an error, not a redirection. With
+``--window`` omitted the window is derived from the frequency instead (windows
+never overlap, so at most one covers it), and a frequency **no live window
+covers** is not an error there: the window it needs is created as part of the
+same edit. See :doc:`fit_curation` for the rules and the curation-file form.
 
 Creating a window
 ~~~~~~~~~~~~~~~~~
 
-- ``review create --at F`` — install a fit window covering ``F``.
+- ``review create --at F`` — install a fit window covering ``F``, as an
+  explicit, structural-only step. Creating one implicitly, as a side effect of
+  the ``add`` that needs it, is usually what you want instead; this verb
+  remains for pinning a window's id (what a replay writes) and for installing
+  structure now to fill later.
 
 Windows come from Stage 4, which builds them around the lines Stage 3 *promoted*.
 A real line the detector missed therefore has no window to edit, and reaching it by

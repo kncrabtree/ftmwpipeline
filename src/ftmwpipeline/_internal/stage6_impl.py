@@ -2538,9 +2538,21 @@ def _derive_review_edit_window_id(
     path: str,
     add: Sequence[float],
     remove: Sequence[Union[float, PeakUidToken]],
-) -> int:
+) -> Tuple[Optional[int], Optional[float]]:
     """Derive the single live window every ``add``/``remove`` target in one
-    ``review edit`` call resolves to.
+    ``review edit`` call resolves to -- or, when the call is exactly one
+    ``add`` and nothing else and that one frequency is uncovered, the anchor
+    for W3's implied create.
+
+    Returns ``(window_id, implied_create_anchor)``, exactly one not ``None``:
+    a concrete id when every target resolves (the W2 case, unchanged), or an
+    anchor when the sole target is one uncovered ``add`` (W3). ``remove``
+    NEVER implies a create -- an uncovered ``remove`` is a permanent error,
+    named below -- and a call mixing an uncovered ``add`` with any other
+    target (another ``add``, or any ``remove``) is refused with today's
+    per-target error rather than guessing which of several possible creates
+    the caller meant: ``RefitWindowResult`` is a per-window result, so only
+    the single-add shape has an unambiguous single window to bind to.
 
     ``window_id`` stays REQUIRED for a bare edit (``add`` and ``remove`` both
     empty -- an identity refit names the window it re-converges; it is the
@@ -2558,11 +2570,17 @@ def _derive_review_edit_window_id(
             "identity refit names the window it re-converges); pass a "
             "window id explicitly"
         )
+    # Only a call shaped as exactly one add and nothing else has an
+    # unambiguous single window to bind an implied create to -- see the
+    # docstring above.
+    eligible_for_implied_create = len(add) == 1 and not remove
     fit = _load_current_spectrum_fit(path)
     resolutions: List[Tuple[str, int]] = []
     for f in add:
         wid = _window_for_curation_token(fit, f)
         if wid is None:
+            if eligible_for_implied_create:
+                return None, float(f)
             raise ValueError(
                 f"add={float(f):.4f} MHz is not covered by any live window "
                 f"(windows are disjoint); create a window at this "
@@ -2597,7 +2615,7 @@ def _derive_review_edit_window_id(
             f"({detail}); issue separate 'review edit' calls, one per "
             f"window, or pass a window id explicitly"
         )
-    return next(iter(wids))
+    return next(iter(wids)), None
 
 
 def refit_window_impl(
@@ -2647,11 +2665,18 @@ def refit_window_impl(
         Optional (``None``, the default) when ``add`` or ``remove`` is
         non-empty: the window is then derived from the target frequencies
         (or ``"uid:N"`` identifiers) by live-window coverage -- see
-        :func:`_derive_review_edit_window_id`. A bare edit (``add`` and
-        ``remove`` both empty -- an identity refit) still REQUIRES it
-        explicitly, since there the window is the operand, not a coordinate
-        for something else. A *named* window is still checked: naming the
-        wrong one is still an error, exactly as before.
+        :func:`_derive_review_edit_window_id`. When the call is exactly one
+        ``add`` and nothing else and that frequency is covered by no live
+        window, the window it needs is minted (or an adjacent one widened)
+        and the add applied into it, as ONE decision -- W3, see
+        :func:`_finish_implied_create_edit`; a ``remove`` never implies a
+        create, and a call mixing more than one uncovered target is refused
+        rather than guessing. A bare edit (``add`` and ``remove`` both
+        empty -- an identity refit) still REQUIRES it explicitly, since
+        there the window is the operand, not a coordinate for something
+        else. A *named* window is still checked: naming the wrong one is
+        still an error, exactly as before -- the implied create fires only
+        when the window was OMITTED.
     add :
         Molecular frequencies (MHz) of peaks to add, as ``float`` or a numeric
         ``str`` (the CLI passes strings).  Each is snapped to the nearest
@@ -2660,12 +2685,12 @@ def refit_window_impl(
         peaks carry ``origin="user"`` and are stamped with the
         ``order_index`` of the decision that added them
         (:attr:`~ftmwpipeline.core.data_structures.FittedPeak.derivation`).
-        The post-snap frequency must lie inside the window's own
-        ``freq_range``; a frequency no window covers needs
-        :func:`create_window_impl` first.  ``add`` is frequency-only: a
-        ``"uid:N"`` token is refused (see :func:`~ftmwpipeline.core.curation.
-        parse_peak_token`) -- a uid names a peak that already exists, and
-        ``add`` has none.
+        The post-snap frequency must lie inside the (named) window's own
+        ``freq_range``; with ``window_id`` omitted and no live window
+        covering it, see W3 above instead of :func:`create_window_impl`.
+        ``add`` is frequency-only: a ``"uid:N"`` token is refused (see
+        :func:`~ftmwpipeline.core.curation.parse_peak_token`) -- a uid names
+        a peak that already exists, and ``add`` has none.
     remove :
         Frequencies (MHz, ``float`` or numeric ``str``) or ``"uid:N"``
         identifier tokens of fitted peaks to remove; the two may be mixed in
@@ -2716,9 +2741,14 @@ def refit_window_impl(
         outside the named window's ``freq_range`` after snapping,
         ``frame`` is omitted on a ``self_calibrated`` file with a non-empty
         ``add``/``remove``, ``window_id`` is omitted with ``add`` and
-        ``remove`` both empty, an omitted ``window_id``'s target frequency
-        (or ``"uid:N"``) is not covered by any live window, or several
-        omitted-window targets in one call resolve to different windows.
+        ``remove`` both empty, an omitted ``window_id``'s ``remove`` target
+        (frequency or ``"uid:N"``) is not covered by any live window
+        (permanent -- a remove never implies a create), an omitted
+        ``window_id``'s uncovered ``add`` target is not the call's sole
+        target (mixed with another ``add`` or any ``remove``), several
+        omitted-window targets in one call resolve to different windows, or
+        the sole uncovered ``add``'s implied create anchor falls outside the
+        analysis band.
     """
     # Checked before the batch opens so a malformed call cannot even take the
     # undo baseline: a refused edit must leave the file untouched. The applier
@@ -2753,16 +2783,50 @@ def refit_window_impl(
             for t in remove_raw
         ]
 
-    resolved_window_id: int = (
-        window_id
-        if window_id is not None
-        else _derive_review_edit_window_id(path, add_raw, remove_raw)
-    )
+    resolved_window_id: Optional[int]
+    implied_anchor: Optional[float]
+    if window_id is not None:
+        resolved_window_id, implied_anchor = window_id, None
+    else:
+        resolved_window_id, implied_anchor = _derive_review_edit_window_id(
+            path, add_raw, remove_raw
+        )
+
+    if implied_anchor is not None:
+        # W3: the sole add target is uncovered by any live window -- mint
+        # (or widen) the window it needs, then apply the edit into it, as
+        # ONE decision-log entry (the add), not two. See
+        # scratch/intent-driven-windowing-plan.md, W3 'Shape'.
+        anchor: float = implied_anchor
+
+        def _apply_implied(ctx: _BatchCtx) -> RefitWindowResult:
+            created = _batch_apply_create(
+                ctx,
+                anchor,
+                replay_window_id=None,
+                snap_tol_mhz=snap_tol,
+                record_decision=False,
+            )
+            return _finish_implied_create_edit(
+                ctx,
+                created,
+                add_raw,
+                remove_raw,
+                add_seeds=add_seeds,
+                snap_tol_mhz=snap_tol,
+            )
+
+        return _run_single_action(
+            path, _apply_implied, snap_tol_mhz=snap_tol, shared=_shared
+        )
+
+    assert resolved_window_id is not None
+    edit_window_id: int = resolved_window_id
     return _run_single_action(
         path,
         lambda ctx: _batch_apply_edit_action(
             ctx,
-            resolved_window_id,
+            edit_window_id,
             add_raw,
             remove_raw,
             add_seeds=add_seeds,
@@ -3454,6 +3518,37 @@ to a concrete live-window id by :func:`_resolve_curation_window_ids` before
 :func:`_resolve_curation_plan` ever sees it -- unlike ``_NEW_WINDOW_SENTINEL``,
 this value never reaches a :class:`PlannedAction` or the decision log."""
 
+_FIRST_IMPLIED_WINDOW_ID = -3
+"""W3: the first of a stream of unique negative *correlation* ids
+(``_FIRST_IMPLIED_WINDOW_ID``, ``_FIRST_IMPLIED_WINDOW_ID - 1``, ...)
+:func:`_resolve_curation_window_ids` mints when an ``add`` row's frequency is
+covered by no live window. That row is expanded into a ``create`` op and an
+``add`` op sharing one fresh correlation id as their ``window_id`` -- late
+binding for the id the create will actually mint (or widen), which is not
+known until execution. Distinct from ``_NEW_WINDOW_SENTINEL`` (an EXPLICIT,
+unpinned ``create`` row -- unpinned because the caller does not care which id
+it gets, not because something else needs to find it again) and
+``_DERIVE_WINDOW_SENTINEL`` (resolved away before this point): a correlation
+id is a private handshake between exactly one ``create``/``add`` pair, unique
+per pair so several implied creates in one plan cannot cross-wire, and it
+never reaches the decision log -- see :func:`_resolve_curation_window_ids`,
+:func:`_execute_curation_batch`, and :func:`_run_review_preview`, which each
+resolve it to the create's real minted id before recording anything. A
+REPLAYED implied create (:func:`_decision_to_op`) does not need this: the
+decision log already carries the concrete, pinned id, so ``window_id`` there
+is real from the start -- ``PlannedAction.implied_create`` (not the id) is
+what signals "one merged decision" on that path.
+"""
+
+
+def _is_implied_window_id(window_id: int) -> bool:
+    """Whether *window_id* is one of the fresh, not-yet-real correlation
+    placeholders :data:`_FIRST_IMPLIED_WINDOW_ID` starts -- true only before
+    the paired ``create`` action has run and the real id is known. Never true
+    of a REPLAYED implied create, whose ``window_id`` is already the real,
+    pinned id (see :data:`_FIRST_IMPLIED_WINDOW_ID`'s docstring)."""
+    return window_id <= _FIRST_IMPLIED_WINDOW_ID
+
 
 @dataclass
 class CurationOp:
@@ -3483,6 +3578,16 @@ class CurationOp:
         ``key=value`` modifiers (``into`` for split, ``candidate`` for accept).
     line_no : int
         1-based source line, for diagnostics.
+    implied_create : bool
+        W3. ``True`` on the synthesized ``create``/``add`` pair
+        :func:`_resolve_curation_window_ids` builds from one uncovered
+        ``add`` row (or :func:`_decision_to_op` rebuilds from a replayed
+        decision carrying ``created_window`` evidence) -- signals that the
+        pair must record ONE decision (the add), not the create's own
+        separate ``create_window`` entry plus the add's. ``False`` (the
+        default) for everything else, including an ordinary EXPLICIT
+        ``create`` row followed by its own, separately-decided ``add`` row on
+        the same window id -- that pair is two decisions, unaffected.
     """
 
     action: str
@@ -3490,6 +3595,7 @@ class CurationOp:
     freqs: List[Union[float, PeakUidToken]]
     params: Dict[str, str]
     line_no: int
+    implied_create: bool = False
 
 
 @dataclass
@@ -3561,6 +3667,16 @@ class PlannedAction:
     """``create`` only: the molecular frequency (MHz) the new window must cover.
     Its ``window_id`` is :data:`_NEW_WINDOW_SENTINEL` when the source did not
     name one, and otherwise the id the action is expected to produce."""
+    implied_create: bool = False
+    """W3. ``True`` on both halves of an implied create/edit pair -- see
+    :attr:`CurationOp.implied_create`, which this is copied from by
+    :func:`_resolve_curation_plan`. On the ``create`` half, its ``window_id``
+    is either a fresh correlation id (a pair :func:`_resolve_curation_window_
+    ids` just synthesized -- see :data:`_FIRST_IMPLIED_WINDOW_ID`) or the
+    real, pinned id a decision-log replay recorded; either way execution
+    (:func:`_execute_curation_batch`, :func:`_run_review_preview`) suppresses
+    the create's own decision and records ONE ``"add"`` entry from the edit
+    half instead, carrying the structural consequence on its evidence."""
 
 
 @dataclass
@@ -3868,18 +3984,35 @@ def _resolve_curation_window_ids(
     a window id to coalesce on), costing one refit per row instead of one for
     the run. See :func:`_window_for_curation_token` for the shared,
     live-windows-only resolver (THE RULE: never a global nearest-peak
-    search). A frequency (converted to the raw frame first, since window
-    ranges are stored raw) that no live window covers is an error naming the
-    frequency and line, pointing at ``review create``; a ``"uid:N"`` token
-    unmatched in any window is an error naming the uid and line. A row that
-    already names a window -- including a ``"new"``/``"auto"`` token on a
-    ``create`` row, which is the unrelated :data:`_NEW_WINDOW_SENTINEL` --
-    is returned unchanged.
+    search).
+
+    A ``remove`` (frequency or ``"uid:N"``) that no live window covers is an
+    error naming it and the line -- PERMANENT: a remove never implies a
+    create.
+
+    W3: an ``add`` whose frequency (converted to the raw frame first, since
+    window ranges are stored raw) is covered by no live window instead
+    IMPLIES a create -- this ONE row is expanded into TWO ops sharing a fresh
+    negative correlation id (:data:`_FIRST_IMPLIED_WINDOW_ID`) as their
+    ``window_id`` and ``implied_create=True``: a ``create`` op anchored at
+    the row's own frequency, immediately followed by the original ``add`` op
+    (window id swapped from the sentinel to the correlation id). Because the
+    correlation id is unique to this one pair, :func:`_resolve_curation_plan`
+    -- UNCHANGED -- coalesces the ``add`` half into its own dedicated
+    ``PlannedAction`` exactly as it would any other window's row, and
+    :func:`_canonicalize_batch_plan` -- also unchanged -- still hoists the
+    ``create`` half first; only :func:`_execute_curation_batch` and
+    :func:`_run_review_preview` know the id is a placeholder and resolve it
+    to whatever the create actually mints (or widens) before applying the
+    edit. A row that already names a window -- including a ``"new"``/
+    ``"auto"`` token on a ``create`` row, which is the unrelated
+    :data:`_NEW_WINDOW_SENTINEL` -- is returned unchanged.
     """
     if not any(op.window_id == _DERIVE_WINDOW_SENTINEL for op in ops):
         return list(ops)
     fit = _load_current_spectrum_fit(path)
     resolved: List[CurationOp] = []
+    next_implied_id = _FIRST_IMPLIED_WINDOW_ID
     for op in ops:
         if op.window_id != _DERIVE_WINDOW_SENTINEL:
             resolved.append(op)
@@ -3894,17 +4027,33 @@ def _resolve_curation_window_ids(
                     f"from a fit predating peak_uid, or the identifier is "
                     f"wrong)"
                 )
-        else:
-            freq_raw = _frame_to_raw(float(token), frame=frame, stamp=stamp)
-            wid = _window_for_curation_token(fit, freq_raw)
-            if wid is None:
+            resolved.append(replace(op, window_id=wid))
+            continue
+        freq_raw = _frame_to_raw(float(token), frame=frame, stamp=stamp)
+        wid = _window_for_curation_token(fit, freq_raw)
+        if wid is None:
+            if op.action != "add":
                 raise ValueError(
                     f"curation line {op.line_no}: {op.action} "
                     f"{float(token):.4f} MHz is not covered by any live "
-                    f"window (windows are disjoint); create a window at "
-                    f"this frequency first with 'review create', or name "
-                    f"the window explicitly"
+                    f"window (windows are disjoint); nothing to remove "
+                    f"there"
                 )
+            # W3: implied create -- see the docstring above.
+            correlation_id = next_implied_id
+            next_implied_id -= 1
+            resolved.append(
+                CurationOp(
+                    action="create",
+                    window_id=correlation_id,
+                    freqs=[token],
+                    params={},
+                    line_no=op.line_no,
+                    implied_create=True,
+                )
+            )
+            resolved.append(replace(op, window_id=correlation_id, implied_create=True))
+            continue
         resolved.append(replace(op, window_id=wid))
     return resolved
 
@@ -3937,6 +4086,13 @@ def _resolve_curation_plan(ops: Sequence[CurationOp]) -> List[PlannedAction]:
 
     ``create`` never coalesces: it installs structure the rows after it name, so
     it stands alone and in order.
+
+    W3: ``op.implied_create`` is copied onto the resulting :class:`PlannedAction`
+    unchanged -- this function does not otherwise know or care what it means,
+    only that it rides along (see :attr:`PlannedAction.implied_create`). An
+    implied pair's unique correlation id (or, on replay, its real pinned id)
+    means no OTHER op can ever land in the same ``pending`` group, so the flag
+    set when a group is first opened is always the group's only value.
     """
     plan: List[PlannedAction] = []
     pending: Dict[int, PlannedAction] = {}
@@ -3954,14 +4110,19 @@ def _resolve_curation_plan(ops: Sequence[CurationOp]) -> List[PlannedAction]:
         if op.action == "create":
             plan.append(
                 PlannedAction(
-                    kind="create", window_id=wid, anchor=_assert_plain_freq(op.freqs[0])
+                    kind="create",
+                    window_id=wid,
+                    anchor=_assert_plain_freq(op.freqs[0]),
+                    implied_create=op.implied_create,
                 )
             )
             continue
         if op.action in ("add", "remove"):
             pa = pending.get(wid)
             if pa is None:
-                pa = PlannedAction(kind="edit", window_id=wid)
+                pa = PlannedAction(
+                    kind="edit", window_id=wid, implied_create=op.implied_create
+                )
                 pending[wid] = pa
                 pending_order.append(wid)
             if op.action == "add":
@@ -4014,9 +4175,22 @@ def describe_planned_action(action: PlannedAction) -> str:
     """Render one :class:`PlannedAction` as a one-line human-readable summary."""
     wid = action.window_id
     if action.kind == "create":
-        target = "a new window" if wid == _NEW_WINDOW_SENTINEL else f"window {wid}"
+        # A fresh W3 correlation id (_is_implied_window_id) is never a real
+        # window id, just like _NEW_WINDOW_SENTINEL -- both read as "a new
+        # window" here. A REPLAYED implied create's window_id is already the
+        # real, pinned id, so it prints exactly like any other pinned create.
+        target = (
+            "a new window"
+            if wid == _NEW_WINDOW_SENTINEL or _is_implied_window_id(wid)
+            else f"window {wid}"
+        )
         return f"create {target}: anchor {float(action.anchor or 0.0):.4f}"
     if action.kind == "edit":
+        wid_label = (
+            "the window this add creates"
+            if _is_implied_window_id(wid)
+            else f"window {wid}"
+        )
         parts = []
         if action.add:
             parts.append("add " + ", ".join(f"{f:.4f}" for f in action.add))
@@ -4024,7 +4198,7 @@ def describe_planned_action(action: PlannedAction) -> str:
             parts.append(
                 "remove " + ", ".join(_fmt_remove_token(t) for t in action.remove)
             )
-        return f"edit window {wid}: " + "; ".join(parts)
+        return f"edit {wid_label}: " + "; ".join(parts)
     if action.kind == "merge":
         return f"merge window {wid}: peaks " + ", ".join(
             f"{f:.4f}" for f in action.peaks
@@ -5646,6 +5820,7 @@ def _batch_apply_create(
     *,
     replay_window_id: Optional[int],
     snap_tol_mhz: float,
+    record_decision: bool = True,
 ) -> CreateWindowResult:
     """Batch equivalent of :func:`create_window_impl`. Recomputes the effective
     plan (:func:`_batch_effective_plan`) so a second create in the same batch
@@ -5657,6 +5832,13 @@ def _batch_apply_create(
     existing peak set on the wider grid, so it is added to *both*: its
     dependents may have frozen on a leakage skirt that widening just removed,
     and the cascade must reach them.
+
+    ``record_decision=False`` (W3) suppresses this create's own
+    ``"create_window"`` decision entry -- for an IMPLIED create, whose caller
+    (:func:`_finish_implied_create_edit`) records ONE ``"add"`` entry for the
+    whole create+edit pair instead, carrying the structural consequence on
+    its own evidence rather than a separate entry. ``True`` (the default) is
+    every other caller, unaffected.
     """
     from ..fitting.result_conversion import sort_fitting_result_by_frequency
     from .active_ft_support import default_tau0_us
@@ -5795,22 +5977,23 @@ def _batch_apply_create(
     grid_span = fit_win.diagnostics.get("grid_span", [0, -1])
     n_points = int(grid_span[1]) - int(grid_span[0]) + 1
 
-    ctx.changeset.decisions.append(
-        {
-            "window_id": new_wid,
-            "frequency_mhz": anchor,
-            "kind": "create_window",
-            "evidence": {
-                "mode": proposal.mode,
-                "freq_min_mhz": lo,
-                "freq_max_mhz": hi,
-                "n_points": n_points,
-                "n_contributors": len(fit_win.fixed_contributors),
-                "depends_on": [int(d) for d in proposal.depends_on],
-            },
-        }
-    )
-    ctx.changeset.next_decision_index += 1
+    if record_decision:
+        ctx.changeset.decisions.append(
+            {
+                "window_id": new_wid,
+                "frequency_mhz": anchor,
+                "kind": "create_window",
+                "evidence": {
+                    "mode": proposal.mode,
+                    "freq_min_mhz": lo,
+                    "freq_max_mhz": hi,
+                    "n_points": n_points,
+                    "n_contributors": len(fit_win.fixed_contributors),
+                    "depends_on": [int(d) for d in proposal.depends_on],
+                },
+            }
+        )
+        ctx.changeset.next_decision_index += 1
 
     probe_freq_mhz = ctx.shared.fit_ctx.probe_freq_mhz
     epsilon = ctx.shared.epsilon
@@ -5836,6 +6019,108 @@ def _batch_apply_create(
     )
 
 
+def _finish_implied_create_edit(
+    ctx: _BatchCtx,
+    created: CreateWindowResult,
+    add: Sequence[float],
+    remove: Sequence[Union[float, PeakUidToken]],
+    *,
+    add_seeds: Optional[List[ModelPeak]] = None,
+    snap_tol_mhz: float,
+) -> RefitWindowResult:
+    """W3: the edit half of an implied create -- apply *add*/*remove* into
+    the window *created* just minted (or widened), then record the ONE
+    decision the whole create+edit pair gets: the add, with the structural
+    consequence on its own evidence rather than a separate ``create_window``
+    entry. See ``scratch/intent-driven-windowing-plan.md``, W3 'Shape'.
+
+    *created* comes from a caller's own :func:`_batch_apply_create` call
+    (with ``record_decision=False``) immediately before this -- kept as a
+    separate step rather than folded in here so a curation-plan batch can
+    attribute a CREATE-side failure (anchor outside the analysis band, or an
+    anchor a concurrent create in the same batch already claims) to the
+    ``create`` action, and an EDIT-side failure to the ``edit`` action, per
+    :func:`_execute_curation_batch` / :func:`_run_review_preview`'s existing
+    per-action error attribution.
+
+    Suppresses the edit's own default per-frequency decisions
+    (``record_decisions=False``) and appends the merged entry itself.
+
+    **The invariant this upholds: an implied create ALWAYS records
+    ``created_window``.** Replay depends on it -- `_decision_to_op` needs that
+    evidence to reissue the create op before the add, and without it a replay
+    adds into the window at its *base plan* width, which is either a hard
+    error partway through a replay (leaving the file rolled back with its log
+    emptied, the failure ``df3f289`` fixed) or a silently wrong seed.
+
+    One path could break it: :func:`_batch_apply_edit_action` can reinterpret
+    this add against the window it landed in -- for ``mode="widened"``, a
+    non-empty one -- as an inferred merge/split, and those appliers record
+    their OWN decision regardless of ``record_decisions``, which would carry
+    no ``created_window``. That is refused here rather than recorded wrong.
+
+    Reaching the refusal requires the anchor to land within snap tolerance of
+    an existing peak in the very window a too-narrow gap just widened, and
+    the geometry works against it: ``min_window_half_width_points`` (32) is
+    ~51x the snap tolerance in points (0.625), so a peak sits tens of
+    snap-tolerances inside its own window's edge, and the one mechanism that
+    does put a peak near a boundary -- a midpoint split between two close
+    detections -- leaves the windows ADJACENT, with no gap for an uncovered
+    anchor to fall in. Measured on the real 2638 fit: zero reachable
+    configurations, the nearest 40x the snap tolerance away. Refusing costs a
+    user in that position nothing they cannot do by naming the window
+    explicitly.
+    """
+    n_before = len(ctx.changeset.decisions)
+    result = _batch_apply_edit_action(
+        ctx,
+        created.window_id,
+        add,
+        remove,
+        add_seeds=add_seeds,
+        record_decisions=False,
+        snap_tol_mhz=snap_tol_mhz,
+    )
+    if len(ctx.changeset.decisions) != n_before:
+        # An applier recorded its own entry, which carries no
+        # ``created_window`` -- see this function's docstring. Refuse rather
+        # than persist a decision the replay cannot reconstruct the create
+        # from.
+        raise ValueError(
+            f"add={float(add[0]):.4f} MHz implies creating a window, but "
+            f"inside window {created.window_id} (mode='{created.mode}') it "
+            f"was reinterpreted as an edit of an existing peak, which cannot "
+            f"record the implied create for replay. Name the window "
+            f"explicitly with a separate 'review create' plus 'review edit' "
+            f"if that reinterpretation is what you want."
+        )
+    anchor_for_entry = float(add[0]) if add else float(created.anchor_mhz)
+    ctx.changeset.decisions.append(
+        {
+            "window_id": created.window_id,
+            "frequency_mhz": anchor_for_entry,
+            "kind": "add",
+            "evidence": {
+                "chi2r_before": result.chi2r_before,
+                "chi2r_after": result.chi2r_after,
+                "n_peaks_before": result.n_peaks_before,
+                "n_peaks_after": result.n_peaks_after,
+                "inferred": True,
+                "created_window": {
+                    "mode": created.mode,
+                    "freq_min_mhz": created.freq_range[0],
+                    "freq_max_mhz": created.freq_range[1],
+                    "n_points": created.n_points,
+                    "n_contributors": created.n_contributors,
+                    "depends_on": list(created.depends_on),
+                },
+            },
+        }
+    )
+    ctx.changeset.next_decision_index += 1
+    return result
+
+
 def _canonicalize_batch_plan(
     plan: Sequence[PlannedAction],
 ) -> List[Tuple[int, PlannedAction]]:
@@ -5843,7 +6128,25 @@ def _canonicalize_batch_plan(
     execution: creates first (their own relative order -- they install
     structure later rows name), then every other action grouped by ascending
     window id. ``sorted`` is stable, so two actions sharing a window id keep
-    the relative order ``_resolve_curation_plan`` already gave them."""
+    the relative order ``_resolve_curation_plan`` already gave them.
+
+    W3, deliberately UNCHANGED: an implied edit's ``window_id`` is either a
+    fresh negative correlation id (:data:`_FIRST_IMPLIED_WINDOW_ID`, a fresh
+    fit) or a real pinned id (a decision-log replay) -- neither is "not yet
+    known" from this function's point of view, so the existing sort key
+    (``window_id`` itself) still orders it deterministically; it just sorts
+    a correlation id ahead of every real, non-negative window id, clustering
+    same-batch implied edits together ahead of ordinary ones. That is safe
+    because "creates first" (above) already guarantees every ``create`` --
+    implied or not -- has run, and so every correlation id is resolvable to
+    its real window, before ANY ``rest`` action executes; and because windows
+    are independent, so the exact relative order among different-window edits
+    in ``rest`` affects the decision log's presentation order, never a fit's
+    numerical outcome. What genuinely could not be known here is the real
+    window an implied create MINTS -- that late binding is resolved at
+    execution time (:func:`_execute_curation_batch`, :func:`_run_review_preview`),
+    not by this function, which only ever schedules.
+    """
     indexed = list(enumerate(plan))
     creates = [t for t in indexed if t[1].kind == "create"]
     rest = sorted(
@@ -6246,29 +6549,58 @@ def _execute_curation_batch(
     ctx = _open_batch(path, snap_tol_mhz=snap_tol_mhz, shared=shared)
 
     applied = 0
+    # W3: created.window_id of every implied create this batch has run so
+    # far, keyed by the create action's own window_id (a fresh correlation
+    # id on a fresh implied create, or the real pinned id on a replayed one
+    # -- either way, "creates first" canonicalization guarantees the paired
+    # edit action below finds its entry already here). Popped as consumed,
+    # so a later, UNRELATED action that happens to share a replayed
+    # implied-create's real window id (e.g. a plain edit on the same window
+    # from a different decision) falls through to the ordinary path.
+    implied_creates: Dict[int, CreateWindowResult] = {}
     for original_index, action in _canonicalize_batch_plan(plan):
         try:
             if action.kind == "create":
                 if action.anchor is None:
                     raise ValueError("create action requires an anchor frequency")
-                _batch_apply_create(
+                created = _batch_apply_create(
                     ctx,
                     action.anchor,
                     replay_window_id=(
                         None
                         if action.window_id == _NEW_WINDOW_SENTINEL
+                        or _is_implied_window_id(action.window_id)
                         else action.window_id
                     ),
                     snap_tol_mhz=snap_tol_mhz,
+                    record_decision=not action.implied_create,
                 )
+                if action.implied_create:
+                    implied_creates[action.window_id] = created
             elif action.kind == "edit":
-                _batch_apply_edit_action(
-                    ctx,
-                    action.window_id,
-                    action.add,
-                    action.remove,
-                    snap_tol_mhz=snap_tol_mhz,
-                )
+                if action.implied_create:
+                    implied = implied_creates.pop(action.window_id, None)
+                    if implied is None:
+                        raise ValueError(
+                            f"internal: no matching implied create for "
+                            f"window {action.window_id} (canonicalization "
+                            f"should always run creates first)"
+                        )
+                    _finish_implied_create_edit(
+                        ctx,
+                        implied,
+                        action.add,
+                        action.remove,
+                        snap_tol_mhz=snap_tol_mhz,
+                    )
+                else:
+                    _batch_apply_edit_action(
+                        ctx,
+                        action.window_id,
+                        action.add,
+                        action.remove,
+                        snap_tol_mhz=snap_tol_mhz,
+                    )
             elif action.kind == "merge":
                 _batch_apply_merge(
                     ctx, action.window_id, action.peaks, snap_tol_mhz=snap_tol_mhz
@@ -6610,6 +6942,10 @@ def _run_review_preview(
     }
 
     action_indices: Dict[int, List[int]] = {}
+    # W3: see the matching dict in _execute_curation_batch for what this
+    # tracks and why it is safe to key by action.window_id in both the
+    # fresh (correlation id) and replayed (real pinned id) cases.
+    implied_creates: Dict[int, CreateWindowResult] = {}
     for original_index, action in _canonicalize_batch_plan(plan):
         try:
             if action.kind == "create":
@@ -6621,20 +6957,42 @@ def _run_review_preview(
                     replay_window_id=(
                         None
                         if action.window_id == _NEW_WINDOW_SENTINEL
+                        or _is_implied_window_id(action.window_id)
                         else action.window_id
                     ),
                     snap_tol_mhz=snap_tol,
+                    record_decision=not action.implied_create,
                 )
                 action_indices.setdefault(created.window_id, []).append(original_index)
+                if action.implied_create:
+                    implied_creates[action.window_id] = created
             elif action.kind == "edit":
-                _batch_apply_edit_action(
-                    ctx,
-                    action.window_id,
-                    action.add,
-                    action.remove,
-                    snap_tol_mhz=snap_tol,
-                )
-                action_indices.setdefault(action.window_id, []).append(original_index)
+                if action.implied_create:
+                    implied = implied_creates.pop(action.window_id, None)
+                    if implied is None:
+                        raise ValueError(
+                            f"internal: no matching implied create for "
+                            f"window {action.window_id} (canonicalization "
+                            f"should always run creates first)"
+                        )
+                    _finish_implied_create_edit(
+                        ctx,
+                        implied,
+                        action.add,
+                        action.remove,
+                        snap_tol_mhz=snap_tol,
+                    )
+                    target_wid = implied.window_id
+                else:
+                    _batch_apply_edit_action(
+                        ctx,
+                        action.window_id,
+                        action.add,
+                        action.remove,
+                        snap_tol_mhz=snap_tol,
+                    )
+                    target_wid = action.window_id
+                action_indices.setdefault(target_wid, []).append(original_index)
             elif action.kind == "merge":
                 _batch_apply_merge(
                     ctx, action.window_id, action.peaks, snap_tol_mhz=snap_tol
@@ -6790,10 +7148,38 @@ def _decision_to_op(entry: DecisionLogEntry) -> List[CurationOp]:
     original seeds exactly. A decision recorded before this inference existed
     carries no ``inferred`` key at all, so it is unaffected and keeps
     replaying through the verb form exactly as it always has.
+
+    W3: an ``add`` entry whose evidence carries ``created_window`` (the
+    ONE-entry shape an implied create records) replays as a ``create``
+    immediately followed by the original ``add``, BOTH pinned to the
+    entry's own ``window_id`` and both flagged ``implied_create=True`` --
+    exactly as the ``create_window`` branch below pins an explicit create's
+    replay, and NEVER re-inferring: re-inference could mint a different id
+    than the one this entry (and any surviving decision naming the same
+    window) still depends on.
     """
     wid = entry.window_id
     kind = entry.kind
     if kind in ("add", "remove"):
+        if kind == "add" and entry.evidence.get("created_window") is not None:
+            return [
+                CurationOp(
+                    "create",
+                    wid,
+                    [float(entry.frequency_mhz)],
+                    {},
+                    0,
+                    implied_create=True,
+                ),
+                CurationOp(
+                    "add",
+                    wid,
+                    [float(entry.frequency_mhz)],
+                    {},
+                    0,
+                    implied_create=True,
+                ),
+            ]
         return [CurationOp(kind, wid, [float(entry.frequency_mhz)], {}, 0)]
     if kind == "create_window":
         # Carry the id the original create produced: replay re-derives the
@@ -6910,17 +7296,31 @@ def review_undo_impl(
     # Undoing a window creation orphans every decision made against that window:
     # replaying them would fail partway through, leaving the file half-rolled-back.
     # Refuse up front and name the ids the caller has to undo along with it.
-    dropped_windows = {
-        int(e.window_id) for e in removed if e.kind == "create_window"
-    } - {int(e.window_id) for e in surviving if e.kind == "create_window"}
+    #
+    # W3: an "add" entry carrying created_window evidence ALSO installs a
+    # window (an implied create, W3's one-entry shape -- see _decision_to_op
+    # and _finish_implied_create_edit), so it must count here exactly like an
+    # explicit "create_window" entry. Otherwise: add at X (implies window W),
+    # a later add at Y resolves into W by W2's live-window coverage, then
+    # undoing the first drops W out from under the second and the replay
+    # fails partway -- precisely the failure this guard exists to refuse.
+    def _installs_window(e: DecisionLogEntry) -> bool:
+        return e.kind == "create_window" or (
+            e.kind == "add" and e.evidence.get("created_window") is not None
+        )
+
+    dropped_windows = {int(e.window_id) for e in removed if _installs_window(e)} - {
+        int(e.window_id) for e in surviving if _installs_window(e)
+    }
     orphaned = sorted(
         e.order_index for e in surviving if int(e.window_id) in dropped_windows
     )
     if orphaned:
         raise ValueError(
             f"cannot undo: decision(s) {orphaned} act on window(s) "
-            f"{sorted(dropped_windows)}, which the undone 'create_window' "
-            f"decision(s) installed. Undo them together."
+            f"{sorted(dropped_windows)}, which the undone decision(s) "
+            f"installed (a 'create_window' decision, or an implied create on "
+            f"an 'add'). Undo them together."
         )
 
     has_fit_edits = any(e.kind in _FIT_EDIT_KINDS for e in log)

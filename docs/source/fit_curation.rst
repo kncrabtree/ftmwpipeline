@@ -315,16 +315,26 @@ beginning with ``#`` are ignored, and a leading header row is optional.
 On an ``add`` or ``remove`` row, the ``window`` column is optional: leave it
 blank (or write ``new``, ``auto``, or ``-``) and the window is derived from
 the row's own frequency (or ``uid:N``, below) instead of named -- the live
-window whose range covers it, since windows never overlap. A frequency no
-live window covers is an error naming it, rather than a silent do-nothing;
-``remove`` in particular never implies creating a window, since there is
-nothing there to remove. A run of several omitted-window rows that resolve to
-the same window still coalesces into one edit, exactly as a run of
-explicitly-named rows does. Naming the window explicitly is unaffected and
-still an assertion -- naming the wrong one is still an error. ``accept`` and
-``create`` still require the window column: there it names the window being
-acted on (or, for ``create``, may take the same blank/``new``/``auto``/``-``
-tokens to mean "mint a new one"), not a coordinate derived from a frequency.
+window whose range covers it, since windows never overlap. A ``remove`` whose
+frequency (or ``uid:N``) no live window covers is an error naming it, rather
+than a silent do-nothing: ``remove`` never implies creating a window, since
+there is nothing there to remove. An ``add`` whose frequency no live window
+covers instead **mints the window it needs** (or widens an adjacent one, when
+the gap is too narrow to hold a new one) and applies the add into it --
+exactly what a separate ``review create`` row followed by an ``add`` row
+would produce, except recorded as the ONE decision the user actually made
+rather than two: the create is a mechanism the engine chose, not something the
+user decided. This only fires when the ``window`` column was OMITTED; naming a
+window explicitly is still an assertion, and naming one whose range does not
+cover the row's frequency is still an error even if some other live window
+would have. A run of several omitted-window rows that resolve to the same
+EXISTING live window still coalesces into one edit, exactly as a run of
+explicitly-named rows does; each row whose frequency implies its own create
+gets its own window and its own edit, even when two such rows are adjacent.
+``accept`` and ``create`` still require the window column: there it names the
+window being acted on (or, for ``create``, may take the same blank/``new``/
+``auto``/``-`` tokens to mean "mint a new one"), not a coordinate derived from
+a frequency.
 
 A ``remove`` row may name its target by identifier instead of by frequency,
 writing ``uid:N`` for the line whose
