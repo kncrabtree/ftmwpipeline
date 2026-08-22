@@ -32,6 +32,31 @@ had to reach into ``_internal`` or parse out of prose to obtain are now
 published, and the Stage 6 edit paths that carry them were collapsed onto one
 engine so they cannot answer differently.
 
+* **``review preview`` / ``review apply --dry-run`` / ``review edit`` now
+  report the structural consequence of a create, implied or explicit, on the
+  results they already return -- the acceptance condition an implied create
+  (immediately below) shipped under: a typo'd frequency shows up as a stray
+  window in the preview rather than erroring, so the preview is what replaces
+  the error as the typo guard.** ``PreviewWindowResult`` gains
+  ``created_window_mode`` / ``created_window_freq_range`` /
+  ``created_window_n_points`` / ``created_window_n_contributors`` /
+  ``created_window_depends_on``, additive and ``None`` on every window the
+  batch did not create or widen -- keyed by the same in-memory-minted window
+  id the preview already reports under, so no re-derivation is needed to
+  render "this add creates a window at A-B MHz". ``RefitWindowResult`` gains
+  the same five fields, so a caller of ``review_edit`` learns a window was
+  built (or widened), and where, from the result it already holds rather than
+  only from the preview. ``review preview`` and ``review apply --dry-run``
+  print the extent, grid points, and frozen-contributor count for any window
+  a plan created or widened; ``review apply --dry-run`` runs the in-memory
+  preview once more purely to report this (its own resolved-plan echo cannot
+  know a create's extent without running it), and only when the plan actually
+  contains one, so an ordinary dry run pays nothing extra. ``review edit``
+  prints the same when the call it services implied a create. The
+  preview-then-apply staged-reuse guarantee on a :class:`ReviewSession`
+  already covered a plan containing an implied create -- the resolved plan
+  the comparison keys on already carried it -- verified rather than assumed,
+  with a test.
 * **An ``add`` whose frequency no live window covers now implies a create,
   instead of erroring.** Building directly on the window-derivation above: an
   ``add`` -- through ``review edit``, its ``api``/``Pipeline``/CLI forms, or a

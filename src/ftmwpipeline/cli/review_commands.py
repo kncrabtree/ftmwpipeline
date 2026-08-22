@@ -14,7 +14,7 @@ span, is read as one -- see ``review edit``'s description and
 
 import argparse
 import json
-from typing import Any, List, Optional, Union
+from typing import Any, List, Optional, Tuple, Union
 
 import h5py
 
@@ -89,6 +89,40 @@ def _load_window_fits(file_path: str) -> List[FittingResult]:
 
 def _fmt_mhz(v: float) -> str:
     return f"{v:.4f}"
+
+
+def _print_created_window(
+    window_id: int,
+    mode: Optional[str],
+    freq_range: Optional[Tuple[float, float]],
+    n_points: Optional[int],
+    n_contributors: Optional[int],
+    depends_on: Optional[List[int]],
+) -> None:
+    """Print one "this window was created/widened" line, in ``review
+    create``'s own style (W4) -- shared by ``review edit``, ``review
+    preview`` and ``review apply --dry-run`` so a human sees the same
+    rendering everywhere a batch installs (or widens) structure. Call only
+    when *mode* is not ``None``; the other four arguments are then never
+    ``None`` either (see ``PreviewWindowResult`` / ``RefitWindowResult``).
+    All five are typed ``Optional`` to match the result fields as-is
+    (avoiding a re-assertion at every call site after its own ``is not
+    None`` guard); asserted here so a violation is loud rather than a
+    silently blank line.
+    """
+    assert mode is not None
+    assert freq_range is not None
+    assert n_points is not None
+    assert n_contributors is not None
+    assert depends_on is not None
+    lo, hi = freq_range
+    verb = "created" if mode == "created" else "widened"
+    print(
+        f"  Window {window_id} {verb}: [{_fmt_mhz(lo)}, {_fmt_mhz(hi)}] MHz "
+        f"({n_points} points, {n_contributors} frozen contributor(s))"
+    )
+    if depends_on:
+        print(f"    Reads leakage from window(s): {depends_on}")
 
 
 def _combined_label(status: Optional["WindowReviewStatus"]) -> str:
@@ -520,6 +554,18 @@ def cmd_review_edit(args: argparse.Namespace) -> int:
         f"peaks {result.n_peaks_before} → {result.n_peaks_after}  "
         f"chi2r {result.chi2r_before:.4g} → {result.chi2r_after:.4g}"
     )
+    if result.created_window_mode is not None:
+        # W4: this edit's window did not exist (or was too narrow) before
+        # this call -- say so, with the same extent a typo-guard preview
+        # would have shown.
+        _print_created_window(
+            result.window_id,
+            result.created_window_mode,
+            result.created_window_freq_range,
+            result.created_window_n_points,
+            result.created_window_n_contributors,
+            result.created_window_depends_on,
+        )
     if add_freqs:
         print(
             f"  Added seeds ({len(add_freqs)}): "
@@ -726,6 +772,38 @@ def cmd_review_apply(args: argparse.Namespace) -> int:
         print("warnings:")
         for w in result.warnings:
             print(f"  - {w}")
+    if dry_run and any(action.kind == "create" for action in result.plan):
+        # W4: apply_curation_impl's own dry run resolves the plan without
+        # running it, so it cannot know a create's actual extent (that needs
+        # the fit engine, per plan_stage6_window) -- only whether one is
+        # implied. Run the (side-effect-free) in-memory preview once more,
+        # purely to report it, exactly as review_preview would show it; the
+        # plan echo above is unaffected. Gated on an actual create in the
+        # plan so an ordinary dry run (the common case) pays nothing extra.
+        try:
+            preview = review_preview_impl(file_path, args.curation_file, frame=frame)
+        except (ValueError, KeyError, OSError) as exc:
+            print(f"  (could not preview the implied window structure: {exc})")
+        else:
+            created_windows = sorted(
+                (
+                    pw
+                    for pw in preview.windows.values()
+                    if pw.created_window_mode is not None
+                ),
+                key=lambda pw: pw.window_id,
+            )
+            if created_windows:
+                print("this would install:")
+                for pw in created_windows:
+                    _print_created_window(
+                        pw.window_id,
+                        pw.created_window_mode,
+                        pw.created_window_freq_range,
+                        pw.created_window_n_points,
+                        pw.created_window_n_contributors,
+                        pw.created_window_depends_on,
+                    )
     if dry_run:
         print(f"{len(result.plan)} action(s) would be applied (nothing written).")
     else:
@@ -766,6 +844,17 @@ def cmd_review_preview(args: argparse.Namespace) -> int:
             f"peaks {w.n_peaks_before}->{w.n_peaks_after}  "
             f"chi2r {chi2r_before}->{chi2r_after}"
         )
+        if w.created_window_mode is not None:
+            # W4: this batch installed or widened this window -- the typo
+            # guard BlackQuill asked implicit creation be conditioned on.
+            _print_created_window(
+                wid,
+                w.created_window_mode,
+                w.created_window_freq_range,
+                w.created_window_n_points,
+                w.created_window_n_contributors,
+                w.created_window_depends_on,
+            )
     return 0
 
 

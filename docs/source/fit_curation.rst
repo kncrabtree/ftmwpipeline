@@ -605,6 +605,34 @@ the window 5 remove degrades it — the judgment the dry run cannot offer. A
 window this batch *created* has no "before", and prints ``-`` on that side
 rather than a ``0.000`` that would read as a perfect fit.
 
+An ``add`` whose frequency no live window covers implies the window it needs
+rather than erroring (above, under "Curation files"), and a file's own
+``create`` row installs one explicitly. Either way the preview reports what
+got built, not just that something did — the acceptance condition for
+letting an ``add`` create structure on its own is that a typo'd frequency
+shows up here as a stray window rather than silently landing somewhere
+plausible:
+
+.. code-block:: console
+
+   $ ftmwpipeline review preview exp_2638.ftmw exp_2638_curation.csv
+   review preview (nothing written):
+     window    1  [  direct]  actions=2         peaks 2->3  chi2r 1.066->1.013
+     window  298  [  direct]  actions=2         peaks 0->1  chi2r -->1.204
+       Window 298 created: [30850.5734, 30850.6520] MHz (12 points, 2 frozen contributor(s))
+
+The extra line only appears on a window the batch created or widened —
+``PreviewWindowResult.created_window_mode`` is ``"created"`` or ``"widened"``
+there, and ``None`` (no line) for a window the batch only edited, merged,
+split, accepted, or cascaded into. When present, ``created_window_freq_range``
+/ ``created_window_n_points`` / ``created_window_n_contributors`` /
+``created_window_depends_on`` carry the rest of the structural facts, straight
+off the create that ran in memory — a UI can render "this add creates a
+window at A–B MHz" from these fields alone, without re-deriving anything.
+``review apply --dry-run`` reports the same facts for a plan that implies (or
+explicitly names) a create, since its own resolved-plan echo cannot know a
+create's extent without running it.
+
 A preview is not a weaker apply. It shares the appliers, so it raises the same
 per-action error on the same failures, and it is epoch-gated by the same check,
 so it cannot show you numbers whose apply is guaranteed to refuse. The one
@@ -619,6 +647,9 @@ no fit and previews as ``(no fit-mutating actions; nothing to preview)``.
    preview = ftmw.review_preview("exp_2638.ftmw", "exp_2638_curation.csv")
    for wid, w in sorted(preview.windows.items()):
        print(wid, w.n_peaks_before, "->", w.n_peaks_after, w.chi2r_after)
+       if w.created_window_mode is not None:
+           lo, hi = w.created_window_freq_range
+           print(f"  {w.created_window_mode}: {lo:.4f}-{hi:.4f} MHz")
 
 The three form a ladder, each answering the next question: ``--dry-run`` —
 does the plan resolve? ``review preview`` — what does it fit to?

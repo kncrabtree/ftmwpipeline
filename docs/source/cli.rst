@@ -262,7 +262,9 @@ never implies a create. An ``--add`` frequency no live window covers instead
 **mints the window it needs** (or widens an adjacent one, when the gap is too
 narrow), records it and the add as ONE decision, and applies -- this only
 fires when ``--window`` was omitted; naming ``--window`` and having it not
-cover the frequency is still an error. A bare ``edit`` (no ``--add``/
+cover the frequency is still an error. When this happens, the printed
+result also reports the window's extent, grid points, and frozen-contributor
+count, exactly as ``review create`` would. A bare ``edit`` (no ``--add``/
 ``--remove`` -- an identity refit) still requires ``--window`` explicitly, and
 naming ``--window`` explicitly on any edit is still checked -- naming the
 wrong one is still an error. There is no separate ``merge`` or ``split``
@@ -276,12 +278,22 @@ by replay-from-baseline. See :doc:`stage6_review`.
 Two read-only verbs support the editing ones. ``review preview`` runs a
 curation file's plan to completion in memory and reports the fitted outcome
 (peak counts and χ²ᵣ per affected window) without writing anything --- the
-question ``apply --dry-run`` cannot answer, since a dry run resolves the plan
-but never fits it. ``review snap-tolerance`` prints the MHz tolerance *this*
-file's curation verbs resolve to, with the bin count and bin spacing it came
-from (``--format json`` for a script); the tolerance is defined in active-FT
-bins, so it is a property of the file rather than a fixed frequency. Both are
-covered in :doc:`fit_curation`.
+question ``apply --dry-run`` does not answer, since a dry run resolves the
+plan rather than fitting it, and so reports no fitted outcome. For a window the plan created or widened -- an implied
+create (an uncovered ``add``) or an explicit ``create`` row -- ``review
+preview`` prints an extra line with the extent it was built (or widened) to,
+its grid points, and its frozen-contributor count: the typo guard for letting
+an ``add`` mint structure on its own. ``review apply --dry-run`` prints the
+same for a plan that implies or names a create. This is the one thing a dry
+run cannot get from resolution alone -- a window's extent comes from the
+planner, not the plan -- so it runs the in-memory preview once, purely to
+report it, and only when the plan actually contains a create. A dry run of a
+plan without one is unchanged and costs nothing extra; a dry run *with* one
+costs what a preview costs. ``review snap-tolerance`` prints the MHz tolerance
+*this* file's curation verbs resolve to, with the bin count and bin spacing it
+came from (``--format json`` for a script); the tolerance is defined in
+active-FT bins, so it is a property of the file rather than a fixed
+frequency. All three are covered in :doc:`fit_curation`.
 
 ``report`` — finalized deliverables
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

@@ -1016,6 +1016,29 @@ class RefitWindowResult:
         ``calibration_state == \"self_calibrated\"``).
     sigma_epsilon : float
         1-sigma uncertainty on ``epsilon`` (``0.0`` when inapplicable).
+    created_window_mode : str or None
+        W4. ``"created"`` or ``"widened"`` when this refit was the edit half
+        of an implied create (:func:`_finish_implied_create_edit`) -- i.e.
+        ``window_id`` did not exist, or was too narrow to hold a fresh
+        window, before this call. ``None`` for an ordinary edit into an
+        already-live window, which installed no structure. Present whenever
+        any of the ``created_window_*`` fields below is, since a UI needs to
+        know *which* structural change happened, not just that one did.
+    created_window_freq_range : tuple of float or None
+        The installed (or widened) window's ``(min_mhz, max_mhz)`` extent,
+        raw frame -- :attr:`CreateWindowResult.freq_range` from the create
+        this edit's window came from. ``None`` iff ``created_window_mode``
+        is ``None``.
+    created_window_n_points : int or None
+        Grid points the window covers. ``None`` iff ``created_window_mode``
+        is ``None``.
+    created_window_n_contributors : int or None
+        Frozen leakage contributors attached to the window. ``None`` iff
+        ``created_window_mode`` is ``None``.
+    created_window_depends_on : list of int or None
+        Window ids the window reads frozen leakage from. ``None`` iff
+        ``created_window_mode`` is ``None`` (``[]`` is a legitimate value --
+        a created window with no dependencies -- and distinct from that).
     """
 
     window_id: int
@@ -1028,6 +1051,11 @@ class RefitWindowResult:
     calibration_state: str = "rb_locked"
     epsilon: float = 0.0
     sigma_epsilon: float = 0.0
+    created_window_mode: Optional[str] = None
+    created_window_freq_range: Optional[Tuple[float, float]] = None
+    created_window_n_points: Optional[int] = None
+    created_window_n_contributors: Optional[int] = None
+    created_window_depends_on: Optional[List[int]] = None
 
 
 def _make_refit_result(
@@ -6118,6 +6146,15 @@ def _finish_implied_create_edit(
         }
     )
     ctx.changeset.next_decision_index += 1
+    # W4: the structural consequence, threaded onto the returned result
+    # rather than left only in the preview / the decision log's evidence --
+    # a caller of review_edit needs to learn a window was built (or widened)
+    # and where, from the result it already holds.
+    result.created_window_mode = created.mode
+    result.created_window_freq_range = created.freq_range
+    result.created_window_n_points = created.n_points
+    result.created_window_n_contributors = created.n_contributors
+    result.created_window_depends_on = list(created.depends_on)
     return result
 
 
@@ -6809,6 +6846,32 @@ class PreviewWindowResult:
         three-term sigma budget, identical in shape and value to what a
         subsequent ``apply`` of the same plan would persist. Not the
         raw / stat-only ``RefitWindowResult.fitted_peaks``.
+    created_window_mode : str or None
+        W4, BlackQuill's acceptance condition for implicit window creation
+        (``scratch/intent-driven-windowing-plan.md``, W4): ``"created"`` or
+        ``"widened"`` when some action in this batch -- an implied create
+        (an uncovered ``add``) or an explicit ``create`` -- installed or grew
+        this window; ``None`` for a window this batch only edited, merged,
+        split, accepted, or cascaded into, which is the common case. A UI
+        renders "this add creates a window at A-B MHz" straight off this
+        entry, without re-deriving anything -- see ``created_window_freq_range``
+        below. ``None`` here, not a fabricated ``"created"``/``"widened"``,
+        for any window the batch did not create or widen -- the same
+        absence-vs-plausible-value discipline ``chi2r_before`` documents.
+    created_window_freq_range : tuple of float or None
+        The installed (or widened) window's ``(min_mhz, max_mhz)`` extent,
+        raw frame -- :attr:`CreateWindowResult.freq_range`, unchanged.
+        ``None`` iff ``created_window_mode`` is ``None``.
+    created_window_n_points : int or None
+        Grid points the window covers. ``None`` iff ``created_window_mode``
+        is ``None``.
+    created_window_n_contributors : int or None
+        Frozen leakage contributors attached to the window. ``None`` iff
+        ``created_window_mode`` is ``None``.
+    created_window_depends_on : list of int or None
+        Window ids the window reads frozen leakage from. ``None`` iff
+        ``created_window_mode`` is ``None`` (``[]`` is a legitimate value --
+        a created window with no dependencies -- and distinct from that).
     """
 
     window_id: int
@@ -6819,6 +6882,11 @@ class PreviewWindowResult:
     chi2r_before: Optional[float] = None
     chi2r_after: Optional[float] = None
     peaks: List["FinalPeak"] = field(default_factory=list)
+    created_window_mode: Optional[str] = None
+    created_window_freq_range: Optional[Tuple[float, float]] = None
+    created_window_n_points: Optional[int] = None
+    created_window_n_contributors: Optional[int] = None
+    created_window_depends_on: Optional[List[int]] = None
 
 
 @dataclass
@@ -6946,6 +7014,13 @@ def _run_review_preview(
     # tracks and why it is safe to key by action.window_id in both the
     # fresh (correlation id) and replayed (real pinned id) cases.
     implied_creates: Dict[int, CreateWindowResult] = {}
+    # W4: every _batch_apply_create result this batch produces, keyed by the
+    # REAL (minted or widened) window id -- unlike implied_creates above,
+    # never popped, and populated for an EXPLICIT create too (the plan's
+    # scope covers both). This is what PreviewWindowResult's
+    # created_window_* fields read from below; a window absent here leaves
+    # them None.
+    created_facts: Dict[int, CreateWindowResult] = {}
     for original_index, action in _canonicalize_batch_plan(plan):
         try:
             if action.kind == "create":
@@ -6964,6 +7039,7 @@ def _run_review_preview(
                     record_decision=not action.implied_create,
                 )
                 action_indices.setdefault(created.window_id, []).append(original_index)
+                created_facts[created.window_id] = created
                 if action.implied_create:
                     implied_creates[action.window_id] = created
             elif action.kind == "edit":
@@ -7056,6 +7132,10 @@ def _run_review_preview(
         chi2r_before: Optional[float] = before[1] if before is not None else None
         n_after: int = after[0] if after is not None else 0
         chi2r_after: Optional[float] = after[1] if after is not None else None
+        # W4: the structural consequence, if this batch created or widened
+        # `wid` -- absent (None) for a window it only edited/merged/split/
+        # accepted/cascaded into. See created_facts above.
+        created_fact = created_facts.get(wid)
         windows[wid] = PreviewWindowResult(
             window_id=wid,
             origin="direct" if wid in direct_wids else "cascaded",
@@ -7065,6 +7145,19 @@ def _run_review_preview(
             chi2r_before=chi2r_before,
             chi2r_after=chi2r_after,
             peaks=peaks_by_window.get(wid, []),
+            created_window_mode=(None if created_fact is None else created_fact.mode),
+            created_window_freq_range=(
+                None if created_fact is None else created_fact.freq_range
+            ),
+            created_window_n_points=(
+                None if created_fact is None else created_fact.n_points
+            ),
+            created_window_n_contributors=(
+                None if created_fact is None else created_fact.n_contributors
+            ),
+            created_window_depends_on=(
+                None if created_fact is None else list(created_fact.depends_on)
+            ),
         )
 
     result = ReviewPreviewResult(windows=windows, plan=plan, warnings=warnings)
