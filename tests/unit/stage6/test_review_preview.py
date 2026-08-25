@@ -40,6 +40,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import shutil
 from dataclasses import replace
 from pathlib import Path
@@ -298,6 +299,17 @@ def _assert_final_peaks_equal(a: FinalPeak, b: FinalPeak) -> None:
             assert va is vb, name
         else:
             assert va == pytest.approx(vb, rel=1e-9, abs=1e-12), name
+    assert a.knockout_supported is b.knockout_supported
+    for name in ("knockout_p_value", "knockout_aicc_delta"):
+        va, vb = getattr(a, name), getattr(b, name)
+        if va is None or vb is None:
+            # None is "no knockout result", and must not silently pair with
+            # the nan that means "tested, refit did not converge".
+            assert va is vb, name
+        elif math.isnan(va) or math.isnan(vb):
+            assert math.isnan(va) and math.isnan(vb), name
+        else:
+            assert va == pytest.approx(vb, rel=1e-9, abs=1e-12), name
 
 
 # ---------------------------------------------------------------------------
@@ -315,6 +327,72 @@ def test_fixture_is_actually_self_calibrated(sc_multi_file: Path) -> None:
 
 def test_fixture_has_at_least_two_live_windows(sc_multi_file: Path) -> None:
     assert len(_fitted_window_ids(sc_multi_file)) >= 2
+
+
+# ---------------------------------------------------------------------------
+# Convergence visibility: a failed joint NLS is reported, not left to be
+# inferred from an implausible chi2r.
+# ---------------------------------------------------------------------------
+
+
+def _force_failed_fit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make every window refit report a non-converged fit, leaving everything
+    else about it real. A genuine failure returns the seeds verbatim with an
+    infinite chi-squared; what is under test is whether the *flag* reaches the
+    result, so faking the flag alone is the minimal probe."""
+    orig_core = s6.refit_window_core
+
+    def failing_core(fit_ctx, fit_win, wf, **kwargs):
+        out = orig_core(fit_ctx, fit_win, wf, **kwargs)
+        out.success = False
+        return out
+
+    monkeypatch.setattr(s6, "refit_window_core", failing_core)
+
+
+class TestConvergenceReported:
+    def test_preview_reports_converged_true_on_an_ordinary_edit(
+        self, sc_multi_file: Path, tmp_path: Path
+    ) -> None:
+        wid = _fitted_window_ids(sc_multi_file)[0]
+        freq = _window_center(sc_multi_file, wid)
+        cur = tmp_path / "cur.csv"
+        cur.write_text(f"add,{wid},{freq},\n")
+
+        result = review_preview_impl(sc_multi_file, cur, frame="raw")
+        assert result.windows[wid].converged is True
+
+    def test_preview_reports_a_failed_fit(
+        self,
+        sc_multi_file: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        wid = _fitted_window_ids(sc_multi_file)[0]
+        freq = _window_center(sc_multi_file, wid)
+        cur = tmp_path / "cur.csv"
+        cur.write_text(f"add,{wid},{freq},\n")
+
+        _force_failed_fit(monkeypatch)
+        result = review_preview_impl(sc_multi_file, cur, frame="raw")
+        assert result.windows[wid].converged is False
+
+    def test_preview_convergence_is_read_off_the_post_cascade_fit(
+        self, sc_multi_file: Path, tmp_path: Path
+    ) -> None:
+        """Same source as ``chi2r_after``: the in-memory fit after the batch's
+        one combined cascade. Whatever windows one reports on, the other must
+        -- a window with an ``chi2r_after`` has a convergence answer, and a
+        window without one has ``None`` rather than a fabricated ``True``."""
+        wid = _fitted_window_ids(sc_multi_file)[0]
+        freq = _window_center(sc_multi_file, wid)
+        cur = tmp_path / "cur.csv"
+        cur.write_text(f"add,{wid},{freq},\n")
+
+        result = review_preview_impl(sc_multi_file, cur, frame="raw")
+        assert result.windows
+        for w in result.windows.values():
+            assert (w.converged is None) == (w.chi2r_after is None)
 
 
 # ---------------------------------------------------------------------------
@@ -467,6 +545,140 @@ class TestBareAcceptOnlyShortCircuit:
         assert result.windows == {}
         assert result.plan == []
         assert _digest(sc_multi_file) == before
+
+
+# ---------------------------------------------------------------------------
+# The live apply's own per-window block, and its agreement with the preview's.
+# ---------------------------------------------------------------------------
+
+
+class TestApplyReportsWindows:
+    def test_apply_block_matches_the_preview_block(
+        self, sc_multi_file: Path, tmp_path: Path
+    ) -> None:
+        """The whole point of the apply-side block: a caller can confirm the
+        rung that committed did what the rung that rehearsed showed, without a
+        second read of the file. Every field the two shapes share must agree
+        on every window either reports."""
+        wids = _fitted_window_ids(sc_multi_file)
+        w0, w1 = wids[0], wids[1]
+        freq0, freq1 = _clear_add_freq(sc_multi_file, w0), _clear_add_freq(
+            sc_multi_file, w1
+        )
+        cur = tmp_path / "cur.csv"
+        cur.write_text(f"add,{w0},{freq0},\nadd,{w1},{freq1},\n")
+
+        preview_copy = tmp_path / "preview.ftmw"
+        apply_copy = tmp_path / "apply.ftmw"
+        shutil.copy(sc_multi_file, preview_copy)
+        shutil.copy(sc_multi_file, apply_copy)
+
+        preview = review_preview_impl(preview_copy, cur, frame="raw")
+        applied = apply_curation_impl(apply_copy, cur, frame="raw")
+
+        assert set(applied.windows) == set(preview.windows)
+        assert applied.windows, "this plan must touch at least one window"
+        for wid, aw in applied.windows.items():
+            pw = preview.windows[wid]
+            assert aw.window_id == pw.window_id == wid
+            assert aw.origin == pw.origin
+            assert aw.action_indices == pw.action_indices
+            assert aw.n_peaks_before == pw.n_peaks_before
+            assert aw.n_peaks_after == pw.n_peaks_after
+            assert aw.converged == pw.converged
+            for name in ("chi2r_before", "chi2r_after"):
+                va, vb = getattr(aw, name), getattr(pw, name)
+                if va is None or vb is None:
+                    assert va is vb, name
+                else:
+                    assert va == pytest.approx(vb, rel=1e-9), name
+
+    def test_apply_counts_match_the_persisted_fit(
+        self, sc_multi_file: Path, tmp_path: Path
+    ) -> None:
+        """The block reports the fit the apply actually wrote, not an
+        intermediate: it is read off the post-cascade in-memory fit that
+        ``_finish_batch`` persisted moments earlier."""
+        wid = _fitted_window_ids(sc_multi_file)[0]
+        freq = _clear_add_freq(sc_multi_file, wid)
+        cur = tmp_path / "cur.csv"
+        cur.write_text(f"add,{wid},{freq},\n")
+
+        applied = apply_curation_impl(sc_multi_file, cur, frame="raw")
+        persisted = _window_stats(sc_multi_file)
+
+        assert applied.windows
+        for w_id, aw in applied.windows.items():
+            n_after, chi2r_after = persisted[w_id]
+            assert aw.n_peaks_after == n_after
+            assert aw.chi2r_after == pytest.approx(chi2r_after, rel=1e-9)
+
+    def test_the_edited_window_reports_the_count_arithmetic(
+        self, sc_multi_file: Path, tmp_path: Path
+    ) -> None:
+        """BlackQuill's stated use: post-refit count == prior + adds - removes,
+        checkable off the apply result alone."""
+        wid = _fitted_window_ids(sc_multi_file)[0]
+        freq = _clear_add_freq(sc_multi_file, wid)
+        cur = tmp_path / "cur.csv"
+        cur.write_text(f"add,{wid},{freq},\n")
+
+        applied = apply_curation_impl(sc_multi_file, cur, frame="raw")
+
+        aw = applied.windows[wid]
+        assert aw.origin == "direct"
+        assert aw.action_indices == [0]
+        assert aw.n_peaks_after == aw.n_peaks_before + 1
+        assert aw.converged is True
+
+    def test_dry_run_reports_no_windows(
+        self, sc_multi_file: Path, tmp_path: Path
+    ) -> None:
+        """A dry run fits nothing, so it has no counts to report -- an empty
+        block rather than a fabricated one."""
+        wid = _fitted_window_ids(sc_multi_file)[0]
+        freq = _clear_add_freq(sc_multi_file, wid)
+        cur = tmp_path / "cur.csv"
+        cur.write_text(f"add,{wid},{freq},\n")
+
+        applied = apply_curation_impl(sc_multi_file, cur, dry_run=True, frame="raw")
+        assert applied.windows == {}
+
+    def test_bare_accept_plan_reports_no_windows(
+        self, sc_multi_file: Path, tmp_path: Path
+    ) -> None:
+        """A bare-accept plan touches no fit and takes the cheap path that
+        never opens the engine; it has no per-window outcome to report."""
+        wids = _fitted_window_ids(sc_multi_file)[:2]
+        cur = tmp_path / "cur.csv"
+        cur.write_text("\n".join(f"accept,{w},," for w in wids) + "\n")
+
+        applied = apply_curation_impl(sc_multi_file, cur, frame="raw")
+        assert applied.applied == 2
+        assert applied.windows == {}
+
+    def test_session_staged_apply_reports_the_staged_preview_numbers(
+        self, sc_multi_file: Path, tmp_path: Path
+    ) -> None:
+        """D4: a staged apply persists the preview's own cascaded fit, so its
+        block must be the preview's own numbers rather than a re-derivation."""
+        wid = _fitted_window_ids(sc_multi_file)[0]
+        freq = _clear_add_freq(sc_multi_file, wid)
+        cur = tmp_path / "cur.csv"
+        cur.write_text(f"add,{wid},{freq},\n")
+
+        with Pipeline.open(sc_multi_file).review_session() as session:
+            preview = session.review_preview(cur, frame="raw")
+            applied = session.review_apply(cur, frame="raw")
+
+        assert set(applied.windows) == set(preview.windows)
+        for w_id, aw in applied.windows.items():
+            pw = preview.windows[w_id]
+            assert aw.n_peaks_before == pw.n_peaks_before
+            assert aw.n_peaks_after == pw.n_peaks_after
+            assert aw.chi2r_after == pytest.approx(pw.chi2r_after, rel=1e-12)
+            assert aw.converged == pw.converged
+            assert aw.action_indices == pw.action_indices
 
 
 # ---------------------------------------------------------------------------

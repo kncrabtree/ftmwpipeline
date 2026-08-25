@@ -142,6 +142,9 @@ def _final_peak_to_dict(p: FinalPeak) -> Dict[str, Any]:
         "clock_lattice": p.clock_lattice,
         "derivation": p.derivation,
         "peak_uid": p.peak_uid,
+        "knockout_p_value": p.knockout_p_value,
+        "knockout_supported": p.knockout_supported,
+        "knockout_aicc_delta": p.knockout_aicc_delta,
     }
 
 
@@ -171,6 +174,18 @@ def _final_peak_from_dict(d: Dict[str, Any]) -> FinalPeak:
         # Absent in tables written before peak identity; None is the honest
         # value for a pre-existing table -- never backfilled.
         peak_uid=(None if d.get("peak_uid") is None else int(d["peak_uid"])),
+        # Absent in tables written before the knockout statistics were carried
+        # to the final table. None reads as "no knockout result", which is the
+        # honest value for such a table -- and stays distinct from the nan the
+        # test itself writes when its refit did not converge (nan survives the
+        # JSON round-trip; json.dumps/loads handle it natively).
+        knockout_p_value=opt_float(d, "knockout_p_value"),
+        knockout_supported=(
+            None
+            if d.get("knockout_supported") is None
+            else bool(d["knockout_supported"])
+        ),
+        knockout_aicc_delta=opt_float(d, "knockout_aicc_delta"),
     )
 
 

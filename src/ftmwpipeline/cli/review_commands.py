@@ -91,6 +91,20 @@ def _fmt_mhz(v: float) -> str:
     return f"{v:.4f}"
 
 
+def _print_not_converged(indent: str = "  ") -> None:
+    """Print the "this window's joint fit did not converge" warning, in one
+    place so ``review edit``, ``review accept`` and ``review preview`` say it
+    identically. A failed joint NLS returns the seeds verbatim with an
+    infinite chi-squared, so the peak counts and chi2r printed alongside
+    describe a fit that did not happen -- without this line the only tell a
+    human gets is an implausible ``chi2r_after``.
+    """
+    print(
+        f"{indent}WARNING: the joint fit did not converge -- the window kept "
+        f"its seed positions, so the numbers above are not measurements."
+    )
+
+
 def _print_created_window(
     window_id: int,
     mode: Optional[str],
@@ -554,6 +568,8 @@ def cmd_review_edit(args: argparse.Namespace) -> int:
         f"peaks {result.n_peaks_before} → {result.n_peaks_after}  "
         f"chi2r {result.chi2r_before:.4g} → {result.chi2r_after:.4g}"
     )
+    if not result.converged:
+        _print_not_converged()
     if result.created_window_mode is not None:
         # W4: this edit's window did not exist (or was too narrow) before
         # this call -- say so, with the same extent a typo-guard preview
@@ -702,6 +718,8 @@ def cmd_review_accept(args: argparse.Namespace) -> int:
             f"candidate accepted: peaks {result.n_peaks_before} → {result.n_peaks_after}  "
             f"chi2r {result.chi2r_before:.4g} → {result.chi2r_after:.4g}"
         )
+        if not result.converged:
+            _print_not_converged(indent="    ")
     return 0
 
 
@@ -788,6 +806,24 @@ def cmd_review_apply(args: argparse.Namespace) -> int:
                 pw.n_contributors,
                 pw.depends_on,
             )
+    if result.windows:
+        # The per-window outcome of the batch, in the shape `review preview`
+        # prints -- so the rung that commits reports what the rung that
+        # rehearsed did. Empty (and so silent) on a dry run and on a plan of
+        # bare accepts, neither of which fits anything.
+        print("windows:")
+        for wid in sorted(result.windows):
+            aw = result.windows[wid]
+            actions = ",".join(str(i + 1) for i in aw.action_indices) or "-"
+            chi2r_before = "-" if aw.chi2r_before is None else f"{aw.chi2r_before:.3f}"
+            chi2r_after = "-" if aw.chi2r_after is None else f"{aw.chi2r_after:.3f}"
+            print(
+                f"  window {wid:>4}  [{aw.origin:>8}]  actions={actions:<8}  "
+                f"peaks {aw.n_peaks_before}->{aw.n_peaks_after}  "
+                f"chi2r {chi2r_before}->{chi2r_after}"
+            )
+            if aw.converged is False:
+                _print_not_converged(indent="    ")
     if dry_run:
         print(f"{len(result.plan)} action(s) would be applied (nothing written).")
     else:
@@ -828,6 +864,11 @@ def cmd_review_preview(args: argparse.Namespace) -> int:
             f"peaks {w.n_peaks_before}->{w.n_peaks_after}  "
             f"chi2r {chi2r_before}->{chi2r_after}"
         )
+        # `converged is None` means this window has no fit on the after side
+        # at all -- nothing to warn about, same windows chi2r_after prints
+        # "-" for.
+        if w.converged is False:
+            _print_not_converged(indent="    ")
         if w.created_window_mode is not None:
             # W4: this batch installed or widened this window -- the typo
             # guard BlackQuill asked implicit creation be conditioned on.

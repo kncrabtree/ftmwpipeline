@@ -559,7 +559,24 @@ Dropping ``--dry-run`` applies the plan, refitting each affected window in place
    review apply: plan
        1. edit window 42: add 26614.2000; remove 26613.6131
        ...
+   windows:
+     window   42  [  direct]  actions=1         peaks 2->2  chi2r 1.181->1.004
+     window   43  [cascaded]  actions=-         peaks 3->3  chi2r 1.022->1.019
+     ...
    applied 4 action(s).
+
+The ``windows:`` block is the live apply's per-window outcome, in the shape
+``review preview`` prints and on the same fields: which actions targeted the
+window, whether it was reached directly or as a cascaded dependent, the peak
+count and χ²ᵣ on each side, and a warning line if its fit did not converge. It
+is ``CurationApplyResult.windows`` on the Python interfaces, keyed by window
+id, so a caller can check the count arithmetic (after == before + adds −
+removes) or confirm that a preview and its apply agreed — field for field, on
+the fields both shapes carry — without re-reading the file. A ``--dry-run``
+fits nothing and a bare-``accept`` plan touches no fit, so both report an empty
+block rather than a fabricated one; the preview's own ``peaks`` are not
+repeated here, since an apply persists the final-products table and the file is
+the place to read it.
 
 Each applied edit appends an anchored entry to the
 :ref:`Stage 6 decision log <stage6-decisions>`, exactly as the interactive verbs
@@ -582,6 +599,8 @@ same Python entry points are available on the functional API and the
 
    result = ftmw.review_apply("exp_2638.ftmw", "exp_2638_curation.csv")
    print(result.applied)   # number of actions refit
+   for wid, w in sorted(result.windows.items()):
+       print(wid, w.origin, w.n_peaks_before, "->", w.n_peaks_after, w.converged)
 
 .. _curation-preview:
 
@@ -612,6 +631,16 @@ changed, and χ²ᵣ before and after. Here the window 1 add improves the fit an
 the window 5 remove degrades it — the judgment the dry run cannot offer. A
 window this batch *created* has no "before", and prints ``-`` on that side
 rather than a ``0.000`` that would read as a perfect fit.
+
+A window whose joint fit did not converge prints a ``WARNING`` line under its
+row, and reports ``PreviewWindowResult.converged`` (``RefitWindowResult.converged``
+for a single-window verb) as ``False``. A failed nonlinear least-squares returns
+the window's seed positions verbatim with an infinite χ²ᵣ, so every number on
+that row describes a fit that did not happen: treat the peaks as seeds rather
+than measurements, and do not fold them into anything downstream. The flag is
+read off the same post-cascade fit ``chi2r_after`` is, and is ``None`` — like
+``chi2r_after`` and for exactly the same windows — when a window carries no fit
+on the after side at all.
 
 An ``add`` whose frequency no live window covers implies the window it needs
 rather than erroring (above, under "Curation files"), and a file's own

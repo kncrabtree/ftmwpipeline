@@ -32,6 +32,51 @@ had to reach into ``_internal`` or parse out of prose to obtain are now
 published, and the Stage 6 edit paths that carry them were collapsed onto one
 engine so they cannot answer differently.
 
+* **The live apply reports its per-window outcome.**
+  ``CurationApplyResult`` gains ``windows``, keyed by window id: the counts,
+  the chi2r pair, convergence, the ``direct``/``cascaded`` origin and the
+  action indices, for every window the plan touched or the cascade reached
+  (:class:`AppliedWindowResult`). Previously only ``review preview`` carried
+  that block, so a caller wanting the counts off a live apply had to re-read
+  the file or the decision log's per-decision evidence. Built from the
+  batch's own finished in-memory fit -- no extra read and no extra fit -- and
+  narrowed to what an apply can answer for free: the preview's ``peaks`` are
+  not repeated (an apply persists the final-products table), and installed
+  structure stays on ``created_windows``, which a dry run fills too. Empty on
+  a dry run and on a bare-``accept`` plan, both of which fit nothing. A
+  session's staged apply reports the staged preview's own numbers rather than
+  a second derivation of them. ``review apply`` prints the block in the shape
+  ``review preview`` already prints it.
+
+* **Doc fix:** the Stage 6 page said the per-line ``qual`` determinacy score
+  "also serves as a ``review rank --by`` key". It does not -- ``RANK_METRICS``
+  is per-window and ``qual`` is per-line -- and the page now says so.
+
+* **Per-peak significance now crosses the curation-result boundary.**
+  ``FinalPeak`` gains ``knockout_p_value``, ``knockout_supported`` and
+  ``knockout_aicc_delta``, copied from the Stage 5 fitted peak's knockout
+  result when the final-products table is built. The knockout test already ran
+  on every curation refit and was already persisted per peak, but was dropped
+  at the ``FinalPeak`` boundary, so a caller holding a ``review_preview``
+  result -- which by design persists nothing -- had no significance statistics
+  and no file to recover them from. Additive and backward-compatible: all
+  three are ``None`` for a peak with no knockout result and for a table
+  written before this existed, and ``nan`` (a float, distinct from ``None``)
+  when the test ran but its refit did not converge. The exported table's
+  columns are unchanged.
+
+* **A failed refit is now visible on the curation results.**
+  ``RefitWindowResult`` and ``PreviewWindowResult`` gain ``converged``,
+  mirroring ``FittingResult.success``. A joint fit that fails returns the
+  window's seeds verbatim with an infinite chi-squared, which was previously
+  reachable only as an implausible ``chi2r_after`` -- convergence was the one
+  outcome dimension the curation door did not report. ``review edit``,
+  ``review accept`` and ``review preview`` print a warning line for such a
+  window. ``PreviewWindowResult.converged`` is read off the same post-cascade
+  in-memory fit ``chi2r_after`` is, and is ``None`` on a window with no fit on
+  the after side, exactly where ``chi2r_after`` is; ``RefitWindowResult.converged``
+  is a plain ``bool``, since a refit that returns has a fit either way.
+
 * **``review preview`` / ``review apply --dry-run`` / ``review edit`` now
   report the structural consequence of a create, implied or explicit, on the
   results they already return -- the acceptance condition an implied create

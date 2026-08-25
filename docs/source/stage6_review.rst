@@ -284,6 +284,20 @@ tagged one was added, or is a merge or split product, and must not silently inhe
 the old binding. ``review undo`` renumbers the tags together with the log, so a tag
 always indexes a decision that is actually in it.
 
+Each row also carries the line's **knockout statistics**, the significance test
+every window fit runs per peak: ``knockout_p_value`` (the F-test p-value of the
+K-peak fit against the (K-1)-peak refit that drops this line),
+``knockout_supported`` (whether the AICc gate prefers keeping it — ``False``
+flags the line as redundant), and ``knockout_aicc_delta`` (the gate statistic
+itself). These are carried through from the Stage 5 fitted peak rather than
+recomputed, so a caller holding only a ``review preview`` result — which
+persists nothing — has the same significance numbers an applied fit would have
+written. All three are ``None`` when the source peak carries no knockout result
+at all; ``nan`` (a float, not ``None``) when the test ran but its own refit did
+not converge. They are fields on ``FinalPeak``, not columns of the exported
+table. A line held out of a refit by a thaw is re-attached verbatim, so its
+statistics describe its earlier fit while its neighbors' describe the new one.
+
 The frequency uncertainty is composed as three independent terms in quadrature:
 
 .. math::
@@ -329,8 +343,9 @@ free-running instrument, a null op for a locked one, and never a hard bar to a r
 Each line in the report and the per-window detail also carries the per-line **``qual``
 determinacy score** introduced in :doc:`Stage 5 <stage5_fitting>` — how many of four
 independent checks the line clearly passes, written ``k/4`` (detected with margin,
-amplitude identifiable, position pinned, isolated). It also serves as a ``review rank
---by`` key. The framing is the same here: it measures how firmly the data *determine* a
+amplitude identifiable, position pinned, isolated). It is a per-*line* score, so it is
+not one of the per-window ``review rank --by`` metrics (those are listed above). The
+framing is the same here: it measures how firmly the data *determine* a
 line, not whether the line is a real, assignable transition. A high score can still
 attach to an unmasked spur or an unassigned feature, so it informs curation rather than
 gating it.

@@ -63,6 +63,42 @@ def _load_spectrum_fit(path: Path) -> SpectrumFit:
 
 
 # ---------------------------------------------------------------------------
+# Convergence visibility on the single-window verb
+# ---------------------------------------------------------------------------
+
+
+class TestRefitReportsConvergence:
+    """``RefitWindowResult.converged`` mirrors the joint fit's own outcome.
+
+    A failed NLS returns the window's seeds verbatim with an infinite
+    chi-squared and still returns a result -- the refit ran, the fit did not
+    converge -- so without this flag the only tell a caller gets is a wild
+    ``chi2r_after``.
+    """
+
+    def test_identity_refit_converges(self, writable_stage5_file):
+        wid = _load_spectrum_fit(writable_stage5_file).window_fits[0].window_id
+        result = refit_window_impl(str(writable_stage5_file), wid)
+        assert result.converged is True
+
+    def test_failed_fit_is_reported(self, writable_stage5_file, monkeypatch):
+        from ftmwpipeline._internal import stage6_impl as s6
+
+        orig_core = s6.refit_window_core
+
+        def failing_core(fit_ctx, fit_win, wf, **kwargs):
+            out = orig_core(fit_ctx, fit_win, wf, **kwargs)
+            out.success = False
+            return out
+
+        monkeypatch.setattr(s6, "refit_window_core", failing_core)
+
+        wid = _load_spectrum_fit(writable_stage5_file).window_fits[0].window_id
+        result = refit_window_impl(str(writable_stage5_file), wid)
+        assert result.converged is False
+
+
+# ---------------------------------------------------------------------------
 # Task 4: Complex-amplitude round-trip
 # ---------------------------------------------------------------------------
 

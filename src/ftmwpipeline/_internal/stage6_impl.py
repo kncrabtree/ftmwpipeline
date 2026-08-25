@@ -35,6 +35,7 @@ from typing import (
     Any,
     Callable,
     Dict,
+    Iterable,
     List,
     Optional,
     Sequence,
@@ -1049,6 +1050,15 @@ class RefitWindowResult:
         Window ids the window reads frozen leakage from. ``None`` iff
         ``created_window_mode`` is ``None`` (``[]`` is a legitimate value --
         a created window with no dependencies -- and distinct from that).
+    converged : bool
+        Whether the joint NLS behind this refit converged
+        (:attr:`FittingResult.success`). ``False`` means the solver bailed and
+        the window kept its seeds verbatim with an infinite chi-squared, so
+        every number reported here describes a fit that did not happen --
+        ``chi2r_after`` will be wild and the peak positions are the seeds, not
+        measurements. The refit still *ran*: this reports the fit's outcome,
+        not the operation's, which is why a non-converged refit returns a
+        result rather than raising.
     """
 
     window_id: int
@@ -1066,6 +1076,7 @@ class RefitWindowResult:
     created_window_n_points: Optional[int] = None
     created_window_n_contributors: Optional[int] = None
     created_window_depends_on: Optional[List[int]] = None
+    converged: bool = True
 
 
 def _make_refit_result(
@@ -1077,6 +1088,7 @@ def _make_refit_result(
     chi2r_before: float,
     chi2r_after: float,
     fitted_peaks: List[FittedPeak],
+    converged: bool,
 ) -> RefitWindowResult:
     """Build one :class:`RefitWindowResult`, labeled with both frames (A6) and
     stamped with the calibration actually applied -- shared by every applier
@@ -1102,6 +1114,7 @@ def _make_refit_result(
         calibration_state=shared.calibration_state,
         epsilon=shared.epsilon,
         sigma_epsilon=shared.sigma_epsilon,
+        converged=converged,
     )
 
 
@@ -3775,6 +3788,123 @@ class PlannedWindowResult:
 
 
 @dataclass
+class AppliedWindowResult:
+    """One window a live curation apply touched, as
+    :class:`CurationApplyResult` reports it.
+
+    The per-window block ``ReviewPreviewResult`` already carries, narrowed to
+    what an apply can report without re-deriving anything: the counts, the
+    chi2r pair, and convergence. It deliberately does NOT carry the preview's
+    ``peaks`` (an apply persists the final-products table, so the file is the
+    place to read it) or its ``created_window_*`` fields (an apply reports
+    installed structure on :attr:`CurationApplyResult.created_windows`, which
+    a dry run fills too).
+
+    Read off the same post-cascade in-memory fit the apply just persisted, so
+    a caller can check a preview and its apply agreed -- field for field, on
+    the fields both shapes carry -- without a second read of the file.
+
+    Attributes
+    ----------
+    window_id : int
+        The window this entry reports on.
+    origin : str
+        ``"direct"`` -- some action in the plan targeted this window;
+        ``"cascaded"`` -- the combined cascade refit it as a downstream
+        dependent of another window's edit, with no action of its own naming
+        it. A window that is both is ``"direct"``, exactly as in
+        :class:`PreviewWindowResult`.
+    action_indices : list of int
+        0-based indices into :attr:`CurationApplyResult.plan` of every action
+        that directly targeted this window. Empty for a purely-cascaded one.
+    n_peaks_before, n_peaks_after : int
+        Peak count in this window before the batch / after the cascade.
+    chi2r_before, chi2r_after : float or None
+        Reduced chi-squared before the batch / after the cascade, or ``None``
+        when that side carries no fit -- most obviously ``chi2r_before`` on a
+        window the batch itself created. ``None`` rather than ``0.0`` for the
+        reason :class:`PreviewWindowResult` documents.
+    converged : bool or None
+        Whether this window's post-cascade fit converged. ``False`` means the
+        solver bailed and the window kept its seeds, so the numbers here
+        describe a fit that did not happen. ``None`` on a window with no fit
+        on the after side, exactly where ``chi2r_after`` is ``None``.
+    """
+
+    window_id: int
+    origin: str
+    action_indices: List[int] = field(default_factory=list)
+    n_peaks_before: int = 0
+    n_peaks_after: int = 0
+    chi2r_before: Optional[float] = None
+    chi2r_after: Optional[float] = None
+    converged: Optional[bool] = None
+
+
+def _applied_windows_block(
+    ctx: "_BatchCtx",
+    *,
+    before_stats: Dict[int, Tuple[int, float]],
+    action_indices: Dict[int, List[int]],
+    direct_wids: Set[int],
+    cascaded_wids: Iterable[int],
+) -> Dict[int, AppliedWindowResult]:
+    """Build the per-window block from a finished batch's own in-memory fit.
+
+    The apply-side twin of the block :func:`_run_review_preview` assembles,
+    reading the same two sources in the same way -- a pre-batch snapshot for
+    the "before" side, and the post-cascade ``window_fits`` for the "after"
+    side -- so the two rungs cannot come to disagree about a window they both
+    report. Costs no file read and no extra fit: every input is already in
+    hand when a batch closes.
+    """
+    after_by_wid: Dict[int, Tuple[int, float, bool]] = {
+        int(wf.window_id): (
+            len(wf.fitted_peaks),
+            float(wf.reduced_chi2),
+            bool(wf.success),
+        )
+        for wf in ctx.changeset.spectrum_fit.window_fits
+        if wf.window_id is not None
+    }
+    windows: Dict[int, AppliedWindowResult] = {}
+    for wid in sorted(direct_wids | set(cascaded_wids)):
+        before = before_stats.get(wid)
+        after = after_by_wid.get(wid)
+        windows[wid] = AppliedWindowResult(
+            window_id=wid,
+            origin="direct" if wid in direct_wids else "cascaded",
+            action_indices=sorted(action_indices.get(wid, [])),
+            n_peaks_before=before[0] if before is not None else 0,
+            n_peaks_after=after[0] if after is not None else 0,
+            chi2r_before=before[1] if before is not None else None,
+            chi2r_after=after[1] if after is not None else None,
+            converged=after[2] if after is not None else None,
+        )
+    return windows
+
+
+def _applied_window_from_preview(pw: "PreviewWindowResult") -> AppliedWindowResult:
+    """Narrow one preview entry to the apply-side shape.
+
+    Used by the staged-preview reuse path (D4): that apply persists the
+    preview's own already-cascaded fit rather than recomputing it, so its
+    per-window block has to be the preview's own numbers too -- deriving them
+    a second time is exactly the disagreement staging exists to rule out.
+    """
+    return AppliedWindowResult(
+        window_id=pw.window_id,
+        origin=pw.origin,
+        action_indices=list(pw.action_indices),
+        n_peaks_before=pw.n_peaks_before,
+        n_peaks_after=pw.n_peaks_after,
+        chi2r_before=pw.chi2r_before,
+        chi2r_after=pw.chi2r_after,
+        converged=pw.converged,
+    )
+
+
+@dataclass
 class CurationApplyResult:
     """Outcome of :func:`apply_curation_impl`.
 
@@ -3801,6 +3931,14 @@ class CurationApplyResult:
         implicit window creation (W3/W4) on the cheap rung of the
         dry-run -> preview -> apply ladder -- a caller sees "this add would
         create a window at A-B MHz" without paying for a preview.
+    windows : dict of int to AppliedWindowResult
+        Per-window outcome of the batch, keyed by window id -- counts, the
+        chi2r pair, and convergence, for every window the plan touched
+        directly or reached through the cascade. Empty on a dry run (nothing
+        was fit) and on a bare-``accept`` plan (no fit touched). The
+        preview's block narrowed to what an apply can report for free (see
+        :class:`AppliedWindowResult`), so a caller can confirm a preview and
+        its apply agreed without re-reading the file.
     base_changed : bool
         D4. ``True`` only when a :class:`ReviewSession` had a staged preview
         for this exact plan that it had to drop and recompute because the
@@ -3815,6 +3953,7 @@ class CurationApplyResult:
     applied: int
     dry_run: bool
     created_windows: List[PlannedWindowResult] = field(default_factory=list)
+    windows: Dict[int, AppliedWindowResult] = field(default_factory=dict)
     base_changed: bool = False
 
 
@@ -5630,6 +5769,11 @@ def _batch_apply_edit_action(
                 chi2r_before=chi2r_before,
                 chi2r_after=last.chi2r_after,
                 fitted_peaks=last.fitted_peaks,
+                # This result reports the composite edit, whose fit is the
+                # LAST sub-action's -- the same peaks and chi2r are taken
+                # from `last`, so the convergence flag has to come from
+                # there too or it would describe a different fit.
+                converged=last.converged,
             )
 
     return _batch_apply_edit_plain(
@@ -5722,6 +5866,7 @@ def _batch_apply_edit_plain(
         chi2r_before=chi2r_before,
         chi2r_after=chi2r_after,
         fitted_peaks=list(new_wf.fitted_peaks),
+        converged=bool(new_wf.success),
     )
 
 
@@ -5889,6 +6034,7 @@ def _batch_apply_merge(
         chi2r_before=chi2r_before,
         chi2r_after=chi2r_after,
         fitted_peaks=list(new_wf.fitted_peaks),
+        converged=bool(new_wf.success),
     )
 
 
@@ -6032,6 +6178,7 @@ def _batch_apply_split(
         chi2r_before=chi2r_before,
         chi2r_after=chi2r_after,
         fitted_peaks=list(new_wf.fitted_peaks),
+        converged=bool(new_wf.success),
     )
 
 
@@ -6084,6 +6231,7 @@ def _batch_apply_accept(
             chi2r_before=chi2r_before,
             chi2r_after=chi2r_after,
             fitted_peaks=list(new_wf.fitted_peaks),
+            converged=bool(new_wf.success),
         )
 
     anchor_freq = 0.0
@@ -6963,11 +7111,14 @@ class _BatchOutcome:
     :class:`CurationApplyResult` publishes. The second field is why this is a
     dataclass rather than the bare ``int`` it used to be: a live apply reports
     the window it built in the same shape a dry run predicts it, so a caller
-    reads one field either way.
+    reads one field either way. ``windows`` is the per-window outcome block
+    (:class:`AppliedWindowResult`), built from this batch's own finished
+    in-memory fit -- empty on the bare-accept path, which fits nothing.
     """
 
     applied: int
     created_windows: List[PlannedWindowResult] = field(default_factory=list)
+    windows: Dict[int, AppliedWindowResult] = field(default_factory=dict)
 
 
 def _execute_curation_batch(
@@ -7021,6 +7172,22 @@ def _execute_curation_batch(
     # so a caller-side gate alone would let that shape through.
     ctx = _open_batch(path, snap_tol_mhz=snap_tol_mhz, shared=shared)
 
+    # Snapshot every window's pre-batch stats now, before any action mutates
+    # ctx.changeset.spectrum_fit in place -- the same snapshot, taken at the
+    # same point and for the same reason, _run_review_preview takes. A dict
+    # comprehension over the fit already in hand: no read, no fit.
+    before_stats: Dict[int, Tuple[int, float]] = {
+        int(wf.window_id): (len(wf.fitted_peaks), float(wf.reduced_chi2))
+        for wf in ctx.changeset.spectrum_fit.window_fits
+        if wf.window_id is not None
+    }
+    # Which plan actions targeted which window, for the caller's per-window
+    # block -- recorded exactly where _run_review_preview records it, so the
+    # two rungs attribute an action to the same window (W3/W3.1 included:
+    # an implied create's edit half is attributed to the window that was
+    # actually built, or to the one it coalesced into).
+    action_indices: Dict[int, List[int]] = {}
+
     applied = 0
     # W3: created.window_id of every implied create this batch has run so
     # far, keyed by the create action's own window_id (a fresh correlation
@@ -7069,6 +7236,9 @@ def _execute_curation_batch(
                 )
                 if coalesce_target is not None:
                     coalesced_creates[action.window_id] = coalesce_target
+                    action_indices.setdefault(coalesce_target, []).append(
+                        original_index
+                    )
                 else:
                     created = _batch_apply_create(
                         ctx,
@@ -7081,6 +7251,9 @@ def _execute_curation_batch(
                         ),
                         snap_tol_mhz=snap_tol_mhz,
                         record_decision=not action.implied_create,
+                    )
+                    action_indices.setdefault(created.window_id, []).append(
+                        original_index
                     )
                     created_facts[created.window_id] = created
                     if action.implied_create:
@@ -7096,6 +7269,7 @@ def _execute_curation_batch(
                             action.remove,
                             snap_tol_mhz=snap_tol_mhz,
                         )
+                        target_wid = coalesced_wid
                     else:
                         implied = implied_creates.pop(action.window_id, None)
                         if implied is None:
@@ -7111,6 +7285,7 @@ def _execute_curation_batch(
                             action.remove,
                             snap_tol_mhz=snap_tol_mhz,
                         )
+                        target_wid = implied.window_id
                 else:
                     _batch_apply_edit_action(
                         ctx,
@@ -7119,10 +7294,13 @@ def _execute_curation_batch(
                         action.remove,
                         snap_tol_mhz=snap_tol_mhz,
                     )
+                    target_wid = action.window_id
+                action_indices.setdefault(target_wid, []).append(original_index)
             elif action.kind == "merge":
                 _batch_apply_merge(
                     ctx, action.window_id, action.peaks, snap_tol_mhz=snap_tol_mhz
                 )
+                action_indices.setdefault(action.window_id, []).append(original_index)
             elif action.kind == "split":
                 if action.peak is None:
                     raise ValueError("split action requires a peak frequency")
@@ -7133,6 +7311,7 @@ def _execute_curation_batch(
                     action.into,
                     snap_tol_mhz=snap_tol_mhz,
                 )
+                action_indices.setdefault(action.window_id, []).append(original_index)
             elif action.kind == "accept":
                 _batch_apply_accept(
                     ctx,
@@ -7140,6 +7319,12 @@ def _execute_curation_batch(
                     action.candidate,
                     snap_tol_mhz=snap_tol_mhz,
                 )
+                # A bare accept touches no fit and so names no window in this
+                # block; an accept carrying a candidate is an add, and does.
+                if action.candidate is not None:
+                    action_indices.setdefault(action.window_id, []).append(
+                        original_index
+                    )
         except (ValueError, KeyError) as exc:
             raise ValueError(
                 f"curation action {original_index + 1} "
@@ -7147,7 +7332,11 @@ def _execute_curation_batch(
             ) from exc
         applied += 1
 
-    _finish_batch(ctx, path, snap_tol_mhz=snap_tol_mhz)
+    # Direct = every window some action touched, snapshotted BEFORE the
+    # cascade _finish_batch runs (mutated_wids only grows from there).
+    # Anything the cascade adds beyond this set arrived purely as a dependent.
+    direct_wids = set(ctx.changeset.mutated_wids)
+    cascaded_wids = _finish_batch(ctx, path, snap_tol_mhz=snap_tol_mhz)
 
     return _BatchOutcome(
         applied=applied,
@@ -7155,6 +7344,13 @@ def _execute_curation_batch(
             _window_structure_from_create(created)
             for _, created in sorted(created_facts.items())
         ],
+        windows=_applied_windows_block(
+            ctx,
+            before_stats=before_stats,
+            action_indices=action_indices,
+            direct_wids=direct_wids,
+            cascaded_wids=cascaded_wids,
+        ),
     )
 
 
@@ -7423,6 +7619,7 @@ def apply_curation_impl(
         applied=outcome.applied,
         dry_run=False,
         created_windows=outcome.created_windows,
+        windows=outcome.windows,
     )
 
 
@@ -7516,6 +7713,17 @@ class PreviewWindowResult:
         Window ids the window reads frozen leakage from. ``None`` iff
         ``created_window_mode`` is ``None`` (``[]`` is a legitimate value --
         a created window with no dependencies -- and distinct from that).
+    converged : bool or None
+        Whether this window's fit after the batch's one combined cascade
+        converged (:attr:`FittingResult.success`), read off the same
+        post-cascade in-memory fit ``chi2r_after`` and ``peaks`` are -- never
+        off an applier's own ``RefitWindowResult``, which the cascade can
+        supersede. ``False`` means the solver bailed: the window kept its
+        seeds verbatim with an infinite chi-squared, so ``chi2r_after`` is
+        wild and this window's ``peaks`` are seeds rather than measurements.
+        ``None`` when the window carries no fit on the after side at all --
+        the same absence-vs-plausible-value discipline ``chi2r_after``
+        documents, and ``None`` for exactly the same windows.
     """
 
     window_id: int
@@ -7531,6 +7739,7 @@ class PreviewWindowResult:
     created_window_n_points: Optional[int] = None
     created_window_n_contributors: Optional[int] = None
     created_window_depends_on: Optional[List[int]] = None
+    converged: Optional[bool] = None
 
 
 @dataclass
@@ -7811,8 +8020,12 @@ def _run_review_preview(
             if peak.window_id is not None:
                 peaks_by_window.setdefault(int(peak.window_id), []).append(peak)
 
-    after_by_wid: Dict[int, Tuple[int, float]] = {
-        int(wf.window_id): (len(wf.fitted_peaks), float(wf.reduced_chi2))
+    after_by_wid: Dict[int, Tuple[int, float, bool]] = {
+        int(wf.window_id): (
+            len(wf.fitted_peaks),
+            float(wf.reduced_chi2),
+            bool(wf.success),
+        )
         for wf in ctx.changeset.spectrum_fit.window_fits
         if wf.window_id is not None
     }
@@ -7828,6 +8041,7 @@ def _run_review_preview(
         chi2r_before: Optional[float] = before[1] if before is not None else None
         n_after: int = after[0] if after is not None else 0
         chi2r_after: Optional[float] = after[1] if after is not None else None
+        converged: Optional[bool] = after[2] if after is not None else None
         # W4: the structural consequence, if this batch created or widened
         # `wid` -- absent (None) for a window it only edited/merged/split/
         # accepted/cascaded into. See created_facts above.
@@ -7840,6 +8054,7 @@ def _run_review_preview(
             n_peaks_after=n_after,
             chi2r_before=chi2r_before,
             chi2r_after=chi2r_after,
+            converged=converged,
             peaks=peaks_by_window.get(wid, []),
             created_window_mode=(None if created_fact is None else created_fact.mode),
             created_window_freq_range=(
@@ -8778,6 +8993,15 @@ def _build_final_products(
         if snr_val is not None and amp_err is not None and amp != 0.0:
             snr_err = abs(snr_val) * abs(amp_err / amp)
 
+        # Knockout significance, carried through verbatim. `None` (not nan)
+        # when the source peak has no knockout result at all, so a consumer
+        # can tell "never tested" from "tested, refit did not converge" --
+        # the latter is a genuine nan the test itself wrote.
+        ko = pk.knockout
+        ko_p = None if ko is None else float(ko.p_value)
+        ko_supported = None if ko is None else bool(ko.supported)
+        ko_aicc = None if ko is None else float(ko.aicc_delta)
+
         final_peaks.append(
             FinalPeak(
                 frequency_mhz=f_corr,
@@ -8798,6 +9022,9 @@ def _build_final_products(
                 clock_lattice=pk.clock_lattice,
                 derivation=pk.derivation,
                 peak_uid=pk.peak_uid,
+                knockout_p_value=ko_p,
+                knockout_supported=ko_supported,
+                knockout_aicc_delta=ko_aicc,
             )
         )
 
@@ -9117,6 +9344,11 @@ class _StagedPreview:
     created_windows: List[PlannedWindowResult] = field(default_factory=list)
     """The structure this preview's batch installed, carried so that
     persisting it as an apply reports exactly what the preview reported."""
+    windows: Dict[int, AppliedWindowResult] = field(default_factory=dict)
+    """This preview's per-window block, narrowed to the apply-side shape
+    (:func:`_applied_window_from_preview`) and carried for the same reason
+    ``created_windows`` is: the apply that persists this preview reports the
+    preview's own numbers rather than a second derivation of them."""
 
 
 class ReviewSession:
@@ -9395,6 +9627,10 @@ class ReviewSession:
                 cascaded_wids=list(run.cascaded_wids),
                 review=run.review,
                 created_windows=list(run.result.created_windows),
+                windows={
+                    wid: _applied_window_from_preview(pw)
+                    for wid, pw in run.result.windows.items()
+                },
             )
         else:
             self._staged = None
@@ -9469,6 +9705,7 @@ class ReviewSession:
                         applied=len(plan),
                         dry_run=False,
                         created_windows=list(staged.created_windows),
+                        windows=dict(staged.windows),
                         base_changed=base_changed,
                     )
             # Staged, but it does not match this call -- irrelevant now.

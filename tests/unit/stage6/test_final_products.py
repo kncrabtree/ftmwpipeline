@@ -28,6 +28,7 @@ from ftmwpipeline._internal.stage6_impl import (
 from ftmwpipeline.core.data_structures import (
     FinalProducts,
     FittedPeak,
+    KnockoutInfo,
     FrequencyCalibration,
     Sideband,
     SpectrumFit,
@@ -271,6 +272,177 @@ def test_peak_uid_absent_json_key_loads_none(tmp_path):
         loaded = load_stage6_review_from_hdf5(h5f["stage6_review"])
     assert loaded.final_products is not None
     assert all(p.peak_uid is None for p in loaded.final_products.peaks)
+
+
+def test_knockout_stats_carried_and_roundtrip(tmp_path):
+    """The knockout test runs on every window fit and is persisted per fitted
+    peak; the final-products table must carry its three published statistics
+    so a ``review_preview`` caller -- which gets no file to read them back
+    from -- still has them."""
+    fit = _synthetic_fit()
+    fit.fitted_peaks[0].knockout = KnockoutInfo(
+        delta_chi2=12.5,
+        expected_delta_chi2=9.0,
+        supported=True,
+        p_value=1.4e-3,
+        n_eff=210.0,
+        aicc_delta=6.25,
+    )
+    fit.fitted_peaks[1].knockout = KnockoutInfo(
+        delta_chi2=0.4,
+        expected_delta_chi2=0.5,
+        supported=False,
+        p_value=0.61,
+        n_eff=210.0,
+        aicc_delta=-2.5,
+    )
+    fp = _build_final_products(
+        fit,
+        probe_freq_mhz=PROBE,
+        sideband=Sideband.LOWER,
+        calibration_state="rb_locked",
+        epsilon=0.0,
+        sigma_epsilon=0.0,
+        sigma_floor_khz=0.0,
+    )
+    assert [p.knockout_supported for p in fp.peaks] == [True, False]
+    assert fp.peaks[0].knockout_p_value == pytest.approx(1.4e-3)
+    assert fp.peaks[1].knockout_p_value == pytest.approx(0.61)
+    assert fp.peaks[0].knockout_aicc_delta == pytest.approx(6.25)
+    assert fp.peaks[1].knockout_aicc_delta == pytest.approx(-2.5)
+
+    review = Stage6Review(final_products=fp)
+    out = tmp_path / "review.h5"
+    with h5py.File(out, "w") as h5f:
+        grp = h5f.create_group("stage6_review")
+        save_stage6_review_to_hdf5(review, grp)
+    with h5py.File(out, "r") as h5f:
+        loaded = load_stage6_review_from_hdf5(h5f["stage6_review"])
+    assert loaded.final_products is not None
+    got = loaded.final_products.peaks
+    assert [p.knockout_supported for p in got] == [True, False]
+    assert got[0].knockout_p_value == pytest.approx(1.4e-3)
+    assert got[0].knockout_aicc_delta == pytest.approx(6.25)
+    assert got[1].knockout_aicc_delta == pytest.approx(-2.5)
+
+
+def test_knockout_absent_is_none_not_nan():
+    """A peak with no knockout result at all reports ``None``, which must stay
+    distinct from the ``nan`` the test itself writes when its refit failed to
+    converge: never-tested is not tested-and-uninformative."""
+    fit = _synthetic_fit()
+    fit.fitted_peaks[0].knockout = None
+    fit.fitted_peaks[1].knockout = KnockoutInfo(
+        delta_chi2=1.0,
+        expected_delta_chi2=1.0,
+        supported=False,
+        p_value=float("nan"),
+        n_eff=float("nan"),
+        aicc_delta=float("nan"),
+    )
+    fp = _build_final_products(
+        fit,
+        probe_freq_mhz=PROBE,
+        sideband=Sideband.LOWER,
+        calibration_state="rb_locked",
+        epsilon=0.0,
+        sigma_epsilon=0.0,
+        sigma_floor_khz=0.0,
+    )
+    p_absent, p_nan = fp.peaks
+    assert p_absent.knockout_p_value is None
+    assert p_absent.knockout_supported is None
+    assert p_absent.knockout_aicc_delta is None
+    assert p_nan.knockout_supported is False
+    assert p_nan.knockout_p_value is not None and math.isnan(p_nan.knockout_p_value)
+    assert p_nan.knockout_aicc_delta is not None and math.isnan(
+        p_nan.knockout_aicc_delta
+    )
+
+
+def test_knockout_nan_survives_the_json_roundtrip(tmp_path):
+    """``nan`` is a value the knockout test genuinely writes, so it has to come
+    back as ``nan`` rather than as ``None`` (which would read as never tested)
+    or as an error."""
+    fit = _synthetic_fit()
+    for pk in fit.fitted_peaks:
+        pk.knockout = KnockoutInfo(
+            delta_chi2=1.0,
+            expected_delta_chi2=1.0,
+            supported=True,
+            p_value=float("nan"),
+            n_eff=float("nan"),
+            aicc_delta=float("nan"),
+        )
+    review = Stage6Review(
+        final_products=_build_final_products(
+            fit,
+            probe_freq_mhz=PROBE,
+            sideband=Sideband.LOWER,
+            calibration_state="rb_locked",
+            epsilon=0.0,
+            sigma_epsilon=0.0,
+            sigma_floor_khz=0.0,
+        )
+    )
+    out = tmp_path / "review.h5"
+    with h5py.File(out, "w") as h5f:
+        grp = h5f.create_group("stage6_review")
+        save_stage6_review_to_hdf5(review, grp)
+    with h5py.File(out, "r") as h5f:
+        loaded = load_stage6_review_from_hdf5(h5f["stage6_review"])
+    assert loaded.final_products is not None
+    for p in loaded.final_products.peaks:
+        assert p.knockout_p_value is not None and math.isnan(p.knockout_p_value)
+        assert p.knockout_aicc_delta is not None and math.isnan(p.knockout_aicc_delta)
+        assert p.knockout_supported is True
+
+
+def test_knockout_absent_json_keys_load_none(tmp_path):
+    """A table written before the knockout statistics reached ``FinalPeak``
+    has no such keys; loading must not raise, and must not invent a value."""
+    fit = _synthetic_fit()
+    for pk in fit.fitted_peaks:
+        pk.knockout = KnockoutInfo(
+            delta_chi2=1.0,
+            expected_delta_chi2=1.0,
+            supported=True,
+            p_value=0.01,
+            n_eff=100.0,
+            aicc_delta=3.0,
+        )
+    review = Stage6Review(
+        final_products=_build_final_products(
+            fit,
+            probe_freq_mhz=PROBE,
+            sideband=Sideband.LOWER,
+            calibration_state="rb_locked",
+            epsilon=0.0,
+            sigma_epsilon=0.0,
+            sigma_floor_khz=0.0,
+        )
+    )
+    out = tmp_path / "review.h5"
+    with h5py.File(out, "w") as h5f:
+        grp = h5f.create_group("stage6_review")
+        save_stage6_review_to_hdf5(review, grp)
+    with h5py.File(out, "r+") as h5f:
+        raw = json.loads(str(h5f["stage6_review/final_products"].attrs["data"]))
+        for peak in raw["peaks"]:
+            for key in (
+                "knockout_p_value",
+                "knockout_supported",
+                "knockout_aicc_delta",
+            ):
+                peak.pop(key, None)
+        h5f["stage6_review/final_products"].attrs["data"] = json.dumps(raw)
+    with h5py.File(out, "r") as h5f:
+        loaded = load_stage6_review_from_hdf5(h5f["stage6_review"])
+    assert loaded.final_products is not None
+    for p in loaded.final_products.peaks:
+        assert p.knockout_p_value is None
+        assert p.knockout_supported is None
+        assert p.knockout_aicc_delta is None
 
 
 # ---------------------------------------------------------------------------

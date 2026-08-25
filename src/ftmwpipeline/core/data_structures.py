@@ -2015,6 +2015,39 @@ class FinalPeak:
         from a fitted position. Valid only within the one Stage 5 fit lineage
         this table was built from -- no cross-run meaning is promised.
         ``None`` on a fit produced before this field existed.
+    knockout_p_value : float or None
+        Diagnostic F-test p-value of the K-peak fit against the (K-1)-peak
+        refit that drops this line, carried through from
+        :attr:`FittedPeak.knockout`. ``None`` when the source peak carries no
+        knockout result at all (a fit written before the test existed, or a
+        peak that never went through a window fit); ``nan`` -- a float, not
+        ``None`` -- when the test ran but its refit failed to converge. The
+        two are distinct: absent versus attempted-and-uninformative.
+    knockout_supported : bool or None
+        Whether the AICc-with-``n_eff`` gate prefers keeping this line
+        (:attr:`KnockoutInfo.supported`). ``False`` flags the peak as
+        redundant: dropping it and refitting the survivors produces a
+        strictly better AICc. ``None`` when the source peak carries no
+        knockout result.
+    knockout_aicc_delta : float or None
+        The gate statistic ``AICc(K-1 refit) - AICc(K)`` at the shared
+        ``n_eff``; negative means the simpler model wins. ``None`` when
+        absent, ``nan`` when the refit did not converge -- same distinction
+        as ``knockout_p_value``.
+
+        All three describe the fit that produced the source peak. A line held
+        out of a Stage 6 refit by a **thaw** is re-attached verbatim, so its
+        statistics are the ones its earlier fit wrote while its neighbors' are
+        fresh -- by design (the thawed line was frozen into the background,
+        not free in that NLS), but worth knowing before comparing two peaks'
+        p-values across a curated window.
+
+        All three describe the fit that produced the source peak. A line held
+        out of a Stage 6 refit by a **thaw** is re-attached verbatim, so its
+        statistics are the ones its earlier fit wrote while its neighbors'
+        are fresh -- by design (the thawed line was frozen into the
+        background, not free in that NLS), but worth knowing before comparing
+        two peaks' p-values across a curated window.
     """
 
     frequency_mhz: float
@@ -2035,6 +2068,9 @@ class FinalPeak:
     clock_lattice: Optional[str] = None
     derivation: Optional[int] = None
     peak_uid: Optional[int] = None
+    knockout_p_value: Optional[float] = None
+    knockout_supported: Optional[bool] = None
+    knockout_aicc_delta: Optional[float] = None
 
 
 @dataclass
