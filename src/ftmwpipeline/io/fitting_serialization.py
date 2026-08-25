@@ -98,6 +98,13 @@ HDF5 layout (under the caller-provided group, e.g. ``/stage5_fitting``)::
                                                           stamped at birth;
                                                           -1 or an absent
                                                           column -> None)
+                unresolved_spread_mhz            [f8]    (auto-merge component
+                                                          spread already folded
+                                                          into
+                                                          frequency_error; NaN
+                                                          or an absent column
+                                                          -> None, i.e. not a
+                                                          merged multiplet)
         window_0001/ ...
 
 Round-trip contract: ``save`` -> hand-edit -> ``load`` returns the edited
@@ -259,6 +266,7 @@ _PEAK_TABLE_NUMERIC: Dict[str, str] = {
     "flat_decay": "i1",
     "derivation": "i8",
     "peak_uid": "i8",
+    "unresolved_spread_mhz": "f8",
 }
 
 
@@ -290,6 +298,7 @@ _OPTIONAL_PEAK_COLUMNS = (
     "knockout_p_value",
     "knockout_n_eff",
     "knockout_aicc_delta",
+    "unresolved_spread_mhz",
 )
 # Optional string columns: absent in older files; load substitutes b"" (-> None)
 # for clock_lattice (None when absent) and "auto" for origin (default provenance).
@@ -857,6 +866,11 @@ def _peak_table(
         columns["flat_decay"][i] = 1 if bool(p.flat_decay) else 0
         columns["derivation"][i] = -1 if p.derivation is None else int(p.derivation)
         columns["peak_uid"][i] = -1 if p.peak_uid is None else int(p.peak_uid)
+        columns["unresolved_spread_mhz"][i] = (
+            float("nan")
+            if p.unresolved_spread_mhz is None
+            else float(p.unresolved_spread_mhz)
+        )
         clock_lattice_col[i] = p.clock_lattice or ""
         origin_col[i] = p.origin or "auto"
 
@@ -1209,6 +1223,9 @@ def _peaks_from_rows(
                 flat_decay=bool(int(columns["flat_decay"][i])),
                 derivation=None if derivation_raw < 0 else derivation_raw,
                 peak_uid=None if uid_raw < 0 else uid_raw,
+                unresolved_spread_mhz=none_if_nan(
+                    float(columns["unresolved_spread_mhz"][i])
+                ),
             )
         )
     return peaks
@@ -1275,6 +1292,7 @@ FIT_PEAK_COLUMN_SPECS: Dict[str, ColumnSpec] = {
     "knockout_p_value": ("f8", float("nan")),
     "knockout_n_eff": ("f8", float("nan")),
     "knockout_aicc_delta": ("f8", float("nan")),
+    "unresolved_spread_mhz": ("f8", float("nan")),
 }
 
 #: ``shape`` is not a stored peak column; it is broadcast from the window.

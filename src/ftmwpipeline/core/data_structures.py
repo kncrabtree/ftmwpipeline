@@ -704,6 +704,30 @@ class KnockoutInfo:
     aicc_delta: float = float("nan")
 
 
+def widen_for_unresolved_spread(
+    formal_error_mhz: Optional[float], spread_mhz: Optional[float]
+) -> Optional[float]:
+    """``sqrt(formal**2 + spread**2)`` -- the one definition of the widening a
+    collapsed multiplet's frequency error carries.
+
+    Shared by the Stage 5 auto-merge that first applies it and the Stage 6
+    refit that re-applies it to a freshly computed formal error, so the two
+    cannot drift apart. ``spread`` of ``None`` (or non-positive) returns the
+    formal error untouched, which is the common case: most lines are not
+    merged multiplets.
+
+    Takes the **formal** error -- the bare covariance-derived value. Passing an
+    already-widened error would count the spread twice, so call this only where
+    a fresh formal error has just been computed, never on a value read back
+    from a peak (:attr:`FittedPeak.frequency_error` always stores the widened
+    result, and :attr:`FittedPeak.unresolved_spread_mhz` the input to it).
+    """
+    if spread_mhz is None or not (float(spread_mhz) > 0.0):
+        return formal_error_mhz
+    formal = 0.0 if formal_error_mhz is None else float(formal_error_mhz)
+    return float(np.hypot(formal, float(spread_mhz)))
+
+
 @dataclass
 class FittedPeak:
     """
@@ -745,6 +769,29 @@ class FittedPeak:
     """``FitWindow.window_id`` the line was fit in."""
     knockout: Optional[KnockoutInfo] = None
     """Knockout-test outcome from :func:`ftmwpipeline.fitting.window_fit.knockout_test`."""
+
+    unresolved_spread_mhz: Optional[float] = None
+    """Amplitude-weighted spread (MHz) of the components this line absorbed in a
+    Stage 5 auto-merge, or ``None`` for a line that is not a collapsed
+    multiplet.
+
+    A merged line's position is honestly known only to within the spread of the
+    unresolved components behind it, so wherever a fresh covariance-derived
+    ``frequency_error`` is computed for this peak it is widened to
+    ``sqrt(formal**2 + unresolved_spread_mhz**2)``
+    (:func:`ftmwpipeline._internal.stage5_impl._inflate_merged_frequency_errors`).
+
+    **``frequency_error`` always holds the effective (widened) value**, never
+    the bare formal one -- so this field is provenance, not a term a consumer
+    has to add in. It exists to survive curation: a Stage 6 refit recomputes
+    the formal error from its own covariance, and without the spread recorded
+    on the line the widening would silently vanish the first time the window
+    was refit (or cascaded into), leaving the multiplet claiming a precision
+    the data do not support.
+
+    Carried through a refit with the line, and dropped with it: a line the user
+    removes takes its spread with it, and split products are new lines that
+    carry none."""
 
     # Clock-lattice annotation: set when the fitted frequency matches the
     # declared instrument clock lattice (locked or drifting family).

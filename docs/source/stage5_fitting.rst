@@ -391,6 +391,20 @@ dependent always freezes a clean, current background. All leave hand-added
   this marginally-resolved band; kept merges flag ``auto_merged_review``. Set
   ``degenerate_trial_frac`` to ``0`` to disable.
 
+A merged line's reported frequency uncertainty is **widened** to
+:math:`\sqrt{\sigma_\text{formal}^2 + s^2}`, where :math:`s` is the
+amplitude-weighted spread of the components it absorbed: the collapsed multiplet's
+position is honestly known only to within that spread, and on a real fit the widening
+routinely dominates — a factor of 10–100 above the formal covariance error. The spread
+is recorded on the line itself (``FittedPeak.unresolved_spread_mhz``) and persisted with
+it, so the widening is re-applied every time the line is re-fit. That matters because
+:doc:`Stage 6 <stage6_review>` curation recomputes the formal error from its own
+covariance: without the spread travelling with the line, editing the window — or merely
+editing a *neighboring* window, which cascades into this one — would silently replace
+the honest uncertainty with a formal-only one an order of magnitude too small.
+``frequency_error`` always stores the widened value, so a consumer never adds the
+spread in itself.
+
 A separate, **observation-only** doublet-alternative pass refits each sub-resolution
 pair as a single line and records the comparison statistics (:math:`\Delta\chi^2`,
 orthogonal-evidence score) without ever changing a fitted peak, so the review surface

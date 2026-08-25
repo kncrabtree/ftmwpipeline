@@ -1123,6 +1123,76 @@ class TestPeakUidRoundTrip:
 
 
 # ---------------------------------------------------------------------------
+# Auto-merge spread (unresolved_spread_mhz) persistence
+# ---------------------------------------------------------------------------
+class TestUnresolvedSpreadRoundTrip:
+    """The auto-merge component spread persists per peak.
+
+    It has to: ``frequency_error`` stores the widened value, and a Stage 6
+    refit recomputes that error from its own covariance. Without the spread on
+    the line, the widening cannot be re-applied and a merged multiplet's
+    reported uncertainty silently collapses to a formal-only one the first
+    time its window is re-fit.
+    """
+
+    def test_merged_peak_round_trips(self, tmp_path):
+        peak = _sample_fitted_peak(detection_index=0, window_id=0, freq_mhz=36100.0)
+        peak.unresolved_spread_mhz = 0.0131
+        win = _make_window_fit(0, [peak], audit=[], thaw_events=[])
+        fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
+
+        loaded = _roundtrip(fit, tmp_path / "fit.h5")
+
+        assert loaded.fitted_peaks[0].unresolved_spread_mhz == pytest.approx(0.0131)
+        assert loaded.window_fits[0].fitted_peaks[
+            0
+        ].unresolved_spread_mhz == pytest.approx(0.0131)
+
+    def test_unmerged_peak_round_trips_as_none(self, tmp_path):
+        """``None`` means "not a collapsed multiplet", which is most lines --
+        it must not come back as a ``0.0`` that reads as a measured spread."""
+        peak = _sample_fitted_peak(detection_index=0, window_id=0, freq_mhz=36100.0)
+        assert peak.unresolved_spread_mhz is None
+        win = _make_window_fit(0, [peak], audit=[], thaw_events=[])
+        fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
+
+        loaded = _roundtrip(fit, tmp_path / "fit.h5")
+
+        assert loaded.fitted_peaks[0].unresolved_spread_mhz is None
+
+    def test_mixed_in_one_window(self, tmp_path):
+        pk_a = _sample_fitted_peak(detection_index=0, window_id=0, freq_mhz=36100.0)
+        pk_b = _sample_fitted_peak(detection_index=1, window_id=0, freq_mhz=36105.0)
+        pk_a.unresolved_spread_mhz = 0.02
+        win = _make_window_fit(0, [pk_a, pk_b], audit=[], thaw_events=[])
+        fit = SpectrumFit(window_fits=[win], fitted_peaks=[pk_a, pk_b])
+
+        loaded = _roundtrip(fit, tmp_path / "fit.h5")
+
+        by_id = {p.detection_index: p for p in loaded.fitted_peaks}
+        assert by_id[0].unresolved_spread_mhz == pytest.approx(0.02)
+        assert by_id[1].unresolved_spread_mhz is None
+
+    def test_legacy_file_without_column_loads_none(self, tmp_path):
+        """A file written before the column existed loads without error and
+        without inventing a spread. Its merges are recovered from the
+        window-level ``vif_collapse`` diagnostics instead, at the curation
+        door -- see ``tests/unit/stage6/test_merged_error_widening.py``."""
+        path = tmp_path / "fit.h5"
+        peak = _sample_fitted_peak(detection_index=0, window_id=0, freq_mhz=36100.0)
+        peak.unresolved_spread_mhz = 0.02
+        win = _make_window_fit(0, [peak], audit=[], thaw_events=[])
+        fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
+        with h5py.File(path, "w") as h5f:
+            g = h5f.create_group("stage5_fitting")
+            save_spectrum_fit_to_hdf5(fit, g)
+            del g["peaks/unresolved_spread_mhz"]
+        with h5py.File(path, "r") as h5f:
+            loaded = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+        assert loaded.fitted_peaks[0].unresolved_spread_mhz is None
+
+
+# ---------------------------------------------------------------------------
 # DoubletAlternativeInfo serialization
 # ---------------------------------------------------------------------------
 def _make_doublet_alt(

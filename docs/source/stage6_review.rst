@@ -306,7 +306,11 @@ The frequency uncertainty is composed as three independent terms in quadrature:
               \;+\; \sigma_\text{floor}^2}.
 
 - :math:`\sigma_\text{stat}` is the **statistical precision** from the fit covariance,
-  the per-line frequency error Stage 5 reports.
+  the per-line frequency error Stage 5 reports. For a line Stage 5 auto-merged from a
+  degenerate pair this term also carries the unresolved-component spread (see
+  :doc:`Stage 5 <stage5_fitting>`), and keeps carrying it across curation: every refit
+  re-applies the widening to its own freshly computed formal error, including a refit a
+  line reaches only as the cascaded dependent of an edit elsewhere.
 - :math:`\sigma_\varepsilon\, f_\text{baseband}` is the **timebase-calibration
   residual**: a fractional digitizer-clock scale error :math:`\varepsilon` multiplies
   the line's baseband offset from the probe, so it grows with distance from the local

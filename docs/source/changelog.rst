@@ -32,6 +32,32 @@ had to reach into ``_internal`` or parse out of prose to obtain are now
 published, and the Stage 6 edit paths that carry them were collapsed onto one
 engine so they cannot answer differently.
 
+* **Fixed: an auto-merged line's frequency uncertainty no longer collapses when
+  its window is curated.** Stage 5 widens a merged multiplet's
+  ``frequency_error`` to ``sqrt(formal**2 + spread**2)``, but recorded the
+  spread only in ``FittedPeak.extra_errors``, which is not serialized -- so
+  the first Stage 6 refit of that window recomputed the error from its own
+  covariance and the widening vanished. On the 2638 reference file the six
+  auto-merged lines carry a spread 13x to 131x their formal error, so the
+  reported ``sigma_f`` on a blended line dropped by one to two orders of
+  magnitude, claiming a precision the data do not support. It did not take an
+  edit to the line: a cascade refit triggered by an edit in a *neighboring*
+  window did it too, invisibly.
+
+  ``FittedPeak`` gains ``unresolved_spread_mhz``, persisted as a peaks-table
+  column (absent or NaN -> ``None``, i.e. not a merged multiplet), and every
+  Stage 6 refit re-applies the widening to the formal error it just computed.
+  ``frequency_error`` still stores the widened value, so no consumer has to
+  add the term in. The spread travels with the line and is dropped with it: a
+  removed line takes it along, and added or split-product lines carry none.
+  A fit written before the column recovers its spreads at the curation door
+  from the window-level ``vif_collapse`` diagnostics, which were always
+  persisted -- matched by nearest frequency within the file's own snap
+  tolerance, skipping any line a Stage 6 decision has altered. That recovery
+  seeds the field only; it never rewrites a stored error, since on an
+  uncurated legacy file the stored value already carries the widening and
+  re-applying it would count the spread twice.
+
 * **The live apply reports its per-window outcome.**
   ``CurationApplyResult`` gains ``windows``, keyed by window id: the counts,
   the chi2r pair, convergence, the ``direct``/``cascaded`` origin and the

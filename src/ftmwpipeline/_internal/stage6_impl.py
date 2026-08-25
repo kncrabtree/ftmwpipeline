@@ -65,6 +65,7 @@ from ..core.data_structures import (
     SpectrumFit,
     Stage6Review,
     WindowReviewStatus,
+    widen_for_unresolved_spread,
 )
 from ..fitting.active_ft import active_ft_bin_spacing_mhz, peak_uid_from_offset
 from ..fitting.peak_model import ModelPeak
@@ -1522,6 +1523,22 @@ def _next_decision_index(path: str) -> int:
     return len(review.decision_log)
 
 
+def _restore_unresolved_spread(fp: FittedPeak, spread: Optional[float]) -> None:
+    """Re-apply an auto-merged line's frequency-error widening after a refit.
+
+    *fp* is an output peak of the joint NLS, so its ``frequency_error`` is the
+    formal, covariance-only value this refit just computed -- exactly what
+    :func:`widen_for_unresolved_spread` expects, and why this is called here
+    rather than anywhere a stored error might already be widened. A no-op when
+    the seed carried no spread, which is every line that is not a collapsed
+    multiplet.
+    """
+    if spread is None:
+        return
+    fp.unresolved_spread_mhz = float(spread)
+    fp.frequency_error = widen_for_unresolved_spread(fp.frequency_error, spread)
+
+
 def refit_window_core(
     fit_ctx: "Stage5FitContext",
     fit_win: "FitWindow",
@@ -1770,9 +1787,14 @@ def refit_window_core(
     # must add it back explicitly.
     thawed_held_peaks: List[FittedPeak] = []  # verbatim re-append after NLS
 
-    # (seed, origin, derivation) triples, kept together so the "remove" pop and
-    # the by-position origin/derivation stamping below cannot fall out of step.
-    seed_peaks_with_origin: List[Tuple[ModelPeak, str, Optional[int]]] = []
+    # (seed, origin, derivation, unresolved_spread) tuples, kept together so
+    # the "remove" pop and the by-position stamping below cannot fall out of
+    # step. The spread rides along for the same reason the derivation does: it
+    # is a property of the LINE, and the refit has to hand it back to whichever
+    # output peak came from this seed.
+    seed_peaks_with_origin: List[
+        Tuple[ModelPeak, str, Optional[int], Optional[float]]
+    ] = []
     for fp in wf.fitted_peaks:
         freq_mhz = float(fp.frequency_mhz)
         offset = float(s * (freq_mhz - center_mhz))
@@ -1813,7 +1835,9 @@ def refit_window_core(
                 phase=float(fp.phase) if fp.phase is not None else 0.0,
                 peak_uid=fp.peak_uid,
             )
-            seed_peaks_with_origin.append((mp, fp.origin, fp.derivation))
+            seed_peaks_with_origin.append(
+                (mp, fp.origin, fp.derivation, fp.unresolved_spread_mhz)
+            )
 
     # Apply "remove" edits: drop seeds closest to remove frequencies.
     # A "remove" on a thawed line drops it entirely (not frozen): the user
@@ -2024,7 +2048,7 @@ def refit_window_core(
             clash = next(
                 (
                     prior
-                    for prior, _, _ in seed_peaks_with_origin
+                    for prior, _, _, _ in seed_peaks_with_origin
                     if prior.peak_uid == mp.peak_uid
                 ),
                 None,
@@ -2047,13 +2071,16 @@ def refit_window_core(
             if add_derivations is not None and i < len(add_derivations)
             else None
         )
-        seed_peaks_with_origin.append((mp, add_origin, add_derivation))
+        # An added seed carries no spread: it is a new line (or a split
+        # product), not the collapsed multiplet the spread describes.
+        seed_peaks_with_origin.append((mp, add_origin, add_derivation, None))
         protected_offsets.append(mp.offset_mhz)
 
     # Extract final seed list in offset order.
-    final_seeds = [mp for mp, _, _ in seed_peaks_with_origin]
-    origin_flags = [orig for _, orig, _ in seed_peaks_with_origin]
-    derivation_flags = [deriv for _, _, deriv in seed_peaks_with_origin]
+    final_seeds = [mp for mp, _, _, _ in seed_peaks_with_origin]
+    origin_flags = [orig for _, orig, _, _ in seed_peaks_with_origin]
+    derivation_flags = [deriv for _, _, deriv, _ in seed_peaks_with_origin]
+    spread_flags = [spread for _, _, _, spread in seed_peaks_with_origin]
 
     # "Freeze inherited" mode for the VIF-collapse sequential merge: fit ONLY
     # the added (merged) seeds, holding every inherited peak frozen at its
@@ -2070,6 +2097,7 @@ def refit_window_core(
         added_seeds = final_seeds[-n_added:]
         added_origins = origin_flags[-n_added:]
         added_derivations = derivation_flags[-n_added:]
+        added_spreads = spread_flags[-n_added:]
         used_src: set[int] = set()
         for mp in inherited_seeds:
             freq = center_mhz + s * mp.offset_mhz
@@ -2103,6 +2131,7 @@ def refit_window_core(
         final_seeds = list(added_seeds)
         origin_flags = list(added_origins)
         derivation_flags = list(added_derivations)
+        spread_flags = list(added_spreads)
         background, data_minus_bg = subtract_frozen_background(
             offset_grid,
             z_slice,
@@ -2162,25 +2191,41 @@ def refit_window_core(
     # An inherited seed carries its own prior ``derivation`` forward: the refit
     # re-converged it but did not change its identity, so the tag still names
     # the decision that last did.
+    #
+    # An inherited seed's ``unresolved_spread_mhz`` rides the same path, and
+    # for a reason worth spelling out: ``window_outcome_to_fitting_result``
+    # has just written a FORMAL, covariance-only ``frequency_error`` for every
+    # output peak. For a collapsed multiplet that error is a claim the data do
+    # not support -- the line's position is known only to within the spread of
+    # the components it absorbed -- so the widening Stage 5 applied has to be
+    # re-applied here, against this refit's own formal error. Without it the
+    # widening would silently disappear the first time the window was refit,
+    # including a cascade refit the user never asked for.
     if len(new_wf.fitted_peaks) == len(origin_flags):
-        for fp, orig, deriv in zip(new_wf.fitted_peaks, origin_flags, derivation_flags):
+        for fp, orig, deriv, spread in zip(
+            new_wf.fitted_peaks, origin_flags, derivation_flags, spread_flags
+        ):
             if orig == "user":
                 fp.origin = "user"
             if deriv is not None:
                 fp.derivation = int(deriv)
+            _restore_unresolved_spread(fp, spread)
     else:
         user_seeds = [
-            (float(center_mhz + s * mp.offset_mhz), orig, deriv)
-            for mp, orig, deriv in zip(final_seeds, origin_flags, derivation_flags)
-            if orig == "user" or deriv is not None
+            (float(center_mhz + s * mp.offset_mhz), orig, deriv, spread)
+            for mp, orig, deriv, spread in zip(
+                final_seeds, origin_flags, derivation_flags, spread_flags
+            )
+            if orig == "user" or deriv is not None or spread is not None
         ]
         for fp in new_wf.fitted_peaks:
-            for uf, orig, deriv in user_seeds:
+            for uf, orig, deriv, spread in user_seeds:
                 if abs(float(fp.frequency_mhz) - uf) <= snap_tol_mhz:
                     if orig == "user":
                         fp.origin = "user"
                     if deriv is not None:
                         fp.derivation = int(deriv)
+                    _restore_unresolved_spread(fp, spread)
                     break
 
     # --- Re-insert thawed lines verbatim ------------------------------------
@@ -5336,7 +5381,83 @@ def _build_shared_fit_ctx(path: str) -> _SharedFitCtx:
     )
 
 
-def _build_batch_changeset(path: str, shared: _SharedFitCtx) -> _BatchChangeset:
+def _seed_unresolved_spreads_from_diagnostics(
+    spectrum_fit: SpectrumFit, *, snap_tol_mhz: float
+) -> int:
+    """Recover auto-merge spreads onto peaks loaded from a file written before
+    the per-peak column existed. Returns how many peaks were seeded.
+
+    The spread was always recorded at the *window* level, in
+    ``diagnostics['vif_collapse']['collapses']``, and that survives every
+    curation write. So a legacy file still knows which line absorbed what --
+    it just never stamped it on the line. Without this, every file fitted
+    before the column silently loses its widening on its first refit, which
+    is the defect itself, merely restricted to existing files.
+
+    Matched per window by nearest frequency to the recorded merge centroid,
+    within the file's own snap tolerance -- the same "is this that line?"
+    question every curation verb asks, answered the same way. Two guards keep
+    a record from landing on the wrong peak: a peak that already carries a
+    spread is left alone (a fresh fit stamped it directly), and so is one
+    carrying a Stage 6 ``derivation``, which marks a line an edit created or
+    altered -- a split product, say, whose components are by assertion
+    resolved and must not inherit the parent multiplet's spread.
+
+    Seeds the field only; it never rewrites ``frequency_error``. On a legacy
+    file that has not been curated yet the stored error already carries the
+    widening, so widening it again would count the spread twice; on one that
+    has already been refit the widening is gone and cannot be told apart from
+    the first case by looking at the number. The next refit computes a fresh
+    formal error and re-applies the widening correctly either way, which is
+    the case that matters.
+    """
+    recs = spectrum_fit.diagnostics.get("vif_collapse", {}).get("collapses", [])
+    if not recs:
+        return 0
+
+    peaks_by_window: Dict[int, List[FittedPeak]] = {}
+    for wf in spectrum_fit.window_fits:
+        if wf.window_id is not None:
+            peaks_by_window[int(wf.window_id)] = list(wf.fitted_peaks)
+
+    seeded = 0
+    used: Dict[int, Set[int]] = {}
+    for rec in recs:
+        try:
+            wid = int(rec["window_id"])
+            spread = float(rec.get("unresolved_spread_mhz") or 0.0)
+            target = float(rec["merged_frequency_mhz"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not (spread > 0.0):
+            continue
+        best_k, best_d = -1, float("inf")
+        for k, pk in enumerate(peaks_by_window.get(wid, [])):
+            if k in used.get(wid, set()):
+                continue
+            if pk.unresolved_spread_mhz is not None or pk.derivation is not None:
+                continue
+            d = abs(float(pk.frequency_mhz) - target)
+            if d < best_d:
+                best_d, best_k = d, k
+        if best_k < 0 or best_d > snap_tol_mhz:
+            continue
+        used.setdefault(wid, set()).add(best_k)
+        peaks_by_window[wid][best_k].unresolved_spread_mhz = spread
+        seeded += 1
+
+    if seeded:
+        logger.debug(
+            "Stage 6: recovered %d auto-merge spread(s) from vif_collapse "
+            "diagnostics (fit predates the per-peak column)",
+            seeded,
+        )
+    return seeded
+
+
+def _build_batch_changeset(
+    path: str, shared: _SharedFitCtx, *, snap_tol_mhz: float
+) -> _BatchChangeset:
     """Load-or-reset everything one batch's actions accumulate: the current
     ``spectrum_fit``, the review's ``created_windows`` overlay and the
     ``fit_window_map`` derived from it, and the next decision-log index.
@@ -5359,6 +5480,11 @@ def _build_batch_changeset(path: str, shared: _SharedFitCtx) -> _BatchChangeset:
                     "No Stage 5 fit found in this file. Run 'fit run' first."
                 )
             spectrum_fit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+
+    # A fit written before the per-peak column carries its auto-merge spreads
+    # only in the window-level diagnostics; put them back on the lines before
+    # any refit reads them. Idempotent, and a no-op on a fit with no merges.
+    _seed_unresolved_spreads_from_diagnostics(spectrum_fit, snap_tol_mhz=snap_tol_mhz)
 
     review = load_stage6_review_from_file(path)
     created_windows = list(review.created_windows)
@@ -5386,7 +5512,7 @@ def _build_batch_ctx(
     """
     if shared is None:
         shared = _build_shared_fit_ctx(path)
-    changeset = _build_batch_changeset(path, shared)
+    changeset = _build_batch_changeset(path, shared, snap_tol_mhz=snap_tol_mhz)
     return _BatchCtx(shared=shared, changeset=changeset)
 
 

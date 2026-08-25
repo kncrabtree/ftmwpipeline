@@ -48,6 +48,7 @@ from ..core.data_structures import (
     Sideband,
     SpectrumFit,
     WindowPlan,
+    widen_for_unresolved_spread,
 )
 from ..core.stage_fit_settings import (
     ShapeSpec,
@@ -354,9 +355,15 @@ def _inflate_merged_frequency_errors(
     line's position is honestly known only to within the (unresolved-hyperfine)
     spread of the components it absorbed. Each ``pending`` record is matched to
     its merged peak (nearest ``frequency_mhz`` to ``merged_frequency_mhz``) and
-    the peak is rebuilt with the inflated error; the spread is also recorded in
-    ``extra_errors['unresolved_spread_mhz']`` for the report/provenance. The
-    merged peaks were stamped ``origin="auto"`` by the collapse refit.
+    the peak is rebuilt with the inflated error; the spread is recorded on the
+    peak as :attr:`~ftmwpipeline.core.data_structures.FittedPeak.unresolved_spread_mhz`.
+    The merged peaks were stamped ``origin="auto"`` by the collapse refit.
+
+    Recording it on the peak is what makes the widening survive curation. It is
+    persisted with the line and re-applied wherever a fresh covariance-derived
+    error is computed for it, so a Stage 6 refit of the window -- or a cascade
+    refit triggered by an edit in a *neighboring* window -- can no longer
+    quietly replace the effective error with a formal-only one.
     """
     peaks = list(wf.fitted_peaks)
     used: set[int] = set()
@@ -375,11 +382,11 @@ def _inflate_merged_frequency_errors(
             continue
         used.add(best_k)
         pk = peaks[best_k]
-        formal = float(pk.frequency_error) if pk.frequency_error is not None else 0.0
-        eff = float(np.hypot(formal, spread))
-        extra_errors = dict(pk.extra_errors)
-        extra_errors["unresolved_spread_mhz"] = spread
-        peaks[best_k] = replace(pk, frequency_error=eff, extra_errors=extra_errors)
+        peaks[best_k] = replace(
+            pk,
+            frequency_error=widen_for_unresolved_spread(pk.frequency_error, spread),
+            unresolved_spread_mhz=spread,
+        )
     wf.fitted_peaks = peaks
 
 
