@@ -2601,7 +2601,51 @@ def settings_show(
     )
 
 
-def settings_set(file_path: Union[str, Path], knob: str, value: str) -> Any:
+def settings_defaults(
+    selector: Optional[str] = None,
+    *,
+    include_advanced: bool = False,
+    preset: Optional[Union[str, Path]] = None,
+) -> Tuple[Any, ...]:
+    """The settings registry -- every setting at its hard default, file-less.
+
+    The pre-file counterpart to :func:`settings_show`: same row shape, same
+    dotted paths, same registry enrichment, and the same coverage of *every*
+    settings dataclass field (not only the knobs :func:`scan_list` registers),
+    but computed from the dataclass defaults alone. Use it to populate a
+    settings surface **before** the target ``.ftmw`` exists; once it does, ask
+    :func:`settings_show` for the same rows with real provenance.
+
+    Like :func:`scan_list`, this is file-independent and so takes no path.
+
+    Parameters
+    ----------
+    selector : str, optional
+        Filter by dotted-path prefix (e.g. ``"stage2b"`` /
+        ``"stage2b.gaussian"``); ``None`` returns every setting.
+    include_advanced : bool, default False
+        Reveal advanced-tier settings hidden from the default view. Pass ``True``
+        for the complete registry.
+    preset : str or Path, optional
+        Populate the ``.yml`` provenance layer from this preset (bare name or
+        path), showing what the preset would seed. With no preset every row
+        reports ``source == "default"``.
+
+    Returns
+    -------
+    tuple of SettingRow
+        One row per setting, carrying ``path`` / ``value`` / ``source`` /
+        ``hard_default`` / ``tier`` / ``help``. ``value`` equals
+        ``hard_default`` except on fields a given ``preset`` supplies.
+    """
+    return Pipeline.settings_defaults(
+        selector,
+        include_advanced=include_advanced,
+        preset=preset,
+    )
+
+
+def settings_set(file_path: Union[str, Path], knob: str, value: Any) -> Any:
     """Persist a chosen value into the ``.ftmw``, equivalent to
     :meth:`Pipeline.settings_set`.
 
@@ -2618,8 +2662,32 @@ def settings_set(file_path: Union[str, Path], knob: str, value: str) -> Any:
     knob : str
         Dotted settings path (``stage2.window_mhz`` /
         ``stage5.tau.max_decay_factor`` / ``stage5.shape``).
-    value : str
-        The value in string form; coerced to the field's declared type.
+    value : Any
+        Either a native Python value of the field's declared type -- the direct
+        form for an in-process caller -- or a string in one of the encodings
+        below (the CLI's form). Either way the value is coerced to the declared
+        type, and one that does not parse raises ``ValueError`` without touching
+        the file.
+
+        - numbers: the number, or a string ``float``/``int`` parses; an ``int``
+          field also accepts an integral float (``3.0``), since JSON has one
+          number type.
+        - booleans: ``True``/``False``, or ``true``/``false``, ``1``/``0``,
+          ``yes``/``no``, ``on``/``off`` (case-insensitive).
+        - strings: the string, verbatim.
+        - tuple fields (``stage1.trim``, ``stage2b.gaussian.tau_G_seeds``,
+          ``stage2b.band.band_labels``, ...): a list or tuple of natives, a JSON
+          array (``"[100.0, 50.0]"``), or comma-joined scalars without brackets
+          (``"100.0,50.0"``). Every element is coerced to the field's declared
+          element type and a fixed-arity tuple checks its length.
+        - ``stage5.shape``: a ``ShapeSpec``, a ``PeakShape``, a mapping, or the
+          kind string (``"gaussian"``).
+        - ``stage5.spur.clocks``: a sequence of ``ClockSource`` or of mappings,
+          or the JSON array of objects.
+        - ``None`` unsets the field, exactly as :func:`settings_unset` does.
+          There is deliberately no *string* that means ``None``: the string
+          ``"None"`` is only ever that four-character text, which is a valid
+          value for a ``str`` field and a coercion error for any other.
 
     Returns
     -------
@@ -2627,6 +2695,30 @@ def settings_set(file_path: Union[str, Path], knob: str, value: str) -> Any:
         Carries the knob path, the coerced value, and the invalidated stages.
     """
     return Pipeline.open(file_path).settings_set(knob, value)
+
+
+def settings_unset(file_path: Union[str, Path], knob: str) -> Any:
+    """Clear a persisted value, equivalent to :meth:`Pipeline.settings_unset`.
+
+    The inverse of :func:`settings_set`: the field goes back to unset, so the
+    next run resolves it from the preset / recommended / hard-default chain
+    instead of the value the file had fixed. Invalidates the affected stage and
+    everything downstream exactly as a set does, since the effective value
+    changes either way.
+
+    Parameters
+    ----------
+    file_path : str or Path
+        The ``.ftmw`` to modify.
+    knob : str
+        Dotted settings path to clear.
+
+    Returns
+    -------
+    SetResult
+        Carries the knob path, ``value`` ``None``, and the invalidated stages.
+    """
+    return Pipeline.open(file_path).settings_unset(knob)
 
 
 def settings_export(

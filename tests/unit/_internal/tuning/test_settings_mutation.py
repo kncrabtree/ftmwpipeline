@@ -1,8 +1,9 @@
 """Unit tests for the settings change-grammar core (issue #28, step 4).
 
-``set_setting`` coercion + persistence + stage invalidation, and
-``export_settings`` round-tripping through the stages' ``load_preset`` path --
-all against bare HDF5 ``.ftmw`` files with stage groups stamped directly.
+``set_setting`` coercion + persistence + stage invalidation, ``unset_setting``
+clearing a field back to the resolver's layers, and ``export_settings``
+round-tripping through the stages' ``load_preset`` path -- all against bare
+HDF5 ``.ftmw`` files with stage groups stamped directly.
 """
 
 from __future__ import annotations
@@ -13,8 +14,13 @@ from pathlib import Path
 import h5py
 import pytest
 
-from ftmwpipeline._internal.tuning import export_settings, set_setting
+from ftmwpipeline._internal.tuning import (
+    export_settings,
+    set_setting,
+    unset_setting,
+)
 from ftmwpipeline._internal.tuning.settings_inspection import (
+    SOURCE_DEFAULT,
     SOURCE_FTMW,
     resolve_settings_view,
 )
@@ -138,6 +144,134 @@ def test_set_on_unrun_stage_invalidates_nothing(bare_ftmw: Path) -> None:
     _stamp_stages(bare_ftmw, ["stage0_fid_data", "stage1_complex_ft"])
     result = set_setting(bare_ftmw, "stage5.tau.max_decay_factor", "4.0")
     assert result.invalidated == ()
+
+
+# --- set_setting: the value encoding ----------------------------------------
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "100.0,50.0,20.0",  # comma-joined scalars, the CLI's shorthand
+        "[100.0, 50.0, 20.0]",  # a JSON array, the natural machine rendering
+        " [100.0,50.0,20.0] ",
+        [100.0, 50.0, 20.0],  # native list
+        (100.0, 50.0, 20.0),  # native tuple
+    ],
+)
+def test_tuple_field_accepts_every_documented_encoding(bare_ftmw: Path, raw) -> None:
+    """A JSON array must coerce like the comma form, not corrupt the tuple.
+
+    The old splitter split on ',' alone, so a bracketed rendering persisted
+    ``('[100.0', 50.0, '20.0]')`` -- strings inside a Tuple[float, ...] field,
+    silently, with the next run fitting against them.
+    """
+    result = set_setting(bare_ftmw, "stage2b.gaussian.tau_G_seeds", raw)
+    assert result.value == (100.0, 50.0, 20.0)
+    assert all(isinstance(v, float) for v in result.value)
+    assert tuple(_row(bare_ftmw, "stage2b.gaussian.tau_G_seeds").value) == (
+        100.0,
+        50.0,
+        20.0,
+    )
+
+
+def test_fixed_arity_tuple_checks_its_length(bare_ftmw: Path) -> None:
+    set_setting(bare_ftmw, "stage1.trim", "[26500.0, 40000.0]")
+    assert tuple(_row(bare_ftmw, "stage1.trim").value) == (26500.0, 40000.0)
+    with pytest.raises(ValueError, match="expected 2 value"):
+        set_setting(bare_ftmw, "stage1.trim", "[26500.0, 30000.0, 40000.0]")
+
+
+def test_tuple_elements_take_the_declared_element_type(bare_ftmw: Path) -> None:
+    """A Tuple[str, ...] keeps numeric-looking labels as text."""
+    result = set_setting(bare_ftmw, "stage2b.band.band_labels", "K,Ka,18")
+    assert result.value == ("K", "Ka", "18")
+
+
+@pytest.mark.parametrize(
+    "knob,raw,message",
+    [
+        ("stage2b.gaussian.tau_G_seeds", "None", "cannot parse a number"),
+        ("stage2b.gaussian.tau_G_seeds", "[1.0, oops]", "cannot parse a number"),
+        ("stage2.window_mhz", "wide", "cannot parse a number"),
+        ("stage2.n_iter", "3.5", "cannot parse an integer"),
+        ("stage2.region_aware", "maybe", "cannot parse boolean"),
+    ],
+)
+def test_unparsable_value_raises_and_persists_nothing(
+    bare_ftmw: Path, knob: str, raw: str, message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        set_setting(bare_ftmw, knob, raw)
+    assert _row(bare_ftmw, knob).source == SOURCE_DEFAULT
+
+
+def test_native_values_are_accepted_directly(bare_ftmw: Path) -> None:
+    assert set_setting(bare_ftmw, "stage2.window_mhz", 123.5).value == 123.5
+    assert set_setting(bare_ftmw, "stage2.region_aware", True).value is True
+    # JSON has one number type, so an integral float is how it spells an int.
+    assert set_setting(bare_ftmw, "stage2.n_iter", 5.0).value == 5
+    assert set_setting(bare_ftmw, "stage5.shape", "gaussian").value.kind == (
+        ps_mod.PeakShape.GAUSSIAN
+    )
+
+
+def test_string_none_is_only_ever_text(bare_ftmw: Path) -> None:
+    """No string encodes the unset state; "None" is four characters of text.
+
+    Valid on a str field, a coercion error anywhere else -- the unset request
+    is the native ``None`` (equivalently ``unset_setting``).
+    """
+    assert set_setting(bare_ftmw, "stage5.conservative.n_eff_kind", "None").value == (
+        "None"
+    )
+    with pytest.raises(ValueError):
+        set_setting(bare_ftmw, "stage2.window_mhz", "None")
+
+
+def test_non_string_on_a_str_field_is_refused(bare_ftmw: Path) -> None:
+    with pytest.raises(ValueError, match="expected a string"):
+        set_setting(bare_ftmw, "stage5.conservative.n_eff_kind", 3)
+
+
+# --- unset_setting ----------------------------------------------------------
+def test_unset_restores_the_resolver_layers(bare_ftmw: Path) -> None:
+    set_setting(bare_ftmw, "stage2.window_mhz", "123.5")
+    assert _row(bare_ftmw, "stage2.window_mhz").source == SOURCE_FTMW
+
+    result = unset_setting(bare_ftmw, "stage2.window_mhz")
+    assert result.value is None
+    row = _row(bare_ftmw, "stage2.window_mhz")
+    assert row.source == SOURCE_DEFAULT
+    assert row.value == row.hard_default
+
+
+def test_unset_is_set_with_none(bare_ftmw: Path) -> None:
+    set_setting(bare_ftmw, "stage2b.gaussian.snr_min", "7.5")
+    assert set_setting(bare_ftmw, "stage2b.gaussian.snr_min", None).value is None
+    assert _row(bare_ftmw, "stage2b.gaussian.snr_min").source == SOURCE_DEFAULT
+
+
+def test_unset_stage1_field(bare_ftmw: Path) -> None:
+    set_setting(bare_ftmw, "stage1.start_us", "3.25")
+    assert _row(bare_ftmw, "stage1.start_us").value == 3.25
+    unset_setting(bare_ftmw, "stage1.start_us")
+    assert _row(bare_ftmw, "stage1.start_us").source == SOURCE_DEFAULT
+
+
+def test_unset_invalidates_like_a_set(bare_ftmw: Path) -> None:
+    set_setting(bare_ftmw, "stage2.window_mhz", "90")
+    _stamp_stages(
+        bare_ftmw,
+        ["stage0_fid_data", "stage1_complex_ft", "stage2_noise_result", "stage3_peaks"],
+    )
+    result = unset_setting(bare_ftmw, "stage2.window_mhz")
+    assert "stage2_noise_result" in result.invalidated
+    assert "stage3_peaks" in result.invalidated
+
+
+def test_unset_unknown_knob_raises(bare_ftmw: Path) -> None:
+    with pytest.raises(ValueError, match="unknown setting"):
+        unset_setting(bare_ftmw, "stage2.no_such_field")
 
 
 # --- export_settings -------------------------------------------------------

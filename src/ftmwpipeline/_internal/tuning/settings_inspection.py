@@ -231,7 +231,7 @@ def _enrich(path: str) -> Tuple[str, str]:
 
 
 def resolve_settings_view(
-    file_path: Union[str, Path],
+    file_path: Optional[Union[str, Path]] = None,
     selector: Optional[str] = None,
     *,
     include_advanced: bool = False,
@@ -250,9 +250,17 @@ def resolve_settings_view(
     file_path :
         Path to the ``.ftmw``. Layers that have not been written (a stage not yet
         run) simply fall through; the file need not have reached any stage.
+        ``None`` selects the **file-less** view: the two file-sourced layers
+        (persisted and recommended) are empty, so every row reports the hard
+        default (or the preset value, when ``preset`` is given). That is the
+        registry a caller needs *before* the target file exists -- the same rows,
+        the same paths and enrichment, computed from the dataclass defaults
+        alone.
     selector :
         Dotted-path prefix filter (``stage2b`` / ``stage2b.gaussian``); ``None``
-        returns every row.
+        returns every row. ``file_path`` stays first here, so a file-less caller
+        passes this by name; the public ``settings_defaults`` surfaces take it
+        as their first positional instead.
     include_advanced :
         Include advanced-tier rows. ``False`` (default) keeps the view a short
         primary-knob starting point, matching ``scan list``.
@@ -263,12 +271,18 @@ def resolve_settings_view(
         named preset changes a resolved value only for fields the file has not
         persisted.
     """
-    path_str = str(file_path)
+    path_str = None if file_path is None else str(file_path)
     preset_label = None if preset is None else f"{SOURCE_PRESET_PREFIX}{preset}"
     rows: List[SettingRow] = []
     for spec in _STAGE_SPECS:
-        persisted = spec.load_persisted(path_str)
-        recommended = spec.load_recommended(path_str) if spec.load_recommended else None
+        # With no file the two file-sourced layers are simply absent; the
+        # precedence chain below is unchanged and falls through to preset/default.
+        persisted = None if path_str is None else spec.load_persisted(path_str)
+        recommended = (
+            spec.load_recommended(path_str)
+            if path_str is not None and spec.load_recommended is not None
+            else None
+        )
         preset_layer = (
             spec.load_preset(preset)
             if preset is not None and spec.load_preset is not None

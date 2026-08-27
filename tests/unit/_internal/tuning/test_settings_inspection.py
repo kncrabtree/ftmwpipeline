@@ -168,3 +168,54 @@ def test_registry_enrichment(bare_ftmw: Path) -> None:
     # An unswept field absent from the registry is advanced with empty help.
     assert rows["stage1.units_power"].tier == "advanced"
     assert rows["stage1.units_power"].help == ""
+
+
+# --- the file-less view (the settings registry) -----------------------------
+def test_fileless_view_matches_a_bare_file_row_for_row(bare_ftmw: Path) -> None:
+    """With no file, the rows are the ones a file with nothing persisted gets.
+
+    A bare ``.ftmw`` has no persisted and no recommended layer, so it is the
+    one file whose resolved view must equal the file-less registry exactly --
+    same paths, same order, same values, same enrichment.
+    """
+    fileless = resolve_settings_view(include_advanced=True)
+    from_file = resolve_settings_view(bare_ftmw, include_advanced=True)
+    assert fileless == from_file
+    assert fileless
+
+
+def test_fileless_view_is_every_field_at_its_hard_default() -> None:
+    rows = resolve_settings_view(include_advanced=True)
+    assert {r.source for r in rows} == {SOURCE_DEFAULT}
+    assert all(r.value == r.hard_default for r in rows)
+    # Coverage is the dataclasses', not the knob registry's: a field the
+    # registry omits still appears (tiered advanced, empty help).
+    by_path = _by_path(rows)
+    assert by_path["stage1.units_power"].tier == "advanced"
+    assert by_path["stage2.window_mhz"].help
+
+
+def test_fileless_view_honours_selector_and_tier() -> None:
+    primary = resolve_settings_view()
+    every = resolve_settings_view(include_advanced=True)
+    assert 0 < len(primary) < len(every)
+    assert all(r.tier == "primary" for r in primary)
+
+    # The core keeps file_path first, so the file-less caller names the
+    # selector; the public settings_defaults surfaces take it positionally.
+    sel = resolve_settings_view(selector="stage5.rescue", include_advanced=True)
+    assert sel
+    assert all(r.path.startswith("stage5.rescue.") for r in sel)
+
+
+def test_fileless_view_shows_what_a_preset_would_seed(tmp_path: Path) -> None:
+    preset = tmp_path / "seed.yml"
+    preset.write_text("name: seed\nstage2:\n  window_mhz: 77.5\n")
+    rows = _by_path(resolve_settings_view(include_advanced=True, preset=preset))
+    seeded = rows["stage2.window_mhz"]
+    assert seeded.value == 77.5
+    assert seeded.source == f"{SOURCE_PRESET_PREFIX}{preset}"
+    # The hard default is still reported alongside the preset's value.
+    assert seeded.hard_default != 77.5
+    # A field the preset does not carry stays at its default.
+    assert rows["stage2.n_iter"].source == SOURCE_DEFAULT

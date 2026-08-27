@@ -3,14 +3,17 @@
 ``settings show <file> [selector]`` reports, per setting, the value actually in
 effect for an experiment and the layer that supplied it (``.ftmw`` / ``.yml:<name>``
 / ``recommended`` / ``default``) -- the resolved-view counterpart to ``scan
-list``'s tunable-knob listing. The shared core is
+list``'s tunable-knob listing. ``settings defaults [selector]`` prints the same
+table with no file at all: every setting at its hard default, which is the view
+to consult before the experiment exists. The shared core is
 ``_internal.tuning.resolve_settings_view``; this module only formats its rows,
 reusing the ``scan list`` table layout (prefix-elided knob column, primary/advanced
 tiering, dotted-path selector).
 
-The ``set`` / ``export`` verbs (persist a chosen value to the ``.ftmw`` / write a
-``.yml`` preset block) attach to the same ``settings`` object group; see
-``CLI_STRATEGY.md`` and ``planning/tune-settings-verb.md``.
+The ``set`` / ``unset`` / ``export`` verbs (persist a chosen value to the
+``.ftmw`` / clear one back to the resolver's layers / write a ``.yml`` preset
+block) attach to the same ``settings`` object group; see ``CLI_STRATEGY.md`` and
+``planning/tune-settings-verb.md``.
 """
 
 from __future__ import annotations
@@ -52,14 +55,29 @@ def cmd_settings_show(args: argparse.Namespace) -> int:
     for the named preset (with no ``--preset`` the preset layer is empty, since
     no preset is bound to a file).
     """
-    from .._internal.tuning import resolve_settings_view
-
     file_path = args.file_path
     if not file_path.endswith(".ftmw"):
         file_path = file_path + ".ftmw"
     if not Path(file_path).exists():
         print_error(f"Pipeline file not found: {file_path}")
         return 1
+    return _print_settings_table(file_path, args)
+
+
+def cmd_settings_defaults(args: argparse.Namespace) -> int:
+    """Print every setting at its hard default, with no file involved.
+
+    The same table ``settings show`` prints, resolved from the settings
+    dataclasses alone -- the view to consult before the experiment exists.
+    Every row's source reads ``default``, or ``.yml:<name>`` for the fields a
+    ``--preset`` supplies.
+    """
+    return _print_settings_table(None, args)
+
+
+def _print_settings_table(file_path: Optional[str], args: argparse.Namespace) -> int:
+    """Render the resolved-settings table for a file, or file-less for defaults."""
+    from .._internal.tuning import resolve_settings_view
 
     selector = getattr(args, "selector", None)
     show_all = bool(getattr(args, "all", False))
@@ -122,6 +140,17 @@ def cmd_settings_show(args: argparse.Namespace) -> int:
         ]
         if hidden:
             print(f"{len(hidden)} advanced setting(s) hidden; use --all to show them.")
+    if file_path is None:
+        print(
+            "source: default (the hard default) or .yml:<name> when --preset "
+            "supplies the field. No file is consulted, so the persisted and "
+            "recommended layers are absent."
+        )
+        print(
+            "Run 'settings show <file>' for the same rows resolved against a "
+            "real experiment."
+        )
+        return 0
     print(
         "source: .ftmw (persisted in the file) > .yml:<name> (preset) > "
         "recommended > default."
@@ -131,8 +160,9 @@ def cmd_settings_show(args: argparse.Namespace) -> int:
         "to see what a preset would seed for fields the file has not fixed."
     )
     print(
-        "Change a value with 'settings set <file> <knob> <value>'; capture the "
-        "file's chosen values as a preset with 'settings export <file> <out.yml>'."
+        "Change a value with 'settings set <file> <knob> <value>', clear one "
+        "with 'settings unset <file> <knob>'; capture the file's chosen values "
+        "as a preset with 'settings export <file> <out.yml>'."
     )
     return 0
 
@@ -155,6 +185,38 @@ def cmd_settings_set(args: argparse.Namespace) -> int:
         return 1
 
     print(f"Set {result.path} = {_fmt_value(result.value)} (persisted to .ftmw).")
+    if result.invalidated:
+        print(
+            "Invalidated downstream stage(s): "
+            + ", ".join(result.invalidated)
+            + " -- re-run them to refresh."
+        )
+    else:
+        print("No completed stages depended on this setting.")
+    return 0
+
+
+def cmd_settings_unset(args: argparse.Namespace) -> int:
+    """Clear a persisted value, restoring the resolver's own layers."""
+    from .._internal.tuning import unset_setting
+
+    file_path = args.file_path
+    if not file_path.endswith(".ftmw"):
+        file_path = file_path + ".ftmw"
+    if not Path(file_path).exists():
+        print_error(f"Pipeline file not found: {file_path}")
+        return 1
+
+    try:
+        result = unset_setting(file_path, args.knob)
+    except ValueError as e:
+        print_error(str(e))
+        return 1
+
+    print(
+        f"Unset {result.path}; it now resolves from the preset / recommended / "
+        f"default chain."
+    )
     if result.invalidated:
         print(
             "Invalidated downstream stage(s): "
@@ -243,6 +305,38 @@ def register_settings_commands(subparsers: Any) -> None:
     )
     p_show.set_defaults(func=cmd_settings_show)
 
+    p_defaults = settings_sub.add_parser(
+        "defaults",
+        help="Show every setting at its hard default (no file needed)",
+        description=(
+            "Print the settings registry: every setting's path, hard default, "
+            "and tier, resolved from the settings definitions alone. This is "
+            "the 'settings show' table for a file that does not exist yet -- "
+            "no .ftmw is read, so the persisted and recommended layers are "
+            "absent and every source reads 'default'."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_defaults.add_argument(
+        "selector",
+        nargs="?",
+        default=None,
+        help="Filter by dotted-path prefix, e.g. stage2b or stage2b.gaussian",
+    )
+    p_defaults.add_argument(
+        "--all",
+        action="store_true",
+        help="Include advanced-tier settings (hidden by default)",
+    )
+    p_defaults.add_argument(
+        "--preset",
+        type=str,
+        default=None,
+        help="Show what this preset would seed, in place of the hard default "
+        "(bare name or path to a YAML file)",
+    )
+    p_defaults.set_defaults(func=cmd_settings_defaults)
+
     p_set = settings_sub.add_parser(
         "set",
         help="Persist a chosen value into the .ftmw (invalidates stale stages)",
@@ -250,7 +344,21 @@ def register_settings_commands(subparsers: Any) -> None:
             "Persist KNOB = VALUE into the experiment's settings. The affected "
             "stage and every downstream stage are invalidated so the file stays "
             "self-consistent; re-run them to refresh. The FT is "
-            "unapodized and native-length -- there are no FT apodization knobs."
+            "unapodized and native-length -- there are no FT apodization knobs.\n"
+            "\n"
+            "VALUE is coerced to the field's declared type, and a value that "
+            "does not parse is refused rather than stored:\n"
+            "  numbers   the number, e.g. 3.5 or 12\n"
+            "  booleans  true/false (also 1/0, yes/no, on/off)\n"
+            "  text      taken verbatim\n"
+            "  tuples    comma-joined scalars (26500,40000) or a JSON array\n"
+            "            ([26500, 40000]); elements take the declared element\n"
+            "            type and a fixed-arity tuple checks its length\n"
+            "  shape     the kind string, e.g. gaussian (stage5.shape)\n"
+            "  clocks    a JSON array of objects (stage5.spur.clocks)\n"
+            "\n"
+            "There is no VALUE that means 'unset' -- 'None' is just that text. "
+            "Clear a setting with 'settings unset <file> <knob>' instead."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -262,6 +370,25 @@ def register_settings_commands(subparsers: Any) -> None:
     )
     p_set.add_argument("value", help="Value to persist (coerced to the field type)")
     p_set.set_defaults(func=cmd_settings_set)
+
+    p_unset = settings_sub.add_parser(
+        "unset",
+        help="Clear a persisted value so the resolver decides it again",
+        description=(
+            "Clear KNOB's persisted value. The field goes back to unset, so the "
+            "next run resolves it from the preset / recommended / hard-default "
+            "chain instead of the value this file had fixed. The affected stage "
+            "and every downstream stage are invalidated exactly as they are for "
+            "a 'settings set'."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_unset.add_argument("file_path", help="Path to the .ftmw experiment")
+    p_unset.add_argument(
+        "knob",
+        help="Dotted settings path to clear, e.g. stage2.window_mhz",
+    )
+    p_unset.set_defaults(func=cmd_settings_unset)
 
     p_export = settings_sub.add_parser(
         "export",

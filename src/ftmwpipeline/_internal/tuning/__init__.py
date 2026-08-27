@@ -22,6 +22,7 @@ from .settings_mutation import (
     SetResult,
     export_settings,
     set_setting,
+    unset_setting,
 )
 
 __all__ = [
@@ -38,5 +39,6 @@ __all__ = [
     "SetResult",
     "ExportResult",
     "set_setting",
+    "unset_setting",
     "export_settings",
 ]

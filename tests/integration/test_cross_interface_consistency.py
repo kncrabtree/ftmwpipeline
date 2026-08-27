@@ -1068,6 +1068,41 @@ class TestSettingsShowConsistency:
         assert "stage2b.gaussian.snr_min" in stdout
         assert "stage5" not in stdout
 
+    def test_defaults_pipeline_api_rows_identical(self):
+        api_rows = ftmw.settings_defaults(include_advanced=True)
+        pipe_rows = Pipeline.settings_defaults(include_advanced=True)
+        assert api_rows == pipe_rows
+        assert len(api_rows) > 0
+        assert {r.source for r in api_rows} == {"default"}
+
+    def test_defaults_cover_the_same_paths_as_show(self, baseline_2638_stage2):
+        """The file-less registry is the same rows, only without file layers."""
+        shown = ftmw.settings_show(baseline_2638_stage2, include_advanced=True)
+        defaults = ftmw.settings_defaults(include_advanced=True)
+        assert [r.path for r in defaults] == [r.path for r in shown]
+        assert [r.hard_default for r in defaults] == [r.hard_default for r in shown]
+        assert [(r.tier, r.help) for r in defaults] == [(r.tier, r.help) for r in shown]
+
+    def test_cli_defaults_table_matches_rows(self):
+        from ftmwpipeline.cli.settings_commands import _fmt_value
+
+        by_path = {r.path: r for r in ftmw.settings_defaults(include_advanced=True)}
+        stdout, _ = TestSettingsShowConsistency._run_cli(
+            ["settings", "defaults", "--all"]
+        )
+        win = by_path["stage2.window_mhz"]
+        line = next(ln for ln in stdout.splitlines() if "stage2.window_mhz" in ln)
+        assert "default" in line
+        assert _fmt_value(win.hard_default) in line
+
+    def test_cli_defaults_needs_no_file(self, tmp_path):
+        """The verb takes no path at all -- that is the point of it."""
+        stdout, _ = TestSettingsShowConsistency._run_cli(
+            ["settings", "defaults", "stage2b.gaussian", "--all"]
+        )
+        assert "stage2b.gaussian.snr_min" in stdout
+        assert "stage5" not in stdout
+
     @staticmethod
     def _run_cli(args):
         result = subprocess.run(
@@ -1132,6 +1167,52 @@ class TestSettingsMutationConsistency:
         row = {r.path: r for r in ftmw.settings_show(work)}["stage2.smoothing_mhz"]
         assert row.source == ".ftmw"
         assert row.value == 650.0
+
+    def test_set_accepts_native_and_string_identically(
+        self, baseline_2638_stage2, tmp_path
+    ):
+        """A native value and its documented string spelling must agree."""
+        a = tmp_path / "na.ftmw"
+        b = tmp_path / "nb.ftmw"
+        shutil.copyfile(baseline_2638_stage2, a)
+        shutil.copyfile(baseline_2638_stage2, b)
+
+        ra = ftmw.settings_set(a, "stage2b.gaussian.tau_G_seeds", [100.0, 50.0])
+        rb = Pipeline.open(b).settings_set(
+            "stage2b.gaussian.tau_G_seeds", "[100.0, 50.0]"
+        )
+        assert ra.value == rb.value == (100.0, 50.0)
+        assert ra.invalidated == rb.invalidated
+
+    def test_unset_parity(self, baseline_2638_stage2, tmp_path):
+        a = tmp_path / "ua.ftmw"
+        b = tmp_path / "ub.ftmw"
+        shutil.copyfile(baseline_2638_stage2, a)
+        shutil.copyfile(baseline_2638_stage2, b)
+        ftmw.settings_set(a, "stage2.smoothing_mhz", "650")
+        ftmw.settings_set(b, "stage2.smoothing_mhz", "650")
+
+        ra = ftmw.settings_unset(a, "stage2.smoothing_mhz")
+        rb = Pipeline.open(b).settings_unset("stage2.smoothing_mhz")
+        assert ra.value is rb.value is None
+        assert ra.invalidated == rb.invalidated
+
+        rows_a = {r.path: r for r in ftmw.settings_show(a, include_advanced=True)}
+        rows_b = {r.path: r for r in ftmw.settings_show(b, include_advanced=True)}
+        assert rows_a["stage2.smoothing_mhz"] == rows_b["stage2.smoothing_mhz"]
+        assert rows_a["stage2.smoothing_mhz"].source != ".ftmw"
+
+    def test_cli_unset_then_show_reflects(self, baseline_2638_stage2, tmp_path):
+        work = tmp_path / "wu.ftmw"
+        shutil.copyfile(baseline_2638_stage2, work)
+        ftmw.settings_set(work, "stage2.smoothing_mhz", "650")
+        TestSettingsShowConsistency._run_cli(
+            ["settings", "unset", str(work), "stage2.smoothing_mhz"]
+        )
+        row = {r.path: r for r in ftmw.settings_show(work, include_advanced=True)}[
+            "stage2.smoothing_mhz"
+        ]
+        assert row.source != ".ftmw"
 
 
 # ---------------------------------------------------------------------------

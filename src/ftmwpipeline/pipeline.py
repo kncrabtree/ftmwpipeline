@@ -2646,24 +2646,70 @@ class Pipeline:
             preset=preset,
         )
 
-    def settings_set(self, knob: str, value: str) -> "SetResult":
+    @staticmethod
+    def settings_defaults(
+        selector: Optional[str] = None,
+        *,
+        include_advanced: bool = False,
+        preset: Optional[Union[str, Path]] = None,
+    ) -> "Tuple[SettingRow, ...]":
+        """The settings registry: every setting at its hard default, file-less.
+
+        Equivalent to :func:`ftmwpipeline.api.settings_defaults`. Returns the
+        same :class:`SettingRow` shape as :meth:`settings_show` -- same paths,
+        same ``tier`` / ``help`` enrichment, same coverage of *every* settings
+        dataclass field (not only registry-registered knobs) -- but computed
+        from the dataclass defaults alone, so it answers before any file exists.
+        Every row reports ``source == "default"``, or the preset's value and
+        ``".yml:<name>"`` for the fields a given ``preset`` supplies. Being
+        file-independent, this is a staticmethod, like :meth:`scan_list`.
+        """
+        from ._internal.tuning import resolve_settings_view
+
+        return resolve_settings_view(
+            None,
+            selector,
+            include_advanced=include_advanced,
+            preset=preset,
+        )
+
+    def settings_set(self, knob: str, value: Any) -> "SetResult":
         """Persist a chosen value for ``knob`` into this file's persisted layer.
 
         Equivalent to :func:`ftmwpipeline.api.settings_set`. ``knob`` is a dotted
         settings path (``stage2.window_mhz`` / ``stage5.tau.max_decay_factor``);
-        ``value`` is the string form, coerced to the field's type. Because the
-        stored stage results were computed against the old value, the affected
-        stage and all downstream stages are invalidated (their results dropped
-        and completion cleared) so the file never carries results inconsistent
-        with its settings. Stage 1 data-selection knobs (``stage1.start_us`` /
-        ``stage1.end_us`` / ``stage1.trim_min_mhz`` / ``stage1.trim_max_mhz`` /
+        ``value`` is either a native Python value of the field's declared type or
+        a string in one of the documented encodings, and is coerced to that type.
+        A value that does not parse raises ``ValueError`` without touching the
+        file. ``None`` unsets the field -- see :meth:`settings_unset`, which is
+        also the only spelling on the CLI, since no *string* encodes ``None``.
+        Because the stored stage results were computed against the old value, the
+        affected stage and all downstream stages are invalidated (their results
+        dropped and completion cleared) so the file never carries results
+        inconsistent with its settings. Stage 1 data-selection knobs
+        (``stage1.start_us`` / ``stage1.end_us`` / ``stage1.trim`` /
         ``stage1.units_power``) may also be set here, equivalently to passing
-        them to :meth:`compute_ft`.
+        them to :meth:`compute_ft`. The knob is the settings field ``trim``, a
+        two-element tuple -- not the ``trim_min_mhz`` / ``trim_max_mhz`` attrs
+        the resolved record is *stored* under.
         Returns a :class:`SetResult` with the invalidated stage names.
         """
         from ._internal.tuning import set_setting
 
         return set_setting(self.filepath, knob, value)
+
+    def settings_unset(self, knob: str) -> "SetResult":
+        """Clear ``knob``'s persisted value, restoring the resolver's layers.
+
+        Equivalent to :func:`ftmwpipeline.api.settings_unset` and to
+        :meth:`settings_set` with ``None``: the field goes back to unset, so the
+        next run resolves it from the preset / recommended / hard-default chain
+        instead of the value this file had fixed. Invalidates the same stages a
+        set does. Returns a :class:`SetResult` with ``value`` ``None``.
+        """
+        from ._internal.tuning import unset_setting
+
+        return unset_setting(self.filepath, knob)
 
     def settings_export(
         self,

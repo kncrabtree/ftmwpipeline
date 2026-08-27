@@ -154,6 +154,15 @@ surface for batch and scripting use. Provided operations mirror the class:
 import, load, compute FT, visualize, estimate noise, save parameters, and
 introspection.
 
+The one class of exception is **introspection that is not about a file**: the
+tunable-knob registry and the settings registry describe the pipeline itself,
+not any experiment, and a path argument they would ignore would be a lie about
+what the answer depends on. Such a function takes no path (`scan_list`,
+`settings_defaults`), and its `Pipeline` counterpart is a staticmethod for
+parity. These must be genuinely file-independent: a function whose answer can
+differ per file belongs to the path-first rule, however convenient a fileless
+default would be.
+
 The canonical functional namespace is `ftmwpipeline.api`
 (`import ftmwpipeline.api as ftmw`); the package top level is intentionally not
 flooded with these functions. The `Pipeline` class and the `api` module are
@@ -190,6 +199,33 @@ Where a diagnostic is delivered as human-readable *lines* rather than an
 exception (the environment-drift lists in `info()` / `validate()`), the machine-
 readable part must be documented as a contract and the rest declared prose. The
 convention is a `"<field_name>: "` prefix; nothing after the colon is stable.
+
+### A mutating verb refuses a value it cannot coerce
+
+A verb that persists a caller-supplied value into the file must **reject** a
+value it cannot coerce to the target's declared type, rather than storing a
+best-effort reading of it. A silently mistyped value is worse than an error by
+the same argument the derived-state rule makes: the caller believes it set one
+thing, the next run computes against another, and neither side has a signal.
+Type-driven coercion is not optional strictness — it is what makes the write
+mean what the caller said.
+
+Two requirements follow, and both are part of the published contract:
+
+- **The native typed value is accepted.** A caller holding a `float`, a
+  `bool`, or a list does not have to render it to a string and hope the parser
+  reads it back the same way. Strings remain accepted — they are what a CLI
+  has — but they are a second encoding of the same contract, not the only one.
+- **Every accepted string encoding is documented at the verb**, per target
+  type, so an integrator has a spelling to render *to* instead of guessing one
+  from the parser's behavior. Where a value has no string spelling, that is
+  stated too, along with the verb that expresses it instead.
+
+`settings_set` / `settings_unset` are governed by this: values coerce to each
+settings field's declared type (element-typed and arity-checked for tuple
+fields), an uncoercible value raises without touching the file, and `None` —
+the unset request — is deliberately spelled as the native value or as
+`settings_unset`, never as a magic string.
 
 ## Public constants
 
