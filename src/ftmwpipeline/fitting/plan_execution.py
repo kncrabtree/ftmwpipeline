@@ -2661,6 +2661,53 @@ def _log_window_progress(n_done: int, n_total: int) -> None:
     logger.info("window %d/%d", n_done, n_total)
 
 
+# A window whose fit took longer than this (seconds) is reported as slow.
+SLOW_WINDOW_WARNING_S = 60.0
+
+# The per-window detail record, one per fitted window, always at INFO.
+WINDOW_DETAIL_LOG_TEMPLATE = "w%d [%.1f-%.1f MHz]: %d peaks, chi2r=%.3g, %.1fs"
+# The slow-window record, emitted IN ADDITION to the detail line -- at WARNING,
+# under its own template -- when a window exceeds ``SLOW_WINDOW_WARNING_S``.
+# Level and template identify it together: a consumer filtering by level and
+# one matching on ``record.msg`` agree on which records mean "slow".
+SLOW_WINDOW_LOG_TEMPLATE = "slow window w%d [%.1f-%.1f MHz]: %.1fs (over %.0fs)"
+
+
+def _log_window_outcome(
+    wid: int,
+    freq_range: Tuple[float, float],
+    *,
+    n_peaks: int,
+    reduced_chi2: float,
+    elapsed_s: float,
+) -> None:
+    """Log one finished window: the INFO detail line, plus a separate WARNING
+    under :data:`SLOW_WINDOW_LOG_TEMPLATE` when it took too long.
+
+    Two records rather than one promoted to WARNING, so the detail line keeps
+    one level and one template for every window and the slow flag is a
+    record of its own shape.
+    """
+    logger.info(
+        WINDOW_DETAIL_LOG_TEMPLATE,
+        wid,
+        freq_range[0],
+        freq_range[1],
+        n_peaks,
+        reduced_chi2,
+        elapsed_s,
+    )
+    if elapsed_s > SLOW_WINDOW_WARNING_S:
+        logger.warning(
+            SLOW_WINDOW_LOG_TEMPLATE,
+            wid,
+            freq_range[0],
+            freq_range[1],
+            elapsed_s,
+            SLOW_WINDOW_WARNING_S,
+        )
+
+
 def _process_one_window(
     win: FitWindow,
     *,
@@ -2927,15 +2974,12 @@ def _process_one_window(
         )
         return
     final = outcomes[wid]
-    log = logger.warning if elapsed > 60.0 else logger.info
-    log(
-        "w%d [%.1f-%.1f MHz]: %d peaks, chi2r=%.3g, %.1fs",
+    _log_window_outcome(
         wid,
-        win.freq_range[0],
-        win.freq_range[1],
-        final.fit.n_peaks,
-        final.fit.fit.reduced_chi2,
-        elapsed,
+        win.freq_range,
+        n_peaks=final.fit.n_peaks,
+        reduced_chi2=final.fit.fit.reduced_chi2,
+        elapsed_s=elapsed,
     )
 
 

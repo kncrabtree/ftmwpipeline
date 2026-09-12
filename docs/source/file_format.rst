@@ -48,6 +48,16 @@ is meant to be inspected through the :doc:`cli` (``ftmwpipeline info``) and the
 fixed paths. Because the container is plain HDF5, it is also readable with any
 HDF5 tool (``h5dump``, ``h5py``) for ad hoc inspection.
 
+The file on disk is always as small as its content. HDF5 never reclaims the
+space a rewritten attribute or a deleted variable-length dataset leaves behind
+-- exactly what a stage re-run or a Stage 6 curation write churns -- so without
+intervention a curated file grew by roughly a review group plus a fit table per
+edit and never shrank. Every stage run and every curation write therefore ends
+by repacking the file (the equivalent of ``h5repack``: every object copied into
+a fresh file that atomically replaces the original), which costs tens of
+milliseconds; ``ftmwpipeline run`` repacks once at the end of the whole run.
+There is no verb for it and nothing to configure.
+
 Stage tracking and dependencies
 -------------------------------
 

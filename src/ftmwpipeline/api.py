@@ -1800,6 +1800,7 @@ def review_apply(
     *,
     dry_run: bool = False,
     frame: Optional[Frame] = None,
+    log_prefix: Optional[int] = None,
 ) -> CurationApplyResult:
     """Apply a curation file of batched review edits.
 
@@ -1834,6 +1835,12 @@ def review_apply(
         (or must agree with) this argument; omitting both is an error on a
         ``self_calibrated`` file when the file carries any frequency (see
         :data:`~ftmwpipeline.core.curation.Frame`).
+    log_prefix :
+        Apply as if the decision log ended after its first ``log_prefix``
+        decisions -- the rest are dropped and the kept ones are replayed
+        together with this batch in one pass (see
+        :meth:`Pipeline.review_apply`).  ``None`` applies on top of every
+        recorded decision.  Not combined with ``dry_run``.
 
     Returns
     -------
@@ -1844,7 +1851,7 @@ def review_apply(
     Requires Stage 5 completed.
     """
     return Pipeline.open(file_path).review_apply(
-        curation_path, dry_run=dry_run, frame=frame
+        curation_path, dry_run=dry_run, frame=frame, log_prefix=log_prefix
     )
 
 

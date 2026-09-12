@@ -33,6 +33,7 @@ from ..preprocessing.noise_estimation import (
     estimate_active_ft_noise,
 )
 from .active_ft_support import build_trimmed_active_ft
+from .compaction import compact_file
 from .shared_utils import require_resolved
 
 logger = logging.getLogger(__name__)
@@ -513,6 +514,10 @@ def _update_stage_completion(file_path: str, stage_name: str) -> None:
         Path to the .ftmw pipeline file
     stage_name : str
         Name of the stage to mark as completed
+
+    Compacts the file afterwards: a stage re-run deletes and recreates its
+    group, and HDF5 never reclaims the attribute and vlen space that leaves
+    behind (see :mod:`~ftmwpipeline._internal.compaction`).
     """
     try:
         with h5py.File(file_path, "a") as h5f:
@@ -552,6 +557,11 @@ def _update_stage_completion(file_path: str, stage_name: str) -> None:
 
     except Exception as e:
         raise RuntimeError(f"Failed to update stage completion: {e}")
+
+    # Every stage from noise through review stamps its completion here, last,
+    # so this is the one place a finished stage run reclaims the dead space
+    # its rewrite left (see ``_internal.compaction``).
+    compact_file(file_path)
 
 
 def _stamp_stage_environment(

@@ -769,10 +769,15 @@ def cmd_review_apply(args: argparse.Namespace) -> int:
     file_path = _ensure_ftmw(args.file_path)
     dry_run: bool = getattr(args, "dry_run", False)
     frame: Optional[Frame] = getattr(args, "frame", None)
+    log_prefix: Optional[int] = getattr(args, "log_prefix", None)
 
     try:
         result = apply_curation_impl(
-            file_path, args.curation_file, dry_run=dry_run, frame=frame
+            file_path,
+            args.curation_file,
+            dry_run=dry_run,
+            frame=frame,
+            log_prefix=log_prefix,
         )
     except (ValueError, KeyError, OSError) as exc:
         print(f"Error: {exc}")
@@ -1142,6 +1147,21 @@ def register_review_commands(subparsers: Any) -> None:
         action="store_true",
         default=False,
         help="Print the resolved plan and warnings without modifying the file.",
+    )
+    p_apply.add_argument(
+        "--log-prefix",
+        dest="log_prefix",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Apply as if the decision log ended after its first N decisions: "
+            "the rest are dropped and the kept ones are replayed together with "
+            "this file in one pass (the outcome of 'review undo' of the dropped "
+            "ids followed by 'review apply', in one replay). Frequencies and "
+            "omitted window ids resolve against the state the kept decisions "
+            "leave. Not combined with --dry-run."
+        ),
     )
     _add_frame_argument(p_apply)
     p_apply.add_argument(

@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, TextIO, Tuple, Union
 
+from .compaction import deferred_compaction
 from .progress import StageProgress
 
 # ---------------------------------------------------------------------------
@@ -134,7 +135,9 @@ def run_pipeline_impl(
     }
 
     t0 = time.monotonic()
-    with reporter.capture_logs():
+    # One compaction of the output file at the end of the run, not one per
+    # stage (see ``_internal.compaction``).
+    with reporter.capture_logs(), deferred_compaction():
         try:
             with reporter.stage("import"):
                 pipe = Pipeline.create(

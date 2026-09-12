@@ -243,18 +243,17 @@ def _free_anchor(path: Path) -> float:
     return max(highs) + 5.0
 
 
-def test_incremental_writes_do_not_grow_the_file_like_full_ones(
+def test_curation_writes_land_at_content_size_whichever_writer_ran(
     stage5_multi_file, tmp_path, monkeypatch
 ):
-    """The other half of the point: the file stops growing per edit.
-
-    Deleting an HDF5 group does not return its space to the file, so the
-    old delete-and-rewrite leaked the whole fit table on every curation
-    write (919 kB per write on the 2638 build, 26.1 MB -> 35.3 MB over ten).
-    Measured as an A/B rather than against an absolute bound, because the
-    per-edit cost of everything *else* a write does -- the undo baseline,
-    the review log -- dominates on a fixture this small and would set the
-    scale, not the fit table.
+    """The other half of the point used to be measured as file growth: the
+    incremental writer leaked less than a full delete-and-rewrite (919 kB per
+    write on the 2638 build). Every curation write now ends by compacting the
+    file (``_internal.compaction``), so growth no longer distinguishes the two
+    writers -- both land at the size of the content. This pins that: the same
+    two edits through either writer give the same file size (within the
+    noise of a repack), and the second edit adds nothing the first did not
+    (the one-time undo baseline is the only real growth).
     """
     incremental = tmp_path / "incr.ftmw"
     full = tmp_path / "full.ftmw"
@@ -265,27 +264,32 @@ def test_incremental_writes_do_not_grow_the_file_like_full_ones(
     add_freq = _clear_add_freq(incremental, wid)
     edits = [f"add,{wid},{add_freq},\n", f"remove,{wid},{freq},\n"]
 
-    def run(target: Path) -> int:
-        before = target.stat().st_size
+    def run(target: Path) -> List[int]:
+        sizes = []
         for i, text in enumerate(edits):
             apply_curation_impl(
                 target, _write_curation(tmp_path, f"{target.stem}{i}.csv", text)
             )
-        return target.stat().st_size - before
+            sizes.append(target.stat().st_size)
+        return sizes
 
-    incremental_growth = run(incremental)
+    incremental_sizes = run(incremental)
     with monkeypatch.context() as m:
         m.setattr(
             fitser,
             "update_spectrum_fit_windows_in_hdf5",
             lambda fit, group, wids: save_spectrum_fit_to_hdf5(fit, group),
         )
-        full_growth = run(full)
+        full_sizes = run(full)
 
-    assert incremental_growth < full_growth, (
-        f"incremental writes grew the file by {incremental_growth / 1e3:.0f} kB, "
-        f"a full rewrite by {full_growth / 1e3:.0f} kB -- the saving is gone"
+    assert incremental_sizes[-1] == pytest.approx(full_sizes[-1], rel=0.02), (
+        f"incremental writer left {incremental_sizes[-1] / 1e3:.0f} kB, a full "
+        f"rewrite {full_sizes[-1] / 1e3:.0f} kB -- compaction should erase the "
+        f"difference"
     )
+    # After the first edit took the undo baseline, a further edit changes the
+    # content by a few peaks' worth, not by a table set.
+    assert incremental_sizes[1] <= 1.02 * incremental_sizes[0], incremental_sizes
 
 
 def _datasets(group: h5py.Group) -> List[h5py.Dataset]:

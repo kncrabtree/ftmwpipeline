@@ -2000,6 +2000,7 @@ class Pipeline:
         *,
         dry_run: bool = False,
         frame: Optional[Frame] = None,
+        log_prefix: Optional[int] = None,
     ) -> CurationApplyResult:
         """Apply a curation file of batched review edits.
 
@@ -2039,6 +2040,18 @@ class Pipeline:
             both is an error on a ``self_calibrated`` file when the file
             carries any frequency (see
             :data:`~ftmwpipeline.core.curation.Frame`).
+        log_prefix :
+            Apply the batch as if the decision log ended after its first
+            ``log_prefix`` decisions: those later in the log are dropped, the
+            automatic fit is replayed with the kept decisions plus this batch
+            in one pass, and the log continues from there.  ``None`` (the
+            default) and a value equal to the log's length are the ordinary
+            apply on top of every recorded decision.  Equivalent in outcome
+            to :meth:`review_undo` of the dropped decisions followed by an
+            ordinary apply, at the cost of one replay instead of two; the
+            batch's frequencies and omitted window ids resolve against the
+            state the kept decisions leave, not the file as it stood.  Not
+            combined with ``dry_run``.
 
         Returns
         -------
@@ -2048,7 +2061,11 @@ class Pipeline:
             the plan installs or grows.
         """
         return apply_curation_impl(
-            self.filepath, curation_path, dry_run=dry_run, frame=frame
+            self.filepath,
+            curation_path,
+            dry_run=dry_run,
+            frame=frame,
+            log_prefix=log_prefix,
         )
 
     def review_preview(

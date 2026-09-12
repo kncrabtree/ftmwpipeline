@@ -32,6 +32,46 @@ had to reach into ``_internal`` or parse out of prose to obtain are now
 published, and the Stage 6 edit paths that carry them were collapsed onto one
 engine so they cannot answer differently.
 
+* **``review apply --log-prefix N`` (``log_prefix=N`` on ``Pipeline.review_apply``,
+  ``api.review_apply`` and ``ReviewSession.review_apply``) applies a curation
+  file as if the decision log ended after its first ``N`` decisions.** The
+  later decisions are dropped, the automatic fit is restored, and the kept
+  decisions are replayed together with the file as one batch -- one cascade,
+  one persist -- so the outcome is that of ``review undo`` of the dropped ids
+  followed by ``review apply``, in one replay instead of two. The file's
+  frequencies and omitted window ids (``uid:N`` targets included) resolve
+  against the in-memory state the kept decisions leave, not the file as it
+  stood before the restore or the bare baseline after it; a failing row leaves
+  the file aligned at the prefix. ``N`` equal to the log's length is the
+  ordinary apply; a shorter ``N`` refuses ``--dry-run``. Built for a client
+  that keeps its own position in the log and aligns the file only on its next
+  real edit.
+
+* **A ``.ftmw`` no longer grows with every curation write.** HDF5 never
+  reclaims the space a rewritten attribute or a deleted variable-length
+  dataset leaves behind, which is what a stage re-run and every Stage 6 write
+  churn: measured on a 6.5 MB build, each single-window edit added 0.7 MB and
+  each undo 1.2 MB, permanently, until a curated file was three times its
+  content. (Free-space tracking at file creation was measured and does not
+  help -- that space is on no free list.) Every stage run and every curation
+  write now ends by repacking the file in place (an object-by-object copy that
+  atomically replaces the original, tens of milliseconds at this size);
+  ``ftmwpipeline run`` repacks once at the end. Existing files shrink on their
+  next stage run or curation write. There is no verb and nothing to configure.
+
+* **Stage 6 ``review run`` now logs like the other stages, and a slow Stage 5
+  window is its own log record.** ``review run`` emits a start line
+  (``Stage 6 review: routing attention for %d windows in %s``) and a
+  completion summary (``Saved Stage 6 review to %s: %d windows, %d need
+  attention``) on the ``ftmwpipeline`` logger, where it used to emit nothing.
+  Stage 5's per-window detail line (``w%d [%.1f-%.1f MHz]: %d peaks,
+  chi2r=%.3g, %.1fs``) is now always INFO; a window over the slow threshold
+  (``plan_execution.SLOW_WINDOW_WARNING_S``, 60 s) ADDITIONALLY logs a WARNING
+  under its own template (``slow window w%d [%.1f-%.1f MHz]: %.1fs (over
+  %.0fs)``), so a consumer filtering by level and one matching on the message
+  template agree on which records mean "slow" -- previously the one detail
+  template was promoted to WARNING, which neither could tell apart.
+
 * **Fixed: an auto-merged line's frequency uncertainty no longer collapses when
   its window is curated.** Stage 5 widens a merged multiplet's
   ``frequency_error`` to ``sqrt(formal**2 + spread**2)``, but recorded the

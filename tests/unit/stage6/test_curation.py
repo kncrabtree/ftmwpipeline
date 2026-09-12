@@ -1553,3 +1553,211 @@ def test_one_add_at_that_frequency_still_works(stage5_multi_file, tmp_path):
     apply_curation_impl(stage5_multi_file, cur)
 
     assert len(_fitted_by_window(stage5_multi_file)[wid]) == n_before + 1
+
+
+# ---------------------------------------------------------------------------
+# review apply --log-prefix: apply against a chosen prefix of the decision log
+# ---------------------------------------------------------------------------
+
+
+def _two_adds(stage5_multi_file, tmp_path) -> tuple:
+    """Record two add decisions (one per window) on a fresh copy; return
+    ``(path, wa, fa, wb, fb)``. Skips when the fixture lacks two fitted
+    windows."""
+    by_w = _fitted_by_window(stage5_multi_file)
+    wids = [w for w, f in by_w.items() if f]
+    if len(wids) < 2:
+        pytest.skip("Need two windows with peaks")
+    wa, wb = wids[0], wids[1]
+    fa = _clear_add_freq(stage5_multi_file, wa)
+    fb = _clear_add_freq(stage5_multi_file, wb)
+    fp = tmp_path / "two_adds.ftmw"
+    shutil.copy(stage5_multi_file, fp)
+    apply_curation_impl(fp, _write_curation(tmp_path, f"add,{wa},{fa},\n"))
+    apply_curation_impl(fp, _write_curation(tmp_path, f"add,{wb},{fb},\n"))
+    assert [e.window_id for e in review_log_impl(fp)] == [wa, wb]
+    return fp, wa, fa, wb, fb
+
+
+def _close(a: Dict[int, List[float]], b: Dict[int, List[float]], tol=1e-4) -> bool:
+    """Same windows, same peak counts, every frequency within ``tol`` MHz."""
+    if a.keys() != b.keys():
+        return False
+    for wid in a:
+        if len(a[wid]) != len(b[wid]):
+            return False
+        if any(abs(x - y) > tol for x, y in zip(a[wid], b[wid])):
+            return False
+    return True
+
+
+@pytest.mark.integration
+def test_apply_log_prefix_matches_undo_then_apply(stage5_multi_file, tmp_path):
+    """``log_prefix=N`` + batch == undo of the decisions after N + batch."""
+    fp, wa, fa, wb, fb = _two_adds(stage5_multi_file, tmp_path)
+    ref = tmp_path / "ref.ftmw"
+    shutil.copy(fp, ref)
+    # The batch removes the peak the KEPT decision added -- it resolves only
+    # against the prefix state.
+    cur = _write_curation(tmp_path, f"remove,{wa},{fa},\n")
+
+    review_undo_impl(ref, [1])
+    apply_curation_impl(ref, cur)
+
+    result = apply_curation_impl(fp, cur, log_prefix=1)
+
+    assert result.applied == 1 and not result.dry_run
+    assert [a.kind for a in result.plan] == ["edit"]
+    assert _close(_fitted_by_window(fp), _fitted_by_window(ref))
+    log = review_log_impl(fp)
+    assert [(e.order_index, e.window_id, e.kind) for e in log] == [
+        (0, wa, "add"),
+        (1, wa, "remove"),
+    ]
+    assert [(e.window_id, e.kind) for e in review_log_impl(ref)] == [
+        (wa, "add"),
+        (wa, "remove"),
+    ]
+    # The report is relative to the aligned position: the kept decision's
+    # window is direct (the batch edited it), the dropped one's is untouched.
+    assert wa in result.windows and result.windows[wa].origin == "direct"
+    assert result.windows[wa].action_indices == [0]
+
+
+@pytest.mark.integration
+def test_apply_log_prefix_zero_drops_every_decision(stage5_multi_file, tmp_path):
+    fp, wa, fa, wb, fb = _two_adds(stage5_multi_file, tmp_path)
+    ref = tmp_path / "ref.ftmw"
+    shutil.copy(stage5_multi_file, ref)
+    cur = _write_curation(tmp_path, f"add,{wb},{fb},\n")
+    apply_curation_impl(ref, cur)
+
+    apply_curation_impl(fp, cur, log_prefix=0)
+
+    assert _fitted_by_window(fp) == _fitted_by_window(ref)
+    assert [(e.window_id, e.kind) for e in review_log_impl(fp)] == [(wb, "add")]
+
+
+@pytest.mark.integration
+def test_apply_log_prefix_full_length_is_a_plain_apply(stage5_multi_file, tmp_path):
+    fp, wa, fa, wb, fb = _two_adds(stage5_multi_file, tmp_path)
+    plain = tmp_path / "plain.ftmw"
+    shutil.copy(fp, plain)
+    cur = _write_curation(tmp_path, f"remove,{wb},{fb},\n")
+
+    apply_curation_impl(plain, cur)
+    apply_curation_impl(fp, cur, log_prefix=2)
+
+    assert _fitted_by_window(fp) == _fitted_by_window(plain)
+    assert [e.kind for e in review_log_impl(fp)] == ["add", "add", "remove"]
+    # A full-length prefix is the ordinary path, so a dry run is allowed.
+    before = hashlib.md5(fp.read_bytes()).hexdigest()
+    dry = apply_curation_impl(fp, cur, log_prefix=3, dry_run=True)
+    assert dry.dry_run and hashlib.md5(fp.read_bytes()).hexdigest() == before
+
+
+@pytest.mark.integration
+def test_apply_log_prefix_argument_checks(stage5_multi_file, tmp_path):
+    fp, wa, fa, wb, fb = _two_adds(stage5_multi_file, tmp_path)
+    cur = _write_curation(tmp_path, f"remove,{wb},{fb},\n")
+    before = hashlib.md5(fp.read_bytes()).hexdigest()
+    with pytest.raises(ValueError, match="between 0 and the decision log's length"):
+        apply_curation_impl(fp, cur, log_prefix=3)
+    with pytest.raises(ValueError, match="between 0 and the decision log's length"):
+        apply_curation_impl(fp, cur, log_prefix=-1)
+    with pytest.raises(ValueError, match="dry_run cannot be combined"):
+        apply_curation_impl(fp, cur, log_prefix=1, dry_run=True)
+    # A malformed file refuses before anything is restored.
+    with pytest.raises(ValueError):
+        apply_curation_impl(
+            fp, _write_curation(tmp_path, "split,1,1.0,\n"), log_prefix=1
+        )
+    assert hashlib.md5(fp.read_bytes()).hexdigest() == before
+
+
+@pytest.mark.integration
+def test_apply_log_prefix_failed_batch_leaves_the_file_aligned(
+    stage5_multi_file, tmp_path
+):
+    """A row that fails costs the caller the failed rows only: the file ends
+    up at the prefix (undo of the dropped decisions), not at the bare
+    baseline the restore passed through."""
+    fp, wa, fa, wb, fb = _two_adds(stage5_multi_file, tmp_path)
+    ref = tmp_path / "ref.ftmw"
+    shutil.copy(fp, ref)
+    review_undo_impl(ref, [1])
+
+    bad = _write_curation(tmp_path, f"remove,{wa},99999.0,\n")
+    with pytest.raises(ValueError, match="curation action 1.*failed"):
+        apply_curation_impl(fp, bad, log_prefix=1)
+
+    assert _close(_fitted_by_window(fp), _fitted_by_window(ref))
+    assert [(e.window_id, e.kind) for e in review_log_impl(fp)] == [(wa, "add")]
+
+
+@pytest.mark.integration
+def test_apply_log_prefix_resolves_uid_targets_against_the_prefix_state(
+    stage5_multi_file, tmp_path
+):
+    """An omitted-window ``uid:N`` remove names a peak the current file no
+    longer holds (a later decision removed it) but the prefix state does:
+    it must resolve, because the batch is resolved against the replayed
+    prefix, not the file as it stood."""
+    by_w = _fitted_by_window(stage5_multi_file)
+    wids = [w for w, f in by_w.items() if f]
+    if not wids:
+        pytest.skip("Need a window with peaks")
+    wa = wids[0]
+    fa = _clear_add_freq(stage5_multi_file, wa)
+    fp = tmp_path / "uid.ftmw"
+    shutil.copy(stage5_multi_file, fp)
+    before_uids = {u for u, _ in _uids_by_window(fp)[wa]}
+    apply_curation_impl(fp, _write_curation(tmp_path, f"add,{wa},{fa},\n"))
+    # The added peak is the one identifier the window did not carry before.
+    (uid,) = {u for u, _ in _uids_by_window(fp)[wa] if u is not None} - before_uids
+    apply_curation_impl(fp, _write_curation(tmp_path, f"remove,{wa},uid:{uid},\n"))
+    assert all(u != uid for u, _ in _uids_by_window(fp)[wa])
+
+    # Against the file as it stands this uid is gone; at prefix 1 it exists.
+    cur = _write_curation(tmp_path, f"remove,,uid:{uid},\n")
+    with pytest.raises(ValueError, match=f"peak_uid={uid}"):
+        apply_curation_impl(fp, cur, dry_run=True)
+    result = apply_curation_impl(fp, cur, log_prefix=1)
+    assert result.applied == 1 and result.plan[0].window_id == wa
+    assert all(u != uid for u, _ in _uids_by_window(fp)[wa])
+    assert [(e.window_id, e.kind) for e in review_log_impl(fp)] == [
+        (wa, "add"),
+        (wa, "remove"),
+    ]
+
+
+@pytest.mark.integration
+def test_apply_log_prefix_cross_interface(stage5_multi_file, tmp_path):
+    """api / Pipeline / CLI / ReviewSession agree on a log-prefix apply."""
+    fp, wa, fa, wb, fb = _two_adds(stage5_multi_file, tmp_path)
+    paths = {k: tmp_path / f"{k}.ftmw" for k in ("api", "pipe", "cli", "session")}
+    for p in paths.values():
+        shutil.copy(fp, p)
+    cur = tmp_path / "x.csv"
+    cur.write_text(f"remove,{wa},{fa},\n")
+
+    ftmw.review_apply(str(paths["api"]), str(cur), log_prefix=1)
+    Pipeline.open(paths["pipe"]).review_apply(str(cur), log_prefix=1)
+    rc = cmd_review_apply(
+        argparse.Namespace(
+            file_path=str(paths["cli"]),
+            curation_file=str(cur),
+            dry_run=False,
+            log_prefix=1,
+        )
+    )
+    assert rc == 0
+    with Pipeline.open(paths["session"]).review_session() as session:
+        session.review_apply(str(cur), log_prefix=1)
+
+    ref = _fitted_by_window(paths["api"])
+    ref_log = [(e.window_id, e.kind) for e in review_log_impl(paths["api"])]
+    assert ref_log == [(wa, "add"), (wa, "remove")]
+    for k in ("pipe", "cli", "session"):
+        assert _fitted_by_window(paths[k]) == ref, k
+        assert [(e.window_id, e.kind) for e in review_log_impl(paths[k])] == ref_log, k

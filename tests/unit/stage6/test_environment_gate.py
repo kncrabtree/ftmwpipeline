@@ -135,6 +135,23 @@ class TestSpliceGate:
         # The decision log is intact -- nothing was rolled back.
         assert len(ftmw.review_log(str(fitted))) == 2
 
+    def test_log_prefix_apply_is_gated_before_it_rolls_back(self, fitted, tmp_path):
+        """A shortened-log apply restores the baseline and then replays, like
+        undo, so it too must refuse before touching anything."""
+        wid, freq = self._a_fitted_peak(fitted)
+        ftmw.review_edit(str(fitted), wid, remove=[freq])
+        ftmw.review_edit(str(fitted), wid, add=[freq])
+        assert len(ftmw.review_log(str(fitted))) == 2
+        cf = tmp_path / "cur.csv"
+        cf.write_text(f"remove,{wid},{freq:.6f},\n")
+
+        _force_fit_epoch(fitted, ANALYSIS_EPOCH + 1)
+        with pytest.raises(ValueError, match="analysis epoch"):
+            ftmw.review_apply(str(fitted), cf, log_prefix=1)
+
+        # The decision log is intact -- nothing was rolled back.
+        assert len(ftmw.review_log(str(fitted))) == 2
+
     def test_apply_is_gated_before_it_applies_anything(self, fitted, tmp_path):
         wid, freq = self._a_fitted_peak(fitted)
         cf = tmp_path / "cur.csv"

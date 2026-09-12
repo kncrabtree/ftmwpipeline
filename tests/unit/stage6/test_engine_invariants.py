@@ -42,6 +42,7 @@ ENGINE_ENTRY_POINTS: Set[str] = {
     "create_window_impl",
     "apply_curation_impl",
     "review_undo_impl",
+    "_apply_curation_at_prefix",
 }
 
 
@@ -118,9 +119,14 @@ class TestEngineIsSingleSourced:
         before that rollback rather than when the replay opens its batch.
         """
         gaters = set(_functions_calling({"require_splice_compatible_environment"}))
-        assert gaters == {"_open_batch", "review_undo_impl"}, (
-            "the epoch gate belongs to _open_batch (plus review_undo_impl, which "
-            f"must refuse before it rolls back); found: {sorted(gaters)}"
+        assert gaters == {
+            "_open_batch",
+            "review_undo_impl",
+            "_apply_curation_at_prefix",
+        }, (
+            "the epoch gate belongs to _open_batch (plus review_undo_impl and "
+            "_apply_curation_at_prefix, which restore the baseline before they "
+            f"open a batch and so must refuse before that); found: {sorted(gaters)}"
         )
 
 
@@ -185,9 +191,10 @@ class TestEveryEntryPointIsGated:
 
     def test_every_operation_is_gated_and_writes_nothing(self, fitted, tmp_path):
         ops = self._operations(fitted, tmp_path)
-        # Every listed engine entry point is exercised, except review_undo_impl,
-        # which needs recorded decisions and is covered in test_environment_gate.
-        assert len(ops) >= len(ENGINE_ENTRY_POINTS) - 1
+        # Every listed engine entry point is exercised, except review_undo_impl
+        # and _apply_curation_at_prefix, which need recorded decisions and are
+        # covered in test_environment_gate.
+        assert len(ops) >= len(ENGINE_ENTRY_POINTS) - 2
 
         _force_fit_epoch(fitted, ANALYSIS_EPOCH + 1)
         for name, op in ops.items():

@@ -249,7 +249,16 @@ the ``.ftmw`` reproduces the curated analysis with no side channel. Each entry i
 **anchored** to a window identity and a molecular frequency, and records its kind, its
 ``user`` provenance, and an evidence snapshot. ``review log`` lists the history;
 ``review undo`` reverts the most recent decisions by restoring the snapshotted
-automatic fit and replaying the surviving decisions on top.
+automatic fit and replaying the surviving decisions on top. A client that keeps
+its own position in the log (an editor whose undo steps back through the
+decisions without re-fitting) aligns the file on its next real edit with
+``review apply --log-prefix N`` (``log_prefix=N`` on the API): the decisions
+after the first ``N`` are dropped and the kept ones are replayed together with
+the new batch as one replay -- the same outcome as an undo of the dropped ids
+followed by an apply, one cascade and one persist instead of two. The batch's
+frequencies and omitted window ids resolve against the state the kept decisions
+leave, never the file as it stood; should a row fail, the file is left aligned
+at the prefix rather than at the bare automatic fit.
 
 Because the decisions are anchored rather than baked in, re-running an upstream stage
 does not silently discard them. **Replay re-applies each decision wherever its anchor

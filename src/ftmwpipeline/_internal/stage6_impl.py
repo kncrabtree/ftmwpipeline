@@ -91,6 +91,7 @@ from ..io.stage6_review_serialization import (
     save_stage6_review_to_hdf5,
 )
 from ..io.window_serialization import read_window_plan_columns
+from .compaction import compact_file, deferred_compaction
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage2_impl import _update_stage_completion
 
@@ -3234,6 +3235,7 @@ def _record_decision(
             del h5f["stage6_review"]
         grp = h5f.create_group("stage6_review")
         save_stage6_review_to_hdf5(new_review, grp)
+    compact_file(path)
 
 
 def review_accept_impl(
@@ -3385,6 +3387,7 @@ def _record_bare_accept(path: str, window_id: int) -> None:
             del h5f["stage6_review"]
         grp = h5f.create_group("stage6_review")
         save_stage6_review_to_hdf5(new_review, grp)
+    compact_file(path)
 
 
 # ---------------------------------------------------------------------------
@@ -4263,6 +4266,7 @@ def _resolve_curation_window_ids(
     *,
     frame: Frame,
     stamp: Optional[_CalibrationStamp],
+    coverage: Optional[Sequence[FitWindowCoverage]] = None,
 ) -> List[CurationOp]:
     """Resolve every add/remove row's omitted window token (parsed to
     :data:`_DERIVE_WINDOW_SENTINEL`) to the live window its frequency (or
@@ -4297,10 +4301,16 @@ def _resolve_curation_window_ids(
     edit. A row that already names a window -- including a ``"new"``/
     ``"auto"`` token on a ``create`` row, which is the unrelated
     :data:`_NEW_WINDOW_SENTINEL` -- is returned unchanged.
+
+    ``coverage`` is the live-window index to resolve against; omitted, it is
+    read from *path*. A log-prefix apply passes the index of its in-memory,
+    prefix-replayed fit instead (:func:`_resolve_deferred_curation`), since
+    the file at that moment holds neither the dropped nor the kept decisions.
     """
     if not any(op.window_id == _DERIVE_WINDOW_SENTINEL for op in ops):
         return list(ops)
-    coverage = _load_curation_window_index(path)
+    if coverage is None:
+        coverage = _load_curation_window_index(path)
     resolved: List[CurationOp] = []
     next_implied_id = _FIRST_IMPLIED_WINDOW_ID
     for op in ops:
@@ -4618,6 +4628,7 @@ def _curation_ambiguity_warnings(
     *,
     snap_tol_mhz: float,
     index: Optional[Tuple[Dict[int, List[float]], Dict[int, Set[int]]]] = None,
+    planned_ranges: Optional[Dict[int, Tuple[float, float]]] = None,
 ) -> List[str]:
     """Advisories where a curation action will not resolve against the file.
 
@@ -4650,7 +4661,8 @@ def _curation_ambiguity_warnings(
     ``"uid:N"`` target, which most do not.
     """
     by_window, by_uid = _fitted_peak_index(path, plan) if index is None else index
-    planned_ranges = _planned_window_ranges(path)
+    if planned_ranges is None:
+        planned_ranges = _planned_window_ranges(path)
     warnings: List[str] = []
 
     # A ``create`` in this same plan installs the window that a later ``add``
@@ -7198,6 +7210,9 @@ def _finish_batch(
     # session, stamped with the fit group's write stamp so the next batch can
     # tell whether anything has rewritten it since.
     ctx.shared.fit_cache.install(ctx.changeset.spectrum_fit, path)
+    # The fit-cache stamp above is three attrs on the fit group, which the
+    # compaction copy preserves, so the order of these two does not matter.
+    compact_file(path)
     return cascaded
 
 
@@ -7245,75 +7260,194 @@ class _BatchOutcome:
     applied: int
     created_windows: List[PlannedWindowResult] = field(default_factory=list)
     windows: Dict[int, AppliedWindowResult] = field(default_factory=dict)
+    resolved_deferred: Optional[Tuple[List[PlannedAction], List[str]]] = None
+    """The deferred segment's resolved plan and advisories, when the batch
+    ran one (:class:`_DeferredCuration`); ``applied``, ``created_windows``
+    and ``windows`` then describe that segment, not the replayed prefix."""
 
 
-def _execute_curation_batch(
+@dataclass
+class _DeferredCuration:
+    """A parsed, frame-resolved curation file whose window derivation,
+    coalescing and advisories are held back until a batch has replayed a
+    decision-log prefix in memory -- the log-prefix apply
+    (:func:`apply_curation_impl`'s ``log_prefix``).
+
+    Resolving against the file instead would read the wrong state twice
+    over: before the restore, the dropped decisions are still applied (an
+    omitted window id could land in a window about to vanish); after it, the
+    kept ones are not yet (a peak a kept ``add`` created is absent). The
+    only state that is right is the in-memory fit after the prefix segment,
+    which is where :func:`_execute_curation_batch` resolves this.
+    """
+
+    ops: ParsedCurationFile
+    frame: Frame
+    stamp: Optional[_CalibrationStamp]
+
+    def needs_fit(self) -> bool:
+        """Whether any row will mutate the fit (mirrors the planned-action
+        test in :func:`_execute_curation_batch`, before the plan exists)."""
+        return any(op.action != "accept" or "candidate" in op.params for op in self.ops)
+
+
+def _coverage_from_fit(fit: SpectrumFit) -> List[FitWindowCoverage]:
+    """The live-window index :func:`_load_curation_window_index` reads from
+    disk, built from an in-memory fit instead -- same fields, same
+    ``window_id``-ascending order."""
+    return sorted(
+        (
+            FitWindowCoverage(
+                int(wf.window_id),
+                (
+                    None
+                    if wf.window is None
+                    else (
+                        float(wf.window.freq_range[0]),
+                        float(wf.window.freq_range[1]),
+                    )
+                ),
+                {p.peak_uid for p in wf.fitted_peaks if p.peak_uid is not None},
+            )
+            for wf in fit.window_fits
+            if wf.window_id is not None
+        ),
+        key=lambda c: c.window_id,
+    )
+
+
+def _peak_index_from_fit(
+    fit: SpectrumFit, plan: Sequence[PlannedAction]
+) -> Tuple[Dict[int, List[float]], Dict[int, Set[int]]]:
+    """:func:`_fitted_peak_index` over an in-memory fit: the uid half only
+    when *plan* carries a ``"uid:N"`` target, as the on-disk reader does."""
+    freqs = {
+        int(wf.window_id): [float(p.frequency_mhz) for p in wf.fitted_peaks]
+        for wf in fit.window_fits
+        if wf.window_id is not None
+    }
+    has_uid_target = any(
+        action.kind == "edit"
+        and any(isinstance(t, PeakUidToken) for t in action.remove)
+        for action in plan
+    )
+    if not has_uid_target:
+        return freqs, {}
+    uids = {
+        int(wf.window_id): {
+            p.peak_uid for p in wf.fitted_peaks if p.peak_uid is not None
+        }
+        for wf in fit.window_fits
+        if wf.window_id is not None
+    }
+    return freqs, uids
+
+
+def _planned_ranges_from_plan(plan: "WindowPlan") -> Dict[int, Tuple[float, float]]:
+    """:func:`_planned_window_ranges` over an in-memory effective plan."""
+    return {
+        int(w.window_id): (
+            min(float(w.freq_range[0]), float(w.freq_range[1])),
+            max(float(w.freq_range[0]), float(w.freq_range[1])),
+        )
+        for w in plan.windows
+    }
+
+
+def _resolve_deferred_curation(
     path: str,
-    plan: List[PlannedAction],
+    deferred: _DeferredCuration,
     *,
     snap_tol_mhz: float,
-    shared: Optional[_SharedFitCtx] = None,
-) -> _BatchOutcome:
-    """Execute a resolved curation plan as one batch: shared context, one
-    combined cascade, one persist of ``/stage5_fitting`` and one of
-    ``/stage6_review``. Falls back to the cheap per-action path
-    (:func:`_execute_planned_action`) when the whole plan is bare ``accept``
-    (no Stage 5 fit touched, so there is nothing to batch and -- unlike every
-    other action -- a bare accept does not even require a Stage 5 fit to
-    exist).
+    ctx: Optional[_BatchCtx] = None,
+) -> Tuple[List[PlannedAction], List[str]]:
+    """Resolve a :class:`_DeferredCuration` into its plan and advisories
+    against the state *ctx* holds -- its in-memory fit and effective window
+    plan -- or, with no ``ctx`` (the bare-accept path, where every prefix
+    action has already been persisted one by one), against the file.
 
-    ``shared`` lets a caller with an already-built :class:`_SharedFitCtx`
-    reuse it (``ReviewSession``, D3); a fresh one is built when omitted,
-    exactly as before. Unused on the bare-accept-only fallback path, which
-    never opens the engine at all.
-
-    Returns the number of actions applied (``len(plan)`` on success; a failure
-    raises before this returns and leaves the file untouched, since nothing is
-    persisted until every action in the batch has succeeded) together with the
-    structure every ``create`` among them installed -- see
-    :class:`_BatchOutcome`.
+    The same three passes :func:`apply_curation_impl` runs up front on an
+    ordinary apply (window derivation + coalescing, the ambiguity advisories,
+    the frame-mismatch advisory), fed from memory instead of disk.
     """
-    if not plan:
-        return _BatchOutcome(applied=0)
+    if ctx is None:
+        plan = _resolve_curation_ops(
+            deferred.ops, path, frame=deferred.frame, stamp=deferred.stamp
+        )
+        index = _fitted_peak_index(path, plan)
+        planned_ranges: Optional[Dict[int, Tuple[float, float]]] = None
+    else:
+        fit = ctx.changeset.spectrum_fit
+        plan = _resolve_curation_ops(
+            deferred.ops,
+            path,
+            frame=deferred.frame,
+            stamp=deferred.stamp,
+            coverage=_coverage_from_fit(fit),
+        )
+        index = _peak_index_from_fit(fit, plan)
+        planned_ranges = _planned_ranges_from_plan(_batch_effective_plan(ctx))
+    warnings = _curation_ambiguity_warnings(
+        path,
+        plan,
+        snap_tol_mhz=snap_tol_mhz,
+        index=index,
+        planned_ranges=planned_ranges,
+    )
+    warnings += _frame_mismatch_warnings(
+        path,
+        plan,
+        resolved_frame=deferred.frame,
+        stamp=deferred.stamp,
+        fitted_freqs=index[0],
+    )
+    return plan, warnings
 
-    needs_fit = any(a.kind != "accept" or a.candidate is not None for a in plan)
-    if not needs_fit:
-        applied = 0
-        for i, action in enumerate(plan):
-            try:
-                _execute_planned_action(path, action)
-            except (ValueError, KeyError) as exc:
-                raise ValueError(
-                    f"curation action {i + 1} ({describe_planned_action(action)}) "
-                    f"failed: {exc}"
-                ) from exc
-            applied += 1
-        # A bare-accept plan carries no create by construction.
-        return _BatchOutcome(applied=applied)
 
-    # Gate + snapshot + context, exactly as a single-window verb does: the
-    # engine enforces them itself rather than trusting its callers. An
-    # all-``accept`` plan whose accepts carry candidates is fit-mutating but
-    # reads as non-mutating to the callers' "any non-accept action" pre-check,
-    # so a caller-side gate alone would let that shape through.
-    ctx = _open_batch(path, snap_tol_mhz=snap_tol_mhz, shared=shared)
+def _apply_actions_one_by_one(path: str, plan: Sequence[PlannedAction]) -> int:
+    """The cheap per-action path for a plan that touches no fit (bare
+    ``accept`` rows only): each action persists itself. Returns the count."""
+    applied = 0
+    for i, action in enumerate(plan):
+        try:
+            _execute_planned_action(path, action)
+        except (ValueError, KeyError) as exc:
+            raise ValueError(
+                f"curation action {i + 1} ({describe_planned_action(action)}) "
+                f"failed: {exc}"
+            ) from exc
+        applied += 1
+    return applied
 
-    # Snapshot every window's pre-batch stats now, before any action mutates
-    # ctx.changeset.spectrum_fit in place -- the same snapshot, taken at the
-    # same point and for the same reason, _run_review_preview takes. A dict
-    # comprehension over the fit already in hand: no read, no fit.
-    before_stats: Dict[int, Tuple[int, float]] = {
+
+def _batch_window_stats(ctx: _BatchCtx) -> Dict[int, Tuple[int, float]]:
+    """``(n_peaks, reduced_chi2)`` per window of the batch's in-memory fit as
+    of now -- the "before" side of the per-window report. A dict
+    comprehension over the fit already in hand: no read, no fit."""
+    return {
         int(wf.window_id): (len(wf.fitted_peaks), float(wf.reduced_chi2))
         for wf in ctx.changeset.spectrum_fit.window_fits
         if wf.window_id is not None
     }
-    # Which plan actions targeted which window, for the caller's per-window
-    # block -- recorded exactly where _run_review_preview records it, so the
-    # two rungs attribute an action to the same window (W3/W3.1 included:
-    # an implied create's edit half is attributed to the window that was
-    # actually built, or to the one it coalesced into).
-    action_indices: Dict[int, List[int]] = {}
 
+
+def _apply_batch_segment(
+    ctx: _BatchCtx,
+    plan: Sequence[PlannedAction],
+    *,
+    snap_tol_mhz: float,
+    action_indices: Dict[int, List[int]],
+) -> Tuple[int, Dict[int, CreateWindowResult]]:
+    """Run one canonicalized segment of a batch's plan against ``ctx``: the
+    action loop of :func:`_execute_curation_batch`, split out so a log-prefix
+    apply can run its replayed prefix and then its own curation file as two
+    segments of ONE batch (one cascade, one persist), the second resolved
+    against the fit the first leaves.
+
+    ``action_indices`` is filled in place (window id -> the positions in
+    *plan* of the actions that targeted it). Returns the count applied and
+    every create this segment ran, keyed by the real window id.
+    """
     applied = 0
     # W3: created.window_id of every implied create this batch has run so
     # far, keyed by the create action's own window_id (a fresh correlation
@@ -7457,11 +7591,110 @@ def _execute_curation_batch(
                 f"({describe_planned_action(action)}) failed: {exc}"
             ) from exc
         applied += 1
+    return applied, created_facts
+
+
+def _execute_curation_batch(
+    path: str,
+    plan: List[PlannedAction],
+    *,
+    snap_tol_mhz: float,
+    shared: Optional[_SharedFitCtx] = None,
+    deferred: Optional[_DeferredCuration] = None,
+) -> _BatchOutcome:
+    """Execute a resolved curation plan as one batch: shared context, one
+    combined cascade, one persist of ``/stage5_fitting`` and one of
+    ``/stage6_review``. Falls back to the cheap per-action path
+    (:func:`_execute_planned_action`) when the whole plan is bare ``accept``
+    (no Stage 5 fit touched, so there is nothing to batch and -- unlike every
+    other action -- a bare accept does not even require a Stage 5 fit to
+    exist).
+
+    ``shared`` lets a caller with an already-built :class:`_SharedFitCtx`
+    reuse it (``ReviewSession``, D3); a fresh one is built when omitted,
+    exactly as before. Unused on the bare-accept-only fallback path, which
+    never opens the engine at all.
+
+    Returns the number of actions applied (``len(plan)`` on success; a failure
+    raises before this returns and leaves the file untouched, since nothing is
+    persisted until every action in the batch has succeeded) together with the
+    structure every ``create`` among them installed -- see
+    :class:`_BatchOutcome`.
+
+    ``deferred`` is a second segment -- a curation file whose resolution had
+    to wait for *plan* (a replayed decision-log prefix) to run in memory
+    (:class:`_DeferredCuration`). It is resolved against the fit the first
+    segment leaves, applied in the same batch, and cascaded and persisted
+    with it; the outcome then reports THAT segment (its count, its creates,
+    its per-window block relative to the state after the prefix), never the
+    replayed prefix, which the caller already knows.
+    """
+    if not plan and deferred is None:
+        return _BatchOutcome(applied=0)
+
+    needs_fit = any(a.kind != "accept" or a.candidate is not None for a in plan)
+    if deferred is not None and deferred.needs_fit():
+        needs_fit = True
+    if not needs_fit:
+        applied = _apply_actions_one_by_one(path, plan)
+        if deferred is None:
+            # A bare-accept plan carries no create by construction.
+            return _BatchOutcome(applied=applied)
+        # Every prefix action has been persisted one by one, so the file IS
+        # the state to resolve against here.
+        deferred_plan, deferred_warnings = _resolve_deferred_curation(
+            path, deferred, snap_tol_mhz=snap_tol_mhz
+        )
+        applied = _apply_actions_one_by_one(path, deferred_plan)
+        return _BatchOutcome(
+            applied=applied, resolved_deferred=(deferred_plan, deferred_warnings)
+        )
+
+    # Gate + snapshot + context, exactly as a single-window verb does: the
+    # engine enforces them itself rather than trusting its callers. An
+    # all-``accept`` plan whose accepts carry candidates is fit-mutating but
+    # reads as non-mutating to the callers' "any non-accept action" pre-check,
+    # so a caller-side gate alone would let that shape through.
+    ctx = _open_batch(path, snap_tol_mhz=snap_tol_mhz, shared=shared)
+
+    # Snapshot every window's pre-batch stats now, before any action mutates
+    # ctx.changeset.spectrum_fit in place -- the same snapshot, taken at the
+    # same point and for the same reason, _run_review_preview takes.
+    before_stats = _batch_window_stats(ctx)
+    # Which plan actions targeted which window, for the caller's per-window
+    # block -- recorded exactly where _run_review_preview records it, so the
+    # two rungs attribute an action to the same window (W3/W3.1 included:
+    # an implied create's edit half is attributed to the window that was
+    # actually built, or to the one it coalesced into).
+    action_indices: Dict[int, List[int]] = {}
+
+    applied, created_facts = _apply_batch_segment(
+        ctx, plan, snap_tol_mhz=snap_tol_mhz, action_indices=action_indices
+    )
+    resolved_deferred: Optional[Tuple[List[PlannedAction], List[str]]] = None
+    prefix_wids: Set[int] = set()
+    if deferred is not None:
+        # The prefix has run; the caller's own batch resolves against the
+        # fit it left, and is reported relative to it.
+        prefix_wids = set(ctx.changeset.mutated_wids)
+        before_stats = _batch_window_stats(ctx)
+        action_indices = {}
+        deferred_plan, deferred_warnings = _resolve_deferred_curation(
+            path, deferred, snap_tol_mhz=snap_tol_mhz, ctx=ctx
+        )
+        applied, created_facts = _apply_batch_segment(
+            ctx, deferred_plan, snap_tol_mhz=snap_tol_mhz, action_indices=action_indices
+        )
+        resolved_deferred = (deferred_plan, deferred_warnings)
 
     # Direct = every window some action touched, snapshotted BEFORE the
     # cascade _finish_batch runs (mutated_wids only grows from there).
     # Anything the cascade adds beyond this set arrived purely as a dependent.
-    direct_wids = set(ctx.changeset.mutated_wids)
+    direct_wids = (
+        set(ctx.changeset.mutated_wids)
+        if deferred is None
+        else (set(ctx.changeset.mutated_wids) - prefix_wids) | set(action_indices)
+    )
     cascaded_wids = _finish_batch(ctx, path, snap_tol_mhz=snap_tol_mhz)
 
     return _BatchOutcome(
@@ -7477,6 +7710,7 @@ def _execute_curation_batch(
             direct_wids=direct_wids,
             cascaded_wids=cascaded_wids,
         ),
+        resolved_deferred=resolved_deferred,
     )
 
 
@@ -7652,6 +7886,7 @@ def apply_curation_impl(
     *,
     dry_run: bool = False,
     frame: Optional[Frame] = None,
+    log_prefix: Optional[int] = None,
     _shared: Optional["_SharedFitCtx"] = None,
 ) -> CurationApplyResult:
     """Apply a curation file to *file_path*, delegating to the edit impls.
@@ -7701,9 +7936,44 @@ def apply_curation_impl(
     untouched (nothing is persisted until every action in the plan has
     succeeded).
 
+    ``log_prefix`` applies the file as if the decision log ended after its
+    first ``log_prefix`` decisions (a count: ``0`` keeps none, the log's
+    length keeps all and is the ordinary apply). The later decisions are
+    dropped, the automatic fit is restored and the kept decisions are
+    replayed together with this file as ONE batch -- one cascade, one
+    persist -- so the outcome is that of :func:`review_undo_impl` on the
+    dropped decisions followed by an ordinary apply, in one replay instead
+    of two. See :func:`_apply_curation_at_prefix` for what resolves against
+    what. Refused with ``dry_run`` when it would shorten the log: the
+    advisories and structure a dry run reports are read against the file,
+    which at no point holds the state a shortened prefix describes.
+
     ``_shared`` is internal -- see :func:`refit_window_impl`.
     """
     path = str(file_path)
+    if log_prefix is not None:
+        log = load_stage6_review_from_file(path).decision_log
+        if log_prefix < 0 or log_prefix > len(log):
+            raise ValueError(
+                f"log_prefix must be between 0 and the decision log's length "
+                f"({len(log)}), got {log_prefix}"
+            )
+        if log_prefix < len(log):
+            if dry_run:
+                raise ValueError(
+                    "dry_run cannot be combined with a log_prefix shorter than "
+                    "the decision log: the file never holds the state the "
+                    "prefix describes, so the preview would resolve against "
+                    "the wrong fit. Undo the later decisions first, then dry-run."
+                )
+            return _apply_curation_at_prefix(
+                path,
+                curation_path,
+                frame=frame,
+                log=log,
+                keep=log_prefix,
+                shared=_shared,
+            )
     plan, resolved_frame, stamp = _resolve_curation_call(path, curation_path, frame)
 
     snap_tol = resolve_snap_tol_mhz(path, None)
@@ -7739,6 +8009,105 @@ def apply_curation_impl(
 
     outcome = _execute_curation_batch(path, plan, snap_tol_mhz=snap_tol, shared=_shared)
 
+    return CurationApplyResult(
+        plan=plan,
+        warnings=warnings,
+        applied=outcome.applied,
+        dry_run=False,
+        created_windows=outcome.created_windows,
+        windows=outcome.windows,
+    )
+
+
+def _reset_to_baseline(path: str, *, restore_fit: bool) -> None:
+    """Put the file at the automatic fit with an empty decision log: restore
+    ``/stage5_fitting`` from the undo baseline (when ``restore_fit``; a log of
+    bare accepts never moved the fit and has no baseline), drop the review
+    group, and rebuild it from the restored fit. The common prologue of
+    :func:`review_undo_impl` and :func:`_apply_curation_at_prefix`, whose
+    replays both start here."""
+    if restore_fit:
+        _restore_stage5_baseline(path)
+    with h5py.File(path, "a") as h5f:
+        if "stage6_review" in h5f:
+            del h5f["stage6_review"]
+    review_run_impl(path)
+
+
+def _apply_curation_at_prefix(
+    path: str,
+    curation_path: Union[Path, str],
+    *,
+    frame: Optional[Frame],
+    log: Sequence[DecisionLogEntry],
+    keep: int,
+    shared: Optional["_SharedFitCtx"],
+) -> CurationApplyResult:
+    """The shortened-log path of :func:`apply_curation_impl`: drop the
+    decisions after the first ``keep``, and replay the kept ones plus the
+    curation file as one batch from the automatic fit.
+
+    The dropped set is a suffix, so unlike an arbitrary undo it can never
+    orphan a kept decision (nothing earlier in the log acts on a window a
+    later decision installed); the checks that remain are the undo's
+    baseline availability and the epoch gate, both made before anything is
+    restored.
+
+    The curation file is parsed and its frame resolved BEFORE the restore
+    (both state-independent, so a malformed file refuses with the file
+    untouched), but its window derivation, coalescing and advisories are
+    deferred into the batch (:class:`_DeferredCuration`), where they read the
+    in-memory fit the replayed prefix leaves: the file on disk at that point
+    holds the bare automatic fit, and before the restore it held the dropped
+    decisions too -- neither is the state the caller's rows were written
+    against. The prefix's own decisions are replayed exactly as
+    :func:`review_undo_impl` replays survivors (one action per decision, see
+    there), and are renumbered from zero; the new decisions follow.
+
+    Should the caller's segment fail (an unmatched remove, say), the file is
+    left at the aligned prefix -- the kept decisions replayed and persisted
+    on their own -- rather than at the bare baseline the restore produced,
+    so a failed apply costs the caller nothing but the failed rows, exactly
+    as an undo followed by a failed apply would.
+    """
+    kept = list(log[:keep])
+    ops, resolved_frame, stamp = _parse_curation_call(path, curation_path, frame)
+    deferred = _DeferredCuration(ops=ops, frame=resolved_frame, stamp=stamp)
+
+    has_fit_edits = any(e.kind in _FIT_EDIT_KINDS for e in log)
+    baseline = _has_stage5_baseline(path)
+    if has_fit_edits and not baseline:
+        raise ValueError(
+            "cannot apply at a log prefix: the automatic-fit baseline is "
+            "unavailable (the fit may have been re-run after editing). Rebuild "
+            "from the source and re-edit."
+        )
+    prefix_plan = [a for e in kept for a in _resolve_curation_plan(_decision_to_op(e))]
+    # The restore-then-replay is one unit: gate first, so a refusal leaves the
+    # file as it was rather than rolled back to the automatic fit.
+    if any(e.kind in _FIT_EDIT_KINDS for e in kept) or deferred.needs_fit():
+        require_splice_compatible_environment(path)
+
+    snap_tol = resolve_snap_tol_mhz(path, None)
+    with deferred_compaction():
+        _reset_to_baseline(path, restore_fit=baseline)
+        try:
+            outcome = _execute_curation_batch(
+                path,
+                prefix_plan,
+                snap_tol_mhz=snap_tol,
+                shared=shared,
+                deferred=deferred,
+            )
+        except ValueError:
+            # Nothing was persisted; realign the file at the prefix alone.
+            _execute_curation_batch(
+                path, prefix_plan, snap_tol_mhz=snap_tol, shared=shared
+            )
+            raise
+
+    assert outcome.resolved_deferred is not None  # a deferred segment always resolves
+    plan, warnings = outcome.resolved_deferred
     return CurationApplyResult(
         plan=plan,
         warnings=warnings,
@@ -8508,15 +8877,11 @@ def review_undo_impl(
     # batch (_execute_curation_batch): a single shared fit context, one
     # combined cascade, one persist -- instead of one full rebuild per
     # surviving decision.
-    if baseline:
-        _restore_stage5_baseline(path)
-    with h5py.File(path, "a") as h5f:
-        if "stage6_review" in h5f:
-            del h5f["stage6_review"]
-    review_run_impl(path)
-    outcome = _execute_curation_batch(
-        path, plan, snap_tol_mhz=resolve_snap_tol_mhz(path, None), shared=_shared
-    )
+    with deferred_compaction():
+        _reset_to_baseline(path, restore_fit=baseline)
+        outcome = _execute_curation_batch(
+            path, plan, snap_tol_mhz=resolve_snap_tol_mhz(path, None), shared=_shared
+        )
 
     return UndoResult(
         removed=removed,
@@ -9247,6 +9612,12 @@ def review_run_impl(
     acquisition_us: float = float(spectrum_fit.parameters.get("acquisition_us", 0.0))
     merged_window_freqs = _auto_merged_window_freqs(spectrum_fit)
 
+    logger.info(
+        "Stage 6 review: routing attention for %d windows in %s",
+        len(spectrum_fit.window_fits),
+        path,
+    )
+
     new_statuses: Dict[int, WindowReviewStatus] = {}
     for wf in spectrum_fit.window_fits:
         wid = int(wf.window_id) if wf.window_id is not None else -1
@@ -9322,6 +9693,13 @@ def review_run_impl(
             n_attention += 1
         for reason in status.attention_reasons:
             reason_counts[reason.kind] = reason_counts.get(reason.kind, 0) + 1
+
+    logger.info(
+        "Saved Stage 6 review to %s: %d windows, %d need attention",
+        path,
+        len(new_statuses),
+        n_attention,
+    )
 
     return ReviewRunResult(
         n_windows=len(new_statuses),
@@ -9427,20 +9805,45 @@ def _resolve_curation_call(
     raw frame, since window ranges are stored raw) and is reused for the
     final plan-level conversion, so it runs exactly once per call.
     """
+    ops, resolved_frame, stamp = _parse_curation_call(path, curation_path, frame)
+    plan = _resolve_curation_ops(ops, path, frame=resolved_frame, stamp=stamp)
+    return plan, resolved_frame, stamp
+
+
+def _parse_curation_call(
+    path: str, curation_path: Union[Path, str], frame: Optional[Frame]
+) -> Tuple[ParsedCurationFile, Frame, Optional[_CalibrationStamp]]:
+    """The state-independent half of :func:`_resolve_curation_call`: parse
+    the file and resolve its frame. Neither reads anything a curation
+    decision changes (the frame comes from the calibration stamp), so a
+    log-prefix apply runs this before it moves the file and defers only
+    :func:`_resolve_curation_ops` to the replayed state."""
     ops = parse_curation_file(curation_path)
     resolved_frame: Frame = "raw"
     stamp: Optional[_CalibrationStamp] = None
     if _curation_ops_have_freq(ops):
         resolved_frame, stamp = _resolve_curation_frame(path, ops.header, frame)
+    return ops, resolved_frame, stamp
+
+
+def _resolve_curation_ops(
+    ops: Sequence[CurationOp],
+    path: str,
+    *,
+    frame: Frame,
+    stamp: Optional[_CalibrationStamp],
+    coverage: Optional[Sequence[FitWindowCoverage]] = None,
+) -> List["PlannedAction"]:
+    """The state-dependent half of :func:`_resolve_curation_call`: derive
+    omitted window ids against ``coverage`` (the file's live windows unless
+    given), coalesce, and convert every frequency to raw."""
     resolved_ops = _resolve_curation_window_ids(
-        ops, path, frame=resolved_frame, stamp=stamp
+        ops, path, frame=frame, stamp=stamp, coverage=coverage
     )
     plan = _resolve_curation_plan(resolved_ops)
     if any(_planned_action_has_freq(a) for a in plan):
-        plan = [
-            _planned_action_to_raw(a, frame=resolved_frame, stamp=stamp) for a in plan
-        ]
-    return plan, resolved_frame, stamp
+        plan = [_planned_action_to_raw(a, frame=frame, stamp=stamp) for a in plan]
+    return plan
 
 
 # ---------------------------------------------------------------------------
@@ -9787,6 +10190,7 @@ class ReviewSession:
         curation_path: Union[str, Path],
         *,
         frame: Optional[Frame] = None,
+        log_prefix: Optional[int] = None,
     ) -> CurationApplyResult:
         """Apply a curation file as one batch.
 
@@ -9807,6 +10211,11 @@ class ReviewSession:
         existed but had to be dropped because the base moved out from under
         it (a foreign write, or another mutating verb issued on this session
         in between) -- never merely because no preview preceded this call.
+
+        ``log_prefix`` is :meth:`Pipeline.review_apply
+        <ftmwpipeline.pipeline.Pipeline.review_apply>`'s: a staged preview
+        was computed against the log as it stood, so none is reused when a
+        prefix is given.
         """
         shared = self._sync()
         base_changed = self._pending_base_changed
@@ -9815,7 +10224,8 @@ class ReviewSession:
         staged = self._staged
         if staged is not None:
             same_request = (
-                staged.curation_path == str(curation_path)
+                log_prefix is None
+                and staged.curation_path == str(curation_path)
                 and staged.frame == frame
                 and staged.fingerprint == self._fingerprint
             )
@@ -9838,7 +10248,11 @@ class ReviewSession:
             self._staged = None
 
         result = apply_curation_impl(
-            self._path, curation_path, frame=frame, _shared=shared
+            self._path,
+            curation_path,
+            frame=frame,
+            log_prefix=log_prefix,
+            _shared=shared,
         )
         if base_changed:
             result = replace(result, base_changed=True)

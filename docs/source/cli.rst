@@ -273,7 +273,11 @@ within snap tolerance of a fitted peak is read as a split of it, and removing
 the mutually-close components of one feature while adding one frequency in
 their span is read as a merge. ``apply`` replays a curation CSV of batched
 edits; ``log`` lists the decision log; ``undo --id N`` rolls a decision back
-by replay-from-baseline. See :doc:`stage6_review`.
+by replay-from-baseline. ``apply --log-prefix N`` applies the file as if the
+decision log ended after its first ``N`` decisions: the later ones are
+dropped and the kept ones are replayed together with the file in one pass --
+the outcome of ``undo`` of the dropped ids followed by ``apply``, at the cost
+of one replay instead of two. See :doc:`stage6_review`.
 
 Two read-only verbs support the editing ones. ``review preview`` runs a
 curation file's plan to completion in memory and reports the fitted outcome

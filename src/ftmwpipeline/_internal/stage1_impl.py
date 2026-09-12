@@ -30,6 +30,7 @@ from ..core.settings import (
     FTSettings,
     resolve,
 )
+from .compaction import compact_file
 from .shared_utils import fold_settings_blob
 from .stage0_impl import load_fid_from_pipeline_impl
 
@@ -446,6 +447,9 @@ def _persist_ft_settings(file_path: str, resolved: FTSettings) -> None:
         stages.attrs["completed_stages"] = json.dumps(completed)
         stages.attrs["last_updated"] = datetime.now().isoformat()
     logger.info("FT parameters and stage tracking saved to pipeline file")
+    # Stage 1 stamps its own completion rather than going through
+    # ``_update_stage_completion``, so it reclaims its own dead space too.
+    compact_file(file_path)
 
 
 def save_ft_parameters_impl(file_path: str, parameters: Dict[str, Any]) -> None:
