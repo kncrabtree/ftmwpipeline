@@ -233,7 +233,7 @@ def test_legacy_report_table_renders_the_rebuilt_fields_without_writing(legacy):
     before = _md5(legacy)
     text = ftmw.report_table(legacy, fmt="csv")
     assert _md5(legacy) == before
-    rows = list(csv.reader(io.StringIO(text)))
+    rows = list(csv.reader(ln for ln in io.StringIO(text) if not ln.startswith("#")))
     header = rows[0]
     assert header[-7:] == [
         "decay_time_us",
@@ -370,7 +370,7 @@ def test_manifest_declares_every_field_and_the_envelope_has_them(stamped, capsys
 
 def test_csv_report_has_the_columns_with_empty_cells_for_held_fixed_tau(stamped):
     text = ftmw.report_table(stamped, fmt="csv")
-    rows = list(csv.reader(io.StringIO(text)))
+    rows = list(csv.reader(ln for ln in io.StringIO(text) if not ln.startswith("#")))
     header = rows[0]
     fp = ftmw.get_final_products(stamped)
     assert len(rows) - 1 == len(fp.peaks)

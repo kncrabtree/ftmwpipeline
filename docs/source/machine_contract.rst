@@ -34,7 +34,7 @@ The contract version
     if ftmwpipeline.CONTRACT_VERSION < 1:
         raise RuntimeError("needs a newer ftmwpipeline")
 
-The first published contract is version ``1``; this release is version ``2``. Additions (a new accessor,
+The first published contract is version ``1``; this release is version ``3``. Additions (a new accessor,
 field or code) raise the version by one and never break an existing field. Every machine-readable payload also carries a **schema name**
 of the form ``ftmw/<payload>@<n>``; a schema name never changes meaning.
 

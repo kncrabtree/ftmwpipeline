@@ -322,6 +322,9 @@ _CSV_COLUMNS = [
     "fit_window_high_mhz",
 ]
 
+#: The trailing per-line fit columns of :data:`_CSV_COLUMNS`.
+_CSV_FIT_COLUMNS: List[str] = _CSV_COLUMNS[_CSV_COLUMNS.index("decay_time_us") :]
+
 
 # Proximity-annotation columns appended when a ``--catalog`` is supplied.
 _CATALOG_COLUMNS = [
@@ -377,17 +380,24 @@ def _render_csv(
     comments += [
         f"# {k}: {v}" for k, v in _provenance(products, file_path, uname, xref)
     ]
-    cols = list(_CSV_COLUMNS) + (_CATALOG_COLUMNS if xref is not None else [])
+    # The per-line fit columns go last, after any catalog columns, so every
+    # column that existed before them keeps its position in both modes.
+    n_base = len(_CSV_COLUMNS) - len(_CSV_FIT_COLUMNS)
+    cols = list(_CSV_COLUMNS[:n_base])
+    if xref is not None:
+        cols += _CATALOG_COLUMNS
+    cols += _CSV_FIT_COLUMNS
     # The stdlib writer quotes any free-text cell (a catalog label or origin) that
     # carries a comma / quote / newline, so column alignment survives such values.
     buf = io.StringIO()
     writer = csv.writer(buf, lineterminator="\n")
     writer.writerow(cols)
     for i, p in enumerate(products.peaks):
-        row = _csv_row(p, uval)
+        full = _csv_row(p, uval)
+        row = full[:n_base]
         if xref is not None:
             row = row + _catalog_csv_cells(xref.matches[i])
-        writer.writerow(row)
+        writer.writerow(row + full[n_base:])
     return "\n".join(comments) + "\n" + buf.getvalue()
 
 

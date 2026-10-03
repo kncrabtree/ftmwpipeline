@@ -2540,10 +2540,11 @@ def _index_final_table(
             _esc(p.origin),
             _lattice_cell(p),
             win_cell,
-            *_fit_field_cells(p),
         ]
         if with_cat:
             row.append(_catalog_cell(matches[i]))  # type: ignore[index]
+        # Appended after any catalog column so existing columns keep their place.
+        row.extend(_fit_field_cells(p))
         rows.append(row)
     head = [
         "Frequency (MHz)",
@@ -2553,10 +2554,10 @@ def _index_final_table(
         "Origin",
         "Lattice",
         "Window",
-        *_FIT_FIELD_HEAD,
     ]
     if with_cat:
         head.append("Catalog")
+    head.extend(_FIT_FIELD_HEAD)
     return _table(head, rows, cls="final-list", row_attrs=row_attrs)
 
 
@@ -2621,10 +2622,11 @@ def _window_peak_table(
             _esc("" if p.snr is None else _concise(float(p.snr), p.snr_error)),
             _esc(p.origin),
             _lattice_cell(p),
-            *_fit_field_cells(p),
         ]
         if with_cat:
             row.append(_catalog_cell(matches[i]))  # type: ignore[index]
+        # After any catalog column, before the curation column (CSS keeps it last).
+        row.extend(_fit_field_cells(p))
         if curate:
             row.append(_peak_curation_cell())
             raw = _freq(p.frequency_raw_mhz)
@@ -2645,10 +2647,10 @@ def _window_peak_table(
         "SNR",
         "Origin",
         "Lattice",
-        *_FIT_FIELD_HEAD,
     ]
     if with_cat:
         head.append("Catalog")
+    head.extend(_FIT_FIELD_HEAD)
     if curate:
         head.append('<span class="cur-col-h">Curate</span>')
     return _table(head, rows, cls="peak-list", row_attrs=row_attrs if curate else None)

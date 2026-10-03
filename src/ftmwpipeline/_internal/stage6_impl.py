@@ -9391,11 +9391,14 @@ def _final_products_is_stale(fp: Optional[FinalProducts], path: str) -> bool:
     that cannot succeed anyway."""
     if fp is None:
         return False
+    # A table that predates the fit fields is rebuilt whatever the calibration
+    # stamp says; otherwise it would be served (and re-stored) with every fit
+    # field UNDEFINED.
+    if _persisted_table_predates_fit_fields(path):
+        return True
     current = _current_calibration_stamp(path)
     if current is None:
         return False
-    if _persisted_table_predates_fit_fields(path):
-        return True
     stamped = (
         fp.calibration_state,
         float(fp.epsilon),
