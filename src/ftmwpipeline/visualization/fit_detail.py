@@ -892,7 +892,7 @@ def plot_summary_histograms(
             ax.set_xscale("log")
         else:
             edges = np.linspace(lo, hi if hi > lo else lo + 1.0, bins + 1)
-        ax.hist(arr, bins=edges, color=GUNROCK, alpha=0.8, edgecolor="white", lw=0.3)
+        ax.hist(arr, bins=edges.tolist(), color=GUNROCK, alpha=0.8, edgecolor="white", lw=0.3)
         med = float(np.median(arr))
         ax.axvline(med, color=DOUBLE_DECKER, lw=1.0, ls="--", label=f"median {med:.3g}")
         ax.set_title(f"{title}  (n={arr.size})", fontsize=9)
@@ -935,7 +935,7 @@ def plot_magnitude_histogram(
         return None
     edges = np.logspace(np.log10(lo), np.log10(hi), bins + 1)
     fig, ax = plt.subplots(figsize=figsize, constrained_layout=True)
-    ax.hist(arr, bins=edges, color=GUNROCK, alpha=0.8, edgecolor="white", lw=0.3)
+    ax.hist(arr, bins=edges.tolist(), color=GUNROCK, alpha=0.8, edgecolor="white", lw=0.3)
     ax.set_xscale("log")
     ax.set_yscale("log")
     if sigma_median > 0.0:

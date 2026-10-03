@@ -53,7 +53,7 @@ def _plot_snr_histogram(
         )
         return
     bins = np.logspace(np.log10(max(snrs.min(), 0.5)), np.log10(snrs.max()), 60)
-    ax.hist(snrs, bins=bins, color=AGGIE_BLUE, alpha=0.8)
+    ax.hist(snrs, bins=bins.tolist(), color=AGGIE_BLUE, alpha=0.8)
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.set_xlabel("peak SNR (user grid)")

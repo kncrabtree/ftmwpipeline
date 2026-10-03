@@ -330,7 +330,10 @@ def _plot_contributor_decays(ax: Any, row: Any, leaf: str, fit_color: str) -> No
     segments = np.stack([xs_grid, curves], axis=-1)  # (n_contrib, n_t, 2)
     ax.add_collection(
         LineCollection(
-            segments, colors="black", alpha=_contrib_alpha(taus.size), linewidths=0.5
+            list(segments),
+            colors="black",
+            alpha=_contrib_alpha(taus.size),
+            linewidths=0.5,
         )
     )
 

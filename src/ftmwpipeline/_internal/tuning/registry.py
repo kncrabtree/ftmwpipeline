@@ -522,10 +522,9 @@ def _metric_fit(result: Any) -> Dict[str, Any]:
 
     fit = result["fit"]
     rows = [window_fit_quality(wf) for wf in fit.window_fits]
-    eps = np.asarray([r["epsilon"] for r in rows], dtype=float)
-    chi2r = np.asarray(
-        [r["chi2r"] for r in rows if np.isfinite(r["chi2r"])], dtype=float
-    )
+    eps = np.asarray([float(cast(float, r["epsilon"])) for r in rows], dtype=np.float64)
+    chi2r_all = [float(cast(float, r["chi2r"])) for r in rows]
+    chi2r = np.asarray([c for c in chi2r_all if np.isfinite(c)], dtype=np.float64)
     n_fail = sum(1 for r in rows if not r["passed"])
     n_peaks = sum(cast(int, r["n_peaks"]) for r in rows)
 
@@ -549,7 +548,11 @@ def _metric_fit(result: Any) -> Dict[str, Any]:
         "n_fail": n_fail,
         "n_peaks": n_peaks,
         "n_free_tau": n_free_tau,
-        "sigma_f_khz": round(float(np.median(sig_f)) * 1e3, 4) if sig_f else 0.0,
+        "sigma_f_khz": (
+            round(float(np.median(np.asarray(sig_f, dtype=np.float64))) * 1e3, 4)
+            if sig_f
+            else 0.0
+        ),
         "chi2r_p50": round(float(np.median(chi2r)), 3) if chi2r.size else 0.0,
         "chi2r_p95": pct(chi2r, 95),
     }

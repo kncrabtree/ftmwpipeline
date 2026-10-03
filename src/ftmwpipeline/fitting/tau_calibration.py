@@ -1336,11 +1336,14 @@ def _select_rss_for_gate(
     if shape == "gaussian":
         rss = np.array(shape_fits.rss_gauss, dtype=float, copy=True)
     elif shape == "best_of_three":
-        rss = np.fmin(
-            np.fmin(shape_fits.rss_exp_nls, shape_fits.rss_gauss),
-            shape_fits.rss_voigt,
-        )
-        rss = np.asarray(rss, dtype=float)
+        parts = (shape_fits.rss_exp_nls, shape_fits.rss_gauss, shape_fits.rss_voigt)
+        if any(part is None for part in parts):
+            raise ValueError(
+                "best_of_three gate needs the exp, Gaussian and Voigt residuals; "
+                "the shape fits did not produce all three"
+            )
+        rss_exp, rss_gauss, rss_voigt = (np.asarray(part) for part in parts)
+        rss = np.asarray(np.fmin(np.fmin(rss_exp, rss_gauss), rss_voigt), dtype=float)
     else:
         raise ValueError(
             f"shape must be one of {sorted(_VALID_CLASSIFIER_SHAPES)}; "
