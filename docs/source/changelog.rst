@@ -33,6 +33,7 @@ published, and the Stage 6 edit paths that carry them were collapsed onto one
 engine so they cannot answer differently.
 
 * **Machine contract, Wave 2: per-line fit fields on the final products.**
+  ``CONTRACT_VERSION`` is now ``3``.
   Each ``FinalPeak`` now carries, from the Stage 5 fit of its window,
   ``decay_time_us``, ``decay_time_error_us``, ``shape``, ``fwhm_mhz``,
   ``detection_index`` and ``fit_window_mhz`` (see :doc:`machine_contract`).
