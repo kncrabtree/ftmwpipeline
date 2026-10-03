@@ -32,6 +32,25 @@ had to reach into ``_internal`` or parse out of prose to obtain are now
 published, and the Stage 6 edit paths that carry them were collapsed onto one
 engine so they cannot answer differently.
 
+* **The machine contract has its foundations: a contract version, ``Absent``,
+  typed errors with codes, a JSON serializer, and ``capabilities``.**
+  ``ftmwpipeline.CONTRACT_VERSION`` (currently ``0``, not yet announced) is the
+  integer a program gates on. ``ftmwpipeline.Absent`` (``NOT_RUN`` /
+  ``UNDEFINED``) is the one vocabulary for "no value", written on the wire as
+  ``null`` plus a ``"<field>_absent"`` sibling and in arrays as a ``uint8``
+  ``<column>__status`` column. Every error a program may route on is a
+  ``PipelineFileError`` with a stable ``code`` and ``to_dict()``; two new
+  members, ``NotFoundError`` (also a ``KeyError``) and
+  ``IncompleteProvenanceError`` (also a ``ValueError``), join the family, and no
+  existing exception changed its constructor, message or built-in base.
+  ``ftmwpipeline.to_jsonable`` converts results to strict JSON, and
+  ``capabilities()`` (``api.capabilities``, ``Pipeline.capabilities``,
+  ``ftmwpipeline read capabilities``) reports what this installation declares.
+  Under the accessor verbs of ``read``, a contract error is printed as its
+  ``to_dict()`` JSON on stderr, with exit code 2 for ``file_corrupt`` and 1 for
+  every other code; array results are written as ``.npy`` files under
+  ``--output``. See :doc:`machine_contract`.
+
 * **``review apply --log-prefix N`` (``log_prefix=N`` on ``Pipeline.review_apply``,
   ``api.review_apply`` and ``ReviewSession.review_apply``) applies a curation
   file as if the decision log ended after its first ``N`` decisions.** The

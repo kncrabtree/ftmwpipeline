@@ -40,6 +40,7 @@
    clock_declaration
    scope_record_import
    performance
+   machine_contract
 
 .. toctree::
    :hidden:

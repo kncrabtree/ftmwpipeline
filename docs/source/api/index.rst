@@ -222,6 +222,20 @@ Functional API
    :members:
    :member-order: bysource
 
+Machine contract
+----------------
+
+The published, versioned surface a program may rely on; see
+:doc:`../machine_contract` for the user-facing description.
+
+.. automodule:: ftmwpipeline.contract
+   :members:
+   :member-order: bysource
+
+.. automodule:: ftmwpipeline.serialize
+   :members:
+   :member-order: bysource
+
 Data structures
 ---------------
 
@@ -455,3 +469,7 @@ The file-management error family, all subclasses of
 .. autoexception:: ftmwpipeline.file_manager.PipelineCompatibilityError
 
 .. autoexception:: ftmwpipeline.file_manager.AnalysisEpochMismatchError
+
+.. autoexception:: ftmwpipeline.file_manager.NotFoundError
+
+.. autoexception:: ftmwpipeline.file_manager.IncompleteProvenanceError
