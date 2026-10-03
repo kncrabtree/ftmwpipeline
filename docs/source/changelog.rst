@@ -32,6 +32,18 @@ had to reach into ``_internal`` or parse out of prose to obtain are now
 published, and the Stage 6 edit paths that carry them were collapsed onto one
 engine so they cannot answer differently.
 
+* **Machine contract: ``fid_samples`` and ``display_units``.**
+  ``fid_samples(path)`` returns ``{"samples", "stored_dtype"}``: the stored
+  Stage 0 samples as a 1-D ``float64`` array (values equal the stored ones,
+  promoted losslessly if the stored dtype is narrower), from a single dataset
+  read. ``display_units(path)`` returns ``{"amplitude_scale", "units_label",
+  "units_power"}``, and its first two fields are exactly the pair
+  ``compute_display_ft`` applies, at every stage including before Stage 1. Both
+  exist as ``api`` functions, ``Pipeline`` methods and ``ftmwpipeline read
+  fid_samples`` (array written to ``samples.npy`` under ``--output``) / ``read
+  display_units``, carry schemas ``ftmw/fid_samples@1`` and
+  ``ftmw/display_units@1``, and never write the file.
+
 * **The machine contract has its foundations: a contract version, ``Absent``,
   typed errors with codes, a JSON serializer, and ``capabilities``.**
   ``ftmwpipeline.CONTRACT_VERSION`` (``1``, the first published contract) is the

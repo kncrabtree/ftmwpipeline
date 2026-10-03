@@ -64,6 +64,55 @@ reads a file takes the path as its first argument on the API and as the
 ``Pipeline``; one that needs no file (like ``capabilities``) takes no path
 anywhere.
 
+Reading the FID: ``fid_samples``
+--------------------------------
+
+``fid_samples(path)`` returns the Stage 0 samples exactly as stored:
+
+.. code-block:: python
+
+   res = ftmw.fid_samples("exp.ftmw")      # or Pipeline.open(path).fid_samples()
+   res["samples"]       # 1-D float64 ndarray, stored order
+   res["stored_dtype"]  # what is on disk, e.g. "float64"
+
+The values equal the stored ones: no scaling, windowing or mean removal. The
+pipeline stores ``float64``; a narrower stored dtype is promoted losslessly and
+``stored_dtype`` still names the on-disk type. The samples are write-once, so
+the array is stable for the life of the file. The call reads one dataset and
+never writes. The pipeline publishes no digest of the samples; a client that
+wants a spectrum identity hashes the array itself.
+
+.. code-block:: console
+
+   $ ftmwpipeline read fid_samples exp.ftmw --output out/
+
+writes ``out/samples.npy`` and prints ``{"schema": "ftmw/fid_samples@1",
+"samples": "samples.npy", "stored_dtype": "float64"}``. Without ``--output`` it
+exits ``1``, because the result holds an array.
+
+A file with no Stage 0 FID data raises ``StageDependencyError`` (code
+``stage_not_run``, ``missing_dependencies`` ``["data"]``). There is no
+``Absent`` value in this payload.
+
+Display units: ``display_units``
+--------------------------------
+
+``display_units(path)`` returns ``{"amplitude_scale": float, "units_label":
+str, "units_power": int}`` (schema ``ftmw/display_units@1``):
+
+.. code-block:: console
+
+   $ ftmwpipeline read display_units exp.ftmw
+
+``amplitude_scale`` and ``units_label`` are exactly the pair that
+``compute_display_ft`` applies to its spectrum, at every stage, including
+before Stage 1 has persisted anything. The value is resolved through the Stage 1
+chain (persisted, then the import-time recommendation, then the hard default),
+the same chain that selects the spectrum being labelled, so a displayed
+magnitude is ``abs(spectrum) * amplitude_scale`` in ``units_label``. The call
+only reads. Because the chain ends in a hard default, ``units_power`` is
+always an integer in practice; it carries no ``Absent`` marker.
+
 Missing values: ``Absent``
 --------------------------
 
