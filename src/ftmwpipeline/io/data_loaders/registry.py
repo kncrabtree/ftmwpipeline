@@ -207,8 +207,8 @@ class FormatRegistry:
         Returns
         -------
         SourcePreview
-            The format, one :class:`~.base.FidInfo` per FID, and the declared
-            chirp window (or ``None``).
+            The format, one :class:`~ftmwpipeline.contract.FidPreviewRow` per
+            FID, and the declared chirp window (or ``None``).
 
         Raises
         ------

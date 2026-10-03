@@ -2501,8 +2501,9 @@ class Pipeline:
         if not validation_report["valid"]:
             info_dict["errors"] = validation_report["errors"]
 
-        if validation_report.get("warnings"):
-            info_dict["warnings"] = validation_report["warnings"]
+        # Always present (an empty list when there are none), so a client
+        # reads it without a key check.
+        info_dict["warnings"] = list(validation_report.get("warnings") or [])
 
         return info_dict
 
@@ -2662,13 +2663,14 @@ class Pipeline:
     def fid_samples(self) -> Dict[str, Any]:
         """The stored Stage 0 FID samples (``ftmw/fid_samples@1``).
 
-        ``{"samples": 1-D float64 array, "stored_dtype": str}``; values equal
-        the stored ones, in stored order. One dataset read; never writes.
+        ``{"schema", "samples": 1-D float64 array, "stored_dtype": str}``;
+        values equal the stored ones, in stored order. One dataset read; never
+        writes.
 
         Raises
         ------
         StageDependencyError
-            If the file has no imported FID data.
+            If the file has no imported FID data (``command`` ``data import``).
         """
         from ._internal.read_impl import fid_samples_impl
 
@@ -2677,24 +2679,27 @@ class Pipeline:
     def display_units(self) -> Dict[str, Any]:
         """Display units (``ftmw/display_units@1``).
 
-        ``{"amplitude_scale", "units_label", "units_power"}``: exactly the
-        pair :meth:`compute_display_ft` applies, at every stage (resolved via
-        the Stage 1 chain). ``units_power`` is ``None`` when unset. Never
-        writes.
+        ``{"schema", "amplitude_scale", "units_label", "units_power"}``:
+        exactly the pair :meth:`compute_display_ft` applies, at every stage
+        (resolved via the Stage 1 chain, which ends in a hard default, so
+        ``units_power`` is always an int). Never writes.
         """
         from ._internal.stage5_impl import display_units_impl
 
         return display_units_impl(str(self.filepath))
+
     def window_status(self) -> Dict[str, Any]:
-        """One row per Stage 4 plan window and per created window, as columns.
+        """One record per Stage 4 plan window and per created window.
 
         Equivalent to :func:`ftmwpipeline.api.window_status`; the payload is
-        ``ftmw/window_status@1``. Raises
-        :class:`~ftmwpipeline.StageDependencyError` before Stage 4.
+        ``ftmw/window_status@1``, ``{"schema", "windows": [WindowStatusRow,
+        ...]}``. Raises :class:`~ftmwpipeline.StageDependencyError` before
+        Stage 4.
         """
         from ._internal.read_impl import window_status_impl
 
         return window_status_impl(str(self.filepath))
+
     @staticmethod
     def preview_source(
         source: Union[str, Path], format_name: Optional[str] = None
@@ -2702,7 +2707,8 @@ class Pipeline:
         """What a data source holds, without importing it (file-independent).
 
         Equivalent to :func:`ftmwpipeline.api.preview_source`; the payload is
-        ``ftmw/source_preview@1``.
+        ``ftmw/source_preview@1``, with ``fids`` a list of
+        :class:`~ftmwpipeline.contract.FidPreviewRow`.
         """
         from ._internal.preview_impl import preview_source_impl
 

@@ -2257,7 +2257,7 @@ def get_pipeline_info(file_path: Union[str, Path]) -> Dict[str, Any]:
         - 'completed_stages': List of completed processing stages
         - 'next_available_stages': Stages ready to run
         - 'errors': List of issues if invalid
-        - 'warnings': List of warnings if any
+        - 'warnings': List of warnings (always present; empty when none)
         - 'stage_environments', 'last_written_with', 'environment_drift':
           the per-stage analysis-environment record and whether the file's
           own stages disagree
@@ -2576,8 +2576,8 @@ def capabilities() -> Dict[str, Any]:
 def fid_samples(file_path: Union[str, Path]) -> Dict[str, Any]:
     """The stored Stage 0 FID samples, equivalent to :meth:`Pipeline.fid_samples`.
 
-    ``{"samples": 1-D float64 array, "stored_dtype": str}`` (schema
-    ``ftmw/fid_samples@1``); values equal the stored samples. Never writes.
+    ``{"schema": "ftmw/fid_samples@1", "samples": 1-D float64 array,
+    "stored_dtype": str}``; values equal the stored samples. Never writes.
     """
     return Pipeline.open(file_path).fid_samples()
 
@@ -2585,10 +2585,13 @@ def fid_samples(file_path: Union[str, Path]) -> Dict[str, Any]:
 def display_units(file_path: Union[str, Path]) -> Dict[str, Any]:
     """Display units, equivalent to :meth:`Pipeline.display_units`.
 
-    ``{"amplitude_scale", "units_label", "units_power"}``, exactly the pair
-    :func:`compute_display_ft` applies at every stage.
+    ``{"schema": "ftmw/display_units@1", "amplitude_scale", "units_label",
+    "units_power"}``, exactly the pair :func:`compute_display_ft` applies at
+    every stage.
     """
     return Pipeline.open(file_path).display_units()
+
+
 def fit_thresholds(file_path: Union[str, Path]) -> Dict[str, Any]:
     """The thresholds the persisted Stage 5 fit actually applied.
 
@@ -2597,16 +2600,20 @@ def fit_thresholds(file_path: Union[str, Path]) -> Dict[str, Any]:
     has no Stage 5 fit, and a threshold the fit never recorded is ``NOT_RUN``
     too -- never a guessed default.
     """
-    return Pipeline(file_path).fit_thresholds()
+    return Pipeline.open(file_path).fit_thresholds()
+
+
 def window_status(file_path: Union[str, Path]) -> Dict[str, Any]:
     """Per-window status: the Stage 4 plan, created windows and Stage 5 coverage.
 
-    Returns the ``ftmw/window_status@1`` payload: columns ``window_id``,
-    ``freq_min_mhz``, ``freq_max_mhz``, ``created``, ``n_fitted_peaks`` and
-    ``live`` (true when the Stage 5 fit holds at least one fitted line in the
-    window), one row per window. Before Stage 5, ``n_fitted_peaks`` and ``live``
-    are ``Absent.NOT_RUN`` (``<column>__status`` is ``1``). Also readable as the
-    ``window_status`` table of :func:`read_table`.
+    Returns the ``ftmw/window_status@1`` payload ``{"schema", "windows":
+    [WindowStatusRow, ...]}``, one :class:`~ftmwpipeline.contract.WindowStatusRow`
+    per window with ``window_id``, ``freq_min_mhz``, ``freq_max_mhz``,
+    ``created``, ``n_fitted_peaks`` and ``live`` (true when the Stage 5 fit
+    holds at least one fitted line in the window). Before Stage 5, each row's
+    ``n_fitted_peaks`` and ``live`` are ``Absent.NOT_RUN``. The columnar form,
+    with ``<column>__status`` columns, is the ``window_status`` table of
+    :func:`read_table`.
 
     Raises
     ------
@@ -2614,6 +2621,8 @@ def window_status(file_path: Union[str, Path]) -> Dict[str, Any]:
         Stage 4 has not been run.
     """
     return Pipeline.open(file_path).window_status()
+
+
 def preview_source(
     source: Union[str, Path], format_name: Optional[str] = None
 ) -> Dict[str, Any]:
@@ -2622,11 +2631,12 @@ def preview_source(
     File-independent: takes a source path (a Blackchirp directory, a CSV, ...),
     not a ``.ftmw`` file. Returns the ``ftmw/source_preview@1`` payload
     ``{"schema", "source", "format", "n_fids", "fids", "chirp_window"}``.
-    ``fids`` is the FID table as columns (``index``, ``n_points``,
-    ``spacing_us``, ``probe_freq_mhz``, ``sideband`` -- ``"upper"``/``"lower"``
-    -- and ``shots``, each absent-capable column with a ``<column>__status``
-    list), one entry per FID the source holds. ``chirp_window`` is the declared
-    window or ``Absent.NOT_RUN``. Nothing is imported or written.
+    ``fids`` is the FID table, one :class:`~ftmwpipeline.contract.FidPreviewRow`
+    per FID the source holds (``index``, ``n_points``, ``spacing_us``,
+    ``probe_freq_mhz``, ``sideband`` -- ``"upper"``/``"lower"`` -- and
+    ``shots``; every field but ``index`` may be an ``Absent``).
+    ``chirp_window`` is the declared window or ``Absent.NOT_RUN``. Nothing is
+    imported or written.
 
     Raises
     ------

@@ -52,7 +52,9 @@ from ftmwpipeline.contract import (
     MANIFEST,
     Absent,
     ContractManifest,
+    FidPreviewRow,
     Stage,
+    WindowStatusRow,
     capabilities,
 )
 
@@ -119,6 +121,8 @@ __all__ = [
     "Absent",
     "ContractManifest",
     "Stage",
+    "WindowStatusRow",
+    "FidPreviewRow",
     "capabilities",
     "to_jsonable",
     # Main pipeline interface

@@ -14,12 +14,18 @@ uncertainty-budgeted final line list -- is ``report table``, not this.
 All the work lives in ``_internal.read_impl``, shared with
 ``Pipeline.read_table`` / ``api.read_table``; this module only parses arguments
 and formats output.
+
+``read <accessor>`` (one per machine-contract accessor, spelled as its API
+name: ``read capabilities``, ``read read_table``, ``read window_status``, ...)
+prints the accessor's schema-stamped JSON envelope; see
+:func:`register_contract_accessors`. ``table`` / ``meta`` / ``list`` are the
+human-facing views and are not contract.
 """
 
 from __future__ import annotations
 
 import argparse
-from typing import Any, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .._internal.read_impl import (
     READ_TABLES,
@@ -31,8 +37,27 @@ from .._internal.read_impl import (
     read_tables_impl,
     write_text_impl,
 )
-from ..contract import DISPLAY_UNITS_SCHEMA, FID_SAMPLES_SCHEMA, MANIFEST
-from ..contract import FIT_THRESHOLDS_SCHEMA, MANIFEST
+from ..contract import (
+    CALIBRATION_SCHEMA,
+    CAPABILITIES_SCHEMA,
+    DISPLAY_FT_SCHEMA,
+    DISPLAY_UNITS_SCHEMA,
+    FID_SAMPLES_SCHEMA,
+    FINAL_PRODUCTS_SCHEMA,
+    FIT_THRESHOLDS_SCHEMA,
+    MANIFEST,
+    METADATA_SCHEMA,
+    PIPELINE_INFO_SCHEMA,
+    REVIEW_LOG_SCHEMA,
+    SETTINGS_DEFAULTS_SCHEMA,
+    SETTINGS_SCHEMA,
+    SNAP_TOLERANCE_SCHEMA,
+    SOURCE_PREVIEW_SCHEMA,
+    TABLE_SCHEMA,
+    TABLES_SCHEMA,
+    WINDOW_STATUS_SCHEMA,
+    Absent,
+)
 from ..file_manager import PipelineFileError
 from .contract_commands import exit_code_for, register_accessor, report_contract_error
 from .utils import setup_logging
@@ -160,6 +185,217 @@ def _add_output_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _settings_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "selector",
+        nargs="?",
+        default=None,
+        help="Filter by dotted-path prefix, e.g. stage2b or stage2b.gaussian",
+    )
+    parser.add_argument(
+        "--include-advanced",
+        dest="include_advanced",
+        action="store_true",
+        help="Include advanced-tier settings",
+    )
+    parser.add_argument(
+        "--preset",
+        default=None,
+        help="Preset for the .yml provenance layer (bare name or YAML path)",
+    )
+
+
+def _settings_kwargs(args: argparse.Namespace) -> Dict[str, Any]:
+    return {
+        "selector": args.selector,
+        "include_advanced": args.include_advanced,
+        "preset": args.preset,
+    }
+
+
+def _table_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "table", metavar="TABLE", help="Table to read: " + ", ".join(READ_TABLES)
+    )
+    parser.add_argument(
+        "--columns",
+        default=None,
+        metavar="A,B,C",
+        help="Comma-separated columns to read, in order (default: all)",
+    )
+
+
+def _display_ft_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--pad-factor",
+        type=int,
+        default=None,
+        help="Zero-fill factor (default: the display default)",
+    )
+
+
+def _source_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "source", help="Data source (e.g. a Blackchirp directory or a CSV)"
+    )
+    parser.add_argument(
+        "--source-format",
+        dest="source_format",
+        default=None,
+        metavar="NAME",
+        help="Source format to use instead of auto-detection",
+    )
+
+
+def register_contract_accessors(read_sub: Any) -> None:
+    """Register ``read <name>`` for every manifest accessor (JSON envelopes).
+
+    The verb is spelled exactly as the functional-API name, so three of them
+    (``read_metadata``, ``read_tables``, ``read_table``) sit beside the
+    human-facing ``meta`` / ``list`` / ``table`` verbs above, which are not
+    contract.
+    """
+    from ..pipeline import Pipeline
+
+    def opened(method: str) -> Callable[..., Any]:
+        """A file-bound accessor: the named method of the opened Pipeline."""
+        return lambda path, **kw: getattr(Pipeline.open(path), method)(**kw)
+
+    def final_products(path: str, **kw: Any) -> Any:
+        # None before Stage 6 in Python (Wave 3 migrates it); absent on the wire.
+        result = Pipeline.open(path).final_products(**kw)
+        if result is None:
+            return {"schema": FINAL_PRODUCTS_SCHEMA, "items": Absent.NOT_RUN}
+        return result
+
+    def register(
+        name: str,
+        accessor: Callable[..., Any],
+        schema: str,
+        help: str,
+        **extra: Any,
+    ) -> None:
+        register_accessor(read_sub, name, accessor, help=help, schema=schema, **extra)
+
+    register(
+        "capabilities",
+        Pipeline.capabilities,
+        CAPABILITIES_SCHEMA,
+        "Machine-contract version, schemas, accessors and error codes",
+    )
+    register(
+        "frequency_calibration",
+        opened("frequency_calibration"),
+        CALIBRATION_SCHEMA,
+        "The frequency calibration the file is under now",
+    )
+    register(
+        "refit_snap_tol_mhz",
+        opened("refit_snap_tol_mhz"),
+        SNAP_TOLERANCE_SCHEMA,
+        "The Stage 6 curation snap tolerance (MHz) of this file",
+    )
+    register(
+        "read_metadata",
+        opened("read_metadata"),
+        METADATA_SCHEMA,
+        "The file's cheap top-level scalars",
+    )
+    register(
+        "read_tables",
+        opened("read_tables"),
+        TABLES_SCHEMA,
+        "The readable tables, their availability and columns",
+    )
+    register(
+        "read_table",
+        opened("read_table"),
+        TABLE_SCHEMA,
+        "One persisted table as columns (arrays via --output)",
+        add_args=_table_args,
+        call_kwargs=lambda a: {
+            "table": a.table,
+            "columns": _split_columns(a.columns),
+        },
+    )
+    register(
+        "settings_defaults",
+        Pipeline.settings_defaults,
+        SETTINGS_DEFAULTS_SCHEMA,
+        "Every setting at its hard default (no file needed)",
+        add_args=_settings_args,
+        call_kwargs=_settings_kwargs,
+    )
+    register(
+        "settings_show",
+        opened("settings_show"),
+        SETTINGS_SCHEMA,
+        "Resolved value and provenance of each setting",
+        add_args=_settings_args,
+        call_kwargs=_settings_kwargs,
+    )
+    register(
+        "get_final_products",
+        final_products,
+        FINAL_PRODUCTS_SCHEMA,
+        "The persisted Stage 6 calibrated final-products table",
+    )
+    register(
+        "review_log",
+        opened("review_log"),
+        REVIEW_LOG_SCHEMA,
+        "The persisted Stage 6 decision log, in execution order",
+    )
+    register(
+        "get_pipeline_info",
+        opened(MANIFEST.pipeline_names["get_pipeline_info"]),
+        PIPELINE_INFO_SCHEMA,
+        "File status, stage record and analysis environment",
+    )
+    register(
+        "compute_display_ft",
+        opened("compute_display_ft"),
+        DISPLAY_FT_SCHEMA,
+        "Zero-padded display FT over the analysis band (arrays via --output)",
+        add_args=_display_ft_args,
+        call_kwargs=lambda a: (
+            {} if a.pad_factor is None else {"pad_factor": a.pad_factor}
+        ),
+    )
+    register(
+        "fid_samples",
+        opened("fid_samples"),
+        FID_SAMPLES_SCHEMA,
+        "Stored Stage 0 FID samples (samples go to .npy under --output)",
+    )
+    register(
+        "display_units",
+        opened("display_units"),
+        DISPLAY_UNITS_SCHEMA,
+        "Display amplitude scale and units label",
+    )
+    register(
+        "fit_thresholds",
+        opened("fit_thresholds"),
+        FIT_THRESHOLDS_SCHEMA,
+        "Thresholds the persisted Stage 5 fit applied",
+    )
+    register(
+        "window_status",
+        opened("window_status"),
+        WINDOW_STATUS_SCHEMA,
+        "Per-window status: plan, created windows, Stage 5 coverage",
+    )
+    register(
+        "preview_source",
+        Pipeline.preview_source,
+        SOURCE_PREVIEW_SCHEMA,
+        "Format and FID table of a data source, without importing it",
+        add_args=_source_args,
+        call_kwargs=lambda a: {"source": a.source, "format_name": a.source_format},
+    )
+
+
 def register_read_commands(subparsers: Any) -> None:
     """Register the ``read`` object group and its verbs."""
     read = subparsers.add_parser(
@@ -236,92 +472,7 @@ Examples:
     )
     p_list.set_defaults(func=cmd_read_list)
 
-    # Contract accessors: one register_accessor call each.
-    from ..pipeline import Pipeline
-
-    register_accessor(
-        read_sub,
-        "capabilities",
-        Pipeline.capabilities,
-        help="Machine-contract version, schemas, accessors and error codes (JSON)",
-        takes_file=MANIFEST.file_bound["capabilities"],
-    )
-
-    # Declared accessors with no existing verb elsewhere (the others are
-    # served by the verb path MANIFEST.cli_verbs names).
-    def _display_ft_args(parser: argparse.ArgumentParser) -> None:
-        parser.add_argument(
-            "--pad-factor",
-            type=int,
-            default=None,
-            help="Zero-fill factor (default: the display default)",
-        )
-
-    register_accessor(
-        read_sub,
-        "compute_display_ft",
-        lambda path, **kw: Pipeline.open(path).compute_display_ft(**kw),
-        help="Zero-padded display FT over the analysis band (arrays via --output)",
-        takes_file=MANIFEST.file_bound["compute_display_ft"],
-        add_args=_display_ft_args,
-        call_kwargs=lambda a: (
-            {} if a.pad_factor is None else {"pad_factor": a.pad_factor}
-        ),
-    )
-
-    register_accessor(
-        read_sub,
-        "fid_samples",
-        lambda path, **kw: Pipeline.open(path).fid_samples(),
-        help="Stored Stage 0 FID samples (samples go to .npy under --output)",
-        schema=FID_SAMPLES_SCHEMA,
-    )
-    register_accessor(
-        read_sub,
-        "display_units",
-        lambda path, **kw: Pipeline.open(path).display_units(),
-        help="Display amplitude scale and units label (JSON)",
-        schema=DISPLAY_UNITS_SCHEMA,
-    )
-
-    register_accessor(
-        read_sub,
-        "fit_thresholds",
-        lambda path: Pipeline(path).fit_thresholds(),
-        help="Thresholds the persisted Stage 5 fit applied (JSON)",
-        schema=FIT_THRESHOLDS_SCHEMA,
-    )
-
-    register_accessor(
-        read_sub,
-        "window_status",
-        lambda path, **kw: Pipeline.open(path).window_status(),
-        help="Per-window status: plan, created windows, Stage 5 coverage (JSON)",
-        schema="ftmw/window_status@1",
-        takes_file=MANIFEST.file_bound["window_status"],
-    )
-
-    def _source_args(parser: argparse.ArgumentParser) -> None:
-        parser.add_argument(
-            "source", help="Data source (e.g. a Blackchirp directory or a CSV)"
-        )
-        parser.add_argument(
-            "--source-format",
-            dest="source_format",
-            default=None,
-            metavar="NAME",
-            help="Source format to use instead of auto-detection",
-        )
-
-    register_accessor(
-        read_sub,
-        "preview_source",
-        Pipeline.preview_source,
-        help="Format and FID table of a data source, without importing it (JSON)",
-        takes_file=MANIFEST.file_bound["preview_source"],
-        add_args=_source_args,
-        call_kwargs=lambda a: {"source": a.source, "format_name": a.source_format},
-    )
+    register_contract_accessors(read_sub)
 
     # 'read' with no subcommand prints its help.
     def _read_help(args: argparse.Namespace) -> int:

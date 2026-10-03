@@ -16,7 +16,7 @@ Architecture:
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple, Union, cast
+from typing import Any, ClassVar, Dict, List, Optional, Tuple, Union, cast
 
 import numpy as np
 import scipy.fft as sfft
@@ -2153,6 +2153,10 @@ class FinalProducts:
     sideband : str
         Sideband configuration (``"upper"`` / ``"lower"``).
     """
+
+    #: Machine-contract schema name
+    #: (``ftmwpipeline.contract.FINAL_PRODUCTS_SCHEMA``).
+    __ftmw_schema__: ClassVar[str] = "ftmw/final_products@1"
 
     peaks: List["FinalPeak"] = field(default_factory=list)
     calibration_state: str = "rb_locked"

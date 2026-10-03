@@ -33,11 +33,11 @@ published, and the Stage 6 edit paths that carry them were collapsed onto one
 engine so they cannot answer differently.
 
 * **Machine contract: ``fid_samples`` and ``display_units``.**
-  ``fid_samples(path)`` returns ``{"samples", "stored_dtype"}``: the stored
+  ``fid_samples(path)`` returns ``{"schema", "samples", "stored_dtype"}``: the stored
   Stage 0 samples as a 1-D ``float64`` array (values equal the stored ones,
   promoted losslessly if the stored dtype is narrower), from a single dataset
-  read. ``display_units(path)`` returns ``{"amplitude_scale", "units_label",
-  "units_power"}``, and its first two fields are exactly the pair
+  read. ``display_units(path)`` returns ``{"schema", "amplitude_scale",
+  "units_label", "units_power"}``, and its scale and label are exactly the pair
   ``compute_display_ft`` applies, at every stage including before Stage 1. Both
   exist as ``api`` functions, ``Pipeline`` methods and ``ftmwpipeline read
   fid_samples`` (array written to ``samples.npy`` under ``--output``) / ``read
@@ -46,8 +46,8 @@ engine so they cannot answer differently.
 * **``preview_source`` describes a data source without importing it.** The
   format and the full FID table (index, points, spacing, probe frequency,
   sideband as ``"upper"``/``"lower"``, shots) of every FID a loader's source
-  holds, plus the declared chirp window; ``read preview_source SOURCE`` on the
-  command line. ``validate_source`` is unchanged.
+  holds, as a list of ``FidPreviewRow`` records, plus the declared chirp
+  window; ``read preview_source SOURCE`` on the command line. ``validate_source`` is unchanged.
 
 * **The machine contract has its foundations: a contract version, ``Absent``,
   typed errors with codes, a JSON serializer, and ``capabilities``.**
@@ -92,11 +92,25 @@ engine so they cannot answer differently.
   ``compute_display_ft``, together with the ``read_metadata`` keys, the
   ``fit_peaks`` / ``windows`` columns, the fields of ``FinalPeak``,
   ``DecisionLogEntry`` and ``ComplexFT``, and the decision-log ``kind`` and
-  ``provenance`` vocabularies. Behaviour is unchanged. The one new verb is
-  ``ftmwpipeline read compute_display_ft`` (``--pad-factor``, arrays via
-  ``--output``); ``to_jsonable`` now serializes ``ComplexFT``.
+  ``provenance`` vocabularies. Python behaviour is unchanged, except that
+  ``get_pipeline_info`` now always carries ``warnings`` (an empty list when
+  there are none) and ``read_table`` refuses a table whose stage has not run
+  with ``StageDependencyError`` (still a ``ValueError``) naming the verb to
+  run. ``CalibrationStamp`` and ``FinalProducts`` declare their schema
+  (``ftmw/calibration@1``, ``ftmw/final_products@1``); ``to_jsonable`` now
+  serializes ``ComplexFT``.
+* **Every contract accessor has one CLI verb, ``ftmwpipeline read <name>``,
+  spelled as its API name** (``read frequency_calibration``, ``read
+  read_table FILE TABLE --columns ...``, ``read get_pipeline_info``, ...). It
+  prints the schema-stamped JSON envelope: a dict result is stamped directly, a
+  list is ``{"schema", "items": [...]}``, a scalar ``{"schema", "value": x}``,
+  and ``read get_final_products`` before Stage 6 prints ``"items": null`` with
+  ``"items_absent": "not_run"``. The existing human verbs (``info``, ``review
+  log``, ``settings show``, ``timebase state``, ``report table``, ``read
+  table`` / ``meta`` / ``list``) are unchanged and are not contract. Schema
+  names are constants in ``ftmwpipeline.contract``.
 * **``fit_thresholds`` reports the thresholds the persisted Stage 5 fit applied
-  (``api.fit_thresholds``, ``Pipeline.fit_thresholds``,
+  (``api.fit_thresholds``, ``Pipeline.open(path).fit_thresholds()``,
   ``ftmwpipeline read fit_thresholds``; schema ``ftmw/fit_thresholds@1``).**
   ``peak_survival_snr_floor`` and ``vif_collapse_threshold`` are read from the
   fit's recorded diagnostics; each is ``Absent.NOT_RUN`` when there is no fit
@@ -105,14 +119,16 @@ engine so they cannot answer differently.
   longer fall back to a VIF threshold of ``4.0`` when a fit did not record
   one; that value was the setting default only briefly and is long stale. They
   use the current default, ``25.0``, as a display-grading reference.
-* **``window_status`` reports every window's state.** One row per Stage 4 plan
-  window and per Stage 6 created window, with ``window_id``, the bounds,
-  ``created``, ``n_fitted_peaks`` and ``live`` (a Stage 5 line is held in the
-  window), schema ``ftmw/window_status@1``. Before Stage 5 the two fit-derived
-  columns are ``Absent.NOT_RUN`` (``__status`` ``1``); before Stage 4 it raises
+* **``window_status`` reports every window's state.** ``{"schema", "windows":
+  [...]}``, one ``WindowStatusRow`` per Stage 4 plan window and per Stage 6
+  created window, with ``window_id``, the bounds, ``created``,
+  ``n_fitted_peaks`` and ``live`` (a Stage 5 line is held in the window),
+  schema ``ftmw/window_status@1``. Before Stage 5 each row's two fit-derived
+  fields are ``Absent.NOT_RUN``; before Stage 4 it raises
   ``StageDependencyError`` naming ``windows run``. Available as
   ``api.window_status``, ``Pipeline.window_status``, ``ftmwpipeline read
-  window_status`` and the ``window_status`` table of ``read_table``.
+  window_status``, and in columnar form (with ``__status`` columns) as the
+  ``window_status`` table of ``read_table``.
 
 * **``review apply --log-prefix N`` (``log_prefix=N`` on ``Pipeline.review_apply``,
   ``api.review_apply`` and ``ReviewSession.review_apply``) applies a curation

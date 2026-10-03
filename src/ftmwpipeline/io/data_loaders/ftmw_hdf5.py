@@ -44,7 +44,7 @@ from ..input_metadata import (
     resolve_input_metadata,
     sidecar_layer,
 )
-from .base import BaseLoader, FidInfo, LoaderError
+from .base import BaseLoader, FidPreviewRow, LoaderError
 
 if TYPE_CHECKING:
     from ...core.data_structures import FID
@@ -138,7 +138,7 @@ class FtmwHdf5Loader(BaseLoader):
 
         return result
 
-    def preview_fids(self, source_path: Union[str, Path]) -> List[FidInfo]:
+    def preview_fids(self, source_path: Union[str, Path]) -> List[FidPreviewRow]:
         """The one FID: embedded attributes, overridden by an adjacent sidecar."""
         source_path = Path(source_path)
         validation = self.validate_source(source_path)

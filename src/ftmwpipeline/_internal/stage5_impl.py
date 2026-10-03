@@ -43,7 +43,7 @@ import h5py
 import numpy as np
 from threadpoolctl import threadpool_limits
 
-from ..contract import FIT_THRESHOLDS_SCHEMA, Absent
+from ..contract import DISPLAY_UNITS_SCHEMA, FIT_THRESHOLDS_SCHEMA, Absent
 from ..core.data_structures import (
     ComplexFT,
     FittedPeak,
@@ -2805,11 +2805,13 @@ def _resolve_display_style(
 def display_units_impl(file_path: str) -> Dict[str, Any]:
     """Display units, exactly the pair :func:`compute_display_ft_impl` applies.
 
-    ``{"amplitude_scale", "units_label", "units_power"}``; ``units_power`` is
-    ``None`` when the setting is unset. Reads only; works at every stage.
+    ``{"schema": "ftmw/display_units@1", "amplitude_scale", "units_label",
+    "units_power"}``. ``units_power`` always resolves (the Stage 1 chain ends in
+    a hard default). Reads only; works at every stage.
     """
     scale, label, power, _trim = _resolve_display_style(file_path)
     return {
+        "schema": DISPLAY_UNITS_SCHEMA,
         "amplitude_scale": float(scale),
         "units_label": label,
         "units_power": power,

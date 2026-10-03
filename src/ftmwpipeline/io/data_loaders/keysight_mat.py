@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 import numpy as np
 
 from ...contract import Absent
-from .base import BaseLoader, FidInfo, LoaderError
+from .base import BaseLoader, FidPreviewRow, LoaderError
 
 if TYPE_CHECKING:
     from ...core.data_structures import FID
@@ -170,7 +170,7 @@ class KeysightMatLoader(BaseLoader):
 
         return result
 
-    def preview_fids(self, source_path: Union[str, Path]) -> List[FidInfo]:
+    def preview_fids(self, source_path: Union[str, Path]) -> List[FidPreviewRow]:
         """The one science FID of the first channel.
 
         Direct sampling: probe ``0`` MHz, ``upper`` sideband, spacing ``XInc``
@@ -185,7 +185,7 @@ class KeysightMatLoader(BaseLoader):
             raise LoaderError(f"Invalid keysight-mat source: {validation['errors']}")
         meta = validation["metadata"]
         return [
-            FidInfo(
+            FidPreviewRow(
                 index=0,
                 n_points=Absent.UNDEFINED,
                 spacing_us=float(meta["duration_us"]) / int(meta["n_samples"]),

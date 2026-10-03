@@ -86,12 +86,17 @@ import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import h5py
 import numpy as np
 
-from ..contract import Absent
+from ..contract import (
+    FID_SAMPLES_SCHEMA,
+    WINDOW_STATUS_SCHEMA,
+    Absent,
+    WindowStatusRow,
+)
 from ..core.settings import FTSettings
 from ..core.settings_framework import NONE as NONE_SENTINEL
 from ..file_manager import (
@@ -162,7 +167,6 @@ __all__ = [
     "read_tables_impl",
     "read_metadata_impl",
     "window_status_impl",
-    "WINDOW_STATUS_SCHEMA",
     "format_table_impl",
     "format_metadata_impl",
     "write_text_impl",
@@ -216,9 +220,6 @@ _TAU_TABLES = (
 
 _WINDOWS_HINT = "assign_windows() / 'windows run'"
 
-#: Schema name of the :func:`window_status_impl` payload.
-WINDOW_STATUS_SCHEMA = "ftmw/window_status@1"
-
 #: Columns that can be absent, each with a ``<column>__status`` companion.
 _WINDOW_STATUS_ABSENT_CAPABLE = ("n_fitted_peaks", "live")
 
@@ -244,6 +245,15 @@ _WINDOW_STATUS_DTYPES: Dict[str, Any] = {
 }
 
 _FIT_HINT = "fit_peaks() / 'fit run'"
+
+#: The bare CLI verb that produces each table group, named in the refusal.
+_COMMAND_BY_GROUP: Dict[str, str] = {
+    TAU_GROUP_PATH: "tau run",
+    GAUSSIAN_GROUP_PATH: "tau run --gaussian",
+    "stage3_peaks": "peaks run",
+    "stage4_windows": "windows run",
+    "stage5_fitting": "fit run",
+}
 
 _TABLE_SPECS: Dict[str, _TableSpec] = {}
 for _prefix, _group, _hint in (
@@ -431,18 +441,27 @@ def read_table_impl(
 
     Raises
     ------
+    StageDependencyError
+        If the stage that produces the table has not been run (code
+        ``stage_not_run``, ``command`` the CLI verb that produces it). Also a
+        ``ValueError``.
     ValueError
-        If the table name or a column name is unknown, if the stage that
-        produces the table has not been run, or if the persisted group is
-        malformed.
+        If the table name or a column name is unknown, or if the persisted
+        group is malformed.
     """
     name = normalize_table_name(table)
     spec = _TABLE_SPECS[name]
     with _open(file_path) as h5f:
         if spec.group not in h5f:
-            raise ValueError(
-                f"No {spec.group} data found in {file_path}; table {name!r} is "
-                f"unavailable. Run {spec.hint} first."
+            raise StageDependencyError(
+                f"read_table {name}",
+                [spec.group],
+                Path(file_path),
+                command=_COMMAND_BY_GROUP[spec.group],
+                message=(
+                    f"No {spec.group} data found in {file_path}; table {name!r} "
+                    f"is unavailable. Run {spec.hint} first."
+                ),
             )
         return spec.reader(h5f[spec.group], columns)
 
@@ -453,10 +472,8 @@ def read_table_impl(
 # ---------------------------------------------------------------------------
 
 
-def _window_status_columns(
-    h5f: h5py.File, columns: Optional[Sequence[str]] = None
-) -> Dict[str, np.ndarray]:
-    """Build the window-status table from an open file (raises before Stage 4).
+def _window_status_rows(h5f: h5py.File) -> List[WindowStatusRow]:
+    """Build the window-status rows from an open file (raises before Stage 4).
 
     One row per effective window id: every Stage 4 plan window, with a
     Stage-6-created window of the same id replacing the plan row (the
@@ -493,23 +510,45 @@ def _window_status_columns(
         fit = read_fit_window_columns(h5f["stage5_fitting"], ["window_id", "n_peaks"])
         fitted = {int(i): int(n) for i, n in zip(fit["window_id"], fit["n_peaks"])}
 
-    def fit_state(wid: int) -> Tuple[Any, Any]:
-        """``(n_fitted_peaks, live)``; the one place a window can be NOT_RUN."""
-        if fitted is None:
-            return Absent.NOT_RUN, Absent.NOT_RUN
-        n = fitted.get(wid, 0)
-        return n, n > 0
+    def row(wid: int) -> WindowStatusRow:
+        # The one place a window's fit state can be NOT_RUN.
+        n: Union[int, Absent] = Absent.NOT_RUN
+        live: Union[bool, Absent] = Absent.NOT_RUN
+        if fitted is not None:
+            n = fitted.get(wid, 0)
+            live = n > 0
+        lo, hi = bounds[wid]
+        return WindowStatusRow(
+            window_id=wid,
+            freq_min_mhz=lo,
+            freq_max_mhz=hi,
+            created=wid in created_ids,
+            n_fitted_peaks=n,
+            live=live,
+        )
 
-    order = sorted(bounds, key=lambda w: (bounds[w][0], w))
-    states = [fit_state(w) for w in order]
+    return [row(w) for w in sorted(bounds, key=lambda w: (bounds[w][0], w))]
+
+
+def _window_status_columns(
+    h5f: h5py.File, columns: Optional[Sequence[str]] = None
+) -> Dict[str, np.ndarray]:
+    """The columnar ``window_status`` table, derived from the rows.
+
+    Each absent-capable column gains its ``<column>__status`` companion.
+    """
+    rows = _window_status_rows(h5f)
     table = with_status_columns(
         {
-            "window_id": order,
-            "freq_min_mhz": [bounds[w][0] for w in order],
-            "freq_max_mhz": [bounds[w][1] for w in order],
-            "created": [w in created_ids for w in order],
-            "n_fitted_peaks": [s[0] for s in states],
-            "live": [s[1] for s in states],
+            name: [getattr(r, name) for r in rows]
+            for name in (
+                "window_id",
+                "freq_min_mhz",
+                "freq_max_mhz",
+                "created",
+                "n_fitted_peaks",
+                "live",
+            )
         },
         absent_capable=_WINDOW_STATUS_ABSENT_CAPABLE,
         fills={"n_fitted_peaks": 0, "live": False},
@@ -522,13 +561,13 @@ def _window_status_columns(
 
 
 def window_status_impl(file_path: Union[str, Path]) -> Dict[str, Any]:
-    """The ``ftmw/window_status@1`` payload: one row per window, as columns.
+    """The ``ftmw/window_status@1`` payload: ``{"schema", "windows": [row, ...]}``.
 
-    Columns: ``window_id``, ``freq_min_mhz``, ``freq_max_mhz``, ``created``,
-    ``n_fitted_peaks`` (+ ``n_fitted_peaks__status``), ``live``
-    (+ ``live__status``). A window is live when the Stage 5 fit holds at least
-    one fitted line in it. Before Stage 5 both fit-derived columns are
-    ``Absent.NOT_RUN`` (status ``1``). Read-only.
+    One :class:`~ftmwpipeline.contract.WindowStatusRow` per window. A window is
+    live when the Stage 5 fit holds at least one fitted line in it. Before
+    Stage 5 each row's ``n_fitted_peaks`` and ``live`` are ``Absent.NOT_RUN``.
+    Read-only. The columnar form is the ``window_status`` table of
+    :func:`read_table_impl`.
 
     Raises
     ------
@@ -536,10 +575,8 @@ def window_status_impl(file_path: Union[str, Path]) -> Dict[str, Any]:
         Stage 4 has not been run (``command`` is ``"windows run"``).
     """
     with _open(file_path) as h5f:
-        columns = _window_status_columns(h5f)
-    payload: Dict[str, Any] = {"schema": WINDOW_STATUS_SCHEMA}
-    payload.update(columns)
-    return payload
+        rows = _window_status_rows(h5f)
+    return {"schema": WINDOW_STATUS_SCHEMA, "windows": rows}
 
 
 def _row_count(stage_group: h5py.Group, count_path: str) -> Optional[int]:
@@ -714,10 +751,11 @@ def _alias_section(out: Dict[str, Any], canonical: str, synonym: str) -> None:
 def fid_samples_impl(file_path: Union[str, Path]) -> Dict[str, Any]:
     """The stored Stage 0 FID samples: one dataset read, no pipeline load.
 
-    Returns ``{"samples": float64 1-D array, "stored_dtype": str}``. Values
-    equal the stored ones, in stored order; a narrower stored dtype is
-    promoted losslessly. Raises ``StageDependencyError`` when Stage 0 has not
-    been imported into the file.
+    Returns ``{"schema": "ftmw/fid_samples@1", "samples": float64 1-D array,
+    "stored_dtype": str}``. Values equal the stored ones, in stored order; a
+    narrower stored dtype is promoted losslessly. Raises
+    ``StageDependencyError`` (``command`` ``"data import"``) when Stage 0 has
+    not been imported into the file.
     """
     path = Path(file_path)
     h5f = _open(path)
@@ -728,7 +766,7 @@ def fid_samples_impl(file_path: Union[str, Path]) -> Dict[str, Any]:
                 "fid_samples",
                 ["stage0_fid_data"],
                 path,
-                command=f"ftmwpipeline data import {path}",
+                command="data import",
             )
         dataset = group["time_series_data"]
         stored_dtype = str(dataset.dtype)
@@ -736,7 +774,11 @@ def fid_samples_impl(file_path: Union[str, Path]) -> Dict[str, Any]:
     finally:
         h5f.close()
     samples = np.array(raw, dtype=np.float64, copy=True).reshape(-1)
-    return {"samples": samples, "stored_dtype": stored_dtype}
+    return {
+        "schema": FID_SAMPLES_SCHEMA,
+        "samples": samples,
+        "stored_dtype": stored_dtype,
+    }
 
 
 def _read_start_record(h5f: h5py.File, out: Dict[str, Any]) -> None:

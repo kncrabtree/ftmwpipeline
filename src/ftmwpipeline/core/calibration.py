@@ -19,7 +19,7 @@ it can be imported anywhere without a cycle.
 """
 
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import ClassVar, Literal, Optional
 
 __all__ = ["CalibrationState", "CalibrationStamp"]
 
@@ -89,6 +89,9 @@ class CalibrationStamp:
         ``epsilon`` correction is applied in the baseband frame and is
         sideband-independent.
     """
+
+    #: Machine-contract schema name (``ftmwpipeline.contract.CALIBRATION_SCHEMA``).
+    __ftmw_schema__: ClassVar[str] = "ftmw/calibration@1"
 
     state: CalibrationState
     epsilon: float

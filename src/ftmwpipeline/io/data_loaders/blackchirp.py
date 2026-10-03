@@ -15,7 +15,7 @@ import pandas as pd
 from ...contract import Absent
 from .base import (
     BaseLoader,
-    FidInfo,
+    FidPreviewRow,
     LoaderError,
     count_or_absent,
     finite_or_absent,
@@ -203,7 +203,7 @@ class BlackChirpLoader(BaseLoader):
             result["errors"].append(f"Validation failed: {e}")
             return result
 
-    def preview_fids(self, source_path: Union[str, Path]) -> List[FidInfo]:
+    def preview_fids(self, source_path: Union[str, Path]) -> List[FidPreviewRow]:
         """One row per ``fidparams.csv`` row (the FID's index is its row position).
 
         ``size`` is the point count, ``spacing`` is in seconds, and ``sideband``
@@ -225,7 +225,7 @@ class BlackChirpLoader(BaseLoader):
         def cell(row: "pd.Series", column: str) -> Any:
             return row[column] if column in row.index else None
 
-        rows: List[FidInfo] = []
+        rows: List[FidPreviewRow] = []
         for position in range(len(frame)):
             row = frame.iloc[position]
             spacing_s = finite_or_absent(cell(row, "spacing"))
@@ -239,7 +239,7 @@ class BlackChirpLoader(BaseLoader):
                 except (LoaderError, ValueError, TypeError):
                     sideband = Absent.UNDEFINED
             rows.append(
-                FidInfo(
+                FidPreviewRow(
                     index=position,
                     n_points=count_or_absent(cell(row, "size")),
                     spacing_us=(

@@ -46,9 +46,35 @@ SNAPSHOT_ACCESSORS = frozenset(
         "review_log",
         "get_pipeline_info",
         "compute_display_ft",
+        "fid_samples",
+        "display_units",
+        "fit_thresholds",
+        "window_status",
+        "preview_source",
     }
 )
-SNAPSHOT_SCHEMAS = frozenset({"ftmw/error@1", "ftmw/capabilities@1"})
+SNAPSHOT_SCHEMAS = frozenset(
+    {
+        "ftmw/error@1",
+        "ftmw/capabilities@1",
+        "ftmw/fid_samples@1",
+        "ftmw/display_units@1",
+        "ftmw/fit_thresholds@1",
+        "ftmw/window_status@1",
+        "ftmw/source_preview@1",
+        "ftmw/calibration@1",
+        "ftmw/snap_tolerance@1",
+        "ftmw/metadata@1",
+        "ftmw/tables@1",
+        "ftmw/table@1",
+        "ftmw/settings_defaults@1",
+        "ftmw/settings@1",
+        "ftmw/final_products@1",
+        "ftmw/review_log@1",
+        "ftmw/pipeline_info@1",
+        "ftmw/display_ft@1",
+    }
+)
 SNAPSHOT_CODES = frozenset(
     {
         "stage_not_run",
@@ -73,24 +99,15 @@ SNAPSHOT_FILE_BOUND = {
     "review_log": True,
     "get_pipeline_info": True,
     "compute_display_ft": True,
+    "fid_samples": True,
+    "display_units": True,
+    "fit_thresholds": True,
+    "window_status": True,
+    "preview_source": False,
 }
 SNAPSHOT_PIPELINE_NAMES = {
     "get_final_products": "final_products",
     "get_pipeline_info": "info",
-}
-SNAPSHOT_CLI_VERBS = {
-    "capabilities": ("read", "capabilities"),
-    "frequency_calibration": ("timebase", "state"),
-    "refit_snap_tol_mhz": ("review", "snap-tolerance"),
-    "read_metadata": ("read", "meta"),
-    "read_tables": ("read", "list"),
-    "read_table": ("read", "table"),
-    "settings_defaults": ("settings", "defaults"),
-    "settings_show": ("settings", "show"),
-    "get_final_products": ("report", "table"),
-    "review_log": ("review", "log"),
-    "get_pipeline_info": ("info",),
-    "compute_display_ft": ("read", "compute_display_ft"),
 }
 SNAPSHOT_METADATA_KEYS: frozenset = frozenset(
     {
@@ -154,6 +171,16 @@ SNAPSHOT_TABLES: dict = {
         "knockout_aicc_delta",
     },
     "windows": {"window_id", "freq_min", "freq_max"},
+    "window_status": {
+        "window_id",
+        "freq_min_mhz",
+        "freq_max_mhz",
+        "created",
+        "n_fitted_peaks",
+        "n_fitted_peaks__status",
+        "live",
+        "live__status",
+    },
 }
 SNAPSHOT_FIELDS: dict = {
     "CalibrationStamp": {
@@ -230,11 +257,11 @@ def _read_verbs() -> set:
 
 
 def _verb_parser(name: str) -> argparse.ArgumentParser:
-    """The parser of an accessor's CLI verb, at the path the manifest declares."""
+    """The parser of an accessor's CLI verb: always ``read <name>``."""
     parser = create_parser()
-    for part in MANIFEST.cli_verbs[name]:
+    for part in ("read", name):
         choices = _subparser_choices(parser)
-        assert part in choices, (name, MANIFEST.cli_verbs[name])
+        assert part in choices, (name, part)
         parser = choices[part]
     return parser
 
@@ -254,21 +281,14 @@ def test_accessor_on_pipeline(name):
 
 @pytest.mark.parametrize("name", MANIFEST.accessors)
 def test_accessor_has_a_cli_verb(name):
-    # Resolves the declared verb path (``read <name>`` unless the accessor
-    # names an existing verb elsewhere); fails when the path does not exist.
+    # Every accessor's verb is ``read <name>``, spelled as the API name.
     assert isinstance(_verb_parser(name), argparse.ArgumentParser)
+    assert name in _read_verbs()
 
 
-def test_no_accessor_has_a_second_read_verb():
-    """An accessor served elsewhere is not also registered as ``read <name>``."""
-    for name, path in MANIFEST.cli_verbs.items():
-        if path != ("read", name):
-            assert name not in _read_verbs(), name
-
-
-def test_cli_verb_paths_are_unique():
-    paths = list(MANIFEST.cli_verbs.values())
-    assert len(set(paths)) == len(paths)
+def test_manifest_declares_no_cli_verb_mapping():
+    assert not hasattr(MANIFEST, "cli_verbs")
+    assert "cli" not in AccessorSpec._fields
 
 
 # ---- binding kind: file-bound vs file-less -------------------------------
@@ -301,7 +321,7 @@ def test_file_bound_must_match_accessors():
 
 def test_accessor_spec_is_name_and_binding():
     spec = AccessorSpec("x", file_bound=True)
-    assert tuple(spec) == ("x", True)
+    assert tuple(spec) == ("x", True, None)
 
 
 @pytest.mark.parametrize("name", MANIFEST.accessors)
@@ -451,8 +471,6 @@ def test_nothing_declared_disappears():
         assert set(cols) <= set(MANIFEST.tables[table])
     for name, pname in SNAPSHOT_PIPELINE_NAMES.items():
         assert MANIFEST.pipeline_names[name] == pname
-    for name, path in SNAPSHOT_CLI_VERBS.items():
-        assert MANIFEST.cli_verbs[name] == path
     for type_name, names in SNAPSHOT_FIELDS.items():
         assert set(names) <= set(MANIFEST.fields[type_name])
     for vocab, values in SNAPSHOT_VOCABULARIES.items():
@@ -473,7 +491,6 @@ def test_additions_update_the_snapshot():
     assert {n: p for n, p in MANIFEST.pipeline_names.items() if n != p} == (
         SNAPSHOT_PIPELINE_NAMES
     )
-    assert dict(MANIFEST.cli_verbs) == SNAPSHOT_CLI_VERBS
     assert set(MANIFEST.tables) == set(SNAPSHOT_TABLES)
     for table, cols in SNAPSHOT_TABLES.items():
         # The snapshot pins the promised core; more columns may be declared
@@ -605,13 +622,11 @@ def test_decision_kinds_recorded_by_the_code_are_declared():
     assert {"add", "remove", "merge", "split", "accept", "create_window"} <= recorded
 
 
-def test_manifest_rejects_cli_or_pipeline_names_for_non_accessors():
+def test_manifest_rejects_pipeline_names_for_non_accessors():
     with pytest.raises(ValueError):
         ContractManifest(0, ("a",), (), (), (), {}, {"a": True}, {"b": "x"})
-    with pytest.raises(ValueError):
-        ContractManifest(0, ("a",), (), (), (), {}, {"a": True}, {}, {"b": ("x",)})
     ok = ContractManifest(0, ("a",), (), (), (), {}, {"a": True})
-    assert ok.pipeline_names["a"] == "a" and ok.cli_verbs["a"] == ("read", "a")
+    assert ok.pipeline_names["a"] == "a"
 
 
 def test_manifest_fields_and_vocabularies_read_only_and_unique():
@@ -620,4 +635,4 @@ def test_manifest_fields_and_vocabularies_read_only_and_unique():
     with pytest.raises(TypeError):
         MANIFEST.vocabularies["x"] = ()  # type: ignore[index]
     with pytest.raises(ValueError):
-        ContractManifest(0, (), (), (), (), {}, {}, {}, {}, {"T": ("a", "a")})
+        ContractManifest(0, (), (), (), (), {}, {}, {}, {"T": ("a", "a")})

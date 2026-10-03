@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
-from ...contract import Absent
+from ...contract import Absent, FidPreviewRow
 
 if TYPE_CHECKING:
     from ...core.data_structures import FID
@@ -25,24 +25,6 @@ class LoaderError(Exception):
 
 
 @dataclass(frozen=True)
-class FidInfo:
-    """One row of a source's FID table (see :meth:`BaseLoader.preview_fids`).
-
-    Every field except ``index`` is a value or an
-    :class:`~ftmwpipeline.contract.Absent`: ``NOT_RUN`` when the source does not
-    declare it, ``UNDEFINED`` when it cannot be stated without load parameters
-    (or is not finite).
-    """
-
-    index: int
-    n_points: Union[int, Absent] = Absent.NOT_RUN
-    spacing_us: Union[float, Absent] = Absent.NOT_RUN
-    probe_freq_mhz: Union[float, Absent] = Absent.NOT_RUN
-    sideband: Union[str, Absent] = Absent.NOT_RUN  # "upper" | "lower"
-    shots: Union[int, Absent] = Absent.NOT_RUN
-
-
-@dataclass(frozen=True)
 class SourcePreview:
     """What a source holds, found without importing (see ``preview_source``).
 
@@ -51,7 +33,7 @@ class SourcePreview:
     """
 
     format: str
-    fids: List[FidInfo]
+    fids: List[FidPreviewRow]
     chirp_window: Optional[Dict[str, Any]] = None
 
 
@@ -164,7 +146,7 @@ class BaseLoader(ABC):
         """
         pass
 
-    def preview_fids(self, source_path: Union[str, Path]) -> List[FidInfo]:
+    def preview_fids(self, source_path: Union[str, Path]) -> List[FidPreviewRow]:
         """
         Describe every FID the source holds, without importing anything.
 
@@ -186,7 +168,7 @@ class BaseLoader(ABC):
             )
         meta = validation.get("metadata", {})
         return [
-            FidInfo(
+            FidPreviewRow(
                 index=0,
                 n_points=count_or_absent(meta.get("n_points")),
                 spacing_us=finite_or_absent(meta.get("spacing_us")),

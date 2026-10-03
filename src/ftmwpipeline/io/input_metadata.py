@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from .data_loaders.base import (
-    FidInfo,
+    FidPreviewRow,
     LoaderError,
     count_or_absent,
     finite_or_absent,
@@ -234,7 +234,7 @@ def sidecar_layer(source_path: Union[str, Path]) -> Dict[str, Any]:
     return load_sidecar(found) if found is not None else {}
 
 
-def acquisition_row(n_points: int, *layers: Dict[str, Any], index: int = 0) -> FidInfo:
+def acquisition_row(n_points: int, *layers: Dict[str, Any], index: int = 0) -> FidPreviewRow:
     """Describe a generic-loader FID from metadata layers, without importing.
 
     The first layer that sets a field wins, as in :func:`resolve_input_metadata`;
@@ -249,7 +249,7 @@ def acquisition_row(n_points: int, *layers: Dict[str, Any], index: int = 0) -> F
                 return layer[key]
         return _DEFAULTS.get(key)
 
-    return FidInfo(
+    return FidPreviewRow(
         index=index,
         n_points=n_points,
         spacing_us=finite_or_absent(pick("spacing_us")),

@@ -2,11 +2,13 @@
 
 A contract accessor is a read-only function that returns a result the machine
 contract has frozen. This module is the one place that turns such a function
-into a ``read <name>`` verb: it runs the accessor, passes the result through
-:func:`ftmwpipeline.serialize.to_jsonable`, prints the JSON envelope to stdout,
-writes array fields as ``.npy`` files into ``--output`` (the envelope names the
-file in place of the array), and reports a contract error as its ``to_dict()``
-JSON on stderr with a mapped exit code.
+into a ``read <name>`` verb (every manifest accessor has exactly one, spelled as
+its API name): it runs the accessor, wraps the result in its schema-stamped
+envelope (:func:`contract_envelope`), passes it through
+:func:`ftmwpipeline.serialize.to_jsonable`, prints the JSON to stdout, writes
+array fields as ``.npy`` files into ``--output`` (the envelope names the file
+in place of the array), and reports a contract error as its ``to_dict()`` JSON
+on stderr with a mapped exit code.
 
 It also holds the CLI's one contract-code -> exit-code table
 (:data:`EXIT_CODES`, :func:`exit_code_for`); every verb that reports a
@@ -17,10 +19,12 @@ Registering a new accessor is one call from ``read_commands``::
     register_accessor(
         read_sub,
         "frequency_calibration",
-        lambda path, **kw: Pipeline.open(path).frequency_calibration(),
+        lambda path, **kw: Pipeline.open(path).frequency_calibration(**kw),
         help="Frequency calibration stamp",
-        schema="ftmw/frequency_calibration@1",
+        schema=CALIBRATION_SCHEMA,
     )
+
+Whether the verb takes a file argument is read from ``MANIFEST.file_bound``.
 
 Extra verb-specific options go through ``add_args`` (a callable receiving the
 verb's parser) and reach the accessor via ``call_kwargs`` (``args -> dict``).
@@ -36,7 +40,7 @@ from typing import Any, Callable, Dict, Optional
 
 import numpy as np
 
-from ..contract import PipelineFileError
+from ..contract import MANIFEST, PipelineFileError
 from ..serialize import ArrayCollector, to_jsonable
 from .utils import setup_logging
 
@@ -71,12 +75,27 @@ def report_contract_error(exc: PipelineFileError, fmt: str) -> int:
     return exit_code_for(exc)
 
 
-def emit_contract_result(
-    result: Any, *, schema: Optional[str], output: Optional[str]
-) -> None:
+def contract_envelope(result: Any, schema: str) -> Any:
+    """The object to serialize for *result* under *schema*.
+
+    A list or tuple becomes ``{"schema", "items": [...]}``; a scalar becomes
+    ``{"schema", "value": x}``. Anything else (a dict, a dataclass, a
+    ``ComplexFT``) is stamped directly by :func:`to_jsonable`, which also
+    checks that a payload already stamped in Python carries the same name.
+    """
+    if isinstance(result, (list, tuple)):
+        return {"schema": schema, "items": result}
+    if isinstance(result, (bool, int, float, str, np.generic)):
+        return {"schema": schema, "value": result}
+    return result
+
+
+def emit_contract_result(result: Any, *, schema: str, output: Optional[str]) -> None:
     """Serialize *result*, write its arrays to *output*, print the envelope."""
     collector = ArrayCollector()
-    payload = to_jsonable(result, schema=schema, arrays=collector)
+    payload = to_jsonable(
+        contract_envelope(result, schema), schema=schema, arrays=collector
+    )
     if collector.arrays:
         if output is None:
             raise ValueError(
@@ -94,7 +113,7 @@ def run_accessor_command(
     args: argparse.Namespace,
     accessor: Callable[..., Any],
     *,
-    schema: Optional[str] = None,
+    schema: str,
     takes_file: bool = True,
     call_kwargs: Optional[Callable[[argparse.Namespace], Dict[str, Any]]] = None,
 ) -> int:
@@ -130,17 +149,19 @@ def register_accessor(
     accessor: Callable[..., Any],
     *,
     help: str,
-    schema: Optional[str] = None,
-    takes_file: bool = True,
+    schema: str,
     add_args: Optional[Callable[[argparse.ArgumentParser], None]] = None,
     call_kwargs: Optional[Callable[[argparse.Namespace], Dict[str, Any]]] = None,
 ) -> argparse.ArgumentParser:
-    """Add ``read <name>`` for a contract accessor to the ``read`` subparsers.
+    """Add ``read <name>`` for a manifest accessor to the ``read`` subparsers.
 
-    ``accessor`` is called as ``accessor(path, **call_kwargs(args))`` (or
-    ``accessor(**...)`` when ``takes_file`` is false). ``schema`` stamps the
-    envelope when the result is a plain dict that carries no stamp already.
+    ``accessor`` is called as ``accessor(path, **call_kwargs(args))`` when
+    ``MANIFEST.file_bound[name]``, else as ``accessor(**call_kwargs(args))``.
+    ``schema`` is the accessor's schema name: it stamps the envelope (see
+    :func:`contract_envelope`) and must equal any stamp the result already
+    carries.
     """
+    takes_file = MANIFEST.file_bound[name]
     parser: argparse.ArgumentParser = read_sub.add_parser(
         name, help=help, description=help
     )

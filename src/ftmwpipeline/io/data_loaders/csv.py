@@ -24,7 +24,7 @@ from ..input_metadata import (
     resolve_input_metadata,
     sidecar_layer,
 )
-from .base import BaseLoader, FidInfo, LoaderError
+from .base import BaseLoader, FidPreviewRow, LoaderError
 
 if TYPE_CHECKING:
     from ...core.data_structures import FID
@@ -88,7 +88,7 @@ class CSVLoader(BaseLoader):
         result["valid"] = True
         return result
 
-    def preview_fids(self, source_path: Union[str, Path]) -> List[FidInfo]:
+    def preview_fids(self, source_path: Union[str, Path]) -> List[FidPreviewRow]:
         """The one FID: point count from the file, the rest from a sidecar.
 
         Sidecar-absent fields are ``Absent.NOT_RUN``, except the three the

@@ -58,7 +58,8 @@ declares. It needs no file and is the same on every interface:
 
 The payload is ``{"schema": "ftmw/capabilities@1", "contract_version": int,
 "schemas": [...], "accessors": [...], "codes": [...]}``. Every accessor listed
-exists on the API, on ``Pipeline`` and as a ``read`` verb. An accessor that
+exists on the API, on ``Pipeline`` and as exactly one CLI verb,
+``ftmwpipeline read <name>``, spelled as the API name. An accessor that
 reads a file takes the path as its first argument on the API and as the
 ``read`` verb's file argument, and is an instance method of an opened
 ``Pipeline``; one that needs no file (like ``capabilities``) takes no path
@@ -72,9 +73,12 @@ Accessors that predate the contract are declared in
 ``frequency_calibration``, ``refit_snap_tol_mhz``, ``read_metadata``,
 ``read_tables``, ``read_table``, ``settings_defaults``, ``settings_show``,
 ``get_final_products``, ``review_log``, ``get_pipeline_info`` and
-``compute_display_ft``. ``MANIFEST.cli_verbs`` names the CLI verb that serves
-each (an existing verb such as ``review log`` or ``info``, else
-``read <name>``), ``MANIFEST.pipeline_names`` the ``Pipeline`` method
+``compute_display_ft``. Each is served on the command line by ``read <name>``
+(``read frequency_calibration``, ``read read_table``, ``read
+get_pipeline_info``, ...); the older human-facing verbs (``info``, ``review
+log``, ``settings show``, ``timebase state``, ``report table``, ``read table`` /
+``meta`` / ``list``) keep their output and are not contract.
+``MANIFEST.pipeline_names`` names the ``Pipeline`` method
 (``get_final_products`` is ``Pipeline.final_products``, ``get_pipeline_info``
 is ``Pipeline.info``), ``MANIFEST.metadata_keys`` and ``MANIFEST.tables`` the
 declared ``read_metadata`` keys and ``read_table`` columns, ``MANIFEST.fields``
@@ -83,22 +87,39 @@ the declared fields of the result types (``FinalPeak``, ``DecisionLogEntry``,
 the curation results), and ``MANIFEST.vocabularies`` the frozen
 ``DecisionLogEntry`` ``kind`` and ``provenance`` values.
 
+Their Python results are unchanged. Each has a schema name, a constant in
+``ftmwpipeline.contract``: ``ftmw/calibration@1``, ``ftmw/snap_tolerance@1``,
+``ftmw/metadata@1``, ``ftmw/tables@1``, ``ftmw/table@1``,
+``ftmw/settings_defaults@1``, ``ftmw/settings@1``, ``ftmw/final_products@1``,
+``ftmw/review_log@1``, ``ftmw/pipeline_info@1`` and ``ftmw/display_ft@1``.
+``CalibrationStamp`` and ``FinalProducts`` declare theirs as
+``__ftmw_schema__``; the ``read`` verb stamps the rest: a dict result is
+stamped directly, a list (``settings_show``, ``settings_defaults``,
+``review_log``) becomes ``{"schema", "items": [...]}``, and a scalar
+(``refit_snap_tol_mhz``) becomes ``{"schema", "value": x}``.
+
 Each declared accessor, with its absence cases:
 
 * ``read_metadata`` / ``read_tables`` / ``read_table`` -- the persisted scalars
   and table columns, raw. ``tau.`` / ``tau_g.`` / ``timebase.`` keys appear only
   once that calibration has run, so a file without it simply lacks them; an
-  unknown table or column is a ``ValueError``.
+  unknown table or column is a ``ValueError``. A table whose stage has not run
+  raises ``StageDependencyError`` (``stage_not_run``, also a ``ValueError``)
+  with ``command`` the verb that produces it (``fit run``, ``windows run``,
+  ...). ``read read_table FILE TABLE [--columns a,b]`` writes each column to
+  ``<column>.npy`` under ``--output``.
 * ``get_final_products`` -- the persisted final-products table, or ``None``
-  before Stage 6 (``None`` becomes ``Absent`` in a later wave). Each
+  before Stage 6 (``None`` becomes ``Absent`` in a later wave; ``read
+  get_final_products`` already prints ``"items": null, "items_absent":
+  "not_run"``). Each
   ``FinalPeak`` carries ``peak_uid``, ``window_id``, ``origin``, ``derivation``,
   ``clock_lattice``, the ``knockout_*`` fields, the frequency and its sigma.
 * ``review_log`` -- the ``DecisionLogEntry`` rows in execution order (an empty
   list when nothing was edited). ``kind`` is one of ``add``, ``remove``,
   ``merge``, ``split``, ``accept``, ``create_window``; ``provenance`` is
   ``user``.
-* ``get_pipeline_info`` -- the status dict. ``warnings`` is present only when
-  non-empty.
+* ``get_pipeline_info`` -- the status dict. ``warnings`` is always present (an
+  empty list when there are none).
 * ``frequency_calibration``, ``refit_snap_tol_mhz``, ``settings_show``,
   ``settings_defaults`` -- unchanged; ``settings_defaults`` needs no file.
 * ``compute_display_ft`` -- ``freq_array`` and ``complex_spectrum`` plus
@@ -107,7 +128,7 @@ Each declared accessor, with its absence cases:
 
 Every one raises ``PipelineFileNotFoundError`` (code ``not_found``) for a
 missing file and ``PipelineCorruptionError`` (``file_corrupt``, exit 2) for a
-file that is not HDF5, and none of them writes the file. The new verb:
+file that is not HDF5, and none of them writes the file. For example:
 
 .. code-block:: console
 
@@ -144,7 +165,8 @@ writes ``out/samples.npy`` and prints ``{"schema": "ftmw/fid_samples@1",
 exits ``1``, because the result holds an array.
 
 A file with no Stage 0 FID data raises ``StageDependencyError`` (code
-``stage_not_run``, ``missing_dependencies`` ``["data"]``). There is no
+``stage_not_run``, ``missing_dependencies`` ``["data"]``, ``command``
+``data import``). There is no
 ``Absent`` value in this payload.
 
 Display units: ``display_units``
@@ -175,7 +197,7 @@ deserialized, and a read never writes the file).
 .. code-block:: python
 
    ftmw.fit_thresholds("exp.ftmw")           # functional API
-   Pipeline("exp.ftmw").fit_thresholds()     # Pipeline instance method
+   Pipeline.open("exp.ftmw").fit_thresholds()  # Pipeline instance method
 
 .. code-block:: console
 
@@ -321,13 +343,14 @@ source path, not a ``.ftmw`` file, so it is file-less.
    $ ftmwpipeline read preview_source exp_2638 [--source-format blackchirp]
 
 The payload is ``ftmw/source_preview@1``: ``source``, ``format``, ``n_fids``,
-``fids`` and ``chirp_window``. ``fids`` is a table of equal-length lists
-(``index``, ``n_points``, ``spacing_us``, ``probe_freq_mhz``, ``sideband`` --
-``"upper"`` or ``"lower"``, whatever the source encodes it as -- and
-``shots``), with a ``<column>__status`` list for every column but ``index``
-(``0`` present, ``1`` not run, ``2`` undefined). A value the source does not
-declare is *not run*; one that depends on load-time parameters (a Keysight
-record's point and shot counts) is *undefined*. ``chirp_window`` is the
+``fids`` and ``chirp_window``. ``fids`` is a list of
+``ftmwpipeline.FidPreviewRow`` records, one per FID (``index``, ``n_points``,
+``spacing_us``, ``probe_freq_mhz``, ``sideband`` -- ``"upper"`` or
+``"lower"``, whatever the source encodes it as -- and ``shots``). Every field
+but ``index`` may be ``Absent`` (on the wire, ``null`` plus its ``_absent``
+sibling): a value the source does not declare is *not run*; one that depends
+on load-time parameters (a Keysight record's point and shot counts) is
+*undefined*. ``chirp_window`` is the
 window the source declares (``chirp_start_us``, ``chirp_end_us``,
 ``start_margin_us``, each possibly absent) or, when it declares none, ``null``
 with ``chirp_window_absent: "not_run"``. A path that does not exist raises
@@ -372,9 +395,9 @@ Every contract payload that names a stage uses the canonical vocabulary
 JSON from the command line
 --------------------------
 
-The contract accessors under ``ftmwpipeline read`` (such as ``read
-capabilities``) take ``--format json`` (the only, and default, format),
-``-o/--output DIR`` and ``-v``.
+The contract accessors under ``ftmwpipeline read`` (one ``read <name>`` per
+accessor, such as ``read capabilities``) take ``--format json`` (the only, and
+default, format), ``-o/--output DIR`` and ``-v``.
 
 * The result is printed to stdout as JSON that is always strictly valid
   (non-finite floats follow the ``Absent`` rule above).
@@ -425,10 +448,10 @@ reserved and not yet implemented.
 Window status: ``window_status``
 --------------------------------
 
-``window_status(path)`` reports one row per Stage 4 plan window and per
-window Stage 6 created, as columns (schema ``ftmw/window_status@1``):
-``window_id``, ``freq_min_mhz``, ``freq_max_mhz``, ``created``,
-``n_fitted_peaks`` and ``live``. A window is **live** when the Stage 5 fit
+``window_status(path)`` returns ``{"schema": "ftmw/window_status@1",
+"windows": [...]}``, one ``ftmwpipeline.WindowStatusRow`` per Stage 4 plan
+window and per window Stage 6 created, with ``window_id``, ``freq_min_mhz``,
+``freq_max_mhz``, ``created``, ``n_fitted_peaks`` and ``live``. A window is **live** when the Stage 5 fit
 holds at least one fitted line in it. Rows ascend by ``freq_min_mhz`` and then
 ``window_id``. A created window that reuses a plan ``window_id`` (the
 narrow-gap widening case) replaces that plan row, with its own bounds and
@@ -436,24 +459,25 @@ narrow-gap widening case) replaces that plan row, with its own bounds and
 
 Absence and refusals:
 
-* Before Stage 5, ``n_fitted_peaks`` and ``live`` are ``Absent.NOT_RUN``:
-  ``n_fitted_peaks__status`` and ``live__status`` are ``1`` and the value
-  columns hold the fill ``0`` / ``False``, which a program must not read.
+* Before Stage 5, each row's ``n_fitted_peaks`` and ``live`` are
+  ``Absent.NOT_RUN`` (``null`` plus ``"<field>_absent": "not_run"`` on the
+  wire).
 * Once Stage 5 exists, a window it holds no entry for (for example a created
   window not yet re-fit) reports ``0`` and ``False`` with status ``0``.
 * Before Stage 4 it raises ``StageDependencyError`` (``stage_not_run``) with
   ``command`` ``windows run``.
 * A path that does not exist raises ``PipelineFileNotFoundError``.
 
-It is also the ``window_status`` table of ``read_table`` (the same columns
-without ``schema``; column selection works). ``read_table`` raises the plain
-missing-stage ``ValueError`` of the other tables before Stage 4. The read never
-writes the file. The CLI writes each column to ``<column>.npy`` under
-``--output`` and prints the envelope naming them:
+Its columnar form is the ``window_status`` table of ``read_table``, built from
+the same rows: the six columns plus ``n_fitted_peaks__status`` and
+``live__status`` (``1`` before Stage 5, where the value columns hold the fill
+``0`` / ``False``, which a program must not read); column selection works.
+Before Stage 4 ``read_table`` raises the same ``StageDependencyError``. The
+read never writes the file. The CLI prints the records inline:
 
 .. code-block:: console
 
-   $ ftmwpipeline read window_status experiment.ftmw --output status/
+   $ ftmwpipeline read window_status experiment.ftmw
 
 Serialization rules worth knowing: an enum is written as its ``.value``
 (``PeakShape.LORENTZIAN`` is ``"lorentzian"``, also as a mapping key); a

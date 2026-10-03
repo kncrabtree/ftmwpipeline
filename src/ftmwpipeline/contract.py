@@ -18,11 +18,13 @@ program may rely on (normative spec: ``dev-docs/CONTRACT_STRATEGY.md``):
   vocabularies). Tests assert that everything declared here
   exists on all three interfaces and that nothing declared disappears.
 - :func:`capabilities` -- the manifest as a payload, for clients.
+- The schema-name constants (``*_SCHEMA``) and the entity-table records
+  (:class:`WindowStatusRow`, :class:`FidPreviewRow`).
 - The typed error family (re-exported from :mod:`ftmwpipeline.file_manager`).
 
 Adding to the contract
 ----------------------
-Edit the ``_ACCESSORS`` (name, binding, and any non-default Pipeline/CLI
+Edit the ``_ACCESSORS`` (name, binding, and any non-default Pipeline
 spelling) / ``_SCHEMAS`` / ``_CODES`` / ``_METADATA_KEYS`` / ``_TABLES`` /
 ``_FIELDS`` / ``_VOCABULARIES`` literals below -- that is the only place entries are declared --
 and raise :data:`CONTRACT_VERSION` per the spec's versioning rules. Entries are
@@ -37,6 +39,8 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Dict, Mapping, NamedTuple, Optional, Tuple, Union
 
+from .core.calibration import CalibrationStamp
+from .core.data_structures import FinalProducts
 from .file_manager import (
     ERROR_SCHEMA,
     AnalysisEpochMismatchError,
@@ -58,11 +62,32 @@ CONTRACT_VERSION: int = 1
 #: Schema name of the :func:`capabilities` payload.
 CAPABILITIES_SCHEMA = "ftmw/capabilities@1"
 
-#: Schema names of the FID-samples and display-units payloads.
+#: Schema names of the accessor payloads. The API, ``Pipeline`` and the CLI
+#: return the same stamped object: a dict payload carries the name under its
+#: ``"schema"`` key, a dataclass payload declares it as ``__ftmw_schema__``.
 FID_SAMPLES_SCHEMA = "ftmw/fid_samples@1"
 DISPLAY_UNITS_SCHEMA = "ftmw/display_units@1"
-#: Schema name of the :func:`fit_thresholds` payload.
 FIT_THRESHOLDS_SCHEMA = "ftmw/fit_thresholds@1"
+WINDOW_STATUS_SCHEMA = "ftmw/window_status@1"
+SOURCE_PREVIEW_SCHEMA = "ftmw/source_preview@1"
+
+#: Schema names of the declared existing accessors. Their Python results are
+#: unchanged (a dataclass, list, scalar or plain dict); the CLI envelope stamps
+#: them: a dict directly, a list as ``{"schema", "items": [...]}``, a scalar as
+#: ``{"schema", "value": x}``, an object as its fields plus ``"schema"``.
+#: (``CalibrationStamp`` and ``FinalProducts`` declare their own
+#: ``__ftmw_schema__``; the constants here are read from them.)
+CALIBRATION_SCHEMA: str = CalibrationStamp.__ftmw_schema__
+SNAP_TOLERANCE_SCHEMA = "ftmw/snap_tolerance@1"
+METADATA_SCHEMA = "ftmw/metadata@1"
+TABLES_SCHEMA = "ftmw/tables@1"
+TABLE_SCHEMA = "ftmw/table@1"
+SETTINGS_DEFAULTS_SCHEMA = "ftmw/settings_defaults@1"
+SETTINGS_SCHEMA = "ftmw/settings@1"
+FINAL_PRODUCTS_SCHEMA: str = FinalProducts.__ftmw_schema__
+REVIEW_LOG_SCHEMA = "ftmw/review_log@1"
+PIPELINE_INFO_SCHEMA = "ftmw/pipeline_info@1"
+DISPLAY_FT_SCHEMA = "ftmw/display_ft@1"
 
 #: ``ftmw/<payload>@<n>``: lowercase payload name, positive integer revision.
 SCHEMA_NAME_RE = re.compile(r"^ftmw/[a-z][a-z0-9_]*@[1-9][0-9]*$")
@@ -97,6 +122,47 @@ class Absent(enum.Enum):
 STATUS_PRESENT: int = 0
 STATUS_NOT_RUN: int = 1
 STATUS_UNDEFINED: int = 2
+
+
+# --------------------------------------------------------------------------
+# Entity-table records. An accessor that returns one row per window or FID
+# returns a list of these; an absent field is an Absent per row.
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class WindowStatusRow:
+    """One row of :func:`~ftmwpipeline.api.window_status`.
+
+    A Stage 4 plan window, or a window Stage 6 created (``created``). A window
+    is ``live`` when the Stage 5 fit holds at least one fitted line in it.
+    Before Stage 5, ``n_fitted_peaks`` and ``live`` are :attr:`Absent.NOT_RUN`.
+    """
+
+    window_id: int
+    freq_min_mhz: float
+    freq_max_mhz: float
+    created: bool
+    n_fitted_peaks: Union[int, Absent]
+    live: Union[bool, Absent]
+
+
+@dataclass(frozen=True)
+class FidPreviewRow:
+    """One row of a source's FID table (:func:`~ftmwpipeline.api.preview_source`).
+
+    Every field except ``index`` is a value or an :class:`Absent`:
+    ``NOT_RUN`` when the source does not declare it, ``UNDEFINED`` when it
+    cannot be stated without load parameters (or is not finite). ``sideband``
+    is ``"upper"`` or ``"lower"``.
+    """
+
+    index: int
+    n_points: Union[int, Absent] = Absent.NOT_RUN
+    spacing_us: Union[float, Absent] = Absent.NOT_RUN
+    probe_freq_mhz: Union[float, Absent] = Absent.NOT_RUN
+    sideband: Union[str, Absent] = Absent.NOT_RUN
+    shots: Union[int, Absent] = Absent.NOT_RUN
 
 
 class Stage(str, enum.Enum):
@@ -199,11 +265,9 @@ class ContractManifest:
         Per accessor, the :class:`~ftmwpipeline.Pipeline` method that serves
         it (the accessor's own name unless it is declared otherwise, e.g.
         ``get_pipeline_info`` is :meth:`Pipeline.info`). Keys equal
-        :attr:`accessors`. Read-only.
-    cli_verbs : Mapping[str, tuple of str]
-        Per accessor, the CLI verb path that exposes it (``("read", name)``
-        unless the existing exposure lives under another verb, e.g.
-        ``("review", "log")``). Keys equal :attr:`accessors`. Read-only.
+        :attr:`accessors`. Read-only. Every accessor's CLI verb is
+        ``read <name>`` (spelled as the accessor name), so no verb mapping is
+        declared.
     fields : Mapping[str, tuple of str]
         Declared fields of each contract result type: a dataclass field, or,
         for a dict result, a produced key. Read-only.
@@ -220,7 +284,6 @@ class ContractManifest:
     tables: Mapping[str, Tuple[str, ...]]
     file_bound: Mapping[str, bool] = field(default_factory=dict)
     pipeline_names: Mapping[str, str] = field(default_factory=dict)
-    cli_verbs: Mapping[str, Tuple[str, ...]] = field(default_factory=dict)
     fields: Mapping[str, Tuple[str, ...]] = field(default_factory=dict)
     vocabularies: Mapping[str, Tuple[str, ...]] = field(default_factory=dict)
 
@@ -238,21 +301,13 @@ class ContractManifest:
                 {name: bool(self.file_bound[name]) for name in self.accessors}
             ),
         )
-        for attr in ("pipeline_names", "cli_verbs"):
-            if set(getattr(self, attr)) - set(self.accessors):
-                raise ValueError(f"{attr} names a non-accessor")
+        if set(self.pipeline_names) - set(self.accessors):
+            raise ValueError("pipeline_names names a non-accessor")
         object.__setattr__(
             self,
             "pipeline_names",
             MappingProxyType(
                 {n: self.pipeline_names.get(n, n) for n in self.accessors}
-            ),
-        )
-        object.__setattr__(
-            self,
-            "cli_verbs",
-            MappingProxyType(
-                {n: tuple(self.cli_verbs.get(n, ("read", n))) for n in self.accessors}
             ),
         )
         for attr in ("fields", "vocabularies"):
@@ -281,35 +336,28 @@ class AccessorSpec(NamedTuple):
     """One accessor declaration.
 
     ``file_bound`` says whether it reads a file. ``pipeline_name`` is the
-    :class:`~ftmwpipeline.Pipeline` method when it differs from ``name``.
-    ``cli`` is the existing CLI verb path when the accessor is not served by
-    ``read <name>`` (an accessor is never given a second verb).
+    :class:`~ftmwpipeline.Pipeline` method when it differs from ``name``. The
+    CLI verb is always ``read <name>``.
     """
 
     name: str
     file_bound: bool
     pipeline_name: Optional[str] = None
-    cli: Optional[Tuple[str, ...]] = None
 
 
 _ACCESSORS: Tuple[AccessorSpec, ...] = (
     AccessorSpec("capabilities", file_bound=False),
     # Already present; declared as contract (Wave 1, task 1.1).
-    AccessorSpec("frequency_calibration", True, cli=("timebase", "state")),
-    AccessorSpec("refit_snap_tol_mhz", True, cli=("review", "snap-tolerance")),
-    AccessorSpec("read_metadata", True, cli=("read", "meta")),
-    AccessorSpec("read_tables", True, cli=("read", "list")),
-    AccessorSpec("read_table", True, cli=("read", "table")),
-    AccessorSpec("settings_defaults", False, cli=("settings", "defaults")),
-    AccessorSpec("settings_show", True, cli=("settings", "show")),
-    AccessorSpec(
-        "get_final_products",
-        True,
-        pipeline_name="final_products",
-        cli=("report", "table"),
-    ),
-    AccessorSpec("review_log", True, cli=("review", "log")),
-    AccessorSpec("get_pipeline_info", True, pipeline_name="info", cli=("info",)),
+    AccessorSpec("frequency_calibration", True),
+    AccessorSpec("refit_snap_tol_mhz", True),
+    AccessorSpec("read_metadata", True),
+    AccessorSpec("read_tables", True),
+    AccessorSpec("read_table", True),
+    AccessorSpec("settings_defaults", False),
+    AccessorSpec("settings_show", True),
+    AccessorSpec("get_final_products", True, pipeline_name="final_products"),
+    AccessorSpec("review_log", True),
+    AccessorSpec("get_pipeline_info", True, pipeline_name="info"),
     AccessorSpec("compute_display_ft", True),
     AccessorSpec("fid_samples", file_bound=True),
     AccessorSpec("display_units", file_bound=True),
@@ -324,8 +372,19 @@ _SCHEMAS: Tuple[str, ...] = (
     FID_SAMPLES_SCHEMA,
     DISPLAY_UNITS_SCHEMA,
     FIT_THRESHOLDS_SCHEMA,
-    "ftmw/window_status@1",
-    "ftmw/source_preview@1",
+    WINDOW_STATUS_SCHEMA,
+    SOURCE_PREVIEW_SCHEMA,
+    CALIBRATION_SCHEMA,
+    SNAP_TOLERANCE_SCHEMA,
+    METADATA_SCHEMA,
+    TABLES_SCHEMA,
+    TABLE_SCHEMA,
+    SETTINGS_DEFAULTS_SCHEMA,
+    SETTINGS_SCHEMA,
+    FINAL_PRODUCTS_SCHEMA,
+    REVIEW_LOG_SCHEMA,
+    PIPELINE_INFO_SCHEMA,
+    DISPLAY_FT_SCHEMA,
 )
 
 _CODES: Tuple[str, ...] = (
@@ -502,7 +561,6 @@ MANIFEST = ContractManifest(
     tables=_TABLES,
     file_bound={spec.name: spec.file_bound for spec in _ACCESSORS},
     pipeline_names={s.name: s.pipeline_name for s in _ACCESSORS if s.pipeline_name},
-    cli_verbs={s.name: s.cli for s in _ACCESSORS if s.cli},
     fields=_FIELDS,
     vocabularies=_VOCABULARIES,
 )
@@ -530,7 +588,24 @@ def capabilities() -> Dict[str, Any]:
 __all__ = [
     "CONTRACT_VERSION",
     "CAPABILITIES_SCHEMA",
+    "FID_SAMPLES_SCHEMA",
+    "DISPLAY_UNITS_SCHEMA",
     "FIT_THRESHOLDS_SCHEMA",
+    "WINDOW_STATUS_SCHEMA",
+    "SOURCE_PREVIEW_SCHEMA",
+    "CALIBRATION_SCHEMA",
+    "SNAP_TOLERANCE_SCHEMA",
+    "METADATA_SCHEMA",
+    "TABLES_SCHEMA",
+    "TABLE_SCHEMA",
+    "SETTINGS_DEFAULTS_SCHEMA",
+    "SETTINGS_SCHEMA",
+    "FINAL_PRODUCTS_SCHEMA",
+    "REVIEW_LOG_SCHEMA",
+    "PIPELINE_INFO_SCHEMA",
+    "DISPLAY_FT_SCHEMA",
+    "WindowStatusRow",
+    "FidPreviewRow",
     "ERROR_SCHEMA",
     "SCHEMA_NAME_RE",
     "Absent",
