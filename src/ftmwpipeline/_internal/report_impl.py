@@ -35,6 +35,7 @@ import h5py
 import numpy as np
 
 from ..core.data_structures import FinalPeak, FinalProducts, SpectrumFit
+from ..file_manager import StageDependencyError
 from ..fitting.validation import (
     DEFAULT_CHI2R_NOISE_FLOOR,
     DEFAULT_SHAPE_ERROR_KAPPA,
@@ -611,9 +612,15 @@ def report_table_impl(
 
     products = get_final_products_impl(str(file_path))
     if products is None:
-        raise ValueError(
-            "No final-products table found in this file. Run 'review run' first "
-            "to consolidate the calibrated final products."
+        raise StageDependencyError(
+            "report",
+            ["stage6_review"],
+            Path(str(file_path)),
+            command="review run",
+            message=(
+                "No final-products table found in this file. Run 'review run' first "
+                "to consolidate the calibrated final products."
+            ),
         )
 
     xref = load_cross_ref(products.peaks, catalog, catalog_n_sigma)
@@ -927,9 +934,15 @@ def _assemble_summary(file_path: Union[Path, str]) -> _SummaryModel:
     path = str(file_path)
     products = get_final_products_impl(path)
     if products is None:
-        raise ValueError(
-            "No final-products table found in this file. Run 'review run' first "
-            "to consolidate the calibrated final products."
+        raise StageDependencyError(
+            "report",
+            ["stage6_review"],
+            Path(str(path)),
+            command="review run",
+            message=(
+                "No final-products table found in this file. Run 'review run' first "
+                "to consolidate the calibrated final products."
+            ),
         )
 
     timebase_n_used: Optional[int] = None

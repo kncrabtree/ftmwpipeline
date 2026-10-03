@@ -27,6 +27,7 @@ import pytest
 import ftmwpipeline.api as ftmw
 from ftmwpipeline import Pipeline
 from ftmwpipeline.core.data_structures import FID, ComplexFT
+from ftmwpipeline.file_manager import StageDependencyError
 from ftmwpipeline.preprocessing.noise_estimation import NoiseResult
 
 
@@ -984,15 +985,14 @@ class TestErrorConsistency:
         # Don't call compute_ft() - missing Stage 1
 
         # All interfaces should raise appropriate errors for missing Stage 1
-        with pytest.raises(
-            (ValueError, RuntimeError), match="Stage 1.*must be completed"
-        ):
-            pipe.estimate_noise()
-
-        with pytest.raises(
-            (ValueError, RuntimeError), match="Stage 1.*must be completed"
-        ):
-            ftmw.estimate_noise(test_file)
+        # Typed on both, naming the missing stage -- not a RuntimeError that
+        # flattened it.
+        for call in (pipe.estimate_noise, lambda: ftmw.estimate_noise(test_file)):
+            with pytest.raises(
+                StageDependencyError, match="Stage 1.*must be completed"
+            ) as excinfo:
+                call()
+            assert excinfo.value.missing_dependencies == ["stage1_complex_ft"]
 
         # CLI should fail with non-zero return code
         result = subprocess.run(

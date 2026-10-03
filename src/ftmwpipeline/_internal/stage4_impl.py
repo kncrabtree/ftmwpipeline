@@ -29,7 +29,7 @@ from ..core.window_planning_settings import (
 )
 from ..core.window_planning_settings import load_preset as load_window_planning_preset
 from ..core.window_planning_settings import resolve as resolve_window_planning_settings
-from ..file_manager import invalidate_downstream_stages
+from ..file_manager import StageDependencyError, invalidate_downstream_stages
 from ..io.window_planning_settings_serialization import (
     load_window_planning_settings_from_h5,
     save_window_planning_settings_to_h5,
@@ -100,9 +100,15 @@ def assign_windows_impl(
     """
     with h5py.File(file_path, "r") as h5f:
         if "stage3_peaks" not in h5f:
-            raise ValueError(
-                "Stage 3 (peak detection) must be completed before window "
-                "assignment. Run detect_peaks()/'peaks run' first."
+            raise StageDependencyError(
+                "stage4_windows",
+                ["stage3_peaks"],
+                Path(str(file_path)),
+                command="peaks run",
+                message=(
+                    "Stage 3 (peak detection) must be completed before window "
+                    "assignment. Run detect_peaks()/'peaks run' first."
+                ),
             )
 
     preset_layer: Optional[WindowPlanningSettings] = None
@@ -260,9 +266,15 @@ def load_windows_impl(file_path: str) -> Dict[str, Any]:
     """Load the persisted Stage 4 window plan (validates structure loudly)."""
     with h5py.File(file_path, "r") as h5f:
         if "stage4_windows" not in h5f:
-            raise ValueError(
-                "No Stage 4 window plan found. Run assign_windows()/"
-                "'windows run' first."
+            raise StageDependencyError(
+                "load windows",
+                ["stage4_windows"],
+                Path(str(file_path)),
+                command="windows run",
+                message=(
+                    "No Stage 4 window plan found. Run assign_windows()/"
+                    "'windows run' first."
+                ),
             )
         grp = h5f["stage4_windows"]
         plan = load_window_plan_from_hdf5(grp)

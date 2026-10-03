@@ -67,6 +67,7 @@ from ..core.data_structures import (
     WindowReviewStatus,
     widen_for_unresolved_spread,
 )
+from ..file_manager import StageDependencyError
 from ..fitting.active_ft import active_ft_bin_spacing_mhz, peak_uid_from_offset
 from ..fitting.peak_model import ModelPeak
 from ..fitting.peak_model import molecular_frequency as _molecular_frequency
@@ -571,8 +572,12 @@ def get_candidate_ledger_impl(
     if spectrum_fit is None or sideband is None:
         with h5py.File(path, "r") as h5f:
             if "stage5_fitting" not in h5f:
-                raise ValueError(
-                    "No Stage 5 fit found in this file. Run 'fit run' first."
+                raise StageDependencyError(
+                    "review",
+                    ["stage5_fitting"],
+                    Path(str(path)),
+                    command="fit run",
+                    message="No Stage 5 fit found in this file. Run 'fit run' first.",
                 )
             spectrum_fit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
         fid = load_fid_from_pipeline_impl(path)
@@ -796,7 +801,13 @@ def rank_windows_impl(
     path = str(file_path)
     with h5py.File(path, "r") as h5f:
         if "stage5_fitting" not in h5f:
-            raise ValueError("No Stage 5 fit found in this file. Run 'fit run' first.")
+            raise StageDependencyError(
+                "review",
+                ["stage5_fitting"],
+                Path(str(path)),
+                command="fit run",
+                message="No Stage 5 fit found in this file. Run 'fit run' first.",
+            )
         spectrum_fit: SpectrumFit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
 
     fid = load_fid_from_pipeline_impl(path)
@@ -2603,7 +2614,13 @@ def _load_curation_window_index(path: str) -> List[FitWindowCoverage]:
     """
     with h5py.File(path, "r") as h5f:
         if "stage5_fitting" not in h5f:
-            raise ValueError("No Stage 5 fit found in this file. Run 'fit run' first.")
+            raise StageDependencyError(
+                "review",
+                ["stage5_fitting"],
+                Path(str(path)),
+                command="fit run",
+                message="No Stage 5 fit found in this file. Run 'fit run' first.",
+            )
         return read_fit_window_coverage(h5f["stage5_fitting"])
 
 
@@ -3312,10 +3329,40 @@ def review_accept_impl(
     )
 
 
+def _require_known_window(path: str, window_id: int) -> None:
+    """Refuse a window id this file does not have.
+
+    A bare accept needs no fit, so the windows it may name are the Stage 5
+    fit's when one exists (which includes every created window) and the
+    Stage 4 plan's otherwise. Without this a typo'd id recorded a "reviewed"
+    status and a decision for a window that was never there.
+    """
+    with h5py.File(path, "r") as h5f:
+        if "stage5_fitting" in h5f:
+            known = {
+                c.window_id for c in read_fit_window_coverage(h5f["stage5_fitting"])
+            }
+            where = "Stage 5 fit"
+        elif "stage4_windows" in h5f:
+            ids = read_window_plan_columns(h5f["stage4_windows"], ["window_id"])
+            known = {int(w) for w in ids["window_id"]}
+            where = "Stage 4 window plan"
+        else:
+            raise StageDependencyError(
+                "review accept",
+                ["stage4_windows"],
+                Path(path),
+                command="windows run",
+            )
+    if int(window_id) not in known:
+        raise KeyError(f"window_id={window_id} not found in the {where}")
+
+
 def _record_bare_accept(path: str, window_id: int) -> None:
     """Mark one window reviewed: a decision entry and a provenance flip, nothing
     else. Shared by :func:`review_accept_impl` and a bare ``accept`` row in a
     curation file, which is why it is not folded into the batch engine."""
+    _require_known_window(path, window_id)
     # A representative anchor frequency for the log entry (best effort: the
     # entry is a marker, and a window with no fit still accepts).
     anchor_freq = 0.0
@@ -5297,7 +5344,13 @@ def _build_shared_fit_ctx(path: str) -> _SharedFitCtx:
 
     with h5py.File(path, "r") as h5f:
         if "stage5_fitting" not in h5f:
-            raise ValueError("No Stage 5 fit found in this file. Run 'fit run' first.")
+            raise StageDependencyError(
+                "review",
+                ["stage5_fitting"],
+                Path(str(path)),
+                command="fit run",
+                message="No Stage 5 fit found in this file. Run 'fit run' first.",
+            )
         # The ``parameters`` attr alone, read only to seed the spur-catalog
         # replay below -- never the whole fit, which is per-batch state that
         # each batch reloads for itself (see ``_BatchChangeset``) and which
@@ -5488,8 +5541,12 @@ def _build_batch_changeset(
     if spectrum_fit is None:
         with h5py.File(path, "r") as h5f:
             if "stage5_fitting" not in h5f:
-                raise ValueError(
-                    "No Stage 5 fit found in this file. Run 'fit run' first."
+                raise StageDependencyError(
+                    "review",
+                    ["stage5_fitting"],
+                    Path(str(path)),
+                    command="fit run",
+                    message="No Stage 5 fit found in this file. Run 'fit run' first.",
                 )
             spectrum_fit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
 
@@ -6376,17 +6433,19 @@ def _batch_apply_accept(
     wf_list = [
         wf for wf in ctx.changeset.spectrum_fit.window_fits if wf.window_id == window_id
     ]
-    if wf_list:
-        c = _window_center(wf_list[0])
-        if c is not None:
-            anchor_freq = c
-        elif wf_list[0].fitted_peaks:
-            anchor_freq = float(
-                max(
-                    wf_list[0].fitted_peaks,
-                    key=lambda p: (float(p.snr) if p.snr is not None else 0.0),
-                ).frequency_mhz
-            )
+    if not wf_list:
+        # The batch's own fit, so a window created earlier in this batch counts.
+        raise KeyError(f"window_id={window_id} not found in the Stage 5 fit")
+    c = _window_center(wf_list[0])
+    if c is not None:
+        anchor_freq = c
+    elif wf_list[0].fitted_peaks:
+        anchor_freq = float(
+            max(
+                wf_list[0].fitted_peaks,
+                key=lambda p: (float(p.snr) if p.snr is not None else 0.0),
+            ).frequency_mhz
+        )
     ctx.changeset.decisions.append(
         {
             "window_id": window_id,
@@ -7406,16 +7465,29 @@ def _resolve_deferred_curation(
 
 def _apply_actions_one_by_one(path: str, plan: Sequence[PlannedAction]) -> int:
     """The cheap per-action path for a plan that touches no fit (bare
-    ``accept`` rows only): each action persists itself. Returns the count."""
+    ``accept`` rows only): each action persists itself. Returns the count.
+
+    Every window id is checked before the first action persists, so an
+    unknown id refuses the whole file rather than leaving the rows above it
+    applied -- the same all-or-nothing outcome the batch engine gives."""
+
+    def _refuse(i: int, action: PlannedAction, exc: Exception) -> ValueError:
+        return ValueError(
+            f"curation action {i + 1} ({describe_planned_action(action)}) "
+            f"failed: {exc}"
+        )
+
+    for i, action in enumerate(plan):
+        try:
+            _require_known_window(path, action.window_id)
+        except KeyError as exc:
+            raise _refuse(i, action, exc) from exc
     applied = 0
     for i, action in enumerate(plan):
         try:
             _execute_planned_action(path, action)
         except (ValueError, KeyError) as exc:
-            raise ValueError(
-                f"curation action {i + 1} ({describe_planned_action(action)}) "
-                f"failed: {exc}"
-            ) from exc
+            raise _refuse(i, action, exc) from exc
         applied += 1
     return applied
 
@@ -9357,6 +9429,39 @@ def _current_final_products(
     return _rebuild_final_products(path)
 
 
+def refresh_persisted_final_products_impl(file_path: Union[Path, str]) -> bool:
+    """Rewrite a stale persisted final-products table under the file's current
+    calibration; return whether anything was written.
+
+    A calibration change (a timebase re-run) moves every calibrated frequency
+    and the ``sigma_epsilon`` term of every ``sigma_f`` without re-fitting
+    anything: Stage 5 stores raw-frame frequencies, and the timebase result
+    only re-derives the calibrated table from them. Reads already rebuild a
+    stale table on the fly (:func:`get_final_products_impl`); this makes the
+    stored copy agree too, so the file never carries a table its own
+    calibration contradicts. Only the table is replaced -- per-window
+    provenance, attention reasons, the decision log and created windows are
+    written back untouched. No-op when no table has been built yet or the
+    stored one is current.
+    """
+    path = str(file_path)
+    review = load_stage6_review_from_file(path)
+    existing = review.final_products
+    if existing is None or not _final_products_is_stale(existing, path):
+        return False
+    rebuilt = _rebuild_final_products(path)
+    if rebuilt is None:
+        return False
+    _write_stage6_review_only(replace(review, final_products=rebuilt), path)
+    logger.info(
+        "Refreshed the Stage 6 final-products table under the current "
+        "calibration (epsilon=%.3e, sigma_epsilon=%.3e)",
+        rebuilt.epsilon,
+        rebuilt.sigma_epsilon,
+    )
+    return True
+
+
 def get_final_products_impl(file_path: Union[Path, str]) -> Optional[FinalProducts]:
     """Return the current Stage 6 final-products table, or ``None``.
 
@@ -9594,7 +9699,13 @@ def review_run_impl(
 
     with h5py.File(path, "r") as h5f:
         if "stage5_fitting" not in h5f:
-            raise ValueError("No Stage 5 fit found in this file. Run 'fit run' first.")
+            raise StageDependencyError(
+                "review",
+                ["stage5_fitting"],
+                Path(str(path)),
+                command="fit run",
+                message="No Stage 5 fit found in this file. Run 'fit run' first.",
+            )
         spectrum_fit: SpectrumFit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
         # Load existing review to preserve provenance/decision_log.
         existing_review: Stage6Review

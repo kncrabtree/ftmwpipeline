@@ -491,9 +491,15 @@ def load_tau_calibration_impl(
     with h5py.File(file_path, "r") as h5f:
         if group_path not in h5f:
             verb = "tau run --gaussian" if shape == "gaussian" else "tau run"
-            raise ValueError(
-                f"Stage 2b ({shape}) tau calibration has not been completed for "
-                f"{file_path}. Run calibrate_tau(shape={shape!r}) / '{verb}' first."
+            raise StageDependencyError(
+                "load tau",
+                [_stage_name_for_shape(shape)],
+                Path(str(file_path)),
+                command=verb,
+                message=(
+                    f"Stage 2b ({shape}) tau calibration has not been completed for "
+                    f"{file_path}. Run calibrate_tau(shape={shape!r}) / '{verb}' first."
+                ),
             )
         grp = h5f[group_path]
         result = load_tau_calibration_from_hdf5(grp)

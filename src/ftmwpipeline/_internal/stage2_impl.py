@@ -20,6 +20,7 @@ from ..core.noise_settings import (
 )
 from ..core.noise_settings import load_preset as load_noise_preset
 from ..core.noise_settings import resolve as resolve_noise_settings
+from ..file_manager import StageDependencyError, invalidate_downstream_stages
 from ..io.noise_result_serialization import (
     load_noise_result_from_hdf5,
     save_noise_result_to_hdf5,
@@ -93,9 +94,15 @@ def compute_noise_estimation_impl(
                 "processing_parameters" not in h5f
                 or "ft_processing" not in h5f["processing_parameters"]
             ):
-                raise ValueError(
-                    "Stage 1 (FT computation) must be completed before noise estimation. "
-                    "Run compute_ft() or 'ft run' command first."
+                raise StageDependencyError(
+                    "stage2_noise_result",
+                    ["stage1_complex_ft"],
+                    Path(str(file_path)),
+                    command="ft run",
+                    message=(
+                        "Stage 1 (FT computation) must be completed before noise estimation. "
+                        "Run compute_ft() or 'ft run' command first."
+                    ),
                 )
 
         # Import Stage 1 implementation for on-demand ComplexFT computation
@@ -109,20 +116,23 @@ def compute_noise_estimation_impl(
             f"Computed ComplexFT on-demand with {len(complex_ft.freq_array):,} frequency points"
         )
 
+    except StageDependencyError:
+        raise
     except Exception as e:
         raise RuntimeError(
             f"Failed to compute ComplexFT from pipeline file {file_path}: {e}"
-        )
+        ) from e
 
     scatter_preset_layer: Optional[NoiseSettings] = None
     scatter_preset_name: Optional[str] = None
     if preset is not None:
         scatter_preset_layer = load_noise_preset(preset)
         scatter_preset_name = str(preset)
+    persisted = load_noise_settings_from_h5(file_path)
     scatter_resolved = resolve_noise_settings(
         explicit=settings,
         preset=scatter_preset_layer,
-        persisted=load_noise_settings_from_h5(file_path),
+        persisted=persisted,
         recommended=None,
     )
     return _compute_noise_scatter(
@@ -131,6 +141,7 @@ def compute_noise_estimation_impl(
         trim_range=stage1_result.get("trim_range"),
         settings=scatter_resolved,
         preset_name=scatter_preset_name,
+        previous=persisted,
     )
 
 
@@ -141,6 +152,7 @@ def _compute_noise_scatter(
     trim_range: Optional[tuple] = None,
     settings: NoiseSettings,
     preset_name: Optional[str] = None,
+    previous: Optional[NoiseSettings] = None,
 ) -> Dict[str, Any]:
     """Run the scatter (high-pass) Stage 2 estimator and persist its result.
 
@@ -152,6 +164,11 @@ def _compute_noise_scatter(
     result dict for the display/range summary only. The ``settings`` argument
     is a *resolved* bundle with every field filled from the hard defaults if
     no layer supplied one.
+
+    ``previous`` is the settings record this run replaces. When the resolved
+    settings differ from it, every stage built on the old sigma (Stage 2b
+    onward) is invalidated, as an explicit override must; an identical re-run
+    reproduces the same sigma and leaves them standing, as Stage 1 does.
     """
     window_mhz_v = float(_required(settings.window_mhz, "window_mhz"))
     pedestal_mhz_v = float(_required(settings.pedestal_mhz, "pedestal_mhz"))
@@ -219,6 +236,11 @@ def _compute_noise_scatter(
         # ``processing_parameters/stage2_noise`` so a no-kwargs re-run inherits
         # it via the resolver's persisted layer.
         save_noise_settings_to_h5(file_path, settings, preset_name=preset_name)
+        invalidated = (
+            invalidate_downstream_stages(file_path, "stage2_noise_result")
+            if previous is not None and previous != settings
+            else []
+        )
         _update_stage_completion(file_path, "stage2_noise_result")
         logger.info("Stage 2: Noise estimation results saved and marked complete")
     except Exception as e:
@@ -236,6 +258,7 @@ def _compute_noise_scatter(
         "frequency_range": (float(active_freq.min()), float(active_freq.max())),
         "noise_points": int(noise_result.noise_mask.sum()),
         "total_points": len(active_freq),
+        "invalidated_stages": invalidated,
     }
 
 
@@ -288,9 +311,15 @@ def visualize_noise_impl(
         with h5py.File(file_path, "r") as h5f:
             # Check dependencies
             if "stage2_noise_result" not in h5f:
-                raise ValueError(
-                    "Stage 2 (noise estimation) must be completed before visualization. "
-                    "Run estimate_noise() or 'noise run' command first."
+                raise StageDependencyError(
+                    "noise show",
+                    ["stage2_noise_result"],
+                    Path(str(file_path)),
+                    command="noise run",
+                    message=(
+                        "Stage 2 (noise estimation) must be completed before visualization. "
+                        "Run estimate_noise() or 'noise run' command first."
+                    ),
                 )
 
             # Check that Stage 1 parameters exist (needed for on-demand ComplexFT computation)
@@ -298,9 +327,15 @@ def visualize_noise_impl(
                 "processing_parameters" not in h5f
                 or "ft_processing" not in h5f["processing_parameters"]
             ):
-                raise ValueError(
-                    "Stage 1 (FT computation) required for noise visualization. "
-                    "Run compute_ft() or 'ft run' command first."
+                raise StageDependencyError(
+                    "noise show",
+                    ["stage1_complex_ft"],
+                    Path(str(file_path)),
+                    command="ft run",
+                    message=(
+                        "Stage 1 (FT computation) required for noise visualization. "
+                        "Run compute_ft() or 'ft run' command first."
+                    ),
                 )
 
         # Rebuild the trimmed active FT -- the grid the noise was
@@ -321,8 +356,12 @@ def visualize_noise_impl(
             )
             logger.info("Loaded NoiseResult and active FT from pipeline file")
 
+    except StageDependencyError:
+        raise
     except Exception as e:
-        raise RuntimeError(f"Failed to load data from pipeline file {file_path}: {e}")
+        raise RuntimeError(
+            f"Failed to load data from pipeline file {file_path}: {e}"
+        ) from e
 
     # Import visualization function
     try:
@@ -543,7 +582,7 @@ def _update_stage_completion(file_path: str, stage_name: str) -> None:
 
             # Save updated completion status
             stages_group.attrs["completed_stages"] = json.dumps(
-                list(stage_tracker.completed_stages)
+                sorted(stage_tracker.completed_stages)
             )
             stages_group.attrs["last_updated"] = datetime.now().isoformat()
 

@@ -16,6 +16,7 @@ estimator is :func:`ftmwpipeline.preprocessing.noise_estimation.estimate_active_
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Optional, Tuple
 
 import h5py
@@ -23,6 +24,7 @@ import numpy as np
 
 from ..core.data_structures import ComplexFT, Sideband
 from ..core.noise_settings import resolve as resolve_noise_settings
+from ..file_manager import StageDependencyError
 from ..fitting.active_ft import ActiveFTResult, compute_active_ft
 from ..io.noise_result_serialization import load_noise_result_from_hdf5
 from ..io.noise_settings_serialization import load_noise_settings_from_h5
@@ -199,9 +201,15 @@ def load_persisted_active_noise(
     active_ft = compute_persisted_active_ft(file_path)
     with h5py.File(file_path, "r") as h5f:
         if "stage2_noise_result" not in h5f:
-            raise ValueError(
-                "Stage 2 (noise estimation) must be completed before the "
-                "persisted noise can be loaded. Run estimate_noise() first."
+            raise StageDependencyError(
+                "load noise",
+                ["stage2_noise_result"],
+                Path(str(file_path)),
+                command="noise run",
+                message=(
+                    "Stage 2 (noise estimation) must be completed before the "
+                    "persisted noise can be loaded. Run estimate_noise() first."
+                ),
             )
         noise = load_noise_result_from_hdf5(
             h5f["stage2_noise_result"],

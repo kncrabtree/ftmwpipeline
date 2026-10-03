@@ -33,6 +33,7 @@ from ..core.data_structures import (
     LedgerCandidate,
     WindowReviewStatus,
 )
+from ..file_manager import StageDependencyError
 from ..fitting.peak_model import sideband_sign as _sideband_sign
 from ..fitting.validation import DEFAULT_CHI2R_NOISE_FLOOR, shape_error_fraction
 from ..io.stage6_review_serialization import load_stage6_review_from_file
@@ -3976,9 +3977,15 @@ def _assemble_report_site(
     review = load_stage6_review_from_file(path)
     products = _current_final_products(review.final_products, path)
     if products is None:
-        raise ValueError(
-            "No final-products table found in this file. Run 'review run' first "
-            "to consolidate the calibrated final products."
+        raise StageDependencyError(
+            "report",
+            ["stage6_review"],
+            Path(str(path)),
+            command="review run",
+            message=(
+                "No final-products table found in this file. Run 'review run' first "
+                "to consolidate the calibrated final products."
+            ),
         )
 
     model = assemble_summary_model(path)

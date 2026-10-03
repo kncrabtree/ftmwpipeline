@@ -57,7 +57,7 @@ from ..core.stage_fit_settings import (
     load_preset,
 )
 from ..core.stage_fit_settings import resolve as resolve_stage_fit_settings
-from ..file_manager import invalidate_downstream_stages
+from ..file_manager import StageDependencyError, invalidate_downstream_stages
 from ..fitting.clock_lattice import ClockLattice
 from ..fitting.peak_model import PeakShape
 from ..fitting.plan_execution import (
@@ -1866,9 +1866,15 @@ def _fit_peaks_impl(
     # --- Validate Stage 4 prerequisite up front ----------------------------
     with h5py.File(file_path, "r") as h5f:
         if "stage4_windows" not in h5f:
-            raise ValueError(
-                "Stage 4 (window assignment) must be completed before "
-                "fitting. Run assign_windows()/'windows run' first."
+            raise StageDependencyError(
+                "stage5_fitting",
+                ["stage4_windows"],
+                Path(str(file_path)),
+                command="windows run",
+                message=(
+                    "Stage 4 (window assignment) must be completed before "
+                    "fitting. Run assign_windows()/'windows run' first."
+                ),
             )
 
     plan: WindowPlan = load_windows_impl(file_path)["plan"]
@@ -2567,7 +2573,13 @@ def load_fit_impl(file_path: str) -> Dict[str, Any]:
     """Load the persisted Stage 5 fit (validates structure loudly)."""
     with h5py.File(file_path, "r") as h5f:
         if "stage5_fitting" not in h5f:
-            raise ValueError("No Stage 5 fit found. Run fit_peaks()/'fit run' first.")
+            raise StageDependencyError(
+                "load fit",
+                ["stage5_fitting"],
+                Path(str(file_path)),
+                command="fit run",
+                message="No Stage 5 fit found. Run fit_peaks()/'fit run' first.",
+            )
         grp = h5f["stage5_fitting"]
         fit = load_spectrum_fit_from_hdf5(grp)
         creation_time = grp.attrs.get("creation_time", "unknown")
@@ -2677,13 +2689,17 @@ class _DetailBundle:
 def _load_display_style(
     file_path: str,
 ) -> Tuple[float, str, Optional[Tuple[float, float]]]:
-    """Display transforms (amplitude scale, units label, overview trim) from
-    the persisted FTSettings. Falls back to (1.0, "", None)."""
-    from .stage1_impl import _read_settings_layer
+    """Display transforms (amplitude scale, units label, overview trim).
 
-    settings = _read_settings_layer(file_path, "/processing_parameters/ft_processing")
-    if settings is None:
-        return 1.0, "", None
+    Resolved through the same Stage 1 chain (persisted > recommended > hard
+    default) that selects the spectrum being labelled, so the label always
+    describes that spectrum -- including before Stage 1 has persisted
+    anything, when the window comes from the import-time recommendation.
+    Once Stage 1 has run this is simply its persisted record.
+    """
+    from .stage1_impl import _resolve_settings
+
+    settings = _resolve_settings(file_path, None)
     units_power = settings.units_power
     if units_power is None:
         scale, label = 1.0, ""

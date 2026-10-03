@@ -39,6 +39,7 @@ from ftmwpipeline._internal.stage6_impl import (
     _rebuild_final_products,
     apply_curation_impl,
     get_final_products_impl,
+    refresh_persisted_final_products_impl,
     review_accept_impl,
     review_run_impl,
 )
@@ -506,3 +507,98 @@ def test_rebuild_final_products_none_without_stage5(tmp_path):
     with h5py.File(fp, "w") as h5f:
         h5f.attrs["x"] = 1
     assert _rebuild_final_products(str(fp)) is None
+
+
+# ---------------------------------------------------------------------------
+# A timebase re-run carries into the stored table: frequencies AND errors,
+# without re-running Stage 5.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_sigma_epsilon_change_reaches_every_sigma_f(sc_multi_file):
+    """The sigma_epsilon term of the sigma_f budget follows the new calibration."""
+    fp = sc_multi_file
+    review_run_impl(str(fp))
+    sigma_2 = 4.0 * SIGMA_EPS
+    _stamp_timebase(fp, epsilon=EPS_2, sigma_epsilon=sigma_2)
+
+    after = get_final_products_impl(str(fp))
+    assert after is not None and after.sigma_epsilon == pytest.approx(sigma_2)
+    assert after.peaks
+    for peak in after.peaks:
+        assert peak.sigma_eps_khz == pytest.approx(
+            sigma_2 * peak.f_baseband_mhz * 1.0e3
+        )
+        assert peak.sigma_f_khz == pytest.approx(
+            (peak.sigma_stat_khz**2 + peak.sigma_eps_khz**2 + peak.sigma_floor_khz**2)
+            ** 0.5
+        )
+
+
+@pytest.mark.integration
+def test_refresh_rewrites_only_the_stale_table(sc_multi_file):
+    fp = sc_multi_file
+    review_run_impl(str(fp))
+    wid = _fitted_window_ids(fp)[0]
+    review_accept_impl(str(fp), wid)
+    before = load_stage6_review_from_file(str(fp))
+
+    assert refresh_persisted_final_products_impl(str(fp)) is False  # current
+
+    _stamp_timebase(fp, epsilon=EPS_2, sigma_epsilon=SIGMA_EPS)
+    assert refresh_persisted_final_products_impl(str(fp)) is True
+
+    after = load_stage6_review_from_file(str(fp))
+    assert after.final_products is not None
+    assert after.final_products.epsilon == pytest.approx(EPS_2)
+    assert not _final_products_is_stale(after.final_products, str(fp))
+    _assert_arithmetic(
+        before.final_products, after.final_products, delta_eps=EPS_2 - EPS_1
+    )
+    # Curation state is carried over untouched.
+    assert after.decision_log == before.decision_log
+    assert after.window_statuses == before.window_statuses
+
+
+@pytest.mark.integration
+def test_timebase_run_refreshes_the_stored_table(sc_multi_file, monkeypatch):
+    """``timebase run`` itself, not a hand-stamped result, updates the table.
+
+    The measurement is stubbed (the fixture's lattice is not the point); the
+    write path after it is the real one.
+    """
+    from ftmwpipeline._internal import timebase_impl
+    from ftmwpipeline.fitting.timebase_calibration import TimebaseCalibrationResult
+
+    fp = sc_multi_file
+    review_run_impl(str(fp))
+    with h5py.File(str(fp), "r") as h5f:
+        fit_before = h5f["stage5_fitting"].attrs["creation_time"]
+
+    def _measured(*_args, **_kwargs):
+        return TimebaseCalibrationResult(
+            epsilon=EPS_2,
+            sigma_epsilon=SIGMA_EPS,
+            n_used=5,
+            n_detected=5,
+            lattice_g_mhz=320.0,
+            tone_reads=(),
+            kappa_sys=0.0,
+            snr_min=10.0,
+            sample_dt_us=0.02,
+            start_us=0.0,
+            end_us=13.0,
+            span_us=13.0,
+            preconditions_passed=True,
+        )
+
+    monkeypatch.setattr(timebase_impl, "calibrate_timebase_from_fid", _measured)
+    ftmw.calibrate_timebase(str(fp))
+
+    stored = load_stage6_review_from_file(str(fp)).final_products
+    assert stored is not None and stored.epsilon == pytest.approx(EPS_2)
+    with h5py.File(str(fp), "r") as h5f:
+        # Stage 5 was not re-run: the fit on disk is the same one.
+        assert h5f["stage5_fitting"].attrs["creation_time"] == fit_before
+    assert "stage5_fitting" in ftmw.get_pipeline_info(str(fp))["completed_stages"]

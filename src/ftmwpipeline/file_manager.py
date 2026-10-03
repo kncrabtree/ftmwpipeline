@@ -71,18 +71,41 @@ class PipelineExistsError(PipelineFileError):
         )
 
 
-class StageDependencyError(PipelineFileError):
-    """Raised when attempting to execute a stage without required dependencies."""
+class StageDependencyError(PipelineFileError, ValueError):
+    """Raised when an operation needs a stage the file has not completed.
 
-    def __init__(self, stage_name: str, missing_dependencies: list, filepath: Path):
+    Covers both running a stage before its predecessor and reading a stage's
+    result before it exists. ``stage_name`` is the operation that was refused,
+    ``missing_dependencies`` the stage keys it needs, and ``command`` (when
+    given) the CLI verb that produces them. Also a :class:`ValueError`, which is
+    what these refusals raised before they were typed.
+    """
+
+    def __init__(
+        self,
+        stage_name: str,
+        missing_dependencies: list,
+        filepath: Path,
+        *,
+        command: Optional[str] = None,
+        message: Optional[str] = None,
+    ):
         self.stage_name = stage_name
         self.missing_dependencies = missing_dependencies
         self.filepath = filepath
-        super().__init__(
-            f"Cannot execute {stage_name} - missing dependencies: {missing_dependencies}\n"
-            f"File: {filepath}\n"
-            f"Complete the required stages first."
-        )
+        self.command = command
+        if message is None:
+            message = (
+                f"Cannot execute {stage_name} - missing dependencies: "
+                f"{missing_dependencies}\n"
+                f"File: {filepath}\n"
+                + (
+                    f"Run '{command}' first."
+                    if command is not None
+                    else "Complete the required stages first."
+                )
+            )
+        super().__init__(message)
 
 
 class PipelineCorruptionError(PipelineFileError):
@@ -368,7 +391,7 @@ class PipelineStageTracker:
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
         return {
-            "completed_stages": list(self.completed_stages),
+            "completed_stages": sorted(self.completed_stages),
             "next_available": self.get_next_available_stages(),
         }
 
@@ -455,7 +478,7 @@ def create_pipeline_file(
                 "stage0_fid_data"
             )  # Stage 0 completed by creating file
             stages_group.attrs["completed_stages"] = json.dumps(
-                list(stage_tracker.completed_stages)
+                sorted(stage_tracker.completed_stages)
             )
             stages_group.attrs["created"] = datetime.now().isoformat()
             stages_group.attrs["last_updated"] = datetime.now().isoformat()

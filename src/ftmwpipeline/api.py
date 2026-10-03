@@ -2380,7 +2380,7 @@ def workflow_summary(file_path: Union[str, Path]) -> str:
                     f'2. ftmw.visualize_ft("{Path(file_path).name}", save_params=True)',
                 ]
             )
-        elif "stage2_noise_estimation" in info["next_available_stages"]:
+        elif "stage2_noise_result" in info["next_available_stages"]:
             lines.extend(
                 [
                     "",

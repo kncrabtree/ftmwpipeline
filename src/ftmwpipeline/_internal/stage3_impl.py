@@ -45,7 +45,7 @@ from ..core.peak_detection_settings import (
 )
 from ..core.peak_detection_settings import load_preset as load_peak_detection_preset
 from ..core.peak_detection_settings import resolve as resolve_peak_detection_settings
-from ..file_manager import invalidate_downstream_stages
+from ..file_manager import StageDependencyError, invalidate_downstream_stages
 from ..io.peak_detection_settings_serialization import (
     load_peak_detection_settings_from_h5,
     save_peak_detection_settings_to_h5,
@@ -564,14 +564,26 @@ def detect_peaks_impl(
             "processing_parameters" not in h5f
             or "ft_processing" not in h5f["processing_parameters"]
         ):
-            raise ValueError(
-                "Stage 1 (FT computation) must be completed before peak "
-                "detection. Run compute_ft()/'ft run' first."
+            raise StageDependencyError(
+                "stage3_peaks",
+                ["stage1_complex_ft"],
+                Path(str(file_path)),
+                command="ft run",
+                message=(
+                    "Stage 1 (FT computation) must be completed before peak "
+                    "detection. Run compute_ft()/'ft run' first."
+                ),
             )
         if "stage2_noise_result" not in h5f:
-            raise ValueError(
-                "Stage 2 (noise estimation) must be completed before peak "
-                "detection. Run estimate_noise()/'noise run' first."
+            raise StageDependencyError(
+                "stage3_peaks",
+                ["stage2_noise_result"],
+                Path(str(file_path)),
+                command="noise run",
+                message=(
+                    "Stage 2 (noise estimation) must be completed before peak "
+                    "detection. Run estimate_noise()/'noise run' first."
+                ),
             )
 
     # The active FT is the single grid on which detections are
@@ -851,9 +863,15 @@ def load_peaks_impl(file_path: str) -> Dict[str, Any]:
     """Load the persisted Stage 3 peak list (validates structure loudly)."""
     with h5py.File(file_path, "r") as h5f:
         if "stage3_peaks" not in h5f:
-            raise ValueError(
-                "No Stage 3 peak results found. Run detect_peaks()/"
-                "'peaks run' first."
+            raise StageDependencyError(
+                "load peaks",
+                ["stage3_peaks"],
+                Path(str(file_path)),
+                command="peaks run",
+                message=(
+                    "No Stage 3 peak results found. Run detect_peaks()/"
+                    "'peaks run' first."
+                ),
             )
         grp = h5f["stage3_peaks"]
         peaks = load_peaks_from_hdf5(grp)

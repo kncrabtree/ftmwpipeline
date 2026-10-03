@@ -184,6 +184,14 @@ def calibrate_timebase_impl(
         "lattice_g_mhz": result.lattice_g_mhz,
     }
     save_timebase_calibration_impl(file_path, result, parameters_used=parameters_used)
+    # A new epsilon moves every calibrated frequency and sigma_f, but not the
+    # Stage 5 fit (which is raw-frame; epsilon only steered its spur
+    # classification, which is not re-run). Carry it into a stored Stage 6
+    # table now rather than leave the file contradicting itself until the
+    # next review run.
+    from .stage6_impl import refresh_persisted_final_products_impl
+
+    refresh_persisted_final_products_impl(file_path)
     _update_stage_completion(file_path, STAGE_NAME)
 
     return {
@@ -220,9 +228,15 @@ def load_timebase_calibration_impl(file_path: str) -> Dict[str, Any]:
     """
     with h5py.File(file_path, "r") as h5f:
         if TIMEBASE_GROUP_PATH not in h5f:
-            raise ValueError(
-                "Timebase calibration has not been completed for "
-                f"{file_path}. Run calibrate_timebase() / 'timebase run' first."
+            raise StageDependencyError(
+                "load timebase",
+                ["timebase_calibration"],
+                Path(str(file_path)),
+                command="timebase run",
+                message=(
+                    "Timebase calibration has not been completed for "
+                    f"{file_path}. Run calibrate_timebase() / 'timebase run' first."
+                ),
             )
         grp = h5f[TIMEBASE_GROUP_PATH]
         result = load_timebase_calibration_from_hdf5(grp)
