@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 from types import SimpleNamespace
+from unittest import mock
 
 import numpy as np
 import pytest
@@ -17,6 +18,7 @@ import pytest
 import ftmwpipeline.api as ftmw
 from ftmwpipeline import CONTRACT_VERSION, MANIFEST, Pipeline
 from ftmwpipeline._internal.read_impl import READ_TABLES
+from ftmwpipeline.cli import contract_commands
 from ftmwpipeline.cli.contract_commands import (
     EXIT_CODES,
     INTERRUPTED_EXIT,
@@ -71,11 +73,16 @@ def test_capabilities_cli_default_format_and_no_file(capsys):
 
 
 def _run(accessor, argv, *, schema=None, takes_file=False):
+    """Register a test-only ``probe`` accessor through the real plumbing.
+
+    ``register_accessor`` reads file binding from ``MANIFEST.file_bound``; a
+    test-only name is not in the manifest, so the plumbing sees a stand-in.
+    """
+    stand_in = SimpleNamespace(file_bound={"probe": takes_file})
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="verb")
-    register_accessor(
-        sub, "probe", accessor, help="test", schema=schema, takes_file=takes_file
-    )
+    with mock.patch.object(contract_commands, "MANIFEST", stand_in):
+        register_accessor(sub, "probe", accessor, help="test", schema=schema)
     args = parser.parse_args(argv)
     return args.func(args)
 

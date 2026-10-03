@@ -60,8 +60,14 @@ def _cli(*argv: str):
 #: ``Pipeline.open`` is what the first real file-bound accessor will do.
 _PROBE = textwrap.dedent("""
     import argparse, sys
+    from types import SimpleNamespace
     from ftmwpipeline import Pipeline
+    from ftmwpipeline.cli import contract_commands
     from ftmwpipeline.cli.contract_commands import register_accessor
+
+    # register_accessor reads file binding from MANIFEST.file_bound; a probe is
+    # not a manifest accessor, so give the plumbing a stand-in.
+    contract_commands.MANIFEST = SimpleNamespace(file_bound={"probe": True})
 
     def accessor(path):
         Pipeline.open(path)

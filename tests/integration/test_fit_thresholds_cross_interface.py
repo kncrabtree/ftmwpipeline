@@ -35,7 +35,7 @@ def test_real_fit_thresholds_agree_across_interfaces(
 ):
     path = baseline_2638_stage5_small
     via_api = ftmw.fit_thresholds(path)
-    via_pipeline = Pipeline(path).fit_thresholds()
+    via_pipeline = Pipeline.open(path).fit_thresholds()
     rc, out, err = _cli(
         ["read", "fit_thresholds", str(path), "--format", "json"], capsys
     )
@@ -67,7 +67,7 @@ def test_real_fit_read_is_byte_identical(baseline_2638_stage5_small, capsys):
     path = baseline_2638_stage5_small
     before = _md5(path)
     ftmw.fit_thresholds(path)
-    Pipeline(path).fit_thresholds()
+    Pipeline.open(path).fit_thresholds()
     _cli(["read", "fit_thresholds", str(path), "--format", "json"], capsys)
     assert _md5(path) == before
 
@@ -78,7 +78,7 @@ def test_no_fit_agrees_across_interfaces_all_not_run(
     path = tmp_path / "nofit.ftmw"
     shutil.copy(baseline_2638_stage4_small, path)
     via_api = ftmw.fit_thresholds(path)
-    via_pipeline = Pipeline(path).fit_thresholds()
+    via_pipeline = Pipeline.open(path).fit_thresholds()
     rc, out, _ = _cli(["read", "fit_thresholds", str(path), "--format", "json"], capsys)
     assert rc == 0
     via_cli = json.loads(out)

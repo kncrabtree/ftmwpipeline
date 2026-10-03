@@ -70,7 +70,8 @@ def test_fid_samples_equals_stored_values_in_order(stage0_file):
     with h5py.File(stage0_file, "r") as f:
         stored = f[FID_PATH][...]
         stored_dtype = str(f[FID_PATH].dtype)
-    assert set(res) == {"samples", "stored_dtype"}
+    assert set(res) == {"schema", "samples", "stored_dtype"}
+    assert res["schema"] == FID_SAMPLES_SCHEMA
     assert isinstance(res["samples"], np.ndarray)
     assert res["samples"].dtype == np.float64 and res["samples"].ndim == 1
     np.testing.assert_array_equal(res["samples"], stored)
@@ -136,6 +137,8 @@ def test_fid_samples_missing_dataset_raises_stage_dependency(stage0_copy):
     assert err.code == "stage_not_run"
     assert err.missing_dependencies == ["stage0_fid_data"]
     assert err.to_dict()["missing_dependencies"] == ["data"]
+    # The command is a bare CLI verb, never a full shell line.
+    assert err.command == err.to_dict()["command"] == "data import"
 
 
 def test_fid_samples_missing_stage0_group_raises_stage_dependency(stage0_copy):
@@ -152,6 +155,7 @@ def test_fid_samples_bare_stamped_file_raises_stage_dependency(tmp_path):
     with pytest.raises(StageDependencyError) as info:
         fid_samples_impl(bare)
     assert info.value.to_dict()["missing_dependencies"] == ["data"]
+    assert info.value.command == "data import"
 
 
 def test_fid_samples_missing_file_is_typed_not_found(tmp_path):
@@ -174,7 +178,8 @@ def test_fid_samples_corrupt_file_is_typed(tmp_path):
 
 def test_display_units_before_stage1_matches_the_import_recommendation(stage0_file):
     res = ftmw.display_units(stage0_file)
-    assert set(res) == {"amplitude_scale", "units_label", "units_power"}
+    assert set(res) == {"schema", "amplitude_scale", "units_label", "units_power"}
+    assert res["schema"] == DISPLAY_UNITS_SCHEMA
     with h5py.File(stage0_file, "r") as f:
         assert FT_GROUP not in f  # genuinely before Stage 1
         power = int(f[REC_GROUP].attrs["units_power"])
@@ -218,6 +223,7 @@ def test_display_units_follows_persisted_power_and_matches_display_ft(
     ftmw.compute_ft(fp, trim=(26500, 40000), units_power=power)
     units = ftmw.display_units(fp)
     assert units == {
+        "schema": DISPLAY_UNITS_SCHEMA,
         "amplitude_scale": 10.0**power,
         "units_label": label,
         "units_power": power,
@@ -303,7 +309,8 @@ def test_fid_samples_agrees_across_interfaces(baseline_2638_stage1, tmp_path, ca
     )
     assert rc == 0
     env = json.loads(out)
-    assert env["schema"] == FID_SAMPLES_SCHEMA
+    assert env["schema"] == via_api["schema"] == FID_SAMPLES_SCHEMA
+    assert via_pipe["schema"] == FID_SAMPLES_SCHEMA
     assert env["samples"] == "samples.npy"
     assert env["stored_dtype"] == via_api["stored_dtype"] == via_pipe["stored_dtype"]
     via_cli = np.load(out_dir / "samples.npy")
@@ -327,7 +334,7 @@ def test_display_units_agrees_across_interfaces(baseline_2638_stage1, capsys):
     )
     assert rc == 0
     via_cli = json.loads(out)
-    assert via_cli.pop("schema") == DISPLAY_UNITS_SCHEMA
+    assert via_cli["schema"] == via_api["schema"] == DISPLAY_UNITS_SCHEMA
     assert via_api == via_pipe == via_cli
 
 
@@ -335,7 +342,6 @@ def test_display_units_agrees_across_interfaces_before_stage1(stage0_file, capsy
     via_api = ftmw.display_units(stage0_file)
     rc, out, _ = _cli_json(["read", "display_units", str(stage0_file)], capsys)
     via_cli = json.loads(out)
-    via_cli.pop("schema")
     assert rc == 0 and via_api == via_cli == Pipeline.open(stage0_file).display_units()
 
 
@@ -367,4 +373,5 @@ def test_cli_refusals_are_typed_error_json_with_exit_codes(
     assert rc == 1 and out == ""
     assert payload["code"] == "stage_not_run"
     assert payload["missing_dependencies"] == ["data"]
+    assert payload["command"] == "data import"
     assert not (tmp_path / "o").exists()

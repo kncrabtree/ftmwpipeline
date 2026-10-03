@@ -185,7 +185,7 @@ def test_pipeline_method_matches_api(base_file):
         base_file,
         {"peak_survival": {"snr_floor": 3.3}, "vif_collapse": {"vif_threshold": 9.0}},
     )
-    assert Pipeline(base_file).fit_thresholds() == ftmw.fit_thresholds(base_file)
+    assert Pipeline.open(base_file).fit_thresholds() == ftmw.fit_thresholds(base_file)
     assert read_fit_thresholds_impl(base_file) == ftmw.fit_thresholds(base_file)
 
 
@@ -196,7 +196,7 @@ def test_read_leaves_file_byte_identical(base_file):
     )
     before = _md5(base_file)
     ftmw.fit_thresholds(base_file)
-    Pipeline(base_file).fit_thresholds()
+    Pipeline.open(base_file).fit_thresholds()
     assert _md5(base_file) == before
 
 

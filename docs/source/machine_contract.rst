@@ -65,6 +65,36 @@ reads a file takes the path as its first argument on the API and as the
 ``Pipeline``; one that needs no file (like ``capabilities``) takes no path
 anywhere.
 
+Rules every accessor follows
+----------------------------
+
+* **One CLI verb per accessor:** ``ftmwpipeline read <name>``, spelled exactly
+  as the API name (``read window_status``, ``read read_table``, ``read
+  get_pipeline_info``). It prints the accessor's JSON envelope. Verbs that
+  predate the contract (``info``, ``review log``, ``settings show``, ...) keep
+  their human output and are not contract.
+* **The envelope has one of three forms**, by the kind of result: a dict or
+  dataclass is *stamped directly* (``{"schema": ..., <fields>}``); a list or
+  tuple is *wrapped as items* (``{"schema": ..., "items": [...]}``); a scalar
+  is *wrapped as value* (``{"schema": ..., "value": x}``). An absent result is
+  an ``Absent`` in a named field, like any other absence: ``read
+  get_final_products`` before Stage 6 prints ``{"schema":
+  "ftmw/final_products@1", "items": null, "items_absent": "not_run"}``.
+* **The payload carries its schema in Python too**, wherever the Python type
+  can: a dict payload has a ``"schema"`` key, a dataclass payload declares
+  ``__ftmw_schema__``, so the API, ``Pipeline`` and the CLI return the same
+  stamped object. The dicts of ``read_metadata``, ``read_tables``,
+  ``read_table`` and ``get_pipeline_info`` (and ``ComplexFT``) keep their
+  existing Python shape and are stamped by the verb only.
+* **Entity tables are lists of records**, not parallel columns: an accessor
+  that returns one row per window, FID or line returns a list of dataclasses or
+  dicts, so an absent field travels as ``Absent`` per row (``null`` plus its
+  ``_absent`` sibling). Numeric series (samples, spectra) are arrays and go to
+  ``.npy`` files under ``--output``. The columnar form of a table, with
+  ``<column>__status`` columns, belongs to ``read_table``.
+* **A refusal names the command to run as a bare CLI verb** (``windows run``,
+  ``data import``, ``tau run --gaussian``), never a full shell line.
+
 Declared existing surface
 -------------------------
 
@@ -87,16 +117,18 @@ the declared fields of the result types (``FinalPeak``, ``DecisionLogEntry``,
 the curation results), and ``MANIFEST.vocabularies`` the frozen
 ``DecisionLogEntry`` ``kind`` and ``provenance`` values.
 
-Their Python results are unchanged. Each has a schema name, a constant in
-``ftmwpipeline.contract``: ``ftmw/calibration@1``, ``ftmw/snap_tolerance@1``,
-``ftmw/metadata@1``, ``ftmw/tables@1``, ``ftmw/table@1``,
-``ftmw/settings_defaults@1``, ``ftmw/settings@1``, ``ftmw/final_products@1``,
-``ftmw/review_log@1``, ``ftmw/pipeline_info@1`` and ``ftmw/display_ft@1``.
-``CalibrationStamp`` and ``FinalProducts`` declare theirs as
-``__ftmw_schema__``; the ``read`` verb stamps the rest: a dict result is
-stamped directly, a list (``settings_show``, ``settings_defaults``,
-``review_log``) becomes ``{"schema", "items": [...]}``, and a scalar
-(``refit_snap_tol_mhz``) becomes ``{"schema", "value": x}``.
+Their Python results keep their types, except that ``get_pipeline_info`` always
+carries ``warnings``. Each has a schema name, a constant in
+``ftmwpipeline.contract`` (``CALIBRATION_SCHEMA``, ``SNAP_TOLERANCE_SCHEMA``,
+...): ``ftmw/calibration@1``, ``ftmw/snap_tolerance@1``, ``ftmw/metadata@1``,
+``ftmw/tables@1``, ``ftmw/table@1``, ``ftmw/settings_defaults@1``,
+``ftmw/settings@1``, ``ftmw/final_products@1``, ``ftmw/review_log@1``,
+``ftmw/pipeline_info@1`` and ``ftmw/display_ft@1``. ``CalibrationStamp`` and
+``FinalProducts`` declare theirs as ``__ftmw_schema__``; the ``read`` verb
+stamps the rest by the envelope rules above: a dict result is stamped directly,
+a list or tuple (``settings_show``, ``settings_defaults``, ``review_log``)
+becomes ``{"schema", "items": [...]}``, and a scalar (``refit_snap_tol_mhz``)
+becomes ``{"schema", "value": x}``.
 
 Each declared accessor, with its absence cases:
 
@@ -105,8 +137,9 @@ Each declared accessor, with its absence cases:
   once that calibration has run, so a file without it simply lacks them; an
   unknown table or column is a ``ValueError``. A table whose stage has not run
   raises ``StageDependencyError`` (``stage_not_run``, also a ``ValueError``)
-  with ``command`` the verb that produces it (``fit run``, ``windows run``,
-  ...). ``read read_table FILE TABLE [--columns a,b]`` writes each column to
+  with ``missing_dependencies`` the stage group and ``command`` the verb that
+  produces it: ``tau run``, ``tau run --gaussian``, ``peaks run``,
+  ``windows run`` or ``fit run``, for every table. ``read read_table FILE TABLE [--columns a,b]`` writes each column to
   ``<column>.npy`` under ``--output``.
 * ``get_final_products`` -- the persisted final-products table, or ``None``
   before Stage 6 (``None`` becomes ``Absent`` in a later wave; ``read
@@ -135,13 +168,16 @@ file that is not HDF5, and none of them writes the file. For example:
    $ ftmwpipeline read compute_display_ft run.ftmw --format json \
          --output ft/ --pad-factor 2
 
-The JSON envelope names ``freq_array.npy`` and ``complex_spectrum.npy`` (a
-complex128 array) under ``--output`` and carries ``metadata`` inline; without
-``--output`` the verb exits 1, since arrays are never inlined.
+The JSON envelope (stamped ``ftmw/display_ft@1`` by the verb) names
+``freq_array.npy`` and ``complex_spectrum.npy`` (a complex128 array) under
+``--output`` and carries ``metadata`` inline; without ``--output`` the verb
+exits 1, since arrays are never inlined.
+
 Reading the FID: ``fid_samples``
 --------------------------------
 
-``fid_samples(path)`` returns the Stage 0 samples exactly as stored:
+``fid_samples(path)`` returns the Stage 0 samples exactly as stored, as
+``{"schema": "ftmw/fid_samples@1", "samples": ..., "stored_dtype": ...}``:
 
 .. code-block:: python
 
@@ -166,14 +202,14 @@ exits ``1``, because the result holds an array.
 
 A file with no Stage 0 FID data raises ``StageDependencyError`` (code
 ``stage_not_run``, ``missing_dependencies`` ``["data"]``, ``command``
-``data import``). There is no
-``Absent`` value in this payload.
+``data import``). There is no ``Absent`` value in this payload.
+
 
 Display units: ``display_units``
 --------------------------------
 
-``display_units(path)`` returns ``{"amplitude_scale": float, "units_label":
-str, "units_power": int}`` (schema ``ftmw/display_units@1``):
+``display_units(path)`` returns ``{"schema": "ftmw/display_units@1",
+"amplitude_scale": float, "units_label": str, "units_power": int}``:
 
 .. code-block:: console
 
@@ -185,8 +221,9 @@ before Stage 1 has persisted anything. The value is resolved through the Stage 1
 chain (persisted, then the import-time recommendation, then the hard default),
 the same chain that selects the spectrum being labelled, so a displayed
 magnitude is ``abs(spectrum) * amplitude_scale`` in ``units_label``. The call
-only reads. Because the chain ends in a hard default, ``units_power`` is
-always an integer in practice; it carries no ``Absent`` marker.
+only reads. Because the chain ends in a hard default, ``units_power`` always
+resolves to an ``int``; it carries no ``Absent`` marker.
+
 Reading the fit thresholds: ``fit_thresholds``
 ----------------------------------------------
 
@@ -215,7 +252,9 @@ Either field is ``Absent.NOT_RUN`` (``null`` plus ``"<field>_absent":
 "not_run"`` on the wire) when the file has no Stage 5 fit, when the fit predates
 the recording of that threshold, or when the fit's peak-survival pass was
 disabled (it then recorded neither). A default is never substituted: the
-accessor reports what the fit applied or says it cannot. A missing file raises
+accessor reports what the fit applied or says it cannot. (The figures that grade
+old fits for display fall back to the file's own resolved settings; the
+accessor does not.) A missing file raises
 ``PipelineFileNotFoundError`` (code ``not_found``).
 
 Missing values: ``Absent``
@@ -407,7 +446,10 @@ The contract accessors under ``ftmwpipeline read`` (one ``read <name>`` per
 accessor, such as ``read capabilities``) take ``--format json`` (the only, and
 default, format), ``-o/--output DIR`` and ``-v``.
 
-* The result is printed to stdout as JSON that is always strictly valid
+* The result is printed to stdout as one schema-stamped envelope: a dict or
+  dataclass result stamped directly, a list or tuple as ``{"schema", "items"}``,
+  a scalar as ``{"schema", "value"}`` (see the rules above). It is JSON that is
+  always strictly valid
   (non-finite floats follow the ``Absent`` rule above).
 * ``--output`` names a **directory** (created if needed). Each array-valued
   field is written there as ``<field path>.npy`` (for example

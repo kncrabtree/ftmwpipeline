@@ -27,6 +27,7 @@ import pytest
 import ftmwpipeline.api as ftmw
 from ftmwpipeline import Pipeline
 from ftmwpipeline._internal.read_impl import READ_TABLES
+from ftmwpipeline.file_manager import StageDependencyError
 
 
 def _run_read(args: list) -> str:
@@ -432,8 +433,12 @@ class TestReadErrors:
 
         path = tmp_path / "stage4_only.ftmw"
         shutil.copy(baseline_2638_stage4, path)
-        with pytest.raises(ValueError, match="fit run"):
+        with pytest.raises(StageDependencyError, match="fit run") as api_err:
             ftmw.read_table(str(path), "fit_peaks")
+        with pytest.raises(StageDependencyError) as pipe_err:
+            Pipeline.open(str(path)).read_table("fit_peaks")
+        assert api_err.value.command == pipe_err.value.command == "fit run"
+        assert api_err.value.to_dict() == pipe_err.value.to_dict()
 
         result = subprocess.run(
             ["ftmwpipeline", "read", "table", str(path), "fit_peaks"],

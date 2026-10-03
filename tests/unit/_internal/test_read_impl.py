@@ -39,7 +39,7 @@ from ftmwpipeline.core.data_structures import (
     WindowPlan,
 )
 from ftmwpipeline.core.settings import FTSettings
-from ftmwpipeline.file_manager import PipelineCompatibilityError
+from ftmwpipeline.file_manager import PipelineCompatibilityError, StageDependencyError
 from ftmwpipeline.fitting.tau_calibration import (
     BandMajority,
     GMMBimodality,
@@ -253,8 +253,37 @@ class TestTableRegistry:
     def test_missing_stage_error_names_the_command_to_run(self, ftmw_file):
         with h5py.File(ftmw_file, "a") as h5f:
             del h5f["stage5_fitting"]
-        with pytest.raises(ValueError, match=r"Run fit_peaks\(\) / 'fit run' first"):
+        with pytest.raises(
+            StageDependencyError, match=r"Run fit_peaks\(\) / 'fit run' first"
+        ) as info:
             read_table_impl(ftmw_file, "fit_peaks")
+        assert isinstance(info.value, ValueError)
+        assert info.value.command == "fit run"
+        assert info.value.to_dict()["missing_dependencies"] == ["stage5_fitting"]
+
+    @pytest.mark.parametrize(
+        "table,group,command",
+        [
+            ("tau_bands", "stage2b_tau_calibration", "tau run"),
+            ("tau_g_bands", "stage2b_tau_G_calibration", "tau run --gaussian"),
+            ("peaks", "stage3_peaks", "peaks run"),
+            ("windows", "stage4_windows", "windows run"),
+            ("window_status", "stage4_windows", "windows run"),
+            ("fit_windows", "stage5_fitting", "fit run"),
+        ],
+    )
+    def test_every_missing_stage_refusal_is_typed_with_a_bare_verb(
+        self, ftmw_file, table, group, command
+    ):
+        with h5py.File(ftmw_file, "a") as h5f:
+            del h5f[group]
+        with pytest.raises(StageDependencyError) as info:
+            read_table_impl(ftmw_file, table)
+        err = info.value
+        assert err.command == command
+        assert err.code == "stage_not_run"
+        assert err.to_dict()["missing_dependencies"] == [group]
+        assert not command.startswith("ftmwpipeline")
 
     def test_missing_file_error_is_actionable(self, tmp_path):
         with pytest.raises(FileNotFoundError, match="data import"):
@@ -581,8 +610,9 @@ class TestTauTables:
         listing = read_tables_impl(ftmw_file)
         assert listing["tau_g_bands"]["available"] is False
         assert listing["tau_bands"]["available"] is True
-        with pytest.raises(ValueError, match="tau run --gaussian"):
+        with pytest.raises(StageDependencyError, match="tau run --gaussian") as info:
             read_table_impl(ftmw_file, "tau_g_bands")
+        assert info.value.command == "tau run --gaussian"
 
 
 class TestFormatting:
