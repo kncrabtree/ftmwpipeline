@@ -68,6 +68,17 @@ engine so they cannot answer differently.
   is serialized as its value, and a complex number as ``{"real", "imag"}``.
   See :doc:`machine_contract`.
 
+* **``fit_thresholds`` reports the thresholds the persisted Stage 5 fit applied
+  (``api.fit_thresholds``, ``Pipeline.fit_thresholds``,
+  ``ftmwpipeline read fit_thresholds``; schema ``ftmw/fit_thresholds@1``).**
+  ``peak_survival_snr_floor`` and ``vif_collapse_threshold`` are read from the
+  fit's recorded diagnostics; each is ``Absent.NOT_RUN`` when there is no fit
+  or the fit never recorded it, never a guessed default. Separately, the
+  figures that grade old fits (``fit show`` detail, the rescue summary) no
+  longer fall back to a VIF threshold of ``4.0`` when a fit did not record
+  one; that value was the setting default only briefly and is long stale. They
+  use the current default, ``25.0``, as a display-grading reference.
+
 * **``review apply --log-prefix N`` (``log_prefix=N`` on ``Pipeline.review_apply``,
   ``api.review_apply`` and ``ReviewSession.review_apply``) applies a curation
   file as if the decision log ended after its first ``N`` decisions.** The

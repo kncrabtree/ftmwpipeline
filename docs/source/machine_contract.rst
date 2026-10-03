@@ -64,6 +64,37 @@ reads a file takes the path as its first argument on the API and as the
 ``Pipeline``; one that needs no file (like ``capabilities``) takes no path
 anywhere.
 
+Reading the fit thresholds: ``fit_thresholds``
+----------------------------------------------
+
+``fit_thresholds(path)`` reports the thresholds the persisted Stage 5 fit
+actually applied, by name. It reads only the recorded fit diagnostics (no fit is
+deserialized, and a read never writes the file).
+
+.. code-block:: python
+
+   ftmw.fit_thresholds("exp.ftmw")           # functional API
+   Pipeline("exp.ftmw").fit_thresholds()     # Pipeline instance method
+
+.. code-block:: console
+
+   $ ftmwpipeline read fit_thresholds exp.ftmw --format json
+
+The payload is ``{"schema": "ftmw/fit_thresholds@1",
+"peak_survival_snr_floor": float, "vif_collapse_threshold": float}``:
+
+* ``peak_survival_snr_floor`` -- the survival SNR floor the fit used (the Stage 3
+  promotion cutoff times the survival factor, unless overridden).
+* ``vif_collapse_threshold`` -- the variance-inflation threshold of the collapse
+  pass.
+
+Either field is ``Absent.NOT_RUN`` (``null`` plus ``"<field>_absent":
+"not_run"`` on the wire) when the file has no Stage 5 fit, when the fit predates
+the recording of that threshold, or when the fit's peak-survival pass was
+disabled (it then recorded neither). A default is never substituted: the
+accessor reports what the fit applied or says it cannot. A missing file raises
+``PipelineFileNotFoundError`` (code ``not_found``).
+
 Missing values: ``Absent``
 --------------------------
 
