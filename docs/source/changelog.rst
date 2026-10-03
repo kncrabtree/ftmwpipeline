@@ -68,6 +68,15 @@ engine so they cannot answer differently.
   is serialized as its value, and a complex number as ``{"real", "imag"}``.
   See :doc:`machine_contract`.
 
+* **``window_status`` reports every window's state.** One row per Stage 4 plan
+  window and per Stage 6 created window, with ``window_id``, the bounds,
+  ``created``, ``n_fitted_peaks`` and ``live`` (a Stage 5 line is held in the
+  window), schema ``ftmw/window_status@1``. Before Stage 5 the two fit-derived
+  columns are ``Absent.NOT_RUN`` (``__status`` ``1``); before Stage 4 it raises
+  ``StageDependencyError`` naming ``windows run``. Available as
+  ``api.window_status``, ``Pipeline.window_status``, ``ftmwpipeline read
+  window_status`` and the ``window_status`` table of ``read_table``.
+
 * **``review apply --log-prefix N`` (``log_prefix=N`` on ``Pipeline.review_apply``,
   ``api.review_apply`` and ``ReviewSession.review_apply``) applies a curation
   file as if the decision log ended after its first ``N`` decisions.** The
