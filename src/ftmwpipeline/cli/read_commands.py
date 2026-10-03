@@ -32,6 +32,7 @@ from .._internal.read_impl import (
     write_text_impl,
 )
 from ..file_manager import PipelineFileError
+from .contract_commands import register_accessor
 from .utils import setup_logging
 
 #: What a bad request looks like here: a missing or unreadable file, an unknown
@@ -165,6 +166,7 @@ Examples:
       --columns frequency_mhz,decay_rate,shape --output lines.csv
   ftmwpipeline read table exp_2638.ftmw windows --columns window_id,freq_min,freq_max
   ftmwpipeline read meta  exp_2638.ftmw --format json
+  ftmwpipeline read capabilities
         """,
     )
     read_sub = read.add_subparsers(dest="read_command", help="read subcommands")
@@ -218,6 +220,17 @@ Examples:
         "-v", "--verbose", action="store_true", help="Enable verbose output"
     )
     p_list.set_defaults(func=cmd_read_list)
+
+    # Contract accessors: one register_accessor call each.
+    from ..pipeline import Pipeline
+
+    register_accessor(
+        read_sub,
+        "capabilities",
+        Pipeline.capabilities,
+        help="Machine-contract version, schemas, accessors and error codes (JSON)",
+        takes_file=False,
+    )
 
     # 'read' with no subcommand prints its help.
     def _read_help(args: argparse.Namespace) -> int:
