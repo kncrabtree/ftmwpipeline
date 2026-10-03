@@ -48,7 +48,10 @@ Interactive behavior is unchanged by anything here.
   `ftmw/<payload>@<n>` (for example `ftmw/final_products@1`). A schema name
   never changes meaning; an incompatible payload gets a new `<n>`.
 - **Additive change** — a new accessor, a new optional field, a new code —
-  raises `CONTRACT_VERSION` and keeps every existing schema valid.
+  raises `CONTRACT_VERSION` and keeps every existing schema valid. The first
+  published contract is version 1; each release that adds or (before 1.0.0)
+  changes contract elements raises it by one, so a client can gate on the
+  version as well as on `capabilities()`.
 - **Breaking change** — removing or renaming a field, changing a field's type
   or meaning, changing a definition — requires a new schema name, and the old
   one remains available until its retirement is announced.
@@ -99,6 +102,16 @@ Two distinct meanings of "no value" exist and must survive every surface:
   `read_table`) are migrated before 1.0.0.
 - On the wire a field keeps one type (its value type or `null`); the reason
   lives only in the sibling key, which is omitted when the value is present.
+- **Non-finite floats.** JSON cannot carry `nan` or `±inf`. A non-finite
+  value in a named contract field is written as `null` with sibling
+  `"<field>_absent": "undefined"` (it is a computed quantity without a finite
+  value); inline in a JSON list it is written as `null`, and the reason is
+  carried by the array's status column where one is declared. Arrays written
+  as `.npy` keep their `nan` values.
+- A key named `"<field>_absent"` is reserved: a payload never contains it
+  unless `<field>` is `null` for one of the two reasons above.
+- Typed error attributes follow the same rule (an epoch the file never
+  recorded is `Absent.NOT_RUN`, not `None`).
 - Columnar reads return a `uint8` status column `<column>__status` alongside any
   column that can be absent, using the codes above.
 - Unset *settings* are not "absent values": a setting that is unset reads as
@@ -335,16 +348,23 @@ An unknown `window_id` raises `not_found`; a file without a Stage 5 fit raises
   string and typed attributes; `to_dict()` returns
   `{"schema": "ftmw/error@1", "code", "message", ...attributes}`.
 - Codes (initial set): `stage_not_run` (`StageDependencyError`:
-  `missing_dependencies`, `command`), `bad_setting` (`path`, `expected`,
+  `missing_dependencies` — canonical stage names, §Status and settings —
+  and `command`), `bad_setting` (`path`, `expected`,
   `value`), `not_found` (window/peak/file: `kind`, `ids` — every id a request
 named that does not exist, e.g. all unknown window ids of a curation batch),
-`incomplete_provenance` (`missing`), `file_incompatible`,
-  `file_corrupt`, `epoch_mismatch` (`file_epoch`, `current_epoch`),
+`incomplete_provenance` (`missing`), `file_exists`, `file_incompatible`
+  (`file_version`, `supported_version`), `file_corrupt`, `epoch_mismatch` (`file_epoch`, `current_epoch`),
   `cancelled`, `callback_failed`, `algorithm_failed` (`stage`).
 - Each typed error remains a subclass of the built-in it replaced (most are
   `ValueError`), so existing `except` clauses keep working.
-- The CLI maps codes to exit codes in one place and, under `--format json`,
-  writes the error dict to stderr.
+- A `.ftmw` path that does not exist raises `not_found` (`kind: "file"`),
+  which is also a `FileNotFoundError`; a path that exists but cannot be opened
+  as a pipeline file raises `file_corrupt`.
+- The CLI maps codes to exit codes in one place: `file_corrupt` and
+  `algorithm_failed` exit 2, `cancelled` exits 130, every other code exits 1.
+  Under `--format json`, and always for `read` accessors, the error dict is
+  written to stderr. The code set is introduced wave by wave; codes not yet
+  implemented are not listed by `capabilities()`.
 - Status calls (`get_pipeline_info`, `list_available_stages`) raise for a file
   they cannot open; `validate_pipeline` and `Pipeline.validate` must agree on
   whether an unopenable file raises or returns a report.
@@ -377,8 +397,12 @@ named that does not exist, e.g. all unknown window ids of a curation batch),
 
 ## Status and settings *(outline)*
 
-- One canonical **stage vocabulary**, a public enum, with a documented mapping
-  to every other spelling (CLI object, settings prefix, knob label).
+- One canonical **stage vocabulary**, the public enum `ftmwpipeline.Stage`,
+  whose values are the CLI object names: `data`, `ft`, `noise`, `tau`,
+  `tau_g`, `timebase`, `peaks`, `windows`, `fit`, `review`. It carries a
+  documented mapping to every other spelling (settings prefix, knob label,
+  internal storage key). Every contract payload that names a stage uses these
+  values.
 - `status(path)` → each stage's state (`complete`, `partial` — Stage 5 after a
   cancel — or `not_run`), the dependency graph, and the re-run order a full
   refresh would follow.
@@ -412,11 +436,17 @@ discover the parameter.
 
 A public `ftmwpipeline.serialize.to_jsonable(obj)` covers every contract result
 and domain type, applies the missing-value rule above, and stamps the schema
-name. CLI `--format json` on every verb routes through it.
+name. Enums serialize as their `.value`. Inline complex numbers are
+`{"real", "imag"}`. CLI `--format json` on every verb routes through it.
+
+Through the CLI, `--output` for a `read` accessor names a directory; each
+array field is written there as `<field path>.npy` and the JSON envelope
+names the file in the array's place. An accessor whose result holds arrays
+refuses to run without `--output`.
 
 ## Capabilities *(outline)*
 
-`capabilities()` → `{"contract_version": int, "schemas": [...],
+`capabilities()` → `{"schema": "ftmw/capabilities@1", "contract_version": int, "schemas": [...],
 "accessors": [...], "codes": [...]}`, read from the same manifest the
 contract tests check.
 
