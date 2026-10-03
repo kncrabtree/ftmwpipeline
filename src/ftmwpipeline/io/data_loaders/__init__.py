@@ -22,6 +22,7 @@ from .registry import (
     get_format_info,
     list_formats,
     load_fid,
+    preview_source,
     register_loader,
     validate_source,
 )
@@ -47,6 +48,7 @@ __all__ = [
     "register_loader",
     "detect_format",
     "validate_source",
+    "preview_source",
     "load_fid",
     "list_formats",
     "get_format_info",

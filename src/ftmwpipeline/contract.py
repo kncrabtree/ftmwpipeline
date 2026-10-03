@@ -230,11 +230,15 @@ class AccessorSpec(NamedTuple):
     file_bound: bool
 
 
-_ACCESSORS: Tuple[AccessorSpec, ...] = (AccessorSpec("capabilities", file_bound=False),)
+_ACCESSORS: Tuple[AccessorSpec, ...] = (
+    AccessorSpec("capabilities", file_bound=False),
+    AccessorSpec("preview_source", file_bound=False),
+)
 
 _SCHEMAS: Tuple[str, ...] = (
     ERROR_SCHEMA,
     CAPABILITIES_SCHEMA,
+    "ftmw/source_preview@1",
 )
 
 _CODES: Tuple[str, ...] = (

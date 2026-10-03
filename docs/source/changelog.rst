@@ -32,6 +32,12 @@ had to reach into ``_internal`` or parse out of prose to obtain are now
 published, and the Stage 6 edit paths that carry them were collapsed onto one
 engine so they cannot answer differently.
 
+* **``preview_source`` describes a data source without importing it.** The
+  format and the full FID table (index, points, spacing, probe frequency,
+  sideband as ``"upper"``/``"lower"``, shots) of every FID a loader's source
+  holds, plus the declared chirp window; ``read preview_source SOURCE`` on the
+  command line. ``validate_source`` is unchanged.
+
 * **The machine contract has its foundations: a contract version, ``Absent``,
   typed errors with codes, a JSON serializer, and ``capabilities``.**
   ``ftmwpipeline.CONTRACT_VERSION`` (``1``, the first published contract) is the

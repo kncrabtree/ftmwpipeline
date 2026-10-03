@@ -36,13 +36,15 @@ import h5py
 import numpy as np
 
 from ..input_metadata import (
+    acquisition_row,
     build_fid_metadata,
     explicit_layer_from_kwargs,
     find_sidecar,
     load_sidecar,
     resolve_input_metadata,
+    sidecar_layer,
 )
-from .base import BaseLoader, LoaderError
+from .base import BaseLoader, FidInfo, LoaderError
 
 if TYPE_CHECKING:
     from ...core.data_structures import FID
@@ -135,6 +137,34 @@ class FtmwHdf5Loader(BaseLoader):
             result["errors"].append(f"Validation failed: {exc}")
 
         return result
+
+    def preview_fids(self, source_path: Union[str, Path]) -> List[FidInfo]:
+        """The one FID: embedded attributes, overridden by an adjacent sidecar."""
+        source_path = Path(source_path)
+        validation = self.validate_source(source_path)
+        if not validation["valid"]:
+            raise LoaderError(f"Invalid ftmw-hdf5 source: {validation['errors']}")
+        with h5py.File(source_path, "r") as h5f:
+            embedded = self._read_embedded(h5f)
+        return [
+            acquisition_row(
+                int(validation["metadata"]["n_points"]),
+                sidecar_layer(source_path),
+                embedded,
+            )
+        ]
+
+    def preview_chirp_window(
+        self, source_path: Union[str, Path]
+    ) -> Optional[Dict[str, Any]]:
+        """The sidecar's ``chirp_window`` block, else the embedded attributes."""
+        source_path = Path(source_path)
+        window = sidecar_layer(source_path).get("chirp_window")
+        if window is not None:
+            return dict(window)
+        with h5py.File(source_path, "r") as h5f:
+            embedded = self._read_embedded(h5f).get("chirp_window")
+        return dict(embedded) if embedded is not None else None
 
     def load_fid(self, source_path: Union[str, Path], **kwargs: Any) -> "FID":
         from ...core.data_structures import FID, FIDProcessingParameters

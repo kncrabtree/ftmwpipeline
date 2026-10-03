@@ -171,6 +171,37 @@ corruption: it propagates as the original ``OSError`` so a client can retry. ``P
 (``api.read_table``, ``api.read_metadata``, ``read table`` / ``meta`` /
 ``list``) agree on this.
 
+Previewing a source: ``preview_source``
+---------------------------------------
+
+``preview_source(source, format_name=None)`` says what a data source holds
+without importing it: the detected format and the source's FID table, one row
+per FID the source holds (a Blackchirp experiment may hold many). It takes a
+source path, not a ``.ftmw`` file, so it is file-less.
+
+.. code-block:: python
+
+   ftmw.preview_source("exp_2638")          # functional API
+   Pipeline.preview_source("exp_2638")      # Pipeline class (static)
+
+.. code-block:: console
+
+   $ ftmwpipeline read preview_source exp_2638 [--source-format blackchirp]
+
+The payload is ``ftmw/source_preview@1``: ``source``, ``format``, ``n_fids``,
+``fids`` and ``chirp_window``. ``fids`` is a table of equal-length lists
+(``index``, ``n_points``, ``spacing_us``, ``probe_freq_mhz``, ``sideband`` --
+``"upper"`` or ``"lower"``, whatever the source encodes it as -- and
+``shots``), with a ``<column>__status`` list for every column but ``index``
+(``0`` present, ``1`` not run, ``2`` undefined). A value the source does not
+declare is *not run*; one that depends on load-time parameters (a Keysight
+record's point and shot counts) is *undefined*. ``chirp_window`` is the
+window the source declares (``chirp_start_us``, ``chirp_end_us``,
+``start_margin_us``, each possibly absent) or, when it declares none, ``null``
+with ``chirp_window_absent: "not_run"``. A path that does not exist raises
+``not_found`` with kind ``"file"``; an unknown ``format_name``, or a source no
+format recognises, raises ``not_found`` with kind ``"format"``.
+
 Stage names
 -----------
 

@@ -16,13 +16,15 @@ import numpy as np
 import pandas as pd
 
 from ..input_metadata import (
+    acquisition_row,
     build_fid_metadata,
     explicit_layer_from_kwargs,
     find_sidecar,
     load_sidecar,
     resolve_input_metadata,
+    sidecar_layer,
 )
-from .base import BaseLoader, LoaderError
+from .base import BaseLoader, FidInfo, LoaderError
 
 if TYPE_CHECKING:
     from ...core.data_structures import FID
@@ -85,6 +87,25 @@ class CSVLoader(BaseLoader):
         result["options"]["columns"] = [str(c) for c in frame.columns]
         result["valid"] = True
         return result
+
+    def preview_fids(self, source_path: Union[str, Path]) -> List[FidInfo]:
+        """The one FID: point count from the file, the rest from a sidecar.
+
+        Sidecar-absent fields are ``Absent.NOT_RUN``, except the three the
+        import itself defaults (probe ``0`` MHz, ``upper`` sideband, ``1`` shot).
+        """
+        source_path = Path(source_path)
+        validation = self.validate_source(source_path)
+        if not validation["valid"]:
+            raise LoaderError(f"Invalid csv source: {validation['errors']}")
+        sidecar = sidecar_layer(source_path)
+        return [acquisition_row(int(validation["metadata"]["n_points"]), sidecar)]
+
+    def preview_chirp_window(
+        self, source_path: Union[str, Path]
+    ) -> Optional[Dict[str, Any]]:
+        """The sidecar's ``chirp_window`` block, or ``None``."""
+        return sidecar_layer(Path(source_path)).get("chirp_window")
 
     def load_fid(self, source_path: Union[str, Path], **kwargs: Any) -> "FID":
         from ...core.data_structures import FID, FIDProcessingParameters

@@ -246,6 +246,28 @@ Examples:
         takes_file=MANIFEST.file_bound["capabilities"],
     )
 
+    def _source_args(parser: argparse.ArgumentParser) -> None:
+        parser.add_argument(
+            "source", help="Data source (e.g. a Blackchirp directory or a CSV)"
+        )
+        parser.add_argument(
+            "--source-format",
+            dest="source_format",
+            default=None,
+            metavar="NAME",
+            help="Source format to use instead of auto-detection",
+        )
+
+    register_accessor(
+        read_sub,
+        "preview_source",
+        Pipeline.preview_source,
+        help="Format and FID table of a data source, without importing it (JSON)",
+        takes_file=MANIFEST.file_bound["preview_source"],
+        add_args=_source_args,
+        call_kwargs=lambda a: {"source": a.source, "format_name": a.source_format},
+    )
+
     # 'read' with no subcommand prints its help.
     def _read_help(args: argparse.Namespace) -> int:
         read.print_help()
