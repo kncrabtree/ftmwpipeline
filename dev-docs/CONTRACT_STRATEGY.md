@@ -317,7 +317,12 @@ Each `FinalPeak` additionally carries, from the Stage 5 fit of its window:
 
 These fields are always present on a table read through the contract. A stored
 table that predates them is rebuilt **in memory** when read; the file is not
-touched (§File model: a read never writes).
+touched (§File model: a read never writes). They use `Absent` from the start
+(no `None`/`nan` absence): a line with no Stage 5 fit record behind it (for
+example a line whose window cannot be identified) reports each field as
+`Absent.UNDEFINED`. `fit_window_mhz` is in the calibrated frame, like
+`frequency_mhz`; a line from a window created during review reports that
+window's bounds. On the wire a pair is a two-element array.
 
 ### Window status
 
@@ -349,8 +354,10 @@ non-finite sidecar value) is `Absent.UNDEFINED`.
 fitted model of one window, evaluated so a client can draw it over the
 spectrum without reimplementing the line shape:
 
-- `schema`: `ftmw/window_model@1`; `window_id`; `frame` (the frequency frame of
-  the grid, matching `compute_display_ft`'s axis);
+- `schema`: `ftmw/window_model@1`; `window_id`; `grid` (`"active"` or
+  `"display"`); `frame` — always `"raw"`, the fit's frame and
+  `compute_display_ft`'s axis (the calibrated frame applies only to reported
+  line frequencies);
 - `frequency_mhz`: the grid, restricted to the window's fit range;
 - `model`: complex, the full window model — the window's fitted lines plus the
   frozen contributions of neighbours that the fit held fixed;
@@ -369,6 +376,22 @@ use.
 
 An unknown `window_id` raises `not_found`; a file without a Stage 5 fit raises
 `stage_not_run`.
+
+### Spectrum model
+
+`spectrum_model(path, *, grid="active")` → `{"schema":
+"ftmw/spectrum_model@1", "grid", "frame": "raw", "frequency_mhz", "model",
+"residual"}`:
+
+- `frequency_mhz`: the full grid of the corresponding spectrum (`compute_ft`'s
+  for `"active"`, `compute_display_ft`'s for `"display"`);
+- `model`: complex, every line of the persisted fit (including curation
+  edits) evaluated **once** over the whole grid with the same evaluator as
+  `window_model` — no frozen-neighbour double counting;
+- `residual`: complex, that spectrum minus `model`, point for point.
+
+A file without a Stage 5 fit raises `stage_not_run`. Through the CLI, the
+arrays go to `.npy` under `--output` like every other array.
 
 ## Errors *(outline)*
 
@@ -481,10 +504,5 @@ contract tests check.
 
 ## Open questions
 
-1. **Whole-spectrum model** (wanted by BlackQuill; lands before 1.0.0, after
-   the accessors above). `spectrum_model(path, grid=...)` — every final line evaluated over
-   the full grid, with its residual. Overlapping windows make "sum of window
-   models" double-count the frozen neighbours, so it is its own evaluation.
-
-Resolved: CLI arrays are `.npy` (§Accessors). A time-domain model is not
-wanted.
+None open. Resolved: CLI arrays are `.npy` (§Accessors); the whole-spectrum
+model is §Spectrum model; a time-domain model is not wanted.
