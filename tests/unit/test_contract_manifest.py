@@ -202,6 +202,12 @@ SNAPSHOT_FIELDS: dict = {
         "knockout_aicc_delta",
         "frequency_mhz",
         "sigma_f_khz",
+        "decay_time_us",
+        "decay_time_error_us",
+        "shape",
+        "fwhm_mhz",
+        "detection_index",
+        "fit_window_mhz",
     },
     "DecisionLogEntry": {
         "order_index",

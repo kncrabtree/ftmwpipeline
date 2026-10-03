@@ -34,6 +34,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import h5py
 import numpy as np
 
+from ..core.absent import Absent
 from ..core.data_structures import FinalPeak, FinalProducts, SpectrumFit
 from ..file_manager import StageDependencyError
 from ..fitting.validation import (
@@ -95,6 +96,20 @@ def _freq(x: Optional[float]) -> str:
     if abs(xf) >= 1e9:  # a sane frequency is never this large -- bound the width
         return f"{xf:.6g}"
     return f"{xf:.6f}"
+
+
+def _present(x: Any) -> Any:
+    """``None`` for an :class:`~ftmwpipeline.contract.Absent` value, else ``x``:
+    the exported tables render an absent field exactly like a missing one."""
+    return None if isinstance(x, Absent) else x
+
+
+def _fit_window_bounds(p: FinalPeak) -> Tuple[Optional[float], Optional[float]]:
+    """``(low, high)`` of the line's calibrated fit window, or ``(None, None)``."""
+    bounds = _present(p.fit_window_mhz)
+    if bounds is None:
+        return (None, None)
+    return (float(bounds[0]), float(bounds[1]))
 
 
 def _scaled(x: Optional[float], unit_value: float, sig: int = 4) -> str:
@@ -293,6 +308,18 @@ _CSV_COLUMNS = [
     # this field existed. Valid only within the one Stage 5 fit lineage this
     # table was built from.
     "peak_uid",
+    # Per-line fit fields, joined from the Stage 5 fit of the line's window
+    # (empty when the field is absent): the window's decay time and its error
+    # (empty when tau was held fixed), its line shape, the finite-record
+    # feature FWHM, the Stage 3 index that seeded the line, and the window's
+    # bounds in the calibrated frame.
+    "decay_time_us",
+    "decay_time_error_us",
+    "shape",
+    "fwhm_mhz",
+    "detection_index",
+    "fit_window_low_mhz",
+    "fit_window_high_mhz",
 ]
 
 
@@ -331,6 +358,12 @@ def _csv_row(p: FinalPeak, unit_value: float) -> List[str]:
         p.clock_lattice or "",
         "" if p.derivation is None else str(p.derivation),
         "" if p.peak_uid is None else str(p.peak_uid),
+        _g(_present(p.decay_time_us), 6),
+        _g(_present(p.decay_time_error_us), 3),
+        _present(p.shape) or "",
+        _g(_present(p.fwhm_mhz), 6),
+        "" if _present(p.detection_index) is None else str(p.detection_index),
+        *(_freq(b) for b in _fit_window_bounds(p)),
     ]
 
 
@@ -406,6 +439,16 @@ def _peak_json(
         "clock_lattice": p.clock_lattice,
         "derivation": p.derivation,
         "peak_uid": p.peak_uid,
+        "decay_time_us": _jnum(_present(p.decay_time_us)),
+        "decay_time_error_us": _jnum(_present(p.decay_time_error_us)),
+        "shape": _present(p.shape),
+        "fwhm_mhz": _jnum(_present(p.fwhm_mhz)),
+        "detection_index": _present(p.detection_index),
+        "fit_window_mhz": (
+            None
+            if _present(p.fit_window_mhz) is None
+            else [_jnum(b) for b in _fit_window_bounds(p)]
+        ),
     }
     if with_catalog:
         payload["catalog"] = _catalog_json(match)

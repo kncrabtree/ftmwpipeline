@@ -32,6 +32,21 @@ had to reach into ``_internal`` or parse out of prose to obtain are now
 published, and the Stage 6 edit paths that carry them were collapsed onto one
 engine so they cannot answer differently.
 
+* **Machine contract, Wave 2: per-line fit fields on the final products.**
+  Each ``FinalPeak`` now carries, from the Stage 5 fit of its window,
+  ``decay_time_us``, ``decay_time_error_us``, ``shape``, ``fwhm_mhz``,
+  ``detection_index`` and ``fit_window_mhz`` (see :doc:`machine_contract`).
+  ``fwhm_mhz`` is ``feature_fwhm(tau, stage5.acquisition_us, shape)`` exactly,
+  and ``fit_window_mhz`` is in the calibrated frame like ``frequency_mhz``.
+  They are ``Absent`` when they have no value (an error for a ``tau`` held
+  fixed, a line no Stage 3 detection seeded, a line with no fit record) and
+  are stored losslessly. A final-products table written before them is
+  rebuilt in memory on read, without writing the file. ``report table``
+  (CSV and JSON) and the HTML report's line tables gain the matching columns,
+  after the existing ones; an absent field is left empty, as missing values
+  already are. ``ftmwpipeline.Absent`` is unchanged (it is now defined in a
+  core module and re-exported, so the data structures can use it).
+
 * **Machine contract, Wave 1: the read surface, one rule for every accessor.**
   ``CONTRACT_VERSION`` is now ``2``.
   The sixteen accessors added to ``MANIFEST`` after ``capabilities`` share one set of

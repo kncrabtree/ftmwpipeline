@@ -43,9 +43,11 @@ from .report_impl import (
     _CAL_STATE_PHRASE,
     _amplitude_unit,
     _concise,
+    _fit_window_bounds,
     _freq,
     _g,
     _md_num,
+    _present,
     _scaled,
     assemble_summary_model,
     report_table_impl,
@@ -2465,6 +2467,44 @@ def _lattice_cell(p: FinalPeak) -> str:
     return f'<span class="badge lattice" title="{_esc(title)}">{_esc(cl)}</span>'
 
 
+#: Header cells of the per-line fit fields, appended after each line table's
+#: own columns (before the optional catalog and curation columns).
+_FIT_FIELD_HEAD: Tuple[str, ...] = (
+    "&tau; (&micro;s)",
+    "Shape",
+    "FWHM (kHz)",
+    "Detection",
+    "Fit window (MHz)",
+)
+
+
+def _fit_field_cells(p: FinalPeak) -> List[str]:
+    """Escaped cells for :data:`_FIT_FIELD_HEAD`; an absent field is empty.
+
+    ``tau`` is shown as ``value(uncertainty)`` when it has an error, plain when
+    it was held fixed; the fit window in the calibrated frame, like the line's
+    frequency.
+    """
+    tau = _present(p.decay_time_us)
+    tau_err = _present(p.decay_time_error_us)
+    if tau is None:
+        tau_cell = ""
+    elif tau_err is None:
+        tau_cell = _g(tau, 4)
+    else:
+        tau_cell = _concise(float(tau), float(tau_err))
+    fwhm = _present(p.fwhm_mhz)
+    det = _present(p.detection_index)
+    lo, hi = _fit_window_bounds(p)
+    return [
+        _esc(tau_cell),
+        _esc(_present(p.shape) or ""),
+        _esc("" if fwhm is None else _g(float(fwhm) * 1e3, 4)),
+        _esc("" if det is None else str(det)),
+        _esc("" if lo is None or hi is None else f"{_freq(lo)}–{_freq(hi)}"),
+    ]
+
+
 def _index_final_table(
     products: FinalProducts,
     matches: Optional[List[Optional[CatalogMatch]]] = None,
@@ -2500,6 +2540,7 @@ def _index_final_table(
             _esc(p.origin),
             _lattice_cell(p),
             win_cell,
+            *_fit_field_cells(p),
         ]
         if with_cat:
             row.append(_catalog_cell(matches[i]))  # type: ignore[index]
@@ -2512,6 +2553,7 @@ def _index_final_table(
         "Origin",
         "Lattice",
         "Window",
+        *_FIT_FIELD_HEAD,
     ]
     if with_cat:
         head.append("Catalog")
@@ -2579,6 +2621,7 @@ def _window_peak_table(
             _esc("" if p.snr is None else _concise(float(p.snr), p.snr_error)),
             _esc(p.origin),
             _lattice_cell(p),
+            *_fit_field_cells(p),
         ]
         if with_cat:
             row.append(_catalog_cell(matches[i]))  # type: ignore[index]
@@ -2602,6 +2645,7 @@ def _window_peak_table(
         "SNR",
         "Origin",
         "Lattice",
+        *_FIT_FIELD_HEAD,
     ]
     if with_cat:
         head.append("Catalog")

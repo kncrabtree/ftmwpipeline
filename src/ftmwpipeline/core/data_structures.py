@@ -21,6 +21,8 @@ from typing import Any, ClassVar, Dict, List, Optional, Tuple, Union, cast
 import numpy as np
 import scipy.fft as sfft
 
+from .absent import Absent
+
 # ---------------------------------------------------------------------------
 # Chirp-window declaration
 # ---------------------------------------------------------------------------
@@ -2089,12 +2091,38 @@ class FinalPeak:
         not free in that NLS), but worth knowing before comparing two peaks'
         p-values across a curated window.
 
-        All three describe the fit that produced the source peak. A line held
-        out of a Stage 6 refit by a **thaw** is re-attached verbatim, so its
-        statistics are the ones its earlier fit wrote while its neighbors'
-        are fresh -- by design (the thawed line was frozen into the
-        background, not free in that NLS), but worth knowing before comparing
-        two peaks' p-values across a curated window.
+    decay_time_us : float or Absent
+        The decay time ``tau`` (microseconds) the Stage 5 fit of the line's
+        window used: ``tau`` for a Lorentzian window, ``tau_G`` for a Gaussian
+        one. The window's shared value, so every line of one window reports
+        the same ``tau``.
+    decay_time_error_us : float or Absent
+        1-sigma error of ``decay_time_us``. ``Absent.UNDEFINED`` when ``tau``
+        was held fixed in that fit (it has no error), or when the fit left it
+        without one.
+    shape : str or Absent
+        The line shape the window was fitted with (``"lorentzian"`` or
+        ``"gaussian"``).
+    fwhm_mhz : float or Absent
+        Feature FWHM (MHz) of the finite-record line shape:
+        ``fitting.validation.feature_fwhm(decay_time_us, acquisition_us,
+        shape=shape)``, with ``acquisition_us`` the record length the fit
+        recorded (``read_metadata``'s ``stage5.acquisition_us``).
+        ``Absent.NOT_RUN`` when the fit recorded no record length.
+    detection_index : int or Absent
+        The Stage 3 detection index that seeded the line
+        (:attr:`FittedPeak.detection_index`). Provenance, not identity: lines
+        of one blend can share it; ``peak_uid`` is the identifier.
+        ``Absent.UNDEFINED`` when no Stage 3 detection seeded the line (a line
+        added in a window that holds none, such as one created during review).
+    fit_window_mhz : tuple of float, or Absent
+        ``(low, high)`` bounds (MHz) of the window the line was fitted in, in
+        the calibrated frame like ``frequency_mhz``. A line from a window
+        created during review reports that window's bounds.
+
+        These six fields are joined from the Stage 5 fit record of the line's
+        window. Every one is ``Absent.UNDEFINED`` for a line with no fit record
+        behind it (its window cannot be identified).
     """
 
     frequency_mhz: float
@@ -2118,6 +2146,12 @@ class FinalPeak:
     knockout_p_value: Optional[float] = None
     knockout_supported: Optional[bool] = None
     knockout_aicc_delta: Optional[float] = None
+    decay_time_us: Union[float, Absent] = Absent.UNDEFINED
+    decay_time_error_us: Union[float, Absent] = Absent.UNDEFINED
+    shape: Union[str, Absent] = Absent.UNDEFINED
+    fwhm_mhz: Union[float, Absent] = Absent.UNDEFINED
+    detection_index: Union[int, Absent] = Absent.UNDEFINED
+    fit_window_mhz: Union[Tuple[float, float], Absent] = Absent.UNDEFINED
 
 
 @dataclass

@@ -458,8 +458,12 @@ order, are ``frequency_mhz`` (calibrated), ``sigma_f_khz`` (the total budget), i
 three components ``sigma_stat_khz`` / ``sigma_eps_khz`` / ``sigma_floor_khz``,
 ``frequency_raw_mhz`` (uncalibrated) and ``f_baseband_mhz``, ``amplitude`` /
 ``amplitude_err`` (in a header-declared unit), ``phase_rad`` / ``phase_err_rad``,
-``snr`` / ``snr_err``, ``origin``, ``window_id``, ``clock_lattice``, and
-``derivation``. With
+``snr`` / ``snr_err``, ``origin``, ``window_id``, ``clock_lattice``,
+``derivation``, ``peak_uid``, and the per-line fit fields of the line's window:
+``decay_time_us`` / ``decay_time_error_us`` (empty when ``tau`` was held fixed),
+``shape``, ``fwhm_mhz``, ``detection_index``, and ``fit_window_low_mhz`` /
+``fit_window_high_mhz`` (calibrated, like ``frequency_mhz``). An absent value is
+an empty cell. With
 ``--catalog`` four columns append: ``catalog_label``, ``catalog_freq_mhz``,
 ``catalog_delta_khz``, and ``catalog_pull``. A representative excerpt:
 

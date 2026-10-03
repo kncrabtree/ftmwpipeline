@@ -48,6 +48,7 @@ from typing import (
 import h5py
 import numpy as np
 
+from ..core.absent import Absent
 from ..core.calibration import CalibrationStamp, CalibrationState
 from ..core.curation import REFIT_SNAP_TOL_BINS, Frame, PeakUidToken, parse_peak_token
 from ..core.data_structures import (
@@ -72,7 +73,11 @@ from ..fitting.active_ft import active_ft_bin_spacing_mhz, peak_uid_from_offset
 from ..fitting.peak_model import ModelPeak
 from ..fitting.peak_model import molecular_frequency as _molecular_frequency
 from ..fitting.peak_model import sideband_sign
-from ..fitting.validation import DEFAULT_CHI2R_NOISE_FLOOR, DEFAULT_SHAPE_ERROR_KAPPA
+from ..fitting.validation import (
+    DEFAULT_CHI2R_NOISE_FLOOR,
+    DEFAULT_SHAPE_ERROR_KAPPA,
+    feature_fwhm,
+)
 from ..io.fitting_serialization import (
     FitWindowCoverage,
     load_spectrum_fit_from_hdf5,
@@ -87,6 +92,7 @@ from ..io.frequency_calibration_serialization import (
     save_frequency_calibration_to_hdf5,
 )
 from ..io.stage6_review_serialization import (
+    final_products_predate_fit_fields,
     load_stage6_review_from_file,
     load_stage6_review_from_hdf5,
     save_stage6_review_to_hdf5,
@@ -9373,18 +9379,23 @@ def _current_calibration_stamp(
 
 
 def _final_products_is_stale(fp: Optional[FinalProducts], path: str) -> bool:
-    """Whether ``fp``'s calibration stamp no longer matches the file's
+    """Whether ``fp`` -- the table persisted in ``path`` -- must be rebuilt
+    before it is used: its calibration stamp no longer matches the file's
     currently-derived calibration (e.g. after a timebase re-run that never
-    touched Stage 6). ``None`` (no table built yet) is never "stale" -- there
-    is nothing to have gone stale. Likewise when the file has nothing to
-    derive a current stamp from (:func:`_current_calibration_stamp` returns
-    ``None``): with no grounds to declare staleness, trust the persisted
-    table rather than force a rebuild that cannot succeed anyway."""
+    touched Stage 6), or the stored table predates the per-line fit fields
+    (:func:`_persisted_table_predates_fit_fields`). ``None`` (no table built
+    yet) is never "stale" -- there is nothing to have gone stale. Likewise
+    when the file has nothing to derive a current stamp from
+    (:func:`_current_calibration_stamp` returns ``None``): with no grounds to
+    declare staleness, trust the persisted table rather than force a rebuild
+    that cannot succeed anyway."""
     if fp is None:
         return False
     current = _current_calibration_stamp(path)
     if current is None:
         return False
+    if _persisted_table_predates_fit_fields(path):
+        return True
     stamped = (
         fp.calibration_state,
         float(fp.epsilon),
@@ -9394,6 +9405,20 @@ def _final_products_is_stale(fp: Optional[FinalProducts], path: str) -> bool:
         fp.sideband,
     )
     return stamped != current
+
+
+def _persisted_table_predates_fit_fields(path: str) -> bool:
+    """Whether the final-products table stored in ``path`` was written before
+    ``FinalPeak`` carried the Stage 5 fit fields (``decay_time_us`` ...
+    ``fit_window_mhz``). Such a table reads those fields as ``Absent``, so it
+    is rebuilt from the raw fit -- in memory on a read, persisted by the next
+    write that stores the table. Read-only."""
+    try:
+        with h5py.File(path, "r") as h5f:
+            group = h5f.get("stage6_review")
+            return final_products_predate_fit_fields(group)
+    except OSError:
+        return False
 
 
 def _rebuild_final_products(path: str) -> Optional[FinalProducts]:
@@ -9428,8 +9453,9 @@ def _current_final_products(
     ``existing`` is whatever a persisted ``Stage6Review`` carries (``None``
     until ``review run`` first builds a table). When it is present but its
     stamp no longer matches the file's current calibration -- most commonly a
-    timebase re-run with no Stage 6 action at all -- rebuild from the raw
-    Stage 5 fit rather than returning the stale table.
+    timebase re-run with no Stage 6 action at all -- or the stored table
+    predates the per-line fit fields, rebuild from the raw Stage 5 fit rather
+    than returning the stale table.
 
     Read-only: never writes to ``path``, so it is safe to call on a file the
     caller has open only for reading (or not open at all). Callers that want
@@ -9479,7 +9505,8 @@ def get_final_products_impl(file_path: Union[Path, str]) -> Optional[FinalProduc
     Rebuilds from the raw Stage 5 fit -- in memory, without persisting --
     when the persisted table's calibration stamp no longer matches the
     file's current calibration (e.g. a timebase re-run since the table was
-    last built). See :func:`_current_final_products`.
+    last built), or when the stored table predates the per-line fit fields.
+    See :func:`_current_final_products`.
     """
     path = str(file_path)
     existing = load_stage6_review_from_file(path).final_products
@@ -9557,6 +9584,140 @@ def _derive_frequency_calibration(
     return "self_calibrated", float(tc.epsilon), float(tc.sigma_epsilon)
 
 
+#: ``FinalPeak``'s per-line fit fields for a line with no Stage 5 fit record
+#: behind it: every one is undefined.
+_NO_FIT_RECORD_FIELDS: Dict[str, Any] = {
+    "decay_time_us": Absent.UNDEFINED,
+    "decay_time_error_us": Absent.UNDEFINED,
+    "shape": Absent.UNDEFINED,
+    "fwhm_mhz": Absent.UNDEFINED,
+    "detection_index": Absent.UNDEFINED,
+    "fit_window_mhz": Absent.UNDEFINED,
+}
+
+
+def _recorded_acquisition_us(spectrum_fit: SpectrumFit) -> Union[float, Absent]:
+    """The record length ``T`` (us) the Stage 5 fit recorded.
+
+    The same value :func:`~ftmwpipeline._internal.read_impl.read_metadata_impl`
+    reports as ``stage5.acquisition_us`` (both read the fit's persisted
+    ``parameters["acquisition_us"]``), so a width computed from it is the one a
+    client computes from that key. ``Absent.NOT_RUN`` when the fit recorded
+    none; ``Absent.UNDEFINED`` when the recorded value is not a positive
+    finite number.
+    """
+    raw = spectrum_fit.parameters.get("acquisition_us")
+    if raw is None:
+        return Absent.NOT_RUN
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return Absent.UNDEFINED
+    if not math.isfinite(value) or value <= 0.0:
+        return Absent.UNDEFINED
+    return value
+
+
+def _window_fit_fields(
+    wf: FittingResult,
+    *,
+    acquisition_us: Union[float, Absent],
+    probe_freq_mhz: float,
+    epsilon: float,
+) -> Dict[str, Any]:
+    """The per-line fit fields every line of window ``wf`` shares.
+
+    ``decay_time_us`` / ``decay_time_error_us`` are the window's shared
+    ``tau`` and its error (the error is undefined when ``tau`` was held fixed,
+    or the fit left it without one); ``shape`` is the window's line shape;
+    ``fwhm_mhz`` is exactly ``feature_fwhm(tau, acquisition_us, shape=shape)``
+    (absent with the same reason as ``acquisition_us`` when that is absent,
+    undefined when ``tau`` or ``shape`` is); ``fit_window_mhz`` is the
+    window's ``(low, high)`` bounds moved to the calibrated frame with the same
+    correction as ``frequency_mhz`` (:func:`_frame_to_calibrated`).
+    """
+    tau_entry = wf.shared_parameters.get("tau_us") or {}
+
+    decay_time: Union[float, Absent] = Absent.UNDEFINED
+    tau_raw = tau_entry.get("value")
+    if tau_raw is not None:
+        tau = float(tau_raw)
+        if math.isfinite(tau) and tau > 0.0:
+            decay_time = tau
+
+    decay_error: Union[float, Absent] = Absent.UNDEFINED
+    err_raw = tau_entry.get("error")
+    if (
+        not isinstance(decay_time, Absent)
+        and tau_entry.get("fitted") is not False
+        and err_raw is not None
+    ):
+        err = float(err_raw)
+        if math.isfinite(err) and err >= 0.0:
+            decay_error = err
+
+    shape: Union[str, Absent] = Absent.UNDEFINED
+    shape_raw = getattr(wf, "shape", None)
+    if shape_raw is not None and str(getattr(shape_raw, "value", shape_raw)):
+        shape = str(getattr(shape_raw, "value", shape_raw))
+
+    fwhm: Union[float, Absent]
+    if isinstance(acquisition_us, Absent):
+        fwhm = acquisition_us
+    elif isinstance(decay_time, Absent) or isinstance(shape, Absent):
+        fwhm = Absent.UNDEFINED
+    else:
+        try:
+            fwhm = float(feature_fwhm(decay_time, acquisition_us, shape=shape))
+        except ValueError:
+            fwhm = Absent.UNDEFINED
+        if not isinstance(fwhm, Absent) and not math.isfinite(fwhm):
+            fwhm = Absent.UNDEFINED
+
+    fit_window: Union[Tuple[float, float], Absent] = Absent.UNDEFINED
+    window = wf.window
+    if window is not None:
+        lo_raw, hi_raw = (float(v) for v in window.freq_range)
+        if math.isfinite(lo_raw) and math.isfinite(hi_raw):
+            lo, hi = sorted(
+                _frame_to_calibrated(v, probe_freq_mhz=probe_freq_mhz, epsilon=epsilon)
+                for v in (lo_raw, hi_raw)
+            )
+            fit_window = (lo, hi)
+
+    return {
+        "decay_time_us": decay_time,
+        "decay_time_error_us": decay_error,
+        "shape": shape,
+        "fwhm_mhz": fwhm,
+        "fit_window_mhz": fit_window,
+    }
+
+
+def _line_fit_fields(
+    pk: FittedPeak, window_fields: Dict[int, Dict[str, Any]]
+) -> Dict[str, Any]:
+    """``FinalPeak``'s per-line fit fields for ``pk``: its window's shared
+    fields (:func:`_window_fit_fields`) plus its ``detection_index``
+    (undefined when no Stage 3 detection seeded the line). Every
+    field is ``Absent.UNDEFINED`` when the line has no fit record behind it
+    (no window id, or no fit result for that window)."""
+    shared = None if pk.window_id is None else window_fields.get(int(pk.window_id))
+    if shared is None:
+        return dict(_NO_FIT_RECORD_FIELDS)
+    # The fit writes -1 when no Stage 3 detection seeded the line (a line added
+    # to a window with no free Stage 3 peaks, e.g. one created during review);
+    # the contract carries that as Absent, never as the -1 sentinel.
+    detection_index: Union[int, Absent] = Absent.UNDEFINED
+    try:
+        index = int(pk.detection_index)
+    except (TypeError, ValueError):
+        index = -1
+    if index >= 0:
+        detection_index = index
+    return {**shared, "detection_index": detection_index}
+
+
 def _build_final_products(
     spectrum_fit: SpectrumFit,
     *,
@@ -9573,8 +9734,21 @@ def _build_final_products(
     (``f_corr = probe + (f_raw - probe)/(1+epsilon)``, sideband-independent) and
     builds the three-term ``sigma_f`` budget per accepted peak:
     ``sqrt(sigma_stat^2 + (sigma_epsilon * f_baseband)^2 + sigma_floor^2)``.
+    Each line also carries the per-line fit fields joined from the fit record
+    of its window (:func:`_window_fit_fields`, :func:`_line_fit_fields`), with
+    the window bounds moved to the calibrated frame by the same correction.
     """
     floor_khz = float(sigma_floor_khz)
+    acquisition_us = _recorded_acquisition_us(spectrum_fit)
+    window_fields: Dict[int, Dict[str, Any]] = {}
+    for wf in spectrum_fit.window_fits:
+        if wf.window_id is not None and int(wf.window_id) not in window_fields:
+            window_fields[int(wf.window_id)] = _window_fit_fields(
+                wf,
+                acquisition_us=acquisition_us,
+                probe_freq_mhz=probe_freq_mhz,
+                epsilon=epsilon,
+            )
     final_peaks: List[FinalPeak] = []
     for pk in spectrum_fit.fitted_peaks:
         f_raw = float(pk.frequency_mhz)
@@ -9632,6 +9806,7 @@ def _build_final_products(
                 knockout_p_value=ko_p,
                 knockout_supported=ko_supported,
                 knockout_aicc_delta=ko_aicc,
+                **_line_fit_fields(pk, window_fields),
             )
         )
 
