@@ -351,47 +351,65 @@ non-finite sidecar value) is `Absent.UNDEFINED`.
 ### Window model
 
 `window_model(path, window_id, *, grid="active", components=False)` → the
-fitted model of one window, evaluated so a client can draw it over the
-spectrum without reimplementing the line shape:
+fitted model of one window, evaluated so a client can draw it — and check it —
+without reimplementing the line shape:
 
-- `schema`: `ftmw/window_model@1`; `window_id`; `grid` (`"active"` or
-  `"display"`); `frame` — always `"raw"`, the fit's frame and
-  `compute_display_ft`'s axis (the calibrated frame applies only to reported
-  line frequencies);
+- `schema`: `ftmw/window_model@1`; `window_id`; `grid`; `frame` — always
+  `"raw"`, the fit's frame (the calibrated frame applies only to reported line
+  frequencies);
 - `frequency_mhz`: the grid, restricted to the window's fit range;
-- `model`: complex, the full window model — the window's fitted lines plus the
-  frozen contributions of neighbours that the fit held fixed;
-- `fixed`: complex, the frozen neighbour contribution alone;
+- `data`: complex, the spectrum on that grid — for `"active"`, exactly the data
+  the fit compared with;
+- `model`: complex, everything the fit compared with the data: the window's
+  fitted lines, plus the frozen contributions of neighbours the fit held fixed,
+  plus the window's fitted baseline when it has one;
+- `fixed`: complex, the frozen neighbour contribution alone, evaluated as the
+  fit evaluated it (at the decay time the fit held it at, which the fit
+  records);
+- `baseline`: complex, the fitted baseline alone, or `Absent.NOT_RUN` when the
+  window was fitted without one;
+- `sigma`, `excluded` (active grid only; `Absent.UNDEFINED` on the display
+  grid): the per-bin noise the fit weighted by and a boolean mask of the bins
+  the fit left out (gated spurs), so that
+  `sum(|data − model|² / (sigma²/2))` over the bins not excluded is the fit's
+  χ²;
 - with `components=True`, one complex array per fitted line, keyed by
-  `peak_uid`.
+  `peak_uid`; `model = Σ components + fixed + baseline`.
 
-`grid="active"` evaluates on the native active-FT grid. There, `model` is
-exactly what the fit compared with the data; the residual is
-`compute_ft` data minus `model`. `grid="display"` evaluates on
-`compute_display_ft`'s zero-filled grid, so the model overlays that spectrum
-point for point. Amplitudes are in the same units as the corresponding
+`grid="active"` is the **native active-FT grid that Stage 5 fits** — not
+`compute_ft`'s grid, which covers the full record at a different bin spacing,
+scale and phase origin. `grid="display"` is `compute_display_ft`'s zero-filled
+grid, which contains every active bin exactly; the model overlays that
+spectrum point for point. Amplitudes are in the units of the corresponding
 spectrum, so `display_units` applies to both. Magnitudes are `abs()` of the
-complex arrays. The evaluation is the same code path the fit-detail plots
-use.
+complex arrays. The evaluation is the same code path every plot uses.
 
 An unknown `window_id` raises `not_found`; a file without a Stage 5 fit raises
-`stage_not_run`.
+`stage_not_run`. A fit that held frozen neighbours at a decay time it did not
+record (written before the fit recorded it) cannot be reproduced and raises
+`incomplete_provenance` for that window.
 
 ### Spectrum model
 
 `spectrum_model(path, *, grid="active")` → `{"schema":
-"ftmw/spectrum_model@1", "grid", "frame": "raw", "frequency_mhz", "model",
-"residual"}`:
+"ftmw/spectrum_model@1", "grid", "frame": "raw", "frequency_mhz", "data",
+"model", "residual"}`:
 
-- `frequency_mhz`: the full grid of the corresponding spectrum (`compute_ft`'s
-  for `"active"`, `compute_display_ft`'s for `"display"`);
-- `model`: complex, every line of the persisted fit (including curation
-  edits) evaluated **once** over the whole grid with the same evaluator as
-  `window_model` — no frozen-neighbour double counting;
-- `residual`: complex, that spectrum minus `model`, point for point.
+- `frequency_mhz` / `data`: the whole grid and spectrum (the native active FT,
+  or `compute_display_ft`'s);
+- `model`: complex, every line of the persisted fit (including curation edits)
+  evaluated **once** over the whole grid at its window's fitted decay time,
+  plus each window's fitted baseline evaluated **only inside that window's fit
+  range** (a baseline is a local leakage-wing polynomial and is meaningless
+  outside it; where fit ranges overlap, a bin takes the baseline of the window
+  whose centre is nearest);
+- `residual`: `data − model`, point for point.
 
-A file without a Stage 5 fit raises `stage_not_run`. Through the CLI, the
-arrays go to `.npy` under `--output` like every other array.
+Inside a window, `spectrum_model` differs from `window_model` by design: it
+carries every neighbour's full line rather than the frozen contribution the
+fit held, so its residual is not the fit's χ² residual. A file without a
+Stage 5 fit raises `stage_not_run`. Through the CLI, the arrays go to `.npy`
+under `--output`.
 
 ## Errors *(outline)*
 
