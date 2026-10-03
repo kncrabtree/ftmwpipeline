@@ -58,6 +58,10 @@ CONTRACT_VERSION: int = 1
 #: Schema name of the :func:`capabilities` payload.
 CAPABILITIES_SCHEMA = "ftmw/capabilities@1"
 
+#: Schema names of the FID-samples and display-units payloads.
+FID_SAMPLES_SCHEMA = "ftmw/fid_samples@1"
+DISPLAY_UNITS_SCHEMA = "ftmw/display_units@1"
+
 #: ``ftmw/<payload>@<n>``: lowercase payload name, positive integer revision.
 SCHEMA_NAME_RE = re.compile(r"^ftmw/[a-z][a-z0-9_]*@[1-9][0-9]*$")
 
@@ -305,11 +309,15 @@ _ACCESSORS: Tuple[AccessorSpec, ...] = (
     AccessorSpec("review_log", True, cli=("review", "log")),
     AccessorSpec("get_pipeline_info", True, pipeline_name="info", cli=("info",)),
     AccessorSpec("compute_display_ft", True),
+    AccessorSpec("fid_samples", file_bound=True),
+    AccessorSpec("display_units", file_bound=True),
 )
 
 _SCHEMAS: Tuple[str, ...] = (
     ERROR_SCHEMA,
     CAPABILITIES_SCHEMA,
+    FID_SAMPLES_SCHEMA,
+    DISPLAY_UNITS_SCHEMA,
 )
 
 _CODES: Tuple[str, ...] = (
