@@ -127,6 +127,25 @@ file to `--output` (self-describing dtype, shape and byte order) and prints the
 JSON envelope with the array fields replaced by their file name. Each states what it returns, what it is guaranteed to
 equal, and when it is absent.
 
+Rules every accessor follows:
+
+- **One CLI verb per accessor: `ftmwpipeline read <accessor name>`**, spelled
+  exactly as the functional-API name, printing the accessor's JSON envelope.
+  Verbs that predate the contract (`info`, `review log`, `settings show`, …)
+  keep their human output and are not contract.
+- **The payload carries its schema in Python too.** A dict payload has a
+  `"schema"` key; a dataclass payload declares `__ftmw_schema__`. The API,
+  `Pipeline` and the CLI therefore return the same stamped object. Schema
+  names are constants in `ftmwpipeline.contract`.
+- **Entity tables are lists of records.** An accessor that returns one row per
+  window, FID or line returns a list of records (dataclasses or dicts), so an
+  absent field travels as `Absent` per row (`null` plus its `_absent` sibling
+  on the wire). Numeric series (samples, spectra, models) are arrays and go to
+  `.npy` through the CLI. The columnar form of a table, with `<column>__status`
+  columns, belongs to `read_table`.
+- A refusal names the command to run as a bare CLI verb (`windows run`,
+  `data import`), never a full shell line.
+
 ### Already present — declared as contract
 
 These exist today; the contract freezes their names and the listed fields.
@@ -255,7 +274,8 @@ computed from the file alone.
 ### Display units
 
 `display_units(path)` → `{"amplitude_scale": float, "units_label": str,
-"units_power": int | None}`.
+"units_power": int}`. `units_power` always resolves (the Stage 1 chain ends
+in a hard default).
 
 **Guarantee:** on the same file, at every stage — including before Stage 1 has
 persisted anything — `amplitude_scale` and `units_label` are exactly the pair
