@@ -2598,6 +2598,22 @@ def fit_thresholds(file_path: Union[str, Path]) -> Dict[str, Any]:
     too -- never a guessed default.
     """
     return Pipeline(file_path).fit_thresholds()
+def window_status(file_path: Union[str, Path]) -> Dict[str, Any]:
+    """Per-window status: the Stage 4 plan, created windows and Stage 5 coverage.
+
+    Returns the ``ftmw/window_status@1`` payload: columns ``window_id``,
+    ``freq_min_mhz``, ``freq_max_mhz``, ``created``, ``n_fitted_peaks`` and
+    ``live`` (true when the Stage 5 fit holds at least one fitted line in the
+    window), one row per window. Before Stage 5, ``n_fitted_peaks`` and ``live``
+    are ``Absent.NOT_RUN`` (``<column>__status`` is ``1``). Also readable as the
+    ``window_status`` table of :func:`read_table`.
+
+    Raises
+    ------
+    StageDependencyError
+        Stage 4 has not been run.
+    """
+    return Pipeline.open(file_path).window_status()
 
 
 def settings_show(

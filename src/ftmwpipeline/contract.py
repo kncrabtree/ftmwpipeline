@@ -314,6 +314,7 @@ _ACCESSORS: Tuple[AccessorSpec, ...] = (
     AccessorSpec("fid_samples", file_bound=True),
     AccessorSpec("display_units", file_bound=True),
     AccessorSpec("fit_thresholds", file_bound=True),
+    AccessorSpec("window_status", file_bound=True),
 )
 
 _SCHEMAS: Tuple[str, ...] = (
@@ -322,6 +323,7 @@ _SCHEMAS: Tuple[str, ...] = (
     FID_SAMPLES_SCHEMA,
     DISPLAY_UNITS_SCHEMA,
     FIT_THRESHOLDS_SCHEMA,
+    "ftmw/window_status@1",
 )
 
 _CODES: Tuple[str, ...] = (
@@ -416,6 +418,16 @@ _TABLES: Dict[str, Tuple[str, ...]] = {
         "batch",
         "n_free_peaks",
         "n_fixed_contributors",
+    ),
+    "window_status": (
+        "window_id",
+        "freq_min_mhz",
+        "freq_max_mhz",
+        "created",
+        "n_fitted_peaks",
+        "n_fitted_peaks__status",
+        "live",
+        "live__status",
     ),
 }
 

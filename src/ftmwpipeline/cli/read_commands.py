@@ -292,6 +292,15 @@ Examples:
         schema=FIT_THRESHOLDS_SCHEMA,
     )
 
+    register_accessor(
+        read_sub,
+        "window_status",
+        lambda path, **kw: Pipeline.open(path).window_status(),
+        help="Per-window status: plan, created windows, Stage 5 coverage (JSON)",
+        schema="ftmw/window_status@1",
+        takes_file=MANIFEST.file_bound["window_status"],
+    )
+
     # 'read' with no subcommand prints its help.
     def _read_help(args: argparse.Namespace) -> int:
         read.print_help()

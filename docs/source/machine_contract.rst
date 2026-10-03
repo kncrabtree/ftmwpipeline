@@ -368,6 +368,39 @@ reserved and not yet implemented.
 
    $ ftmwpipeline read capabilities | python -m json.tool
 
+Window status: ``window_status``
+--------------------------------
+
+``window_status(path)`` reports one row per Stage 4 plan window and per
+window Stage 6 created, as columns (schema ``ftmw/window_status@1``):
+``window_id``, ``freq_min_mhz``, ``freq_max_mhz``, ``created``,
+``n_fitted_peaks`` and ``live``. A window is **live** when the Stage 5 fit
+holds at least one fitted line in it. Rows ascend by ``freq_min_mhz`` and then
+``window_id``. A created window that reuses a plan ``window_id`` (the
+narrow-gap widening case) replaces that plan row, with its own bounds and
+``created`` true.
+
+Absence and refusals:
+
+* Before Stage 5, ``n_fitted_peaks`` and ``live`` are ``Absent.NOT_RUN``:
+  ``n_fitted_peaks__status`` and ``live__status`` are ``1`` and the value
+  columns hold the fill ``0`` / ``False``, which a program must not read.
+* Once Stage 5 exists, a window it holds no entry for (for example a created
+  window not yet re-fit) reports ``0`` and ``False`` with status ``0``.
+* Before Stage 4 it raises ``StageDependencyError`` (``stage_not_run``) with
+  ``command`` ``windows run``.
+* A path that does not exist raises ``PipelineFileNotFoundError``.
+
+It is also the ``window_status`` table of ``read_table`` (the same columns
+without ``schema``; column selection works). ``read_table`` raises the plain
+missing-stage ``ValueError`` of the other tables before Stage 4. The read never
+writes the file. The CLI writes each column to ``<column>.npy`` under
+``--output`` and prints the envelope naming them:
+
+.. code-block:: console
+
+   $ ftmwpipeline read window_status experiment.ftmw --output status/
+
 Serialization rules worth knowing: an enum is written as its ``.value``
 (``PeakShape.LORENTZIAN`` is ``"lorentzian"``, also as a mapping key); a
 complex number is ``{"real": x, "imag": y}``; a non-finite float with no field
