@@ -84,6 +84,21 @@ def tau_calibrated_2638(baseline_2638_stage2, tmp_path_factory):
     return path
 
 
+@pytest.fixture(scope="module")
+def ft_unset_end_1231(tmp_path_factory):
+    """A Stage 1 file with no declared end time, as a real import produces it.
+
+    1231 ships no ``fid/processing.csv``, so the import declares no
+    ``FidEndUs`` and Stage 1 persists ``end_us`` as unset -- the state every
+    such Blackchirp import is in.
+    """
+    path = tmp_path_factory.mktemp("read_unset") / "unset_end_1231.ftmw"
+    ftmw.import_data(path, "examples/blackchirp_data/1231")
+    ftmw.settings_set(path, "stage1.trim", "26500,40000")
+    ftmw.compute_ft(path, from_saved_params=True)
+    return path
+
+
 @pytest.fixture
 def table_source(baseline_2638_stage5_small, tau_calibrated_2638):
     """Resolve a table name to the fixture file that carries it."""
@@ -374,6 +389,25 @@ class TestReadAcrossInterfaces:
         assert via_api == Pipeline.open(path).read_metadata()
         for key in ("tau.tau_maj_us", "tau_g.tau_maj_us", "tau.sigma_tau_us"):
             assert via_cli[key] == pytest.approx(via_api[key])
+
+    def test_identical_metadata_with_an_unset_end_time(self, ft_unset_end_1231):
+        """Unset settings read as ``None`` on every surface, not as a sentinel."""
+        path = str(ft_unset_end_1231)
+        via_api = ftmw.read_metadata(path)
+        via_cli = json.loads(_run_read(["meta", path, "--format", "json"]))
+
+        assert via_api == Pipeline.open(path).read_metadata()
+        for prefix in ("ft", "stage1"):
+            assert via_api[f"{prefix}.end_us"] is None
+            assert via_cli[f"{prefix}.end_us"] is None
+        # The active length runs to the end of the record.
+        assert via_api["ft.acquisition_us"] == pytest.approx(
+            via_api["fid.duration_us"] - via_api["ft.start_us"]
+        )
+        assert via_cli["ft.acquisition_us"] == pytest.approx(
+            via_api["ft.acquisition_us"]
+        )
+        assert via_cli["ft.trim_min_mhz"] == pytest.approx(26500.0)
 
     def test_ft_and_fit_agree_on_the_active_record_length(
         self, baseline_2638_stage5_small

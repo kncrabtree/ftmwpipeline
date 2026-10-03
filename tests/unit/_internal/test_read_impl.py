@@ -38,6 +38,7 @@ from ftmwpipeline.core.data_structures import (
     SpectrumFit,
     WindowPlan,
 )
+from ftmwpipeline.core.settings import FTSettings
 from ftmwpipeline.file_manager import PipelineCompatibilityError
 from ftmwpipeline.fitting.tau_calibration import (
     BandMajority,
@@ -46,6 +47,9 @@ from ftmwpipeline.fitting.tau_calibration import (
 )
 from ftmwpipeline.io.fitting_serialization import save_spectrum_fit_to_hdf5
 from ftmwpipeline.io.peak_serialization import save_peaks_to_hdf5
+from ftmwpipeline.io.stage_fit_settings_serialization import (
+    write_stage2b_recommended_shape,
+)
 from ftmwpipeline.io.tau_calibration_serialization import save_tau_calibration_to_hdf5
 from ftmwpipeline.io.window_serialization import save_window_plan_to_hdf5
 
@@ -412,6 +416,61 @@ class TestReadMetadata:
         assert meta["ft.units_power"] == settings.units_power
         assert meta["ft.start_us"] == pytest.approx(settings.start_us)
 
+    def _write_ft_record(self, path, settings: FTSettings) -> None:
+        """Replace the Stage 1 record with what Stage 1's own writer emits."""
+        with h5py.File(path, "a") as h5f:
+            group = h5f["processing_parameters/ft_processing"]
+            for key in list(group.attrs):
+                del group.attrs[key]
+            group.attrs.update(settings.to_attrs())
+
+    def test_unset_end_us_reads_as_none(self, ftmw_file):
+        """An import with no declared end time persists ``end_us`` as unset.
+
+        Every Blackchirp import lacking a ``FidEndUs`` is in this state. The
+        writer spells unset as the ``__None__`` sentinel, so this view must read
+        it back as ``None`` -- and derive the active length over the whole
+        record, as Stage 1 does -- rather than fail to parse it.
+        """
+        self._write_ft_record(
+            ftmw_file,
+            FTSettings(
+                start_us=2.27, end_us=None, units_power=6, trim=(26500.0, 40000.0)
+            ),
+        )
+        meta = read_metadata_impl(ftmw_file)
+        assert meta["ft.end_us"] is None
+        assert meta["stage1.end_us"] is None
+        assert meta["ft.acquisition_us"] == pytest.approx(15.0 - 2.27)
+        assert meta["ft.acquisition_us"] == active_acquisition_us(15.0, 2.27, None)
+
+    def test_unset_trim_reads_as_none_not_the_sentinel(self, ftmw_file):
+        """A file whose trim was never set must not report a trim of "__None__"."""
+        self._write_ft_record(
+            ftmw_file, FTSettings(start_us=2.27, end_us=15.0, units_power=6)
+        )
+        meta = read_metadata_impl(ftmw_file)
+        for prefix in ("ft", "stage1"):
+            assert meta[f"{prefix}.trim_min_mhz"] is None
+            assert meta[f"{prefix}.trim_max_mhz"] is None
+        assert meta["ft.units_power"] == 6
+
+    def test_ft_section_matches_the_stage1_resolver(self, ftmw_file):
+        """This view and Stage 1 read the same record the same way."""
+        from ftmwpipeline._internal.stage1_impl import _read_settings_layer
+
+        self._write_ft_record(ftmw_file, FTSettings(start_us=None, end_us=None))
+        meta = read_metadata_impl(ftmw_file)
+        settings = _read_settings_layer(
+            str(ftmw_file), "processing_parameters/ft_processing"
+        )
+        assert settings is not None
+        assert meta["ft.start_us"] == settings.start_us
+        assert meta["ft.end_us"] == settings.end_us
+        assert meta["ft.units_power"] == settings.units_power
+        assert settings.trim is None and meta["ft.trim_min_mhz"] is None
+        assert meta["ft.acquisition_us"] == pytest.approx(15.0)
+
     def test_ft_section_absent_when_stage1_has_not_run(self, ftmw_file):
         with h5py.File(ftmw_file, "a") as h5f:
             del h5f["processing_parameters/ft_processing"]
@@ -441,6 +500,19 @@ class TestReadMetadata:
         assert meta["tau.shape"] == "lorentzian"
         assert meta["tau_g.shape"] == "gaussian"
         assert meta["tau.n_bands"] == 2
+
+    def test_no_recommended_shape_reads_as_none(self, ftmw_file):
+        """A Stage 2b vote with no winner stamps the sentinel, which reads as None."""
+        write_stage2b_recommended_shape(str(ftmw_file), None)
+        meta = read_metadata_impl(ftmw_file)
+        assert meta["tau.recommended_shape"] is None
+        assert meta["tau_g.recommended_shape"] is None
+
+    def test_recommended_shape_reads_back_when_the_vote_named_one(self, ftmw_file):
+        write_stage2b_recommended_shape(str(ftmw_file), "gaussian")
+        meta = read_metadata_impl(ftmw_file)
+        assert meta["tau.recommended_shape"] == "gaussian"
+        assert meta["tau_g.recommended_shape"] == "gaussian"
 
     def test_tau_g_section_absent_without_the_gaussian_twin(self, ftmw_file):
         with h5py.File(ftmw_file, "a") as h5f:

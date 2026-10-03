@@ -934,6 +934,7 @@ def _assemble_summary(file_path: Union[Path, str]) -> _SummaryModel:
 
     timebase_n_used: Optional[int] = None
     timebase_lattice_g: Optional[float] = None
+    ft_settings = _read_settings_layer(path, FT_PROCESSING_PATH)
 
     with h5py.File(path, "r") as h5f:
         # --- provenance -----------------------------------------------------
@@ -951,14 +952,13 @@ def _assemble_summary(file_path: Union[Path, str]) -> _SummaryModel:
         )
 
         # --- Stage 1: FT band (display knobs persisted under ft_processing) -
+        # Through the Stage 1 resolver, not the raw attrs: an unset trim is
+        # persisted as the ``__None__`` sentinel, and an older record carries
+        # the bundle only as a JSON blob. Only the record's own codec reads both.
         band_lo: Optional[float] = None
         band_hi: Optional[float] = None
-        ft_processing = h5f.get("processing_parameters/ft_processing")
-        if ft_processing is not None:
-            lo = ft_processing.attrs.get("trim_min_mhz")
-            hi = ft_processing.attrs.get("trim_max_mhz")
-            band_lo = None if lo is None else float(lo)
-            band_hi = None if hi is None else float(hi)
+        if ft_settings is not None and ft_settings.trim is not None:
+            band_lo, band_hi = (float(v) for v in ft_settings.trim)
         ft_bin_khz = 1.0e3 / fid.duration_us if fid.duration_us else None
         ft_n_bins = (
             int(round((band_hi - band_lo) / (ft_bin_khz * 1e-3)))
@@ -1094,7 +1094,6 @@ def _assemble_summary(file_path: Union[Path, str]) -> _SummaryModel:
     # not the raw Stage 0 recommendation -- a manual Stage 1 override must win).
     start_prov = resolve_start_provenance(path)
     end_us = None
-    ft_settings = _read_settings_layer(path, FT_PROCESSING_PATH)
     if ft_settings is not None and ft_settings.end_us is not None:
         end_us = float(ft_settings.end_us)
     start_detection_params: Dict[str, Any] = {}

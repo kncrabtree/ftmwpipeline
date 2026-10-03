@@ -51,6 +51,7 @@ from typing import Any, Dict, List, Optional, Sequence
 import h5py
 import numpy as np
 
+from ..core.settings_framework import NONE
 from ..fitting.tau_calibration import (
     BandMajority,
     FrequencyThird,
@@ -675,11 +676,18 @@ def read_tau_spur_columns(
 
 
 def _plain(value: Any) -> Any:
-    """An HDF5 attribute as a plain Python scalar."""
+    """An HDF5 attribute as a plain Python scalar (the unset sentinel -> ``None``).
+
+    ``recommended_shape`` is stamped with the ``__None__`` sentinel when the
+    Stage 2b vote names no winner; it must read back as ``None``, not as a
+    shape called ``"__None__"``.
+    """
     if isinstance(value, bytes):
-        return value.decode("utf-8")
+        value = value.decode("utf-8")
     if isinstance(value, np.generic):
-        return value.item()
+        value = value.item()
+    if isinstance(value, str) and value == NONE:
+        return None
     return value
 
 

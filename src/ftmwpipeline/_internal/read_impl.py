@@ -91,6 +91,8 @@ from typing import Any, Callable, Dict, Optional, Sequence, Tuple, Union
 import h5py
 import numpy as np
 
+from ..core.settings import FTSettings
+from ..core.settings_framework import NONE as NONE_SENTINEL
 from ..file_manager import check_format_compatibility
 from ..io._hdf5_helpers import ColumnSpec, load_json_attr
 from ..io.fitting_serialization import (
@@ -439,11 +441,13 @@ def read_tables_impl(file_path: Union[str, Path]) -> Dict[str, Dict[str, Any]]:
 
 
 def _decode(value: Any) -> Any:
-    """h5py attribute -> a plain Python scalar."""
+    """h5py attribute -> a plain Python scalar (the unset sentinel -> ``None``)."""
     if isinstance(value, bytes):
-        return value.decode("utf-8")
+        value = value.decode("utf-8")
     if isinstance(value, np.generic):
-        return value.item()
+        value = value.item()
+    if isinstance(value, str) and value == NONE_SENTINEL:
+        return None
     return value
 
 
@@ -484,16 +488,6 @@ _FID_ATTRS = (
 
 _SOURCE_ATTRS = ("source_path", "format_name", "import_timestamp", "source_hash")
 
-#: Canonical Stage 1 data-selection settings, as persisted by ``ft run``. They
-#: are what every later stage analyzes, so ``ft.acquisition_us`` -- and with it
-#: the Fourier resolution element -- is fixed here, not at Stage 5.
-_FT_ATTRS = (
-    "start_us",
-    "end_us",
-    "trim_min_mhz",
-    "trim_max_mhz",
-    "units_power",
-)
 
 #: Fields of the start-detection sweep record worth reporting: what the sweep
 #: found, not the knobs it was given (those are ``settings show``'s job).
@@ -509,9 +503,6 @@ _START_RECORD_FIELDS = (
     "resolved_band_max_mhz",
 )
 
-#: JSON sentinel the start-detection record uses for an unset optional field.
-_NONE_SENTINEL = "__None__"
-
 
 def _read_ft_window(h5f: h5py.File, out: Dict[str, Any]) -> None:
     """Report the canonical FT window, including its derived active length."""
@@ -523,10 +514,20 @@ def _read_ft_window(h5f: h5py.File, out: Dict[str, Any]) -> None:
     # view has to read both the same way, or a blob-only file reports no
     # `ft.units_power` here while the display transform reads one from the blob
     # -- the same question answered two ways by two readers.
-    attrs = fold_settings_blob(dict(h5f[group].attrs))
-    for name in _FT_ATTRS:
-        if name in attrs:
-            out[f"ft.{name}"] = _decode(attrs[name])
+    #
+    # Decoding goes through the record's own codec, not a generic attr copy: an
+    # unset bound or trim is persisted as the ``__None__`` sentinel, and only
+    # ``FTSettings`` knows to read it back as ``None``. These are the canonical
+    # Stage 1 data-selection settings every later stage analyzes, so
+    # ``ft.acquisition_us`` -- and with it the Fourier resolution element -- is
+    # fixed here, not at Stage 5.
+    settings = FTSettings.from_attrs(fold_settings_blob(dict(h5f[group].attrs)))
+    trim_lo, trim_hi = settings.trim if settings.trim is not None else (None, None)
+    out["ft.start_us"] = settings.start_us
+    out["ft.end_us"] = settings.end_us
+    out["ft.trim_min_mhz"] = trim_lo
+    out["ft.trim_max_mhz"] = trim_hi
+    out["ft.units_power"] = settings.units_power
     duration = out.get("fid.duration_us")
     if duration is not None:
         # The one derived value here, computed by the same helper Stages 3-5
@@ -564,7 +565,7 @@ def _read_start_record(h5f: h5py.File, out: Dict[str, Any]) -> None:
         if name not in record:
             continue
         value = record[name]
-        if value == _NONE_SENTINEL:
+        if value == NONE_SENTINEL:
             value = None
         out[f"start.{name}"] = value
 
