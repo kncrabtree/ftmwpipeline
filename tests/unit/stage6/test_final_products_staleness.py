@@ -602,3 +602,30 @@ def test_timebase_run_refreshes_the_stored_table(sc_multi_file, monkeypatch):
         # Stage 5 was not re-run: the fit on disk is the same one.
         assert h5f["stage5_fitting"].attrs["creation_time"] == fit_before
     assert "stage5_fitting" in ftmw.get_pipeline_info(str(fp))["completed_stages"]
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("via", ["api", "pipeline"])
+def test_set_sigma_floor_refreshes_the_stored_table(sc_multi_file, via):
+    """A new floor reaches the stored sigma_f budget without a review run, and
+    leaves the curation record alone."""
+    fp = sc_multi_file
+    review_run_impl(str(fp))
+    review_accept_impl(str(fp), _fitted_window_ids(fp)[0])
+    before = load_stage6_review_from_file(str(fp))
+
+    if via == "api":
+        ftmw.set_sigma_floor(str(fp), 3.0)
+    else:
+        Pipeline.open(str(fp)).set_sigma_floor(3.0)
+
+    after = load_stage6_review_from_file(str(fp))
+    assert after.final_products is not None
+    assert after.final_products.sigma_floor_khz == pytest.approx(3.0)
+    for peak in after.final_products.peaks:
+        assert peak.sigma_floor_khz == pytest.approx(3.0)
+        assert peak.sigma_f_khz == pytest.approx(
+            (peak.sigma_stat_khz**2 + peak.sigma_eps_khz**2 + 3.0**2) ** 0.5
+        )
+    assert after.decision_log == before.decision_log
+    assert after.window_statuses == before.window_statuses

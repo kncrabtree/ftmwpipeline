@@ -145,3 +145,31 @@ def test_display_unit_matches_the_resolved_settings_before_stage1(imported):
     display = ftmw.compute_display_ft(imported)
     assert display.metadata["amplitude_scale"] == pytest.approx(10.0**units_power)
     assert display.metadata["units_label"]
+
+
+# ---------------------------------------------------------------------------
+# Status calls raise for a file they cannot open
+# ---------------------------------------------------------------------------
+
+
+def test_info_raises_for_a_missing_file(tmp_path):
+    missing = tmp_path / "absent.ftmw"
+    with pytest.raises(FileNotFoundError):
+        ftmw.get_pipeline_info(missing)
+    with pytest.raises(FileNotFoundError):
+        ftmw.list_available_stages(missing)
+
+
+def test_info_raises_typed_for_a_file_that_is_not_a_pipeline(tmp_path):
+    bogus = tmp_path / "bogus.ftmw"
+    with h5py.File(bogus, "w") as h5f:
+        h5f.attrs["unrelated"] = 1
+    with pytest.raises(PipelineFileError):
+        ftmw.get_pipeline_info(bogus)
+
+
+def test_info_reports_a_readable_file(imported):
+    info = ftmw.get_pipeline_info(imported)
+    assert info["valid"] is True
+    assert "error" not in info
+    assert ftmw.list_available_stages(imported) == info["next_available_stages"]

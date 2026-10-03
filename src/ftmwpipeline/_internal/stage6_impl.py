@@ -9244,13 +9244,24 @@ def _compute_attention_reasons(
 
 
 def set_sigma_floor_impl(file_path: Union[Path, str], sigma_floor_khz: float) -> None:
-    """Persist the user's systematic accuracy floor into ``/frequency_calibration``.
+    """Persist the user's systematic accuracy floor into ``/frequency_calibration``
+    and carry it into a stored final-products table.
 
     The floor is file-level provenance (a sibling of the source metadata), so
     any reported ``sigma_f`` is reproducible from the record alone and never
-    depends on a transient flag. Does not rebuild the final-products table;
-    call ``review run`` to fold the new floor into the budget.
+    depends on a transient flag. A stored table is rebuilt under the new floor
+    (curation state untouched; see
+    :func:`refresh_persisted_final_products_impl`), so the file never carries a
+    ``sigma_f`` budget its own floor contradicts.
     """
+    _store_sigma_floor(file_path, sigma_floor_khz)
+    if refresh_persisted_final_products_impl(file_path):
+        compact_file(str(file_path))
+
+
+def _store_sigma_floor(file_path: Union[Path, str], sigma_floor_khz: float) -> None:
+    """Validate and write the floor only. :func:`review_run_impl` uses this
+    directly, since it rebuilds the whole table itself right after."""
     floor = float(sigma_floor_khz)
     if floor < 0.0 or not math.isfinite(floor):
         raise ValueError(
@@ -9766,7 +9777,7 @@ def review_run_impl(
     # accuracy floor is persisted as file-level provenance first, so the budget
     # reflects exactly what the record carries (never a transient flag).
     if sigma_floor_khz is not None:
-        set_sigma_floor_impl(path, sigma_floor_khz)
+        _store_sigma_floor(path, sigma_floor_khz)
     with h5py.File(path, "r") as h5f:
         floor_khz = load_frequency_calibration_from_hdf5(h5f).sigma_floor_khz
     cal_state, epsilon, sigma_eps = _derive_frequency_calibration(path)

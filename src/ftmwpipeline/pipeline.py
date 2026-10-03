@@ -1790,8 +1790,9 @@ class Pipeline:
         """Declare the systematic frequency-accuracy floor (kHz), persisted in-file.
 
         Stores the floor as file-level provenance (``/frequency_calibration``)
-        so any reported ``sigma_f`` is reproducible from the record alone.  Call
-        :meth:`review_run` afterwards to fold the new floor into the budget.
+        so any reported ``sigma_f`` is reproducible from the record alone.  A
+        final-products table already built is rebuilt under the new floor;
+        curation state is untouched.
         """
         set_sigma_floor_impl(self.filepath, sigma_floor_khz)
 
@@ -2440,57 +2441,56 @@ class Pipeline:
         version wrote" case, which cross-stage drift cannot express), and
         ``environment_acknowledged``.
 
+        ``valid`` / ``errors`` report what validation found in a readable file.
+        A file that cannot be read at all raises instead.
+
         Returns
         -------
         dict
             Pipeline status and metadata information
+
+        Raises
+        ------
+        PipelineFileError
+            If the file cannot be opened as a pipeline file (corrupt, too new,
+            or missing its stage record).
         """
-        try:
-            validation_report = validate_pipeline_file(self.filepath)
+        validation_report = validate_pipeline_file(self.filepath)
 
-            # Refresh from disk: stages completed by compute_ft()/estimate_noise()
-            # (or by another interface) are written to the file, so the
-            # in-memory tracker captured at open()/create() time is stale.
-            _, self.source_metadata, self.stage_tracker = open_pipeline_file(
-                self.filepath
-            )
+        # Refresh from disk: stages completed by compute_ft()/estimate_noise()
+        # (or by another interface) are written to the file, so the
+        # in-memory tracker captured at open()/create() time is stale.
+        _, self.source_metadata, self.stage_tracker = open_pipeline_file(self.filepath)
 
-            info_dict = {
-                "filepath": str(self.filepath),
-                "valid": validation_report["valid"],
-                "source_path": str(self.source_metadata.source_path),
-                "format": self.source_metadata.format_name,
-                "import_time": self.source_metadata.import_timestamp.isoformat(),
-                "completed_stages": sorted(self.stage_tracker.completed_stages),
-                "next_available_stages": self.stage_tracker.get_next_available_stages(),
-                "format_version": validation_report.get("format_version"),
-                "created_with": validation_report.get("created_with"),
-                "stage_environments": validation_report.get("stage_environments", {}),
-                "last_written_with": validation_report.get("last_written_with"),
-                "environment_drift": validation_report.get("environment_drift", []),
-                "runtime_environment_drift": validation_report.get(
-                    "runtime_environment_drift", []
-                ),
-                "current_environment": validation_report.get("current_environment"),
-                "environment_acknowledged": validation_report.get(
-                    "environment_acknowledged", False
-                ),
-            }
+        info_dict = {
+            "filepath": str(self.filepath),
+            "valid": validation_report["valid"],
+            "source_path": str(self.source_metadata.source_path),
+            "format": self.source_metadata.format_name,
+            "import_time": self.source_metadata.import_timestamp.isoformat(),
+            "completed_stages": sorted(self.stage_tracker.completed_stages),
+            "next_available_stages": self.stage_tracker.get_next_available_stages(),
+            "format_version": validation_report.get("format_version"),
+            "created_with": validation_report.get("created_with"),
+            "stage_environments": validation_report.get("stage_environments", {}),
+            "last_written_with": validation_report.get("last_written_with"),
+            "environment_drift": validation_report.get("environment_drift", []),
+            "runtime_environment_drift": validation_report.get(
+                "runtime_environment_drift", []
+            ),
+            "current_environment": validation_report.get("current_environment"),
+            "environment_acknowledged": validation_report.get(
+                "environment_acknowledged", False
+            ),
+        }
 
-            if not validation_report["valid"]:
-                info_dict["errors"] = validation_report["errors"]
+        if not validation_report["valid"]:
+            info_dict["errors"] = validation_report["errors"]
 
-            if validation_report.get("warnings"):
-                info_dict["warnings"] = validation_report["warnings"]
+        if validation_report.get("warnings"):
+            info_dict["warnings"] = validation_report["warnings"]
 
-            return info_dict
-
-        except Exception as e:
-            return {
-                "filepath": str(self.filepath),
-                "valid": False,
-                "error": f"Failed to get info: {e}",
-            }
+        return info_dict
 
     def validate(self) -> Dict[str, Any]:
         """

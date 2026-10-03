@@ -34,7 +34,7 @@ Example Usage::
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union, cast
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
@@ -1622,7 +1622,8 @@ def set_sigma_floor(file_path: Union[str, Path], sigma_floor_khz: float) -> None
 
     Equivalent to :meth:`Pipeline.set_sigma_floor`.  Stores the floor as
     file-level provenance so any reported ``sigma_f`` is reproducible from the
-    record alone.  Run :func:`review_run` afterwards to fold it into the budget.
+    record alone.  A final-products table already built is rebuilt under the
+    new floor; curation state is untouched.
     """
     Pipeline.open(file_path).set_sigma_floor(sigma_floor_khz)
 
@@ -2263,6 +2264,14 @@ def get_pipeline_info(file_path: Union[str, Path]) -> Dict[str, Any]:
         - 'current_environment', 'runtime_environment_drift': the running
           interpreter and how the file's stamps differ from it
 
+    Raises
+    ------
+    FileNotFoundError
+        If the pipeline file does not exist.
+    PipelineFileError
+        If the file cannot be opened as a pipeline file. ``valid`` and
+        ``errors`` describe a file that opens but fails validation.
+
     Examples
     --------
     >>> import ftmwpipeline.api as ftmw
@@ -2271,16 +2280,7 @@ def get_pipeline_info(file_path: Union[str, Path]) -> Dict[str, Any]:
     >>> print(f"Completed stages: {info['completed_stages']}")
     >>> print(f"Next available: {info['next_available_stages']}")
     """
-    try:
-        pipeline = Pipeline.open(file_path)
-        return pipeline.info()
-    except Exception as e:
-        logger.error(f"Failed to get info for {file_path}: {e}")
-        return {
-            "filepath": str(file_path),
-            "valid": False,
-            "error": f"Failed to get pipeline info: {e}",
-        }
+    return Pipeline.open(file_path).info()
 
 
 def list_available_stages(file_path: Union[str, Path]) -> List[str]:
@@ -2304,8 +2304,8 @@ def list_available_stages(file_path: Union[str, Path]) -> List[str]:
     ------
     FileNotFoundError
         If pipeline file does not exist
-    RuntimeError
-        If stage information cannot be retrieved
+    PipelineFileError
+        If the file cannot be opened as a pipeline file
 
     Examples
     --------
@@ -2315,12 +2315,7 @@ def list_available_stages(file_path: Union[str, Path]) -> List[str]:
     >>> if 'stage1_complex_ft' in stages:
     ...     print("Ready for FT computation")
     """
-    try:
-        info = get_pipeline_info(file_path)
-        return cast(List[str], info.get("next_available_stages", []))
-    except Exception as e:
-        logger.error(f"Failed to get available stages for {file_path}: {e}")
-        raise RuntimeError(f"Could not determine available stages: {e}")
+    return list(get_pipeline_info(file_path)["next_available_stages"])
 
 
 # =============================================================================

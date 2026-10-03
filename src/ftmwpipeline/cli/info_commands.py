@@ -22,7 +22,16 @@ def cmd_info(args: argparse.Namespace) -> int:
     if not file_path.endswith(".ftmw"):
         file_path = file_path + ".ftmw"
 
-    info = get_pipeline_info(file_path)
+    try:
+        info = get_pipeline_info(file_path)
+    except Exception as e:
+        # The API raises for a file it cannot open; this command's output (the
+        # JSON object and exit code 1) is unchanged by that.
+        info = {
+            "filepath": file_path,
+            "valid": False,
+            "error": f"Failed to get pipeline info: {e}",
+        }
 
     if args.format == "json":
         print(json.dumps(info, indent=2, default=str))
