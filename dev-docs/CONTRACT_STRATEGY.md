@@ -109,8 +109,9 @@ Two distinct meanings of "no value" exist and must survive every surface:
 
 Each accessor below is a read: it never writes the file, and it is exposed on
 the functional API, on `Pipeline`, and through the CLI `read` object with
-`--format json` (array-valued accessors may write a binary file instead; see
-the open questions). Each states what it returns, what it is guaranteed to
+`--format json`. Through the CLI, an array-valued accessor writes a `.npy`
+file to `--output` (self-describing dtype, shape and byte order) and prints the
+JSON envelope with the array fields replaced by their file name. Each states what it returns, what it is guaranteed to
 equal, and when it is absent.
 
 ### Already present — declared as contract
@@ -135,14 +136,37 @@ These exist today; the contract freezes their names and the listed fields.
   `frequency_mhz`, `decay_rate`, `shape`; `windows`: `window_id`, `freq_min`,
   `freq_max`).
 - `settings_defaults()` / `settings_show(path)` and their row fields.
-- `get_final_products(path)` and `ReviewSession`.
+- `get_final_products(path)` and `ReviewSession`, with `FinalPeak`'s identity
+  and quality fields declared: `peak_uid`, `window_id`, `origin`,
+  `derivation`, `clock_lattice`, and the knockout result
+  `knockout_p_value`, `knockout_supported`, `knockout_aicc_delta`. Fields that
+  encode absence with `None` today move to `Absent` (each with a notice).
+- `review_log(path)` → `DecisionLogEntry` rows with the fields `order_index`,
+  `window_id`, `frequency_mhz`, `kind`, `provenance`, `evidence`. Names, types
+  and the `kind` / `provenance` vocabularies are frozen, so a client may hash
+  the log as an edit-set identity.
+- The curation result types (`RefitWindowResult`, `PreviewWindowResult`,
+  `AppliedWindowResult`, …) and their `converged` flag.
+- `get_pipeline_info(path)` / `info()`: the environment and epoch fields
+  `stage_environments`, `last_written_with`, `environment_drift`,
+  `runtime_environment_drift`, `current_environment`,
+  `environment_acknowledged`, and `warnings` (where an analysis-epoch
+  difference is reported). Warnings gain a `code` in the typed-errors phase.
+- `compute_display_ft(path, pad_factor=...)` → `ComplexFT`: `freq_array`
+  (ascending, in the raw frame, trimmed to `compute_ft`'s band at
+  `pad_factor`× its density), `complex_spectrum` aligned to it, and
+  `metadata` with `amplitude_scale`, `units_label`, `pad_factor`. Displayed
+  magnitude is `abs(complex_spectrum) * amplitude_scale`.
 
 ### FID samples
 
-`fid_samples(path)` → 1-D `float64` array: the Stage 0 FID samples **exactly as
-stored**, in stored order — no scaling, windowing, mean removal, or dtype
-conversion. The stored samples are write-once: nothing after import rewrites
-them, so this array is stable for the life of the file.
+`fid_samples(path)` → `{"samples": 1-D float64 array, "stored_dtype": str}`:
+the Stage 0 FID samples, in stored order, with **values equal to the stored
+values** — no scaling, windowing or mean removal. The pipeline always stores the
+samples as `float64`, so no conversion happens; should a stored dtype ever be
+narrower, the values are promoted losslessly to `float64`, and `stored_dtype`
+always reports what is on disk. The stored samples are write-once: nothing
+after import rewrites them, so this array is stable for the life of the file.
 
 The pipeline does not define a digest of these samples for clients. A client
 that needs a spectrum identity hashes this array itself. If the pipeline ever
@@ -167,12 +191,23 @@ under the same analysis epoch. Concretely, `@1` covers:
   such as a Stage 2b shape recommendation or a detected start time);
 - the timebase calibration's inputs (its knobs and the clock declaration it
   used);
-- the frequency-calibration inputs (the declared `sigma_floor_khz`);
+- the frequency-calibration inputs (the declared `sigma_floor_khz`). This is
+  the only Stage 6 input that shapes the final products: `review run`'s
+  `bar`, `kappa`, `noise_floor` and `attention_candidate_evidence` only route
+  attention, and the snap tolerance and refit options are arguments of
+  individual curation actions, which are excluded below;
 - the acquisition parameters the analysis used (probe frequency, sideband,
   sample spacing), including any import-time overrides;
 - the analysis epoch each persisted stage was produced under.
 
-A stage that has not run contributes `Absent.NOT_RUN` under its key.
+Every stage key is always present. A stage that has not run contributes
+`Absent.NOT_RUN` under its key, so the digest changes as stages complete; a key
+is never omitted.
+
+**Incomplete provenance.** A file written before a stage persisted everything
+it resolved cannot yield a complete fingerprint. The accessor then raises a
+typed `incomplete_provenance` error naming the missing inputs (re-running the
+stage persists them). It never computes a digest over incomplete inputs.
 
 **Excluded:**
 
@@ -188,7 +223,11 @@ A stage that has not run contributes `Absent.NOT_RUN` under its key.
 
 **Canonical form.** A JSON object keyed by registry path
 (`stage1.trim`, `stage5.peak_survival.vif_collapse_threshold`,
-`timebase.kappa_sys`, …), keys sorted; floats in shortest round-trip `repr`;
+`timebase.kappa_sys`, …), keys sorted by code point; finite floats as the
+shortest decimal string that round-trips to the same IEEE-754 binary64 value
+(as Python's `repr` produces, e.g. `0.1`, `1e-05`, `25.0`); `-0.0` spelled
+`-0.0`; non-finite values as the strings `"nan"`, `"inf"`, `"-inf"`; integers
+without a decimal point; booleans as `true`/`false`;
 tuples as arrays; unset as `null`; `Absent` per the wire rule; structured
 values (`ShapeSpec`, clock sources) in their documented typed-JSON form.
 UTF-8, no insignificant whitespace. The digest is SHA-256 over that byte
@@ -231,15 +270,18 @@ Each `FinalPeak` additionally carries, from the Stage 5 fit of its window:
 - `decay_time_us` and `decay_time_error_us` (the fitted τ and its 1σ error;
   `Absent.UNDEFINED` when τ was held fixed and has no error),
 - `shape` (the line shape the window was fitted with),
-- `fwhm_mhz` — the feature FWHM of the finite-record line shape, computed by
-  the same function the science spec names
-  (`fitting.validation.feature_fwhm` from τ, the active record length, and the
-  shape), and
+- `fwhm_mhz` — the feature FWHM of the finite-record line shape:
+  `fitting.validation.feature_fwhm(τ, stage5.acquisition_us, shape)`, the
+  same call and record length a client makes today, so displayed widths do
+  not move,
+- `detection_index` (the Stage 3 index that seeded the line; provenance, not
+  identity), and
 - `fit_window_mhz` — the `(low, high)` frequency bounds of the fit window, in
   the same frame as `frequency_mhz`.
 
 These fields are always present on a table read through the contract. A stored
-table that predates them is rebuilt when read.
+table that predates them is rebuilt **in memory** when read; the file is not
+touched (§File model: a read never writes).
 
 ### Window status
 
@@ -247,7 +289,8 @@ table that predates them is rebuilt when read.
 window: `window_id`, `freq_min_mhz`, `freq_max_mhz`, `created` (bool),
 `n_fitted_peaks`, and `live` (bool). A window is **live** when the Stage 5 fit
 holds at least one fitted line in it. Before Stage 5, `n_fitted_peaks` and
-`live` are `Absent.NOT_RUN`. Also available as a `read_table` table.
+`live` are `Absent.NOT_RUN`. While Stage 5 is `partial` (after a cancel), a
+window the fit has not reached reports both as `Absent.NOT_RUN`, never 0. Also available as a `read_table` table.
 
 ### Source preview
 
@@ -293,7 +336,9 @@ An unknown `window_id` raises `not_found`; a file without a Stage 5 fit raises
   `{"schema": "ftmw/error@1", "code", "message", ...attributes}`.
 - Codes (initial set): `stage_not_run` (`StageDependencyError`:
   `missing_dependencies`, `command`), `bad_setting` (`path`, `expected`,
-  `value`), `not_found` (window/peak/file: `kind`, `id`), `file_incompatible`,
+  `value`), `not_found` (window/peak/file: `kind`, `ids` — every id a request
+named that does not exist, e.g. all unknown window ids of a curation batch),
+`incomplete_provenance` (`missing`), `file_incompatible`,
   `file_corrupt`, `epoch_mismatch` (`file_epoch`, `current_epoch`),
   `cancelled`, `callback_failed`, `algorithm_failed` (`stage`).
 - Each typed error remains a subclass of the built-in it replaced (most are
@@ -324,7 +369,9 @@ An unknown `window_id` raises `not_found`; a file without a Stage 5 fit raises
   error lists them (`completed_windows`), and `status` reports Stage 5 as
   `partial`. A later `fit run` with the same settings fits only the remaining
   windows and must reach the same result as an uninterrupted run. Changed
-  settings discard the partial fit and start over.
+  settings discard the partial fit and start over. While Stage 5 is
+  `partial`, Stage 6 and the final products are `not_run`: they need a
+  complete fit.
 - Log output is rendered from these events, so interactive users see the same
   lines as today.
 
@@ -355,6 +402,12 @@ An unknown `window_id` raises `not_found`; a file without a Stage 5 fit raises
 JSON-able curation actions as an alternative to a curation-file path, with the
 same validation, frame handling, and results. The file path remains for people.
 
+**Frames are explicit.** Every curation action and every review call that
+takes a frequency declares its frame (`"raw"` or `"calibrated"`) as a typed,
+documented parameter, with a stated default. The conversion stays inside the
+pipeline; clients never convert frequencies themselves or probe signatures to
+discover the parameter.
+
 ## Serialization *(outline)*
 
 A public `ftmwpipeline.serialize.to_jsonable(obj)` covers every contract result
@@ -369,12 +422,10 @@ contract tests check.
 
 ## Open questions
 
-1. **Arrays on the CLI** (asked of BlackQuill). `fid_samples`, `window_model`
-   and any future array accessor through the CLI: a `.npy` written to
-   `--output`, or raw little-endian `float64` with a JSON header?
-2. **Whole-spectrum model.** Is a `spectrum_model(path, grid=...)` — every
-   final line evaluated over the full grid — wanted alongside the per-window
-   model? Overlapping windows make "sum of window models" double-count the
-   frozen neighbours, so it would be its own evaluation.
-3. **Time-domain model.** Is the model as time-domain FID samples (on the
-   active record) wanted, or only the spectral forms above?
+1. **Whole-spectrum model** (wanted by BlackQuill; ranked after the accessors
+   above). `spectrum_model(path, grid=...)` — every final line evaluated over
+   the full grid, with its residual. Overlapping windows make "sum of window
+   models" double-count the frozen neighbours, so it is its own evaluation.
+
+Resolved: CLI arrays are `.npy` (§Accessors). A time-domain model is not
+wanted.
