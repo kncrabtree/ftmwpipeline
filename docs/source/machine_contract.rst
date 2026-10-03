@@ -145,6 +145,12 @@ carries a stable ``code`` and typed attributes, and ``to_dict()`` returns::
      - ``PipelineExistsError``
      - none
 
+The code set is introduced **wave by wave**. ``capabilities()`` lists the
+codes this installation currently implements, and a client should rely on that
+list rather than on this page. Today only the ``read`` accessors emit the error
+JSON described below; every other verb reports a failure as it always has,
+as text on stderr with its usual exit code.
+
 Route on ``code`` (or the class); the ``message`` text is for people. Each typed
 error is still a subclass of the built-in it replaced (most are
 ``ValueError``; ``NotFoundError`` is a ``KeyError``;
@@ -153,9 +159,14 @@ error is still a subclass of the built-in it replaced (most are
 clauses keep working. Every typed error pickles, so it survives a process
 pool.
 
-A path that does not exist raises ``PipelineFileNotFoundError``
-(``not_found``); a path that exists but cannot be opened as a pipeline file
-raises ``PipelineCorruptionError`` (``file_corrupt``).
+**Missing and corrupt files.** A path that does not exist raises
+``PipelineFileNotFoundError`` (``not_found`` with ``kind`` ``"file"``; also a
+``FileNotFoundError``). A path that exists but cannot be opened as a pipeline
+file -- not HDF5, unreadable, missing its source metadata -- raises
+``PipelineCorruptionError`` (``file_corrupt``; also a ``RuntimeError``, chained
+from the underlying error). ``Pipeline.open`` and the ``read`` entry points
+(``api.read_table``, ``api.read_metadata``, ``read table`` / ``meta`` /
+``list``) agree on this.
 
 Stage names
 -----------
@@ -178,18 +189,54 @@ capabilities``) take ``--format json`` (the only, and default, format),
 
 * The result is printed to stdout as JSON that is always strictly valid
   (non-finite floats follow the ``Absent`` rule above).
-* An array-valued field is written to ``DIR`` as a ``.npy`` file (dtype, shape
-  and byte order are self-describing) and the JSON names the file in its
-  place. Asking for an array result without ``--output`` is an error.
-* A contract error is printed to **stderr** as its ``to_dict()`` JSON, and the
-  process exits with a code derived from the error code: ``2`` for
-  ``file_corrupt`` (and ``algorithm_failed``), ``130`` for ``cancelled`` or an
-  interrupt, ``1`` for every other code. The same mapping sets the exit code
-  of ``read table``, ``read meta`` and ``read list``.
+* ``--output`` names a **directory** (created if needed). Each array-valued
+  field is written there as ``<field path>.npy`` (for example
+  ``samples.npy`` or ``components.0.npy``; dtype, shape and byte order are
+  self-describing) and the JSON names the file in the array's place. An
+  accessor whose result holds arrays refuses to run without ``--output``
+  (exit ``1``); a result with no arrays writes nothing and does not create the
+  directory. This differs from ``read table`` and ``read meta``, where
+  ``--output`` names a single text file.
+* A contract error is printed to **stderr** as its ``to_dict()`` JSON, always
+  for a ``read`` accessor, with the exit code from the table below. The same
+  mapping sets the exit code of ``read table``, ``read meta`` and ``read
+  list``, whose printed text is unchanged (``Error: ...``).
+
+.. list-table:: Exit codes
+   :header-rows: 1
+   :widths: 30 15 55
+
+   * - Condition
+     - Exit
+     - Notes
+   * - success
+     - ``0``
+     -
+   * - ``file_corrupt``
+     - ``2``
+     - a file that exists but cannot be opened
+   * - ``algorithm_failed``
+     - ``2``
+     - not yet raised; reserved for a later wave
+   * - ``cancelled``, or Ctrl-C
+     - ``130``
+     - ``cancelled`` is not yet raised; an interrupt exits ``130`` now
+   * - every other code (``not_found``, ``stage_not_run``,
+       ``file_incompatible``, ...) and any other user error
+     - ``1``
+     -
+
+A code that appears in this table but not in ``capabilities()["codes"]`` is
+reserved and not yet implemented.
 
 .. code-block:: console
 
    $ ftmwpipeline read capabilities | python -m json.tool
+
+Serialization rules worth knowing: an enum is written as its ``.value``
+(``PeakShape.LORENTZIAN`` is ``"lorentzian"``, also as a mapping key); a
+complex number is ``{"real": x, "imag": y}``; a non-finite float with no field
+or list to hold it (the top level) is an error rather than a silent ``null``.
 
 Python code can produce the same JSON with
 :func:`ftmwpipeline.to_jsonable`, which applies the ``Absent`` rule, stamps a

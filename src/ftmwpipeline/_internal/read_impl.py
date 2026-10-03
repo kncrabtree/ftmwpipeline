@@ -93,7 +93,11 @@ import numpy as np
 
 from ..core.settings import FTSettings
 from ..core.settings_framework import NONE as NONE_SENTINEL
-from ..file_manager import PipelineFileNotFoundError, check_format_compatibility
+from ..file_manager import (
+    PipelineCorruptionError,
+    PipelineFileNotFoundError,
+    check_format_compatibility,
+)
 from ..io._hdf5_helpers import ColumnSpec, load_json_attr
 from ..io.fitting_serialization import (
     FIT_AUDIT_COLUMN_SPECS,
@@ -334,7 +338,15 @@ def _open(file_path: Union[str, Path]) -> h5py.File:
                 f"  ftmwpipeline data import {path} path/to/data/"
             ),
         )
-    h5f = h5py.File(path, "r")
+    try:
+        h5f = h5py.File(path, "r")
+    except OSError as exc:
+        # Exists but is not an openable HDF5 file: ``file_corrupt``.
+        raise PipelineCorruptionError(
+            path,
+            f"HDF5 error: {exc}",
+            message=f"Failed to open pipeline file {path}: {exc}",
+        ) from exc
     try:
         check_format_compatibility(path, h5f)
     except BaseException:

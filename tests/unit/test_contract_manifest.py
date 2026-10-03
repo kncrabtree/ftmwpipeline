@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import inspect
+from types import SimpleNamespace
 
 import pytest
 
@@ -18,6 +20,7 @@ from ftmwpipeline.cli.main import create_parser
 from ftmwpipeline.contract import (
     MANIFEST,
     SCHEMA_NAME_RE,
+    AccessorSpec,
     ContractManifest,
     PipelineFileError,
 )
@@ -42,6 +45,7 @@ SNAPSHOT_CODES = frozenset(
         "file_exists",
     }
 )
+SNAPSHOT_FILE_BOUND = {"capabilities": False}
 SNAPSHOT_METADATA_KEYS: frozenset = frozenset()
 SNAPSHOT_TABLES: dict = {}
 
@@ -70,6 +74,10 @@ def _read_verbs() -> set:
     return set(_subparser_choices(top["read"]))
 
 
+def _verb_parser(name: str) -> argparse.ArgumentParser:
+    return _subparser_choices(_subparser_choices(create_parser())["read"])[name]
+
+
 # ---- every accessor exists on all three interfaces -----------------------
 
 
@@ -88,13 +96,73 @@ def test_accessor_is_cli_read_verb(name):
     assert name in _read_verbs()
 
 
+# ---- binding kind: file-bound vs file-less -------------------------------
+
+_PATH_NAMES = {"file_path", "path", "filepath"}
+
+
+def _params(fn):
+    return list(inspect.signature(fn).parameters)
+
+
+def test_file_bound_names_exactly_the_accessors():
+    assert set(MANIFEST.file_bound) == set(MANIFEST.accessors)
+    assert all(isinstance(v, bool) for v in MANIFEST.file_bound.values())
+
+
+def test_file_bound_is_read_only():
+    with pytest.raises(TypeError):
+        MANIFEST.file_bound["x"] = True  # type: ignore[index]
+
+
+def test_file_bound_must_match_accessors():
+    with pytest.raises(ValueError):
+        ContractManifest(1, ("a",), (), (), (), {}, {})
+    with pytest.raises(ValueError):
+        ContractManifest(1, (), (), (), (), {}, {"b": False})
+    ok = ContractManifest(1, ("a",), (), (), (), {}, {"a": True})
+    assert dict(ok.file_bound) == {"a": True}
+
+
+def test_accessor_spec_is_name_and_binding():
+    spec = AccessorSpec("x", file_bound=True)
+    assert tuple(spec) == ("x", True)
+
+
+@pytest.mark.parametrize("name", MANIFEST.accessors)
+def test_accessor_binding_matches_declared_kind(name):
+    static = inspect.getattr_static(ftmwpipeline.Pipeline, name)
+    verb_dests = {a.dest for a in _verb_parser(name)._actions}
+    if MANIFEST.file_bound[name]:
+        # An instance method of an opened Pipeline that takes no path ...
+        assert inspect.isfunction(static)
+        assert _params(static)[0] == "self"
+        assert not set(_params(static)[1:2]) & _PATH_NAMES
+        # ... an api function that takes the path first ...
+        assert _params(getattr(api, name))[0] in _PATH_NAMES
+        # ... and a read verb with a file argument.
+        assert "file_path" in verb_dests
+    else:
+        # A staticmethod; no path anywhere.
+        assert isinstance(static, staticmethod)
+        assert not set(_params(getattr(ftmwpipeline.Pipeline, name))) & _PATH_NAMES
+        assert not set(_params(getattr(api, name))) & _PATH_NAMES
+        assert "file_path" not in verb_dests
+
+
+def test_capabilities_is_declared_file_less():
+    assert MANIFEST.file_bound["capabilities"] is False
+
+
 # ---- codes <-> exception classes -----------------------------------------
 
 
 def test_every_code_maps_to_exactly_one_class():
     classes = [c for c in _all_subclasses(PipelineFileError)]
     for code in MANIFEST.codes:
-        owners = [c for c in classes if c.code == code]
+        # A subclass that refines a code (PipelineFileNotFoundError is a
+        # NotFoundError with kind "file") inherits it rather than declaring it.
+        owners = [c for c in classes if "code" in vars(c) and c.code == code]
         assert len(owners) == 1, (code, owners)
 
 
@@ -108,11 +176,28 @@ def test_base_fallback_code_is_not_declared():
     assert PipelineFileError.code not in MANIFEST.codes
 
 
-def test_cli_exit_code_covers_every_code():
-    from ftmwpipeline.cli.contract_commands import EXIT_CODES
+def test_cli_exit_codes_are_the_documented_table():
+    from ftmwpipeline.cli.contract_commands import (
+        DEFAULT_ERROR_EXIT,
+        EXIT_CODES,
+        INTERRUPTED_EXIT,
+    )
 
-    assert set(MANIFEST.codes) <= set(EXIT_CODES)
-    assert set(EXIT_CODES) <= set(MANIFEST.codes)
+    # Only the non-default codes are listed; every other code exits 1. The
+    # table may name codes a later wave introduces, so it is not compared with
+    # MANIFEST.codes.
+    assert EXIT_CODES == {"file_corrupt": 2, "algorithm_failed": 2, "cancelled": 130}
+    assert DEFAULT_ERROR_EXIT == 1 and INTERRUPTED_EXIT == 130
+
+
+def test_every_manifest_code_has_an_exit_code():
+    from ftmwpipeline.cli.contract_commands import EXIT_CODES, exit_code_for
+
+    for code in MANIFEST.codes:
+        stand_in = SimpleNamespace(code=code)  # exit_code_for reads only .code
+        got = exit_code_for(stand_in)  # type: ignore[arg-type]
+        assert got == EXIT_CODES.get(code, 1)
+        assert got in (1, 2, 130)
 
 
 # ---- schema names ---------------------------------------------------------
@@ -168,7 +253,7 @@ def test_manifest_sequences_are_tuples():
 
 
 def test_manifest_version_matches_package():
-    assert MANIFEST.contract_version == ftmwpipeline.CONTRACT_VERSION
+    assert MANIFEST.contract_version == ftmwpipeline.CONTRACT_VERSION == 1
     assert isinstance(ftmwpipeline.CONTRACT_VERSION, int)
 
 
@@ -179,6 +264,8 @@ def test_nothing_declared_disappears():
     assert SNAPSHOT_ACCESSORS <= set(MANIFEST.accessors)
     assert SNAPSHOT_SCHEMAS <= set(MANIFEST.schemas)
     assert SNAPSHOT_CODES <= set(MANIFEST.codes)
+    for name, bound in SNAPSHOT_FILE_BOUND.items():
+        assert MANIFEST.file_bound[name] is bound
     assert SNAPSHOT_METADATA_KEYS <= set(MANIFEST.metadata_keys)
     for table, cols in SNAPSHOT_TABLES.items():
         assert table in MANIFEST.tables
@@ -190,6 +277,7 @@ def test_additions_update_the_snapshot():
     assert set(MANIFEST.accessors) == SNAPSHOT_ACCESSORS
     assert set(MANIFEST.schemas) == SNAPSHOT_SCHEMAS
     assert set(MANIFEST.codes) == SNAPSHOT_CODES
+    assert dict(MANIFEST.file_bound) == SNAPSHOT_FILE_BOUND
     assert set(MANIFEST.metadata_keys) == SNAPSHOT_METADATA_KEYS
     assert {k: set(v) for k, v in MANIFEST.tables.items()} == {
         k: set(v) for k, v in SNAPSHOT_TABLES.items()

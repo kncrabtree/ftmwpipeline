@@ -9,14 +9,18 @@ from __future__ import annotations
 
 import argparse
 import json
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 import ftmwpipeline.api as ftmw
 from ftmwpipeline import CONTRACT_VERSION, MANIFEST, Pipeline
+from ftmwpipeline._internal.read_impl import READ_TABLES
 from ftmwpipeline.cli.contract_commands import (
     EXIT_CODES,
+    INTERRUPTED_EXIT,
+    exit_code_for,
     register_accessor,
 )
 from ftmwpipeline.cli.main import main
@@ -25,6 +29,7 @@ from ftmwpipeline.file_manager import (
     NotFoundError,
     PipelineCorruptionError,
     PipelineFileError,
+    PipelineFileNotFoundError,
 )
 
 pytestmark = [pytest.mark.integration]
@@ -90,7 +95,7 @@ def test_contract_error_goes_to_stderr_as_json_with_mapped_exit(capsys):
     assert payload == exc.to_dict()
     assert payload["schema"] == "ftmw/error@1" and payload["code"] == "not_found"
     assert payload["ids"] == [4, 9]
-    assert rc == EXIT_CODES["not_found"]
+    assert rc == 1
 
 
 def test_corrupt_file_maps_to_processing_exit(capsys):
@@ -99,9 +104,38 @@ def test_corrupt_file_maps_to_processing_exit(capsys):
     assert rc == EXIT_CODES["file_corrupt"] == 2
 
 
-def test_every_manifest_code_has_an_exit_code():
+def test_missing_file_error_reports_not_found_file_exit_1(capsys, tmp_path):
+    exc = PipelineFileNotFoundError(tmp_path / "gone.ftmw")
+    rc = _run(_raiser(exc), ["probe"])
+    payload = json.loads(capsys.readouterr().err)
+    assert payload["code"] == "not_found" and payload["kind"] == "file"
+    assert rc == 1
+
+
+def test_exit_code_table():
+    # Only non-default codes are listed; everything else exits 1.
+    assert EXIT_CODES == {"file_corrupt": 2, "algorithm_failed": 2, "cancelled": 130}
     for code in MANIFEST.codes:
-        assert EXIT_CODES[code] in (1, 2)
+        expected = {"file_corrupt": 2}.get(code, 1)
+        assert exit_code_for(SimpleNamespace(code=code)) == expected  # type: ignore[arg-type]
+
+
+def test_interrupt_exits_130_without_traceback(capsys):
+    rc = _run(_raiser(KeyboardInterrupt()), ["probe"])
+    cap = capsys.readouterr()
+    assert rc == INTERRUPTED_EXIT == 130
+    assert cap.out == ""
+
+
+def test_read_verbs_use_the_shared_exit_mapping(tmp_path, capsys):
+    junk = tmp_path / "junk.ftmw"
+    junk.write_bytes(b"not hdf5" * 100)
+    missing = tmp_path / "absent.ftmw"
+    for verb in (["meta"], ["list"], ["table"]):
+        extra = [READ_TABLES[0]] if verb == ["table"] else []
+        assert main(["read", verb[0], str(junk), *extra]) == 2
+        assert main(["read", verb[0], str(missing), *extra]) == 1
+        capsys.readouterr()
 
 
 def test_unlisted_code_defaults_to_user_error(capsys):
@@ -119,7 +153,8 @@ def test_plain_result_is_stamped_valid_json(capsys):
     )
     out = json.loads(capsys.readouterr().out)
     assert rc == 0
-    assert out["schema"] == "ftmw/probe@1" and out["v"] == "nan"
+    assert out["schema"] == "ftmw/probe@1"
+    assert out["v"] is None and out["v_absent"] == "undefined"
 
 
 def test_npy_written_to_output_and_named_in_envelope(tmp_path, capsys):

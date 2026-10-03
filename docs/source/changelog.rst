@@ -52,11 +52,17 @@ engine so they cannot answer differently.
   ``ftmwpipeline.to_jsonable`` converts results to strict JSON, and
   ``capabilities()`` (``api.capabilities``, ``Pipeline.capabilities``,
   ``ftmwpipeline read capabilities``) reports what this installation declares.
-  Under the accessor verbs of ``read``, a contract error is printed as its
-  ``to_dict()`` JSON on stderr, with exit code 2 for ``file_corrupt``, 130 for
-  an interrupt, and 1 for every other code (``read table`` / ``meta`` /
-  ``list`` use the same mapping); array results are written as ``.npy`` files
-  under ``--output``. See :doc:`machine_contract`.
+  The error code set is introduced wave by wave: ``capabilities()`` lists the
+  codes implemented today, and only the ``read`` accessors emit error JSON.
+  Under those verbs a contract error is printed as its ``to_dict()`` JSON on
+  stderr, with exit code 2 for ``file_corrupt``, 130 for an interrupt, and 1
+  for every other code; ``read table`` / ``meta`` / ``list`` use the same
+  mapping (a file that exists but is not HDF5 now raises
+  ``PipelineCorruptionError`` from ``api.read_table`` / ``read_metadata``, where
+  h5py's ``OSError`` escaped before, and exits 2 from the verbs). Array results are
+  written as ``.npy`` files into the directory named by ``--output``. An enum
+  is serialized as its value, and a complex number as ``{"real", "imag"}``.
+  See :doc:`machine_contract`.
 
 * **``review apply --log-prefix N`` (``log_prefix=N`` on ``Pipeline.review_apply``,
   ``api.review_apply`` and ``ReviewSession.review_apply``) applies a curation

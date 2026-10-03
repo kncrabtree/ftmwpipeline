@@ -19,6 +19,7 @@ import pytest
 from ftmwpipeline.contract import (
     CONTRACT_VERSION,
     ERROR_SCHEMA,
+    STAGE_KEYS,
     STATUS_NOT_RUN,
     STATUS_PRESENT,
     STATUS_UNDEFINED,
@@ -30,8 +31,14 @@ from ftmwpipeline.contract import (
     PipelineCorruptionError,
     PipelineExistsError,
     PipelineFileError,
+    PipelineFileNotFoundError,
+    Stage,
     StageDependencyError,
+    key_for_stage,
+    stage_for_key,
 )
+from ftmwpipeline.core.peak_shape import PeakShape
+from ftmwpipeline.file_manager import PipelineStageTracker
 from ftmwpipeline.serialize import (
     ArrayCollector,
     absent_column,
@@ -73,6 +80,89 @@ def test_contract_version_is_int():
     assert isinstance(CONTRACT_VERSION, int)
 
 
+def test_contract_version_is_one():
+    assert CONTRACT_VERSION == 1
+
+
+# ---- stage vocabulary -----------------------------------------------------
+
+
+def test_stage_values_are_the_cli_object_names():
+    assert [s.value for s in Stage] == [
+        "data",
+        "ft",
+        "noise",
+        "tau",
+        "tau_g",
+        "timebase",
+        "peaks",
+        "windows",
+        "fit",
+        "review",
+    ]
+    assert Stage.FT == "ft"  # a str enum: compares with its value
+
+
+def test_every_internal_stage_key_maps_to_a_stage():
+    keys = set(PipelineStageTracker.STAGE_DEPENDENCIES)
+    assert set(STAGE_KEYS.values()) == keys
+    assert set(STAGE_KEYS) == set(Stage)
+    for key in keys:
+        assert isinstance(stage_for_key(key), Stage)
+
+
+def test_stage_mapping_round_trips():
+    for stage in Stage:
+        assert stage_for_key(key_for_stage(stage)) is stage
+        assert key_for_stage(stage.value) == STAGE_KEYS[stage]
+    for key in PipelineStageTracker.STAGE_DEPENDENCIES:
+        assert key_for_stage(stage_for_key(key)) == key
+
+
+def test_unmapped_stage_names_raise():
+    with pytest.raises(ValueError):
+        stage_for_key("stage99_nonexistent")
+    with pytest.raises(ValueError):
+        stage_for_key("ft")  # a canonical name is not an internal key
+    with pytest.raises(ValueError):
+        key_for_stage("stage1_complex_ft")  # an internal key is not a stage
+
+
+def test_stage_mapping_is_read_only():
+    with pytest.raises(TypeError):
+        STAGE_KEYS[Stage.FT] = "x"  # type: ignore[index]
+
+
+def test_stage_dependency_error_to_dict_uses_canonical_names():
+    e = StageDependencyError(
+        "stage5_fitting",
+        ["stage1_complex_ft", "stage3_peaks", "stage2b_tau_G_calibration"],
+        Path("x.ftmw"),
+        command="ftmwpipeline peaks run",
+    )
+    d = json.loads(json.dumps(e.to_dict(), allow_nan=False))
+    assert d["missing_dependencies"] == ["ft", "peaks", "tau_g"]
+    # The Python attribute keeps the internal keys.
+    assert e.missing_dependencies == [
+        "stage1_complex_ft",
+        "stage3_peaks",
+        "stage2b_tau_G_calibration",
+    ]
+
+
+def test_stage_dependency_error_unmapped_key_fails_loudly_in_to_dict():
+    e = StageDependencyError("s", ["stage99_nonexistent"], Path("x.ftmw"))
+    with pytest.raises(ValueError):
+        e.to_dict()
+
+
+def test_tracker_raised_dependency_error_publishes_canonical_names():
+    tracker = PipelineStageTracker(["stage0_fid_data"])
+    with pytest.raises(StageDependencyError) as exc_info:
+        tracker.validate_dependencies("stage2_noise_result")
+    assert exc_info.value.to_dict()["missing_dependencies"] == ["ft"]
+
+
 # ---- errors ---------------------------------------------------------------
 
 
@@ -94,12 +184,14 @@ def _errors():
             (),
         ),
         (
-            StageDependencyError("fit", ["stage3"], p, command="ftmwpipeline peaks"),
+            StageDependencyError(
+                "fit", ["stage3_peaks"], p, command="ftmwpipeline peaks"
+            ),
             "stage_not_run",
-            {"missing_dependencies": ["stage3"], "command": "ftmwpipeline peaks"},
+            {"missing_dependencies": ["peaks"], "command": "ftmwpipeline peaks"},
             (ValueError,),
         ),
-        (PipelineCorruptionError(p, "bad"), "file_corrupt", {}, ()),
+        (PipelineCorruptionError(p, "bad"), "file_corrupt", {}, (RuntimeError,)),
         (
             PipelineCompatibilityError(p, "9", "1"),
             "file_incompatible",
@@ -117,6 +209,12 @@ def _errors():
             "not_found",
             {"kind": "window", "ids": [4, 9]},
             (KeyError,),
+        ),
+        (
+            PipelineFileNotFoundError(p),
+            "not_found",
+            {"kind": "file", "ids": ["x.ftmw"]},
+            (NotFoundError, FileNotFoundError, KeyError),
         ),
         (
             IncompleteProvenanceError(["stage2b.shape"]),
@@ -145,15 +243,124 @@ def test_error_contract(err, code, fields, bases):
         assert isinstance(err, base)
 
 
-def test_legacy_epoch_none_is_valid_json():
+def test_epoch_mismatch_none_epoch_is_null_with_absent_sibling():
     e = AnalysisEpochMismatchError("f", _Env(None), _Env(3))
     d = json.loads(json.dumps(e.to_dict(), allow_nan=False))
-    assert d["file_epoch"] is None and d["current_epoch"] == 3
+    assert d["file_epoch"] is None and d["file_epoch_absent"] == "not_run"
+    assert d["current_epoch"] == 3 and "current_epoch_absent" not in d
+    # The Python attributes keep None.
+    assert e.file_epoch is None and e.current_epoch == 3
 
 
-def test_error_codes_unique():
-    codes = [c for _, c, _, _ in _errors()]
-    assert len(set(codes)) == len(codes)
+def test_epoch_mismatch_both_none():
+    d = AnalysisEpochMismatchError("f", _Env(None), _Env(None)).to_dict()
+    assert d["file_epoch_absent"] == d["current_epoch_absent"] == "not_run"
+    assert d["file_epoch"] is None and d["current_epoch"] is None
+
+
+def test_epoch_mismatch_present_epochs_have_no_sibling():
+    d = AnalysisEpochMismatchError("f", _Env(2), _Env(3)).to_dict()
+    assert not any(k.endswith("_absent") for k in d)
+
+
+def test_error_codes_unique_per_class():
+    # PipelineFileNotFoundError is a NotFoundError, so it shares its code.
+    by_class = {type(e): c for e, c, _, _ in _errors()}
+    owners = {}
+    for cls, code in by_class.items():
+        owners.setdefault(code, []).append(cls)
+    for code, classes in owners.items():
+        if code == "not_found":
+            assert set(classes) == {NotFoundError, PipelineFileNotFoundError}
+        else:
+            assert len(classes) == 1, (code, classes)
+
+
+def _all_subclasses(cls):
+    seen = []
+    stack = list(cls.__subclasses__())
+    while stack:
+        c = stack.pop()
+        if c not in seen:
+            seen.append(c)
+            stack.extend(c.__subclasses__())
+    return seen
+
+
+def test_errors_list_covers_every_class():
+    covered = {type(e) for e, _, _, _ in _errors()}
+    assert set(_all_subclasses(PipelineFileError)) <= covered
+
+
+def _state(err):
+    return {k: v for k, v in vars(err).items() if not isinstance(v, _Env)}
+
+
+@pytest.mark.parametrize("err,code,fields,bases", _errors(), ids=lambda v: str(type(v)))
+def test_every_error_pickles_with_attributes_preserved(err, code, fields, bases):
+    clone = pickle.loads(pickle.dumps(err))
+    assert type(clone) is type(err)
+    assert clone.code == code
+    assert clone.args == err.args
+    assert str(clone) == str(err)
+    assert _state(clone) == _state(err)
+    assert clone.to_dict() == err.to_dict()
+
+
+def test_base_error_pickles():
+    e = PipelineFileError("plain")
+    clone = pickle.loads(pickle.dumps(e))
+    assert type(clone) is PipelineFileError and clone.to_dict() == e.to_dict()
+
+
+# ---- missing and corrupt files --------------------------------------------
+
+
+def test_missing_file_error_is_notfound_filenotfound_and_keyerror():
+    e = PipelineFileNotFoundError("some/missing.ftmw")
+    assert isinstance(e, NotFoundError)
+    assert isinstance(e, FileNotFoundError)
+    assert isinstance(e, KeyError)
+    assert e.code == "not_found"
+    assert e.kind == "file" and e.ids == ["some/missing.ftmw"]
+    assert e.filepath == Path("some/missing.ftmw")
+    d = e.to_dict()
+    assert d["code"] == "not_found" and d["kind"] == "file"
+    assert d["ids"] == ["some/missing.ftmw"]
+
+
+def test_missing_file_error_keyword_message():
+    e = PipelineFileNotFoundError("a.ftmw", message="custom words")
+    assert str(e) == "custom words" and e.to_dict()["message"] == "custom words"
+
+
+def test_corruption_error_is_a_runtime_error():
+    e = PipelineCorruptionError("f.ftmw", "bad", message="Failed to open f.ftmw")
+    assert isinstance(e, RuntimeError)
+    assert str(e) == "Failed to open f.ftmw"
+    assert e.code == "file_corrupt"
+
+
+def test_pipeline_open_missing_path_raises_missing_file_error(tmp_path):
+    from ftmwpipeline import Pipeline
+
+    missing = tmp_path / "nope.ftmw"
+    with pytest.raises(PipelineFileNotFoundError) as exc_info:
+        Pipeline.open(missing)
+    assert isinstance(exc_info.value, FileNotFoundError)
+    assert exc_info.value.ids == [str(missing)]
+
+
+def test_pipeline_open_junk_file_raises_corruption_error(tmp_path):
+    from ftmwpipeline import Pipeline
+
+    junk = tmp_path / "junk.ftmw"
+    junk.write_bytes(b"this is not an HDF5 file at all" * 20)
+    with pytest.raises(PipelineCorruptionError) as exc_info:
+        Pipeline.open(junk)
+    assert isinstance(exc_info.value, RuntimeError)
+    assert exc_info.value.to_dict()["code"] == "file_corrupt"
+    assert exc_info.value.__cause__ is not None
 
 
 def test_not_found_carries_every_id():
@@ -253,9 +460,50 @@ def test_absent_without_a_name_is_refused():
         to_jsonable([1, Absent.UNDEFINED])
 
 
-def test_absent_sibling_collision_refused():
-    with pytest.raises(ValueError):
-        to_jsonable({"a": Absent.NOT_RUN, "a_absent": "x"})
+# ---- reserved "_absent" keys ----------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        {"a": Absent.NOT_RUN, "a_absent": "x"},  # collides with the sibling
+        {"a": 1, "a_absent": "not_run"},  # forged sibling of a present field
+        {"a_absent": "not_run"},  # sibling with no base field
+        {"_absent": "x"},
+        {"a": float("nan"), "a_absent": "x"},
+    ],
+    ids=["collision", "forged", "orphan", "bare_suffix", "nan_collision"],
+)
+def test_reserved_absent_key_refused_in_mappings(source):
+    with pytest.raises(ValueError, match="reserved"):
+        to_jsonable(source)
+
+
+def test_reserved_absent_key_refused_in_dataclass_and_nested():
+    @dataclasses.dataclass
+    class R:
+        x: int
+        x_absent: str = "undefined"
+
+    with pytest.raises(ValueError, match="reserved"):
+        to_jsonable(R(1))
+    with pytest.raises(ValueError, match="reserved"):
+        to_jsonable({"outer": [{"y_absent": "not_run"}]})
+
+
+def test_keys_merely_containing_absent_are_fine():
+    out = to_jsonable({"absent": 1, "absent_count": 2, "x_absent_rate": 3})
+    assert out == {"absent": 1, "absent_count": 2, "x_absent_rate": 3}
+
+
+def test_generated_siblings_are_never_refused():
+    out = _wire({"a": Absent.NOT_RUN, "b": float("nan")})
+    assert out == {
+        "a": None,
+        "a_absent": "not_run",
+        "b": None,
+        "b_absent": "undefined",
+    }
 
 
 # ---- columnar form --------------------------------------------------------
@@ -293,7 +541,7 @@ def test_with_status_columns_undeclared_absent_refused():
 # ---- non-finite floats and scalars ----------------------------------------
 
 
-def test_nonfinite_floats_are_valid_json():
+def test_nonfinite_named_field_is_null_with_undefined_sibling():
     out = _wire(
         {
             "a": float("nan"),
@@ -301,17 +549,59 @@ def test_nonfinite_floats_are_valid_json():
             "c": float("-inf"),
             "d": np.float64("nan"),
             "e": np.float32("inf"),
-            "l": [float("nan"), 1.0],
+            "f": np.array(np.nan),
+            "ok": 1.0,
         }
     )
-    assert out["a"] == "nan" and out["b"] == "inf" and out["c"] == "-inf"
-    assert out["d"] == "nan" and out["e"] == "inf"
-    assert out["l"] == ["nan", 1.0]
+    for name in "abcdef":
+        assert out[name] is None
+        assert out[name + "_absent"] == "undefined"
+    assert out["ok"] == 1.0 and "ok_absent" not in out
 
 
-def test_nonfinite_in_inline_array_is_valid_json():
-    out = _wire({"x": np.array([1.0, np.nan, np.inf, -np.inf])})
-    assert out["x"] == [1.0, "nan", "inf", "-inf"]
+def test_nonfinite_dataclass_field_and_nested_field():
+    @dataclasses.dataclass
+    class R:
+        chi2: float
+        n: int = 3
+
+    assert _wire(R(float("nan"))) == {"chi2": None, "chi2_absent": "undefined", "n": 3}
+    out = _wire({"rows": [{"x": float("inf")}]})
+    assert out["rows"] == [{"x": None, "x_absent": "undefined"}]
+
+
+def test_nonfinite_in_inline_list_is_null():
+    out = _wire({"l": [float("nan"), 1.0, float("inf")], "t": (np.float64("nan"), 2)})
+    assert out == {"l": [None, 1.0, None], "t": [None, 2]}
+
+
+def test_nonfinite_in_inline_array_is_null():
+    out = _wire(
+        {"x": np.array([1.0, np.nan, np.inf, -np.inf]), "m": np.full((2, 2), np.nan)}
+    )
+    assert out["x"] == [1.0, None, None, None]
+    assert out["m"] == [[None, None], [None, None]]
+    assert "x_absent" not in out
+
+
+@pytest.mark.parametrize(
+    "value", [float("nan"), float("inf"), float("-inf"), np.float64("nan")]
+)
+def test_nonfinite_at_top_level_is_a_typeerror(value):
+    with pytest.raises(TypeError):
+        to_jsonable(value)
+
+
+def test_nonfinite_array_keeps_nan_through_a_sink():
+    c = ArrayCollector()
+    out = to_jsonable({"x": np.array([1.0, np.nan])}, arrays=c)
+    assert out == {"x": "x.npy"}
+    assert np.isnan(c.arrays["x.npy"][1])
+
+
+def test_complex_with_nonfinite_part():
+    out = _wire({"c": complex(float("nan"), 2.0)})
+    assert out == {"c": {"real": None, "real_absent": "undefined", "imag": 2.0}}
 
 
 def test_numpy_scalars_become_python():
@@ -336,6 +626,68 @@ def test_bool_stays_bool_not_int():
 
 def test_complex_wire_form():
     assert _wire({"c": 1 + 2j}) == {"c": {"real": 1.0, "imag": 2.0}}
+
+
+class _Color(enum.Enum):
+    RED = "red"
+    ONE = 1
+
+
+class _Level(enum.IntEnum):
+    LOW = 1
+    HIGH = 2
+
+
+class _Tag(str, enum.Enum):
+    A = "alpha"
+
+
+def test_str_enum_is_written_as_its_value():
+    out = _wire({"shape": PeakShape.LORENTZIAN, "t": _Tag.A})
+    assert out == {"shape": PeakShape.LORENTZIAN.value, "t": "alpha"}
+    assert type(out["shape"]) is str and "PeakShape" not in json.dumps(out)
+
+
+def test_int_enum_is_written_as_its_int_value():
+    out = _wire({"lvl": _Level.HIGH})
+    assert out == {"lvl": 2} and type(out["lvl"]) is int
+
+
+def test_plain_enum_is_written_as_its_value():
+    out = _wire({"c": _Color.RED, "n": _Color.ONE})
+    assert out == {"c": "red", "n": 1}
+
+
+def test_enums_at_top_level_and_in_lists():
+    assert to_jsonable(PeakShape.LORENTZIAN) == PeakShape.LORENTZIAN.value
+    assert _wire([_Level.LOW, _Color.RED, _Tag.A]) == [1, "red", "alpha"]
+
+
+def test_enum_mapping_keys_are_written_as_their_value():
+    out = _wire(
+        {
+            PeakShape.LORENTZIAN: 1,
+            _Level.HIGH: 2,
+            _Color.RED: 3,
+            _Tag.A: 4,
+        }
+    )
+    assert out == {PeakShape.LORENTZIAN.value: 1, "2": 2, "red": 3, "alpha": 4}
+
+
+def test_enum_key_colliding_with_its_value_string_is_refused():
+    with pytest.raises(ValueError):
+        to_jsonable({_Tag.A: 1, "alpha": 2})
+
+
+def test_absent_is_not_a_mapping_key():
+    with pytest.raises(TypeError):
+        to_jsonable({Absent.NOT_RUN: 1})
+
+
+def test_enum_valued_field_that_is_absent_still_gets_a_sibling():
+    out = _wire({"shape": Absent.NOT_RUN, "other": PeakShape.LORENTZIAN})
+    assert out["shape"] is None and out["shape_absent"] == "not_run"
 
 
 def test_misc_types():
