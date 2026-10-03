@@ -31,14 +31,24 @@ from .._internal.read_impl import (
     read_tables_impl,
     write_text_impl,
 )
+from ..contract import MANIFEST
 from ..file_manager import PipelineFileError
-from .contract_commands import register_accessor
+from .contract_commands import exit_code_for, register_accessor
 from .utils import setup_logging
 
 #: What a bad request looks like here: a missing or unreadable file, an unknown
-#: table/column/format, or a stage that has not been run. All of them are user
-#: errors (exit 1), and all carry a message that already says what to do.
+#: table/column/format, or a stage that has not been run. All carry a message
+#: that already says what to do. A contract error exits with the code from the
+#: CLI's one table (:func:`exit_code_for`); anything else here exits 1.
 _USER_ERRORS = (FileNotFoundError, PipelineFileError, ValueError)
+
+
+def _report(exc: BaseException) -> int:
+    """Print *exc* as ``Error: ...`` and return its exit code."""
+    print(f"Error: {exc}")
+    if isinstance(exc, PipelineFileError):
+        return exit_code_for(exc)
+    return 1
 
 
 def _ensure_ftmw(path: str) -> str:
@@ -74,8 +84,7 @@ def cmd_read_table(args: argparse.Namespace) -> int:
         table = read_table_impl(file_path, args.table, columns)
         text = format_table_impl(table, getattr(args, "format", "csv"))
     except _USER_ERRORS as exc:
-        print(f"Error: {exc}")
-        return 1
+        return _report(exc)
     return _emit(text, getattr(args, "output", None), args.table)
 
 
@@ -87,8 +96,7 @@ def cmd_read_meta(args: argparse.Namespace) -> int:
         metadata = read_metadata_impl(file_path)
         text = format_metadata_impl(metadata, getattr(args, "format", "csv"))
     except _USER_ERRORS as exc:
-        print(f"Error: {exc}")
-        return 1
+        return _report(exc)
     return _emit(text, getattr(args, "output", None), "meta")
 
 
@@ -99,8 +107,7 @@ def cmd_read_list(args: argparse.Namespace) -> int:
     try:
         tables = read_tables_impl(file_path)
     except _USER_ERRORS as exc:
-        print(f"Error: {exc}")
-        return 1
+        return _report(exc)
 
     print(f"Readable tables in {file_path}:")
     width = max((len(name) for name in tables), default=0)
@@ -229,7 +236,7 @@ Examples:
         "capabilities",
         Pipeline.capabilities,
         help="Machine-contract version, schemas, accessors and error codes (JSON)",
-        takes_file=False,
+        takes_file=MANIFEST.file_bound["capabilities"],
     )
 
     # 'read' with no subcommand prints its help.

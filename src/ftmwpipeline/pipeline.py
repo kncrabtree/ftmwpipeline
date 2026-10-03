@@ -340,10 +340,11 @@ class Pipeline:
 
         Raises
         ------
-        FileNotFoundError
-            If pipeline file doesn't exist
+        PipelineFileNotFoundError
+            If pipeline file doesn't exist (also a ``FileNotFoundError``)
         PipelineCorruptionError
-            If file appears to be corrupted
+            If file appears to be corrupted or cannot be opened as a pipeline
+            file (also a ``RuntimeError``)
         ValueError
             If file format is invalid
         """

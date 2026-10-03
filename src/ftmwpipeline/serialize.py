@@ -11,13 +11,23 @@ contract's single missing-value rule (``dev-docs/CONTRACT_STRATEGY.md``,
 - columns that can be absent are built with :func:`absent_column`, which gives
   ``nan`` (or the column's fill) plus a ``uint8`` ``<column>__status`` column.
 
-Conversions: ``None``/``bool``/``int``/``str`` pass through; floats (Python and
-numpy) become Python floats, and non-finite floats become the strings
-``"nan"``, ``"inf"``, ``"-inf"`` so the output is always valid JSON; numpy
-scalars become Python scalars; complex numbers become
-``{"real": x, "imag": y}``; dataclasses become dicts of their fields; enums
-their ``.value``; :class:`~pathlib.Path` a string; tuples, lists and sets
-lists; ``date``/``datetime`` ISO-8601 strings; a
+- a key named ``"<field>_absent"`` is reserved for that sibling: a source
+  object that supplies one is rejected (:class:`ValueError`);
+- JSON has no ``nan``/``inf``: a non-finite float that is the value of a named
+  field (mapping key or dataclass field) is written as ``null`` with sibling
+  ``"<field>_absent": "undefined"``; inside a list it is written as ``null``
+  (a declared status column carries the reason); with no field or list to
+  hold it (the top level) it raises :class:`TypeError`, like a nameless
+  :class:`~ftmwpipeline.contract.Absent`. Arrays written through a sink (the
+  CLI's ``.npy`` files) keep their ``nan`` values.
+
+Conversions: ``None``/``bool``/``int``/``str`` pass through; enums become their
+``.value`` (checked first, so a ``str``- or ``int``-valued enum is never
+written as ``"Cls.MEMBER"``; also for mapping keys); finite floats (Python and
+numpy) become Python floats; numpy scalars become Python scalars; complex
+numbers become ``{"real": x, "imag": y}`` (each part a named field);
+dataclasses become dicts of their fields; :class:`~pathlib.Path` a string;
+tuples, lists and sets lists; ``date``/``datetime`` ISO-8601 strings; a
 :class:`~ftmwpipeline.file_manager.PipelineFileError` its ``to_dict()``.
 Anything else raises :class:`TypeError` -- there is no ``str()`` fallback.
 
@@ -100,13 +110,13 @@ def to_jsonable(
     Raises
     ------
     TypeError
-        For an unsupported type, a non-string-able mapping key, or an
+        For an unsupported type, a non-string-able mapping key, an
         :class:`Absent` that is not the value of a named field (top level or a
-        list element): its reason could not survive, so build a column with
-        :func:`absent_column` instead.
+        list element) -- its reason could not survive, so build a column with
+        :func:`absent_column` instead -- or a non-finite float at the top level.
     ValueError
         For a malformed schema name, a conflicting ``"schema"`` key, or a
-        ``"<field>_absent"`` key that collides with an existing key.
+        source key ending in ``"_absent"`` (reserved for absence siblings).
     """
     result = _convert(obj, (), arrays)
     if schema is not None:
@@ -236,19 +246,25 @@ def _stamp(result: Any, schema: str) -> Dict[str, Any]:
     return stamped
 
 
-def _float(x: float) -> Union[float, str]:
-    if math.isfinite(x):
-        return float(x)
-    if math.isnan(x):
-        return "nan"
-    return "inf" if x > 0 else "-inf"
+def _is_nonfinite(x: Any) -> bool:
+    """True for a real float (Python, numpy, or 0-d float array) that is nan/inf."""
+    if isinstance(x, np.ndarray):
+        if x.ndim != 0 or x.dtype.kind != "f":
+            return False
+        x = x.item()
+    if isinstance(x, (float, np.floating)):
+        return not math.isfinite(float(x))
+    return False
 
 
 def _key(k: Any) -> str:
-    if isinstance(k, str):
-        return k
+    # Enum before str/int: a str- or int-valued Enum key is written as its value.
+    if isinstance(k, Absent):
+        raise TypeError("Absent cannot be used as a JSON object key")
     if isinstance(k, enum.Enum):
         return _key(k.value)
+    if isinstance(k, str):
+        return str(k)
     if isinstance(k, (bool, np.bool_)):
         return "true" if k else "false"
     if isinstance(k, (int, np.integer)):
@@ -270,19 +286,30 @@ def _object(
         keys.add(key)
         if isinstance(v, Absent):
             converted.append((key, None, v))
+        elif _is_nonfinite(v):
+            # A named field with no finite value: computed, but undefined.
+            converted.append((key, None, Absent.UNDEFINED))
         else:
             converted.append((key, _convert(v, path + (key,), arrays), None))
+    # "<field>_absent" is reserved for the absence sibling this function
+    # writes; a source object may never supply one.
+    for key in keys:
+        if key.endswith(ABSENT_SUFFIX):
+            base = key[: -len(ABSENT_SUFFIX)]
+            if base in keys:
+                raise ValueError(
+                    f"key {key!r} at {_where(path)} is reserved for the absence "
+                    f"reason of {base!r}; the source object may not supply it"
+                )
+            raise ValueError(
+                f"key {key!r} at {_where(path)} is reserved for an absence "
+                f"reason, but the payload has no field {base!r}"
+            )
     out: Dict[str, Any] = {}
     for key, value, reason in converted:
         out[key] = value
         if reason is not None:
-            sibling = key + ABSENT_SUFFIX
-            if sibling in keys:
-                raise ValueError(
-                    f"absence sibling {sibling!r} collides with an existing key "
-                    f"at {_where(path)}"
-                )
-            out[sibling] = reason.value
+            out[key + ABSENT_SUFFIX] = reason.value
     return out
 
 
@@ -290,25 +317,45 @@ def _where(path: JsonPath) -> str:
     return "/" + "/".join(str(p) for p in path)
 
 
+def _element(obj: Any, path: JsonPath, arrays: Optional[ArraySink]) -> Any:
+    """Convert a list element: a non-finite float is ``null`` (no field to
+    carry a reason; a declared status column carries it)."""
+    if _is_nonfinite(obj):
+        return None
+    return _convert(obj, path, arrays)
+
+
 def _convert(obj: Any, path: JsonPath, arrays: Optional[ArraySink]) -> Any:
-    # Order matters: bool before int, Absent before generic Enum, numpy before
-    # the Python builtins they subclass.
-    if obj is None or isinstance(obj, str):
-        return obj if obj is None else str(obj)
+    # Order matters: Absent before generic Enum, Enum before str/int/float (a
+    # str- or int-valued Enum is written as its value), bool before int, numpy
+    # before the Python builtins they subclass.
+    if obj is None:
+        return None
     if isinstance(obj, Absent):
         raise TypeError(
             f"Absent at {_where(path)} is not the value of a named field; its "
             "reason cannot be carried. Use a field, or absent_column() for arrays."
         )
+    if isinstance(obj, enum.Enum):
+        return _convert(obj.value, path, arrays)
+    if isinstance(obj, str):
+        return str(obj)
     if isinstance(obj, (bool, np.bool_)):
         return bool(obj)
     if isinstance(obj, (int, np.integer)):
         return int(obj)
     if isinstance(obj, (float, np.floating)):
-        return _float(float(obj))
+        x = float(obj)
+        if not math.isfinite(x):
+            raise TypeError(
+                f"non-finite float at {_where(path)} is not the value of a named "
+                "field; its reason cannot be carried. Use a field (written as "
+                "null with an 'undefined' sibling) or an array."
+            )
+        return x
     if isinstance(obj, (complex, np.complexfloating)):
         c = complex(obj)
-        return {"real": _float(c.real), "imag": _float(c.imag)}
+        return _object((("real", c.real), ("imag", c.imag)), path, arrays)
     if isinstance(obj, np.ndarray):
         if obj.ndim == 0:
             return _convert(obj.item(), path, arrays)
@@ -318,7 +365,7 @@ def _convert(obj: Any, path: JsonPath, arrays: Optional[ArraySink]) -> Any:
             raise TypeError(
                 f"array at {_where(path)} holds Absent; use absent_column()"
             )
-        return [_convert(v, path + (i,), None) for i, v in enumerate(obj.tolist())]
+        return [_element(v, path + (i,), None) for i, v in enumerate(obj.tolist())]
     if isinstance(obj, PipelineFileError):
         return obj.to_dict()
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
@@ -329,8 +376,6 @@ def _convert(obj: Any, path: JsonPath, arrays: Optional[ArraySink]) -> Any:
         )
         schema = getattr(type(obj), "__ftmw_schema__", None)
         return _stamp(result, schema) if isinstance(schema, str) else result
-    if isinstance(obj, enum.Enum):
-        return _convert(obj.value, path, arrays)
     if isinstance(obj, Mapping):
         return _object(obj.items(), path, arrays)
     if isinstance(obj, PurePath):
@@ -338,9 +383,9 @@ def _convert(obj: Any, path: JsonPath, arrays: Optional[ArraySink]) -> Any:
     if isinstance(obj, (_dt.datetime, _dt.date, _dt.time)):
         return obj.isoformat()
     if isinstance(obj, (list, tuple)):
-        return [_convert(v, path + (i,), arrays) for i, v in enumerate(obj)]
+        return [_element(v, path + (i,), arrays) for i, v in enumerate(obj)]
     if isinstance(obj, (set, frozenset)):
-        converted = [_convert(v, path, arrays) for v in obj]
+        converted = [_element(v, path, arrays) for v in obj]
         try:
             return sorted(converted)
         except TypeError:

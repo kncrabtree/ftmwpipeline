@@ -52,6 +52,7 @@ from ftmwpipeline.contract import (
     MANIFEST,
     Absent,
     ContractManifest,
+    Stage,
     capabilities,
 )
 
@@ -64,6 +65,7 @@ from ftmwpipeline.file_manager import (
     PipelineCorruptionError,
     PipelineExistsError,
     PipelineFileError,
+    PipelineFileNotFoundError,
     StageDependencyError,
 )
 from ftmwpipeline.serialize import to_jsonable
@@ -109,12 +111,14 @@ __all__ = [
     "PipelineCompatibilityError",
     "AnalysisEpochMismatchError",
     "NotFoundError",
+    "PipelineFileNotFoundError",
     "IncompleteProvenanceError",
     # Machine contract
     "CONTRACT_VERSION",
     "MANIFEST",
     "Absent",
     "ContractManifest",
+    "Stage",
     "capabilities",
     "to_jsonable",
     # Main pipeline interface

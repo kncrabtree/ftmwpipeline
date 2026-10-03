@@ -5,6 +5,9 @@ program may rely on (normative spec: ``dev-docs/CONTRACT_STRATEGY.md``):
 
 - :data:`CONTRACT_VERSION` -- the integer a client gates on (never
   ``__version__``).
+- :class:`Stage` -- the canonical stage vocabulary every contract payload
+  uses to name a stage, with :func:`stage_for_key` / :func:`key_for_stage`
+  mapping to and from the internal storage keys.
 - :class:`Absent` -- the two meanings of "no value" (``NOT_RUN`` and
   ``UNDEFINED``) every contract field uses instead of ``None`` / ``nan`` /
   ``-1``. Its wire and columnar forms are applied by
@@ -18,7 +21,7 @@ program may rely on (normative spec: ``dev-docs/CONTRACT_STRATEGY.md``):
 
 Adding to the contract
 ----------------------
-Edit the ``_ACCESSORS`` / ``_SCHEMAS`` / ``_CODES`` / ``_METADATA_KEYS`` /
+Edit the ``_ACCESSORS`` (name and binding) / ``_SCHEMAS`` / ``_CODES`` / ``_METADATA_KEYS`` /
 ``_TABLES`` literals below -- that is the only place entries are declared --
 and raise :data:`CONTRACT_VERSION` per the spec's versioning rules. Entries are
 only ever appended; removing or renaming one is a breaking change.
@@ -28,9 +31,9 @@ from __future__ import annotations
 
 import enum
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, Dict, Mapping, Tuple
+from typing import Any, Dict, Mapping, NamedTuple, Tuple, Union
 
 from .file_manager import (
     ERROR_SCHEMA,
@@ -41,13 +44,14 @@ from .file_manager import (
     PipelineCorruptionError,
     PipelineExistsError,
     PipelineFileError,
+    PipelineFileNotFoundError,
     StageDependencyError,
 )
 
-#: The machine-contract version. ``0`` means "not yet announced": the contract
-#: may still change incompatibly (pre-1.0.0 rules). The announcement sets it to
-#: ``1``; every additive change after that raises it.
-CONTRACT_VERSION: int = 0
+#: The machine-contract version. The first published contract is ``1``; each
+#: release that adds (or, before 1.0.0, changes) contract elements raises it by
+#: one, so a client can gate on it as well as on :func:`capabilities`.
+CONTRACT_VERSION: int = 1
 
 #: Schema name of the :func:`capabilities` payload.
 CAPABILITIES_SCHEMA = "ftmw/capabilities@1"
@@ -87,6 +91,75 @@ STATUS_NOT_RUN: int = 1
 STATUS_UNDEFINED: int = 2
 
 
+class Stage(str, enum.Enum):
+    """The canonical stage vocabulary.
+
+    Values are the CLI object names. Every contract payload that names a stage
+    (e.g. ``missing_dependencies`` of a ``stage_not_run`` error) uses these
+    values. :func:`stage_for_key` / :func:`key_for_stage` map to and from the
+    internal storage keys (``PipelineStageTracker.STAGE_DEPENDENCIES``).
+    """
+
+    DATA = "data"
+    FT = "ft"
+    NOISE = "noise"
+    TAU = "tau"
+    TAU_G = "tau_g"
+    TIMEBASE = "timebase"
+    PEAKS = "peaks"
+    WINDOWS = "windows"
+    FIT = "fit"
+    REVIEW = "review"
+
+
+#: Internal storage key of each canonical stage (read-only). Covers every key
+#: of ``PipelineStageTracker.STAGE_DEPENDENCIES``.
+STAGE_KEYS: Mapping[Stage, str] = MappingProxyType(
+    {
+        Stage.DATA: "stage0_fid_data",
+        Stage.FT: "stage1_complex_ft",
+        Stage.NOISE: "stage2_noise_result",
+        Stage.TAU: "stage2b_tau_calibration",
+        Stage.TAU_G: "stage2b_tau_G_calibration",
+        Stage.TIMEBASE: "timebase_calibration",
+        Stage.PEAKS: "stage3_peaks",
+        Stage.WINDOWS: "stage4_windows",
+        Stage.FIT: "stage5_fitting",
+        Stage.REVIEW: "stage6_review",
+    }
+)
+
+_STAGE_BY_KEY: Mapping[str, Stage] = MappingProxyType(
+    {key: stage for stage, key in STAGE_KEYS.items()}
+)
+
+
+def stage_for_key(key: str) -> Stage:
+    """The canonical :class:`Stage` for an internal storage key.
+
+    Raises
+    ------
+    ValueError
+        If ``key`` has no canonical stage. Never passes an internal spelling
+        through.
+    """
+    try:
+        return _STAGE_BY_KEY[key]
+    except KeyError:
+        raise ValueError(f"no canonical stage for internal key {key!r}") from None
+
+
+def key_for_stage(stage: Union[Stage, str]) -> str:
+    """The internal storage key for a canonical stage (or its value string).
+
+    Raises
+    ------
+    ValueError
+        If ``stage`` is not a canonical stage.
+    """
+    return STAGE_KEYS[Stage(stage)]
+
+
 @dataclass(frozen=True)
 class ContractManifest:
     """Immutable enumeration of every declared contract element.
@@ -107,6 +180,13 @@ class ContractManifest:
     tables : Mapping[str, tuple of str]
         Declared ``read_table`` tables and, per table, their declared columns.
         Read-only.
+    file_bound : Mapping[str, bool]
+        Per accessor, whether it reads a file. A file-bound accessor is a
+        :class:`~ftmwpipeline.Pipeline` instance method taking no path, an
+        ``api`` function whose first parameter is the path, and a ``read`` verb
+        with a file argument. A file-less one is a ``Pipeline`` staticmethod
+        and an ``api`` function, both without a path, and a ``read`` verb
+        without a file argument. Keys equal :attr:`accessors`. Read-only.
     """
 
     contract_version: int
@@ -115,12 +195,22 @@ class ContractManifest:
     codes: Tuple[str, ...]
     metadata_keys: Tuple[str, ...]
     tables: Mapping[str, Tuple[str, ...]]
+    file_bound: Mapping[str, bool] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         for group in ("accessors", "schemas", "codes", "metadata_keys"):
             values = getattr(self, group)
             if len(set(values)) != len(values):
                 raise ValueError(f"duplicate entry in manifest {group}")
+        if set(self.file_bound) != set(self.accessors):
+            raise ValueError("file_bound must name exactly the manifest accessors")
+        object.__setattr__(
+            self,
+            "file_bound",
+            MappingProxyType(
+                {name: bool(self.file_bound[name]) for name in self.accessors}
+            ),
+        )
         for name in self.schemas:
             if not SCHEMA_NAME_RE.match(name):
                 raise ValueError(f"malformed schema name: {name!r}")
@@ -132,7 +222,15 @@ class ContractManifest:
 # The declarations. This is the ONE place contract elements are added.
 # --------------------------------------------------------------------------
 
-_ACCESSORS: Tuple[str, ...] = ("capabilities",)
+
+class AccessorSpec(NamedTuple):
+    """One accessor declaration: its name and whether it reads a file."""
+
+    name: str
+    file_bound: bool
+
+
+_ACCESSORS: Tuple[AccessorSpec, ...] = (AccessorSpec("capabilities", file_bound=False),)
 
 _SCHEMAS: Tuple[str, ...] = (
     ERROR_SCHEMA,
@@ -155,11 +253,12 @@ _TABLES: Dict[str, Tuple[str, ...]] = {}
 
 MANIFEST = ContractManifest(
     contract_version=CONTRACT_VERSION,
-    accessors=_ACCESSORS,
+    accessors=tuple(spec.name for spec in _ACCESSORS),
     schemas=_SCHEMAS,
     codes=_CODES,
     metadata_keys=_METADATA_KEYS,
     tables=_TABLES,
+    file_bound={spec.name: spec.file_bound for spec in _ACCESSORS},
 )
 
 
@@ -188,6 +287,11 @@ __all__ = [
     "ERROR_SCHEMA",
     "SCHEMA_NAME_RE",
     "Absent",
+    "Stage",
+    "STAGE_KEYS",
+    "stage_for_key",
+    "key_for_stage",
+    "AccessorSpec",
     "STATUS_PRESENT",
     "STATUS_NOT_RUN",
     "STATUS_UNDEFINED",
@@ -202,5 +306,6 @@ __all__ = [
     "PipelineCompatibilityError",
     "AnalysisEpochMismatchError",
     "NotFoundError",
+    "PipelineFileNotFoundError",
     "IncompleteProvenanceError",
 ]

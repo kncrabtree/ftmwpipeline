@@ -71,12 +71,39 @@ class PipelineFileError(Exception):
     also be listed in :data:`ftmwpipeline.contract.MANIFEST`.
     """
 
+    # The error idiom -- every subclass, in every wave, follows it:
+    #
+    # * ``__init__`` sets the typed attributes, builds the message text, and
+    #   calls ``super().__init__(message)`` with that one string. The base
+    #   stores it as ``self.message`` (so ``args == (message,)``).
+    # * A wording override is a keyword-only ``message=None`` parameter.
+    # * ``contract_fields`` names the payload attributes. A field whose wire
+    #   form differs from the Python attribute (a canonical stage name, an
+    #   ``Absent`` for ``None``) is converted in ``_contract_values``; the
+    #   attribute itself keeps its Python value.
+    # * Do not override ``__str__`` unless a built-in base mangles the message
+    #   (``KeyError`` quotes it).
+    # * Do not write ``__reduce__``: the base pickles every subclass from
+    #   ``args`` and ``__dict__`` without calling ``__init__``, so any
+    #   constructor signature round-trips (pool workers re-raise these).
+
     #: Stable routing code. The base value is a fallback for direct raises of
     #: the base class; every concrete subclass overrides it.
     code: ClassVar[str] = "pipeline_error"
 
     #: Attribute names (in payload order) that :meth:`to_dict` carries.
     contract_fields: ClassVar[Tuple[str, ...]] = ()
+
+    def __init__(self, message: str = "") -> None:
+        self.message = message
+        super().__init__(message)
+
+    def __reduce__(self) -> Tuple[Any, ...]:
+        return (_restore_error, (type(self), self.args), self.__dict__.copy())
+
+    def _contract_values(self) -> Dict[str, Any]:
+        """The payload attributes, in their contract (pre-serialization) form."""
+        return {name: getattr(self, name) for name in self.contract_fields}
 
     def to_dict(self) -> Dict[str, Any]:
         """The ``ftmw/error@1`` payload for this error.
@@ -88,11 +115,26 @@ class PipelineFileError(Exception):
         from .serialize import to_jsonable
 
         payload: Dict[str, Any] = {"code": self.code, "message": str(self)}
-        for name in self.contract_fields:
-            payload[name] = getattr(self, name)
+        payload.update(self._contract_values())
         result = to_jsonable(payload, schema=ERROR_SCHEMA)
         assert isinstance(result, dict)
         return result
+
+
+def _restore_error(cls: type, args: Tuple[Any, ...]) -> PipelineFileError:
+    """Unpickle helper: rebuild an error without calling its ``__init__``.
+
+    Pickle then restores the instance ``__dict__`` (the typed attributes and
+    ``message``) as the state.
+    """
+    # The C-level constructor of the instance layout: OSError's for an
+    # OSError subclass (e.g. PipelineFileNotFoundError), else BaseException's.
+    # ``cls.__new__`` may resolve to another base's (KeyError's) and refuse.
+    new = OSError.__new__ if issubclass(cls, OSError) else BaseException.__new__
+    error: BaseException = new(cls, *args)
+    assert isinstance(error, PipelineFileError)
+    error.args = args
+    return error
 
 
 #: Schema name of :meth:`PipelineFileError.to_dict` payloads.
@@ -128,6 +170,10 @@ class StageDependencyError(PipelineFileError, ValueError):
     ``missing_dependencies`` the stage keys it needs, and ``command`` (when
     given) the CLI verb that produces them. Also a :class:`ValueError`, which is
     what these refusals raised before they were typed.
+
+    ``missing_dependencies`` holds the internal storage keys (e.g.
+    ``"stage1_complex_ft"``); :meth:`to_dict` publishes them as canonical
+    :class:`~ftmwpipeline.contract.Stage` values (e.g. ``"ft"``).
     """
 
     code: ClassVar[str] = "stage_not_run"
@@ -159,20 +205,43 @@ class StageDependencyError(PipelineFileError, ValueError):
             )
         super().__init__(message)
 
+    def _contract_values(self) -> Dict[str, Any]:
+        # Canonical names on the wire; an unmapped key raises (never passes
+        # through as an internal spelling).
+        from .contract import stage_for_key
 
-class PipelineCorruptionError(PipelineFileError):
-    """Raised when pipeline file is corrupted or invalid."""
+        values = super()._contract_values()
+        values["missing_dependencies"] = [
+            stage_for_key(key) for key in self.missing_dependencies
+        ]
+        return values
+
+
+class PipelineCorruptionError(PipelineFileError, RuntimeError):
+    """Raised when pipeline file is corrupted or invalid.
+
+    Also a :class:`RuntimeError`, which is what an unopenable (non-HDF5,
+    unreadable) file raised before it was typed.
+    """
 
     code: ClassVar[str] = "file_corrupt"
 
-    def __init__(self, filepath: Path, corruption_details: str):
+    def __init__(
+        self,
+        filepath: Path,
+        corruption_details: str,
+        *,
+        message: Optional[str] = None,
+    ):
         self.filepath = filepath
         self.corruption_details = corruption_details
-        super().__init__(
-            f"Pipeline file is corrupted: {filepath}\n"
-            f"Details: {corruption_details}\n"
-            f"Try recreating from original data source."
-        )
+        if message is None:
+            message = (
+                f"Pipeline file is corrupted: {filepath}\n"
+                f"Details: {corruption_details}\n"
+                f"Try recreating from original data source."
+            )
+        super().__init__(message)
 
 
 class PipelineCompatibilityError(PipelineFileError):
@@ -258,6 +327,17 @@ class AnalysisEpochMismatchError(PipelineFileError, ValueError):
             f"curation crossed an epoch boundary."
         )
 
+    def _contract_values(self) -> Dict[str, Any]:
+        # A file that never recorded its epoch is NOT_RUN on the wire; the
+        # attributes keep None.
+        from .contract import Absent
+
+        values = super()._contract_values()
+        for name in ("file_epoch", "current_epoch"):
+            if values[name] is None:
+                values[name] = Absent.NOT_RUN
+        return values
+
 
 class NotFoundError(PipelineFileError, KeyError):
     """Raised when a request names something the file does not hold.
@@ -294,16 +374,36 @@ class NotFoundError(PipelineFileError, KeyError):
         if message is None:
             listed = ", ".join(str(i) for i in self.ids)
             message = f"No {kind} with id: {listed}"
-        self.message = message
         super().__init__(message)
 
     def __str__(self) -> str:
         return self.message
 
-    def __reduce__(self) -> Tuple[Any, ...]:
-        # Keyword-only message: rebuild from attributes (survives pickling to and
-        # from pool workers).
-        return (_rebuild_error, (type(self), (self.kind, self.ids), self.message))
+
+class PipelineFileNotFoundError(NotFoundError, FileNotFoundError):
+    """Raised when a ``.ftmw`` path does not exist.
+
+    ``not_found`` with ``kind == "file"`` and ``ids == [str(filepath)]``. Also a
+    :class:`FileNotFoundError` (and, via :class:`NotFoundError`, a
+    :class:`KeyError`), so every existing ``except FileNotFoundError`` keeps
+    working.
+
+    Attributes
+    ----------
+    filepath : Path
+        The path that does not exist.
+    """
+
+    def __init__(
+        self,
+        filepath: Union[str, Path],
+        *,
+        message: Optional[str] = None,
+    ) -> None:
+        self.filepath = Path(filepath)
+        if message is None:
+            message = f"Pipeline file not found: {self.filepath}"
+        super().__init__("file", [str(self.filepath)], message=message)
 
 
 class IncompleteProvenanceError(PipelineFileError, ValueError):
@@ -339,18 +439,6 @@ class IncompleteProvenanceError(PipelineFileError, ValueError):
                 f"{', '.join(self.missing)}. Re-run the stage(s) that own them."
             )
         super().__init__(message)
-
-    def __reduce__(self) -> Tuple[Any, ...]:
-        return (_rebuild_error, (type(self), (self.missing,), str(self)))
-
-
-def _rebuild_error(
-    cls: type, args: Tuple[Any, ...], message: Optional[str]
-) -> PipelineFileError:
-    """Unpickle helper for errors whose constructor takes a keyword message."""
-    error = cls(*args, message=message)
-    assert isinstance(error, PipelineFileError)
-    return error
 
 
 class SourceMetadata:
@@ -759,21 +847,26 @@ def open_pipeline_file(
 
     Raises
     ------
-    FileNotFoundError
-        If pipeline file does not exist
+    PipelineFileNotFoundError
+        If pipeline file does not exist (``not_found``, ``kind="file"``; also
+        a ``FileNotFoundError``)
     PipelineCorruptionError
-        If file is corrupted or invalid
+        If file is corrupted or cannot be opened as a pipeline file
+        (``file_corrupt``; also a ``RuntimeError``)
     """
     filepath = Path(filepath)
 
     # Check file existence
     if not filepath.exists():
-        raise FileNotFoundError(
-            f"Pipeline file not found: {filepath}\n\n"
-            f"To create a new pipeline:\n"
-            f"  Pipeline.create('{filepath}', source='path/to/data/')\n"
-            f"  # or\n"
-            f"  ftmwpipeline data import {filepath} path/to/data/"
+        raise PipelineFileNotFoundError(
+            filepath,
+            message=(
+                f"Pipeline file not found: {filepath}\n\n"
+                f"To create a new pipeline:\n"
+                f"  Pipeline.create('{filepath}', source='path/to/data/')\n"
+                f"  # or\n"
+                f"  ftmwpipeline data import {filepath} path/to/data/"
+            ),
         )
 
     try:
@@ -798,7 +891,11 @@ def open_pipeline_file(
         if "h5py" in str(type(e)).lower() or "hdf5" in str(e).lower():
             raise PipelineCorruptionError(filepath, f"HDF5 error: {e}") from e
         else:
-            raise RuntimeError(f"Failed to open pipeline file {filepath}: {e}") from e
+            raise PipelineCorruptionError(
+                filepath,
+                str(e),
+                message=f"Failed to open pipeline file {filepath}: {e}",
+            ) from e
 
 
 def _warn_active_window_past_record(h5f: "h5py.File", fid: Any) -> List[str]:

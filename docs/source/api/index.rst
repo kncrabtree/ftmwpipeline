@@ -472,4 +472,6 @@ The file-management error family, all subclasses of
 
 .. autoexception:: ftmwpipeline.file_manager.NotFoundError
 
+.. autoexception:: ftmwpipeline.file_manager.PipelineFileNotFoundError
+
 .. autoexception:: ftmwpipeline.file_manager.IncompleteProvenanceError

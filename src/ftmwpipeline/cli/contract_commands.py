@@ -5,8 +5,12 @@ contract has frozen. This module is the one place that turns such a function
 into a ``read <name>`` verb: it runs the accessor, passes the result through
 :func:`ftmwpipeline.serialize.to_jsonable`, prints the JSON envelope to stdout,
 writes array fields as ``.npy`` files into ``--output`` (the envelope names the
-file in place of the array), and, under ``--format json``, reports a contract
-error as its ``to_dict()`` JSON on stderr with a mapped exit code.
+file in place of the array), and reports a contract error as its ``to_dict()``
+JSON on stderr with a mapped exit code.
+
+It also holds the CLI's one contract-code -> exit-code table
+(:data:`EXIT_CODES`, :func:`exit_code_for`); every verb that reports a
+:class:`~ftmwpipeline.file_manager.PipelineFileError` exits through it.
 
 Registering a new accessor is one call from ``read_commands``::
 
@@ -36,19 +40,19 @@ from ..contract import PipelineFileError
 from ..serialize import ArrayCollector, to_jsonable
 from .utils import setup_logging
 
-#: Exit code for each contract error code (CLI_STRATEGY: 1 user error,
-#: 2 processing error). The single place this mapping lives; a code absent
-#: here exits 1.
+#: Exit code for each contract error code that does not exit
+#: :data:`DEFAULT_ERROR_EXIT` (CONTRACT_STRATEGY §Errors). The single place this
+#: mapping lives; every other code exits 1. ``algorithm_failed`` and
+#: ``cancelled`` are listed ahead of the waves that introduce them.
 EXIT_CODES: Dict[str, int] = {
-    "stage_not_run": 1,
-    "not_found": 1,
-    "incomplete_provenance": 1,
-    "file_exists": 1,
-    "file_incompatible": 1,
-    "epoch_mismatch": 1,
     "file_corrupt": 2,
+    "algorithm_failed": 2,
+    "cancelled": 130,
 }
 DEFAULT_ERROR_EXIT = 1
+
+#: Exit code for an interrupted (Ctrl-C) command, as the stage verbs use.
+INTERRUPTED_EXIT = 130
 
 
 def exit_code_for(exc: PipelineFileError) -> int:
@@ -112,6 +116,9 @@ def run_accessor_command(
     except (FileNotFoundError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return DEFAULT_ERROR_EXIT
+    except KeyboardInterrupt:
+        print("Error: Interrupted by user", file=sys.stderr)
+        return INTERRUPTED_EXIT
     return 0
 
 

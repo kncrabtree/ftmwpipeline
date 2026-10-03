@@ -34,22 +34,29 @@ engine so they cannot answer differently.
 
 * **The machine contract has its foundations: a contract version, ``Absent``,
   typed errors with codes, a JSON serializer, and ``capabilities``.**
-  ``ftmwpipeline.CONTRACT_VERSION`` (currently ``0``, not yet announced) is the
+  ``ftmwpipeline.CONTRACT_VERSION`` (``1``, the first published contract) is the
   integer a program gates on. ``ftmwpipeline.Absent`` (``NOT_RUN`` /
   ``UNDEFINED``) is the one vocabulary for "no value", written on the wire as
-  ``null`` plus a ``"<field>_absent"`` sibling and in arrays as a ``uint8``
-  ``<column>__status`` column. Every error a program may route on is a
-  ``PipelineFileError`` with a stable ``code`` and ``to_dict()``; two new
-  members, ``NotFoundError`` (also a ``KeyError``) and
-  ``IncompleteProvenanceError`` (also a ``ValueError``), join the family, and no
-  existing exception changed its constructor, message or built-in base.
+  ``null`` plus a ``"<field>_absent"`` sibling (also for a non-finite float)
+  and in arrays as a ``uint8`` ``<column>__status`` column.
+  ``ftmwpipeline.Stage`` is the canonical stage vocabulary (``data``, ``ft``,
+  ... ``review``) every payload uses to name a stage. Every error a program may
+  route on is a ``PipelineFileError`` with a stable ``code`` and ``to_dict()``,
+  and every one pickles; three new members join the family:
+  ``NotFoundError`` (also a ``KeyError``), ``PipelineFileNotFoundError`` (also
+  a ``FileNotFoundError``, raised for a ``.ftmw`` path that does not exist) and
+  ``IncompleteProvenanceError`` (also a ``ValueError``).
+  ``PipelineCorruptionError`` is now also a ``RuntimeError`` and replaces the
+  bare ``RuntimeError`` an unopenable file used to raise, message unchanged.
+  No existing exception lost a built-in base or changed its message.
   ``ftmwpipeline.to_jsonable`` converts results to strict JSON, and
   ``capabilities()`` (``api.capabilities``, ``Pipeline.capabilities``,
   ``ftmwpipeline read capabilities``) reports what this installation declares.
   Under the accessor verbs of ``read``, a contract error is printed as its
-  ``to_dict()`` JSON on stderr, with exit code 2 for ``file_corrupt`` and 1 for
-  every other code; array results are written as ``.npy`` files under
-  ``--output``. See :doc:`machine_contract`.
+  ``to_dict()`` JSON on stderr, with exit code 2 for ``file_corrupt``, 130 for
+  an interrupt, and 1 for every other code (``read table`` / ``meta`` /
+  ``list`` use the same mapping); array results are written as ``.npy`` files
+  under ``--output``. See :doc:`machine_contract`.
 
 * **``review apply --log-prefix N`` (``log_prefix=N`` on ``Pipeline.review_apply``,
   ``api.review_apply`` and ``ReviewSession.review_apply``) applies a curation

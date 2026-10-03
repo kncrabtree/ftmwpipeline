@@ -93,7 +93,7 @@ import numpy as np
 
 from ..core.settings import FTSettings
 from ..core.settings_framework import NONE as NONE_SENTINEL
-from ..file_manager import check_format_compatibility
+from ..file_manager import PipelineFileNotFoundError, check_format_compatibility
 from ..io._hdf5_helpers import ColumnSpec, load_json_attr
 from ..io.fitting_serialization import (
     FIT_AUDIT_COLUMN_SPECS,
@@ -326,10 +326,13 @@ def _open(file_path: Union[str, Path]) -> h5py.File:
     """
     path = Path(file_path)
     if not path.exists():
-        raise FileNotFoundError(
-            f"Pipeline file not found: {path}\n\n"
-            f"To create a new pipeline:\n"
-            f"  ftmwpipeline data import {path} path/to/data/"
+        raise PipelineFileNotFoundError(
+            path,
+            message=(
+                f"Pipeline file not found: {path}\n\n"
+                f"To create a new pipeline:\n"
+                f"  ftmwpipeline data import {path} path/to/data/"
+            ),
         )
     h5f = h5py.File(path, "r")
     try:
