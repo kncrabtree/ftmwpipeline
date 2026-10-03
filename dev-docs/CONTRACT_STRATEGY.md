@@ -422,8 +422,8 @@ contract tests check.
 
 ## Open questions
 
-1. **Whole-spectrum model** (wanted by BlackQuill; ranked after the accessors
-   above). `spectrum_model(path, grid=...)` — every final line evaluated over
+1. **Whole-spectrum model** (wanted by BlackQuill; lands before 1.0.0, after
+   the accessors above). `spectrum_model(path, grid=...)` — every final line evaluated over
    the full grid, with its residual. Overlapping windows make "sum of window
    models" double-count the frozen neighbours, so it is its own evaluation.
 
