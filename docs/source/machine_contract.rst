@@ -34,7 +34,7 @@ The contract version
     if ftmwpipeline.CONTRACT_VERSION < 1:
         raise RuntimeError("needs a newer ftmwpipeline")
 
-The first published contract is version ``1``; this release is version ``2``. Additions (a new accessor,
+The first published contract is version ``1``; this release is version ``3``. Additions (a new accessor,
 field or code) raise the version by one and never break an existing field. Every machine-readable payload also carries a **schema name**
 of the form ``ftmw/<payload>@<n>``; a schema name never changes meaning.
 
@@ -147,6 +147,24 @@ Each declared accessor, with its absence cases:
   "not_run"``). Each
   ``FinalPeak`` carries ``peak_uid``, ``window_id``, ``origin``, ``derivation``,
   ``clock_lattice``, the ``knockout_*`` fields, the frequency and its sigma.
+  It also carries the per-line fit fields, joined from the Stage 5 fit of the
+  line's window: ``decay_time_us`` and ``decay_time_error_us`` (the window's
+  ``tau`` and its 1-sigma error), ``shape``, ``fwhm_mhz``,
+  ``detection_index`` and ``fit_window_mhz``. ``fwhm_mhz`` is exactly
+  ``fitting.validation.feature_fwhm(decay_time_us,
+  read_metadata(path)["stage5.acquisition_us"], shape=shape)``, so a width a
+  client computed that way does not move. ``fit_window_mhz`` is the window's
+  ``(low, high)`` in the calibrated frame, like ``frequency_mhz`` (a
+  two-element array on the wire); a window created during review reports its
+  own bounds. These fields use ``Absent`` from the start:
+  ``decay_time_error_us`` is *undefined* when ``tau`` was held fixed,
+  ``detection_index`` is *undefined* for a line no Stage 3 detection seeded,
+  ``fwhm_mhz`` is *not run* when the fit recorded no
+  ``stage5.acquisition_us``, and every one is *undefined* for a line with no
+  fit record behind it. A table stored before these fields existed is rebuilt
+  in memory when read (the file is not written); the next write that stores
+  the table (``review run``, a curation edit, ``set_sigma_floor``, a timebase
+  refresh) persists them.
 * ``review_log`` -- the ``DecisionLogEntry`` rows in execution order (an empty
   list when nothing was edited). ``kind`` is one of ``add``, ``remove``,
   ``merge``, ``split``, ``accept``, ``create_window``; ``provenance`` is

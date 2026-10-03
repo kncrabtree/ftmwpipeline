@@ -17,7 +17,9 @@ HDF5 layout (under the caller-supplied group)::
             data  (JSON string)
     final_products/ (present once consolidated; absent otherwise)
         .attrs:
-            data  (JSON string)
+            data          (JSON string)
+            peak_fields   (int; absent on tables that predate the per-line
+                           fit fields -- see FINAL_PEAK_FIELDS_VERSION)
     created_windows/ (absent in files predating Stage-6 window creation)
         .attrs:
             data  (JSON string)
@@ -29,7 +31,15 @@ Each element of ``attention_reasons`` is a dict with keys
 
 The decision log is a JSON list (a window carries entries once a `review` edit
 records a decision against it). The final-products subgroup holds the
-consolidated, frequency-calibrated line list `review run` builds. The
+consolidated, frequency-calibrated line list `review run` builds. Its per-line
+fit fields (``decay_time_us``, ``decay_time_error_us``, ``shape``,
+``fwhm_mhz``, ``detection_index``, ``fit_window_mhz``) can be
+:class:`~ftmwpipeline.contract.Absent`; each is stored losslessly as its value
+(``null`` when absent; ``fit_window_mhz`` as a two-element list) plus a sibling
+``"<field>__status"`` integer using the columnar status codes (``0`` present,
+``1`` not run, ``2`` undefined). A table written before those fields existed
+carries no ``peak_fields`` stamp; :func:`final_products_predate_fit_fields`
+detects it so a reader can rebuild the table in memory. The
 created-windows subgroup holds the Stage-6 overlay on the Stage 4 window plan
 (new or widened windows a `create_window` decision installed) as a JSON list of
 serialized ``FitWindow`` objects.
@@ -46,6 +56,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import h5py
 
+from ..core.absent import STATUS_PRESENT, Absent
 from ..core.data_structures import (
     AttentionReason,
     DecisionLogEntry,
@@ -63,7 +74,28 @@ __all__ = [
     "load_stage6_review_from_hdf5",
     "load_stage6_review_from_file",
     "read_created_window_bounds",
+    "final_products_predate_fit_fields",
+    "FINAL_PEAK_FIELDS_VERSION",
 ]
+
+#: Version of the per-line field set a stored final-products table carries,
+#: stamped as the ``peak_fields`` attribute of its subgroup. ``2`` added the
+#: Stage 5 fit fields (:data:`FINAL_PEAK_FIT_FIELDS`); a table without the
+#: stamp predates them.
+FINAL_PEAK_FIELDS_VERSION: int = 2
+
+#: The ``FinalPeak`` fields joined from the Stage 5 fit, each of which can be
+#: ``Absent`` and is stored as a value plus a ``"<field>__status"`` code.
+FINAL_PEAK_FIT_FIELDS: Tuple[str, ...] = (
+    "decay_time_us",
+    "decay_time_error_us",
+    "shape",
+    "fwhm_mhz",
+    "detection_index",
+    "fit_window_mhz",
+)
+
+_STATUS_KEY_SUFFIX = "__status"
 
 
 def _status_to_dict(status: WindowReviewStatus) -> Dict[str, Any]:
@@ -146,7 +178,47 @@ def _final_peak_to_dict(p: FinalPeak) -> Dict[str, Any]:
         "knockout_p_value": p.knockout_p_value,
         "knockout_supported": p.knockout_supported,
         "knockout_aicc_delta": p.knockout_aicc_delta,
+        **_fit_fields_to_dict(p),
     }
+
+
+def _fit_fields_to_dict(p: FinalPeak) -> Dict[str, Any]:
+    """The per-line fit fields as ``value`` + ``"<field>__status"`` pairs."""
+    out: Dict[str, Any] = {}
+    for name in FINAL_PEAK_FIT_FIELDS:
+        value = getattr(p, name)
+        if isinstance(value, Absent):
+            out[name] = None
+            out[name + _STATUS_KEY_SUFFIX] = value.status
+        else:
+            out[name] = list(value) if isinstance(value, tuple) else value
+            out[name + _STATUS_KEY_SUFFIX] = STATUS_PRESENT
+    return out
+
+
+def _fit_fields_from_dict(d: Dict[str, Any]) -> Dict[str, Any]:
+    """Decode :func:`_fit_fields_to_dict`. A field the record does not carry
+    (a table predating the fields) reads as ``Absent.UNDEFINED``; such a
+    table is rebuilt by its reader (see
+    :func:`final_products_predate_fit_fields`)."""
+    out: Dict[str, Any] = {}
+    for name in FINAL_PEAK_FIT_FIELDS:
+        status = d.get(name + _STATUS_KEY_SUFFIX)
+        value: Any = d.get(name)
+        if status is None or (int(status) == STATUS_PRESENT and value is None):
+            out[name] = Absent.UNDEFINED
+        elif int(status) != STATUS_PRESENT:
+            out[name] = Absent.from_status(int(status))
+        elif name == "fit_window_mhz":
+            lo, hi = value
+            out[name] = (float(lo), float(hi))
+        elif name == "shape":
+            out[name] = str(value)
+        elif name == "detection_index":
+            out[name] = int(value)
+        else:
+            out[name] = float(value)
+    return out
 
 
 def _final_peak_from_dict(d: Dict[str, Any]) -> FinalPeak:
@@ -187,6 +259,7 @@ def _final_peak_from_dict(d: Dict[str, Any]) -> FinalPeak:
             else bool(d["knockout_supported"])
         ),
         knockout_aicc_delta=opt_float(d, "knockout_aicc_delta"),
+        **_fit_fields_from_dict(d),
     )
 
 
@@ -273,6 +346,7 @@ def save_stage6_review_to_hdf5(review: Stage6Review, group: h5py.Group) -> None:
         fp_grp.attrs["data"] = json.dumps(
             _final_products_to_dict(review.final_products)
         )
+        fp_grp.attrs["peak_fields"] = FINAL_PEAK_FIELDS_VERSION
 
     cw_grp = group.require_group("created_windows")
     cw_grp.attrs["data"] = json.dumps(
@@ -343,6 +417,23 @@ def read_created_window_bounds(
         lo, hi = (float(v) for v in d["freq_range"])
         out.append((int(d["window_id"]), min(lo, hi), max(lo, hi)))
     return out
+
+
+def final_products_predate_fit_fields(group: Optional[h5py.Group]) -> bool:
+    """Whether the stored final-products table predates the per-line fit fields.
+
+    *group* is a ``stage6_review`` group (or ``None``). ``True`` only when a
+    table is stored and its subgroup carries no ``peak_fields`` stamp (or an
+    older one); ``False`` when no table is stored -- there is nothing to have
+    predated anything. Reads one attribute; never writes.
+    """
+    if group is None:
+        return False
+    fp_grp = group.get("final_products")
+    if fp_grp is None or fp_grp.attrs.get("data") is None:
+        return False
+    stamp = fp_grp.attrs.get("peak_fields")
+    return stamp is None or int(stamp) < FINAL_PEAK_FIELDS_VERSION
 
 
 def load_stage6_review_from_file(file_path: str) -> Stage6Review:

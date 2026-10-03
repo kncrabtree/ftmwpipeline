@@ -39,6 +39,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Dict, Mapping, NamedTuple, Optional, Tuple, Union
 
+from .core.absent import STATUS_NOT_RUN, STATUS_PRESENT, STATUS_UNDEFINED, Absent
 from .core.calibration import CalibrationStamp
 from .core.data_structures import FinalProducts
 from .file_manager import (
@@ -57,7 +58,7 @@ from .file_manager import (
 #: The machine-contract version. The first published contract is ``1``; each
 #: release that adds (or, before 1.0.0, changes) contract elements raises it by
 #: one, so a client can gate on it as well as on :func:`capabilities`.
-CONTRACT_VERSION: int = 2
+CONTRACT_VERSION: int = 3
 
 #: Schema name of the :func:`capabilities` payload.
 CAPABILITIES_SCHEMA = "ftmw/capabilities@1"
@@ -91,37 +92,6 @@ DISPLAY_FT_SCHEMA = "ftmw/display_ft@1"
 
 #: ``ftmw/<payload>@<n>``: lowercase payload name, positive integer revision.
 SCHEMA_NAME_RE = re.compile(r"^ftmw/[a-z][a-z0-9_]*@[1-9][0-9]*$")
-
-
-class Absent(enum.Enum):
-    """Why a contract field has no value.
-
-    ``NOT_RUN``
-        The stage or quantity does not exist in this file (never computed,
-        never tested).
-    ``UNDEFINED``
-        Computed, but the quantity has no value (e.g. chi2_r with zero degrees
-        of freedom, a failed K-1 refit).
-
-    The member value is the wire spelling used in the ``"<field>_absent"``
-    sibling key; :attr:`status` is the code in a ``<column>__status`` column.
-    Compare by identity (``x is Absent.NOT_RUN``). Members are deliberately not
-    falsy-special and not ``None``-like: test for them explicitly.
-    """
-
-    NOT_RUN = "not_run"
-    UNDEFINED = "undefined"
-
-    @property
-    def status(self) -> int:
-        """The ``uint8`` columnar status code (``1`` not run, ``2`` undefined)."""
-        return STATUS_NOT_RUN if self is Absent.NOT_RUN else STATUS_UNDEFINED
-
-
-#: Columnar status codes (``<column>__status``, dtype ``uint8``).
-STATUS_PRESENT: int = 0
-STATUS_NOT_RUN: int = 1
-STATUS_UNDEFINED: int = 2
 
 
 # --------------------------------------------------------------------------
@@ -523,6 +493,14 @@ _FIELDS: Dict[str, Tuple[str, ...]] = {
         "sigma_stat_khz",
         "sigma_eps_khz",
         "sigma_floor_khz",
+        # Per-line fit fields (Wave 2), joined from the Stage 5 fit of the
+        # line's window; Absent from the start.
+        "decay_time_us",
+        "decay_time_error_us",
+        "shape",
+        "fwhm_mhz",
+        "detection_index",
+        "fit_window_mhz",
     ),
     "DecisionLogEntry": (
         "order_index",
