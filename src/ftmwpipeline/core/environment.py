@@ -67,7 +67,7 @@ __all__ = [
 ]
 
 
-ANALYSIS_EPOCH = 3
+ANALYSIS_EPOCH = 4
 """Declared analysis-compatibility epoch of this package.
 
 Bump this **only** when a change alters the numerical output of a stage --
@@ -121,6 +121,16 @@ Epoch history
     output is therefore not bit-identical to epoch 2 on any file, and a peak
     pair straddling one of these boundaries can change dedup, gate, or snap
     outcome outright.
+4
+    2026-10-03. A dependent window's frozen contributors now follow the
+    window's shared ``tau`` *during* the fit, as the Stage 5 model has always
+    written them (``h_T(u - delta_c; tau)``, ROADMAP D18). Before, the skirt was
+    subtracted once at the starting ``tau`` and stayed there while ``tau`` was
+    fitted, so the fit minimised a different model from the one it reported.
+    The same holds for peaks a refit parks in the frozen set (the Stage 5
+    VIF-collapse sequential merge, a Stage 6 thawed or held line). A window
+    whose ``tau`` is held is bit-identical; a free-``tau`` window with any
+    frozen term is not.
 """
 
 

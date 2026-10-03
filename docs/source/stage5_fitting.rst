@@ -137,7 +137,10 @@ contributor's own decay time: :math:`h_T` carries one :math:`\tau` per window, a
 the approximation is benign because a fixed contributor's center :math:`\delta_c`
 lies outside this window — only its far wing, which falls off as
 :math:`\sim 1/(i2\pi\,\Delta f)` independent of :math:`\tau`, reaches the fitted
-band. :math:`B(u)` is a low-order **complex baseline
+band. When :math:`\tau` is fitted, the skirt follows it *during* the fit: every
+trial :math:`\tau` the optimiser tries redraws the fixed contributors at that
+:math:`\tau`, so the model the fit minimises is exactly the model it reports.
+:math:`B(u)` is a low-order **complex baseline
 polynomial**, present only when the leakage-wing trigger fires
 (`Leakage coupling between windows`_). The same form holds for the Gaussian envelope,
 with :math:`h_T` the Gaussian response and :math:`\tau_G` in place of :math:`\tau`.

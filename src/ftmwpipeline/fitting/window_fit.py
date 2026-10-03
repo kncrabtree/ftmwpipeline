@@ -53,7 +53,7 @@ from __future__ import annotations
 
 import os as import_os
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Optional, Union, cast
 
 import numpy as np
@@ -84,6 +84,9 @@ from .validation import (
 __all__ = [
     "ParameterErrors",
     "WindowFitResult",
+    "FrozenSkirt",
+    "frozen_skirt_delta",
+    "reorder_frozen_skirts",
     "AddStep",
     "KnockoutResult",
     "ConservativeFitResult",
@@ -569,7 +572,9 @@ class WindowFitResult:
     fitted_spectrum : np.ndarray
         The fitted complex model on the window grid.
     residual : np.ndarray
-        ``data - fitted_spectrum`` (complex, *unweighted*).
+        ``data - fitted_spectrum`` (complex, *unweighted*), less the frozen
+        skirt's shift ``S(tau) - S(tau_ref)`` when the fit carried
+        ``frozen_skirts`` -- i.e. always the residual of the full model.
     covariance : np.ndarray or None
         Parameter covariance matrix (order: ``A, delta, phase`` per peak, then
         ``tau`` if fitted), or ``None`` if ``J^T J`` was singular.
@@ -838,6 +843,126 @@ def _combine_budget(
     if extra is None:
         return base
     return cast(np.ndarray, np.hypot(np.asarray(base, dtype=float), extra))
+
+
+# ---------------------------------------------------------------------------
+# Frozen-contributor skirt that follows the shared trial tau
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class FrozenSkirt:
+    """Frozen contributors whose leakage skirt follows the window's trial ``tau``.
+
+    A dependent window's model carries every frozen contributor's skirt
+    ``1/2 A_c e^{i phi_c} h_T(u - delta_c; tau)`` at the window's *shared*
+    ``tau`` -- the same ``tau`` its free peaks use (``stage5_fitting.rst``,
+    ROADMAP D18). The contributor's amplitude, offset and phase are frozen and
+    add no free parameters; only ``tau`` is shared.
+
+    The caller has already subtracted the skirt from the data at
+    ``tau_ref_us`` (the background a fit starts from). The skirt then enters
+    the model as the *difference* ``S(tau) - S(tau_ref)``, so the fit's cost
+    is exactly ``|data - free(tau) - S(tau)|^2`` while every data-space
+    consumer keeps working on the background-subtracted data. The difference
+    is identically zero at ``tau == tau_ref`` and is then not evaluated at
+    all, so a fit whose ``tau`` never leaves ``tau_ref`` (a held ``tau``) is
+    bit-identical to a fit with the skirt simply subtracted.
+
+    Attributes
+    ----------
+    peaks : tuple of ModelPeak
+        The frozen contributors, in the fit grid's offset frame.
+    tau_ref_us : float
+        The ``tau`` the caller subtracted the skirt at.
+    bins : np.ndarray, optional
+        Boolean mask over the fit grid restricting the skirt to those bins
+        (the joint thaw co-fit concatenates two windows, each with its own
+        frozen set). ``None`` applies the skirt to every bin.
+    """
+
+    peaks: tuple[ModelPeak, ...]
+    tau_ref_us: float
+    bins: Optional[np.ndarray] = None
+
+    def _grid(self, u: np.ndarray) -> np.ndarray:
+        return u if self.bins is None else u[self.bins]
+
+    def _scatter(self, u: np.ndarray, values: np.ndarray) -> np.ndarray:
+        if self.bins is None:
+            return values
+        out = np.zeros(u.size, dtype=np.complex128)
+        out[self.bins] = values
+        return out
+
+    def delta(
+        self,
+        u: np.ndarray,
+        tau_us: float,
+        acquisition_us: float,
+        shape: PeakShape,
+    ) -> Optional[np.ndarray]:
+        """``S(tau) - S(tau_ref)`` on ``u``; ``None`` when it is identically 0."""
+        if not self.peaks or float(tau_us) == float(self.tau_ref_us):
+            return None
+        uu = self._grid(u)
+        diff = model_spectrum(
+            uu, self.peaks, tau_us, acquisition_us, shape=shape
+        ) - model_spectrum(uu, self.peaks, self.tau_ref_us, acquisition_us, shape=shape)
+        return self._scatter(u, diff)
+
+    def dtau(
+        self,
+        u: np.ndarray,
+        tau_us: float,
+        acquisition_us: float,
+        shape: PeakShape,
+    ) -> np.ndarray:
+        """``dS/dtau`` on ``u`` -- the skirt's share of the shared-tau column."""
+        if not self.peaks:
+            return cast(np.ndarray, np.zeros(u.size, dtype=np.complex128))
+        jac = model_jacobian(
+            self._grid(u),
+            self.peaks,
+            tau_us,
+            acquisition_us,
+            include_tau=True,
+            shape=shape,
+        )
+        return self._scatter(u, jac[:, -1])
+
+    def reordered(self, order: np.ndarray) -> "FrozenSkirt":
+        """The same skirt on a grid permuted by ``order`` (``u_new = u[order]``)."""
+        if self.bins is None:
+            return self
+        return replace(self, bins=np.asarray(self.bins, dtype=bool)[order])
+
+
+FrozenSkirts = tuple[FrozenSkirt, ...]
+
+
+def frozen_skirt_delta(
+    skirts: Optional[Sequence[FrozenSkirt]],
+    u: np.ndarray,
+    tau_us: float,
+    acquisition_us: float,
+    shape: PeakShape | str,
+) -> Optional[np.ndarray]:
+    """Summed :meth:`FrozenSkirt.delta` of ``skirts``; ``None`` when all are 0."""
+    if not skirts:
+        return None
+    s = PeakShape.coerce(shape)
+    total: Optional[np.ndarray] = None
+    for sk in skirts:
+        d = sk.delta(u, tau_us, acquisition_us, s)
+        if d is not None:
+            total = d if total is None else total + d
+    return total
+
+
+def reorder_frozen_skirts(
+    skirts: Optional[Sequence[FrozenSkirt]], order: np.ndarray
+) -> FrozenSkirts:
+    """Permute every skirt's bin mask to a grid sorted by ``order``."""
+    return tuple(sk.reordered(order) for sk in (skirts or ()))
 
 
 # ---------------------------------------------------------------------------
@@ -1114,6 +1239,7 @@ def fit_window(
     baseline_order: Optional[int] = None,
     baseline_offset_scale: Optional[float] = None,
     initial_baseline_coeffs: Optional[np.ndarray] = None,
+    frozen_skirts: Optional[Sequence[FrozenSkirt]] = None,
 ) -> WindowFitResult:
     """Fit a fixed number of lines to one window by complex least squares.
 
@@ -1204,6 +1330,14 @@ def fit_window(
         Conditioning scale ``u_s`` for the baseline abscissa; defaults to
         ``max|u|`` (or ``1.0`` for an all-zero grid). Only used when
         ``baseline_order`` is set.
+    frozen_skirts : sequence of FrozenSkirt, optional
+        Frozen contributors already subtracted from ``complex_spectrum`` at
+        each skirt's ``tau_ref_us``. Their skirt follows the trial ``tau``
+        inside the optimisation (it adds ``S(tau) - S(tau_ref)`` to the model
+        and ``dS/dtau`` to the shared-``tau`` Jacobian column) with no free
+        parameters of its own. ``fitted_spectrum`` stays the free model
+        (peaks plus baseline); ``residual`` and ``chi_squared`` are against the
+        full model, skirt included, at the fitted ``tau``.
 
     Returns
     -------
@@ -1257,10 +1391,17 @@ def fit_window(
 
     k = len(initial_peaks)
     n_data = 2 * n_keep
+    skirts: FrozenSkirts = tuple(frozen_skirts or ())
+    shape_resolved = PeakShape.coerce(shape)
+
+    def _skirt_delta(tau: float) -> Optional[np.ndarray]:
+        return frozen_skirt_delta(skirts, u, tau, acquisition_us, shape_resolved)
 
     # --- null model: nothing to fit, but report the data's chi-squared. -----
     if k == 0:
-        r0 = (z / sig_ri)[keep]
+        null_delta = _skirt_delta(tau0_us)
+        z_null = z if null_delta is None else z - null_delta
+        r0 = (z_null / sig_ri)[keep]
         chi2 = float(np.sum(r0.real**2 + r0.imag**2))
         return WindowFitResult(
             success=False,
@@ -1275,7 +1416,7 @@ def fit_window(
             n_params=0,
             n_function_evals=0,
             fitted_spectrum=np.zeros(m, dtype=np.complex128),
-            residual=z.copy(),
+            residual=z_null.copy(),
             covariance=None,
             # The null model has no lines, but it can stand as a window's
             # *final* fit (seed-knockout enforcement); the persisted
@@ -1383,8 +1524,6 @@ def fit_window(
         or (tau_penalty_lambda > 0.0 and fit_tau)
     )
 
-    shape_resolved = PeakShape.coerce(shape)
-
     def _model_with_baseline(
         peaks: Sequence[ModelPeak], tau: float, params: np.ndarray
     ) -> np.ndarray:
@@ -1396,6 +1535,10 @@ def fit_window(
     def residual(params: np.ndarray) -> np.ndarray:
         peaks, tau = _unpack(params, k, tau0_us, fit_tau)
         model = _model_with_baseline(peaks, tau, params)
+        # The frozen skirt follows the trial tau (D18); zero at tau_ref.
+        delta = _skirt_delta(tau)
+        if delta is not None:
+            model = model + delta
         r = (z - model) / sig_ri
         data_r = np.concatenate([r.real[keep], r.imag[keep]])
         if not penalties_active:
@@ -1416,6 +1559,12 @@ def fit_window(
             include_tau=fit_tau,
             shape=shape_resolved,
         )
+        if fit_tau and skirts:
+            # The frozen skirt shares the tau column (no columns of its own).
+            for sk in skirts:
+                dmodel[:, 3 * k] = dmodel[:, 3 * k] + sk.dtau(
+                    u, tau, acquisition_us, shape_resolved
+                )
         if baseline_active:
             dmodel = np.concatenate([dmodel, base_cols], axis=1)
         return cast(np.ndarray, -dmodel / sig_ri[:, np.newaxis])
@@ -1488,11 +1637,15 @@ def fit_window(
         baseline_coeffs = a + 1j * b
 
     fitted = _model_with_baseline(peaks, tau, sol_x)
+    # The full model adds the frozen skirt at the fitted tau; ``fitted`` stays
+    # the free model (peaks + baseline), the residual is against the full one.
+    final_delta = _skirt_delta(tau)
+    full_resid = z - fitted if final_delta is None else z - (fitted + final_delta)
     # Reported statistics are data-only (penalties act like a prior on the
     # parameters; the F-test / AIC across K stays calibrated only if chi^2
     # counts the data residual alone). Spur-masked bins are excluded from the
     # chi^2 sum to match the reduced n_data.
-    data_resid = ((z - fitted) / sig_ri)[keep]
+    data_resid = (full_resid / sig_ri)[keep]
     chi2 = float(np.sum(data_resid.real**2 + data_resid.imag**2))
     cost_data = 0.5 * chi2
 
@@ -1537,7 +1690,7 @@ def fit_window(
         n_params=int(p0.size),
         n_function_evals=int(sol.nfev),
         fitted_spectrum=fitted,
-        residual=z - fitted,
+        residual=full_resid,
         covariance=covariance,
         shape=shape_resolved,
         baseline_order=order_resolved if baseline_active else None,
@@ -1828,6 +1981,19 @@ def knockout_test(
 
     tau = fit.tau_us
     shape_resolved = fit.shape
+    # A frozen skirt riding the inner kwargs (D18) sits at the K-fit tau on
+    # both sides of every comparison: the (K-1) refits lock tau there too.
+    # Folding its shift into the data here leaves every model below a
+    # free-peak model, exactly as without a skirt.
+    skirt_delta = frozen_skirt_delta(
+        (fit_kwargs_inner or {}).get("frozen_skirts"),
+        u,
+        tau,
+        acquisition_us,
+        shape_resolved,
+    )
+    if skirt_delta is not None:
+        z_keep = (z - skirt_delta)[keep]
     # The K-fit model must carry the fit's baseline term (when one was fit
     # jointly): the (K-1) refits below inherit it via ``fit_kwargs_inner``,
     # so a peaks-only K side would unfairly carry the pedestal as misfit.
@@ -2062,6 +2228,7 @@ def _blend_aware_seed(
     baseline_order: Optional[int] = None,
     baseline_offset_scale: Optional[float] = None,
     point_map: Optional[PointMap] = None,
+    frozen_skirts: Optional[Sequence[FrozenSkirt]] = None,
 ) -> tuple[WindowFitResult, list[AddStep]]:
     """Seed the window fit, escalating K=1 -> K=2 -> K=3 on an elevated chi².
 
@@ -2174,6 +2341,8 @@ def _blend_aware_seed(
     if baseline_order is not None:
         fit_kwargs["baseline_order"] = int(baseline_order)
         fit_kwargs["baseline_offset_scale"] = baseline_offset_scale
+    if frozen_skirts:
+        fit_kwargs["frozen_skirts"] = tuple(frozen_skirts)
     fit1 = fit_window(
         offset_grid_mhz,
         complex_spectrum,
@@ -2694,6 +2863,7 @@ def conservative_fit(
     protected_tol_mhz: float = 0.0,
     candidate_passes: Optional[Sequence[str]] = None,
     point_map: Optional[PointMap] = None,
+    frozen_skirts: Optional[Sequence[FrozenSkirt]] = None,
 ) -> ConservativeFitResult:
     """Conservative incremental peak fitting of one window.
 
@@ -2851,6 +3021,16 @@ def conservative_fit(
         inert unless the sigma_eff gate is active. The NLS objective and all
         reported chi-squared stay on the raw Stage 2 noise.
 
+    frozen_skirts : sequence of FrozenSkirt, optional
+        The dependent window's frozen contributors, already subtracted from
+        ``complex_spectrum`` at each skirt's ``tau_ref_us`` (normally
+        ``tau0_us``). Added to the model of every inner fit (seed, blend
+        escalations, add-loop trials, spur re-fit, knockout refits) so the
+        skirt follows the trial ``tau`` (ROADMAP D18) with no free parameters
+        of its own. Inside the search the add-loop's candidate residual and the
+        line-evidence escape's background columns use the *current* / *trial*
+        fit's ``tau``; ``gate_background`` must be the skirt at ``tau_ref_us``.
+
     Returns
     -------
     ConservativeFitResult
@@ -2869,6 +3049,10 @@ def conservative_fit(
     )
     budget: Optional[np.ndarray] = _extras["budget"]
     background: Optional[np.ndarray] = _extras["background"]
+    skirts = reorder_frozen_skirts(frozen_skirts, _order)
+
+    def _skirt_delta(tau: float) -> Optional[np.ndarray]:
+        return frozen_skirt_delta(skirts, u, tau, acquisition_us, shape_resolved)
 
     weighted = (
         validation.DEFAULT_WEIGHTED_GATE_CHI2
@@ -2918,6 +3102,9 @@ def conservative_fit(
     effective_tau_penalty_lambda = constraints.effective_tau_penalty_lambda
     fit_kwargs_inner = dict(constraints.fit_kwargs_inner)
     fit_kwargs_inner.setdefault("shape", shape_resolved)
+    # The frozen skirt rides every inner fit (and the knockout refits).
+    if skirts:
+        fit_kwargs_inner["frozen_skirts"] = skirts
     # Joint complex-baseline nuisance term for every inner fit (seeder
     # escalations, add-loop trials, knockout refits). On a window whose data
     # carries a smooth leakage pedestal the peaks-only model otherwise buys
@@ -2975,6 +3162,7 @@ def conservative_fit(
             acquisition_us,
             shape=shape_resolved,
             spur_mask=spur_mask,
+            frozen_skirts=skirts,
         )
         return ConservativeFitResult(empty, [], [])
 
@@ -2997,6 +3185,7 @@ def conservative_fit(
         acquisition_us,
         shape=shape_resolved,
         spur_mask=spur_mask,
+        frozen_skirts=skirts,
     )
 
     def _blend_seed(seed_offset: float) -> tuple[WindowFitResult, list[AddStep]]:
@@ -3037,6 +3226,7 @@ def conservative_fit(
             baseline_order=baseline_order,
             baseline_offset_scale=baseline_offset_scale,
             point_map=point_map,
+            frozen_skirts=skirts,
         )
 
     if len(primary_offsets) >= 2:
@@ -3170,6 +3360,11 @@ def conservative_fit(
             acquisition_us,
             shape=shape_resolved,
         )
+        # The candidate residual is against the current model, frozen skirt
+        # included at the current fit's tau.
+        cur_delta = _skirt_delta(current.tau_us)
+        if cur_delta is not None:
+            residual = residual - cur_delta
         cand = max(
             remaining,
             key=lambda o: abs(float(np.interp(o, u, np.abs(residual)))),
@@ -3408,7 +3603,15 @@ def conservative_fit(
                     # Build background columns on the full grid; peak columns
                     # on the support subgrid (pointwise -- byte-identical to
                     # full-grid eval then slicing).
-                    bg_cols = validation.line_escape_background_columns(u, background)
+                    # The frozen background as the trial model carries it: at
+                    # the trial fit's tau.
+                    trial_delta = _skirt_delta(trial.tau_us)
+                    bg_trial = (
+                        background
+                        if background is None or trial_delta is None
+                        else background + trial_delta
+                    )
+                    bg_cols = validation.line_escape_background_columns(u, bg_trial)
                     pk_cols = validation.line_escape_peak_columns(
                         u[keep][sl],
                         others,

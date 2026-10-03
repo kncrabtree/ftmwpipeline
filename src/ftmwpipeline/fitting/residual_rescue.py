@@ -58,6 +58,7 @@ from .window_fit import (
     DEFAULT_SIGNIFICANCE,
     AddStep,
     ConservativeFitResult,
+    FrozenSkirt,
     KnockoutResult,
     WindowFitResult,
     _effective_min_pair_separation,
@@ -65,7 +66,9 @@ from .window_fit import (
     derive_window_fit_constraints,
     evaluate_baseline,
     fit_window,
+    frozen_skirt_delta,
     knockout_test,
+    reorder_frozen_skirts,
     sort_window_arrays,
 )
 
@@ -386,6 +389,10 @@ def merge_close_peaks_cleanup(
     refit_kwargs["fit_tau"] = False
     refit_kwargs.setdefault("shape", fit.shape)
     refit_kwargs["spur_mask"] = spur_mask
+    if refit_kwargs.get("frozen_skirts"):
+        refit_kwargs["frozen_skirts"] = reorder_frozen_skirts(
+            refit_kwargs["frozen_skirts"], _order
+        )
 
     _is_protected_peak = make_protected_matcher(protected_offsets, protected_tol_mhz)
 
@@ -693,6 +700,15 @@ def iterative_aicc_cleanup(
     refit_kwargs["fit_tau"] = False
     refit_kwargs.setdefault("shape", fit.shape)
     refit_kwargs["spur_mask"] = spur_mask
+    # A frozen skirt riding the inner kwargs (D18) is drawn at each iteration's
+    # locked tau: the null (K=0) comparison and the escape's background columns
+    # see the skirt where the refits put it. ``gate_background`` is the skirt
+    # at the skirts' ``tau_ref_us``.
+    skirts = reorder_frozen_skirts(refit_kwargs.get("frozen_skirts"), order)
+    if skirts:
+        refit_kwargs["frozen_skirts"] = skirts
+    z_locked = z
+    bg_locked = background
     keep = (
         ~spur_mask.bin_mask(u) if spur_mask is not None else np.ones(u.size, dtype=bool)
     )
@@ -749,7 +765,7 @@ def iterative_aicc_cleanup(
                 n_params_peak=n_params_peak,
             )
         # Background columns: full-grid (gradient is not pointwise), then slice.
-        bg_cols = validation.line_escape_background_columns(u, background)
+        bg_cols = validation.line_escape_background_columns(u, bg_locked)
         bg_sliced = [col[keep][sl] for col in bg_cols]
         # Per-peak columns: cached full-grid, sliced to this call's support.
         pk_sliced: List[np.ndarray] = []
@@ -781,6 +797,15 @@ def iterative_aicc_cleanup(
     while current.n_peaks > 0:
         _pk_col_cache.clear()
         tau_locked = float(current.tau_us)
+        locked_delta = frozen_skirt_delta(
+            skirts, u, tau_locked, acquisition_us, shape_coerced
+        )
+        z_locked = z if locked_delta is None else z - locked_delta
+        bg_locked = (
+            background
+            if background is None or locked_delta is None
+            else background + locked_delta
+        )
         n_eff = effective_sample_size(
             current.fitted_spectrum,
             kind=n_eff_kind,
@@ -828,8 +853,9 @@ def iterative_aicc_cleanup(
             kept = [pk for j, pk in enumerate(current.peaks) if j != i]
             kept_indices = [j for j in range(current.n_peaks) if j != i]
             if not kept:
-                # Zero model -> residual is the data itself.
-                null_chi2 = calculate_noise_weighted_chi2(z[keep], sigma[keep])
+                # Zero model -> residual is the data itself (less the frozen
+                # skirt at the locked tau).
+                null_chi2 = calculate_noise_weighted_chi2(z_locked[keep], sigma[keep])
                 _, aicc_km1 = gate_aicc_pair(
                     n_eff,
                     more_n_params=current.n_params,
@@ -838,7 +864,7 @@ def iterative_aicc_cleanup(
                     less_chi2_raw=null_chi2,
                     weighted=weighted,
                     more_residual=cur_res_keep,
-                    less_residual=z[keep],
+                    less_residual=z_locked[keep],
                     rms_noise=sigma_keep,
                     weight_model=cur_model_keep,
                     n_eff_kind=n_eff_kind,
@@ -851,7 +877,7 @@ def iterative_aicc_cleanup(
                         current.peaks[i],
                         [],
                         [],
-                        z[keep],
+                        z_locked[keep],
                         tau_locked,
                         max(current.n_params, 1),
                     )
@@ -995,6 +1021,7 @@ def attempt_residual_rescue(
     spur_mask: Optional[SpurMaskSpec] = None,
     forbidden_offsets: Optional[Sequence[float]] = None,
     forbidden_tol_mhz: float = 0.0,
+    frozen_skirts: Optional[Sequence[FrozenSkirt]] = None,
 ) -> RescueOutcome:
     """Find peaks the initial fit missed and fit them to its residual.
 
@@ -1064,6 +1091,13 @@ def attempt_residual_rescue(
         re-detecting them clutters the audit trail. ``None`` (default)
         disables the explicit blacklist; the fitted-peak rejection
         always applies.
+    frozen_skirts : sequence of FrozenSkirt, optional
+        The window's frozen contributors, already subtracted from
+        ``complex_spectrum`` at each skirt's ``tau_ref_us``. The rescue's
+        residual is against the current fit's *full* model, so the skirt is
+        drawn at ``current_fit.tau_us`` (ROADMAP D18). The skirt is not passed
+        on to the rescue's own fit: that fit runs on the residual, which
+        already carries the whole current model.
     """
     u = np.asarray(offset_grid_mhz, dtype=float)
     z = np.asarray(complex_spectrum, dtype=np.complex128)
@@ -1086,6 +1120,11 @@ def attempt_residual_rescue(
         shape=rescue_shape,
     ) + evaluate_baseline(current_fit, u)
     residual = z - initial_model
+    skirt_delta = frozen_skirt_delta(
+        frozen_skirts, u, current_fit.tau_us, acquisition_us, rescue_shape
+    )
+    if skirt_delta is not None:
+        residual = residual - skirt_delta
 
     # Tau policy for the rescue (basis and frozen-tau refit):
     # When a Stage 2b calibration is available, use ``tau_maj`` for every
@@ -1224,6 +1263,7 @@ def attempt_residual_rescue(
     ckwargs.pop("significance", None)
     ckwargs.pop("min_separation_factor", None)
     ckwargs.pop("max_peaks", None)
+    ckwargs.pop("frozen_skirts", None)
     ckwargs.setdefault("shape", rescue_shape)
     # The rescue's inner add-loop runs without the line-evidence escape:
     # its trial model holds only rescue peaks (the initial fit lives in the
@@ -1421,6 +1461,7 @@ def rescue_and_consolidate(
     protected_tol_mhz: float = 0.0,
     forbidden_offsets: Optional[Sequence[float]] = None,
     forbidden_tol_mhz: float = 0.0,
+    frozen_skirts: Optional[Sequence[FrozenSkirt]] = None,
 ) -> ConsolidatedRescueOutcome:
     """Iterate rescue + joint refit + merge + knockout consolidation
     (option B).
@@ -1504,6 +1545,14 @@ def rescue_and_consolidate(
         seeds automatically (forwarded via ``**kwargs``) and is pulled out
         explicitly for the merge cleanup's fresh-stamp-on-merge (see
         :func:`_merge_cluster`).
+    frozen_skirts
+        The window's frozen contributors, already subtracted from
+        ``complex_spectrum`` at each skirt's ``tau_ref_us`` (the window's
+        current tau). Every refit of the chain -- the joint refit, the merge
+        and knockout refits, the iterative cleanup -- carries the skirt at
+        its own trial / locked tau (ROADMAP D18), and each round's rescue
+        residual is against the round-start fit's full model.
+        ``gate_background`` must be the skirt at ``tau_ref_us``.
     """
     if max_rescue_rounds <= 0:
         return ConsolidatedRescueOutcome(
@@ -1582,6 +1631,8 @@ def rescue_and_consolidate(
     )
     fit_kwargs_inner = dict(constraints.fit_kwargs_inner)
     fit_kwargs_inner.setdefault("shape", shape_resolved)
+    if frozen_skirts:
+        fit_kwargs_inner["frozen_skirts"] = tuple(frozen_skirts)
     # A baseline the initial fit carries (the early conservative-phase
     # leakage-wing term) stays in the model across the whole consolidation
     # chain: the joint refit, the merge/knockout refits, and the iterative
@@ -1632,6 +1683,7 @@ def rescue_and_consolidate(
             spur_mask=spur_mask,
             forbidden_offsets=forbidden_offsets,
             forbidden_tol_mhz=forbidden_tol_mhz,
+            frozen_skirts=frozen_skirts,
         )
         n_rescue_added = rescue.fit.n_peaks
 

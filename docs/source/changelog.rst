@@ -16,6 +16,16 @@ Accumulating toward ``1.0.0``. ``0.1.0b4`` is the last published release;
 everything below is reachable only from a source checkout. No further beta is
 planned — these entries fold into the ``1.0.0`` section when it is dated.
 
+**``ANALYSIS_EPOCH`` moves 3 → 4.** A dependent window's frozen contributors
+now follow the window's fitted decay time *during* the fit, as the Stage 5 model
+equation already wrote them (see :doc:`stage5_fitting`). Previously their
+leakage skirt was subtracted once at the starting decay time and stayed there
+while the decay time was fitted, so a free-decay window with frozen
+contributors was fit to a different model from the one it reported. Windows
+whose decay time is held are bit-identical; a file fitted under epoch 3 must be
+re-fit, or have the mismatch accepted, before Stage 6 will splice an edit into
+it.
+
 **``ANALYSIS_EPOCH`` moves 2 → 3.** Every tolerance that expresses a spectral
 distance is now defined in active-FT bins rather than in MHz (see the first
 entry below), which moves fitted output on every existing file. A file fitted

@@ -10,10 +10,13 @@ plan execution:
   fit freely in its ``primary_window_id``. In a dependent window that line
   contributes only its frozen ``h_T`` skirt -- the line itself is not re-fit. The
   free-peak core (:func:`~ftmwpipeline.fitting.window_fit.fit_window` /
-  :func:`~ftmwpipeline.fitting.window_fit.conservative_fit`) fits free peaks only,
-  so the contributor's frozen model is *subtracted from the window data as a
-  frozen background* before delegating to the conservative loop. After the fit,
-  the background is added back to reconstruct the full model and residual.
+  :func:`~ftmwpipeline.fitting.window_fit.conservative_fit`) fits free peaks; the
+  contributor's frozen model is *subtracted from the window data as a frozen
+  background* at the starting ``tau`` and then rides every inner fit as a
+  :class:`~ftmwpipeline.fitting.window_fit.FrozenSkirt`, so the skirt follows
+  the window's shared trial ``tau`` during the optimisation (ROADMAP D18) with
+  no free parameters of its own. After the fit the background is re-drawn at the
+  fitted ``tau`` and added back to reconstruct the full model and residual.
 
 * **DAG / batch execution order.** Windows are fit in
   :attr:`WindowPlan.topological_order` (equivalently, in ascending
@@ -106,6 +109,7 @@ from .window_fit import (
     DEFAULT_MIN_PAIR_SEPARATION_FACTOR,
     DEFAULT_MIN_PAIR_SEPARATION_RESOLUTION_FACTOR,
     ConservativeFitResult,
+    FrozenSkirt,
     ParameterErrors,
     WindowFitResult,
     _effective_min_pair_separation,
@@ -114,6 +118,7 @@ from .window_fit import (
     derive_window_fit_constraints,
     evaluate_baseline,
     fit_window,
+    frozen_skirt_delta,
 )
 
 logger = logging.getLogger(__name__)
@@ -936,6 +941,59 @@ def subtract_frozen_background(
     return bg, np.asarray(complex_spectrum, dtype=np.complex128) - bg
 
 
+def frozen_skirts_for(
+    fixed_peaks: Sequence[FrozenPeak],
+    tau_ref_us: float,
+    *,
+    bins: Optional[np.ndarray] = None,
+) -> tuple[FrozenSkirt, ...]:
+    """The :class:`FrozenSkirt` a fit carries for ``fixed_peaks``.
+
+    ``tau_ref_us`` is the ``tau`` the caller's background was drawn at (the
+    one :func:`subtract_frozen_background` subtracted). Empty when there are no
+    contributors, so a window without a frozen set fits exactly as before.
+    """
+    if not fixed_peaks:
+        return ()
+    return (
+        FrozenSkirt(
+            peaks=tuple(fp.model_peak for fp in fixed_peaks),
+            tau_ref_us=float(tau_ref_us),
+            bins=bins,
+        ),
+    )
+
+
+def background_at_fitted_tau(
+    offset_grid_mhz: np.ndarray,
+    fixed_peaks: Sequence[FrozenPeak],
+    background_ref: np.ndarray,
+    tau_ref_us: float,
+    tau_us: float,
+    acquisition_us: float,
+    *,
+    shape: "PeakShape | str" = "lorentzian",
+) -> np.ndarray:
+    """The frozen background re-drawn at the fit's final ``tau``.
+
+    ``background_ref`` is the background at ``tau_ref_us`` (what the fit
+    started from). It is returned unchanged when ``tau`` never moved -- a held
+    ``tau`` stays bit-identical -- and otherwise the skirt is re-evaluated at
+    ``tau_us``, the ``tau`` the fit's model carried it at.
+    """
+    if not fixed_peaks or float(tau_us) == float(tau_ref_us):
+        return background_ref
+    background, _ = subtract_frozen_background(
+        offset_grid_mhz,
+        np.zeros(np.asarray(offset_grid_mhz).shape, dtype=np.complex128),
+        fixed_peaks,
+        tau_us,
+        acquisition_us,
+        shape=shape,
+    )
+    return background
+
+
 def fit_window_with_fixed_contributors(
     offset_grid_mhz: np.ndarray,
     complex_spectrum: np.ndarray,
@@ -951,11 +1009,17 @@ def fit_window_with_fixed_contributors(
 ) -> tuple[ConservativeFitResult, np.ndarray, np.ndarray, np.ndarray]:
     """Conservative free-peak fit of a window with frozen contributors.
 
-    Subtracts the frozen-contributor background from the window data and runs
-    :func:`~ftmwpipeline.fitting.window_fit.conservative_fit` on the difference.
-    The returned ``full_fitted_spectrum`` is the free-peak model plus the
-    background, and ``full_residual`` is the data minus that full model -- the
-    correct things to plot and to test for residual edge coherence.
+    Subtracts the frozen-contributor background (at ``tau0_us``) from the
+    window data and runs
+    :func:`~ftmwpipeline.fitting.window_fit.conservative_fit` on the difference,
+    carrying the contributors as a
+    :class:`~ftmwpipeline.fitting.window_fit.FrozenSkirt` so their skirt follows
+    the window's shared trial ``tau`` inside every inner fit (ROADMAP D18). The
+    returned ``background`` is the skirt at the *fitted* ``tau``; the returned
+    ``full_fitted_spectrum`` is the free-peak model plus that background, and
+    ``full_residual`` is the data minus that full model -- the correct things to
+    plot and to test for residual edge coherence, and exactly the model the fit
+    minimised.
 
     ``**conservative_kwargs`` are forwarded verbatim to :func:`conservative_fit`
     (e.g. ``fit_tau``, ``significance``, ``min_separation_factor``, ...).
@@ -974,6 +1038,7 @@ def fit_window_with_fixed_contributors(
         acquisition_us,
         shape=shape,
     )
+    skirts = frozen_skirts_for(fixed_peaks, tau0_us)
     # The sigma_eff skirt budget (``kappa_skirt * |background|``) deliberately
     # does NOT gate this conservative fit. The budget exists to discount the
     # subtracted frozen background's extrapolation error -- coherent fringes
@@ -1018,6 +1083,7 @@ def fit_window_with_fixed_contributors(
         acquisition_us,
         gate_background=background,
         candidate_passes=candidate_passes,
+        frozen_skirts=skirts,
         **conservative_kwargs,
     )
     if (
@@ -1035,6 +1101,13 @@ def fit_window_with_fixed_contributors(
             acquisition_us,
             shape=fit_result.fit.shape,
         )
+        # The trigger reads the first fit's full residual: the frozen skirt is
+        # where that fit's model put it, at its fitted tau.
+        first_delta = frozen_skirt_delta(
+            skirts, u_arr, fit_result.fit.tau_us, acquisition_us, shape
+        )
+        if first_delta is not None:
+            first_residual = first_residual - first_delta
         smooth_stat = _smooth_residual_stat(
             u_arr,
             first_residual,
@@ -1053,6 +1126,7 @@ def fit_window_with_fixed_contributors(
                 acquisition_us,
                 gate_background=background,
                 candidate_passes=candidate_passes,
+                frozen_skirts=skirts,
                 **retry_kwargs,
             )
             # Adopt only on a strict raw-chi-squared win: the re-run spends
@@ -1073,6 +1147,16 @@ def fit_window_with_fixed_contributors(
         acquisition_us,
         shape=fit_result.fit.shape,
     ) + evaluate_baseline(fit_result.fit, offset_grid_mhz)
+    # The frozen skirt is part of the model at the fitted tau (D18).
+    background = background_at_fitted_tau(
+        offset_grid_mhz,
+        fixed_peaks,
+        background,
+        tau0_us,
+        fit_result.fit.tau_us,
+        acquisition_us,
+        shape=shape,
+    )
     full_fitted = full_free + background
     full_residual = np.asarray(complex_spectrum, dtype=np.complex128) - full_fitted
     return fit_result, background, full_fitted, full_residual
@@ -1264,13 +1348,17 @@ def fit_seeds_window_outcome(
     center_mhz :
         Molecular center of the window (MHz).
     background :
-        Frozen-contributor model on ``offset_grid``.
+        Frozen-contributor model on ``offset_grid``, drawn at ``tau0_us``.
     data_minus_bg :
         ``z_slice - background``; pre-computed by the caller so the frozen
         background derivation is not repeated.
     fixed_peaks :
         Frozen contributors used in this window (carried verbatim onto the
-        :class:`WindowOutcome`).
+        :class:`WindowOutcome`). They ride the NLS and the knockout refits as
+        a :class:`~ftmwpipeline.fitting.window_fit.FrozenSkirt` referenced to
+        ``tau0_us``, so with ``tau`` free their skirt follows the trial ``tau``
+        (ROADMAP D18); the outcome's ``background`` is re-drawn at the fitted
+        ``tau``.
     seed_peaks :
         Initial :class:`ModelPeak` objects for the NLS.
     tau0_us :
@@ -1300,6 +1388,11 @@ def fit_seeds_window_outcome(
     from .peak_model import model_spectrum
     from .window_fit import evaluate_baseline, knockout_test
 
+    shape = fw_kwargs.get("shape", "lorentzian")
+    fw_kwargs = dict(fw_kwargs)
+    skirts = frozen_skirts_for(fixed_peaks, tau0_us)
+    if skirts:
+        fw_kwargs["frozen_skirts"] = skirts
     fit_result: WindowFitResult = fit_window(
         offset_grid,
         data_minus_bg,
@@ -1346,6 +1439,15 @@ def fit_seeds_window_outcome(
         acquisition_us,
         shape=conservative_result.fit.shape,
     ) + evaluate_baseline(conservative_result.fit, offset_grid)
+    background = background_at_fitted_tau(
+        offset_grid,
+        fixed_peaks,
+        background,
+        tau0_us,
+        conservative_result.fit.tau_us,
+        acquisition_us,
+        shape=shape,
+    )
     full_fitted = free_model + background
     full_residual = z_slice - full_fitted
 
@@ -1764,8 +1866,11 @@ def local_thaw_cofit(
     already a free peak in the primary's fit (that is what "thaw" means: a line
     fit freely in its primary is also constrained by the dependent's data),
     so it is **not** added as a separate peak -- doing so would double-count
-    the line. Other frozen contributors of either window stay frozen as a
-    background subtraction on their respective slices.
+    the line. Other frozen contributors of either window stay frozen on their
+    respective slices: subtracted at ``tau0_us`` and carried as a
+    :class:`~ftmwpipeline.fitting.window_fit.FrozenSkirt` restricted to that
+    slice, so with ``tau`` free their skirt follows the joint trial ``tau``
+    (ROADMAP D18).
 
     The joint fit's peak list layout is
 
@@ -1827,6 +1932,13 @@ def local_thaw_cofit(
 
     grid = np.concatenate([primary_u, dep_u_in_primary])
     data = np.concatenate([primary_clean, dep_clean])
+    # Each side's other contributors follow the joint trial tau on their own
+    # slice only, evaluated on exactly the grid they were subtracted on.
+    on_primary = np.zeros(grid.size, dtype=bool)
+    on_primary[: primary_u.size] = True
+    joint_skirts = frozen_skirts_for(
+        primary_other, tau0_us, bins=on_primary
+    ) + frozen_skirts_for(dep_other, tau0_us, bins=~on_primary)
 
     sigma_primary = np.asarray(primary.rms_noise, dtype=float)
     if sigma_primary.ndim == 0:
@@ -1894,6 +2006,7 @@ def local_thaw_cofit(
         offset_bounds=(lo, hi),
         shape=shape,
         spur_mask=joint_spur_mask,
+        frozen_skirts=joint_skirts,
     )
     return joint, np.array([thawed_index], dtype=int)
 
@@ -2413,6 +2526,10 @@ def _build_doublet_refit_kwargs(
     )
     refit_kwargs: dict[str, Any] = dict(constraints.fit_kwargs_inner)
     refit_kwargs.setdefault("shape", inner.shape)
+    # The merged refit carries the frozen skirt at its own trial tau (D18).
+    skirts = _outcome_skirts(outcome)
+    if skirts:
+        refit_kwargs["frozen_skirts"] = skirts
     return refit_kwargs
 
 
@@ -4583,6 +4700,55 @@ def _install_cofit_outcome(
     outcome.fit.fit.n_params = n_params
 
 
+def _outcome_skirts(outcome: WindowOutcome) -> tuple[FrozenSkirt, ...]:
+    """The outcome's frozen contributors as a skirt referenced to its own tau.
+
+    Invariant: ``outcome.background`` is the frozen skirt at the outcome's
+    current fitted ``tau`` (``outcome.fit.fit.tau_us``); every phase that
+    moves ``tau`` re-draws it (:func:`_install_free_model`). A later phase
+    fitting ``complex_spectrum - background`` therefore references its skirt
+    to that ``tau``.
+    """
+    return frozen_skirts_for(outcome.fixed_peaks, float(outcome.fit.fit.tau_us))
+
+
+def _install_free_model(
+    outcome: WindowOutcome,
+    free_model: np.ndarray,
+    *,
+    tau_before_us: float,
+    acquisition_us: float,
+    residual_edge_m: int,
+) -> None:
+    """Install a re-fit free model on ``outcome`` at its (new) fitted tau.
+
+    ``free_model`` is the free peaks plus any baseline at
+    ``outcome.fit.fit.tau_us``. The frozen background is re-drawn at that tau
+    (unchanged when ``tau`` did not move from ``tau_before_us``, the tau the
+    current background was drawn at), and the full model, the residuals and the
+    edge-coherence statistics are rebuilt against it.
+    """
+    inner = outcome.fit.fit
+    outcome.background = background_at_fitted_tau(
+        outcome.offset_grid_mhz,
+        outcome.fixed_peaks,
+        outcome.background,
+        tau_before_us,
+        float(inner.tau_us),
+        acquisition_us,
+        shape=inner.shape,
+    )
+    inner.fitted_spectrum = free_model
+    inner.residual = (outcome.complex_spectrum - outcome.background) - free_model
+    outcome.full_fitted_spectrum = free_model + outcome.background
+    outcome.full_residual = outcome.complex_spectrum - outcome.full_fitted_spectrum
+    low, high = residual_edge_coherence(
+        outcome.full_residual, outcome.rms_noise, band_m=residual_edge_m
+    )
+    outcome.edge_coherence_low = low
+    outcome.edge_coherence_high = high
+
+
 def _apply_rescue_to_outcome(
     win: FitWindow,
     outcome: WindowOutcome,
@@ -4606,8 +4772,13 @@ def _apply_rescue_to_outcome(
     initial fit missed" includes any contributor's line a thaw promoted to
     a free peak (which appears in the window's free-peak list after a
     successful thaw via :func:`_install_cofit_outcome`). The frozen
-    contributor background is held fixed across the rescue chain -- the
-    rescue addresses missed lines, not contributor renegotiation.
+    contributors are not renegotiated -- the rescue addresses missed lines --
+    but their skirt follows ``tau`` through every refit of the chain (ROADMAP
+    D18): the chain starts from ``complex_spectrum - background`` with the
+    background at the outcome's current fitted ``tau`` and carries the skirt
+    from there. The sigma_eff skirt budget ``kappa_skirt * |background|`` is
+    drawn once, at that current ``tau``: it is a fixed per-bin noise allowance
+    for the search, not a model term.
 
     The conservative-fit audit trail is preserved (the rescue is a
     separate phase, not a continuation of the conservative loop). The
@@ -4621,9 +4792,10 @@ def _apply_rescue_to_outcome(
         ctx["bg_u"] = np.asarray(outcome.offset_grid_mhz, dtype=float)
         ctx["bg"] = np.asarray(outcome.background, dtype=np.complex128)
         validation._fringe_window_ctx = ctx
-    # Same per-window sigma_eff skirt budget the conservative fit's gates used
-    # (the rescue operates on the identical background-subtracted data).
+    # Per-window sigma_eff skirt budget on the background at the window's
+    # current fitted tau (the model the rescue starts from).
     kappa_skirt = validation.DEFAULT_GATE_SIGMA_EFF_KAPPA_SKIRT
+    tau_entry = float(outcome.fit.fit.tau_us)
     budget_extra = (
         float(kappa_skirt) * np.abs(outcome.background)
         if kappa_skirt is not None
@@ -4657,6 +4829,7 @@ def _apply_rescue_to_outcome(
         protected_tol_mhz=protected_tol_mhz,
         forbidden_offsets=forbidden_offsets,
         forbidden_tol_mhz=forbidden_tol_mhz,
+        frozen_skirts=_outcome_skirts(outcome),
         **rescue_kwargs,
     )
 
@@ -4675,15 +4848,13 @@ def _apply_rescue_to_outcome(
             acquisition_us,
             shape=consolidated.fit.fit.shape,
         ) + evaluate_baseline(consolidated.fit.fit, outcome.offset_grid_mhz)
-        outcome.fit.fit.fitted_spectrum = free_model
-        outcome.fit.fit.residual = data_minus_bg - free_model
-        outcome.full_fitted_spectrum = free_model + outcome.background
-        outcome.full_residual = outcome.complex_spectrum - outcome.full_fitted_spectrum
-        low, high = residual_edge_coherence(
-            outcome.full_residual, outcome.rms_noise, band_m=residual_edge_m
+        _install_free_model(
+            outcome,
+            free_model,
+            tau_before_us=tau_entry,
+            acquisition_us=acquisition_us,
+            residual_edge_m=residual_edge_m,
         )
-        outcome.edge_coherence_low = low
-        outcome.edge_coherence_high = high
 
     events: list[RescueEvent] = []
     for diag in consolidated.rounds:
@@ -4874,7 +5045,10 @@ def _apply_baseline_to_outcome(
 
     # Re-free tau (anchored at the band majority) so it relaxes off the collapsed
     # value once the baseline carries the pedestal. The penalty / bound policy
-    # mirrors the primary fit's via ``derive_window_fit_constraints``.
+    # mirrors the primary fit's via ``derive_window_fit_constraints``. The
+    # frozen skirt rides the refit from the window's current tau (D18).
+    tau_entry = float(inner.tau_us)
+    skirts = _outcome_skirts(outcome)
     constraints = derive_window_fit_constraints(
         data_minus_bg,
         outcome.rms_noise,
@@ -4898,6 +5072,7 @@ def _apply_baseline_to_outcome(
         acquisition_us,
         spur_mask=spur_mask,
         baseline_order=baseline_order,
+        frozen_skirts=skirts,
         **refit_kwargs,
     )
     if os.environ.get("FTMW_DEBUG_PHASES"):
@@ -4913,7 +5088,8 @@ def _apply_baseline_to_outcome(
     # Install the joint fit. The baseline carries the pedestal and the re-freed
     # ``tau`` has relaxed to its physical value, so the re-fit ``tau`` / errors
     # are installed too. The fitted spectrum carries peaks + baseline; the
-    # frozen background is added back for the full model.
+    # frozen background, re-drawn at the re-fit tau, is added back for the
+    # full model.
     free_plus_baseline = refit.fitted_spectrum
     inner.peaks = refit.peaks
     inner.peak_errors = refit.peak_errors
@@ -4925,22 +5101,19 @@ def _apply_baseline_to_outcome(
     inner.tau_us = refit.tau_us
     inner.tau_error = refit.tau_error
     inner.tau_was_fit = refit.tau_was_fit
-    inner.fitted_spectrum = free_plus_baseline
-    inner.residual = data_minus_bg - free_plus_baseline
     inner.baseline_order = refit.baseline_order
     inner.baseline_coeffs = refit.baseline_coeffs
     inner.baseline_offset_scale = refit.baseline_offset_scale
-
-    outcome.full_fitted_spectrum = free_plus_baseline + outcome.background
-    outcome.full_residual = outcome.complex_spectrum - outcome.full_fitted_spectrum
-    low, high = residual_edge_coherence(
-        outcome.full_residual, outcome.rms_noise, band_m=residual_edge_m
+    _install_free_model(
+        outcome,
+        free_plus_baseline,
+        tau_before_us=tau_entry,
+        acquisition_us=acquisition_us,
+        residual_edge_m=residual_edge_m,
     )
     outcome.baseline_applied = True
     outcome.baseline_order = refit.baseline_order
     outcome.baseline_coeffs = refit.baseline_coeffs
     outcome.baseline_offset_scale = refit.baseline_offset_scale
     outcome.baseline_edge_coherence = float(s_coh)
-    outcome.edge_coherence_low = low
-    outcome.edge_coherence_high = high
     return True
