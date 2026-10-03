@@ -412,6 +412,7 @@ class TestPeakQualityScore:
             peer_freqs_mhz=[30000.0],
             acquisition_us=13.0,  # res ~0.077 MHz; 0.1*res ~7.7e-3 >> 1e-4
             survival_floor=3.3,
+            vif_collapse_threshold=4.0,
         )
         assert score == PEAK_QUALITY_MAX == 4
 
@@ -426,6 +427,7 @@ class TestPeakQualityScore:
             peer_freqs_mhz=[30000.0, 30000.02],  # 0.02 MHz << res
             acquisition_us=13.0,
             survival_floor=3.3,
+            vif_collapse_threshold=4.0,
         )
         assert score == 0
 
@@ -441,5 +443,6 @@ class TestPeakQualityScore:
             peer_freqs_mhz=[30000.0],
             acquisition_us=13.0,
             survival_floor=3.3,
+            vif_collapse_threshold=4.0,
         )
         assert score == 1

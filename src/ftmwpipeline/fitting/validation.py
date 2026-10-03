@@ -1710,7 +1710,7 @@ def peak_quality_score(
     peer_freqs_mhz: Sequence[float],
     acquisition_us: float,
     survival_floor: float,
-    vif_collapse_threshold: float = 25.0,
+    vif_collapse_threshold: float,
 ) -> int:
     """Grade how well the fit *determines* a line, in ``0..PEAK_QUALITY_MAX``.
 
