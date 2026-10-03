@@ -294,8 +294,9 @@ def test_every_declared_read_leaves_the_file_byte_identical(stage5, tmp_path, ca
             str(tmp_path / "o"),
         ],
     ):
-        main(argv)
-        capsys.readouterr()
+        rc = main(argv)
+        err = capsys.readouterr().err
+        assert rc == 0, (argv, err)
     assert _md5(stage5) == before
 
 

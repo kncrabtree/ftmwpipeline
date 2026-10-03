@@ -7,7 +7,6 @@ import json
 import numpy as np
 import pytest
 
-from ftmwpipeline import MANIFEST
 from ftmwpipeline.core.data_structures import ComplexFT
 from ftmwpipeline.serialize import ArrayCollector, to_jsonable
 

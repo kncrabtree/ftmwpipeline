@@ -33,6 +33,7 @@ published, and the Stage 6 edit paths that carry them were collapsed onto one
 engine so they cannot answer differently.
 
 * **Machine contract, Wave 1: the read surface, one rule for every accessor.**
+  ``CONTRACT_VERSION`` is now ``2``.
   The sixteen accessors added to ``MANIFEST`` after ``capabilities`` share one set of
   rules (see :doc:`machine_contract`).
 

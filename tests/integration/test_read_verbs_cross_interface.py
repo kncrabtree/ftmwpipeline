@@ -58,7 +58,30 @@ KINDS = {
 
 
 def test_every_accessor_has_a_declared_kind_here():
-    assert set(KINDS) == set(MANIFEST.accessors)
+    assert set(KINDS) == set(MANIFEST.accessors) == set(EXPECTED_SCHEMA)
+
+
+#: The schema each accessor's envelope must carry, pinned independently of the
+#: registration code so a mislabeled payload fails.
+EXPECTED_SCHEMA = {
+    "capabilities": "ftmw/capabilities@1",
+    "frequency_calibration": "ftmw/calibration@1",
+    "refit_snap_tol_mhz": "ftmw/snap_tolerance@1",
+    "read_metadata": "ftmw/metadata@1",
+    "read_tables": "ftmw/tables@1",
+    "read_table": "ftmw/table@1",
+    "settings_defaults": "ftmw/settings_defaults@1",
+    "settings_show": "ftmw/settings@1",
+    "get_final_products": "ftmw/final_products@1",
+    "review_log": "ftmw/review_log@1",
+    "get_pipeline_info": "ftmw/pipeline_info@1",
+    "compute_display_ft": "ftmw/display_ft@1",
+    "fid_samples": "ftmw/fid_samples@1",
+    "display_units": "ftmw/display_units@1",
+    "fit_thresholds": "ftmw/fit_thresholds@1",
+    "window_status": "ftmw/window_status@1",
+    "preview_source": "ftmw/source_preview@1",
+}
 
 
 def _py_args(name, path, source):
@@ -126,7 +149,7 @@ def test_api_pipeline_and_cli_agree(name, stage5, exp_2638_data_path, tmp_path, 
     env = _run_cli(name, stage5, source, out, capsys)
 
     schema = env["schema"]
-    assert schema in MANIFEST.schemas
+    assert schema == EXPECTED_SCHEMA[name]
     api_arrays, pipe_arrays = ArrayCollector(), ArrayCollector()
     assert _wire(via_api, schema, api_arrays) == env
     assert _wire(via_pipeline, schema, pipe_arrays) == env
@@ -198,6 +221,29 @@ def test_dataclass_accessor_is_stamped_directly(stage5, tmp_path, capsys):
     stamp = ftmw.frequency_calibration(stage5)
     assert env["schema"] == CALIBRATION_SCHEMA == type(stamp).__ftmw_schema__
     assert set(MANIFEST.fields["CalibrationStamp"]) == set(env) - {"schema"}
+
+
+def test_text_columns_are_saved_without_pickling(stage5, tmp_path, capsys):
+    out = tmp_path / "o"
+    rc = main(
+        [
+            "read",
+            "read_table",
+            stage5,
+            "fit_peaks",
+            "--columns",
+            "shape,origin,clock_lattice",
+            "--output",
+            str(out),
+        ]
+    )
+    assert rc == 0, capsys.readouterr().err
+    capsys.readouterr()
+    table = ftmw.read_table(stage5, "fit_peaks", ["shape", "origin", "clock_lattice"])
+    for col in ("shape", "origin", "clock_lattice"):
+        saved = np.load(out / f"{col}.npy")  # allow_pickle defaults to False
+        assert saved.dtype.kind == "U"
+        assert saved.tolist() == [str(v) for v in table[col]]
 
 
 def test_dict_accessor_is_stamped_directly(stage5, tmp_path, capsys):

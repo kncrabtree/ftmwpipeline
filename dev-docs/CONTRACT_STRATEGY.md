@@ -136,7 +136,10 @@ Rules every accessor follows:
 - **The payload carries its schema in Python too.** A dict payload has a
   `"schema"` key; a dataclass payload declares `__ftmw_schema__`. The API,
   `Pipeline` and the CLI therefore return the same stamped object. Schema
-  names are constants in `ftmwpipeline.contract`.
+  names are constants in `ftmwpipeline.contract`. Accessors that predate the
+  contract keep their Python return types; for them the schema is applied by
+  the CLI envelope: a dict or dataclass is stamped directly, a list becomes
+  `{"schema", "items": [...]}`, a scalar `{"schema", "value": x}`.
 - **Entity tables are lists of records.** An accessor that returns one row per
   window, FID or line returns a list of records (dataclasses or dicts), so an
   absent field travels as `Absent` per row (`null` plus its `_absent` sibling
@@ -329,10 +332,16 @@ window the fit has not reached reports both as `Absent.NOT_RUN`, never 0. Also a
 
 `preview_source(source, format_name=None)` → without importing: the detected
 format and the source's **FID table**, one row per FID with `index`,
-`n_points`, `spacing_us`, `probe_freq_mhz`, `sideband` (decoded to
+`channel`, `n_points`, `spacing_us`, `probe_freq_mhz`, `sideband` (decoded to
 `"upper"`/`"lower"` from whatever encoding the source uses), and `shots`, plus
 the declared chirp window when the source carries one. Every loader that can
-hold more than one FID reports all of them.
+hold more than one FID reports all of them; a multi-channel source reports
+one row per channel, and `channel` names the value import would need.
+
+The preview reports only what the source declares. A field the source does
+not declare is `Absent.NOT_RUN` — never the default import would apply. A
+declared value that cannot be read (a chirp window that fails to parse, a
+non-finite sidecar value) is `Absent.UNDEFINED`.
 
 ### Window model
 

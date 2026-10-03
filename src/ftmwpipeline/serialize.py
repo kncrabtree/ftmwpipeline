@@ -331,6 +331,22 @@ def _is_complex_ft(obj: Any) -> bool:
     return isinstance(obj, ComplexFT)
 
 
+def _npy_safe(arr: np.ndarray, path: JsonPath) -> np.ndarray:
+    """An array a sink can save without pickling.
+
+    An object array of strings (a text column) becomes fixed-width unicode, which
+    ``.npy`` stores natively; any other object array has no self-describing
+    form and is refused.
+    """
+    if arr.dtype.kind != "O":
+        return arr
+    if all(isinstance(v, str) for v in arr.flat):
+        return arr.astype(str)
+    raise TypeError(
+        f"array at {_where(path)} holds non-string objects; it has no .npy form"
+    )
+
+
 def _convert(obj: Any, path: JsonPath, arrays: Optional[ArraySink]) -> Any:
     # Order matters: Absent before generic Enum, Enum before str/int/float (a
     # str- or int-valued Enum is written as its value), bool before int, numpy
@@ -366,7 +382,7 @@ def _convert(obj: Any, path: JsonPath, arrays: Optional[ArraySink]) -> Any:
         if obj.ndim == 0:
             return _convert(obj.item(), path, arrays)
         if arrays is not None:
-            return arrays(path, obj)
+            return arrays(path, _npy_safe(obj, path))
         if obj.dtype.kind == "O" and any(isinstance(v, Absent) for v in obj.flat):
             raise TypeError(
                 f"array at {_where(path)} holds Absent; use absent_column()"

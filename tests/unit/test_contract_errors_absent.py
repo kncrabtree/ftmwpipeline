@@ -80,8 +80,9 @@ def test_contract_version_is_int():
     assert isinstance(CONTRACT_VERSION, int)
 
 
-def test_contract_version_is_one():
-    assert CONTRACT_VERSION == 1
+def test_contract_version_is_two():
+    # Wave 0 published version 1; Wave 1's accessors raised it to 2.
+    assert CONTRACT_VERSION == 2
 
 
 # ---- stage vocabulary -----------------------------------------------------
