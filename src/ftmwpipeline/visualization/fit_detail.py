@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union, cast
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -47,7 +47,7 @@ from matplotlib.gridspec import GridSpec, GridSpecBase, GridSpecFromSubplotSpec
 from matplotlib.ticker import ScalarFormatter
 
 from ..core.data_structures import FittedPeak, FittingResult, Sideband
-from ..fitting.peak_model import ModelPeak, model_spectrum, sideband_sign
+from ..fitting.model_eval import evaluate_window_model, window_model_peaks
 from ..fitting.validation import PEAK_QUALITY_MAX, peak_quality_score
 from .report_style import (
     AGGIE_GOLD,
@@ -168,93 +168,6 @@ def frequency_sorted_labels(freqs: Sequence[float]) -> List[str]:
     return out
 
 
-def _eval_window_baseline(
-    window_fit: FittingResult, u_offset_mhz: np.ndarray
-) -> np.ndarray:
-    """Evaluate the persisted leakage-wing baseline ``B(u)`` on an offset grid.
-
-    Reads the per-window baseline audit from ``quality_metrics``
-    (``baseline_applied`` / ``baseline_order`` / ``baseline_offset_scale`` /
-    ``baseline_coeff{k}_re`` / ``baseline_coeff{k}_im``) and returns the complex
-    ``B(u) = sum_{k<=p} (a_k + i b_k) (u/u_s)^k`` on the signed baseband offset
-    from the window center. Returns zeros when no baseline fired, so callers can
-    add it unconditionally. The Stage 5 fit applies the baseline jointly with
-    the de-biased lines, so the faithful plotted model is
-    ``model_spectrum(peaks) + B(u)``.
-    """
-    qa = window_fit.quality_metrics or {}
-    u = np.asarray(u_offset_mhz, dtype=float)
-    zeros = cast(np.ndarray, np.zeros(u.shape, dtype=np.complex128))
-    if float(qa.get("baseline_applied", 0.0)) < 0.5:
-        return zeros
-    u_s = float(qa.get("baseline_offset_scale", 0.0))
-    order = int(qa.get("baseline_order", 0))
-    if not u_s > 0.0:
-        return zeros
-    x = u / u_s
-    b = np.zeros(u.shape, dtype=np.complex128)
-    for k in range(order + 1):
-        a_k = float(qa.get(f"baseline_coeff{k}_re", 0.0))
-        b_k = float(qa.get(f"baseline_coeff{k}_im", 0.0))
-        b = b + (a_k + 1j * b_k) * x**k
-    return cast(np.ndarray, b)
-
-
-# ---------------------------------------------------------------------------
-# Model assembly
-# ---------------------------------------------------------------------------
-def _window_model_peaks(
-    window_fit: FittingResult, sideband: SidebandLike, center_mhz: float
-) -> List[ModelPeak]:
-    """Fitted peaks + frozen out-of-window contributors as offset ModelPeaks.
-
-    The frozen contributors (``frozen_peak_*`` in ``fixed_parameters``) are the
-    strong neighboring lines whose leakage skirt reaches into this window; the
-    fit subtracts them as a fixed background, so a faithful overlay must add
-    them back.
-    """
-    s = sideband_sign(sideband)
-    peaks = [
-        ModelPeak(
-            amplitude=float(p.amplitude),
-            offset_mhz=float(s * (p.frequency_mhz - center_mhz)),
-            phase=float(p.phase if p.phase is not None else 0.0),
-        )
-        for p in window_fit.fitted_peaks
-    ]
-    for key, fp in window_fit.fixed_parameters.items():
-        if not key.startswith("frozen_peak_"):
-            continue
-        peaks.append(
-            ModelPeak(
-                amplitude=float(fp["amplitude"]),
-                offset_mhz=float(s * (float(fp["frequency_mhz"]) - center_mhz)),
-                phase=float(fp.get("phase", 0.0) or 0.0),
-            )
-        )
-    return peaks
-
-
-def _eval_model(
-    freqs: np.ndarray,
-    window_fit: FittingResult,
-    peaks: Sequence[ModelPeak],
-    tau_us: float,
-    acquisition_us: float,
-    sideband: SidebandLike,
-    center_mhz: float,
-    shape: str,
-) -> np.ndarray:
-    """Model spectrum (lines + leakage-wing baseline) on a frequency grid."""
-    s = sideband_sign(sideband)
-    u = s * (np.asarray(freqs, dtype=float) - center_mhz)
-    if peaks and tau_us > 0.0:
-        model = model_spectrum(u, peaks, tau_us, acquisition_us, shape=shape)
-    else:
-        model = np.zeros(u.shape, dtype=np.complex128)
-    return cast(np.ndarray, model + _eval_window_baseline(window_fit, u))
-
-
 # ---------------------------------------------------------------------------
 # Panel data preparation (one source of truth for both assemblers)
 # ---------------------------------------------------------------------------
@@ -366,8 +279,10 @@ def prepare_window_panels(
     z_slice = complex_spectrum[mask]
     sigma_slice = rms_noise[mask]
 
-    peaks = _window_model_peaks(window_fit, sideband, center)
-    model_slice = _eval_model(
+    # The shared, non-visualization evaluator (``fitting.model_eval``): what the
+    # figures draw is what any client reading the fitted model receives.
+    peaks = window_model_peaks(window_fit, sideband, center)
+    model_slice = evaluate_window_model(
         f_slice, window_fit, peaks, tau_us, acquisition_us, sideband, center, shape_str
     )
     residual = z_slice - model_slice  # native -- drives the histogram/stats
@@ -376,7 +291,7 @@ def prepare_window_panels(
     if f_slice.size >= 2:
         n_fine = (f_slice.size - 1) * MODEL_OVERSAMPLE + 1
         f_fine = np.linspace(float(f_slice.min()), float(f_slice.max()), n_fine)
-        model_fine = _eval_model(
+        model_fine = evaluate_window_model(
             f_fine,
             window_fit,
             peaks,
