@@ -2634,6 +2634,17 @@ class Pipeline:
             fit_all=fit_all,
         )
 
+    @staticmethod
+    def capabilities() -> Dict[str, Any]:
+        """What this installation's machine contract offers (file-independent).
+
+        Equivalent to :func:`ftmwpipeline.api.capabilities`; the payload is
+        ``ftmw/capabilities@1`` from :func:`ftmwpipeline.contract.capabilities`.
+        """
+        from .contract import capabilities
+
+        return capabilities()
+
     def settings_show(
         self,
         selector: Optional[str] = None,

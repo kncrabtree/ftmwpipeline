@@ -2562,6 +2562,17 @@ def scan_all(
         raise
 
 
+def capabilities() -> Dict[str, Any]:
+    """What this installation's machine contract offers.
+
+    File-independent, so takes no path. Returns the ``ftmw/capabilities@1``
+    payload ``{"schema", "contract_version", "schemas", "accessors", "codes"}``
+    read from :data:`ftmwpipeline.contract.MANIFEST`. A client gates on
+    ``contract_version``, never on ``__version__``.
+    """
+    return Pipeline.capabilities()
+
+
 def settings_show(
     file_path: Union[str, Path],
     selector: Optional[str] = None,

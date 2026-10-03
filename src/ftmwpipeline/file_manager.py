@@ -21,7 +21,17 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    ClassVar,
+    Dict,
+    List,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+)
 
 import h5py
 
@@ -47,13 +57,52 @@ FTMW_FORMAT_VERSION = "1.0"
 
 # Custom exceptions for clear error handling
 class PipelineFileError(Exception):
-    """Base exception for pipeline file operations."""
+    """Base of the public, typed exception family (the machine contract's errors).
 
-    pass
+    Every member carries a stable class-level :attr:`code` string and exposes
+    :meth:`to_dict`, which returns the ``ftmw/error@1`` payload
+    ``{"schema", "code", "message", ...typed attributes}``. A program routes on
+    ``code`` (or on the class) and reads the typed attributes; the message text
+    is for people and is not part of the contract.
+
+    A subclass declares its code by overriding :attr:`code` and names the
+    attributes its payload carries in :attr:`contract_fields`; nothing else is
+    needed for :meth:`to_dict` to cover it. Every code a subclass declares must
+    also be listed in :data:`ftmwpipeline.contract.MANIFEST`.
+    """
+
+    #: Stable routing code. The base value is a fallback for direct raises of
+    #: the base class; every concrete subclass overrides it.
+    code: ClassVar[str] = "pipeline_error"
+
+    #: Attribute names (in payload order) that :meth:`to_dict` carries.
+    contract_fields: ClassVar[Tuple[str, ...]] = ()
+
+    def to_dict(self) -> Dict[str, Any]:
+        """The ``ftmw/error@1`` payload for this error.
+
+        Returns a JSON-able dict: ``schema``, ``code``, ``message`` (``str(self)``)
+        and then each attribute named in :attr:`contract_fields`, converted by
+        :func:`ftmwpipeline.serialize.to_jsonable`.
+        """
+        from .serialize import to_jsonable
+
+        payload: Dict[str, Any] = {"code": self.code, "message": str(self)}
+        for name in self.contract_fields:
+            payload[name] = getattr(self, name)
+        result = to_jsonable(payload, schema=ERROR_SCHEMA)
+        assert isinstance(result, dict)
+        return result
+
+
+#: Schema name of :meth:`PipelineFileError.to_dict` payloads.
+ERROR_SCHEMA = "ftmw/error@1"
 
 
 class PipelineExistsError(PipelineFileError):
     """Raised when attempting to create a pipeline file that already exists with different source."""
+
+    code: ClassVar[str] = "file_exists"
 
     def __init__(self, filepath: Path, existing_source: str, requested_source: str):
         self.filepath = filepath
@@ -80,6 +129,9 @@ class StageDependencyError(PipelineFileError, ValueError):
     given) the CLI verb that produces them. Also a :class:`ValueError`, which is
     what these refusals raised before they were typed.
     """
+
+    code: ClassVar[str] = "stage_not_run"
+    contract_fields: ClassVar[Tuple[str, ...]] = ("missing_dependencies", "command")
 
     def __init__(
         self,
@@ -111,6 +163,8 @@ class StageDependencyError(PipelineFileError, ValueError):
 class PipelineCorruptionError(PipelineFileError):
     """Raised when pipeline file is corrupted or invalid."""
 
+    code: ClassVar[str] = "file_corrupt"
+
     def __init__(self, filepath: Path, corruption_details: str):
         self.filepath = filepath
         self.corruption_details = corruption_details
@@ -123,6 +177,9 @@ class PipelineCorruptionError(PipelineFileError):
 
 class PipelineCompatibilityError(PipelineFileError):
     """Raised when a pipeline file's format version is too new to read."""
+
+    code: ClassVar[str] = "file_incompatible"
+    contract_fields: ClassVar[Tuple[str, ...]] = ("file_version", "supported_version")
 
     def __init__(self, filepath: Path, file_version: str, supported_version: str):
         self.filepath = filepath
@@ -173,6 +230,9 @@ class AnalysisEpochMismatchError(PipelineFileError, ValueError):
         The full record of the running environment.
     """
 
+    code: ClassVar[str] = "epoch_mismatch"
+    contract_fields: ClassVar[Tuple[str, ...]] = ("file_epoch", "current_epoch")
+
     def __init__(
         self,
         filepath: Union[str, Path],
@@ -197,6 +257,100 @@ class AnalysisEpochMismatchError(PipelineFileError, ValueError):
             f"retry. The acknowledgement is persisted, so the reports will say the "
             f"curation crossed an epoch boundary."
         )
+
+
+class NotFoundError(PipelineFileError, KeyError):
+    """Raised when a request names something the file does not hold.
+
+    ``kind`` says what was looked up (``"window"``, ``"peak"``, ``"file"``) and
+    ``ids`` lists **every** id of the request that does not exist -- for a batch
+    (e.g. a curation file naming several windows) all unknown ids at once, not
+    only the first. Also a :class:`KeyError`, which is what such lookups raised
+    before they were typed; ``str(exc)`` is the plain message (``KeyError``
+    would otherwise wrap it in quotes).
+
+    Attributes
+    ----------
+    kind : str
+        What kind of thing was looked up.
+    ids : list of int or str
+        Every requested id that does not exist, in request order.
+    """
+
+    code: ClassVar[str] = "not_found"
+    contract_fields: ClassVar[Tuple[str, ...]] = ("kind", "ids")
+
+    def __init__(
+        self,
+        kind: str,
+        ids: Sequence[Union[int, str]],
+        *,
+        message: Optional[str] = None,
+    ) -> None:
+        if isinstance(ids, (str, bytes)):
+            raise TypeError("ids must be a sequence of ids, not a single string")
+        self.kind = kind
+        self.ids: List[Union[int, str]] = list(ids)
+        if message is None:
+            listed = ", ".join(str(i) for i in self.ids)
+            message = f"No {kind} with id: {listed}"
+        self.message = message
+        super().__init__(message)
+
+    def __str__(self) -> str:
+        return self.message
+
+    def __reduce__(self) -> Tuple[Any, ...]:
+        # Keyword-only message: rebuild from attributes (survives pickling to and
+        # from pool workers).
+        return (_rebuild_error, (type(self), (self.kind, self.ids), self.message))
+
+
+class IncompleteProvenanceError(PipelineFileError, ValueError):
+    """Raised when a file lacks the persisted inputs a provenance read needs.
+
+    A file written before a stage persisted everything it resolved cannot yield
+    a complete analysis fingerprint; rather than digest incomplete inputs the
+    accessor refuses. ``missing`` names the absent inputs (registry paths such
+    as ``"stage2b.shape"``). Re-running the stage that owns an input persists it.
+    Also a :class:`ValueError`.
+
+    Attributes
+    ----------
+    missing : list of str
+        The inputs that are not persisted in the file.
+    """
+
+    code: ClassVar[str] = "incomplete_provenance"
+    contract_fields: ClassVar[Tuple[str, ...]] = ("missing",)
+
+    def __init__(
+        self,
+        missing: Sequence[str],
+        *,
+        message: Optional[str] = None,
+    ) -> None:
+        if isinstance(missing, str):
+            raise TypeError("missing must be a sequence of names, not a string")
+        self.missing: List[str] = list(missing)
+        if message is None:
+            message = (
+                "The file does not persist every input this read needs: "
+                f"{', '.join(self.missing)}. Re-run the stage(s) that own them."
+            )
+        super().__init__(message)
+
+    def __reduce__(self) -> Tuple[Any, ...]:
+        return (_rebuild_error, (type(self), (self.missing,), str(self)))
+
+
+def _rebuild_error(
+    cls: type, args: Tuple[Any, ...], message: Optional[str]
+) -> PipelineFileError:
+    """Unpickle helper for errors whose constructor takes a keyword message."""
+    error = cls(*args, message=message)
+    assert isinstance(error, PipelineFileError)
+    return error
 
 
 class SourceMetadata:

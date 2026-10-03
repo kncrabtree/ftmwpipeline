@@ -46,15 +46,27 @@ from ftmwpipeline.core.data_structures import (
     WindowPlan,
 )
 
+# Machine contract: version, missing-value vocabulary, manifest, serializer
+from ftmwpipeline.contract import (
+    CONTRACT_VERSION,
+    MANIFEST,
+    Absent,
+    ContractManifest,
+    capabilities,
+)
+
 # Exception family - typed errors callers are expected to catch and route on
 from ftmwpipeline.file_manager import (
     AnalysisEpochMismatchError,
+    IncompleteProvenanceError,
+    NotFoundError,
     PipelineCompatibilityError,
     PipelineCorruptionError,
     PipelineExistsError,
     PipelineFileError,
     StageDependencyError,
 )
+from ftmwpipeline.serialize import to_jsonable
 
 # Main pipeline interface
 from ftmwpipeline.pipeline import Pipeline
@@ -96,6 +108,15 @@ __all__ = [
     "PipelineCorruptionError",
     "PipelineCompatibilityError",
     "AnalysisEpochMismatchError",
+    "NotFoundError",
+    "IncompleteProvenanceError",
+    # Machine contract
+    "CONTRACT_VERSION",
+    "MANIFEST",
+    "Absent",
+    "ContractManifest",
+    "capabilities",
+    "to_jsonable",
     # Main pipeline interface
     "Pipeline",
     "ReviewSession",
