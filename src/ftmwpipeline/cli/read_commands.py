@@ -32,6 +32,7 @@ from .._internal.read_impl import (
     write_text_impl,
 )
 from ..contract import DISPLAY_UNITS_SCHEMA, FID_SAMPLES_SCHEMA, MANIFEST
+from ..contract import FIT_THRESHOLDS_SCHEMA, MANIFEST
 from ..file_manager import PipelineFileError
 from .contract_commands import exit_code_for, register_accessor, report_contract_error
 from .utils import setup_logging
@@ -281,6 +282,14 @@ Examples:
         lambda path, **kw: Pipeline.open(path).display_units(),
         help="Display amplitude scale and units label (JSON)",
         schema=DISPLAY_UNITS_SCHEMA,
+    )
+
+    register_accessor(
+        read_sub,
+        "fit_thresholds",
+        lambda path: Pipeline(path).fit_thresholds(),
+        help="Thresholds the persisted Stage 5 fit applied (JSON)",
+        schema=FIT_THRESHOLDS_SCHEMA,
     )
 
     # 'read' with no subcommand prints its help.

@@ -2589,6 +2589,15 @@ def display_units(file_path: Union[str, Path]) -> Dict[str, Any]:
     :func:`compute_display_ft` applies at every stage.
     """
     return Pipeline.open(file_path).display_units()
+def fit_thresholds(file_path: Union[str, Path]) -> Dict[str, Any]:
+    """The thresholds the persisted Stage 5 fit actually applied.
+
+    ``ftmw/fit_thresholds@1``: ``peak_survival_snr_floor`` and
+    ``vif_collapse_threshold``. Every field is ``Absent.NOT_RUN`` when the file
+    has no Stage 5 fit, and a threshold the fit never recorded is ``NOT_RUN``
+    too -- never a guessed default.
+    """
+    return Pipeline(file_path).fit_thresholds()
 
 
 def settings_show(
