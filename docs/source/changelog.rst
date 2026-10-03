@@ -68,6 +68,17 @@ engine so they cannot answer differently.
   is serialized as its value, and a complex number as ``{"real", "imag"}``.
   See :doc:`machine_contract`.
 
+* **The existing read surface is declared as contract.** ``MANIFEST`` now lists
+  ``frequency_calibration``, ``refit_snap_tol_mhz``, ``read_metadata``,
+  ``read_tables``, ``read_table``, ``settings_defaults``, ``settings_show``,
+  ``get_final_products``, ``review_log``, ``get_pipeline_info`` and
+  ``compute_display_ft``, together with the ``read_metadata`` keys, the
+  ``fit_peaks`` / ``windows`` columns, the fields of ``FinalPeak``,
+  ``DecisionLogEntry`` and ``ComplexFT``, and the decision-log ``kind`` and
+  ``provenance`` vocabularies. Behaviour is unchanged. The one new verb is
+  ``ftmwpipeline read compute_display_ft`` (``--pad-factor``, arrays via
+  ``--output``); ``to_jsonable`` now serializes ``ComplexFT``.
+
 * **``review apply --log-prefix N`` (``log_prefix=N`` on ``Pipeline.review_apply``,
   ``api.review_apply`` and ``ReviewSession.review_apply``) applies a curation
   file as if the decision log ended after its first ``N`` decisions.** The

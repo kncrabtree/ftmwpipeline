@@ -83,6 +83,41 @@ the declared fields of the result types (``FinalPeak``, ``DecisionLogEntry``,
 the curation results), and ``MANIFEST.vocabularies`` the frozen
 ``DecisionLogEntry`` ``kind`` and ``provenance`` values.
 
+Each declared accessor, with its absence cases:
+
+* ``read_metadata`` / ``read_tables`` / ``read_table`` -- the persisted scalars
+  and table columns, raw. ``tau.`` / ``tau_g.`` / ``timebase.`` keys appear only
+  once that calibration has run, so a file without it simply lacks them; an
+  unknown table or column is a ``ValueError``.
+* ``get_final_products`` -- the persisted final-products table, or ``None``
+  before Stage 6 (``None`` becomes ``Absent`` in a later wave). Each
+  ``FinalPeak`` carries ``peak_uid``, ``window_id``, ``origin``, ``derivation``,
+  ``clock_lattice``, the ``knockout_*`` fields, the frequency and its sigma.
+* ``review_log`` -- the ``DecisionLogEntry`` rows in execution order (an empty
+  list when nothing was edited). ``kind`` is one of ``add``, ``remove``,
+  ``merge``, ``split``, ``accept``, ``create_window``; ``provenance`` is
+  ``user``.
+* ``get_pipeline_info`` -- the status dict. ``warnings`` is present only when
+  non-empty.
+* ``frequency_calibration``, ``refit_snap_tol_mhz``, ``settings_show``,
+  ``settings_defaults`` -- unchanged; ``settings_defaults`` needs no file.
+* ``compute_display_ft`` -- ``freq_array`` and ``complex_spectrum`` plus
+  ``metadata`` (``amplitude_scale``, ``units_label``, ``pad_factor``). It has no
+  absence case: a file without Stage 1 raises ``StageDependencyError``.
+
+Every one raises ``PipelineFileNotFoundError`` (code ``not_found``) for a
+missing file and ``PipelineCorruptionError`` (``file_corrupt``, exit 2) for a
+file that is not HDF5, and none of them writes the file. The new verb:
+
+.. code-block:: console
+
+   $ ftmwpipeline read compute_display_ft run.ftmw --format json \
+         --output ft/ --pad-factor 2
+
+The JSON envelope names ``freq_array.npy`` and ``complex_spectrum.npy`` (a
+complex128 array) under ``--output`` and carries ``metadata`` inline; without
+``--output`` the verb exits 1, since arrays are never inlined.
+
 Missing values: ``Absent``
 --------------------------
 
