@@ -2697,6 +2697,15 @@ def _load_display_style(
     anything, when the window comes from the import-time recommendation.
     Once Stage 1 has run this is simply its persisted record.
     """
+    scale, label, _power, trim = _resolve_display_style(file_path)
+    return scale, label, trim
+
+
+def _resolve_display_style(
+    file_path: str,
+) -> Tuple[float, str, Optional[int], Optional[Tuple[float, float]]]:
+    """:func:`_load_display_style` plus the resolved ``units_power`` setting
+    (``None`` when unset, in which case scale is 1 and the label empty)."""
     from .stage1_impl import _resolve_settings
 
     settings = _resolve_settings(file_path, None)
@@ -2706,7 +2715,22 @@ def _load_display_style(
     else:
         scale = 10.0 ** int(units_power)
         label = UNITS_LABEL_BY_POWER.get(int(units_power), f"·10^{units_power} V")
-    return scale, label, settings.trim
+    power = None if units_power is None else int(units_power)
+    return scale, label, power, settings.trim
+
+
+def display_units_impl(file_path: str) -> Dict[str, Any]:
+    """Display units, exactly the pair :func:`compute_display_ft_impl` applies.
+
+    ``{"amplitude_scale", "units_label", "units_power"}``; ``units_power`` is
+    ``None`` when the setting is unset. Reads only; works at every stage.
+    """
+    scale, label, power, _trim = _resolve_display_style(file_path)
+    return {
+        "amplitude_scale": float(scale),
+        "units_label": label,
+        "units_power": power,
+    }
 
 
 def _padded_active_display_ft(

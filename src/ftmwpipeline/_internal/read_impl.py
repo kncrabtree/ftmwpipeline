@@ -96,6 +96,7 @@ from ..core.settings_framework import NONE as NONE_SENTINEL
 from ..file_manager import (
     PipelineCorruptionError,
     PipelineFileNotFoundError,
+    StageDependencyError,
     check_format_compatibility,
     is_transient_open_error,
 )
@@ -568,6 +569,34 @@ def _alias_section(out: Dict[str, Any], canonical: str, synonym: str) -> None:
     """
     for key in [k for k in out if k.startswith(f"{canonical}.")]:
         out[f"{synonym}.{key.split('.', 1)[1]}"] = out[key]
+
+
+def fid_samples_impl(file_path: Union[str, Path]) -> Dict[str, Any]:
+    """The stored Stage 0 FID samples: one dataset read, no pipeline load.
+
+    Returns ``{"samples": float64 1-D array, "stored_dtype": str}``. Values
+    equal the stored ones, in stored order; a narrower stored dtype is
+    promoted losslessly. Raises ``StageDependencyError`` when Stage 0 has not
+    been imported into the file.
+    """
+    path = Path(file_path)
+    h5f = _open(path)
+    try:
+        group = h5f.get("stage0_fid_data")
+        if group is None or "time_series_data" not in group:
+            raise StageDependencyError(
+                "fid_samples",
+                ["stage0_fid_data"],
+                path,
+                command=f"ftmwpipeline data import {path}",
+            )
+        dataset = group["time_series_data"]
+        stored_dtype = str(dataset.dtype)
+        raw = dataset[...]
+    finally:
+        h5f.close()
+    samples = np.array(raw, dtype=np.float64, copy=True).reshape(-1)
+    return {"samples": samples, "stored_dtype": stored_dtype}
 
 
 def _read_start_record(h5f: h5py.File, out: Dict[str, Any]) -> None:

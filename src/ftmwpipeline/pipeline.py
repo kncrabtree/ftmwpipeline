@@ -2646,6 +2646,33 @@ class Pipeline:
 
         return capabilities()
 
+    def fid_samples(self) -> Dict[str, Any]:
+        """The stored Stage 0 FID samples (``ftmw/fid_samples@1``).
+
+        ``{"samples": 1-D float64 array, "stored_dtype": str}``; values equal
+        the stored ones, in stored order. One dataset read; never writes.
+
+        Raises
+        ------
+        StageDependencyError
+            If the file has no imported FID data.
+        """
+        from ._internal.read_impl import fid_samples_impl
+
+        return fid_samples_impl(self.filepath)
+
+    def display_units(self) -> Dict[str, Any]:
+        """Display units (``ftmw/display_units@1``).
+
+        ``{"amplitude_scale", "units_label", "units_power"}``: exactly the
+        pair :meth:`compute_display_ft` applies, at every stage (resolved via
+        the Stage 1 chain). ``units_power`` is ``None`` when unset. Never
+        writes.
+        """
+        from ._internal.stage5_impl import display_units_impl
+
+        return display_units_impl(str(self.filepath))
+
     def settings_show(
         self,
         selector: Optional[str] = None,

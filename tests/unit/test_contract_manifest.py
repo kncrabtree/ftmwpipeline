@@ -32,8 +32,15 @@ pytestmark = [pytest.mark.unit]
 # the "superset" test. Adding an entry fails the "exact" test until the
 # snapshot below is updated in the same commit -- a deliberate act.
 # --------------------------------------------------------------------------
-SNAPSHOT_ACCESSORS = frozenset({"capabilities"})
-SNAPSHOT_SCHEMAS = frozenset({"ftmw/error@1", "ftmw/capabilities@1"})
+SNAPSHOT_ACCESSORS = frozenset({"capabilities", "fid_samples", "display_units"})
+SNAPSHOT_SCHEMAS = frozenset(
+    {
+        "ftmw/error@1",
+        "ftmw/capabilities@1",
+        "ftmw/fid_samples@1",
+        "ftmw/display_units@1",
+    }
+)
 SNAPSHOT_CODES = frozenset(
     {
         "stage_not_run",
@@ -45,7 +52,11 @@ SNAPSHOT_CODES = frozenset(
         "file_exists",
     }
 )
-SNAPSHOT_FILE_BOUND = {"capabilities": False}
+SNAPSHOT_FILE_BOUND = {
+    "capabilities": False,
+    "fid_samples": True,
+    "display_units": True,
+}
 SNAPSHOT_METADATA_KEYS: frozenset = frozenset()
 SNAPSHOT_TABLES: dict = {}
 

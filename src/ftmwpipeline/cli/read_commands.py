@@ -31,7 +31,7 @@ from .._internal.read_impl import (
     read_tables_impl,
     write_text_impl,
 )
-from ..contract import MANIFEST
+from ..contract import DISPLAY_UNITS_SCHEMA, FID_SAMPLES_SCHEMA, MANIFEST
 from ..file_manager import PipelineFileError
 from .contract_commands import exit_code_for, register_accessor, report_contract_error
 from .utils import setup_logging
@@ -244,6 +244,21 @@ Examples:
         Pipeline.capabilities,
         help="Machine-contract version, schemas, accessors and error codes (JSON)",
         takes_file=MANIFEST.file_bound["capabilities"],
+    )
+
+    register_accessor(
+        read_sub,
+        "fid_samples",
+        lambda path, **kw: Pipeline.open(path).fid_samples(),
+        help="Stored Stage 0 FID samples (samples go to .npy under --output)",
+        schema=FID_SAMPLES_SCHEMA,
+    )
+    register_accessor(
+        read_sub,
+        "display_units",
+        lambda path, **kw: Pipeline.open(path).display_units(),
+        help="Display amplitude scale and units label (JSON)",
+        schema=DISPLAY_UNITS_SCHEMA,
     )
 
     # 'read' with no subcommand prints its help.

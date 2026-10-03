@@ -2573,6 +2573,24 @@ def capabilities() -> Dict[str, Any]:
     return Pipeline.capabilities()
 
 
+def fid_samples(file_path: Union[str, Path]) -> Dict[str, Any]:
+    """The stored Stage 0 FID samples, equivalent to :meth:`Pipeline.fid_samples`.
+
+    ``{"samples": 1-D float64 array, "stored_dtype": str}`` (schema
+    ``ftmw/fid_samples@1``); values equal the stored samples. Never writes.
+    """
+    return Pipeline.open(file_path).fid_samples()
+
+
+def display_units(file_path: Union[str, Path]) -> Dict[str, Any]:
+    """Display units, equivalent to :meth:`Pipeline.display_units`.
+
+    ``{"amplitude_scale", "units_label", "units_power"}``, exactly the pair
+    :func:`compute_display_ft` applies at every stage.
+    """
+    return Pipeline.open(file_path).display_units()
+
+
 def settings_show(
     file_path: Union[str, Path],
     selector: Optional[str] = None,
