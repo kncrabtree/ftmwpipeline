@@ -363,9 +363,9 @@ without reimplementing the line shape:
 - `model`: complex, everything the fit compared with the data: the window's
   fitted lines, plus the frozen contributions of neighbours the fit held fixed,
   plus the window's fitted baseline when it has one;
-- `fixed`: complex, the frozen neighbour contribution alone, evaluated as the
-  fit evaluated it (at the decay time the fit held it at, which the fit
-  records);
+- `fixed`: complex, the frozen neighbour contribution alone, drawn at the
+  window's shared fitted decay time (the far-wing approximation of
+  `stage5_fitting.rst`; the fit evaluates it the same way);
 - `baseline`: complex, the fitted baseline alone, or `Absent.NOT_RUN` when the
   window was fitted without one;
 - `sigma`, `excluded` (active grid only; `Absent.UNDEFINED` on the display
@@ -385,9 +385,7 @@ spectrum, so `display_units` applies to both. Magnitudes are `abs()` of the
 complex arrays. The evaluation is the same code path every plot uses.
 
 An unknown `window_id` raises `not_found`; a file without a Stage 5 fit raises
-`stage_not_run`. A fit that held frozen neighbours at a decay time it did not
-record (written before the fit recorded it) cannot be reproduced and raises
-`incomplete_provenance` for that window.
+`stage_not_run`.
 
 ### Spectrum model
 
