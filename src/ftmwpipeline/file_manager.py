@@ -217,11 +217,13 @@ class StageDependencyError(PipelineFileError, ValueError):
         return values
 
 
-class PipelineCorruptionError(PipelineFileError, RuntimeError):
+class PipelineCorruptionError(PipelineFileError, RuntimeError, OSError):
     """Raised when pipeline file is corrupted or invalid.
 
-    Also a :class:`RuntimeError`, which is what an unopenable (non-HDF5,
-    unreadable) file raised before it was typed.
+    Also a :class:`RuntimeError` (what :meth:`Pipeline.open` raised for an
+    unopenable file before it was typed) and an :class:`OSError` (what the
+    read path let escape from h5py), so existing ``except`` clauses on either
+    keep working.
     """
 
     code: ClassVar[str] = "file_corrupt"
@@ -829,6 +831,19 @@ def check_format_compatibility(filepath: Path, h5f: "h5py.File") -> None:
         )
 
 
+def is_transient_open_error(exc: OSError) -> bool:
+    """Whether *exc* from opening an existing file says nothing about its content.
+
+    A permission failure or HDF5's file-lock refusal (another process holds the
+    file open for writing) can hit a perfectly valid file; such errors
+    propagate unchanged instead of being reported as ``file_corrupt``.
+    """
+    if isinstance(exc, PermissionError):
+        return True
+    text = str(exc).lower()
+    return "unable to lock file" in text or "resource temporarily unavailable" in text
+
+
 def open_pipeline_file(
     filepath: Union[str, Path],
 ) -> Tuple[Path, SourceMetadata, PipelineStageTracker]:
@@ -888,6 +903,10 @@ def open_pipeline_file(
         # messages and types; let them propagate unwrapped.
         raise
     except Exception as e:
+        if isinstance(e, OSError) and is_transient_open_error(e):
+            # A valid file we could not open right now (permissions, another
+            # process holding the HDF5 lock) is not ``file_corrupt``.
+            raise
         if "h5py" in str(type(e)).lower() or "hdf5" in str(e).lower():
             raise PipelineCorruptionError(filepath, f"HDF5 error: {e}") from e
         else:

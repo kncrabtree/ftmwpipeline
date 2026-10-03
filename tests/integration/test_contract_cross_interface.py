@@ -26,6 +26,7 @@ from ftmwpipeline.cli.contract_commands import (
 from ftmwpipeline.cli.main import main
 from ftmwpipeline.contract import capabilities
 from ftmwpipeline.file_manager import (
+    AnalysisEpochMismatchError,
     NotFoundError,
     PipelineCorruptionError,
     PipelineFileError,
@@ -110,6 +111,33 @@ def test_missing_file_error_reports_not_found_file_exit_1(capsys, tmp_path):
     payload = json.loads(capsys.readouterr().err)
     assert payload["code"] == "not_found" and payload["kind"] == "file"
     assert rc == 1
+
+
+def test_error_with_absent_sibling_reports_as_json(capsys):
+    # to_dict() already carries file_epoch_absent; the reporter must not
+    # serialize it a second time (the reserved-key rule would refuse it).
+    class _Env:
+        def __init__(self, epoch):
+            self.analysis_epoch = epoch
+
+        def summary(self):
+            return f"epoch {self.analysis_epoch}"
+
+    exc = AnalysisEpochMismatchError("f.ftmw", _Env(None), _Env(3))
+    rc = _run(_raiser(exc), ["probe"])
+    payload = json.loads(capsys.readouterr().err)
+    assert payload["code"] == "epoch_mismatch"
+    assert payload["file_epoch"] is None and payload["file_epoch_absent"] == "not_run"
+    assert rc == 1
+
+
+def test_read_verbs_under_json_report_error_dict_on_stderr(tmp_path, capsys):
+    missing = tmp_path / "absent.ftmw"
+    rc = main(["read", "meta", str(missing), "--format", "json"])
+    cap = capsys.readouterr()
+    assert rc == 1 and cap.out == ""
+    payload = json.loads(cap.err)
+    assert payload["code"] == "not_found" and payload["kind"] == "file"
 
 
 def test_exit_code_table():

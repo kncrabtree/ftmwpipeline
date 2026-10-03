@@ -46,14 +46,18 @@ engine so they cannot answer differently.
   ``NotFoundError`` (also a ``KeyError``), ``PipelineFileNotFoundError`` (also
   a ``FileNotFoundError``, raised for a ``.ftmw`` path that does not exist) and
   ``IncompleteProvenanceError`` (also a ``ValueError``).
-  ``PipelineCorruptionError`` is now also a ``RuntimeError`` and replaces the
-  bare ``RuntimeError`` an unopenable file used to raise, message unchanged.
+  ``PipelineCorruptionError`` is now also a ``RuntimeError`` and an
+  ``OSError``; it replaces the bare ``RuntimeError`` ``Pipeline.open`` raised
+  and the h5py ``OSError`` the read path let escape for an unopenable file,
+  message unchanged. Permission and HDF5 file-lock failures still propagate
+  as the original ``OSError``.
   No existing exception lost a built-in base or changed its message.
   ``ftmwpipeline.to_jsonable`` converts results to strict JSON, and
   ``capabilities()`` (``api.capabilities``, ``Pipeline.capabilities``,
   ``ftmwpipeline read capabilities``) reports what this installation declares.
   The error code set is introduced wave by wave: ``capabilities()`` lists the
-  codes implemented today, and only the ``read`` accessors emit error JSON.
+  codes implemented today; the ``read`` accessors (and ``read table`` /
+  ``meta`` under ``--format json``) emit error JSON.
   Under those verbs a contract error is printed as its ``to_dict()`` JSON on
   stderr, with exit code 2 for ``file_corrupt``, 130 for an interrupt, and 1
   for every other code; ``read table`` / ``meta`` / ``list`` use the same

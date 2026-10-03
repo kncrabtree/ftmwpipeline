@@ -147,15 +147,16 @@ carries a stable ``code`` and typed attributes, and ``to_dict()`` returns::
 
 The code set is introduced **wave by wave**. ``capabilities()`` lists the
 codes this installation currently implements, and a client should rely on that
-list rather than on this page. Today only the ``read`` accessors emit the error
-JSON described below; every other verb reports a failure as it always has,
-as text on stderr with its usual exit code.
+list rather than on this page. Today the ``read`` accessors, and ``read table``
+/ ``meta`` under ``--format json``, emit the error JSON described below; every
+other verb still reports a failure as ``Error: ...`` text with its usual exit
+code (the remaining verbs move to the error JSON in a later release).
 
 Route on ``code`` (or the class); the ``message`` text is for people. Each typed
 error is still a subclass of the built-in it replaced (most are
 ``ValueError``; ``NotFoundError`` is a ``KeyError``;
 ``PipelineFileNotFoundError`` is also a ``FileNotFoundError``;
-``PipelineCorruptionError`` is also a ``RuntimeError``), so existing ``except``
+``PipelineCorruptionError`` is also a ``RuntimeError`` and an ``OSError``), so existing ``except``
 clauses keep working. Every typed error pickles, so it survives a process
 pool.
 
@@ -163,8 +164,10 @@ pool.
 ``PipelineFileNotFoundError`` (``not_found`` with ``kind`` ``"file"``; also a
 ``FileNotFoundError``). A path that exists but cannot be opened as a pipeline
 file -- not HDF5, unreadable, missing its source metadata -- raises
-``PipelineCorruptionError`` (``file_corrupt``; also a ``RuntimeError``, chained
-from the underlying error). ``Pipeline.open`` and the ``read`` entry points
+``PipelineCorruptionError`` (``file_corrupt``; also a ``RuntimeError`` and an
+``OSError``, chained from the underlying error). A permission failure, or
+HDF5's refusal while another process holds the file open for writing, is not
+corruption: it propagates as the original ``OSError`` so a client can retry. ``Pipeline.open`` and the ``read`` entry points
 (``api.read_table``, ``api.read_metadata``, ``read table`` / ``meta`` /
 ``list``) agree on this.
 

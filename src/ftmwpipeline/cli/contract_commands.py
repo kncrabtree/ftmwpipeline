@@ -63,7 +63,9 @@ def exit_code_for(exc: PipelineFileError) -> int:
 def report_contract_error(exc: PipelineFileError, fmt: str) -> int:
     """Report *exc* (JSON dict on stderr under json, ``Error:`` text otherwise)."""
     if fmt == "json":
-        print(json.dumps(to_jsonable(exc.to_dict()), allow_nan=False), file=sys.stderr)
+        # to_dict() is already wire-form; serializing it again would trip the
+        # reserved ``_absent`` key rule.
+        print(json.dumps(exc.to_dict(), allow_nan=False), file=sys.stderr)
     else:
         print(f"Error: {exc}", file=sys.stderr)
     return exit_code_for(exc)

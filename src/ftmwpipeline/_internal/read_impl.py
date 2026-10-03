@@ -97,6 +97,7 @@ from ..file_manager import (
     PipelineCorruptionError,
     PipelineFileNotFoundError,
     check_format_compatibility,
+    is_transient_open_error,
 )
 from ..io._hdf5_helpers import ColumnSpec, load_json_attr
 from ..io.fitting_serialization import (
@@ -341,6 +342,8 @@ def _open(file_path: Union[str, Path]) -> h5py.File:
     try:
         h5f = h5py.File(path, "r")
     except OSError as exc:
+        if is_transient_open_error(exc):
+            raise
         # Exists but is not an openable HDF5 file: ``file_corrupt``.
         raise PipelineCorruptionError(
             path,

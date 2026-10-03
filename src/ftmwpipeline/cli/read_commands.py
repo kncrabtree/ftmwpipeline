@@ -33,7 +33,7 @@ from .._internal.read_impl import (
 )
 from ..contract import MANIFEST
 from ..file_manager import PipelineFileError
-from .contract_commands import exit_code_for, register_accessor
+from .contract_commands import exit_code_for, register_accessor, report_contract_error
 from .utils import setup_logging
 
 #: What a bad request looks like here: a missing or unreadable file, an unknown
@@ -43,11 +43,18 @@ from .utils import setup_logging
 _USER_ERRORS = (FileNotFoundError, PipelineFileError, ValueError)
 
 
-def _report(exc: BaseException) -> int:
-    """Print *exc* as ``Error: ...`` and return its exit code."""
-    print(f"Error: {exc}")
+def _report(exc: BaseException, fmt: str) -> int:
+    """Report *exc* and return its exit code.
+
+    Under ``--format json`` a contract error goes to stderr as its error dict;
+    otherwise ``Error: ...`` is printed as before.
+    """
     if isinstance(exc, PipelineFileError):
+        if fmt == "json":
+            return report_contract_error(exc, fmt)
+        print(f"Error: {exc}")
         return exit_code_for(exc)
+    print(f"Error: {exc}")
     return 1
 
 
@@ -84,7 +91,7 @@ def cmd_read_table(args: argparse.Namespace) -> int:
         table = read_table_impl(file_path, args.table, columns)
         text = format_table_impl(table, getattr(args, "format", "csv"))
     except _USER_ERRORS as exc:
-        return _report(exc)
+        return _report(exc, getattr(args, "format", "csv"))
     return _emit(text, getattr(args, "output", None), args.table)
 
 
@@ -96,7 +103,7 @@ def cmd_read_meta(args: argparse.Namespace) -> int:
         metadata = read_metadata_impl(file_path)
         text = format_metadata_impl(metadata, getattr(args, "format", "csv"))
     except _USER_ERRORS as exc:
-        return _report(exc)
+        return _report(exc, getattr(args, "format", "csv"))
     return _emit(text, getattr(args, "output", None), "meta")
 
 
@@ -107,7 +114,7 @@ def cmd_read_list(args: argparse.Namespace) -> int:
     try:
         tables = read_tables_impl(file_path)
     except _USER_ERRORS as exc:
-        return _report(exc)
+        return _report(exc, getattr(args, "format", "csv"))
 
     print(f"Readable tables in {file_path}:")
     width = max((len(name) for name in tables), default=0)

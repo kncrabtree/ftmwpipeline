@@ -337,6 +337,8 @@ def test_missing_file_error_keyword_message():
 def test_corruption_error_is_a_runtime_error():
     e = PipelineCorruptionError("f.ftmw", "bad", message="Failed to open f.ftmw")
     assert isinstance(e, RuntimeError)
+    # The read path let h5py's OSError escape before it was typed.
+    assert isinstance(e, OSError)
     assert str(e) == "Failed to open f.ftmw"
     assert e.code == "file_corrupt"
 
@@ -676,8 +678,12 @@ def test_enum_mapping_keys_are_written_as_their_value():
 
 
 def test_enum_key_colliding_with_its_value_string_is_refused():
+    # A plain Enum and its value string are distinct dict keys that serialize
+    # to the same JSON key. (A str-mixin enum hashes equal to its value, so a
+    # dict cannot hold both in the first place.)
+    assert len({_Color.RED: 1, "red": 2}) == 2
     with pytest.raises(ValueError):
-        to_jsonable({_Tag.A: 1, "alpha": 2})
+        to_jsonable({_Color.RED: 1, "red": 2})
 
 
 def test_absent_is_not_a_mapping_key():
@@ -794,3 +800,30 @@ def test_array_collector_names_and_dedupes():
     c2 = ArrayCollector(prefix="p_")
     assert c2(("k",), np.zeros(1)) == "p_k.npy"
     assert c2(("k",), np.zeros(1)) == "p_k-2.npy"
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        PermissionError(13, "Permission denied"),
+        OSError("Unable to synchronously open file (unable to lock file, errno = 11)"),
+    ],
+)
+def test_transient_open_errors_are_not_reported_as_corruption(
+    exc, monkeypatch, tmp_path
+):
+    import h5py
+
+    from ftmwpipeline import Pipeline, api
+
+    path = tmp_path / "busy.ftmw"
+    path.write_bytes(b"placeholder")
+
+    def refuse(*a, **k):
+        raise exc
+
+    monkeypatch.setattr(h5py, "File", refuse)
+    for call in (lambda: Pipeline.open(path), lambda: api.read_metadata(path)):
+        with pytest.raises(OSError) as info:
+            call()
+        assert not isinstance(info.value, PipelineCorruptionError)
