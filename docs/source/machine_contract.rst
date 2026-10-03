@@ -202,6 +202,29 @@ with ``chirp_window_absent: "not_run"``. A path that does not exist raises
 ``not_found`` with kind ``"file"``; an unknown ``format_name``, or a source no
 format recognises, raises ``not_found`` with kind ``"format"``.
 
+What each source reports:
+
+* **Blackchirp** -- one row per ``fid/fidparams.csv`` row, indexed by row
+  position (as ``load_fid`` does). The ``sideband`` cell may be the enum name
+  (``LowerSideband`` / ``UpperSideband``) or the integer code (``1`` lower,
+  ``0`` upper); both decode to ``"lower"`` / ``"upper"``. A column an older
+  file lacks is *not run*; a cell that is not a finite number, or a sideband
+  that is neither encoding, is *undefined*. The chirp window comes from
+  ``chirps.csv`` and ``header.csv``.
+* **CSV and native HDF5** -- one row. Fields come from the sidecar (and, for
+  HDF5, the embedded attributes). ``spacing_us`` is *not run* when nothing
+  declares it; probe frequency, sideband and shots report the import's own
+  defaults (``0``, ``"upper"``, ``1``) when the source is silent.
+* **Keysight MATLAB** -- one row: spacing is the scope's sampling interval,
+  probe frequency ``0`` and sideband ``"upper"``; ``n_points`` and ``shots``
+  are *undefined* because they depend on load-time layout parameters.
+
+``--source-format NAME`` selects the loader instead of auto-detection (the
+CLI's ``--format`` is the output format). A source that exists but does not fit
+the named format exits ``1`` with a plain-text error, not an error object.
+The accessor reads only the source: it creates no ``.ftmw`` file, and
+``validate_source`` is unchanged (it still describes FID 0 alone).
+
 Stage names
 -----------
 
