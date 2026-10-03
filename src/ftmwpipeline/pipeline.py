@@ -2695,6 +2695,18 @@ class Pipeline:
         from ._internal.read_impl import window_status_impl
 
         return window_status_impl(str(self.filepath))
+    @staticmethod
+    def preview_source(
+        source: Union[str, Path], format_name: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """What a data source holds, without importing it (file-independent).
+
+        Equivalent to :func:`ftmwpipeline.api.preview_source`; the payload is
+        ``ftmw/source_preview@1``.
+        """
+        from ._internal.preview_impl import preview_source_impl
+
+        return preview_source_impl(source, format_name)
 
     def settings_show(
         self,

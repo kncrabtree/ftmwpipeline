@@ -303,6 +303,60 @@ corruption: it propagates as the original ``OSError`` so a client can retry. ``P
 (``api.read_table``, ``api.read_metadata``, ``read table`` / ``meta`` /
 ``list``) agree on this.
 
+Previewing a source: ``preview_source``
+---------------------------------------
+
+``preview_source(source, format_name=None)`` says what a data source holds
+without importing it: the detected format and the source's FID table, one row
+per FID the source holds (a Blackchirp experiment may hold many). It takes a
+source path, not a ``.ftmw`` file, so it is file-less.
+
+.. code-block:: python
+
+   ftmw.preview_source("exp_2638")          # functional API
+   Pipeline.preview_source("exp_2638")      # Pipeline class (static)
+
+.. code-block:: console
+
+   $ ftmwpipeline read preview_source exp_2638 [--source-format blackchirp]
+
+The payload is ``ftmw/source_preview@1``: ``source``, ``format``, ``n_fids``,
+``fids`` and ``chirp_window``. ``fids`` is a table of equal-length lists
+(``index``, ``n_points``, ``spacing_us``, ``probe_freq_mhz``, ``sideband`` --
+``"upper"`` or ``"lower"``, whatever the source encodes it as -- and
+``shots``), with a ``<column>__status`` list for every column but ``index``
+(``0`` present, ``1`` not run, ``2`` undefined). A value the source does not
+declare is *not run*; one that depends on load-time parameters (a Keysight
+record's point and shot counts) is *undefined*. ``chirp_window`` is the
+window the source declares (``chirp_start_us``, ``chirp_end_us``,
+``start_margin_us``, each possibly absent) or, when it declares none, ``null``
+with ``chirp_window_absent: "not_run"``. A path that does not exist raises
+``not_found`` with kind ``"file"``; an unknown ``format_name``, or a source no
+format recognises, raises ``not_found`` with kind ``"format"``.
+
+What each source reports:
+
+* **Blackchirp** -- one row per ``fid/fidparams.csv`` row, indexed by row
+  position (as ``load_fid`` does). The ``sideband`` cell may be the enum name
+  (``LowerSideband`` / ``UpperSideband``) or the integer code (``1`` lower,
+  ``0`` upper); both decode to ``"lower"`` / ``"upper"``. A column an older
+  file lacks is *not run*; a cell that is not a finite number, or a sideband
+  that is neither encoding, is *undefined*. The chirp window comes from
+  ``chirps.csv`` and ``header.csv``.
+* **CSV and native HDF5** -- one row. Fields come from the sidecar (and, for
+  HDF5, the embedded attributes). ``spacing_us`` is *not run* when nothing
+  declares it; probe frequency, sideband and shots report the import's own
+  defaults (``0``, ``"upper"``, ``1``) when the source is silent.
+* **Keysight MATLAB** -- one row: spacing is the scope's sampling interval,
+  probe frequency ``0`` and sideband ``"upper"``; ``n_points`` and ``shots``
+  are *undefined* because they depend on load-time layout parameters.
+
+``--source-format NAME`` selects the loader instead of auto-detection (the
+CLI's ``--format`` is the output format). A source that exists but does not fit
+the named format exits ``1`` with a plain-text error, not an error object.
+The accessor reads only the source: it creates no ``.ftmw`` file, and
+``validate_source`` is unchanged (it still describes FID 0 alone).
+
 Stage names
 -----------
 

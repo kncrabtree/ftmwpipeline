@@ -9,7 +9,8 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Type, Union
 
-from .base import BaseLoader, LoaderError
+from ...file_manager import NotFoundError, PipelineFileNotFoundError
+from .base import BaseLoader, LoaderError, SourcePreview
 
 if TYPE_CHECKING:
     from ...core.data_structures import FID
@@ -189,6 +190,65 @@ class FormatRegistry:
             result["errors"].append(f"Validation failed: {e}")
             return result
 
+    def preview_source(
+        self, source_path: Union[str, Path], format_name: Optional[str] = None
+    ) -> SourcePreview:
+        """
+        Describe a source -- its format and every FID it holds -- without
+        importing it.
+
+        Parameters
+        ----------
+        source_path : str or Path
+            Path to data source
+        format_name : str, optional
+            Specific format to use, or None for auto-detection
+
+        Returns
+        -------
+        SourcePreview
+            The format, one :class:`~.base.FidInfo` per FID, and the declared
+            chirp window (or ``None``).
+
+        Raises
+        ------
+        PipelineFileNotFoundError
+            If ``source_path`` does not exist.
+        NotFoundError
+            ``kind == "format"``: ``format_name`` is not a registered format, or
+            auto-detection finds none (``ids`` is then ``[]``).
+        LoaderError
+            If the source is not valid for the chosen format.
+        """
+        if not Path(source_path).exists():
+            raise PipelineFileNotFoundError(
+                source_path, message=f"Data source not found: {source_path}"
+            )
+        if format_name is None:
+            detected = self.detect_format(source_path)
+            if detected is None:
+                raise NotFoundError(
+                    "format",
+                    [],
+                    message=f"Could not detect the data format of: {source_path}",
+                )
+            format_name = detected
+        elif format_name not in self._loader_instances:
+            raise NotFoundError(
+                "format",
+                [format_name],
+                message=(
+                    f"Unknown format '{format_name}'. "
+                    f"Available formats: {self.list_formats()}"
+                ),
+            )
+        loader = self._loader_instances[format_name]
+        return SourcePreview(
+            format=format_name,
+            fids=loader.preview_fids(source_path),
+            chirp_window=loader.preview_chirp_window(source_path),
+        )
+
     def load_fid(
         self,
         source_path: Union[str, Path],
@@ -318,6 +378,13 @@ def validate_source(
 ) -> Dict[str, Any]:
     """Validate source using global registry."""
     return _global_registry.validate_source(source_path, format_name)
+
+
+def preview_source(
+    source_path: Union[str, Path], format_name: Optional[str] = None
+) -> SourcePreview:
+    """Preview a source (format and FID table, nothing imported) via the registry."""
+    return _global_registry.preview_source(source_path, format_name)
 
 
 def load_fid(

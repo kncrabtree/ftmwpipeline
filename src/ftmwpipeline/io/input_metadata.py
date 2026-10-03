@@ -22,7 +22,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-from .data_loaders.base import LoaderError
+from .data_loaders.base import (
+    FidInfo,
+    LoaderError,
+    count_or_absent,
+    finite_or_absent,
+    sideband_or_absent,
+)
 
 # Acquisition fields a sidecar or explicit layer may set, with their defaults.
 # ``spacing_us`` has no default: it is required and resolves to ``None`` when
@@ -220,3 +226,34 @@ def build_fid_metadata(resolved: ResolvedInputMetadata) -> Dict[str, Any]:
     if resolved.chirp_window is not None:
         metadata["chirp_window"] = resolved.chirp_window
     return metadata
+
+
+def sidecar_layer(source_path: Union[str, Path]) -> Dict[str, Any]:
+    """The auto-discovered sidecar's contents (empty when there is none)."""
+    found = find_sidecar(source_path, None)
+    return load_sidecar(found) if found is not None else {}
+
+
+def acquisition_row(n_points: int, *layers: Dict[str, Any], index: int = 0) -> FidInfo:
+    """Describe a generic-loader FID from metadata layers, without importing.
+
+    The first layer that sets a field wins, as in :func:`resolve_input_metadata`;
+    the import's own defaults (probe ``0`` MHz, ``upper`` sideband, ``1`` shot)
+    apply, and ``spacing_us`` -- which has none -- is ``Absent.NOT_RUN`` when no
+    layer supplies it.
+    """
+
+    def pick(key: str) -> Any:
+        for layer in layers:
+            if layer.get(key) is not None:
+                return layer[key]
+        return _DEFAULTS.get(key)
+
+    return FidInfo(
+        index=index,
+        n_points=n_points,
+        spacing_us=finite_or_absent(pick("spacing_us")),
+        probe_freq_mhz=finite_or_absent(pick("probe_freq_mhz")),
+        sideband=sideband_or_absent(pick("sideband")),
+        shots=count_or_absent(pick("shots")),
+    )

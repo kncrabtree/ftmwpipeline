@@ -12,7 +12,14 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Type, Union
 import numpy as np
 import pandas as pd
 
-from .base import BaseLoader, LoaderError
+from ...contract import Absent
+from .base import (
+    BaseLoader,
+    FidInfo,
+    LoaderError,
+    count_or_absent,
+    finite_or_absent,
+)
 
 if TYPE_CHECKING:
     from ...core.data_structures import FID, FIDProcessingParameters, Sideband
@@ -195,6 +202,61 @@ class BlackChirpLoader(BaseLoader):
         except Exception as e:
             result["errors"].append(f"Validation failed: {e}")
             return result
+
+    def preview_fids(self, source_path: Union[str, Path]) -> List[FidInfo]:
+        """One row per ``fidparams.csv`` row (the FID's index is its row position).
+
+        ``size`` is the point count, ``spacing`` is in seconds, and ``sideband``
+        is decoded from either on-disk encoding (the ``LowerSideband`` /
+        ``UpperSideband`` names or the ``1`` / ``0`` codes). A column an older
+        file lacks is ``Absent.NOT_RUN``.
+        """
+        source_path = Path(source_path)
+        if not self.can_load(source_path):
+            raise LoaderError("Not a valid Blackchirp experiment directory")
+        try:
+            frame = pd.read_csv(
+                source_path / "fid" / "fidparams.csv",
+                sep=self._read_separator(source_path),
+            )
+        except Exception as exc:
+            raise LoaderError(f"Failed to read FID parameters: {exc}") from exc
+
+        def cell(row: "pd.Series", column: str) -> Any:
+            return row[column] if column in row.index else None
+
+        rows: List[FidInfo] = []
+        for position in range(len(frame)):
+            row = frame.iloc[position]
+            spacing_s = finite_or_absent(cell(row, "spacing"))
+            raw_sideband = cell(row, "sideband")
+            sideband: Union[str, Absent]
+            if raw_sideband is None:
+                sideband = Absent.NOT_RUN
+            else:
+                try:
+                    sideband = self._resolve_sideband(raw_sideband).value
+                except (LoaderError, ValueError, TypeError):
+                    sideband = Absent.UNDEFINED
+            rows.append(
+                FidInfo(
+                    index=position,
+                    n_points=count_or_absent(cell(row, "size")),
+                    spacing_us=(
+                        spacing_s if isinstance(spacing_s, Absent) else spacing_s * 1e6
+                    ),
+                    probe_freq_mhz=finite_or_absent(cell(row, "probefreq")),
+                    sideband=sideband,
+                    shots=count_or_absent(cell(row, "shots")),
+                )
+            )
+        return rows
+
+    def preview_chirp_window(
+        self, source_path: Union[str, Path]
+    ) -> Optional[Dict[str, Any]]:
+        """The declared chirp window (``chirps.csv`` + ``header.csv``), or ``None``."""
+        return self._extract_chirp_window(Path(source_path))
 
     def load_fid(
         self, source_path: Union[str, Path], fid_index: int = 0, **kwargs: Any

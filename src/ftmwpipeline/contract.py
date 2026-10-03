@@ -315,6 +315,7 @@ _ACCESSORS: Tuple[AccessorSpec, ...] = (
     AccessorSpec("display_units", file_bound=True),
     AccessorSpec("fit_thresholds", file_bound=True),
     AccessorSpec("window_status", file_bound=True),
+    AccessorSpec("preview_source", file_bound=False),
 )
 
 _SCHEMAS: Tuple[str, ...] = (
@@ -324,6 +325,7 @@ _SCHEMAS: Tuple[str, ...] = (
     DISPLAY_UNITS_SCHEMA,
     FIT_THRESHOLDS_SCHEMA,
     "ftmw/window_status@1",
+    "ftmw/source_preview@1",
 )
 
 _CODES: Tuple[str, ...] = (

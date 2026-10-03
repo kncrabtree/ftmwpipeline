@@ -2614,6 +2614,30 @@ def window_status(file_path: Union[str, Path]) -> Dict[str, Any]:
         Stage 4 has not been run.
     """
     return Pipeline.open(file_path).window_status()
+def preview_source(
+    source: Union[str, Path], format_name: Optional[str] = None
+) -> Dict[str, Any]:
+    """Describe a data source without importing it.
+
+    File-independent: takes a source path (a Blackchirp directory, a CSV, ...),
+    not a ``.ftmw`` file. Returns the ``ftmw/source_preview@1`` payload
+    ``{"schema", "source", "format", "n_fids", "fids", "chirp_window"}``.
+    ``fids`` is the FID table as columns (``index``, ``n_points``,
+    ``spacing_us``, ``probe_freq_mhz``, ``sideband`` -- ``"upper"``/``"lower"``
+    -- and ``shots``, each absent-capable column with a ``<column>__status``
+    list), one entry per FID the source holds. ``chirp_window`` is the declared
+    window or ``Absent.NOT_RUN``. Nothing is imported or written.
+
+    Raises
+    ------
+    PipelineFileNotFoundError
+        ``source`` does not exist.
+    NotFoundError
+        ``kind == "format"``: ``format_name`` is unknown, or none was detected.
+    ValueError
+        The source is not valid for the format.
+    """
+    return Pipeline.preview_source(source, format_name)
 
 
 def settings_show(

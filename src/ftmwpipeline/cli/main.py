@@ -94,7 +94,7 @@ Stage objects (synonym):
 Meta objects (cross-cutting, optional dotted selector):
   scan      list | run | all              Knob registry; sweep one / all knobs
   settings  show | set | export           Resolved value + provenance; persist; preset
-  read      list | table | meta | capabilities   Dump persisted data (CSV/TSV/JSON), no recompute
+  read      list | table | meta | capabilities | preview_source Dump persisted data (CSV/TSV/JSON), no recompute
 
 Utility (bare commands):
   formats           List available data formats

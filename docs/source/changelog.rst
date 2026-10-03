@@ -43,6 +43,11 @@ engine so they cannot answer differently.
   fid_samples`` (array written to ``samples.npy`` under ``--output``) / ``read
   display_units``, carry schemas ``ftmw/fid_samples@1`` and
   ``ftmw/display_units@1``, and never write the file.
+* **``preview_source`` describes a data source without importing it.** The
+  format and the full FID table (index, points, spacing, probe frequency,
+  sideband as ``"upper"``/``"lower"``, shots) of every FID a loader's source
+  holds, plus the declared chirp window; ``read preview_source SOURCE`` on the
+  command line. ``validate_source`` is unchanged.
 
 * **The machine contract has its foundations: a contract version, ``Absent``,
   typed errors with codes, a JSON serializer, and ``capabilities``.**

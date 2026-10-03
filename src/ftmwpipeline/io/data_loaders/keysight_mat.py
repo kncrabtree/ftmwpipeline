@@ -37,7 +37,8 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 import numpy as np
 
-from .base import BaseLoader, LoaderError
+from ...contract import Absent
+from .base import BaseLoader, FidInfo, LoaderError
 
 if TYPE_CHECKING:
     from ...core.data_structures import FID
@@ -168,6 +169,31 @@ class KeysightMatLoader(BaseLoader):
             result["errors"].append(f"Validation failed: {exc}")
 
         return result
+
+    def preview_fids(self, source_path: Union[str, Path]) -> List[FidInfo]:
+        """The one science FID of the first channel.
+
+        Direct sampling: probe ``0`` MHz, ``upper`` sideband, spacing ``XInc``
+        (the interleave cleanup does not change it). The point count and shot
+        count depend on the load-time acquisition layout (``pre_record_us``,
+        ``frame_period_us``, ``n_frames``, ``frame``), so they are
+        ``Absent.UNDEFINED``.
+        """
+        source_path = Path(source_path)
+        validation = self.validate_source(source_path)
+        if not validation["valid"]:
+            raise LoaderError(f"Invalid keysight-mat source: {validation['errors']}")
+        meta = validation["metadata"]
+        return [
+            FidInfo(
+                index=0,
+                n_points=Absent.UNDEFINED,
+                spacing_us=float(meta["duration_us"]) / int(meta["n_samples"]),
+                probe_freq_mhz=0.0,
+                sideband="upper",
+                shots=Absent.UNDEFINED,
+            )
+        ]
 
     def load_fid(self, source_path: Union[str, Path], **kwargs: Any) -> "FID":
         """Load the science FID from a segmented scope record.
