@@ -56,6 +56,9 @@ CONTRACT_VERSION: int = 1
 #: Schema name of the :func:`capabilities` payload.
 CAPABILITIES_SCHEMA = "ftmw/capabilities@1"
 
+#: Schema name of the :func:`fit_thresholds` payload.
+FIT_THRESHOLDS_SCHEMA = "ftmw/fit_thresholds@1"
+
 #: ``ftmw/<payload>@<n>``: lowercase payload name, positive integer revision.
 SCHEMA_NAME_RE = re.compile(r"^ftmw/[a-z][a-z0-9_]*@[1-9][0-9]*$")
 
@@ -230,11 +233,15 @@ class AccessorSpec(NamedTuple):
     file_bound: bool
 
 
-_ACCESSORS: Tuple[AccessorSpec, ...] = (AccessorSpec("capabilities", file_bound=False),)
+_ACCESSORS: Tuple[AccessorSpec, ...] = (
+    AccessorSpec("capabilities", file_bound=False),
+    AccessorSpec("fit_thresholds", file_bound=True),
+)
 
 _SCHEMAS: Tuple[str, ...] = (
     ERROR_SCHEMA,
     CAPABILITIES_SCHEMA,
+    FIT_THRESHOLDS_SCHEMA,
 )
 
 _CODES: Tuple[str, ...] = (
@@ -284,6 +291,7 @@ def capabilities() -> Dict[str, Any]:
 __all__ = [
     "CONTRACT_VERSION",
     "CAPABILITIES_SCHEMA",
+    "FIT_THRESHOLDS_SCHEMA",
     "ERROR_SCHEMA",
     "SCHEMA_NAME_RE",
     "Absent",

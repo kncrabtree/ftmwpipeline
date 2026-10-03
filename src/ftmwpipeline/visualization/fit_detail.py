@@ -341,7 +341,7 @@ def prepare_window_panels(
     vline_color: str = POPPY,
     vline_alpha: float = 0.7,
     survival_floor: float = 3.3,
-    vif_collapse_threshold: float = 4.0,
+    vif_collapse_threshold: float = 25.0,
 ) -> WindowPanelData:
     """Prepare the per-window model, residual, and annotations once.
 
@@ -679,7 +679,7 @@ def plot_consolidated_detail(
     figsize: Tuple[float, float] = DEFAULT_FIGSIZE,
     spurs: Optional[Sequence[dict]] = None,
     survival_floor: float = 3.3,
-    vif_collapse_threshold: float = 4.0,
+    vif_collapse_threshold: float = 25.0,
 ) -> plt.Figure:
     """Render the consolidated per-window detail figure (see module docstring).
 

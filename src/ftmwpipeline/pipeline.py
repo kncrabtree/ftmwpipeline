@@ -2429,6 +2429,19 @@ class Pipeline:
         """
         return read_metadata_impl(str(self.filepath))
 
+    def fit_thresholds(self) -> Dict[str, Any]:
+        """The thresholds the persisted Stage 5 fit actually applied.
+
+        ``ftmw/fit_thresholds@1``: ``peak_survival_snr_floor`` and
+        ``vif_collapse_threshold``, read from the fit's recorded diagnostics.
+        Every field is ``Absent.NOT_RUN`` when no Stage 5 fit exists, and a
+        threshold the fit never recorded is ``NOT_RUN`` too (never a default).
+        Reads group attributes only; nothing is written.
+        """
+        from ._internal.stage5_impl import read_fit_thresholds_impl
+
+        return read_fit_thresholds_impl(str(self.filepath))
+
     def info(self) -> Dict[str, Any]:
         """
         Get pipeline file information and status.

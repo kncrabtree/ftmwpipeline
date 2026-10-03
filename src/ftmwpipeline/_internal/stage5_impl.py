@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import math
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import (
@@ -34,6 +35,7 @@ from typing import (
     Mapping,
     Optional,
     Tuple,
+    Union,
     cast,
 )
 
@@ -41,6 +43,7 @@ import h5py
 import numpy as np
 from threadpoolctl import threadpool_limits
 
+from ..contract import FIT_THRESHOLDS_SCHEMA, Absent
 from ..core.data_structures import (
     ComplexFT,
     FittedPeak,
@@ -51,6 +54,7 @@ from ..core.data_structures import (
     widen_for_unresolved_spread,
 )
 from ..core.stage_fit_settings import (
+    _HARD_DEFAULTS,
     ShapeSpec,
     SpurSubSettings,
     StageFitSettings,
@@ -76,6 +80,7 @@ from ..fitting.tau_calibration import (
     TauCalibrationResult,
     band_majority_for_frequency,
 )
+from ..io._hdf5_helpers import load_json_attr
 from ..io.fitting_serialization import (
     load_spectrum_fit_from_hdf5,
     save_spectrum_fit_to_hdf5,
@@ -93,6 +98,7 @@ from .active_ft_support import (
     build_active_grid_with_noise,
     default_tau0_us,
 )
+from .read_impl import _open
 from .shared_utils import active_acquisition_us, require_resolved
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage1_impl import compute_ft_impl
@@ -2569,6 +2575,83 @@ def save_spectrum_fit_impl(file_path: str, fit: SpectrumFit) -> None:
     )
 
 
+#: The Stage 5 threshold fields of ``ftmw/fit_thresholds@1``: field name ->
+#: (diagnostics section, key within it). The one place the persisted
+#: diagnostics are mapped to thresholds, shared by the ``fit_thresholds``
+#: accessor and the old-fit readers below.
+_THRESHOLD_DIAGNOSTIC_KEYS: Dict[str, Tuple[str, str]] = {
+    "peak_survival_snr_floor": ("peak_survival", "snr_floor"),
+    "vif_collapse_threshold": ("vif_collapse", "vif_threshold"),
+}
+
+
+def fit_thresholds_from_diagnostics(
+    diagnostics: Optional[Mapping[str, Any]],
+) -> Dict[str, Union[float, Absent]]:
+    """The thresholds a fit recorded in its diagnostics, by contract name.
+
+    A threshold the diagnostics do not carry (a fit that predates its
+    recording, or one whose cleanup pass was disabled) is
+    :attr:`Absent.NOT_RUN`; no default is substituted. ``None`` or empty
+    diagnostics give every field ``NOT_RUN``.
+    """
+    diag = diagnostics or {}
+    out: Dict[str, Union[float, Absent]] = {}
+    for name, (section, key) in _THRESHOLD_DIAGNOSTIC_KEYS.items():
+        sub = diag.get(section)
+        raw = sub.get(key) if isinstance(sub, Mapping) else None
+        value: Union[float, Absent] = Absent.NOT_RUN
+        if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+            if math.isfinite(float(raw)):
+                value = float(raw)
+        out[name] = value
+    return out
+
+
+def grading_thresholds_from_diagnostics(
+    diagnostics: Optional[Mapping[str, Any]],
+) -> Tuple[float, float]:
+    """``(survival_floor, vif_collapse_threshold)`` for grading displayed lines.
+
+    The detail figures grade each line (``peak_quality_score``) against these
+    two numbers, so they need a value even for an old fit that never recorded
+    one. Recorded values are used as persisted
+    (:func:`fit_thresholds_from_diagnostics`); a missing one falls back to the
+    *current* ``peak_survival`` settings default. That is a display-grading
+    reference only: it is not reported as a threshold the fit applied (the
+    ``fit_thresholds`` accessor says ``NOT_RUN`` there).
+    """
+    recorded = fit_thresholds_from_diagnostics(diagnostics)
+    floor = recorded["peak_survival_snr_floor"]
+    vif = recorded["vif_collapse_threshold"]
+    defaults = _HARD_DEFAULTS["peak_survival"]
+    if isinstance(floor, Absent):
+        floor = DEFAULT_PROMOTION_MIN_SNR * float(defaults["snr_survival_factor"])
+    if isinstance(vif, Absent):
+        vif = float(defaults["vif_collapse_threshold"])
+    return float(floor), float(vif)
+
+
+def read_fit_thresholds_impl(file_path: Union[str, Path]) -> Dict[str, Any]:
+    """The thresholds the persisted Stage 5 fit applied (``ftmw/fit_thresholds@1``).
+
+    Reads only the fit group's ``diagnostics`` attribute (no fit is
+    deserialized, nothing is written). Every field is ``Absent.NOT_RUN`` when
+    the file has no Stage 5 fit, and a threshold the fit never recorded is
+    ``NOT_RUN`` as well.
+    """
+    with _open(file_path) as h5f:
+        diagnostics: Optional[Mapping[str, Any]] = None
+        if "stage5_fitting" in h5f:
+            diagnostics = load_json_attr(
+                h5f["stage5_fitting"], "diagnostics", {}, label="stage5_fitting"
+            )
+    return {
+        "schema": FIT_THRESHOLDS_SCHEMA,
+        **fit_thresholds_from_diagnostics(diagnostics),
+    }
+
+
 def load_fit_impl(file_path: str) -> Dict[str, Any]:
     """Load the persisted Stage 5 fit (validates structure loudly)."""
     with h5py.File(file_path, "r") as h5f:
@@ -3007,6 +3090,7 @@ def render_fit_detail_impl(
 
     bundle = bundle if bundle is not None else _resolve_detail_bundle(file_path)
     wf = bundle.fit.window_fit(window_id)
+    grading = grading_thresholds_from_diagnostics(bundle.fit.diagnostics)
     return plot_consolidated_detail(
         wf,
         frequencies=bundle.frequencies,
@@ -3022,16 +3106,8 @@ def render_fit_detail_impl(
         spec_padded=bundle.spec_padded,
         figsize=figsize if figsize is not None else DEFAULT_FIGSIZE,
         spurs=(bundle.fit.diagnostics or {}).get("gated_spurs"),
-        survival_floor=float(
-            (bundle.fit.diagnostics or {})
-            .get("peak_survival", {})
-            .get("snr_floor", DEFAULT_PROMOTION_MIN_SNR * 1.1)
-        ),
-        vif_collapse_threshold=float(
-            (bundle.fit.diagnostics or {})
-            .get("vif_collapse", {})
-            .get("vif_threshold", 4.0)
-        ),
+        survival_floor=grading[0],
+        vif_collapse_threshold=grading[1],
     )
 
 
@@ -3058,6 +3134,7 @@ def render_rescue_summary_impl(
     bundle = bundle if bundle is not None else _resolve_detail_bundle(file_path)
     wf = bundle.fit.window_fit(window_id)
     diag = bundle.fit.diagnostics or {}
+    grading = grading_thresholds_from_diagnostics(diag)
     panel_data = prepare_window_panels(
         wf,
         frequencies=bundle.frequencies,
@@ -3071,14 +3148,8 @@ def render_rescue_summary_impl(
         freq_padded=bundle.freq_padded,
         spec_padded=bundle.spec_padded,
         spurs=diag.get("gated_spurs"),
-        survival_floor=float(
-            diag.get("peak_survival", {}).get(
-                "snr_floor", DEFAULT_PROMOTION_MIN_SNR * 1.1
-            )
-        ),
-        vif_collapse_threshold=float(
-            diag.get("vif_collapse", {}).get("vif_threshold", 4.0)
-        ),
+        survival_floor=grading[0],
+        vif_collapse_threshold=grading[1],
     )
     kwargs: Dict[str, Any] = {
         "window_id": window_id,

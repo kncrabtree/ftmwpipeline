@@ -2573,6 +2573,17 @@ def capabilities() -> Dict[str, Any]:
     return Pipeline.capabilities()
 
 
+def fit_thresholds(file_path: Union[str, Path]) -> Dict[str, Any]:
+    """The thresholds the persisted Stage 5 fit actually applied.
+
+    ``ftmw/fit_thresholds@1``: ``peak_survival_snr_floor`` and
+    ``vif_collapse_threshold``. Every field is ``Absent.NOT_RUN`` when the file
+    has no Stage 5 fit, and a threshold the fit never recorded is ``NOT_RUN``
+    too -- never a guessed default.
+    """
+    return Pipeline(file_path).fit_thresholds()
+
+
 def settings_show(
     file_path: Union[str, Path],
     selector: Optional[str] = None,

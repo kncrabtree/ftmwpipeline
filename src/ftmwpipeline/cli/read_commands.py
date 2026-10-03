@@ -31,7 +31,7 @@ from .._internal.read_impl import (
     read_tables_impl,
     write_text_impl,
 )
-from ..contract import MANIFEST
+from ..contract import FIT_THRESHOLDS_SCHEMA, MANIFEST
 from ..file_manager import PipelineFileError
 from .contract_commands import exit_code_for, register_accessor, report_contract_error
 from .utils import setup_logging
@@ -244,6 +244,14 @@ Examples:
         Pipeline.capabilities,
         help="Machine-contract version, schemas, accessors and error codes (JSON)",
         takes_file=MANIFEST.file_bound["capabilities"],
+    )
+
+    register_accessor(
+        read_sub,
+        "fit_thresholds",
+        lambda path: Pipeline(path).fit_thresholds(),
+        help="Thresholds the persisted Stage 5 fit applied (JSON)",
+        schema=FIT_THRESHOLDS_SCHEMA,
     )
 
     # 'read' with no subcommand prints its help.
