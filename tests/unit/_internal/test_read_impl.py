@@ -29,6 +29,7 @@ from ftmwpipeline._internal.read_impl import (
     write_text_impl,
 )
 from ftmwpipeline._internal.shared_utils import active_acquisition_us
+from ftmwpipeline.contract import stage_for_key
 from ftmwpipeline.core.data_structures import (
     FittedPeak,
     FittingResult,
@@ -259,7 +260,7 @@ class TestTableRegistry:
             read_table_impl(ftmw_file, "fit_peaks")
         assert isinstance(info.value, ValueError)
         assert info.value.command == "fit run"
-        assert info.value.to_dict()["missing_dependencies"] == ["stage5_fitting"]
+        assert info.value.to_dict()["missing_dependencies"] == ["fit"]
 
     @pytest.mark.parametrize(
         "table,group,command",
@@ -282,7 +283,7 @@ class TestTableRegistry:
         err = info.value
         assert err.command == command
         assert err.code == "stage_not_run"
-        assert err.to_dict()["missing_dependencies"] == [group]
+        assert err.to_dict()["missing_dependencies"] == [stage_for_key(group).value]
         assert not command.startswith("ftmwpipeline")
 
     def test_missing_file_error_is_actionable(self, tmp_path):

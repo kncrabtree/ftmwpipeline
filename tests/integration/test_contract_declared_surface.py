@@ -213,7 +213,8 @@ def test_display_ft_agrees_across_interfaces(stage5, tmp_path, capsys):
     np.testing.assert_array_equal(spec, via_api.complex_spectrum)
     assert env["metadata"] == _jsonable(via_api.metadata)
     assert set(env["metadata"]) == set(MANIFEST.fields["ComplexFT.metadata"])
-    assert set(env) == set(MANIFEST.fields["ComplexFT"])
+    assert set(env) - {"schema"} == set(MANIFEST.fields["ComplexFT"])
+    assert env["schema"] == "ftmw/display_ft@1"
 
 
 def test_display_ft_pad_factor_flag_matches_api(stage5, tmp_path, capsys):

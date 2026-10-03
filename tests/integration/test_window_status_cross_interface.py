@@ -139,7 +139,11 @@ def test_stage5_counts_match_the_fit(baseline_2638_stage5_small):
     rows = ftmw.window_status(path)["windows"]
     fit = ftmw.load_fit(path)
     expected = {wf.window_id: len(wf.fitted_peaks) for wf in fit.window_fits}
-    assert {w.window_id: w.n_fitted_peaks for w in rows} == expected
+    # A complete fit that kept no line in a window has no entry for it: 0 lines.
+    assert {w.window_id: w.n_fitted_peaks for w in rows} == {
+        w.window_id: expected.get(w.window_id, 0) for w in rows
+    }
+    assert set(expected) <= {w.window_id for w in rows}
     assert all(not isinstance(w.live, Absent) for w in rows)
     assert all(w.live is (w.n_fitted_peaks > 0) for w in rows)
 

@@ -27,6 +27,7 @@ from ftmwpipeline.contract import (
     REVIEW_LOG_SCHEMA,
     SNAP_TOLERANCE_SCHEMA,
 )
+from ftmwpipeline.core.data_structures import ComplexFT
 from ftmwpipeline.serialize import ArrayCollector, to_jsonable
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
@@ -190,7 +191,7 @@ def test_envelope_kind_matches_the_python_result(
         assert not isinstance(result, (dict, list, tuple))
         assert set(env) == {"schema", "value"}
     else:
-        assert isinstance(result, dict) or dataclasses.is_dataclass(result)
+        assert isinstance(result, (dict, ComplexFT)) or dataclasses.is_dataclass(result)
         assert "items" not in env and "value" not in env
 
 

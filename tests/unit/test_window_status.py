@@ -444,7 +444,7 @@ def test_read_table_before_stage4_is_typed_and_names_the_command(tmp_path):
         read_table_impl(path, "window_status")
     assert isinstance(info.value, ValueError)
     assert info.value.command == "windows run"
-    assert info.value.to_dict()["missing_dependencies"] == ["stage4_windows"]
+    assert info.value.to_dict()["missing_dependencies"] == ["windows"]
 
 
 def test_stage5_without_stage4_is_still_refused(tmp_path):

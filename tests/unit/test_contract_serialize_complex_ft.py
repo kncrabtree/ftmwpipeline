@@ -26,6 +26,13 @@ def test_arrays_go_to_the_sink_and_are_named():
     out = to_jsonable(_ft(), arrays=sink)
     assert set(sink.arrays) == {"freq_array.npy", "complex_spectrum.npy"}
     assert sink.arrays["complex_spectrum.npy"].dtype == np.complex128
+    assert out["freq_array"] == "freq_array.npy"
+    assert out["complex_spectrum"] == "complex_spectrum.npy"
+    json.dumps(out, allow_nan=False)
+
+
+def test_arrays_inline_without_a_sink():
+    out = to_jsonable(_ft())
     assert out["freq_array"][0] == 1.0 and len(out["freq_array"]) == 4
     assert out["complex_spectrum"][1] == {"real": 1.0, "imag": 1.0}
     json.dumps(out, allow_nan=False)
