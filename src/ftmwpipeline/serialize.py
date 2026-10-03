@@ -325,6 +325,12 @@ def _element(obj: Any, path: JsonPath, arrays: Optional[ArraySink]) -> Any:
     return _convert(obj, path, arrays)
 
 
+def _is_complex_ft(obj: Any) -> bool:
+    from .core.data_structures import ComplexFT
+
+    return isinstance(obj, ComplexFT)
+
+
 def _convert(obj: Any, path: JsonPath, arrays: Optional[ArraySink]) -> Any:
     # Order matters: Absent before generic Enum, Enum before str/int/float (a
     # str- or int-valued Enum is written as its value), bool before int, numpy
@@ -378,6 +384,18 @@ def _convert(obj: Any, path: JsonPath, arrays: Optional[ArraySink]) -> Any:
         return _stamp(result, schema) if isinstance(schema, str) else result
     if isinstance(obj, Mapping):
         return _object(obj.items(), path, arrays)
+    if _is_complex_ft(obj):
+        # ComplexFT is a plain class, not a dataclass: its contract fields are
+        # the two arrays and the metadata mapping.
+        return _object(
+            (
+                ("freq_array", obj.freq_array),
+                ("complex_spectrum", obj.complex_spectrum),
+                ("metadata", obj.metadata),
+            ),
+            path,
+            arrays,
+        )
     if isinstance(obj, PurePath):
         return str(obj)
     if isinstance(obj, (_dt.datetime, _dt.date, _dt.time)):

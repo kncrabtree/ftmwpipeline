@@ -32,7 +32,22 @@ pytestmark = [pytest.mark.unit]
 # the "superset" test. Adding an entry fails the "exact" test until the
 # snapshot below is updated in the same commit -- a deliberate act.
 # --------------------------------------------------------------------------
-SNAPSHOT_ACCESSORS = frozenset({"capabilities"})
+SNAPSHOT_ACCESSORS = frozenset(
+    {
+        "capabilities",
+        "frequency_calibration",
+        "refit_snap_tol_mhz",
+        "read_metadata",
+        "read_tables",
+        "read_table",
+        "settings_defaults",
+        "settings_show",
+        "get_final_products",
+        "review_log",
+        "get_pipeline_info",
+        "compute_display_ft",
+    }
+)
 SNAPSHOT_SCHEMAS = frozenset({"ftmw/error@1", "ftmw/capabilities@1"})
 SNAPSHOT_CODES = frozenset(
     {
@@ -45,9 +60,149 @@ SNAPSHOT_CODES = frozenset(
         "file_exists",
     }
 )
-SNAPSHOT_FILE_BOUND = {"capabilities": False}
-SNAPSHOT_METADATA_KEYS: frozenset = frozenset()
-SNAPSHOT_TABLES: dict = {}
+SNAPSHOT_FILE_BOUND = {
+    "capabilities": False,
+    "frequency_calibration": True,
+    "refit_snap_tol_mhz": True,
+    "read_metadata": True,
+    "read_tables": True,
+    "read_table": True,
+    "settings_defaults": False,
+    "settings_show": True,
+    "get_final_products": True,
+    "review_log": True,
+    "get_pipeline_info": True,
+    "compute_display_ft": True,
+}
+SNAPSHOT_PIPELINE_NAMES = {
+    "get_final_products": "final_products",
+    "get_pipeline_info": "info",
+}
+SNAPSHOT_CLI_VERBS = {
+    "capabilities": ("read", "capabilities"),
+    "frequency_calibration": ("timebase", "state"),
+    "refit_snap_tol_mhz": ("review", "snap-tolerance"),
+    "read_metadata": ("read", "meta"),
+    "read_tables": ("read", "list"),
+    "read_table": ("read", "table"),
+    "settings_defaults": ("settings", "defaults"),
+    "settings_show": ("settings", "show"),
+    "get_final_products": ("report", "table"),
+    "review_log": ("review", "log"),
+    "get_pipeline_info": ("info",),
+    "compute_display_ft": ("read", "compute_display_ft"),
+}
+SNAPSHOT_METADATA_KEYS: frozenset = frozenset(
+    {
+        "file.format_version",
+        "file.completed_stages",
+        "fid.n_points",
+        "fid.duration_us",
+        "fid.probe_freq_mhz",
+        "fid.sideband",
+        "fid.shots",
+        "stage3.n_peaks",
+        "stage4.n_windows",
+        "stage5.n_fitted_peaks",
+        "stage5.acquisition_us",
+        "stage5.shape",
+        "timebase.epsilon",
+        "timebase.sigma_epsilon",
+        "timebase.kappa_sys",
+        "timebase.lattice_g_mhz",
+        "timebase.n_detected",
+        "timebase.n_used",
+        "timebase.preconditions_passed",
+    }
+    | {
+        f"{sec}.{k}"
+        for sec in ("ft", "stage1")
+        for k in (
+            "start_us",
+            "end_us",
+            "trim_min_mhz",
+            "trim_max_mhz",
+            "units_power",
+            "acquisition_us",
+        )
+    }
+    | {
+        f"{sec}.{k}"
+        for sec in ("tau", "tau_g")
+        for k in (
+            "tau_maj_us",
+            "sigma_tau_us",
+            "n_contributors",
+            "n_spur_bins",
+            "n_seg",
+            "preconditions_passed",
+        )
+    }
+)
+SNAPSHOT_TABLES: dict = {
+    "fit_peaks": {
+        "window_id",
+        "frequency_mhz",
+        "decay_rate",
+        "shape",
+        "peak_uid",
+        "origin",
+        "derivation",
+        "clock_lattice",
+        "knockout_p_value",
+        "knockout_supported",
+        "knockout_aicc_delta",
+    },
+    "windows": {"window_id", "freq_min", "freq_max"},
+}
+SNAPSHOT_FIELDS: dict = {
+    "CalibrationStamp": {
+        "state",
+        "epsilon",
+        "sigma_epsilon",
+        "sigma_floor_khz",
+        "probe_freq_mhz",
+        "sideband",
+    },
+    "FinalPeak": {
+        "peak_uid",
+        "window_id",
+        "origin",
+        "derivation",
+        "clock_lattice",
+        "knockout_p_value",
+        "knockout_supported",
+        "knockout_aicc_delta",
+        "frequency_mhz",
+        "sigma_f_khz",
+    },
+    "DecisionLogEntry": {
+        "order_index",
+        "window_id",
+        "frequency_mhz",
+        "kind",
+        "provenance",
+        "evidence",
+    },
+    "RefitWindowResult": {"converged"},
+    "PreviewWindowResult": {"converged"},
+    "AppliedWindowResult": {"converged"},
+    "PipelineInfo": {
+        "stage_environments",
+        "last_written_with",
+        "environment_drift",
+        "runtime_environment_drift",
+        "current_environment",
+        "environment_acknowledged",
+        "warnings",
+    },
+    "ComplexFT": {"freq_array", "complex_spectrum", "metadata"},
+    "ComplexFT.metadata": {"amplitude_scale", "units_label", "pad_factor"},
+}
+SNAPSHOT_VOCABULARIES = {
+    "decision_kind": {"add", "remove", "merge", "split", "accept", "create_window"},
+    "decision_provenance": {"user"},
+}
 
 
 def _all_subclasses(cls):
@@ -75,7 +230,13 @@ def _read_verbs() -> set:
 
 
 def _verb_parser(name: str) -> argparse.ArgumentParser:
-    return _subparser_choices(_subparser_choices(create_parser())["read"])[name]
+    """The parser of an accessor's CLI verb, at the path the manifest declares."""
+    parser = create_parser()
+    for part in MANIFEST.cli_verbs[name]:
+        choices = _subparser_choices(parser)
+        assert part in choices, (name, MANIFEST.cli_verbs[name])
+        parser = choices[part]
+    return parser
 
 
 # ---- every accessor exists on all three interfaces -----------------------
@@ -88,12 +249,26 @@ def test_accessor_on_api(name):
 
 @pytest.mark.parametrize("name", MANIFEST.accessors)
 def test_accessor_on_pipeline(name):
-    assert callable(getattr(ftmwpipeline.Pipeline, name))
+    assert callable(getattr(ftmwpipeline.Pipeline, MANIFEST.pipeline_names[name]))
 
 
 @pytest.mark.parametrize("name", MANIFEST.accessors)
-def test_accessor_is_cli_read_verb(name):
-    assert name in _read_verbs()
+def test_accessor_has_a_cli_verb(name):
+    # Resolves the declared verb path (``read <name>`` unless the accessor
+    # names an existing verb elsewhere); fails when the path does not exist.
+    assert isinstance(_verb_parser(name), argparse.ArgumentParser)
+
+
+def test_no_accessor_has_a_second_read_verb():
+    """An accessor served elsewhere is not also registered as ``read <name>``."""
+    for name, path in MANIFEST.cli_verbs.items():
+        if path != ("read", name):
+            assert name not in _read_verbs(), name
+
+
+def test_cli_verb_paths_are_unique():
+    paths = list(MANIFEST.cli_verbs.values())
+    assert len(set(paths)) == len(paths)
 
 
 # ---- binding kind: file-bound vs file-less -------------------------------
@@ -131,7 +306,8 @@ def test_accessor_spec_is_name_and_binding():
 
 @pytest.mark.parametrize("name", MANIFEST.accessors)
 def test_accessor_binding_matches_declared_kind(name):
-    static = inspect.getattr_static(ftmwpipeline.Pipeline, name)
+    pipeline_name = MANIFEST.pipeline_names[name]
+    static = inspect.getattr_static(ftmwpipeline.Pipeline, pipeline_name)
     verb_dests = {a.dest for a in _verb_parser(name)._actions}
     if MANIFEST.file_bound[name]:
         # An instance method of an opened Pipeline that takes no path ...
@@ -145,7 +321,10 @@ def test_accessor_binding_matches_declared_kind(name):
     else:
         # A staticmethod; no path anywhere.
         assert isinstance(static, staticmethod)
-        assert not set(_params(getattr(ftmwpipeline.Pipeline, name))) & _PATH_NAMES
+        assert (
+            not set(_params(getattr(ftmwpipeline.Pipeline, pipeline_name)))
+            & _PATH_NAMES
+        )
         assert not set(_params(getattr(api, name))) & _PATH_NAMES
         assert "file_path" not in verb_dests
 
@@ -270,6 +449,14 @@ def test_nothing_declared_disappears():
     for table, cols in SNAPSHOT_TABLES.items():
         assert table in MANIFEST.tables
         assert set(cols) <= set(MANIFEST.tables[table])
+    for name, pname in SNAPSHOT_PIPELINE_NAMES.items():
+        assert MANIFEST.pipeline_names[name] == pname
+    for name, path in SNAPSHOT_CLI_VERBS.items():
+        assert MANIFEST.cli_verbs[name] == path
+    for type_name, names in SNAPSHOT_FIELDS.items():
+        assert set(names) <= set(MANIFEST.fields[type_name])
+    for vocab, values in SNAPSHOT_VOCABULARIES.items():
+        assert values <= set(MANIFEST.vocabularies[vocab])
 
 
 def test_additions_update_the_snapshot():
@@ -279,6 +466,158 @@ def test_additions_update_the_snapshot():
     assert set(MANIFEST.codes) == SNAPSHOT_CODES
     assert dict(MANIFEST.file_bound) == SNAPSHOT_FILE_BOUND
     assert set(MANIFEST.metadata_keys) == SNAPSHOT_METADATA_KEYS
-    assert {k: set(v) for k, v in MANIFEST.tables.items()} == {
-        k: set(v) for k, v in SNAPSHOT_TABLES.items()
+    assert set(MANIFEST.fields) == set(SNAPSHOT_FIELDS)
+    assert {k: set(v) for k, v in MANIFEST.vocabularies.items()} == (
+        SNAPSHOT_VOCABULARIES
+    )
+    assert {n: p for n, p in MANIFEST.pipeline_names.items() if n != p} == (
+        SNAPSHOT_PIPELINE_NAMES
+    )
+    assert dict(MANIFEST.cli_verbs) == SNAPSHOT_CLI_VERBS
+    assert set(MANIFEST.tables) == set(SNAPSHOT_TABLES)
+    for table, cols in SNAPSHOT_TABLES.items():
+        # The snapshot pins the promised core; more columns may be declared
+        # only if the code produces them (see the declared-columns tests).
+        assert cols <= set(MANIFEST.tables[table])
+
+
+# ---- declared metadata keys, tables, fields, vocabularies ----------------
+
+
+def test_metadata_key_snapshot_is_exact():
+    assert set(MANIFEST.metadata_keys) == SNAPSHOT_METADATA_KEYS
+
+
+def test_declared_tables_and_columns_are_in_the_read_registry():
+    from ftmwpipeline._internal.read_impl import _TABLE_SPECS
+
+    for table, columns in MANIFEST.tables.items():
+        assert table in _TABLE_SPECS, table
+        assert set(columns) <= set(_TABLE_SPECS[table].specs), table
+
+
+def test_declared_blackquill_columns_are_all_declared():
+    """Every column read_impl emits for fit_peaks / windows is declared."""
+    from ftmwpipeline._internal.read_impl import _TABLE_SPECS
+
+    for table in ("fit_peaks", "windows"):
+        assert set(MANIFEST.tables[table]) == set(_TABLE_SPECS[table].specs)
+
+
+def test_declared_conditional_metadata_scalars_are_written_by_their_stage():
+    """tau. / tau_g. / timebase. keys cannot be seen on the stage-5 fixture, so
+    they are checked against the attribute lists that write them."""
+    from ftmwpipeline._internal.read_impl import _TIMEBASE_ATTRS
+    from ftmwpipeline.io.tau_calibration_serialization import _TAU_SCALAR_ATTRS
+
+    for key in MANIFEST.metadata_keys:
+        section, _, name = key.partition(".")
+        if section in ("tau", "tau_g"):
+            assert name in _TAU_SCALAR_ATTRS, key
+        elif section == "timebase":
+            assert name in _TIMEBASE_ATTRS, key
+
+
+def _type_registry() -> dict:
+    from ftmwpipeline._internal.stage6_impl import (
+        AppliedWindowResult,
+        PreviewWindowResult,
+        RefitWindowResult,
+    )
+    from ftmwpipeline.core.calibration import CalibrationStamp
+    from ftmwpipeline.core.data_structures import DecisionLogEntry, FinalPeak
+
+    return {
+        "CalibrationStamp": CalibrationStamp,
+        "FinalPeak": FinalPeak,
+        "DecisionLogEntry": DecisionLogEntry,
+        "RefitWindowResult": RefitWindowResult,
+        "PreviewWindowResult": PreviewWindowResult,
+        "AppliedWindowResult": AppliedWindowResult,
     }
+
+
+#: Declared types whose result is not a dataclass; their fields are produced
+#: keys / attributes, checked against a real file in
+#: ``tests/integration/test_contract_declared_elements.py``.
+_PRODUCED_TYPES = {"PipelineInfo", "ComplexFT", "ComplexFT.metadata"}
+
+
+def test_every_declared_type_is_resolvable():
+    known = set(_type_registry()) | _PRODUCED_TYPES
+    assert set(MANIFEST.fields) <= known, set(MANIFEST.fields) - known
+
+
+def test_every_declared_field_exists_on_its_dataclass():
+    registry = _type_registry()
+    for type_name, names in MANIFEST.fields.items():
+        if type_name in _PRODUCED_TYPES:
+            continue
+        cls = registry[type_name]
+        assert dataclasses.is_dataclass(cls), type_name
+        have = {f.name for f in dataclasses.fields(cls)}
+        assert set(names) <= have, (type_name, set(names) - have)
+
+
+def test_complex_ft_declared_attributes_exist():
+    import numpy as np
+
+    from ftmwpipeline.core.data_structures import ComplexFT
+
+    ft = ComplexFT(np.zeros(2), np.zeros(2, dtype=complex), {})
+    for name in MANIFEST.fields["ComplexFT"]:
+        assert hasattr(ft, name), name
+
+
+def test_decision_vocabularies_match_the_code():
+    from ftmwpipeline._internal.stage6_impl import _FIT_EDIT_KINDS
+    from ftmwpipeline.core.data_structures import (
+        DECISION_KINDS,
+        DECISION_PROVENANCES,
+    )
+
+    assert set(MANIFEST.vocabularies["decision_kind"]) == set(DECISION_KINDS)
+    assert set(MANIFEST.vocabularies["decision_provenance"]) == set(
+        DECISION_PROVENANCES
+    )
+    assert set(_FIT_EDIT_KINDS) <= set(DECISION_KINDS)
+
+
+def test_decision_kinds_recorded_by_the_code_are_declared():
+    """Every literal ``kind=`` a decision is recorded with is in the vocabulary."""
+    import re
+
+    from ftmwpipeline._internal import stage6_impl
+
+    source = inspect.getsource(stage6_impl)
+    declared = set(MANIFEST.vocabularies["decision_kind"])
+    recorded = set(re.findall(r'"kind": "([a-z_]+)"', source))
+    # "kind" keys also tag attention evidence; keep only decision-shaped ones.
+    decision_like = recorded & {
+        "add",
+        "remove",
+        "merge",
+        "split",
+        "accept",
+        "create_window",
+    }
+    assert decision_like <= declared
+    assert {"add", "remove", "merge", "split", "accept", "create_window"} <= recorded
+
+
+def test_manifest_rejects_cli_or_pipeline_names_for_non_accessors():
+    with pytest.raises(ValueError):
+        ContractManifest(0, ("a",), (), (), (), {}, {"a": True}, {"b": "x"})
+    with pytest.raises(ValueError):
+        ContractManifest(0, ("a",), (), (), (), {}, {"a": True}, {}, {"b": ("x",)})
+    ok = ContractManifest(0, ("a",), (), (), (), {}, {"a": True})
+    assert ok.pipeline_names["a"] == "a" and ok.cli_verbs["a"] == ("read", "a")
+
+
+def test_manifest_fields_and_vocabularies_read_only_and_unique():
+    with pytest.raises(TypeError):
+        MANIFEST.fields["x"] = ()  # type: ignore[index]
+    with pytest.raises(TypeError):
+        MANIFEST.vocabularies["x"] = ()  # type: ignore[index]
+    with pytest.raises(ValueError):
+        ContractManifest(0, (), (), (), (), {}, {}, {}, {}, {"T": ("a", "a")})

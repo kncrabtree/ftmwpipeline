@@ -2186,6 +2186,21 @@ class FrequencyCalibration:
     sigma_floor_khz: float = 0.0
 
 
+#: The closed vocabulary of ``DecisionLogEntry.kind`` the Stage 6 curation code
+#: records. Frozen by the machine contract (``contract.MANIFEST.vocabularies``).
+DECISION_KINDS: Tuple[str, ...] = (
+    "add",
+    "remove",
+    "merge",
+    "split",
+    "accept",
+    "create_window",
+)
+
+#: The closed vocabulary of ``DecisionLogEntry.provenance``.
+DECISION_PROVENANCES: Tuple[str, ...] = ("user",)
+
+
 @dataclass
 class DecisionLogEntry:
     """One anchored user decision in the Stage 6 decision log.
@@ -2199,10 +2214,11 @@ class DecisionLogEntry:
     frequency_mhz : float
         Molecular frequency anchor for the decision (MHz).
     kind : str
-        Decision type: ``"add"``, ``"remove"``, ``"merge"``, ``"split"``,
-        or ``"accept"``.
+        Decision type, one of :data:`DECISION_KINDS`: ``"add"``, ``"remove"``,
+        ``"merge"``, ``"split"``, ``"accept"``, or ``"create_window"``.
     provenance : str
-        Always ``"user"`` for decisions recorded here.
+        One of :data:`DECISION_PROVENANCES`; always ``"user"`` for decisions
+        recorded here.
     evidence : dict
         Optional evidence snapshot (χ²ᵣ before/after, peak deltas, etc.).
     """

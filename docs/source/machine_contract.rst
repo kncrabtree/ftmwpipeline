@@ -64,6 +64,25 @@ reads a file takes the path as its first argument on the API and as the
 ``Pipeline``; one that needs no file (like ``capabilities``) takes no path
 anywhere.
 
+Declared existing surface
+-------------------------
+
+Accessors that predate the contract are declared in
+``ftmwpipeline.contract.MANIFEST`` without changing their behaviour:
+``frequency_calibration``, ``refit_snap_tol_mhz``, ``read_metadata``,
+``read_tables``, ``read_table``, ``settings_defaults``, ``settings_show``,
+``get_final_products``, ``review_log``, ``get_pipeline_info`` and
+``compute_display_ft``. ``MANIFEST.cli_verbs`` names the CLI verb that serves
+each (an existing verb such as ``review log`` or ``info``, else
+``read <name>``), ``MANIFEST.pipeline_names`` the ``Pipeline`` method
+(``get_final_products`` is ``Pipeline.final_products``, ``get_pipeline_info``
+is ``Pipeline.info``), ``MANIFEST.metadata_keys`` and ``MANIFEST.tables`` the
+declared ``read_metadata`` keys and ``read_table`` columns, ``MANIFEST.fields``
+the declared fields of the result types (``FinalPeak``, ``DecisionLogEntry``,
+``PipelineInfo``, ``ComplexFT`` and its ``metadata``, the ``converged`` flag of
+the curation results), and ``MANIFEST.vocabularies`` the frozen
+``DecisionLogEntry`` ``kind`` and ``provenance`` values.
+
 Missing values: ``Absent``
 --------------------------
 

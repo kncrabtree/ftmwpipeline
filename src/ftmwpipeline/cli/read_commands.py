@@ -246,6 +246,28 @@ Examples:
         takes_file=MANIFEST.file_bound["capabilities"],
     )
 
+    # Declared accessors with no existing verb elsewhere (the others are
+    # served by the verb path MANIFEST.cli_verbs names).
+    def _display_ft_args(parser: argparse.ArgumentParser) -> None:
+        parser.add_argument(
+            "--pad-factor",
+            type=int,
+            default=None,
+            help="Zero-fill factor (default: the display default)",
+        )
+
+    register_accessor(
+        read_sub,
+        "compute_display_ft",
+        lambda path, **kw: Pipeline.open(path).compute_display_ft(**kw),
+        help="Zero-padded display FT over the analysis band (arrays via --output)",
+        takes_file=MANIFEST.file_bound["compute_display_ft"],
+        add_args=_display_ft_args,
+        call_kwargs=lambda a: (
+            {} if a.pad_factor is None else {"pad_factor": a.pad_factor}
+        ),
+    )
+
     # 'read' with no subcommand prints its help.
     def _read_help(args: argparse.Namespace) -> int:
         read.print_help()
