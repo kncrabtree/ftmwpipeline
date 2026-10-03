@@ -152,9 +152,12 @@ class FidPreviewRow:
     """One row of a source's FID table (:func:`~ftmwpipeline.api.preview_source`).
 
     Every field except ``index`` is a value or an :class:`Absent`:
-    ``NOT_RUN`` when the source does not declare it, ``UNDEFINED`` when it
-    cannot be stated without load parameters (or is not finite). ``sideband``
-    is ``"upper"`` or ``"lower"``.
+    ``NOT_RUN`` when the source does not declare it (an import default is never
+    reported in its place), ``UNDEFINED`` when it cannot be stated without load
+    parameters (or is not finite). ``sideband`` is ``"upper"`` or ``"lower"``.
+    ``channel`` is the source's channel identifier, spelled exactly as import's
+    ``--channel`` / ``channel=`` takes it (a Keysight record's ``"Channel_3"``),
+    and ``NOT_RUN`` for a source without channels.
     """
 
     index: int
@@ -163,6 +166,7 @@ class FidPreviewRow:
     probe_freq_mhz: Union[float, Absent] = Absent.NOT_RUN
     sideband: Union[str, Absent] = Absent.NOT_RUN
     shots: Union[int, Absent] = Absent.NOT_RUN
+    channel: Union[str, Absent] = Absent.NOT_RUN
 
 
 class Stage(str, enum.Enum):

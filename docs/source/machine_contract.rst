@@ -346,14 +346,19 @@ The payload is ``ftmw/source_preview@1``: ``source``, ``format``, ``n_fids``,
 ``fids`` and ``chirp_window``. ``fids`` is a list of
 ``ftmwpipeline.FidPreviewRow`` records, one per FID (``index``, ``n_points``,
 ``spacing_us``, ``probe_freq_mhz``, ``sideband`` -- ``"upper"`` or
-``"lower"``, whatever the source encodes it as -- and ``shots``). Every field
+``"lower"``, whatever the source encodes it as -- ``shots`` and ``channel``,
+the source's channel identifier spelled exactly as import's ``--channel`` takes
+it, *not run* for a source without channels). Every field
 but ``index`` may be ``Absent`` (on the wire, ``null`` plus its ``_absent``
 sibling): a value the source does not declare is *not run*; one that depends
 on load-time parameters (a Keysight record's point and shot counts) is
 *undefined*. ``chirp_window`` is the
 window the source declares (``chirp_start_us``, ``chirp_end_us``,
-``start_margin_us``, each possibly absent) or, when it declares none, ``null``
-with ``chirp_window_absent: "not_run"``. A path that does not exist raises
+``start_margin_us``, each a finite number or absent) or, when it declares none,
+``null`` with ``chirp_window_absent: "not_run"``. A window the source declares
+but the code cannot read (a non-numeric or non-finite value, a block that is not
+a mapping, an unparsable Blackchirp ``chirps.csv``) is *undefined*, never *not
+run*; the parse error is logged at debug level. A path that does not exist raises
 ``not_found`` with kind ``"file"``; an unknown ``format_name``, or a source no
 format recognises, raises ``not_found`` with kind ``"format"``.
 
@@ -367,12 +372,15 @@ What each source reports:
   that is neither encoding, is *undefined*. The chirp window comes from
   ``chirps.csv`` and ``header.csv``.
 * **CSV and native HDF5** -- one row. Fields come from the sidecar (and, for
-  HDF5, the embedded attributes). ``spacing_us`` is *not run* when nothing
-  declares it; probe frequency, sideband and shots report the import's own
-  defaults (``0``, ``"upper"``, ``1``) when the source is silent.
-* **Keysight MATLAB** -- one row: spacing is the scope's sampling interval,
-  probe frequency ``0`` and sideband ``"upper"``; ``n_points`` and ``shots``
-  are *undefined* because they depend on load-time layout parameters.
+  HDF5, the embedded attributes). A field neither the source nor its sidecar
+  declares (``spacing_us``, probe frequency, sideband, shots) is *not run*;
+  import's own defaults (``0``, ``"upper"``, ``1``) are never reported as if
+  the source had declared them.
+* **Keysight MATLAB** -- one row per ``Channel_*`` group (sorted), whose
+  ``channel`` is the group name to pass as ``--channel``; spacing is that
+  channel's sampling interval. ``n_points`` and ``shots`` are *undefined*
+  because they depend on load-time layout parameters; probe frequency and
+  sideband are *not run* (the record does not declare them).
 
 ``--source-format NAME`` selects the loader instead of auto-detection (the
 CLI's ``--format`` is the output format). A source that exists but does not fit

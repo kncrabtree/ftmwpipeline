@@ -7,10 +7,13 @@ experimental formats with proper metadata preservation.
 """
 
 import math
+import numbers
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Union
+
+import numpy as np
 
 from ...contract import Absent, FidPreviewRow
 
@@ -34,7 +37,37 @@ class SourcePreview:
 
     format: str
     fids: List[FidPreviewRow]
-    chirp_window: Optional[Dict[str, Any]] = None
+    chirp_window: Union[None, Dict[str, Any], Absent] = None
+
+
+def chirp_float(value: Any) -> Union[float, Absent]:
+    """A declared chirp time: a finite real number, else ``UNDEFINED``.
+
+    Booleans and strings are not numbers here; ``None`` is ``NOT_RUN``.
+    """
+    if value is None:
+        return Absent.NOT_RUN
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, numbers.Real):
+        return Absent.UNDEFINED
+    out = float(value)
+    return out if math.isfinite(out) else Absent.UNDEFINED
+
+
+def validated_chirp_window(block: Any) -> Union[Dict[str, Any], Absent]:
+    """Validate a declared ``chirp_window`` block read from a source.
+
+    A block that is not a mapping is ``UNDEFINED`` (declared, unreadable); in a
+    mapping each of the three chirp times is a finite float or ``UNDEFINED``.
+    A declared window without ``chirp_end_us`` is ``UNDEFINED`` as a whole.
+    """
+    if not isinstance(block, dict) or block.get("chirp_end_us") is None:
+        return Absent.UNDEFINED
+    out: Dict[str, Any] = {}
+    for key in ("chirp_start_us", "chirp_end_us", "start_margin_us"):
+        value = chirp_float(block.get(key))
+        if value is not Absent.NOT_RUN:
+            out[key] = value
+    return out
 
 
 def finite_or_absent(value: Any) -> Union[float, Absent]:
@@ -180,11 +213,13 @@ class BaseLoader(ABC):
 
     def preview_chirp_window(
         self, source_path: Union[str, Path]
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Union[None, Dict[str, Any], Absent]:
         """The chirp window the source declares, or ``None`` when it has none.
 
         A dict with ``chirp_end_us`` and, when declared, ``chirp_start_us`` and
-        ``start_margin_us`` (µs). Reads only; never imports.
+        ``start_margin_us`` (µs; each a finite float or ``Absent.UNDEFINED``).
+        ``Absent.UNDEFINED`` means the source declares a window that cannot be
+        read. Reads only; never imports.
         """
         return None
 

@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 import numpy as np
 
 from ...contract import Absent
-from .base import BaseLoader, FidPreviewRow, LoaderError
+from .base import BaseLoader, FidPreviewRow, LoaderError, finite_or_absent
 
 if TYPE_CHECKING:
     from ...core.data_structures import FID
@@ -171,29 +171,44 @@ class KeysightMatLoader(BaseLoader):
         return result
 
     def preview_fids(self, source_path: Union[str, Path]) -> List[FidPreviewRow]:
-        """The one science FID of the first channel.
+        """One row per ``Channel_*`` group, in sorted channel order.
 
-        Direct sampling: probe ``0`` MHz, ``upper`` sideband, spacing ``XInc``
-        (the interleave cleanup does not change it). The point count and shot
-        count depend on the load-time acquisition layout (``pre_record_us``,
+        ``channel`` is the group name -- exactly the ``--channel`` / ``channel=``
+        value import needs to select that row (import refuses a multi-channel
+        file without it). ``spacing_us`` is that channel's ``XInc`` (the
+        interleave cleanup does not change it). ``n_points`` and ``shots``
+        depend on the load-time acquisition layout (``pre_record_us``,
         ``frame_period_us``, ``n_frames``, ``frame``), so they are
-        ``Absent.UNDEFINED``.
+        ``Absent.UNDEFINED``. The record does not declare a probe frequency or
+        sideband (import fixes them for a direct sampler), so both are
+        ``Absent.NOT_RUN``.
         """
         source_path = Path(source_path)
         validation = self.validate_source(source_path)
         if not validation["valid"]:
             raise LoaderError(f"Invalid keysight-mat source: {validation['errors']}")
-        meta = validation["metadata"]
-        return [
-            FidPreviewRow(
-                index=0,
-                n_points=Absent.UNDEFINED,
-                spacing_us=float(meta["duration_us"]) / int(meta["n_samples"]),
-                probe_freq_mhz=0.0,
-                sideband="upper",
-                shots=Absent.UNDEFINED,
-            )
-        ]
+        import h5py
+
+        rows: List[FidPreviewRow] = []
+        with h5py.File(source_path, "r") as h5f:
+            for position, name in enumerate(self._list_channel_groups(h5f)):
+                spacing: Union[float, Absent]
+                try:
+                    spacing = finite_or_absent(
+                        float(h5f[name]["XInc"][...].ravel()[0]) * 1e6
+                    )
+                except Exception:
+                    spacing = Absent.UNDEFINED
+                rows.append(
+                    FidPreviewRow(
+                        index=position,
+                        n_points=Absent.UNDEFINED,
+                        spacing_us=spacing,
+                        shots=Absent.UNDEFINED,
+                        channel=name,
+                    )
+                )
+        return rows
 
     def load_fid(self, source_path: Union[str, Path], **kwargs: Any) -> "FID":
         """Load the science FID from a segmented scope record.

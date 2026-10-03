@@ -234,20 +234,22 @@ def sidecar_layer(source_path: Union[str, Path]) -> Dict[str, Any]:
     return load_sidecar(found) if found is not None else {}
 
 
-def acquisition_row(n_points: int, *layers: Dict[str, Any], index: int = 0) -> FidPreviewRow:
+def acquisition_row(
+    n_points: int, *layers: Dict[str, Any], index: int = 0
+) -> FidPreviewRow:
     """Describe a generic-loader FID from metadata layers, without importing.
 
-    The first layer that sets a field wins, as in :func:`resolve_input_metadata`;
-    the import's own defaults (probe ``0`` MHz, ``upper`` sideband, ``1`` shot)
-    apply, and ``spacing_us`` -- which has none -- is ``Absent.NOT_RUN`` when no
-    layer supplies it.
+    The first layer that sets a field wins, as in :func:`resolve_input_metadata`.
+    A field no layer declares is ``Absent.NOT_RUN``: the import's own defaults
+    (probe ``0`` MHz, ``upper`` sideband, ``1`` shot) are not the source's
+    declaration and are never reported in its place.
     """
 
     def pick(key: str) -> Any:
         for layer in layers:
             if layer.get(key) is not None:
                 return layer[key]
-        return _DEFAULTS.get(key)
+        return None
 
     return FidPreviewRow(
         index=index,

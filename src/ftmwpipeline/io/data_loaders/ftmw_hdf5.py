@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 import h5py
 import numpy as np
 
+from ...contract import Absent
 from ..input_metadata import (
     acquisition_row,
     build_fid_metadata,
@@ -44,7 +45,7 @@ from ..input_metadata import (
     resolve_input_metadata,
     sidecar_layer,
 )
-from .base import BaseLoader, FidPreviewRow, LoaderError
+from .base import BaseLoader, FidPreviewRow, LoaderError, validated_chirp_window
 
 if TYPE_CHECKING:
     from ...core.data_structures import FID
@@ -141,30 +142,58 @@ class FtmwHdf5Loader(BaseLoader):
     def preview_fids(self, source_path: Union[str, Path]) -> List[FidPreviewRow]:
         """The one FID: embedded attributes, overridden by an adjacent sidecar."""
         source_path = Path(source_path)
-        validation = self.validate_source(source_path)
-        if not validation["valid"]:
-            raise LoaderError(f"Invalid ftmw-hdf5 source: {validation['errors']}")
-        with h5py.File(source_path, "r") as h5f:
-            embedded = self._read_embedded(h5f)
-        return [
-            acquisition_row(
-                int(validation["metadata"]["n_points"]),
-                sidecar_layer(source_path),
-                embedded,
+        if not self.can_load(source_path):
+            raise LoaderError(
+                "Invalid ftmw-hdf5 source: not a native ftmwpipeline HDF5 file "
+                f"(missing root '{VERSION_ATTR}' attribute)"
             )
-        ]
+        try:
+            with h5py.File(source_path, "r") as h5f:
+                version = int(h5f.attrs[VERSION_ATTR])
+                if version > SUPPORTED_VERSION:
+                    raise LoaderError(
+                        f"Unsupported {VERSION_ATTR}={version} "
+                        f"(this build understands up to {SUPPORTED_VERSION})"
+                    )
+                if "fid" not in h5f:
+                    raise LoaderError("Missing required '/fid' dataset")
+                n_points = int(h5f["fid"].shape[-1])
+                # Only the acquisition attributes: a malformed chirp attribute
+                # must surface as an UNDEFINED window, not refuse the preview.
+                embedded = {
+                    key: _decode(h5f.attrs[key])
+                    for key in ("spacing_us", "probe_freq_mhz", "sideband", "shots")
+                    if key in h5f.attrs
+                }
+        except LoaderError as exc:
+            raise LoaderError(f"Invalid ftmw-hdf5 source: {exc}") from exc
+        except Exception as exc:
+            raise LoaderError(f"Invalid ftmw-hdf5 source: {exc}") from exc
+        return [acquisition_row(n_points, sidecar_layer(source_path), embedded)]
 
     def preview_chirp_window(
         self, source_path: Union[str, Path]
-    ) -> Optional[Dict[str, Any]]:
-        """The sidecar's ``chirp_window`` block, else the embedded attributes."""
+    ) -> Union[None, Dict[str, Any], Absent]:
+        """The sidecar's ``chirp_window`` block, else the embedded attributes.
+
+        Values are validated as finite floats; an invalid one is ``UNDEFINED``.
+        The raw attributes are read here (not via :meth:`_read_embedded`, which
+        coerces with ``float`` and would raise on a malformed value).
+        """
         source_path = Path(source_path)
         window = sidecar_layer(source_path).get("chirp_window")
         if window is not None:
-            return dict(window)
+            return validated_chirp_window(window)
         with h5py.File(source_path, "r") as h5f:
-            embedded = self._read_embedded(h5f).get("chirp_window")
-        return dict(embedded) if embedded is not None else None
+            attrs = h5f.attrs
+            if attrs.get("chirp_end_us") is None:
+                return None
+            raw = {
+                key: _decode(attrs[key])
+                for key in ("chirp_start_us", "chirp_end_us", "start_margin_us")
+                if attrs.get(key) is not None
+            }
+        return validated_chirp_window(raw)
 
     def load_fid(self, source_path: Union[str, Path], **kwargs: Any) -> "FID":
         from ...core.data_structures import FID, FIDProcessingParameters

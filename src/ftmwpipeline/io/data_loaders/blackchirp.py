@@ -6,6 +6,7 @@ handling FID data extraction from Blackchirp directory structures with
 proper metadata preservation.
 """
 
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Type, Union
 
@@ -19,7 +20,10 @@ from .base import (
     LoaderError,
     count_or_absent,
     finite_or_absent,
+    validated_chirp_window,
 )
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ...core.data_structures import FID, FIDProcessingParameters, Sideband
@@ -254,9 +258,27 @@ class BlackChirpLoader(BaseLoader):
 
     def preview_chirp_window(
         self, source_path: Union[str, Path]
-    ) -> Optional[Dict[str, Any]]:
-        """The declared chirp window (``chirps.csv`` + ``header.csv``), or ``None``."""
-        return self._extract_chirp_window(Path(source_path))
+    ) -> Union[None, Dict[str, Any], Absent]:
+        """The declared chirp window (``chirps.csv`` + ``header.csv``).
+
+        ``None`` when the experiment has no ``chirps.csv`` (declares none);
+        ``Absent.UNDEFINED`` when it has one but the window cannot be parsed
+        (the error is logged at debug level) or is not finite.
+        """
+        source_path = Path(source_path)
+        if not (source_path / "chirps.csv").exists():
+            return None
+        try:
+            parsed = self._parse_chirp_window(source_path)
+        except Exception as exc:
+            logger.debug(
+                "Blackchirp chirp window of %s is declared but unreadable: %s",
+                source_path,
+                exc,
+                exc_info=True,
+            )
+            return Absent.UNDEFINED
+        return validated_chirp_window(parsed)
 
     def load_fid(
         self, source_path: Union[str, Path], fid_index: int = 0, **kwargs: Any
@@ -546,31 +568,34 @@ class BlackChirpLoader(BaseLoader):
           chirp_start_us=0.60 µs, chirp_end_us=1.60 µs.
         """
         try:
-            exp = __import__("blackchirp").BCExperiment(str(source_path))
-        except Exception:
+            return BlackChirpLoader._parse_chirp_window(source_path)
+        except Exception as exc:
+            logger.debug(
+                "Blackchirp chirp window of %s is unreadable: %s",
+                source_path,
+                exc,
+                exc_info=True,
+            )
             return None
 
-        try:
-            # Pre-chirp delay: hardware gate + protection before AWG fires.
-            pre_gate = float(exp.header_value("ChirpConfig", "PreGate"))
-            pre_prot = float(exp.header_value("ChirpConfig", "PreProtection"))
-            chirp_start_us = pre_gate + pre_prot
-        except Exception:
-            return None  # cannot determine start; skip rather than guess
+    @staticmethod
+    def _parse_chirp_window(source_path: Path) -> Dict[str, Any]:
+        """Parse the chirp window; raises when it cannot be determined."""
+        exp = __import__("blackchirp").BCExperiment(str(source_path))
+        # Pre-chirp delay: hardware gate + protection before AWG fires.
+        pre_gate = float(exp.header_value("ChirpConfig", "PreGate"))
+        pre_prot = float(exp.header_value("ChirpConfig", "PreProtection"))
+        chirp_start_us = pre_gate + pre_prot
 
-        try:
-            chirps_df = exp.chirps
-            first_waveform = chirps_df[chirps_df["Chirp"] == 0]
-            if first_waveform.empty:
-                return None
-            chirp_duration_us = float(first_waveform["DurationUs"].sum())
-        except Exception:
-            return None
+        chirps_df = exp.chirps
+        first_waveform = chirps_df[chirps_df["Chirp"] == 0]
+        if first_waveform.empty:
+            raise ValueError("chirps.csv has no rows for Chirp == 0")
+        chirp_duration_us = float(first_waveform["DurationUs"].sum())
 
-        chirp_end_us = chirp_start_us + chirp_duration_us
         return {
             "chirp_start_us": chirp_start_us,
-            "chirp_end_us": chirp_end_us,
+            "chirp_end_us": chirp_start_us + chirp_duration_us,
         }
 
     def get_required_parameters(self) -> List[str]:

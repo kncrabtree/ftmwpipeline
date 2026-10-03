@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 import numpy as np
 import pandas as pd
 
+from ...contract import Absent
 from ..input_metadata import (
     acquisition_row,
     build_fid_metadata,
@@ -24,7 +25,7 @@ from ..input_metadata import (
     resolve_input_metadata,
     sidecar_layer,
 )
-from .base import BaseLoader, FidPreviewRow, LoaderError
+from .base import BaseLoader, FidPreviewRow, LoaderError, validated_chirp_window
 
 if TYPE_CHECKING:
     from ...core.data_structures import FID
@@ -91,8 +92,8 @@ class CSVLoader(BaseLoader):
     def preview_fids(self, source_path: Union[str, Path]) -> List[FidPreviewRow]:
         """The one FID: point count from the file, the rest from a sidecar.
 
-        Sidecar-absent fields are ``Absent.NOT_RUN``, except the three the
-        import itself defaults (probe ``0`` MHz, ``upper`` sideband, ``1`` shot).
+        Every sidecar-absent field is ``Absent.NOT_RUN``; the import's own
+        defaults are never reported as declared values.
         """
         source_path = Path(source_path)
         validation = self.validate_source(source_path)
@@ -103,9 +104,12 @@ class CSVLoader(BaseLoader):
 
     def preview_chirp_window(
         self, source_path: Union[str, Path]
-    ) -> Optional[Dict[str, Any]]:
-        """The sidecar's ``chirp_window`` block, or ``None``."""
-        return sidecar_layer(Path(source_path)).get("chirp_window")
+    ) -> Union[None, Dict[str, Any], Absent]:
+        """The sidecar's validated ``chirp_window`` block, or ``None``."""
+        layer = sidecar_layer(Path(source_path))
+        if "chirp_window" not in layer or layer["chirp_window"] is None:
+            return None
+        return validated_chirp_window(layer["chirp_window"])
 
     def load_fid(self, source_path: Union[str, Path], **kwargs: Any) -> "FID":
         from ...core.data_structures import FID, FIDProcessingParameters

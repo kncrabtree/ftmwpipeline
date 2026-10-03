@@ -44,6 +44,8 @@ def preview_source_impl(
     window: Union[Dict[str, Any], Absent]
     if preview.chirp_window is None:
         window = Absent.NOT_RUN
+    elif isinstance(preview.chirp_window, Absent):
+        window = preview.chirp_window  # declared but unreadable: UNDEFINED
     else:
         declared = preview.chirp_window
         window = {key: declared.get(key, Absent.NOT_RUN) for key in _CHIRP_KEYS}

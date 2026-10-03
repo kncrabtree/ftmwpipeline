@@ -12,6 +12,7 @@ import hashlib
 import json
 from pathlib import Path
 
+import h5py
 import numpy as np
 import pandas as pd
 import pytest
@@ -91,8 +92,8 @@ def test_multi_fid_blackchirp_agrees_across_interfaces(exp_2638_data_path, capsy
     assert via_cli["schema"] == SCHEMA
     assert via_cli["format"] == "blackchirp"
     assert via_cli["n_fids"] == 3
-    assert via_cli["fids"]["index"] == [0, 1, 2]
-    assert via_cli["fids"]["sideband"] == ["lower"] * 3
+    assert [row["index"] for row in via_cli["fids"]] == [0, 1, 2]
+    assert [row["sideband"] for row in via_cli["fids"]] == ["lower"] * 3
 
 
 def test_csv_with_absent_fields_agrees_across_interfaces(tmp_path, capsys):
@@ -107,8 +108,11 @@ def test_csv_with_absent_fields_agrees_across_interfaces(tmp_path, capsys):
     assert rc == 0
     assert via_api["chirp_window"] is Absent.NOT_RUN
     assert _wire(via_api) == _wire(via_pipeline) == via_cli
-    assert via_cli["fids"]["spacing_us"] == [None]
-    assert via_cli["fids"]["spacing_us__status"] == [1]
+    (row,) = via_cli["fids"]
+    assert row["spacing_us"] is None and row["spacing_us_absent"] == "not_run"
+    # Import defaults are not declarations: silent fields are not_run too.
+    for field in ("probe_freq_mhz", "sideband", "shots", "channel"):
+        assert row[field] is None and row[field + "_absent"] == "not_run"
     assert via_cli["chirp_window"] is None
     assert via_cli["chirp_window_absent"] == "not_run"
 
@@ -226,3 +230,35 @@ def test_source_that_does_not_fit_the_format_exits_1_with_text(tmp_path, capsys)
     )
     assert rc == 1 and out == ""
     assert err.startswith("Error:")
+
+
+def test_undefined_chirp_window_and_keysight_channels_agree_across_interfaces(
+    tmp_path, capsys
+):
+    bad = tmp_path / "bad.csv"
+    pd.DataFrame({"v": np.arange(8.0)}).to_csv(bad, index=False)
+    (tmp_path / "bad.csv.ftmwmeta.json").write_text(
+        json.dumps({"spacing_us": 0.02, "chirp_window": {"chirp_end_us": "soon"}})
+    )
+    rc, out, _ = _cli(["read", "preview_source", str(bad)], capsys)
+    via_cli = json.loads(out)
+    assert rc == 0
+    assert via_cli["chirp_window"]["chirp_end_us"] is None
+    assert via_cli["chirp_window"]["chirp_end_us_absent"] == "undefined"
+    assert (
+        via_cli
+        == _wire(ftmw.preview_source(bad))
+        == _wire(Pipeline.preview_source(bad))
+    )
+
+    mat = tmp_path / "scope.mat"
+    with h5py.File(mat, "w") as f:
+        for name in ("Channel_2", "Channel_1"):
+            ch = f.create_group(name)
+            ch.create_dataset("Data", data=np.zeros((1, 10), dtype=np.int16))
+            ch.create_dataset("XInc", data=np.array([[1e-9]]))
+    rc, out, _ = _cli(["read", "preview_source", str(mat)], capsys)
+    via_cli = json.loads(out)
+    assert rc == 0
+    assert [r["channel"] for r in via_cli["fids"]] == ["Channel_1", "Channel_2"]
+    assert via_cli == _wire(ftmw.preview_source(mat))

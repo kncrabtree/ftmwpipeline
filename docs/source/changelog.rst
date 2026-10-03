@@ -47,7 +47,9 @@ engine so they cannot answer differently.
   format and the full FID table (index, points, spacing, probe frequency,
   sideband as ``"upper"``/``"lower"``, shots) of every FID a loader's source
   holds, as a list of ``FidPreviewRow`` records, plus the declared chirp
-  window; ``read preview_source SOURCE`` on the command line. ``validate_source`` is unchanged.
+  window; ``read preview_source SOURCE`` on the command line. ``validate_source`` is unchanged. A field the source does not declare is *not run*, never import's default; a Keysight file reports
+  one row per channel with the ``channel`` value import needs; a declared chirp
+  window the code cannot read is *undefined*.
 
 * **The machine contract has its foundations: a contract version, ``Absent``,
   typed errors with codes, a JSON serializer, and ``capabilities``.**
