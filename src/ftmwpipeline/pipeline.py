@@ -2646,6 +2646,17 @@ class Pipeline:
 
         return capabilities()
 
+    def window_status(self) -> Dict[str, Any]:
+        """One row per Stage 4 plan window and per created window, as columns.
+
+        Equivalent to :func:`ftmwpipeline.api.window_status`; the payload is
+        ``ftmw/window_status@1``. Raises
+        :class:`~ftmwpipeline.StageDependencyError` before Stage 4.
+        """
+        from ._internal.read_impl import window_status_impl
+
+        return window_status_impl(str(self.filepath))
+
     def settings_show(
         self,
         selector: Optional[str] = None,

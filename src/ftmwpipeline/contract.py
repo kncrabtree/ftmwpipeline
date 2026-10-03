@@ -230,11 +230,15 @@ class AccessorSpec(NamedTuple):
     file_bound: bool
 
 
-_ACCESSORS: Tuple[AccessorSpec, ...] = (AccessorSpec("capabilities", file_bound=False),)
+_ACCESSORS: Tuple[AccessorSpec, ...] = (
+    AccessorSpec("capabilities", file_bound=False),
+    AccessorSpec("window_status", file_bound=True),
+)
 
 _SCHEMAS: Tuple[str, ...] = (
     ERROR_SCHEMA,
     CAPABILITIES_SCHEMA,
+    "ftmw/window_status@1",
 )
 
 _CODES: Tuple[str, ...] = (
@@ -249,7 +253,18 @@ _CODES: Tuple[str, ...] = (
 
 _METADATA_KEYS: Tuple[str, ...] = ()
 
-_TABLES: Dict[str, Tuple[str, ...]] = {}
+_TABLES: Dict[str, Tuple[str, ...]] = {
+    "window_status": (
+        "window_id",
+        "freq_min_mhz",
+        "freq_max_mhz",
+        "created",
+        "n_fitted_peaks",
+        "n_fitted_peaks__status",
+        "live",
+        "live__status",
+    ),
+}
 
 MANIFEST = ContractManifest(
     contract_version=CONTRACT_VERSION,

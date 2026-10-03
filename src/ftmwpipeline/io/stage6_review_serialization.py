@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 import h5py
 
@@ -62,6 +62,7 @@ __all__ = [
     "save_stage6_review_to_hdf5",
     "load_stage6_review_from_hdf5",
     "load_stage6_review_from_file",
+    "read_created_window_bounds",
 ]
 
 
@@ -318,6 +319,30 @@ def load_stage6_review_from_hdf5(group: h5py.Group) -> Stage6Review:
         final_products=final_products,
         created_windows=created_windows,
     )
+
+
+def read_created_window_bounds(
+    group: Optional[h5py.Group],
+) -> List[Tuple[int, float, float]]:
+    """``(window_id, freq_min, freq_max)`` of each Stage-6-created window.
+
+    Reads only the ``created_windows`` record of a ``stage6_review`` *group*
+    (``None``, or a group without the record, yields an empty list -- files
+    predating Stage-6 window creation). Bounds are ordered ``min, max`` whatever
+    order they were stored in. A record that is present but undecodable raises,
+    like :func:`load_stage6_review_from_hdf5`.
+    """
+    if group is None:
+        return []
+    cw_grp = group.get("created_windows")
+    if cw_grp is None:
+        return []
+    raw = cw_grp.attrs.get("data", "[]")
+    out: List[Tuple[int, float, float]] = []
+    for d in json.loads(str(raw)):
+        lo, hi = (float(v) for v in d["freq_range"])
+        out.append((int(d["window_id"]), min(lo, hi), max(lo, hi)))
+    return out
 
 
 def load_stage6_review_from_file(file_path: str) -> Stage6Review:

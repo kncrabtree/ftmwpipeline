@@ -236,6 +236,22 @@ reserved and not yet implemented.
 
    $ ftmwpipeline read capabilities | python -m json.tool
 
+Window status: ``window_status``
+--------------------------------
+
+``window_status(path)`` reports one row per Stage 4 plan window and per
+window Stage 6 created, as columns (schema ``ftmw/window_status@1``):
+``window_id``, ``freq_min_mhz``, ``freq_max_mhz``, ``created``,
+``n_fitted_peaks`` and ``live``. A window is **live** when the Stage 5 fit
+holds at least one fitted line in it. Before Stage 5 ``n_fitted_peaks`` and
+``live`` are ``Absent.NOT_RUN`` (``n_fitted_peaks__status`` and
+``live__status`` are ``1``). Before Stage 4 it raises ``stage_not_run`` naming
+``windows run``. It is also the ``window_status`` table of ``read_table``.
+
+.. code-block:: console
+
+   $ ftmwpipeline read window_status experiment.ftmw --output status/
+
 Serialization rules worth knowing: an enum is written as its ``.value``
 (``PeakShape.LORENTZIAN`` is ``"lorentzian"``, also as a mapping key); a
 complex number is ``{"real": x, "imag": y}``; a non-finite float with no field

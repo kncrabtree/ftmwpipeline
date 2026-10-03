@@ -91,15 +91,22 @@ from typing import Any, Callable, Dict, Optional, Sequence, Tuple, Union
 import h5py
 import numpy as np
 
+from ..contract import Absent
 from ..core.settings import FTSettings
 from ..core.settings_framework import NONE as NONE_SENTINEL
 from ..file_manager import (
     PipelineCorruptionError,
     PipelineFileNotFoundError,
+    StageDependencyError,
     check_format_compatibility,
     is_transient_open_error,
 )
-from ..io._hdf5_helpers import ColumnSpec, load_json_attr
+from ..io._hdf5_helpers import (
+    REQUIRED,
+    ColumnSpec,
+    load_json_attr,
+    resolve_column_selection,
+)
 from ..io.fitting_serialization import (
     FIT_AUDIT_COLUMN_SPECS,
     FIT_DOUBLET_COLUMN_SPECS,
@@ -122,6 +129,7 @@ from ..io.peak_serialization import (
     read_peak_columns,
     read_peak_scalars,
 )
+from ..io.stage6_review_serialization import read_created_window_bounds
 from ..io.tau_calibration_serialization import (
     GAUSSIAN_GROUP_PATH,
     GROUP_PATH,
@@ -144,6 +152,7 @@ from ..io.window_serialization import (
     read_window_plan_columns,
     read_window_plan_scalars,
 )
+from ..serialize import with_status_columns
 from .shared_utils import active_acquisition_us, fold_settings_blob
 
 __all__ = [
@@ -152,6 +161,8 @@ __all__ = [
     "read_table_impl",
     "read_tables_impl",
     "read_metadata_impl",
+    "window_status_impl",
+    "WINDOW_STATUS_SCHEMA",
     "format_table_impl",
     "format_metadata_impl",
     "write_text_impl",
@@ -204,6 +215,34 @@ _TAU_TABLES = (
 )
 
 _WINDOWS_HINT = "assign_windows() / 'windows run'"
+
+#: Schema name of the :func:`window_status_impl` payload.
+WINDOW_STATUS_SCHEMA = "ftmw/window_status@1"
+
+#: Columns that can be absent, each with a ``<column>__status`` companion.
+_WINDOW_STATUS_ABSENT_CAPABLE = ("n_fitted_peaks", "live")
+
+#: Layout of the ``window_status`` table (the status columns are ``uint8``).
+WINDOW_STATUS_COLUMN_SPECS: Dict[str, ColumnSpec] = {
+    "window_id": ("i8", REQUIRED),
+    "freq_min_mhz": ("f8", REQUIRED),
+    "freq_max_mhz": ("f8", REQUIRED),
+    "created": ("bool", REQUIRED),
+    "n_fitted_peaks": ("i8", 0),
+    "n_fitted_peaks__status": ("u1", 0),
+    "live": ("bool", False),
+    "live__status": ("u1", 0),
+}
+
+_WINDOW_STATUS_DTYPES: Dict[str, Any] = {
+    "window_id": np.int64,
+    "freq_min_mhz": np.float64,
+    "freq_max_mhz": np.float64,
+    "created": np.bool_,
+    "n_fitted_peaks": np.int64,
+    "live": np.bool_,
+}
+
 _FIT_HINT = "fit_peaks() / 'fit run'"
 
 _TABLE_SPECS: Dict[str, _TableSpec] = {}
@@ -298,6 +337,13 @@ _TABLE_SPECS.update(
             reader=read_fit_rescue_columns,
             count_path="",
             hint=_FIT_HINT,
+        ),
+        "window_status": _TableSpec(
+            group="stage4_windows",
+            specs=WINDOW_STATUS_COLUMN_SPECS,
+            reader=lambda group, columns: _window_status_columns(group.file, columns),
+            count_path="",
+            hint=_WINDOWS_HINT,
         ),
     }
 )
@@ -399,6 +445,101 @@ def read_table_impl(
                 f"unavailable. Run {spec.hint} first."
             )
         return spec.reader(h5f[spec.group], columns)
+
+
+# ---------------------------------------------------------------------------
+# Window status: the Stage 4 plan, the Stage 6 created windows and the Stage 5
+# fit's per-window line counts, joined on ``window_id``.
+# ---------------------------------------------------------------------------
+
+
+def _window_status_columns(
+    h5f: h5py.File, columns: Optional[Sequence[str]] = None
+) -> Dict[str, np.ndarray]:
+    """Build the window-status table from an open file (raises before Stage 4).
+
+    One row per effective window id: every Stage 4 plan window, with a
+    Stage-6-created window of the same id replacing the plan row (the
+    narrow-gap widening case, as in the effective plan) and flagged
+    ``created``; created windows with fresh ids are appended. Rows ascend by
+    frequency, then ``window_id``.
+    """
+    if "stage4_windows" not in h5f:
+        raise StageDependencyError(
+            "read window_status",
+            ["stage4_windows"],
+            Path(str(h5f.filename)),
+            command="windows run",
+            message=(
+                f"No Stage 4 window plan found in {h5f.filename}; table "
+                f"'window_status' is unavailable. Run {_WINDOWS_HINT} first."
+            ),
+        )
+    plan = read_window_plan_columns(
+        h5f["stage4_windows"], ["window_id", "freq_min", "freq_max"]
+    )
+    bounds: Dict[int, Tuple[float, float]] = {
+        int(i): (float(lo), float(hi))
+        for i, lo, hi in zip(plan["window_id"], plan["freq_min"], plan["freq_max"])
+    }
+    created_ids = set()
+    review = h5f["stage6_review"] if "stage6_review" in h5f else None
+    for wid, lo, hi in read_created_window_bounds(review):
+        bounds[wid] = (lo, hi)
+        created_ids.add(wid)
+
+    fitted: Optional[Dict[int, int]] = None
+    if "stage5_fitting" in h5f:
+        fit = read_fit_window_columns(h5f["stage5_fitting"], ["window_id", "n_peaks"])
+        fitted = {int(i): int(n) for i, n in zip(fit["window_id"], fit["n_peaks"])}
+
+    def fit_state(wid: int) -> Tuple[Any, Any]:
+        """``(n_fitted_peaks, live)``; the one place a window can be NOT_RUN."""
+        if fitted is None:
+            return Absent.NOT_RUN, Absent.NOT_RUN
+        n = fitted.get(wid, 0)
+        return n, n > 0
+
+    order = sorted(bounds, key=lambda w: (bounds[w][0], w))
+    states = [fit_state(w) for w in order]
+    table = with_status_columns(
+        {
+            "window_id": order,
+            "freq_min_mhz": [bounds[w][0] for w in order],
+            "freq_max_mhz": [bounds[w][1] for w in order],
+            "created": [w in created_ids for w in order],
+            "n_fitted_peaks": [s[0] for s in states],
+            "live": [s[1] for s in states],
+        },
+        absent_capable=_WINDOW_STATUS_ABSENT_CAPABLE,
+        fills={"n_fitted_peaks": 0, "live": False},
+        dtypes=_WINDOW_STATUS_DTYPES,
+    )
+    requested = resolve_column_selection(
+        columns, list(WINDOW_STATUS_COLUMN_SPECS), table="window_status"
+    )
+    return {name: table[name] for name in requested}
+
+
+def window_status_impl(file_path: Union[str, Path]) -> Dict[str, Any]:
+    """The ``ftmw/window_status@1`` payload: one row per window, as columns.
+
+    Columns: ``window_id``, ``freq_min_mhz``, ``freq_max_mhz``, ``created``,
+    ``n_fitted_peaks`` (+ ``n_fitted_peaks__status``), ``live``
+    (+ ``live__status``). A window is live when the Stage 5 fit holds at least
+    one fitted line in it. Before Stage 5 both fit-derived columns are
+    ``Absent.NOT_RUN`` (status ``1``). Read-only.
+
+    Raises
+    ------
+    StageDependencyError
+        Stage 4 has not been run (``command`` is ``"windows run"``).
+    """
+    with _open(file_path) as h5f:
+        columns = _window_status_columns(h5f)
+    payload: Dict[str, Any] = {"schema": WINDOW_STATUS_SCHEMA}
+    payload.update(columns)
+    return payload
 
 
 def _row_count(stage_group: h5py.Group, count_path: str) -> Optional[int]:
