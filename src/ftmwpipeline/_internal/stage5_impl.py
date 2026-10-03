@@ -54,7 +54,6 @@ from ..core.data_structures import (
     widen_for_unresolved_spread,
 )
 from ..core.stage_fit_settings import (
-    _HARD_DEFAULTS,
     ShapeSpec,
     SpurSubSettings,
     StageFitSettings,
@@ -106,6 +105,7 @@ from .stage2_impl import _update_stage_completion
 from .stage2b_impl import load_tau_calibration_impl, tau_calibration_present
 from .stage3_impl import (
     load_peaks_impl,
+    read_promotion_min_snr,
 )
 from .stage4_impl import load_windows_impl
 
@@ -305,6 +305,57 @@ def _build_active_ft_inputs(
         user_ft,
         trim_range,
     )
+
+
+def _resolve_file_fit_settings(
+    file_path: str,
+    *,
+    explicit: Optional[StageFitSettings] = None,
+    preset: Optional[StageFitSettings] = None,
+) -> StageFitSettings:
+    """The file's resolved Stage 5 settings (explicit > persisted > preset >
+    recommended > hard default).
+
+    The one place the file-side layers (persisted record, Stage 2b
+    recommendations) are gathered; the Stage 5 run and the old-fit display
+    readers both resolve through it.
+    """
+    persisted_settings = load_stage_fit_settings_from_h5(file_path)
+    recommended_shape_str = read_stage2b_recommended_shape(file_path)
+    recommended_clocks = read_recommended_clock_sources(file_path)
+    recommended_settings: Optional[StageFitSettings] = None
+    if recommended_shape_str is not None or recommended_clocks is not None:
+        recommended_settings = StageFitSettings(
+            shape=(
+                ShapeSpec.coerce(recommended_shape_str)
+                if recommended_shape_str is not None
+                else None
+            ),
+            spur=SpurSubSettings(clocks=recommended_clocks),
+        )
+    return resolve_stage_fit_settings(
+        explicit=explicit,
+        preset=preset,
+        persisted=persisted_settings,
+        recommended=recommended_settings,
+    )
+
+
+def derive_survival_floor(
+    promotion_cutoff: Optional[float],
+    survival_factor: float,
+    floor_override: Optional[float] = None,
+) -> float:
+    """The effective peak-survival SNR floor, as Stage 5 derives it.
+
+    An explicit absolute ``floor_override`` wins; otherwise the Stage 3
+    promotion cutoff scaled by ``survival_factor``. A legacy file that never
+    persisted the cutoff falls back to the Stage 3 promotion default.
+    """
+    if floor_override is not None:
+        return float(floor_override)
+    cutoff = DEFAULT_PROMOTION_MIN_SNR if promotion_cutoff is None else promotion_cutoff
+    return float(cutoff) * float(survival_factor)
 
 
 def _required_float(value: Optional[float], name: str) -> float:
@@ -1747,24 +1798,8 @@ def _fit_peaks_impl(
     if preset is not None:
         preset_layer = load_preset(preset)
         preset_name = str(preset)
-    persisted_settings = load_stage_fit_settings_from_h5(file_path)
-    recommended_shape_str = read_stage2b_recommended_shape(file_path)
-    recommended_clocks = read_recommended_clock_sources(file_path)
-    recommended_settings: Optional[StageFitSettings] = None
-    if recommended_shape_str is not None or recommended_clocks is not None:
-        recommended_settings = StageFitSettings(
-            shape=(
-                ShapeSpec.coerce(recommended_shape_str)
-                if recommended_shape_str is not None
-                else None
-            ),
-            spur=SpurSubSettings(clocks=recommended_clocks),
-        )
-    resolved = resolve_stage_fit_settings(
-        explicit=explicit,
-        preset=preset_layer,
-        persisted=persisted_settings,
-        recommended=recommended_settings,
+    resolved = _resolve_file_fit_settings(
+        file_path, explicit=explicit, preset=preset_layer
     )
     # All fields backed by ``_HARD_DEFAULTS`` are guaranteed non-None after
     # resolve(); cast through ``_required_*`` helpers so mypy sees concrete
@@ -1896,13 +1931,11 @@ def _fit_peaks_impl(
     # ``snr_survival_factor``. Stage 3 is a hard dependency, so the cutoff is
     # present; fall back to the Stage 3 promotion default only for a legacy file
     # that predates persisting it.
-    promotion_cutoff = peaks_loaded.get("promotion_min_snr")
-    if promotion_cutoff is None:
-        promotion_cutoff = DEFAULT_PROMOTION_MIN_SNR
-    if peak_survival_floor_override is not None:
-        peak_survival_floor_v = float(peak_survival_floor_override)
-    else:
-        peak_survival_floor_v = float(promotion_cutoff) * peak_survival_factor_v
+    peak_survival_floor_v = derive_survival_floor(
+        peaks_loaded.get("promotion_min_snr"),
+        peak_survival_factor_v,
+        peak_survival_floor_override,
+    )
 
     # --- Stage 2b calibration (optional) ------------------------------------
     # When present, ``tau_maj`` and ``sigma_tau`` drive the per-window tau
@@ -2609,6 +2642,7 @@ def fit_thresholds_from_diagnostics(
 
 
 def grading_thresholds_from_diagnostics(
+    file_path: str,
     diagnostics: Optional[Mapping[str, Any]],
 ) -> Tuple[float, float]:
     """``(survival_floor, vif_collapse_threshold)`` for grading displayed lines.
@@ -2617,18 +2651,30 @@ def grading_thresholds_from_diagnostics(
     two numbers, so they need a value even for an old fit that never recorded
     one. Recorded values are used as persisted
     (:func:`fit_thresholds_from_diagnostics`); a missing one falls back to the
-    *current* ``peak_survival`` settings default. That is a display-grading
-    reference only: it is not reported as a threshold the fit applied (the
-    ``fit_thresholds`` accessor says ``NOT_RUN`` there).
+    *file's* resolved settings (persisted > recommended > default): the
+    survival floor is the persisted Stage 3 promotion cutoff times the
+    resolved survival factor (or the explicit floor), exactly as Stage 5
+    derives it, and the VIF threshold is the resolved Stage 5 setting. That is
+    a display-grading reference only: it is not reported as a threshold the
+    fit applied (the ``fit_thresholds`` accessor says ``NOT_RUN`` there).
     """
     recorded = fit_thresholds_from_diagnostics(diagnostics)
     floor = recorded["peak_survival_snr_floor"]
     vif = recorded["vif_collapse_threshold"]
-    defaults = _HARD_DEFAULTS["peak_survival"]
-    if isinstance(floor, Absent):
-        floor = DEFAULT_PROMOTION_MIN_SNR * float(defaults["snr_survival_factor"])
-    if isinstance(vif, Absent):
-        vif = float(defaults["vif_collapse_threshold"])
+    if isinstance(floor, Absent) or isinstance(vif, Absent):
+        ps = _resolve_file_fit_settings(file_path).peak_survival
+        if isinstance(floor, Absent):
+            floor = derive_survival_floor(
+                read_promotion_min_snr(file_path),
+                _required_float(
+                    ps.snr_survival_factor, "peak_survival.snr_survival_factor"
+                ),
+                ps.snr_survival_floor,
+            )
+        if isinstance(vif, Absent):
+            vif = _required_float(
+                ps.vif_collapse_threshold, "peak_survival.vif_collapse_threshold"
+            )
     return float(floor), float(vif)
 
 
@@ -3116,7 +3162,7 @@ def render_fit_detail_impl(
 
     bundle = bundle if bundle is not None else _resolve_detail_bundle(file_path)
     wf = bundle.fit.window_fit(window_id)
-    grading = grading_thresholds_from_diagnostics(bundle.fit.diagnostics)
+    grading = grading_thresholds_from_diagnostics(file_path, bundle.fit.diagnostics)
     return plot_consolidated_detail(
         wf,
         frequencies=bundle.frequencies,
@@ -3160,7 +3206,7 @@ def render_rescue_summary_impl(
     bundle = bundle if bundle is not None else _resolve_detail_bundle(file_path)
     wf = bundle.fit.window_fit(window_id)
     diag = bundle.fit.diagnostics or {}
-    grading = grading_thresholds_from_diagnostics(diag)
+    grading = grading_thresholds_from_diagnostics(file_path, diag)
     panel_data = prepare_window_panels(
         wf,
         frequencies=bundle.frequencies,

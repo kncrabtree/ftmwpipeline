@@ -19,7 +19,6 @@ from __future__ import annotations
 import csv
 import io
 import json
-import shutil
 import subprocess
 
 import numpy as np
@@ -28,8 +27,6 @@ import pytest
 import ftmwpipeline.api as ftmw
 from ftmwpipeline import Pipeline
 from ftmwpipeline._internal.read_impl import READ_TABLES
-
-from ._stage2b_helpers import skip_auto_recommend_settings
 
 
 def _run_read(args: list) -> str:
@@ -61,27 +58,6 @@ def _available_tables(path: str) -> list:
     return [
         name for name, entry in ftmw.read_tables(path).items() if entry["available"]
     ]
-
-
-@pytest.fixture(scope="module")
-def tau_calibrated_2638(baseline_2638_stage2, tmp_path_factory):
-    """A file carrying both decay-time calibrations, built once per module.
-
-    The Stage 5 baseline does not run Stage 2b, so the ``tau_*`` tables need
-    their own file. Both twins are built here because they live in separate
-    groups and the read surface addresses them as separate tables --
-    ``tau_g_*`` would otherwise never be exercised on real data.
-    ``auto_recommend`` is off: the 3-way shape classifier costs ~50 s per call
-    on this fixture and nothing here depends on its verdict.
-    """
-    tmp = tmp_path_factory.mktemp("read_tau")
-    path = tmp / "read_tau_2638.ftmw"
-    shutil.copy(baseline_2638_stage2, path)
-    for shape in ("lorentzian", "gaussian"):
-        ftmw.calibrate_tau(
-            str(path), shape=shape, settings=skip_auto_recommend_settings()
-        )
-    return path
 
 
 @pytest.fixture(scope="module")

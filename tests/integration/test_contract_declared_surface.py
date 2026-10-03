@@ -4,9 +4,11 @@ refusals.
 
 Every accessor in ``MANIFEST`` that predates the contract is exercised through
 its declared interface triple: ``api.<name>``, ``Pipeline.<pipeline_name>`` and
-the CLI verb path in ``MANIFEST.cli_verbs``. Nothing here writes a file: the
-fixture is the session-scoped Stage 5 2638 build, read only, and outputs go to
-pytest ``tmp_path``.
+the one CLI verb ``read <name>``. Nothing here writes a file: the fixture is
+the session-scoped post-Stage-6 2638 build (``stage5_reviewed_2638``), read
+only, and outputs go to pytest ``tmp_path``. It is reviewed so that
+``get_final_products`` and ``review_log`` carry real rows; every check on them
+asserts non-empty first.
 """
 
 from __future__ import annotations
@@ -22,6 +24,13 @@ import pytest
 import ftmwpipeline.api as ftmw
 from ftmwpipeline import MANIFEST, Pipeline, to_jsonable
 from ftmwpipeline.cli.main import main
+from ftmwpipeline.contract import (
+    CALIBRATION_SCHEMA,
+    FINAL_PRODUCTS_SCHEMA,
+    METADATA_SCHEMA,
+    PIPELINE_INFO_SCHEMA,
+    REVIEW_LOG_SCHEMA,
+)
 from ftmwpipeline.file_manager import (
     NotFoundError,
     PipelineCorruptionError,
@@ -47,8 +56,8 @@ def _jsonable(obj):
 
 
 @pytest.fixture
-def stage5(baseline_2638_stage5_small):
-    return str(baseline_2638_stage5_small)
+def stage5(stage5_reviewed_2638):
+    return str(stage5_reviewed_2638)
 
 
 # ---- every declared accessor, through all three interfaces ----------------
@@ -85,6 +94,12 @@ def test_api_and_pipeline_agree(name, stage5):
     assert _jsonable(via_api) == _jsonable(via_pipeline)
 
 
+def test_the_fixture_carries_real_rows(stage5):
+    fp = ftmw.get_final_products(stage5)
+    assert fp is not None and fp.peaks
+    assert len(ftmw.review_log(stage5)) >= 2
+
+
 def test_read_table_api_and_pipeline_agree(stage5):
     for table, columns in MANIFEST.tables.items():
         a = ftmw.read_table(stage5, table)
@@ -104,38 +119,70 @@ def test_settings_api_and_pipeline_agree(stage5):
     )
 
 
-def test_cli_read_meta_equals_api(stage5, capsys):
-    cli = _cli_json(["read", "meta", stage5, "--format", "json"], capsys)
+def test_cli_read_metadata_equals_api(stage5, capsys):
+    cli = _cli_json(["read", "read_metadata", stage5], capsys)
+    assert cli.pop("schema") == METADATA_SCHEMA
     assert cli == _jsonable(ftmw.read_metadata(stage5))
 
 
-def test_cli_read_table_equals_api(stage5, capsys):
+def test_cli_read_table_equals_api(stage5, tmp_path, capsys):
     for table in MANIFEST.tables:
-        rows = _cli_json(["read", "table", stage5, table, "--format", "json"], capsys)
+        out = tmp_path / table
+        env = _cli_json(
+            ["read", "read_table", stage5, table, "--output", str(out)], capsys
+        )
         cols = ftmw.read_table(stage5, table)
         for col in MANIFEST.tables[table]:
-            assert [r[col] for r in rows] == _jsonable(cols[col]), (table, col)
+            assert env[col] == f"{col}.npy"
+            np.testing.assert_array_equal(np.load(out / env[col]), cols[col])
 
 
 def test_cli_snap_tolerance_equals_api(stage5, capsys):
-    cli = _cli_json(["review", "snap-tolerance", stage5, "--format", "json"], capsys)
-    assert cli["snap_tol_mhz"] == ftmw.refit_snap_tol_mhz(stage5)
+    cli = _cli_json(["read", "refit_snap_tol_mhz", stage5], capsys)
+    assert cli["value"] == ftmw.refit_snap_tol_mhz(stage5)
+    assert cli["schema"].startswith("ftmw/snap_tolerance@")
 
 
-def test_cli_timebase_state_equals_api(stage5, capsys):
-    cli = _cli_json(["timebase", "state", stage5, "--format", "json"], capsys)
+def test_cli_frequency_calibration_equals_api(stage5, capsys):
+    cli = _cli_json(["read", "frequency_calibration", stage5], capsys)
     stamp = ftmw.frequency_calibration(stage5)
+    assert cli.pop("schema") == CALIBRATION_SCHEMA
     assert cli == _jsonable(dataclasses.asdict(stamp))
     assert set(MANIFEST.fields["CalibrationStamp"]) == set(cli)
 
 
-def test_cli_info_equals_api(stage5, capsys):
-    cli = _cli_json(["info", stage5, "--format", "json"], capsys)
+def test_cli_pipeline_info_equals_api(stage5, capsys):
+    cli = _cli_json(["read", "get_pipeline_info", stage5], capsys)
     info = ftmw.get_pipeline_info(stage5)
+    assert cli.pop("schema") == PIPELINE_INFO_SCHEMA
     assert set(cli) == set(info)
     assert cli["completed_stages"] == list(info["completed_stages"])
     for key in MANIFEST.fields["PipelineInfo"]:
-        assert (key in cli) == (key in info)
+        assert key in cli and key in info
+
+
+def test_cli_final_products_equals_api(stage5, capsys):
+    cli = _cli_json(["read", "get_final_products", stage5], capsys)
+    fp = ftmw.get_final_products(stage5)
+    assert fp is not None and fp.peaks
+    assert cli["schema"] == FINAL_PRODUCTS_SCHEMA
+    assert len(cli["peaks"]) == len(fp.peaks)
+    declared = set(MANIFEST.fields["FinalPeak"])
+    for row, peak in zip(cli["peaks"], fp.peaks):
+        assert declared <= set(row)
+        assert row["frequency_mhz"] == peak.frequency_mhz
+        assert row["peak_uid"] == peak.peak_uid
+
+
+def test_cli_review_log_equals_api(stage5, capsys):
+    cli = _cli_json(["read", "review_log", stage5], capsys)
+    log = ftmw.review_log(stage5)
+    assert log
+    assert cli["schema"] == REVIEW_LOG_SCHEMA
+    assert [r["kind"] for r in cli["items"]] == [e.kind for e in log]
+    declared = set(MANIFEST.fields["DecisionLogEntry"])
+    for row in cli["items"]:
+        assert declared <= set(row)
 
 
 def test_display_ft_agrees_across_interfaces(stage5, tmp_path, capsys):
@@ -228,15 +275,15 @@ def test_every_declared_read_leaves_the_file_byte_identical(stage5, tmp_path, ca
     ftmw.compute_display_ft(stage5)
     Pipeline.open(stage5).compute_display_ft(pad_factor=3)
     for argv in (
-        ["read", "meta", stage5, "--format", "json"],
-        ["read", "list", stage5],
-        ["read", "table", stage5, "windows", "--format", "json"],
-        ["review", "snap-tolerance", stage5, "--format", "json"],
-        ["review", "log", stage5],
-        ["timebase", "state", stage5, "--format", "json"],
-        ["info", stage5, "--format", "json"],
-        ["settings", "show", stage5],
-        ["report", "table", stage5, "--format", "json"],
+        ["read", "read_metadata", stage5],
+        ["read", "read_tables", stage5],
+        ["read", "refit_snap_tol_mhz", stage5],
+        ["read", "review_log", stage5],
+        ["read", "frequency_calibration", stage5],
+        ["read", "get_pipeline_info", stage5],
+        ["read", "get_final_products", stage5],
+        ["read", "settings_show", stage5],
+        ["read", "read_table", stage5, "windows", "--output", str(tmp_path / "t")],
         [
             "read",
             "compute_display_ft",

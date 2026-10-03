@@ -26,16 +26,23 @@ import pytest
 import ftmwpipeline.api as ftmw
 from ftmwpipeline import MANIFEST, Absent, Pipeline, to_jsonable
 from ftmwpipeline._internal.stage5_impl import (
+    DEFAULT_PROMOTION_MIN_SNR,
+    derive_survival_floor,
     fit_thresholds_from_diagnostics,
     grading_thresholds_from_diagnostics,
     read_fit_thresholds_impl,
 )
 from ftmwpipeline.contract import FIT_THRESHOLDS_SCHEMA
+from ftmwpipeline.core.stage_fit_settings import _HARD_DEFAULTS
 from ftmwpipeline.file_manager import PipelineFileNotFoundError
 
 pytestmark = [pytest.mark.unit]
 
 _FIELDS = ("peak_survival_snr_floor", "vif_collapse_threshold")
+
+#: The hard defaults of the two settings the grading fallback resolves.
+_DEFAULT_FACTOR = _HARD_DEFAULTS["peak_survival"]["snr_survival_factor"]
+_DEFAULT_VIF = float(_HARD_DEFAULTS["peak_survival"]["vif_collapse_threshold"])
 
 
 @pytest.fixture
@@ -210,37 +217,76 @@ def test_missing_file_is_a_typed_not_found_error(tmp_path):
 # ---- the old-fit display readers share the mapping and invent nothing ------
 
 
-def test_grading_thresholds_use_recorded_values():
+def _persist_promotion_min_snr(path, value):
+    with h5py.File(path, "a") as f:
+        f.require_group("stage3_peaks").attrs["promotion_min_snr"] = value
+    return path
+
+
+def test_grading_thresholds_use_recorded_values(base_file):
     floor, vif = grading_thresholds_from_diagnostics(
-        {"peak_survival": {"snr_floor": 5.0}, "vif_collapse": {"vif_threshold": 9.0}}
+        str(base_file),
+        {"peak_survival": {"snr_floor": 5.0}, "vif_collapse": {"vif_threshold": 9.0}},
     )
     assert (floor, vif) == (5.0, 9.0)
 
 
-def test_grading_thresholds_fall_back_to_current_defaults_not_4():
-    floor, vif = grading_thresholds_from_diagnostics({})
-    assert floor == pytest.approx(3.3)
-    assert vif == 25.0
+def test_grading_fallback_with_no_persisted_state_is_the_defaults(base_file):
+    """Nothing persisted: persisted > recommended > default ends at the default."""
+    floor, vif = grading_thresholds_from_diagnostics(str(base_file), {})
+    assert floor == pytest.approx(DEFAULT_PROMOTION_MIN_SNR * _DEFAULT_FACTOR)
+    assert vif == _DEFAULT_VIF
     assert vif != 4.0
 
 
-def test_grading_thresholds_fall_back_per_field():
+def test_grading_fallback_uses_the_files_persisted_promotion_cutoff(base_file):
+    _persist_promotion_min_snr(base_file, 5.0)
+    floor, vif = grading_thresholds_from_diagnostics(str(base_file), {})
+    assert floor == pytest.approx(5.0 * _DEFAULT_FACTOR)
+    assert floor != pytest.approx(DEFAULT_PROMOTION_MIN_SNR * _DEFAULT_FACTOR)
+    assert vif == _DEFAULT_VIF
+
+
+def test_grading_fallback_uses_the_files_resolved_stage5_settings(base_file):
+    _persist_promotion_min_snr(base_file, 5.0)
+    ftmw.settings_set(base_file, "stage5.peak_survival.vif_collapse_threshold", 12.0)
+    ftmw.settings_set(base_file, "stage5.peak_survival.snr_survival_factor", 1.5)
+    floor, vif = grading_thresholds_from_diagnostics(str(base_file), {})
+    assert vif == 12.0
+    assert floor == pytest.approx(5.0 * 1.5)
+
+
+def test_grading_fallback_explicit_floor_beats_the_derived_one(base_file):
+    _persist_promotion_min_snr(base_file, 5.0)
+    ftmw.settings_set(base_file, "stage5.peak_survival.snr_survival_floor", 7.25)
+    floor, _vif = grading_thresholds_from_diagnostics(str(base_file), {})
+    assert floor == 7.25
+
+
+def test_grading_fallback_is_the_derivation_stage5_runs(base_file):
+    _persist_promotion_min_snr(base_file, 4.4)
+    floor, _vif = grading_thresholds_from_diagnostics(str(base_file), {})
+    assert floor == derive_survival_floor(4.4, _DEFAULT_FACTOR)
+
+
+def test_grading_thresholds_fall_back_per_field(base_file):
+    _persist_promotion_min_snr(base_file, 5.0)
     floor, vif = grading_thresholds_from_diagnostics(
-        {"peak_survival": {"snr_floor": 6.0}}
+        str(base_file), {"peak_survival": {"snr_floor": 6.0}}
     )
-    assert floor == 6.0 and vif == 25.0
+    assert floor == 6.0 and vif == _DEFAULT_VIF
     floor, vif = grading_thresholds_from_diagnostics(
-        {"vif_collapse": {"vif_threshold": 8.0}}
+        str(base_file), {"vif_collapse": {"vif_threshold": 8.0}}
     )
-    assert floor == pytest.approx(3.3) and vif == 8.0
+    assert floor == pytest.approx(5.0 * _DEFAULT_FACTOR) and vif == 8.0
 
 
 def test_fallback_does_not_leak_into_the_accessor(base_file):
     """The grader defaults are display-only; the contract still says NOT_RUN."""
+    _persist_promotion_min_snr(base_file, 5.0)
     _with_diagnostics(base_file, {})
-    assert grading_thresholds_from_diagnostics({}) == (
-        pytest.approx(3.3),
-        25.0,
+    assert grading_thresholds_from_diagnostics(str(base_file), {})[0] == (
+        pytest.approx(5.0 * _DEFAULT_FACTOR)
     )
     res = ftmw.fit_thresholds(base_file)
     assert res["vif_collapse_threshold"] is Absent.NOT_RUN

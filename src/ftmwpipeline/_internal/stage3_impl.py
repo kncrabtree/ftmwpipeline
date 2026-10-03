@@ -859,6 +859,27 @@ def save_peaks_impl(
     logger.info("Saved %d peaks to %s", len(peaks), file_path)
 
 
+def _promotion_attr_to_float(promo_attr: Any) -> Optional[float]:
+    """A persisted ``promotion_min_snr`` attribute as a float, ``None`` if unset."""
+    if promo_attr is None or np.isnan(float(promo_attr)):
+        return None
+    return float(promo_attr)
+
+
+def read_promotion_min_snr(file_path: str) -> Optional[float]:
+    """The Stage 3 promotion cutoff persisted on the file, or ``None``.
+
+    Reads only the attribute (no peaks are deserialized); ``None`` when the
+    file has no Stage 3 group or the group predates persisting the cutoff.
+    """
+    with h5py.File(file_path, "r") as h5f:
+        if "stage3_peaks" not in h5f:
+            return None
+        return _promotion_attr_to_float(
+            h5f["stage3_peaks"].attrs.get("promotion_min_snr")
+        )
+
+
 def load_peaks_impl(file_path: str) -> Dict[str, Any]:
     """Load the persisted Stage 3 peak list (validates structure loudly)."""
     with h5py.File(file_path, "r") as h5f:
@@ -883,9 +904,7 @@ def load_peaks_impl(file_path: str) -> Dict[str, Any]:
                 parameters = json.loads(grp.attrs["parameters"])
             except (json.JSONDecodeError, TypeError):
                 logger.warning("Could not parse saved Stage 3 parameters")
-    promotion_min_snr: Optional[float] = None
-    if promo_attr is not None and not np.isnan(float(promo_attr)):
-        promotion_min_snr = float(promo_attr)
+    promotion_min_snr = _promotion_attr_to_float(promo_attr)
     n_promoted = sum(1 for p in peaks if p.properties.get("promoted"))
     return {
         "peaks": peaks,

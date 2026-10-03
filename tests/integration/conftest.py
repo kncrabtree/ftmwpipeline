@@ -195,6 +195,74 @@ def baseline_2638_stage5_small(baseline_2638_stage4_small, tmp_path_factory):
     return fp
 
 
+@pytest.fixture(scope="session")
+def tau_calibrated_2638(baseline_2638_stage2, tmp_path_factory):
+    """A file carrying both decay-time calibrations, built once per session.
+
+    The Stage 5 baseline does not run Stage 2b, so the ``tau_*`` tables and
+    ``tau.`` / ``tau_g.`` metadata need their own file. Both twins are built
+    because they live in separate groups and the read surface addresses them as
+    separate tables. ``auto_recommend`` is off: the 3-way shape classifier
+    costs ~50 s per call on this fixture and nothing here depends on its
+    verdict. Read-only; tests that mutate must ``shutil.copy`` it first.
+    """
+    from ._stage2b_helpers import skip_auto_recommend_settings
+
+    tmp = tmp_path_factory.mktemp("read_tau")
+    path = tmp / "read_tau_2638.ftmw"
+    shutil.copy(baseline_2638_stage2, path)
+    for shape in ("lorentzian", "gaussian"):
+        ftmw.calibrate_tau(
+            str(path), shape=shape, settings=skip_auto_recommend_settings()
+        )
+    return path
+
+
+@pytest.fixture(scope="session")
+def tau_timebase_calibrated_2638(tau_calibrated_2638, tmp_path_factory):
+    """``tau_calibrated_2638`` plus a persisted timebase calibration.
+
+    The only fixture on which every ``tau.`` / ``tau_g.`` / ``timebase.``
+    metadata key is actually written. Read-only.
+    """
+    from ftmwpipeline.core.stage_fit_settings import ClockSource
+
+    path = tmp_path_factory.mktemp("read_timebase") / "read_timebase_2638.ftmw"
+    shutil.copy(tau_calibrated_2638, path)
+    ftmw.calibrate_timebase(
+        str(path),
+        clocks=[
+            ClockSource(freq_mhz=5760.0, locked=True, label="upconv"),
+            ClockSource(freq_mhz=5120.0, locked=True, label="downconv"),
+            ClockSource(freq_mhz=16000.0, locked=True, label="awg"),
+        ],
+    )
+    return path
+
+
+@pytest.fixture(scope="session")
+def stage5_reviewed_2638(baseline_2638_stage5_small, tmp_path_factory):
+    """The small Stage 5 build after Stage 6, with two recorded decisions.
+
+    ``get_final_products`` is populated and ``review_log`` carries a ``remove``
+    (weakest peak of the first multi-peak window) and an ``accept`` entry, so
+    checks over final peaks and decision-log rows run on real rows. Read-only;
+    tests that mutate must ``shutil.copy`` it first.
+    """
+    path = tmp_path_factory.mktemp("reviewed_small") / "reviewed_2638.ftmw"
+    shutil.copy(baseline_2638_stage5_small, path)
+    ftmw.review_run(str(path))
+    fit = ftmw.load_fit(str(path))
+    multi = next(w for w in fit.window_fits if len(w.fitted_peaks) >= 2)
+    weakest = min(multi.fitted_peaks, key=lambda p: p.snr or 0.0)
+    ftmw.review_edit(
+        str(path), int(multi.window_id), remove=[float(weakest.frequency_mhz)]
+    )
+    other = next(w for w in fit.window_fits if w.window_id != multi.window_id)
+    ftmw.review_accept(str(path), int(other.window_id))
+    return path
+
+
 # ---------------------------------------------------------------------------
 # Module-scoped cross-interface trio fixtures (one per test module)
 # ---------------------------------------------------------------------------
