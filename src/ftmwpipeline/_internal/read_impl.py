@@ -157,6 +157,7 @@ from ..io.window_serialization import (
     read_window_plan_scalars,
 )
 from ..serialize import with_status_columns
+from .absence_rules import float_or_absent
 from .shared_utils import active_acquisition_us
 
 __all__ = [
@@ -802,6 +803,9 @@ def _read_start_record(h5f: h5py.File, out: Dict[str, Any]) -> None:
         if value == NONE_SENTINEL:
             value = None
         out[f"start.{name}"] = value
+    if record.get("chirp_detected") is False and "start.chirp_end_us" in out:
+        # No chirp found: the stored 0.0 is not a measured end time.
+        out["start.chirp_end_us"] = Absent.UNDEFINED
 
 
 def _read_tau_scalars(
@@ -812,6 +816,65 @@ def _read_tau_scalars(
         return
     for key, value in read_tau_scalars(h5f[group]).items():
         out[f"{prefix}.{key}"] = value
+
+
+def _nonfinite_to_absent(out: Dict[str, Any], prefix: str) -> None:
+    """Turn every non-finite float under ``prefix.`` into ``Absent.UNDEFINED``.
+
+    A calibration scalar that was computed but has no finite value (a decay
+    time with zero contributors, a GMM fit on too few points) is ``UNDEFINED``.
+    """
+    for key in [k for k in out if k.startswith(f"{prefix}.")]:
+        value = out[key]
+        if isinstance(value, float) and not math.isfinite(value):
+            out[key] = Absent.UNDEFINED
+
+
+def _tau_section_absence(out: Dict[str, Any], prefix: str) -> None:
+    """Absence for one decay-time calibration section already copied into *out*.
+
+    The vote's ``recommended_shape`` is stored as the unset sentinel when the
+    vote had no winner: the vote ran and chose nothing, so ``UNDEFINED``. A
+    file that recorded no such attribute keeps the key omitted (stage-section
+    omission rule).
+    """
+    _nonfinite_to_absent(out, prefix)
+    key = f"{prefix}.recommended_shape"
+    if key in out and out[key] is None:
+        out[key] = Absent.UNDEFINED
+
+
+def _timebase_absence(out: Dict[str, Any]) -> None:
+    """Absence for the ``timebase.`` section already copied into *out*.
+
+    With no usable tones (``n_used == 0``) the stored scale error is ``0.0`` and
+    its uncertainty ``inf``: neither is a measurement, so both are
+    ``UNDEFINED`` here (the stored record keeps its encoding). A
+    ``lattice_g_mhz`` of ``0.0`` means no locked lattice was found.
+    """
+    n_used = out.get("timebase.n_used")
+    if n_used is not None and int(n_used) == 0:
+        for key in ("timebase.epsilon", "timebase.sigma_epsilon"):
+            if key in out:
+                out[key] = Absent.UNDEFINED
+    lattice = out.get("timebase.lattice_g_mhz")
+    if lattice is not None and not (math.isfinite(float(lattice)) and lattice > 0.0):
+        out["timebase.lattice_g_mhz"] = Absent.UNDEFINED
+    _nonfinite_to_absent(out, "timebase")
+
+
+def _stage5_acquisition_absence(value: Any) -> Union[float, Absent]:
+    """``stage5.acquisition_us`` as a contract value.
+
+    Mirrors ``stage6_impl._recorded_acquisition_us``: missing is ``NOT_RUN``; a
+    value that is not a positive finite number is ``UNDEFINED``.
+    """
+    if value is None:
+        return Absent.NOT_RUN
+    f = float_or_absent(value)
+    if isinstance(f, Absent) or f <= 0.0:
+        return Absent.UNDEFINED
+    return f
 
 
 def read_metadata_impl(file_path: Union[str, Path]) -> Dict[str, Any]:
@@ -858,15 +921,30 @@ def read_metadata_impl(file_path: Union[str, Path]) -> Dict[str, Any]:
         The digitizer-clock scale error and its uncertainty.
 
     ``file.completed_stages`` is a list of stage keys; every other value is a
-    scalar (``str`` / ``int`` / ``float`` / ``bool``) or ``None``.
+    scalar (``str`` / ``int`` / ``float`` / ``bool``), an
+    :class:`~ftmwpipeline.contract.Absent`, or -- for the ``ft.`` settings
+    echoes of an unset bound or trim -- ``None``.
+
+    **Absence.** A key of a stage that has not run is omitted. A key that is
+    present without a value is ``Absent``: ``NOT_RUN`` when the file predates
+    the record (``file.format_version``, ``file.created_with``, ``source.*``,
+    ``stage5.acquisition_us``, the stage 3 SNR cutoffs); ``UNDEFINED`` when it
+    was computed and has no value (``start.chirp_end_us`` when no chirp was
+    found, ``timebase.epsilon`` / ``sigma_epsilon`` with no usable tones,
+    ``timebase.lattice_g_mhz`` with no locked lattice, a decay time with zero
+    contributors, any other non-finite calibration scalar).
     """
     out: Dict[str, Any] = {}
     with _open(file_path) as h5f:
         out["file.path"] = str(Path(file_path))
         version = h5f.attrs.get("ftmw_format_version")
-        out["file.format_version"] = _decode(version) if version is not None else None
+        out["file.format_version"] = (
+            _decode(version) if version is not None else Absent.NOT_RUN
+        )
         created = h5f.attrs.get("created_with_ftmwpipeline")
-        out["file.created_with"] = _decode(created) if created is not None else None
+        out["file.created_with"] = (
+            _decode(created) if created is not None else Absent.NOT_RUN
+        )
         out["file.completed_stages"] = sorted(
             load_json_attr(h5f["pipeline_stages"], "completed_stages", [])
             if "pipeline_stages" in h5f
@@ -874,22 +952,34 @@ def read_metadata_impl(file_path: Union[str, Path]) -> Dict[str, Any]:
         )
 
         _copy_attrs(h5f, "source_metadata", "source", _SOURCE_ATTRS, out)
+        for key in [k for k in out if k.startswith("source.")]:
+            if out[key] is None:  # the stored "unset" sentinel
+                out[key] = Absent.NOT_RUN
         _copy_attrs(h5f, "stage0_fid_data/acquisition", "fid", _FID_ATTRS, out)
         _read_start_record(h5f, out)
         _read_ft_window(h5f, out)
         _copy_attrs(h5f, "timebase_calibration", "timebase", _TIMEBASE_ATTRS, out)
+        _timebase_absence(out)
 
         _read_tau_scalars(h5f, TAU_GROUP_PATH, "tau", out)
+        _tau_section_absence(out, "tau")
         _read_tau_scalars(h5f, GAUSSIAN_GROUP_PATH, "tau_g", out)
+        _tau_section_absence(out, "tau_g")
         if "stage3_peaks" in h5f:
             for key, value in read_peak_scalars(h5f["stage3_peaks"]).items():
-                out[f"stage3.{key}"] = value
+                # None: the file predates the recorded cutoff (Stage 3 always
+                # resolves both), so the quantity was never recorded.
+                out[f"stage3.{key}"] = Absent.NOT_RUN if value is None else value
         if "stage4_windows" in h5f:
             for key, value in read_window_plan_scalars(h5f["stage4_windows"]).items():
                 out[f"stage4.{key}"] = value
         if "stage5_fitting" in h5f:
             for key, value in read_fit_scalars(h5f["stage5_fitting"]).items():
-                out[f"stage5.{key}"] = value
+                out[f"stage5.{key}"] = (
+                    _stage5_acquisition_absence(value)
+                    if key == "acquisition_us"
+                    else value
+                )
     return out
 
 
@@ -906,7 +996,7 @@ def _cell(value: Any) -> str:
     back exactly what is on disk. The presentation-formatted, calibrated line
     list is ``report table``'s job, not this one.
     """
-    if value is None:
+    if value is None or isinstance(value, Absent):
         return ""
     if isinstance(value, np.generic):
         value = value.item()
@@ -920,7 +1010,9 @@ def _cell(value: Any) -> str:
 
 
 def _json_value(value: Any) -> Any:
-    """A JSON-safe view of a cell value (non-finite floats -> ``None``)."""
+    """A JSON-safe view of a cell value (non-finite floats, ``Absent`` -> ``None``)."""
+    if isinstance(value, Absent):
+        return None
     if isinstance(value, np.generic):
         value = value.item()
     if isinstance(value, float) and not math.isfinite(value):

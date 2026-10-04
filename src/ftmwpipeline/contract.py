@@ -401,8 +401,10 @@ _TAU_KEYS: Tuple[str, ...] = (
 )
 
 #: Declared ``read_metadata`` keys. The ``ft.`` section is emitted under both
-#: ``ft.`` and its ``stage1.`` alias; the ``tau.`` / ``tau_g.`` / ``timebase.``
-#: scalars exist only once their stage has run.
+#: ``ft.`` and its ``stage1.`` alias. A declared key of a stage that has not
+#: run is omitted (read with ``.get()``); a key that is present without a value
+#: is an :class:`Absent`, never ``None``. The ``ft.`` settings echoes of an
+#: unset bound or trim stay ``None``.
 _METADATA_KEYS: Tuple[str, ...] = (
     "file.format_version",
     "file.completed_stages",
