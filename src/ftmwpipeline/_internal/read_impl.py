@@ -103,6 +103,7 @@ from ..file_manager import (
     BadSettingError,
     PipelineCorruptionError,
     PipelineFileNotFoundError,
+    PipelineStageTracker,
     StageDependencyError,
     check_format_compatibility,
     is_transient_open_error,
@@ -1404,7 +1405,8 @@ def read_metadata_impl(file_path: Union[str, Path]) -> Dict[str, Any]:
     ``timebase.``
         The digitizer-clock scale error and its uncertainty.
 
-    ``file.completed_stages`` is a list of stage keys; every other value is a
+    ``file.completed_stages`` is a list of canonical stage names
+    (:class:`~ftmwpipeline.Stage` values) in rerun order; every other value is a
     scalar (``str`` / ``int`` / ``float`` / ``bool``), an
     :class:`~ftmwpipeline.contract.Absent`, or -- for the ``ft.`` settings
     echoes of an unset bound or trim -- ``None``.
@@ -1431,11 +1433,13 @@ def read_metadata_impl(file_path: Union[str, Path]) -> Dict[str, Any]:
         out["file.created_with"] = (
             _decode(created) if created is not None else Absent.NOT_RUN
         )
-        out["file.completed_stages"] = sorted(
+        # Canonical stage names in rerun order, like every status payload; a
+        # recorded key no stage of this version owns is left out.
+        out["file.completed_stages"] = PipelineStageTracker(
             load_json_attr(h5f["pipeline_stages"], "completed_stages", [])
             if "pipeline_stages" in h5f
             else []
-        )
+        ).canonical_completed_stages()
 
         _copy_attrs(h5f, "source_metadata", "source", _SOURCE_ATTRS, out)
         for key in [k for k in out if k.startswith("source.")]:

@@ -551,10 +551,25 @@ class TestReadMetadata:
             12.73
         )
 
-    def test_completed_stages_is_a_sorted_list(self, ftmw_file):
+    def test_completed_stages_are_canonical_in_rerun_order(self, ftmw_file):
+        """Mutation: restore the sorted storage keys."""
+        from ftmwpipeline.contract import rerun_order
+
         stages = read_metadata_impl(ftmw_file)["file.completed_stages"]
-        assert stages == sorted(stages)
-        assert "stage5_fitting" in stages
+        assert stages == ["data", "peaks", "windows", "fit"]
+        order = [s.value for s in rerun_order()]
+        assert stages == [s for s in order if s in stages]
+
+    def test_completed_stages_drop_a_key_no_stage_owns(self, ftmw_file):
+        with h5py.File(ftmw_file, "a") as h5f:
+            group = h5f["pipeline_stages"]
+            recorded = json.loads(group.attrs["completed_stages"])
+            group.attrs["completed_stages"] = json.dumps(
+                recorded + ["stage99_retired"]
+            )
+        stages = read_metadata_impl(ftmw_file)["file.completed_stages"]
+        assert "stage99_retired" not in stages
+        assert "fit" in stages
 
     def test_absent_stage_contributes_no_keys(self, ftmw_file):
         with h5py.File(ftmw_file, "a") as h5f:
@@ -862,7 +877,7 @@ class TestFormatting:
     def test_metadata_csv_joins_list_values(self, ftmw_file):
         text = format_metadata_impl(read_metadata_impl(ftmw_file), "csv")
         stages = dict(list(csv.reader(io.StringIO(text)))[1:])["file.completed_stages"]
-        assert "stage5_fitting" in stages.split(";")
+        assert "fit" in stages.split(";")
 
     def test_metadata_json_is_an_object(self, ftmw_file):
         blob = json.loads(format_metadata_impl(read_metadata_impl(ftmw_file), "json"))
