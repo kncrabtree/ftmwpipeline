@@ -35,6 +35,7 @@ from typing import Any, Dict, Optional
 import numpy as np
 
 from ..core.tau_calibration_settings import TauCalibrationSettings
+from ..file_manager import BadSettingError
 from ..fitting.tau_calibration import (
     ShapeRecommendation,
     compute_shape_recommendation,
@@ -122,10 +123,15 @@ def recommend_shape_impl(
     sample_dt_us = float(fid.spacing * 1e6)
     start_us, end_us = ft_settings.active_window_us()
     if ft_settings.trim is None:
-        raise ValueError(
-            "Stage 1 persisted FT settings have no frequency trim; the "
-            "shape recommendation uses the persisted trim range to match "
-            "the user spectrum. Set trim on compute_ft() first."
+        raise BadSettingError(
+            "ft.trim",
+            "a persisted (min, max) MHz trim range (set trim on compute_ft)",
+            None,
+            message=(
+                "Stage 1 persisted FT settings have no frequency trim; the "
+                "shape recommendation uses the persisted trim range to match "
+                "the user spectrum. Set trim on compute_ft() first."
+            ),
         )
     trim_lo_mhz, trim_hi_mhz = ft_settings.trim
     sideband = (
@@ -147,6 +153,30 @@ def recommend_shape_impl(
     margin_v = _required_float(
         rec.pure_margin_threshold, "recommendation.pure_margin_threshold"
     )
+    if bound_hi_v <= bound_lo_v:
+        raise BadSettingError(
+            "stage2b.recommendation.tau_bound_hi",
+            f"a number greater than tau_bound_lo ({bound_lo_v})",
+            bound_hi_v,
+            message=(
+                f"tau_bound_hi ({bound_hi_v}) must exceed tau_bound_lo "
+                f"({bound_lo_v})"
+            ),
+        )
+    n_active = min(int(round(end_us / sample_dt_us)), len(fid.data)) - max(
+        int(round(start_us / sample_dt_us)), 0
+    )
+    if n_active < 4 * int(n_seg_v):
+        raise BadSettingError(
+            "stage2b.stft.n_seg",
+            f"an integer <= {n_active // 4} (4 samples per segment in the "
+            f"{n_active}-sample active region)",
+            n_seg_v,
+            message=(
+                f"active region has too few samples ({n_active}) for "
+                f"n_seg={n_seg_v}"
+            ),
+        )
     if rec.tau_G_seeds is None:
         raise AssertionError(
             "resolved TauCalibrationSettings.recommendation.tau_G_seeds is "

@@ -20,6 +20,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
+import math
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -28,7 +29,7 @@ import h5py
 import numpy as np
 
 from ..core.stage_fit_settings import ClockSource, coerce_clock_sources
-from ..file_manager import StageDependencyError
+from ..file_manager import BadSettingError, StageDependencyError
 from ..fitting.timebase_calibration import (
     DEFAULT_KAPPA_SYS,
     DEFAULT_SNR_MIN,
@@ -68,7 +69,17 @@ def _resolve_clock_sources(
     clocks and must not silently fall back.
     """
     if clocks is not None:
-        coerced = coerce_clock_sources(clocks)
+        try:
+            coerced = coerce_clock_sources(clocks)
+        except BadSettingError:
+            raise
+        except ValueError as e:
+            raise BadSettingError(
+                "clocks",
+                "a sequence of ClockSource or {freq_mhz, locked, label} mappings",
+                clocks if isinstance(clocks, (str, list, tuple)) else repr(clocks),
+                message=str(e),
+            ) from e
         if coerced:
             return coerced
 
@@ -80,12 +91,17 @@ def _resolve_clock_sources(
     if recommended:
         return recommended
 
-    raise ValueError(
-        "No instrument clock declaration found. Timebase self-calibration "
-        "needs the Rb-locked clock fundamentals to build the spur lattice. "
-        "Declare them via spur.clocks (e.g. StageFitSettings with "
-        "spur.clocks=[ClockSource(freq_mhz=5120, locked=True), ...]) or pass "
-        "clocks=... to this call."
+    raise BadSettingError(
+        "stage5.spur.clocks",
+        "a non-empty clock declaration with at least one locked source",
+        None,
+        message=(
+            "No instrument clock declaration found. Timebase self-calibration "
+            "needs the Rb-locked clock fundamentals to build the spur lattice. "
+            "Declare them via spur.clocks (e.g. StageFitSettings with "
+            "spur.clocks=[ClockSource(freq_mhz=5120, locked=True), ...]) or pass "
+            "clocks=... to this call."
+        ),
     )
 
 
@@ -96,6 +112,32 @@ def _split_locked_unlocked(
     locked = [float(c.freq_mhz) for c in clocks if c.locked]
     unlocked = [float(c.freq_mhz) for c in clocks if not c.locked]
     return locked, unlocked
+
+
+def _check_calibration_knobs(
+    kappa_sys: Optional[float], snr_min: Optional[float]
+) -> None:
+    """Refuse a ``kappa_sys`` / ``snr_min`` the calibration cannot use."""
+    if kappa_sys is not None:
+        try:
+            kappa_ok = math.isfinite(float(kappa_sys)) and float(kappa_sys) >= 0.0
+        except (TypeError, ValueError):
+            kappa_ok = False
+        if not kappa_ok:
+            raise BadSettingError(
+                "kappa_sys",
+                "a finite number >= 0 (fractional per-tone floor)",
+                kappa_sys,
+            )
+    if snr_min is not None:
+        try:
+            snr_ok = math.isfinite(float(snr_min)) and float(snr_min) > 0.0
+        except (TypeError, ValueError):
+            snr_ok = False
+        if not snr_ok:
+            raise BadSettingError(
+                "snr_min", "a finite number > 0 (peak/noise gate)", snr_min
+            )
 
 
 def calibrate_timebase_impl(
@@ -128,13 +170,19 @@ def calibrate_timebase_impl(
                 file_path_obj,
             )
 
+    _check_calibration_knobs(kappa_sys, snr_min)
     resolved_clocks = _resolve_clock_sources(file_path, clocks)
     locked, unlocked = _split_locked_unlocked(resolved_clocks)
     if not locked:
-        raise ValueError(
-            "The clock declaration has no locked sources. Timebase "
-            "self-calibration needs at least one Rb-locked clock fundamental "
-            "(ClockSource(..., locked=True)) to build the spur lattice."
+        raise BadSettingError(
+            "stage5.spur.clocks",
+            "a clock declaration with at least one locked source",
+            [c.to_dict() for c in resolved_clocks],
+            message=(
+                "The clock declaration has no locked sources. Timebase "
+                "self-calibration needs at least one Rb-locked clock fundamental "
+                "(ClockSource(..., locked=True)) to build the spur lattice."
+            ),
         )
 
     fid = load_fid_from_pipeline_impl(file_path)

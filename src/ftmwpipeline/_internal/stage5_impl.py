@@ -60,7 +60,11 @@ from ..core.stage_fit_settings import (
     load_preset,
 )
 from ..core.stage_fit_settings import resolve as resolve_stage_fit_settings
-from ..file_manager import StageDependencyError, invalidate_downstream_stages
+from ..file_manager import (
+    BadSettingError,
+    StageDependencyError,
+    invalidate_downstream_stages,
+)
 from ..fitting.clock_lattice import ClockLattice
 from ..fitting.peak_model import PeakShape
 from ..fitting.plan_execution import (
@@ -224,17 +228,33 @@ def _resolve_tau_calibration_for_fit(
     has_tau = tau_maj_override_us is not None
     has_sigma = sigma_tau_override_us is not None
     if has_tau ^ has_sigma:
-        raise ValueError(
-            "tau_maj_override_us and sigma_tau_override_us must be supplied "
-            "together; supplying only one is ambiguous"
+        given_name = "tau_maj_override_us" if has_tau else "sigma_tau_override_us"
+        given_value = tau_maj_override_us if has_tau else sigma_tau_override_us
+        raise BadSettingError(
+            given_name,
+            "supplied together with "
+            + ("sigma_tau_override_us" if has_tau else "tau_maj_override_us"),
+            given_value,
+            message=(
+                "tau_maj_override_us and sigma_tau_override_us must be supplied "
+                "together; supplying only one is ambiguous"
+            ),
         )
     if has_tau:
         tau_v = float(tau_maj_override_us)  # type: ignore[arg-type]
         sigma_v = float(sigma_tau_override_us)  # type: ignore[arg-type]
         if tau_v <= 0.0 or sigma_v <= 0.0:
-            raise ValueError(
-                f"tau_maj_override_us and sigma_tau_override_us must be "
-                f"positive (got tau_maj={tau_v}, sigma_tau={sigma_v})"
+            bad_name = (
+                "tau_maj_override_us" if tau_v <= 0.0 else "sigma_tau_override_us"
+            )
+            raise BadSettingError(
+                bad_name,
+                "a number > 0",
+                tau_v if tau_v <= 0.0 else sigma_v,
+                message=(
+                    f"tau_maj_override_us and sigma_tau_override_us must be "
+                    f"positive (got tau_maj={tau_v}, sigma_tau={sigma_v})"
+                ),
             )
         return tau_v, sigma_v, "override"
     if persisted is not None:
@@ -1847,7 +1867,17 @@ def _fit_peaks_impl(
         explicit = copy.deepcopy(explicit)
         assert explicit is not None
         if shape is not None:
-            explicit.shape = ShapeSpec.coerce(shape)
+            try:
+                explicit.shape = ShapeSpec.coerce(shape)
+            except BadSettingError:
+                raise
+            except ValueError as e:
+                raise BadSettingError(
+                    "shape",
+                    "a peak shape such as 'lorentzian' or 'gaussian'",
+                    shape if isinstance(shape, str) else repr(shape),
+                    message=str(e),
+                ) from e
         if tau_maj_override_us is not None:
             explicit.tau.tau_maj_override_us = tau_maj_override_us
         if sigma_tau_override_us is not None:
@@ -1867,6 +1897,13 @@ def _fit_peaks_impl(
     assert resolved.shape is not None
     shape_enum = resolved.shape.kind
     max_decay_v = _required_float(resolved.tau.max_decay_factor, "tau.max_decay_factor")
+    if not max_decay_v > 1.0:
+        raise BadSettingError(
+            "stage5.tau.max_decay_factor",
+            "a number > 1",
+            max_decay_v,
+            message=f"max_decay_factor must be greater than 1 (got {max_decay_v})",
+        )
     edge_threshold_v = _required_float(
         resolved.thaw.residual_edge_threshold, "thaw.residual_edge_threshold"
     )
@@ -2087,9 +2124,14 @@ def _fit_peaks_impl(
     else:
         tau0_us_v = float(resolved.tau.tau0_us)
     if tau0_us_v <= 0:
-        raise ValueError(
-            f"tau0_us must be positive (got {tau0_us_v}); the active "
-            f"acquisition is {acquisition_us} us"
+        raise BadSettingError(
+            "stage5.tau.tau0_us",
+            "a number > 0 us",
+            tau0_us_v,
+            message=(
+                f"tau0_us must be positive (got {tau0_us_v}); the active "
+                f"acquisition is {acquisition_us} us"
+            ),
         )
     fit_tau_v = _required_bool(resolved.tau.fit_tau, "tau.fit_tau")
 
@@ -3212,8 +3254,8 @@ def select_window_ids(
     The selectors compose as a union: explicit ids, frequency lookups, the
     top-SNR windows, and a random sample are all added to one set. ``all_windows``
     short-circuits to every window with attached context. ``random_seed`` only
-    matters when ``random_n`` is set. Raises ``ValueError`` for an unknown id or
-    a frequency in no window.
+    matters when ``random_n`` is set. Raises ``BadSettingError`` (a ``ValueError``)
+    listing every unknown id, or every frequency in no window.
     """
     available = [
         int(cast(int, wf.window_id)) for wf in fit.window_fits if wf.window is not None
@@ -3224,18 +3266,37 @@ def select_window_ids(
         return sorted(available)
     available_set = set(available)
     selected: set[int] = set()
-    for wid in window_ids or []:
-        if int(wid) not in available_set:
-            raise ValueError(
-                f"window id {wid} not in fit "
+    unknown_ids = [int(w) for w in window_ids or [] if int(w) not in available_set]
+    if unknown_ids:
+        raise BadSettingError(
+            "window_ids",
+            f"ids of windows in the fit ({min(available)}..{max(available)})",
+            unknown_ids,
+            message=(
+                f"window id {unknown_ids[0]} not in fit "
                 f"(available {min(available)}..{max(available)})"
-            )
-        selected.add(int(wid))
+                if len(unknown_ids) == 1
+                else f"window ids {unknown_ids} not in fit "
+                f"(available {min(available)}..{max(available)})"
+            ),
+        )
+    selected.update(int(w) for w in window_ids or [])
+    unmatched_freqs: list[float] = []
     for fq in freqs or []:
         fwid = _window_for_freq(fit, float(fq))
         if fwid is None:
-            raise ValueError(f"frequency {fq} MHz falls in no fit window")
-        selected.add(fwid)
+            unmatched_freqs.append(fq)
+        else:
+            selected.add(fwid)
+    if unmatched_freqs:
+        raise BadSettingError(
+            "freqs",
+            "frequencies (MHz) that fall inside a fit window",
+            unmatched_freqs,
+            message="; ".join(
+                f"frequency {fq} MHz falls in no fit window" for fq in unmatched_freqs
+            ),
+        )
     if top_snr:
         for wid in _windows_by_peak_snr(fit)[: int(top_snr)]:
             selected.add(wid)

@@ -506,10 +506,9 @@ carries a stable ``code`` and typed attributes, and ``to_dict()`` returns::
      - ``PipelineExistsError``
      - none
    * - ``bad_setting``
-     - ``BadSettingError``
-     - ``path`` (the setting path, or ``preset`` / ``trim`` / the preset block
-       or key), ``expected`` (what the setting accepts), ``value`` (what was
-       given)
+     - ``BadSettingError`` (a ``ValueError``)
+     - ``path`` (the registry path of the setting, or the argument name),
+       ``expected`` (what would have been accepted), ``value`` (what was given)
 
 The code set is introduced **wave by wave**. ``capabilities()`` lists the
 codes this installation currently implements, and a client should rely on that
@@ -549,6 +548,62 @@ public calls that raise it:
 
 Range and choice checks at set time are not yet made: an out-of-range number
 is accepted by ``settings_set`` and fails only when a stage runs.
+
+**Refused stage settings.** A stage call given a value it cannot use raises
+``BadSettingError`` (``bad_setting``) before any work starts; ``path`` names the
+setting, so a client can point at the offending knob. The message text is
+unchanged from the ``ValueError`` it replaced.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 34 66
+
+   * - Public call
+     - ``bad_setting`` ``path``
+   * - ``import_data`` (stage-level, auto-detection found nothing or an unknown
+       ``format_name``), ``load_fid`` / source validation
+     - ``format``
+   * - ``compute_ft``
+     - ``ft.start_us`` (negative), ``ft.end_us`` (not after ``start_us``, or past
+       the end of the recording), ``ft.trim`` (no data points in the range)
+   * - ``estimate_noise``
+     - ``stage2.n_iter`` (< 1), ``stage2.smoothing_percentile`` (outside
+       [0, 100])
+   * - ``calibrate_tau``, ``recommend_shape``
+     - ``shape`` (not ``lorentzian`` / ``gaussian``), ``ft.trim`` (value
+       ``null``: no trim persisted by ``compute_ft``), ``stage2b.stft.n_seg``,
+       ``stage2b.stft.sigma_time``, ``stage2b.band.band_edges_mhz``,
+       ``stage2b.band.band_labels``, ``stage2b.gaussian.tau_G_bound_hi``,
+       ``stage2b.gaussian.tau_G_upper_fraction``,
+       ``stage2b.recommendation.tau_bound_hi``
+   * - ``calibrate_timebase``
+     - ``kappa_sys`` (negative or non-finite), ``snr_min`` (<= 0 or
+       non-finite), ``clocks`` (malformed argument), ``stage5.spur.clocks``
+       (no declaration, or no locked source)
+   * - ``detect_peaks``
+     - ``stage3.promotion.min_snr``, ``stage3.promotion.internal_min_snr``,
+       ``stage3.promotion.weak_medium_snr``, ``stage3.savgol.sg_order``,
+       ``stage3.savgol.sg_window``, ``stage3.primary_pass.primary_window``
+       (unknown apodization)
+   * - ``detect_start_time``
+     - ``stage0.step_us`` (FID too short for the sweep step)
+   * - ``fit_peaks``
+     - ``shape``, ``tau_maj_override_us`` / ``sigma_tau_override_us`` (only one
+       of the pair, or non-positive), ``stage5.tau.tau0_us``,
+       ``stage5.tau.max_decay_factor`` (must exceed 1)
+   * - ``show_fit``
+     - ``window_ids`` / ``freqs`` (``value`` lists every unknown id or
+       frequency at once), ``apodize`` / ``apodize_us``
+   * - ``review_create``
+     - ``anchor_mhz`` (the anchor already falls inside a window)
+   * - ``run_pipeline``
+     - ``trim`` (not given)
+
+Reading the noise result before ``noise run`` (or ``ft run``) raises
+``StageDependencyError`` (``stage_not_run``, ``command`` ``noise run`` /
+``ft run``). Typed ``PipelineFileError`` subclasses raised inside the import,
+FT and noise stages propagate with their own type instead of being re-wrapped
+as ``RuntimeError``.
 
 **Missing and corrupt files.** A path that does not exist raises
 ``PipelineFileNotFoundError`` (``not_found`` with ``kind`` ``"file"``; also a

@@ -54,6 +54,7 @@ import numpy as np
 
 from ..core.tau_calibration_settings import TauCalibrationSettings
 from ..file_manager import (
+    BadSettingError,
     StageDependencyError,
     invalidate_downstream_stages,
 )
@@ -94,8 +95,102 @@ _VALID_SHAPES = ("lorentzian", "gaussian")
 
 def _check_shape(shape: str) -> str:
     if shape not in _VALID_SHAPES:
-        raise ValueError(f"shape must be one of {_VALID_SHAPES}; got {shape!r}")
+        raise BadSettingError(
+            "shape",
+            f"one of: {', '.join(_VALID_SHAPES)}",
+            shape,
+            message=f"shape must be one of {_VALID_SHAPES}; got {shape!r}",
+        )
     return shape
+
+
+def _validate_tau_settings(
+    resolved: TauCalibrationSettings,
+    *,
+    shape: str,
+    n_active: int,
+    trim_lo_mhz: float,
+    trim_hi_mhz: float,
+) -> None:
+    """Refuse resolved Stage 2b settings the calibration kernels cannot run.
+
+    These are the same conditions the kernels check on their arguments; raised
+    here, before the calibration starts, as typed setting refusals naming the
+    registry path of the knob that is wrong.
+    """
+    stft = resolved.stft
+    n_seg = int(_required_int(stft.n_seg, "stft.n_seg"))
+    if n_active < 4 * n_seg:
+        raise BadSettingError(
+            "stage2b.stft.n_seg",
+            f"an integer <= {n_active // 4} (4 samples per segment in the "
+            f"{n_active}-sample active region)",
+            n_seg,
+            message=(
+                f"active region has too few samples ({n_active}) for n_seg={n_seg}"
+            ),
+        )
+    if stft.sigma_time is not None and float(stft.sigma_time) <= 0.0:
+        raise BadSettingError(
+            "stage2b.stft.sigma_time",
+            "a number > 0, or unset to estimate it from the FID tail",
+            stft.sigma_time,
+            message="sigma_time must be positive",
+        )
+    band = resolved.band
+    edges = band.band_edges_mhz
+    if edges is not None and bool(
+        _required_bool(band.compute_band_majorities, "band.compute_band_majorities")
+    ):
+        interior = tuple(float(e) for e in edges)
+        if any(e <= trim_lo_mhz or e >= trim_hi_mhz for e in interior):
+            raise BadSettingError(
+                "stage2b.band.band_edges_mhz",
+                f"edges strictly inside the trim range ({trim_lo_mhz}, {trim_hi_mhz})",
+                list(interior),
+                message=(
+                    f"band_edges_mhz must lie strictly inside "
+                    f"({trim_lo_mhz}, {trim_hi_mhz}); got {interior}"
+                ),
+            )
+        if not all(interior[i] < interior[i + 1] for i in range(len(interior) - 1)):
+            raise BadSettingError(
+                "stage2b.band.band_edges_mhz",
+                "strictly increasing edges",
+                list(interior),
+                message=f"band_edges_mhz must be strictly increasing; got {interior}",
+            )
+        if band.band_labels is not None and len(interior) + 1 != len(band.band_labels):
+            raise BadSettingError(
+                "stage2b.band.band_labels",
+                f"{len(interior) + 1} labels, one per band implied by band_edges_mhz",
+                list(band.band_labels),
+                message=(
+                    f"band_labels has {len(band.band_labels)} entries but "
+                    f"band_edges_mhz implies {len(interior) + 1} bands"
+                ),
+            )
+    if shape == "gaussian":
+        gauss = resolved.gaussian
+        lo = float(_required_float(gauss.tau_G_bound_lo, "gaussian.tau_G_bound_lo"))
+        hi = float(_required_float(gauss.tau_G_bound_hi, "gaussian.tau_G_bound_hi"))
+        if hi <= lo:
+            raise BadSettingError(
+                "stage2b.gaussian.tau_G_bound_hi",
+                f"a number greater than tau_G_bound_lo ({lo})",
+                hi,
+                message=f"tau_G_bound_hi ({hi}) must exceed tau_G_bound_lo ({lo})",
+            )
+        frac = float(
+            _required_float(gauss.tau_G_upper_fraction, "gaussian.tau_G_upper_fraction")
+        )
+        if not 0.0 < frac < 1.0:
+            raise BadSettingError(
+                "stage2b.gaussian.tau_G_upper_fraction",
+                "a number in (0, 1)",
+                frac,
+                message=f"tau_G_upper_fraction must lie in (0, 1); got {frac}",
+            )
 
 
 def _group_path_for_shape(shape: str) -> str:
@@ -197,12 +292,26 @@ def calibrate_tau_impl(
     sample_dt_us = float(fid.spacing * 1e6)
     start_us, end_us = ft_settings.active_window_us()
     if ft_settings.trim is None:
-        raise ValueError(
-            "Stage 1 persisted FT settings have no frequency trim; tau "
-            "calibration uses the persisted trim range to match the user "
-            "spectrum. Set trim on compute_ft() first."
+        raise BadSettingError(
+            "ft.trim",
+            "a persisted (min, max) MHz trim range (set trim on compute_ft)",
+            None,
+            message=(
+                "Stage 1 persisted FT settings have no frequency trim; tau "
+                "calibration uses the persisted trim range to match the user "
+                "spectrum. Set trim on compute_ft() first."
+            ),
         )
     trim_lo_mhz, trim_hi_mhz = ft_settings.trim
+    _n_start = max(int(round(start_us / sample_dt_us)), 0)
+    _n_end = min(int(round(end_us / sample_dt_us)), len(fid.data))
+    _validate_tau_settings(
+        resolved,
+        shape=shape,
+        n_active=_n_end - _n_start,
+        trim_lo_mhz=float(trim_lo_mhz),
+        trim_hi_mhz=float(trim_hi_mhz),
+    )
     sideband = (
         fid.sideband.value if hasattr(fid.sideband, "value") else str(fid.sideband)
     )

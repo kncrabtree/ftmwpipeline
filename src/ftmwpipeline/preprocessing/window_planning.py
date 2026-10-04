@@ -59,6 +59,7 @@ from ..core.data_structures import (
     PeakClassification,
     WindowPlan,
 )
+from ..file_manager import BadSettingError
 from ..fitting.peak_model import baseline_basis, effective_tau, h_T
 from .edge_coherence import (
     DEFAULT_EDGE_M,
@@ -1572,9 +1573,15 @@ def plan_stage6_window(
 
     anchor = float(anchor_mhz)
     if anchor < float(ofreqs[0]) or anchor > float(ofreqs[-1]):
-        raise ValueError(
-            f"anchor {anchor:.4f} MHz is outside the analysis band "
-            f"[{float(ofreqs[0]):.4f}, {float(ofreqs[-1]):.4f}] MHz"
+        raise BadSettingError(
+            "anchor_mhz",
+            f"a frequency inside the analysis band "
+            f"[{float(ofreqs[0]):.4f}, {float(ofreqs[-1]):.4f}] MHz",
+            anchor,
+            message=(
+                f"anchor {anchor:.4f} MHz is outside the analysis band "
+                f"[{float(ofreqs[0]):.4f}, {float(ofreqs[-1]):.4f}] MHz"
+            ),
         )
     gi = _nearest_grid_index(ofreqs, anchor)
 
@@ -1598,12 +1605,20 @@ def plan_stage6_window(
     covering_wid = _grid_index_covering_window(spans, gi)
     if covering_wid is not None:
         wlo, whi = plan.window(covering_wid).freq_range
-        raise ValueError(
-            f"anchor {anchor:.4f} MHz already falls inside window {covering_wid} "
-            f"([{min(wlo, whi):.4f}, {max(wlo, whi):.4f}] MHz). Add the peak "
-            f"to that window with 'review edit --window {covering_wid} --add "
-            f"{anchor:.4f}' instead; window creation is for a frequency no "
-            f"window covers."
+        raise BadSettingError(
+            "anchor_mhz",
+            "a frequency no window covers "
+            f"(window {covering_wid} spans "
+            f"[{min(wlo, whi):.4f}, {max(wlo, whi):.4f}] MHz)",
+            anchor,
+            message=(
+                f"anchor {anchor:.4f} MHz already falls inside window "
+                f"{covering_wid} "
+                f"([{min(wlo, whi):.4f}, {max(wlo, whi):.4f}] MHz). Add the peak "
+                f"to that window with 'review edit --window {covering_wid} --add "
+                f"{anchor:.4f}' instead; window creation is for a frequency no "
+                f"window covers."
+            ),
         )
 
     below = [(lo, hi, wid) for lo, hi, wid in spans if hi < gi]

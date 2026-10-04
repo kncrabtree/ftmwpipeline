@@ -20,7 +20,12 @@ from ..core.noise_settings import (
 )
 from ..core.noise_settings import load_preset as load_noise_preset
 from ..core.noise_settings import resolve as resolve_noise_settings
-from ..file_manager import StageDependencyError, invalidate_downstream_stages
+from ..file_manager import (
+    BadSettingError,
+    PipelineFileError,
+    StageDependencyError,
+    invalidate_downstream_stages,
+)
 from ..io.noise_result_serialization import (
     load_noise_result_from_hdf5,
     save_noise_result_to_hdf5,
@@ -117,7 +122,7 @@ def compute_noise_estimation_impl(
             f"Computed ComplexFT on-demand with {len(complex_ft.freq_array):,} frequency points"
         )
 
-    except StageDependencyError:
+    except PipelineFileError:
         raise
     except Exception as e:
         raise RuntimeError(
@@ -182,6 +187,24 @@ def _compute_noise_scatter(
     )
     convolve_mhz_v = float(_required(settings.convolve_mhz, "convolve_mhz"))
 
+    if n_iter_v < 1:
+        raise BadSettingError(
+            "stage2.n_iter",
+            "an integer >= 1",
+            n_iter_v,
+            message=f"Noise estimation failed: n_iter must be >= 1 (got {n_iter_v})",
+        )
+    if not 0.0 <= smoothing_percentile_v <= 100.0:
+        raise BadSettingError(
+            "stage2.smoothing_percentile",
+            "a percentile in [0, 100]",
+            smoothing_percentile_v,
+            message=(
+                "Noise estimation failed: smoothing_percentile must be in "
+                f"[0, 100] (got {smoothing_percentile_v})"
+            ),
+        )
+
     processing_params: Dict[str, Any] = {
         "method": "scatter",
         "window_mhz": window_mhz_v,
@@ -244,6 +267,8 @@ def _compute_noise_scatter(
         )
         _update_stage_completion(file_path, "stage2_noise_result")
         logger.info("Stage 2: Noise estimation results saved and marked complete")
+    except PipelineFileError:
+        raise
     except Exception as e:
         logger.error(f"Failed to save noise estimation results: {e}")
         raise RuntimeError(f"Noise estimation succeeded but storage failed: {e}")
@@ -357,7 +382,7 @@ def visualize_noise_impl(
             )
             logger.info("Loaded NoiseResult and active FT from pipeline file")
 
-    except StageDependencyError:
+    except PipelineFileError:
         raise
     except Exception as e:
         raise RuntimeError(
@@ -493,15 +518,28 @@ def load_noise_result_impl(file_path: str) -> Dict[str, Any]:
         with h5py.File(file_path, "r") as h5f:
             # Check dependencies
             if "stage2_noise_result" not in h5f:
-                raise ValueError("No noise estimation results found in pipeline file")
+                raise StageDependencyError(
+                    "load noise",
+                    ["stage2_noise_result"],
+                    Path(str(file_path)),
+                    command="noise run",
+                    message="No noise estimation results found in pipeline file",
+                )
 
             # Check that Stage 1 parameters exist (needed for ComplexFT computation)
             if (
                 "processing_parameters" not in h5f
                 or "ft_processing" not in h5f["processing_parameters"]
             ):
-                raise ValueError(
-                    "Stage 1 parameters missing - cannot compute ComplexFT for NoiseResult loading"
+                raise StageDependencyError(
+                    "load noise",
+                    ["stage1_complex_ft"],
+                    Path(str(file_path)),
+                    command="ft run",
+                    message=(
+                        "Stage 1 parameters missing - cannot compute ComplexFT "
+                        "for NoiseResult loading"
+                    ),
                 )
 
         # Rebuild the trimmed active FT on-demand: the sigma was
@@ -540,6 +578,8 @@ def load_noise_result_impl(file_path: str) -> Dict[str, Any]:
             "parameters_used": parameters_used,
         }
 
+    except PipelineFileError:
+        raise
     except Exception as e:
         raise RuntimeError(f"Failed to load NoiseResult from pipeline file: {e}")
 
@@ -599,6 +639,8 @@ def _update_stage_completion(file_path: str, stage_name: str) -> None:
             )
             stages_group.attrs["last_updated"] = datetime.now().isoformat()
 
+    except PipelineFileError:
+        raise
     except Exception as e:
         raise RuntimeError(f"Failed to update stage completion: {e}")
 

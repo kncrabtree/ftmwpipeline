@@ -40,6 +40,7 @@ from ..core.settings import (
     FTSettings,
     resolve,
 )
+from ..file_manager import BadSettingError, PipelineFileError
 from ..io.provenance import (
     RecordProvenance,
     group_provenance,
@@ -182,12 +183,46 @@ def _reject_window_past_record(
     by float representation.
     """
     if end_us > duration_us + 0.5 * sample_dt_us:
-        raise ValueError(
-            f"end_us={end_us:g} us is past the end of the recording "
-            f"({duration_us:g} us). The active region cannot be longer than "
-            f"the FID: its length sets the active-FT bin spacing that every "
-            f"frequency tolerance is resolved against. Pass an end_us within "
-            f"the record, or omit it to use the whole record."
+        raise BadSettingError(
+            "ft.end_us",
+            f"a time within the recording (<= {duration_us:g} us), or unset",
+            end_us,
+            message=(
+                f"end_us={end_us:g} us is past the end of the recording "
+                f"({duration_us:g} us). The active region cannot be longer than "
+                f"the FID: its length sets the active-FT bin spacing that every "
+                f"frequency tolerance is resolved against. Pass an end_us within "
+                f"the record, or omit it to use the whole record."
+            ),
+        )
+
+
+def _reject_bad_window_bounds(start_us: float, end_us: float) -> None:
+    """Refuse an active region that starts before 0 or ends at or before its start.
+
+    The same conditions ``FIDProcessingParameters`` enforces, raised here as a
+    typed setting refusal (with the same wording) before preprocessing.
+    """
+    if start_us < 0:
+        raise BadSettingError(
+            "ft.start_us",
+            "a time >= 0 us",
+            start_us,
+            message="FID preprocessing failed: Start time must be non-negative",
+        )
+    if end_us < 0:
+        raise BadSettingError(
+            "ft.end_us",
+            "a time >= 0 us, greater than ft.start_us",
+            end_us,
+            message="FID preprocessing failed: End time must be non-negative",
+        )
+    if start_us >= end_us:
+        raise BadSettingError(
+            "ft.end_us",
+            f"a time greater than ft.start_us ({start_us:g} us)",
+            end_us,
+            message="FID preprocessing failed: Start time must be less than end time",
         )
 
 
@@ -224,6 +259,8 @@ def compute_ft_impl(
     try:
         fid = load_fid_from_pipeline_impl(file_path)
         logger.info(f"Loaded FID with {len(fid.data):,} points from pipeline file")
+    except PipelineFileError:
+        raise
     except Exception as e:
         raise RuntimeError(f"Failed to load FID from pipeline file {file_path}: {e}")
 
@@ -235,13 +272,14 @@ def compute_ft_impl(
         float(fid.duration_us)
     )
     trim_range = resolved.trim
-    _start_us, end_us = resolved.active_window_us()
+    start_us, end_us = resolved.active_window_us()
 
     _reject_window_past_record(
         end_us,
         float(fid.duration_us),
         float(fid.spacing) * 1e6,
     )
+    _reject_bad_window_bounds(start_us, end_us)
 
     logger.info("Resolved FT processing settings:")
     for name, value in resolved.to_preprocess_kwargs().items():
@@ -251,6 +289,8 @@ def compute_ft_impl(
     try:
         preprocessed_fid = fid.preprocess(**resolved.to_preprocess_kwargs())
         logger.info(f"Preprocessing complete: {len(preprocessed_fid.data):,} points")
+    except PipelineFileError:
+        raise
     except Exception as e:
         raise ValueError(f"FID preprocessing failed: {e}")
 
@@ -279,9 +319,15 @@ def compute_ft_impl(
 
             mask = (freq_array >= trim_range[0]) & (freq_array <= trim_range[1])
             if not np.any(mask):
-                raise ValueError(
-                    f"No data points in trim range "
-                    f"[{trim_range[0]:.1f}, {trim_range[1]:.1f}] MHz"
+                raise BadSettingError(
+                    "ft.trim",
+                    "a (min, max) MHz range that overlaps the spectrum "
+                    f"({freq_array[0]:.1f} - {freq_array[-1]:.1f} MHz)",
+                    list(trim_range),
+                    message=(
+                        f"No data points in trim range "
+                        f"[{trim_range[0]:.1f}, {trim_range[1]:.1f}] MHz"
+                    ),
                 )
             result["trimmed_points"] = int(np.sum(mask))
             result["trim_range"] = trim_range
@@ -316,6 +362,13 @@ def compute_ft_impl(
             logger.info(
                 f"Trimmed spectrum: {len(complex_ft.complex_spectrum):,} points"
             )
+        except ValueError as e:
+            raise BadSettingError(
+                "ft.trim",
+                "a (min, max) MHz range, min < max, that overlaps the spectrum",
+                list(trim_range),
+                message=f"Frequency trimming failed: {e}",
+            ) from e
         except Exception as e:
             raise ValueError(f"Frequency trimming failed: {e}")
 

@@ -15,6 +15,8 @@ from typing import Any, Optional, cast
 import numpy as np
 from scipy.signal import get_window
 
+from ..file_manager import BadSettingError
+
 # Apodization vocabulary for the windowed views. Window specs are forwarded to
 # ``scipy.signal.get_window`` (the same vocabulary Blackchirp's ``BCFid.ft``
 # uses), so any scipy window is available: 'boxcar', 'hann', 'hamming',
@@ -35,8 +37,15 @@ def make_apodization(
     *,
     width_us: Optional[float] = None,
     default_width_us: Optional[float] = None,
+    setting: str = "apodize",
+    width_setting: str = "apodize_us",
 ) -> np.ndarray:
     """Real apodization window ``w(t)`` on the active-region time grid.
+
+    A spec that cannot be built raises
+    :class:`~ftmwpipeline.file_manager.BadSettingError` (also a ``ValueError``)
+    with ``path`` set to ``setting`` (the spec) or ``width_setting`` (the ``exp``
+    width), the names of the caller's knobs.
 
     Parameters
     ----------
@@ -54,6 +63,8 @@ def make_apodization(
     default_width_us : float, optional
         Width used when ``width_us`` is ``None`` (e.g. the window's fitted τ, so
         ``exp`` defaults to the matched filter).
+    setting, width_setting : str
+        Names reported as ``BadSettingError.path`` for a bad ``spec`` / width.
     """
     t = np.asarray(t_us, dtype=float)
     key = spec.strip()
@@ -61,22 +72,37 @@ def make_apodization(
     if low in ("exp", "exponential") and ":" not in key:
         w = width_us if width_us is not None else default_width_us
         if w is None or w <= 0:
-            raise ValueError("exp apodization needs a positive width (--apodize-us)")
+            raise BadSettingError(
+                width_setting,
+                "a width > 0 us for exp apodization",
+                w,
+                message="exp apodization needs a positive width (--apodize-us)",
+            )
         return np.exp(-t / float(w))
     if ":" in key:
         parts = key.split(":")
         try:
             gw_spec: Any = (parts[0], *(float(p) for p in parts[1:]))
         except ValueError as e:
-            raise ValueError(f"bad apodization spec {spec!r}: {e}") from e
+            raise BadSettingError(
+                setting,
+                "a window name or name:arg[:arg] with numeric arguments",
+                spec,
+                message=f"bad apodization spec {spec!r}: {e}",
+            ) from e
     else:
         gw_spec = low
     try:
         return cast(np.ndarray, get_window(gw_spec, t.size).astype(float))
     except Exception as e:  # scipy raises ValueError on unknown / underspecified
-        raise ValueError(
-            f"unknown apodization {spec!r}: {e} (use 'exp' or a "
-            f"scipy.signal.get_window spec, e.g. {APODIZATION_EXAMPLES})"
+        raise BadSettingError(
+            setting,
+            f"'exp' or a scipy.signal.get_window spec, e.g. {APODIZATION_EXAMPLES}",
+            spec,
+            message=(
+                f"unknown apodization {spec!r}: {e} (use 'exp' or a "
+                f"scipy.signal.get_window spec, e.g. {APODIZATION_EXAMPLES})"
+            ),
         ) from e
 
 

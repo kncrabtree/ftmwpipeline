@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, TextIO, Tuple, Union
 
+from ..file_manager import BadSettingError
 from .compaction import deferred_compaction
 from .progress import StageProgress
 
@@ -102,9 +103,14 @@ def run_pipeline_impl(
     from ..pipeline import Pipeline
 
     if trim is None:
-        raise ValueError(
-            "run_pipeline requires `trim` (the active-band FT range in MHz); "
-            "there is no active-band auto-detector."
+        raise BadSettingError(
+            "trim",
+            "an active-band (min, max) FT range in MHz",
+            None,
+            message=(
+                "run_pipeline requires `trim` (the active-band FT range in MHz); "
+                "there is no active-band auto-detector."
+            ),
         )
     out_path = Path(output) if output is not None else _default_output(source)
 

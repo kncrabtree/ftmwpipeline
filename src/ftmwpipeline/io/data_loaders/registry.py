@@ -9,7 +9,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Type, Union
 
-from ...file_manager import NotFoundError, PipelineFileNotFoundError
+from ...file_manager import BadSettingError, NotFoundError, PipelineFileNotFoundError
 from .base import BaseLoader, LoaderError, SourcePreview
 
 if TYPE_CHECKING:
@@ -91,13 +91,19 @@ class FormatRegistry:
 
         Raises
         ------
-        ValueError
-            If format is not registered
+        BadSettingError
+            If format is not registered (``path == "format"``; also a
+            ``ValueError``)
         """
         if format_name not in self._loader_instances:
             available = list(self._loaders.keys())
-            raise ValueError(
-                f"Unknown format '{format_name}'. Available formats: {available}"
+            raise BadSettingError(
+                "format",
+                f"one of: {', '.join(available)}",
+                format_name,
+                message=(
+                    f"Unknown format '{format_name}'. Available formats: {available}"
+                ),
             )
 
         return self._loader_instances[format_name]
@@ -284,8 +290,8 @@ class FormatRegistry:
                 raise LoaderError(f"Could not detect data format for: {source_path}")
 
         # Load with specific format
+        loader = self.get_loader(format_name)
         try:
-            loader = self.get_loader(format_name)
             return loader.load_fid(source_path, **kwargs)
         except ValueError as e:
             raise LoaderError(str(e)) from e
@@ -326,7 +332,12 @@ class FormatRegistry:
             - 'optional_parameters': optional loading parameters
         """
         if format_name not in self._loader_instances:
-            raise ValueError(f"Unknown format '{format_name}'")
+            raise BadSettingError(
+                "format",
+                f"one of: {', '.join(self._loaders.keys())}",
+                format_name,
+                message=f"Unknown format '{format_name}'",
+            )
 
         loader = self._loader_instances[format_name]
 
