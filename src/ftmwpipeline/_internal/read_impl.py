@@ -1412,7 +1412,9 @@ def read_metadata_impl(file_path: Union[str, Path]) -> Dict[str, Any]:
     **Absence.** A key of a stage that has not run is omitted. A key that is
     present without a value is ``Absent``: ``NOT_RUN`` when the file predates
     the record (``file.format_version``, ``file.created_with``, ``source.*``,
-    ``stage5.acquisition_us``, the stage 3 SNR cutoffs); ``UNDEFINED`` when it
+    ``stage5.acquisition_us``, the stage 3 SNR cutoffs, and any count,
+    creation time, plan revision or shape attribute missing from a
+    ``stage3.`` / ``stage4.`` / ``stage5.`` group); ``UNDEFINED`` when it
     was computed and has no value (``start.chirp_end_us`` when no chirp was
     found, ``timebase.epsilon`` / ``sigma_epsilon`` with no usable tones,
     ``timebase.lattice_g_mhz`` with no locked lattice, a decay time with zero
@@ -1451,19 +1453,21 @@ def read_metadata_impl(file_path: Union[str, Path]) -> Dict[str, Any]:
         _tau_section_absence(out, "tau_g")
         if "stage3_peaks" in h5f:
             for key, value in read_peak_scalars(h5f["stage3_peaks"]).items():
-                # None: the file predates the recorded cutoff (Stage 3 always
-                # resolves both), so the quantity was never recorded.
+                # None: the group does not carry the attribute (a count, the
+                # creation time, or a cutoff the file predates), so the
+                # quantity was never recorded.
                 out[f"stage3.{key}"] = Absent.NOT_RUN if value is None else value
         if "stage4_windows" in h5f:
             for key, value in read_window_plan_scalars(h5f["stage4_windows"]).items():
-                out[f"stage4.{key}"] = value
+                # None: the group does not carry the attribute (never filled
+                # with 0 or "unknown").
+                out[f"stage4.{key}"] = Absent.NOT_RUN if value is None else value
         if "stage5_fitting" in h5f:
             for key, value in read_fit_scalars(h5f["stage5_fitting"]).items():
-                out[f"stage5.{key}"] = (
-                    _stage5_acquisition_absence(value)
-                    if key == "acquisition_us"
-                    else value
-                )
+                if key == "acquisition_us":
+                    out[f"stage5.{key}"] = _stage5_acquisition_absence(value)
+                else:
+                    out[f"stage5.{key}"] = Absent.NOT_RUN if value is None else value
     return out
 
 

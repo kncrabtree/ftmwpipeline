@@ -221,6 +221,24 @@ def read_attr_value(
     return np.asarray(raw).astype(dtype).item()
 
 
+def optional_int_attr(h5_group: h5py.Group, name: str) -> Optional[int]:
+    """An integer attribute, or ``None`` when the group does not carry it.
+
+    Readers never fabricate a count for a missing attribute; the contract
+    surfaces map ``None`` to ``Absent.NOT_RUN``.
+    """
+    raw = h5_group.attrs.get(name)
+    return None if raw is None else int(raw)
+
+
+def optional_str_attr(h5_group: h5py.Group, name: str) -> Optional[str]:
+    """A string attribute, or ``None`` when the group does not carry it."""
+    raw = h5_group.attrs.get(name)
+    if raw is None:
+        return None
+    return raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+
+
 def stack_columns(
     chunks: Dict[str, List[np.ndarray]],
     specs: Dict[str, ColumnSpec],
