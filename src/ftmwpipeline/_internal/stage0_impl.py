@@ -347,9 +347,11 @@ def _import_data(
                 force=force,
             )
             logger.info(f"Pipeline file created: {pipeline_file}")
+            # The overwrite logs no warning line of its own (it never did);
+            # its stages join the one delivered Invalidated event.
             events.invalidated(
                 [stage_for_key(k) for k in invalidated],
-                reason=f"Import overwrote {Path(pipeline_file).name}",
+                reason=None,
             )
 
             # Written after create_pipeline_file so stage0_fid_data exists.

@@ -402,6 +402,19 @@ class OperationEvents:
             When the callback raises (chained as ``__cause__``).
         """
         render(event, verb=verb, detail=detail)
+        self.deliver(event)
+
+    def deliver(self, event: Event) -> None:
+        """Deliver *event* to the callback without rendering any log line.
+
+        For an event whose line(s) were already rendered step by step (the
+        merged ``Invalidated`` of :meth:`StageScope.collect_invalidations`).
+
+        Raises
+        ------
+        CallbackFailedError
+            When the callback raises (chained as ``__cause__``).
+        """
         if self.callback is None or self._held_failure is not None:
             return
         try:
@@ -619,8 +632,8 @@ class StageScope:
         self.verb = verb
         self._t0 = time.monotonic()
         self.finished = False
-        # (stages, reasons) while collect_invalidations() is active.
-        self._collected: Optional[Tuple[Set[Stage], List[str]]] = None
+        # The stages invalidated while collect_invalidations() is active.
+        self._collected: Optional[Set[Stage]] = None
 
     @property
     def operation(self) -> str:
@@ -688,55 +701,72 @@ class StageScope:
             detail={"freq_range": freq_range},
         )
 
-    def invalidated(self, stages: Sequence[StageLike], *, reason: str) -> None:
+    def invalidated(
+        self, stages: Sequence[StageLike], *, reason: Optional[str]
+    ) -> None:
         """Emit :class:`Invalidated` for *stages* (nothing when empty).
 
-        ``reason`` is the log line's lead (why the stages were dropped).
+        ``reason`` is the log line's lead (why the stages were dropped);
+        ``None`` renders no line (a step that never logged one, such as an
+        import overwriting a file) while the event is still delivered.
         """
         if not stages:
             return
-        if self._collected is not None:
-            self._collected[0].update(Stage(s) for s in stages)
-            if reason not in self._collected[1]:
-                self._collected[1].append(reason)
-            return
         names = {Stage(s) for s in stages}
         ordered = tuple(s for s in rerun_order() if s in names)
-        self.emit(
-            Invalidated(self.operation, self.stage, ordered),
-            detail={"reason": reason},
-        )
+        event = Invalidated(self.operation, self.stage, ordered)
+        if self._collected is not None:
+            # Each step logs its own line as it invalidates; only the event
+            # is merged (delivered once, when the collection ends).
+            if reason is not None:
+                render(event, verb=self.verb, detail={"reason": reason})
+            self._collected.update(names)
+            return
+        if reason is None:
+            self.ops.deliver(event)
+        else:
+            self.emit(event, detail={"reason": reason})
 
     @contextmanager
     def collect_invalidations(self) -> Iterator[None]:
-        """Combine every invalidation inside into ONE :class:`Invalidated`.
+        """Combine every invalidation inside into ONE delivered
+        :class:`Invalidated`.
 
         For a call that invalidates in several steps (an import that both
-        overwrites an analysed file and moves its start hint): the event is
-        emitted once, when the block ends, naming the union of the stages (the
-        result's ``invalidated``); its log line joins the steps' reasons. If the
-        block raises, what was already dropped is still logged but nothing is
-        delivered. Nested use joins the outer collection.
+        overwrites an analysed file and moves its start hint): each step still
+        logs its own warning line at the moment it invalidates; the event is
+        delivered once, when the block ends, naming the union of the stages
+        (the result's ``invalidated``). If the block raises after something was
+        already invalidated, the event is still delivered (best effort: a
+        callback that raises then does not mask the block's exception) and the
+        block's exception propagates. Nested use joins the outer collection.
         """
         if self._collected is not None:
             yield
             return
-        self._collected = (set(), [])
+        self._collected = set()
         try:
             yield
         except BaseException:
-            stages, reasons = self._collected
-            self._collected = None
+            stages, self._collected = self._collected, None
             if stages:
-                ordered = tuple(s for s in rerun_order() if s in stages)
-                render(
-                    Invalidated(self.operation, self.stage, ordered),
-                    detail={"reason": "; ".join(reasons)},
-                )
+                held = self.ops._held_failure
+                try:
+                    self._deliver_collected(stages)
+                except CallbackFailedError:
+                    # The block's own exception is what the caller must see.
+                    pass
+                # Likewise a failure this delivery left held (inside
+                # committing()), which would otherwise replace it there.
+                self.ops._held_failure = held
             raise
-        stages, reasons = self._collected
-        self._collected = None
-        self.invalidated(list(stages), reason="; ".join(reasons))
+        stages, self._collected = self._collected, None
+        if stages:
+            self._deliver_collected(stages)
+
+    def _deliver_collected(self, stages: Set[Stage]) -> None:
+        ordered = tuple(s for s in rerun_order() if s in stages)
+        self.ops.deliver(Invalidated(self.operation, self.stage, ordered))
 
     def finish(
         self,

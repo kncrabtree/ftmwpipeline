@@ -164,8 +164,46 @@ def test_invalidations_in_several_steps_are_one_event(caplog):
     inv = [e for e in seen if isinstance(e, Invalidated)]
     assert len(inv) == 1
     assert list(inv[0].stages) == [Stage.FT, Stage.FIT]
+    # Each step logs its own line as it invalidates; only the event merges.
     lines = [r.getMessage() for r in caplog.records if "invalidated stage" in r.msg]
-    assert len(lines) == 1 and lines[0].startswith("first; second")
+    assert len(lines) == 2
+    assert lines[0].startswith("first; ") and lines[1].startswith("second; ")
+
+
+def test_a_step_without_a_reason_logs_nothing_but_joins_the_event(caplog):
+    seen: list = []
+    ops = operation_events("data import", seen.append)
+    with ops.stage(Stage.DATA) as scope:
+        with scope.collect_invalidations():
+            scope.invalidated([Stage.FIT], reason=None)
+        scope.finish({})
+    inv = [e for e in seen if isinstance(e, Invalidated)]
+    assert len(inv) == 1 and list(inv[0].stages) == [Stage.FIT]
+    assert not [r for r in caplog.records if "invalidated stage" in r.msg]
+
+
+def test_collected_invalidation_is_delivered_when_a_later_step_raises():
+    seen: list = []
+    ops = operation_events("data import", seen.append)
+    scope = ops.detached_scope(Stage.DATA)
+    with pytest.raises(KeyError):
+        with scope.collect_invalidations():
+            scope.invalidated([Stage.FIT], reason="first")
+            raise KeyError("later step")
+    inv = [e for e in seen if isinstance(e, Invalidated)]
+    assert len(inv) == 1 and list(inv[0].stages) == [Stage.FIT]
+
+
+def test_a_raising_callback_does_not_mask_the_steps_exception():
+    def cb(event):
+        raise RuntimeError("listener broke")
+
+    ops = operation_events("data import", cb)
+    scope = ops.detached_scope(Stage.DATA)
+    with pytest.raises(KeyError):
+        with scope.collect_invalidations():
+            scope.invalidated([Stage.FIT], reason="first")
+            raise KeyError("later step")
 
 
 def test_committing_defers_cancel_and_callback_failure():
