@@ -66,7 +66,8 @@ contract tests check is present, in manifest order, so a client can discover
 the whole surface without importing the package: ``tables`` and ``fields``
 list the declared columns and result-type fields, ``vocabularies`` the closed
 value sets, ``file_bound`` whether each accessor takes a file, and
-``pipeline_names`` the ``Pipeline`` method serving each accessor. Every accessor listed
+``pipeline_names`` the ``Pipeline`` method serving each accessor (every
+accessor is listed, defaulting to its own name). Every accessor listed
 exists on the API, on ``Pipeline`` and as exactly one CLI verb,
 ``ftmwpipeline read <name>``, spelled as the API name. An accessor that
 reads a file takes the path as its first argument on the API and as the

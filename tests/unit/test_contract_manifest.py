@@ -235,6 +235,8 @@ SNAPSHOT_FIELDS: dict = {
     "RefitWindowResult": {"converged"},
     "PreviewWindowResult": {"converged"},
     "AppliedWindowResult": {"converged"},
+    "CurationAction": {"action", "window_id", "peak_uid", "epsilon"},
+    "SettingRow": {"path", "value", "type", "nullable", "units", "choices", "bounds"},
     "PipelineInfo": {
         "stage_environments",
         "last_written_with",
@@ -474,7 +476,7 @@ def test_manifest_sequences_are_tuples():
 
 
 def test_manifest_version_matches_package():
-    assert MANIFEST.contract_version == ftmwpipeline.CONTRACT_VERSION == 7
+    assert MANIFEST.contract_version == ftmwpipeline.CONTRACT_VERSION == 8
     assert isinstance(ftmwpipeline.CONTRACT_VERSION, int)
 
 
@@ -563,7 +565,9 @@ def _type_registry() -> dict:
         PreviewWindowResult,
         RefitWindowResult,
     )
+    from ftmwpipeline._internal.tuning.settings_inspection import SettingRow
     from ftmwpipeline.core.calibration import CalibrationStamp
+    from ftmwpipeline.core.curation import CurationAction
     from ftmwpipeline.core.data_structures import DecisionLogEntry, FinalPeak
 
     return {
@@ -573,6 +577,8 @@ def _type_registry() -> dict:
         "RefitWindowResult": RefitWindowResult,
         "PreviewWindowResult": PreviewWindowResult,
         "AppliedWindowResult": AppliedWindowResult,
+        "CurationAction": CurationAction,
+        "SettingRow": SettingRow,
     }
 
 
