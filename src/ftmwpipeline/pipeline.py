@@ -2478,7 +2478,9 @@ class Pipeline:
         # in-memory tracker captured at open()/create() time is stale.
         _, self.source_metadata, self.stage_tracker = open_pipeline_file(self.filepath)
 
-        info_dict = {
+        from ._internal.info_impl import environment_info_fields
+
+        info_dict: Dict[str, Any] = {
             "filepath": str(self.filepath),
             "valid": validation_report["valid"],
             "source_path": str(self.source_metadata.source_path),
@@ -2486,18 +2488,7 @@ class Pipeline:
             "import_time": self.source_metadata.import_timestamp.isoformat(),
             "completed_stages": sorted(self.stage_tracker.completed_stages),
             "next_available_stages": self.stage_tracker.get_next_available_stages(),
-            "format_version": validation_report.get("format_version"),
-            "created_with": validation_report.get("created_with"),
-            "stage_environments": validation_report.get("stage_environments", {}),
-            "last_written_with": validation_report.get("last_written_with"),
-            "environment_drift": validation_report.get("environment_drift", []),
-            "runtime_environment_drift": validation_report.get(
-                "runtime_environment_drift", []
-            ),
-            "current_environment": validation_report.get("current_environment"),
-            "environment_acknowledged": validation_report.get(
-                "environment_acknowledged", False
-            ),
+            **environment_info_fields(validation_report),
         }
 
         if not validation_report["valid"]:

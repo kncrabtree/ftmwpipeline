@@ -11,6 +11,8 @@ import json
 from typing import Any
 
 from ..api import get_pipeline_info
+from ..contract import Absent
+from ..serialize import to_jsonable
 from .utils import print_error, setup_logging
 
 
@@ -34,7 +36,8 @@ def cmd_info(args: argparse.Namespace) -> int:
         }
 
     if args.format == "json":
-        print(json.dumps(info, indent=2, default=str))
+        # Absent values are written as null plus a "<key>_absent" sibling.
+        print(json.dumps(to_jsonable(info), indent=2, default=str))
         return 0 if info.get("valid") else 1
 
     if not info.get("valid", False):
@@ -47,8 +50,11 @@ def cmd_info(args: argparse.Namespace) -> int:
     print(f"Pipeline: {file_path}")
     print(f"  source:          {info.get('source_path')}")
     print(f"  format:          {info.get('format')}")
-    print(f"  file format:     {info.get('format_version') or '(legacy, unstamped)'}")
-    print(f"  created with:    {info.get('created_with') or '(unknown)'}")
+    print(
+        "  file format:     "
+        f"{_value_or(info.get('format_version'), '(legacy, unstamped)')}"
+    )
+    print(f"  created with:    {_value_or(info.get('created_with'), '(unknown)')}")
     print(f"  imported:        {info.get('import_time')}")
     print(
         f"  completed:       {', '.join(info.get('completed_stages', [])) or '(none)'}"
@@ -62,6 +68,29 @@ def cmd_info(args: argparse.Namespace) -> int:
     return 0
 
 
+def _value_or(value: Any, placeholder: str) -> Any:
+    """*value*, or *placeholder* when it is missing (``None``, ``''`` or ``Absent``)."""
+    if value is None or value == "" or isinstance(value, Absent):
+        return placeholder
+    return value
+
+
+def _present(value: Any) -> Any:
+    """A usable value, or ``None`` when it is ``Absent`` or empty."""
+    if isinstance(value, Absent) or not value:
+        return None
+    return value
+
+
+def _record(data: Any) -> Any:
+    """An :class:`EnvironmentRecord` from a payload record that may hold ``Absent``."""
+    from ..core.environment import EnvironmentRecord
+
+    return EnvironmentRecord.from_dict(
+        {k: v for k, v in data.items() if not isinstance(v, Absent)}
+    )
+
+
 def _print_environment(info: dict) -> None:
     """Print the analysis-environment record: what produced each stage.
 
@@ -70,41 +99,50 @@ def _print_environment(info: dict) -> None:
     Stage 6 curation came from different code is the case a single stamp
     cannot express.
     """
-    from ..core.environment import EnvironmentRecord
-
-    last = info.get("last_written_with")
+    last = _present(info.get("last_written_with"))
     if last:
-        print(f"  last written by: {EnvironmentRecord.from_dict(last).summary()}")
+        print(f"  last written by: {_record(last).summary()}")
 
-    envs = info.get("stage_environments") or {}
+    envs = _present(info.get("stage_environments")) or {}
     if not envs:
-        print("  environment:     (not recorded; file predates the stamp)")
-        current = info.get("current_environment")
+        if info.get("stage_environments") is Absent.UNDEFINED:
+            print("  environment:     (could not be read)")
+        else:
+            print("  environment:     (not recorded; file predates the stamp)")
+        current = _present(info.get("current_environment"))
         if current:
             print(
                 "      running now: "
-                f"{EnvironmentRecord.from_dict(current).summary()} -- "
+                f"{_record(current).summary()} -- "
                 "reproducibility against the original run cannot be verified."
             )
         return
 
-    epochs = {d.get("analysis_epoch") for d in envs.values() if d.get("analysis_epoch")}
-    versions = {d.get("ftmwpipeline") for d in envs.values() if d.get("ftmwpipeline")}
+    epochs = {
+        d["analysis_epoch"]
+        for d in envs.values()
+        if _present(d.get("analysis_epoch")) is not None
+    }
+    versions = {
+        d["ftmwpipeline"]
+        for d in envs.values()
+        if _present(d.get("ftmwpipeline")) is not None
+    }
     if len(epochs) <= 1 and len(versions) <= 1:
         blas = next(
-            (d.get("blas") for d in envs.values() if d.get("blas")), "(unknown)"
+            (d["blas"] for d in envs.values() if _present(d.get("blas"))),
+            "(unknown)",
         )
         print(f"  environment:     uniform across {len(envs)} stage(s); BLAS {blas}")
     else:
         print("  environment:     MIXED -- stages came from different versions:")
         for stage in sorted(envs):
-            rec = EnvironmentRecord.from_dict(envs[stage])
+            rec = _record(envs[stage])
             print(f"      {stage:<28} {rec.summary()}")
 
-    drift = info.get("environment_drift") or []
-    for line in drift:
+    for line in _present(info.get("environment_drift")) or []:
         print(f"      drift: {line}")
-    for line in info.get("runtime_environment_drift") or []:
+    for line in _present(info.get("runtime_environment_drift")) or []:
         print(f"      vs running environment: {line}")
     if info.get("environment_acknowledged"):
         print(
