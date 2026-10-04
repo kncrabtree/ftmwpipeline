@@ -31,7 +31,6 @@ from ftmwpipeline.fitting.window_fit import (
     FrozenSkirt,
     conservative_fit,
     evaluate_baseline,
-    fit_window,
     frozen_skirt_delta,
 )
 
