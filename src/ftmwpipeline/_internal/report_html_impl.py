@@ -3353,21 +3353,24 @@ def _render_all_window_figures(
     available, or when the platform lacks ``fork``. The figures are deterministic
     at fixed DPI, so the parallel and serial outputs are byte-identical.
     """
+    from .events import detached_scope
+
     n = len(page_ids)
     last = [time.monotonic()]
+    check = None if events is None else events.check_cancel
+    # The "window n/total" line is rendered from the event (events.WINDOW_LINES),
+    # so a call with no operation reports through a render-only scope.
+    scope = events if events is not None else detached_scope(None)
 
     def _log_progress(i: int, _n: int) -> None:
         # The ordered per-window progress signal on long report runs.
-        logger.info("window %d/%d", i, n)
-        if events is None:
-            return
         now = time.monotonic()
         wid = int(page_ids[i - 1])
         try:
             wf = bundle.fit.window_fit(wid)
         except KeyError:
             wf = None
-        events.window_progress(
+        scope.window_progress(
             phase="initial",
             index=i,
             total=n,
@@ -3389,7 +3392,7 @@ def _render_all_window_figures(
             jobs=jobs,
             override=_FIGURE_RENDER_WORKERS,
             progress=_log_progress,
-            check=None if events is None else events.check_cancel,
+            check=check,
         )
     finally:
         _WORKER_RENDER_CTX = None

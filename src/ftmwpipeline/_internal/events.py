@@ -97,6 +97,7 @@ _STAGE6_LOGGER = "ftmwpipeline._internal.stage6_impl"
 _STAGE2_LOGGER = "ftmwpipeline._internal.stage2_impl"
 _STAGE3_LOGGER = "ftmwpipeline._internal.stage3_impl"
 _STAGE4_LOGGER = "ftmwpipeline._internal.stage4_impl"
+_REPORT_HTML_LOGGER = "ftmwpipeline._internal.report_html_impl"
 
 #: The sub-step progress line (``_internal.progress.WINDOW_LOG_PREFIX``): the
 #: run display reads ``n`` / ``total`` from ``record.args``.
@@ -284,11 +285,25 @@ _INVALIDATION_LINE = LogLine(
     ),
 )
 
-#: The per-window lines of each stage that emits ``WindowProgress``. Stage 6
-#: (``review``) has none yet.
-WINDOW_LINES: Dict[Stage, Tuple[LogLine, LogLine, LogLine]] = {
+#: The per-window lines of each stage that emits ``WindowProgress``, keyed by
+#: the event's ``stage``. ``None`` is the report's per-window rendering (``report
+#: run``, the one stage-less window walk): only its ``window n/total`` line.
+#: Stage 6 (``review``) has none yet.
+WINDOW_LINES: Dict[
+    Optional[Stage], Tuple[Optional[LogLine], Optional[LogLine], LogLine]
+] = {
     # (detail, dropped, progress)
     Stage.FIT: (_WINDOW_DETAIL_LINE, _WINDOW_DROPPED_LINE, _WINDOW_PROGRESS_LINE),
+    None: (
+        None,
+        None,
+        LogLine(
+            _REPORT_HTML_LOGGER,
+            logging.INFO,
+            WINDOW_PROGRESS_LOG_TEMPLATE,
+            lambda e, d: (e.index, e.total),
+        ),
+    ),
 }
 
 
@@ -315,10 +330,12 @@ def render(
         if line is not None:
             line.emit(event, d)
     elif isinstance(event, WindowProgress):
-        lines = WINDOW_LINES.get(event.stage) if event.stage is not None else None
+        lines = WINDOW_LINES.get(event.stage)
         if lines is not None:
             detail_line, dropped_line, progress_line = lines
-            (dropped_line if event.dropped else detail_line).emit(event, d)
+            line = dropped_line if event.dropped else detail_line
+            if line is not None:
+                line.emit(event, d)
             progress_line.emit(event, d)
     elif isinstance(event, Invalidated):
         _INVALIDATION_LINE.emit(event, d)
