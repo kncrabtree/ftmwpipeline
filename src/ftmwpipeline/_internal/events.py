@@ -426,12 +426,32 @@ class OperationEvents:
         block honours it), and a callback that raises is not allowed to abort
         the block: its :class:`CallbackFailedError` is raised when the block
         ends, and nothing more is delivered meanwhile. Log lines still render.
+
+        If the block itself raises an ordinary exception while a callback
+        failure is held, the caller still sees ``callback_failed``: the held
+        :class:`CallbackFailedError` is raised (its ``__cause__`` stays the
+        callback's exception) with the block's exception as its
+        ``__context__``. A ``BaseException`` that is not an ``Exception`` (a
+        second Ctrl-C's ``KeyboardInterrupt``) propagates as is. Either way the
+        held failure is cleared once the outermost block ends.
         """
         self._committing += 1
         try:
             yield
-        finally:
+        except Exception:
             self._committing -= 1
+            if self._committing or self._held_failure is None:
+                raise
+            failure, self._held_failure = self._held_failure, None
+            # Raised inside the handler: the in-flight exception becomes the
+            # failure's __context__; __cause__ (the callback's) is untouched.
+            raise failure
+        except BaseException:
+            self._committing -= 1
+            if not self._committing:
+                self._held_failure = None
+            raise
+        self._committing -= 1
         if not self._committing and self._held_failure is not None:
             failure, self._held_failure = self._held_failure, None
             raise failure
