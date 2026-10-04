@@ -25,6 +25,7 @@ from ftmwpipeline.file_manager import (
     PipelineCompatibilityError,
     PipelineCorruptionError,
     PipelineExistsError,
+    PipelineFileNotFoundError,
     PipelineStageTracker,
     SourceMetadata,
     StageDependencyError,
@@ -137,14 +138,41 @@ class TestPipelineStageTracker:
         tracker = PipelineStageTracker(["stage0_fid_data", "stage1_complex_ft"])
         data_dict = tracker.to_dict()
 
-        assert set(data_dict["completed_stages"]) == {
-            "stage0_fid_data",
-            "stage1_complex_ft",
-        }
-        assert set(data_dict["next_available"]) == {
-            "stage2_noise_result",
-            "timebase_calibration",
-        }
+        # The serialized view names stages canonically (``Stage`` values), in
+        # rerun order -- never by internal storage key.
+        assert data_dict["completed_stages"] == ["data", "ft"]
+        assert data_dict["next_available"] == ["noise", "timebase"]
+
+    def test_canonical_views_follow_rerun_order(self):
+        """Mutation: sort the canonical views alphabetically (or name storage
+        keys) again."""
+        tracker = PipelineStageTracker(
+            [
+                "stage3_peaks",
+                "stage0_fid_data",
+                "stage2_noise_result",
+                "stage1_complex_ft",
+            ]
+        )
+        assert tracker.canonical_completed_stages() == [
+            "data",
+            "ft",
+            "noise",
+            "peaks",
+        ]
+        assert tracker.canonical_next_available_stages() == [
+            "tau",
+            "tau_g",
+            "timebase",
+            "windows",
+        ]
+
+    def test_canonical_completed_stages_omits_an_unknown_key(self):
+        """A key that is no stage of this version has no canonical name; it is
+        dropped from the canonical view, not passed through."""
+        tracker = PipelineStageTracker(["stage0_fid_data", "stage9_future"])
+        assert tracker.canonical_completed_stages() == ["data"]
+        assert "stage9_future" in tracker.completed_stages
 
 
 class TestFileManagerFunctions:
@@ -329,17 +357,89 @@ class TestFileManagerFunctions:
         assert report["valid"] is True
         assert len(report["errors"]) == 0
         assert "file_size" in report
-        assert "stages" in report
+        assert report["stages"] == {
+            "completed_stages": ["data"],
+            "next_available": ["ft"],
+        }
 
-        # Test detection of missing required groups (corruption)
+        # A file that cannot be opened as a pipeline file (missing required
+        # groups) raises the typed open error; validation reports problems in
+        # a file that opens, it does not stand in for opening one.
         filepath_corrupted = temp_dir / "corrupted.ftmw"
         with h5py.File(filepath_corrupted, "w") as h5f:
             h5f.attrs["file_type"] = "ftmw_pipeline"
             # Missing required groups
 
-        report = validate_pipeline_file(filepath_corrupted)
+        with pytest.raises(PipelineCorruptionError) as exc_info:
+            validate_pipeline_file(filepath_corrupted)
+        assert exc_info.value.code == "file_corrupt"
+
+    def test_validate_a_missing_file_raises_not_found(self, temp_dir):
+        """Mutation: restore the early ``{"valid": False}`` report for a path
+        that does not exist."""
+        missing = temp_dir / "gone.ftmw"
+        with pytest.raises(PipelineFileNotFoundError) as exc_info:
+            validate_pipeline_file(missing)
+        assert exc_info.value.code == "not_found"
+        assert isinstance(exc_info.value, FileNotFoundError)
+        assert not missing.exists()  # a failed validation does not create it
+
+    def test_validate_a_non_hdf5_file_raises_file_corrupt(self, temp_dir):
+        junk = temp_dir / "junk.ftmw"
+        junk.write_bytes(b"not hdf5" * 100)
+        with pytest.raises(PipelineCorruptionError):
+            validate_pipeline_file(junk)
+        assert junk.read_bytes() == b"not hdf5" * 100
+
+    def test_validate_a_newer_major_format_raises_incompatible(
+        self, temp_dir, sample_fid, sample_source_metadata
+    ):
+        filepath = temp_dir / "future.ftmw"
+        with atomic_write(filepath):
+            create_pipeline_file(filepath, sample_fid, sample_source_metadata)
+        with h5py.File(filepath, "a") as h5f:
+            h5f.attrs["ftmw_format_version"] = "2.0"
+        with pytest.raises(PipelineCompatibilityError):
+            validate_pipeline_file(filepath)
+
+    def test_a_file_unreadable_mid_report_raises_its_typed_error(
+        self, temp_dir, sample_fid, sample_source_metadata, monkeypatch
+    ):
+        """A file that opens but becomes unreadable while the report is built
+        raises the typed error; the catch-all does not turn it into
+        ``{"valid": False}``."""
+        filepath = temp_dir / "flaky.ftmw"
+        with atomic_write(filepath):
+            create_pipeline_file(filepath, sample_fid, sample_source_metadata)
+
+        def _unreadable(h5f):
+            raise PipelineCorruptionError(filepath, "disappeared mid-report")
+
+        monkeypatch.setattr(
+            "ftmwpipeline.io.environment_serialization.load_stage_environments",
+            _unreadable,
+        )
+        with pytest.raises(PipelineCorruptionError):
+            validate_pipeline_file(filepath)
+
+    def test_an_untyped_failure_mid_report_is_still_reported(
+        self, temp_dir, sample_fid, sample_source_metadata, monkeypatch
+    ):
+        """Only typed errors propagate; any other failure keeps the old report
+        shape, so the narrowing did not make validation raise on bugs."""
+        filepath = temp_dir / "odd.ftmw"
+        with atomic_write(filepath):
+            create_pipeline_file(filepath, sample_fid, sample_source_metadata)
+
+        def _boom(h5f):
+            raise KeyError("unexpected")
+
+        monkeypatch.setattr(
+            "ftmwpipeline.io.environment_serialization.load_stage_environments", _boom
+        )
+        report = validate_pipeline_file(filepath)
         assert report["valid"] is False
-        assert len(report["errors"]) > 0  # Should detect corruption/missing data
+        assert report["errors"][0].startswith("Validation failed")
 
     def test_update_processing_parameters_functional(
         self, temp_dir, sample_fid, sample_source_metadata

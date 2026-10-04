@@ -258,7 +258,7 @@ SNAPSHOT_FIELDS: dict = {
         "environment_acknowledged",
         "warnings",
     },
-    "ComplexFT": {"freq_array", "complex_spectrum", "metadata"},
+    "ComplexFT": {"freq_array", "complex_spectrum", "metadata", "invalidated"},
     "ComplexFT.metadata": {"amplitude_scale", "units_label", "pad_factor"},
     "StageStarted": {"schema", "operation", "stage"},
     "StageFinished": {"schema", "operation", "stage", "elapsed_s", "summary"},
@@ -529,7 +529,7 @@ def test_manifest_sequences_are_tuples():
 
 
 def test_manifest_version_matches_package():
-    assert MANIFEST.contract_version == ftmwpipeline.CONTRACT_VERSION == 11
+    assert MANIFEST.contract_version == ftmwpipeline.CONTRACT_VERSION == 12
     assert isinstance(ftmwpipeline.CONTRACT_VERSION, int)
 
 

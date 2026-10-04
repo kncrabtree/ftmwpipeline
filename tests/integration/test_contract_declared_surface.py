@@ -215,6 +215,8 @@ def test_display_ft_agrees_across_interfaces(stage5, tmp_path, capsys):
     assert set(env["metadata"]) == set(MANIFEST.fields["ComplexFT.metadata"])
     assert set(env) - {"schema"} == set(MANIFEST.fields["ComplexFT"])
     assert env["schema"] == "ftmw/display_ft@1"
+    # A display FT is a read: it invalidated nothing.
+    assert env["invalidated"] == [] == list(via_api.invalidated)
 
 
 def test_display_ft_pad_factor_flag_matches_api(stage5, tmp_path, capsys):

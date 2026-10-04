@@ -39,7 +39,7 @@ class TestPipelineClassWorkflows:
         ], f"Pipeline file invalid: {info.get('errors', 'Unknown error')}"
         assert info["source_path"] == exp_2638_data_path
         assert info["format"] == "blackchirp"
-        assert "stage0_fid_data" in info["completed_stages"]
+        assert "data" in info["completed_stages"]
 
         # Stage 0: Load FID data
         fid = pipe.load_data()
@@ -71,7 +71,7 @@ class TestPipelineClassWorkflows:
         # Verify pipeline state updated
         info_after = pipe.info()
         assert (
-            "stage1_complex_ft" in info_after["completed_stages"]
+            "ft" in info_after["completed_stages"]
         ), "Stage 1 should be marked complete"
 
     def test_pipeline_class_parameter_persistence(
@@ -116,7 +116,7 @@ class TestPipelineClassWorkflows:
         opened = Pipeline(temp_ftmw_file)
         assert opened.filepath == created.filepath
         assert opened.info()["valid"]
-        assert "stage0_fid_data" in opened.info()["completed_stages"]
+        assert "data" in opened.info()["completed_stages"]
 
     def test_pipeline_class_error_handling(self, temp_ftmw_file):
         """Test Pipeline class error handling for missing files and invalid operations."""
@@ -282,7 +282,7 @@ class TestFunctionalAPIWorkflows:
         # Get available stages
         stages = ftmw.list_available_stages(temp_ftmw_file)
         assert isinstance(stages, list), "list_available_stages should return list"
-        assert "stage1_complex_ft" in stages, "Stage 1 should be available"
+        assert "ft" in stages, "Stage 1 should be available"
 
 
 @pytest.mark.single_interface
@@ -380,7 +380,13 @@ class TestCLIWorkflows:
         # Text form
         success, stdout, _ = self.run_cli_command(["info", str(temp_ftmw_file)])
         assert success
-        assert "stage0_fid_data" in stdout
+        completed = [
+            line.split(":", 1)[1].strip()
+            for line in stdout.splitlines()
+            if line.strip().startswith("completed:")
+        ]
+        assert completed == ["data"]
+        assert "stage0_fid_data" not in stdout
 
         # JSON form must be pure, parseable JSON
         success, stdout, _ = self.run_cli_command(
@@ -389,7 +395,8 @@ class TestCLIWorkflows:
         assert success
         info = json.loads(stdout)
         assert info["valid"] is True
-        assert "stage0_fid_data" in info["completed_stages"]
+        assert info["completed_stages"] == ["data"]
+        assert info["next_available_stages"] == ["ft"]
 
     def test_cli_file_creation_only(self, exp_2638_data_path, temp_ftmw_file):
         """Test CLI file creation produces valid files usable by other interfaces."""

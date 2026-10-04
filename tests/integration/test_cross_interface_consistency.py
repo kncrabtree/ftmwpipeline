@@ -959,12 +959,12 @@ class TestErrorConsistency:
         with open(test_file, "r+b") as f:
             f.truncate(100)  # Truncate to 100 bytes
 
-        # All interfaces should detect corruption
-        validation_pipeline = pipe.validate()
-        assert not validation_pipeline["valid"], "Pipeline should detect corruption"
-
-        # An unopenable file raises the typed open error rather than being
-        # reported as a failed validation.
+        # All interfaces should detect corruption. An unopenable file raises
+        # the typed open error rather than being reported as a failed
+        # validation, identically on the Pipeline class and the functional API.
+        with pytest.raises(PipelineFileError) as pipe_exc:
+            pipe.validate()
+        assert pipe_exc.value.code == "file_corrupt"
         with pytest.raises(PipelineFileError) as excinfo:
             ftmw.validate_pipeline(test_file)
         assert excinfo.value.code == "file_corrupt"

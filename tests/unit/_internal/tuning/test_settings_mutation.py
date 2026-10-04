@@ -14,6 +14,7 @@ from pathlib import Path
 import h5py
 import pytest
 
+import ftmwpipeline._internal.tuning.settings_mutation as mutation
 from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline._internal.tuning import (
     export_settings,
@@ -28,6 +29,8 @@ from ftmwpipeline._internal.tuning.settings_inspection import (
 from ftmwpipeline.core import noise_settings as noise_mod
 from ftmwpipeline.core import peak_shape as ps_mod
 from ftmwpipeline.core import stage_fit_settings as fit_mod
+from ftmwpipeline.core.knob_metadata import FieldTyping, make_bounds
+from ftmwpipeline.file_manager import BadSettingError
 from ftmwpipeline.io.noise_settings_serialization import save_noise_settings_to_h5
 from ftmwpipeline.io.stage_fit_settings_serialization import (
     save_stage_fit_settings_to_h5,
@@ -219,19 +222,192 @@ def test_native_values_are_accepted_directly(bare_ftmw: Path) -> None:
 def test_string_none_is_only_ever_text(bare_ftmw: Path) -> None:
     """No string encodes the unset state; "None" is four characters of text.
 
-    Valid on a str field, a coercion error anywhere else -- the unset request
-    is the native ``None`` (equivalently ``unset_setting``).
+    Valid on a str field that states no choices, a coercion error on a numeric
+    field, and a refused choice on a field that declares them (``"None"`` is not
+    one of ``n_eff_kind``'s choices) -- the unset request is the native ``None``
+    (equivalently ``unset_setting``).
     """
-    assert set_setting(bare_ftmw, "stage5.conservative.n_eff_kind", "None").value == (
-        "None"
-    )
+    assert set_setting(
+        bare_ftmw, "stage3.primary_pass.primary_window", "None"
+    ).value == ("None")
     with pytest.raises(ValueError):
         set_setting(bare_ftmw, "stage2.window_mhz", "None")
+    with pytest.raises(BadSettingError) as excinfo:
+        set_setting(bare_ftmw, "stage5.conservative.n_eff_kind", "None")
+    assert excinfo.value.value == "None"
+    assert set_setting(bare_ftmw, "stage5.conservative.n_eff_kind", None).value is None
 
 
 def test_non_string_on_a_str_field_is_refused(bare_ftmw: Path) -> None:
     with pytest.raises(ValueError, match="expected a string"):
         set_setting(bare_ftmw, "stage5.conservative.n_eff_kind", 3)
+
+
+# --- set_setting: declared choices and bounds -------------------------------
+_N_EFF = "stage5.conservative.n_eff_kind"
+_N_EFF_CHOICES = ("perplexity_log1p_snr", "kish_mag_sq", "kish_mag", "hard_radius")
+
+
+def _md5(path: Path) -> str:
+    import hashlib
+
+    return hashlib.md5(path.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize("choice", _N_EFF_CHOICES)
+def test_every_declared_choice_is_accepted(bare_ftmw: Path, choice: str) -> None:
+    assert set_setting(bare_ftmw, _N_EFF, choice).value == choice
+    assert _row(bare_ftmw, _N_EFF).value == choice
+
+
+def test_a_value_outside_the_declared_choices_is_bad_setting(
+    bare_ftmw: Path,
+) -> None:
+    """Mutation: drop the choices check in ``_coerce_or_unset``."""
+    before = _md5(bare_ftmw)
+    with pytest.raises(BadSettingError) as excinfo:
+        set_setting(bare_ftmw, _N_EFF, "bogus")
+    err = excinfo.value
+    assert isinstance(err, ValueError)  # still what a bad value raised before
+    assert err.code == "bad_setting"
+    assert err.path == _N_EFF
+    assert err.value == "bogus"
+    assert err.expected == "one of " + ", ".join(repr(c) for c in _N_EFF_CHOICES)
+    assert err.to_dict()["path"] == _N_EFF
+    assert _md5(bare_ftmw) == before  # the file is untouched
+    assert _row(bare_ftmw, _N_EFF).source == SOURCE_DEFAULT
+
+
+def test_a_bad_choice_does_not_disturb_a_previously_set_value(
+    bare_ftmw: Path,
+) -> None:
+    set_setting(bare_ftmw, _N_EFF, "kish_mag")
+    before = _md5(bare_ftmw)
+    with pytest.raises(BadSettingError):
+        set_setting(bare_ftmw, _N_EFF, "bogus")
+    assert _md5(bare_ftmw) == before
+    assert _row(bare_ftmw, _N_EFF).value == "kish_mag"
+
+
+def test_a_choice_is_case_sensitive(bare_ftmw: Path) -> None:
+    with pytest.raises(BadSettingError):
+        set_setting(bare_ftmw, _N_EFF, "KISH_MAG")
+
+
+def test_unset_skips_the_choices_check(bare_ftmw: Path) -> None:
+    """Mutation: run the choices check on ``None`` (the unset request)."""
+    set_setting(bare_ftmw, _N_EFF, "kish_mag")
+    assert set_setting(bare_ftmw, _N_EFF, None).value is None
+    assert unset_setting(bare_ftmw, _N_EFF).value is None
+    assert _row(bare_ftmw, _N_EFF).source == SOURCE_DEFAULT
+
+
+def test_a_wrong_type_is_refused_before_the_choices_comparison(
+    bare_ftmw: Path,
+) -> None:
+    """A wrong type is still refused as a coercion error (path and value
+    intact), before any choices comparison is attempted."""
+    with pytest.raises(BadSettingError) as excinfo:
+        set_setting(bare_ftmw, _N_EFF, 3)
+    assert excinfo.value.path == _N_EFF and excinfo.value.value == 3
+
+
+# Synthetic typings: no registry field declares bounds yet, so the bounds rule
+# is exercised on ``_check_typing`` directly.
+def _refused(value, **bounds) -> bool:
+    typing = FieldTyping(bounds=make_bounds(**bounds))
+    try:
+        mutation._check_typing("x.y", value, value, typing)
+    except BadSettingError as err:
+        assert err.path == "x.y" and err.value == value
+        return True
+    return False
+
+
+@pytest.mark.parametrize(
+    "value, refused",
+    [(-0.1, True), (0.0, False), (0.5, False), (1.0, False), (1.1, True)],
+)
+def test_inclusive_bounds_admit_their_ends(value: float, refused: bool) -> None:
+    assert _refused(value, min=0.0, max=1.0) is refused
+
+
+@pytest.mark.parametrize(
+    "value, refused",
+    [(0.0, True), (1e-12, False), (0.999, False), (1.0, True), (2.0, True)],
+)
+def test_exclusive_bounds_refuse_their_ends(value: float, refused: bool) -> None:
+    """Mutation: treat ``min_inclusive`` / ``max_inclusive`` False as True."""
+    assert (
+        _refused(value, min=0.0, max=1.0, min_inclusive=False, max_inclusive=False)
+        is refused
+    )
+
+
+def test_a_one_sided_bound_leaves_the_other_end_open() -> None:
+    assert _refused(-1e9, min=0.0) is True
+    assert _refused(1e9, min=0.0) is False
+    assert _refused(1e9, max=10.0) is True
+    assert _refused(-1e9, max=10.0) is False
+
+
+def test_nan_is_refused_whenever_bounds_exist() -> None:
+    """Mutation: let nan through (every comparison with it is False)."""
+    assert _refused(float("nan"), min=0.0, max=1.0) is True
+    assert _refused(float("nan"), min=0.0) is True
+    assert _refused(float("nan"), max=1.0, max_inclusive=False) is True
+
+
+def test_bounds_apply_to_each_element_of_a_tuple_or_list() -> None:
+    typing = FieldTyping(bounds=make_bounds(min=0.0, max=10.0))
+    mutation._check_typing("x.y", (1.0, 9.0), (1.0, 9.0), typing)
+    mutation._check_typing("x.y", [0.0, 10.0], [0.0, 10.0], typing)
+    for bad in ((1.0, 11.0), [-1.0, 5.0], (float("nan"), 1.0)):
+        with pytest.raises(BadSettingError) as excinfo:
+            mutation._check_typing("x.y", bad, bad, typing)
+        assert excinfo.value.value == bad
+
+
+def test_the_bounds_error_names_the_interval_and_the_raw_value() -> None:
+    typing = FieldTyping(bounds=make_bounds(min=0.0, max=1.0, min_inclusive=False))
+    with pytest.raises(BadSettingError) as excinfo:
+        mutation._check_typing("x.y", 5.0, "5", typing)
+    err = excinfo.value
+    assert err.expected == "a value in (0.0, 1.0]"
+    assert err.value == "5"  # what the caller passed, not the coerced number
+
+
+def test_bounds_do_not_apply_to_a_non_numeric_value() -> None:
+    typing = FieldTyping(bounds=make_bounds(min=0.0, max=1.0))
+    mutation._check_typing("x.y", "text", "text", typing)
+    mutation._check_typing("x.y", True, True, typing)  # a bool is not a number
+
+
+def test_no_declared_typing_checks_nothing() -> None:
+    mutation._check_typing("x.y", "anything", "anything", FieldTyping())
+    mutation._check_typing("x.y", 1e99, 1e99, FieldTyping())
+
+
+def test_coerce_or_unset_enforces_the_typing_it_is_given() -> None:
+    typing = FieldTyping(bounds=make_bounds(min=0.0))
+    assert mutation._coerce_or_unset("x.y", float, False, "2.5", typing) == 2.5
+    with pytest.raises(BadSettingError) as excinfo:
+        mutation._coerce_or_unset("x.y", float, False, "-2.5", typing)
+    assert excinfo.value.value == "-2.5"
+    # unset skips the typing; so does no typing at all
+    assert mutation._coerce_or_unset("x.y", float, True, None, typing) is None
+    assert mutation._coerce_or_unset("x.y", float, False, "-2.5") == -2.5
+
+
+def test_field_typing_reads_the_declaration_from_the_dataclass() -> None:
+    from ftmwpipeline.core import settings as ft_settings
+
+    typing = mutation._field_typing(
+        fit_mod.StageFitSettings, "conservative", "n_eff_kind"
+    )
+    assert typing.choices == _N_EFF_CHOICES
+    stated_nothing = mutation._field_typing(ft_settings.FTSettings, None, "start_us")
+    assert stated_nothing.choices is None and stated_nothing.bounds is None
 
 
 # --- unset_setting ----------------------------------------------------------

@@ -143,6 +143,14 @@ warning is logged, so they are recomputed against the new settings rather than
 silently mixed with stale results. Repeating the transform with identical settings
 changes nothing, which keeps re-running an import-and-FT cell in a notebook safe.
 
+Saving settings without running the transform does the same.
+:func:`~ftmwpipeline.api.save_ft_parameters` (and ``visualize_ft(save_params=True)``)
+writes the FT record, and a record that differs from the stored one removes the
+downstream work. ``save_ft_parameters`` returns the removed stages as canonical
+names in re-run order (for example ``["noise", "peaks"]``), or ``[]`` when the
+record did not change or nothing was built on it; ``visualize_ft`` still returns
+its figure and names the stages in its log line.
+
 The stored settings are the concrete values the transform ran with: an unset
 ``start_us`` is stored as ``0.0`` and an unset ``end_us`` as the record's duration
 (the same samples either way), and no ``trim`` is stored as "no trim". Once they

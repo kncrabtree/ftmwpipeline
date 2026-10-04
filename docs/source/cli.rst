@@ -357,7 +357,9 @@ Cross-cutting commands
 layer that supplied it (file / preset / recommended / default); ``--all``
 includes advanced-tier knobs and ``--preset`` previews a preset's contribution.
 ``settings set <file> <knob> <value>`` persists a dotted-path knob (e.g.
-``stage2.window_mhz``) and invalidates the affected and downstream stages.
+``stage2.window_mhz``) and invalidates the affected and downstream stages. A
+value outside the ``choices`` or ``bounds`` that ``settings show --format json``
+reports for the knob is refused (``bad_setting``) before anything is written.
 ``settings export`` writes the file's persisted Stage 2–5 values to a reusable
 ``.yml`` preset (Stage 1 FT settings are excluded). See
 :doc:`settings_and_presets`.
@@ -463,8 +465,9 @@ Stage 0 start-time control and worked preset examples.
 Utility commands
 ----------------
 
-* ``info <file.ftmw>`` — print the provenance record and stage-completion status;
-  ``--json`` (or ``--format json``) for machine-readable output.
+* ``info <file.ftmw>`` — print the provenance record and stage-completion
+  status (stages named canonically, in re-run order); ``--json`` (or
+  ``--format json``) for machine-readable output.
 * ``formats`` — list the registered input-format loaders; ``--format NAME`` for
   one loader's details.
 * ``validate`` — check the installation and its dependencies.

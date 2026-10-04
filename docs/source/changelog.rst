@@ -49,6 +49,43 @@ had to reach into ``_internal`` or parse out of prose to obtain are now
 published, and the Stage 6 edit paths that carry them were collapsed onto one
 engine so they cannot answer differently.
 
+* **Machine contract, cleanup wave: status, validation and settings honesty.**
+  ``CONTRACT_VERSION`` is now ``12``.
+
+  * ``ComplexFT`` gains the wire field ``invalidated`` (the canonical names of
+    the stages the run that produced it discarded; ``[]`` for a display or
+    loaded spectrum). A ``PeakList`` still serializes as the plain list.
+  * **Behaviour change:** ``api.save_ft_parameters`` returns the canonical
+    names, in re-run order, of the stages that saving a changed Stage 1 record
+    invalidated (``[]`` when nothing changed), where it returned ``None``. The
+    call has no ``events`` argument, so no ``Invalidated`` event is delivered;
+    the warning log line names them too. ``visualize_ft(save_params=True)``
+    still returns its figure and now names the stages in its log line.
+  * **Behaviour change:** ``get_pipeline_info``, ``Pipeline.info``,
+    ``list_available_stages``, ``ftmwpipeline info`` and the ``validate_pipeline``
+    report name stages by their canonical names (``data``, ``ft``, ``noise``,
+    ...) in re-run order, where they listed storage keys such as
+    ``stage1_complex_ft`` in alphabetical order. The report's
+    ``stage_environments`` keys, drift lines and "Missing data for completed
+    stage" errors follow. Code that tested ``"stage1_complex_ft" in
+    list_available_stages(path)`` must test ``"ft"``.
+  * **Behaviour change:** ``validate_pipeline`` / ``Pipeline.validate`` raise
+    the typed open error (``not_found``, ``file_corrupt``, ``file_incompatible``)
+    for a file that cannot be opened, and for one that becomes unreadable while
+    the report is built, where they returned ``{"valid": False, ...}``. An
+    openable file still gets a report.
+  * **Behaviour change:** ``settings set`` / ``settings_set`` refuse a value
+    outside the ``choices`` or ``bounds`` a settings row declares
+    (``bad_setting`` with the knob as ``path``, the declaration as ``expected``,
+    the caller's value as ``value``), leaving the file untouched. Only
+    ``stage5.conservative.n_eff_kind`` declares choices today
+    (``perplexity_log1p_snr``, ``kish_mag_sq``, ``kish_mag``, ``hard_radius``);
+    no setting declares bounds yet. Previously any string was stored and the
+    fit failed later.
+  * **Behaviour change:** ``read_metadata`` reports ``Absent.NOT_RUN`` for a
+    count, creation time, plan revision or shape attribute a stage group does
+    not carry, where it returned ``0``, ``"unknown"`` or ``"lorentzian"``.
+
 * **Machine contract, Wave 5.2: Stage 5 partial fits.** ``CONTRACT_VERSION``
   is now ``11``. A cancelled (or callback-failed) fit no longer throws its work
   away: the windows that had finished are kept as a partial fit, in the call's
