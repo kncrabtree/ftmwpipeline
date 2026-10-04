@@ -48,6 +48,7 @@ from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from ..core.stage_fit_settings import ClockSource
 from .active_ft import active_ft_bin_spacing_mhz
 
 logger = logging.getLogger(__name__)
@@ -188,6 +189,11 @@ class TimebaseCalibrationResult:
         and at least three tones survived to the fit.
     preconditions_notes : tuple of str
         Per-precondition diagnostics ("ok" or the failing reason).
+    clock_sources : tuple of ClockSource or None
+        The clock declaration the calibration resolved and ran with (labels
+        included). The estimator itself takes only the locked / unlocked
+        fundamentals, so it leaves this ``None``; the stage records the
+        resolved declaration here before persisting.
     """
 
     epsilon: float
@@ -204,6 +210,7 @@ class TimebaseCalibrationResult:
     span_us: float
     preconditions_passed: bool
     preconditions_notes: Tuple[str, ...] = field(default_factory=tuple)
+    clock_sources: Optional[Tuple[ClockSource, ...]] = None
 
 
 def _lattice_gcd_mhz(
