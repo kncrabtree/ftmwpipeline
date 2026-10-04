@@ -228,3 +228,22 @@ def test_human_output_unchanged_without_json(capsys, exp):
 
 def test_run_result_schema_declared():
     assert "ftmw/run_result@1" in MANIFEST.schemas
+
+
+@pytest.mark.slow
+def test_json_does_not_change_the_format_of_a_written_file(
+    stage5_reviewed_2638, tmp_path, capsys
+):
+    # Mutation: --json forcing --format=json on a verb whose --format is the
+    # format of the file it writes (report run's table became e_lines.json).
+    fp = tmp_path / "e.ftmw"
+    shutil.copy(stage5_reviewed_2638, fp)
+    out_dir = tmp_path / "rep"
+    rc, out, _ = _cli(
+        capsys, "report", "run", fp, "--output-dir", out_dir, "--level1-only", "--json"
+    )
+    assert rc == 0
+    doc = _doc(out)
+    assert doc["schema"] == "ftmw/run_result@1"
+    assert str(doc["summary"]["table"]).endswith(".csv")
+    assert list(out_dir.glob("*.csv")) and not list(out_dir.glob("*.json"))

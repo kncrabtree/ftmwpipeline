@@ -740,13 +740,19 @@ its output machine-readable, routed through `to_jsonable` (never
 `json.dumps(..., default=str)`). This is one uniform switch: `--format` already
 means the report file format (`report`) and the source format (`data import`,
 `run`) on some verbs. `--format json`, where a verb accepts it today (`info`,
-`review log`, `timebase state`, the `read` accessors), stays a synonym. Under
+`review snap-tolerance`, `timebase state`, the `read` accessors), stays a
+synonym. Where `--format` names the format of a file the verb writes
+(`report run`'s table, `read table` / `report table` with `--output`), `--json`
+leaves it alone. Under
 `--json`:
 - a `read` accessor prints its envelope, as today;
 - a stage-running or curation verb prints
   `{"schema": "ftmw/run_result@1", "verb": "<object> <verb>", "stage": <canonical name or null>,
   "invalidated": [...], "summary": {...}}`. `summary` holds the scalars the
-  human output reports (counts, chosen values, paths written), never arrays;
+  human output reports (counts, chosen values, paths written), and at most
+  flat objects of counts, never arrays. `stage` is `null` for a write that is
+  not one stage (`settings`, `clocks`, `start run`, `run`, `report run`), and
+  stage names inside `summary` are canonical;
 - any other verb prints its natural payload through `to_jsonable`;
 - an error prints its `ftmw/error@1` dict on stderr, as `--format json` does
   today.

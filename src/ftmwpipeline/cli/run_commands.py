@@ -28,6 +28,26 @@ from ._argspec import (
 from ._json_output import json_mode, record_run_result
 
 
+
+#: The run's progress labels as canonical stage names (contract.Stage values).
+#: "start detection" (a stamp) and "report" (artifacts) are steps, not stages;
+#: they keep their labels.
+_RUN_STAGE_NAMES = {
+    "import": "data",
+    "FT": "ft",
+    "timebase": "timebase",
+    "noise": "noise",
+    "calibrate tau": "tau",
+    "peaks": "peaks",
+    "windows": "windows",
+    "fit": "fit",
+    "review": "review",
+}
+
+
+def _canonical_run_stage(label: str) -> str:
+    return _RUN_STAGE_NAMES.get(label, label)
+
 def _parse_clocks(spec: Optional[str]) -> Optional[List[dict]]:
     """Parse a ``--clocks`` spec into clock-source dicts.
 
@@ -124,8 +144,16 @@ def cmd_run(args: argparse.Namespace) -> int:
                 "status": result["status"],
                 "pipeline_file": str(result["pipeline_file"]),
                 "n_completed_stages": len(result["completed_stages"]),
-                "completed_stages": ", ".join(result["completed_stages"]),
-                "failed_stage": result.get("failed_stage"),
+                # Canonical stage names (contract.Stage values), not the
+                # progress labels the human output prints.
+                "completed_stages": ", ".join(
+                    _canonical_run_stage(s) for s in result["completed_stages"]
+                ),
+                "failed_stage": (
+                    None
+                    if result.get("failed_stage") is None
+                    else _canonical_run_stage(result["failed_stage"])
+                ),
                 "error": result.get("error"),
                 "timebase": result.get("timebase"),
                 "elapsed_s": result.get("elapsed_s"),

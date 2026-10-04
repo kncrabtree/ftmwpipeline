@@ -140,6 +140,10 @@ def _track_saved_figures(paths: List[str]) -> Iterator[None]:
         Figure.savefig = original  # type: ignore[method-assign]
 
 
+#: Verbs whose ``--format`` is always the format of a file they write.
+_FILE_FORMAT_VERBS = frozenset({"report run"})
+
+
 def _wrap(
     func: Callable[[argparse.Namespace], int],
     verb: str,
@@ -154,7 +158,14 @@ def _wrap(
         )
         if getattr(args, PASSTHROUGH_ATTR, False) or not (wants or synonym):
             return func(args)
-        if has_json_format:
+        # --format is a display format only when the verb prints its result;
+        # where it names the format of a file written (report run's table,
+        # read/report table with --output) --json must not change the file.
+        if (
+            has_json_format
+            and verb not in _FILE_FORMAT_VERBS
+            and getattr(args, "output", None) is None
+        ):
             args.format = "json"
         setattr(args, _MODE_ATTR, True)
         setattr(args, _VERB_ATTR, verb)

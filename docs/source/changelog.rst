@@ -49,6 +49,20 @@ had to reach into ``_internal`` or parse out of prose to obtain are now
 published, and the Stage 6 edit paths that carry them were collapsed onto one
 engine so they cannot answer differently.
 
+* **Machine contract, Wave 8: machine-readable CLI output and full
+  capabilities.** ``CONTRACT_VERSION`` is now ``8``. Every CLI verb accepts
+  ``--json``: stdout is then exactly one JSON document, serialized through
+  ``to_jsonable`` (no ``NaN``, no ``default=str``), logs stay on stderr, and a
+  typed error is the ``ftmw/error@1`` dict on stderr. Stage-running and curation
+  verbs print ``ftmw/run_result@1`` (``verb``, canonical ``stage`` or ``null``,
+  ``invalidated``, and a ``summary`` of the scalars the human output reports);
+  plot verbs print the paths they wrote; other verbs print their natural
+  payload. ``--format json`` stays a synonym where a verb already had it, and
+  ``--json`` never changes the format of a file a verb writes. Human output is
+  unchanged. ``capabilities()`` now carries every manifest group --
+  ``metadata_keys``, ``tables``, ``fields``, ``vocabularies``, ``file_bound``,
+  ``pipeline_names`` -- alongside the schemas, accessors, codes and stages, and
+  declares ``CurationAction`` and ``SettingRow``.
 * **Machine contract, Wave 7: status, stage mappings, no stale results, typed
   settings rows.** ``CONTRACT_VERSION`` is now ``7``. ``status(path)`` (API,
   ``Pipeline``, ``read status``) returns ``ftmw/status@1``: each stage's

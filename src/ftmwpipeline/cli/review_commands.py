@@ -907,14 +907,17 @@ def cmd_review_acknowledge_environment(args: argparse.Namespace) -> int:
     current = info.acknowledged_environment
     fit_env = info.fit_environment
     if json_mode(args):
-        record_payload(
+        # A write (it persists the acknowledgement): the run_result envelope.
+        record_run_result(
             args,
-            {
+            stage="review",
+            summary={
                 "acknowledged": current.summary(),
                 "fit_environment": fit_env.summary() if fit_env is not None else None,
                 "mismatch": bool(info.mismatch),
                 "reason": reason,
             },
+            invalidated=[],
         )
         return 0
     print("review acknowledge-environment")
