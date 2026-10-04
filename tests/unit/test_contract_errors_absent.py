@@ -16,6 +16,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from ftmwpipeline._internal.tuning.registry import UnknownKnobError
 from ftmwpipeline.contract import (
     CONTRACT_VERSION,
     ERROR_SCHEMA,
@@ -241,6 +242,16 @@ def _errors():
             (ValueError,),
         ),
         (
+            UnknownKnobError("stage9.bogus", "a registered knob path", "stage9.bogus"),
+            "bad_setting",
+            {
+                "path": "stage9.bogus",
+                "expected": "a registered knob path",
+                "value": "stage9.bogus",
+            },
+            (ValueError, KeyError),
+        ),
+        (
             AlgorithmFailedError("fit", "no window could be fitted"),
             "algorithm_failed",
             {"stage": "fit"},
@@ -300,6 +311,9 @@ def test_error_codes_unique_per_class():
                 NotFoundValueError,
                 PipelineFileNotFoundError,
             }
+        elif code == "bad_setting":
+            # UnknownKnobError is a BadSettingError that is also a KeyError.
+            assert set(classes) == {BadSettingError, UnknownKnobError}
         else:
             assert len(classes) == 1, (code, classes)
 
