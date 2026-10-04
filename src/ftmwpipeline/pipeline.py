@@ -2685,7 +2685,9 @@ class Pipeline:
         ``environment_acknowledged``.
 
         ``valid`` / ``errors`` report what validation found in a readable file.
-        A file that cannot be read at all raises instead.
+        A file that cannot be read at all raises instead. ``completed_stages``
+        and ``next_available_stages`` name stages by their canonical names
+        (``Stage`` values), in rerun order.
 
         Returns
         -------
@@ -2713,8 +2715,10 @@ class Pipeline:
             "source_path": str(self.source_metadata.source_path),
             "format": self.source_metadata.format_name,
             "import_time": self.source_metadata.import_timestamp.isoformat(),
-            "completed_stages": sorted(self.stage_tracker.completed_stages),
-            "next_available_stages": self.stage_tracker.get_next_available_stages(),
+            "completed_stages": self.stage_tracker.canonical_completed_stages(),
+            "next_available_stages": (
+                self.stage_tracker.canonical_next_available_stages()
+            ),
             **environment_info_fields(validation_report),
         }
 
@@ -2734,12 +2738,15 @@ class Pipeline:
         Returns
         -------
         dict
-            Detailed validation report
+            Detailed validation report. Stages are named by their canonical
+            names (``Stage`` values).
 
         Raises
         ------
-        PipelineCorruptionError
-            If file is corrupted and cannot be validated
+        PipelineFileError
+            If the file cannot be opened (``not_found``, ``file_corrupt``,
+            ``file_incompatible``) or becomes unreadable while the report is
+            built; the report does not swallow it.
         """
         return validate_pipeline_file(self.filepath)
 

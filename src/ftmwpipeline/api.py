@@ -2439,8 +2439,9 @@ def get_pipeline_info(file_path: Union[str, Path]) -> Dict[str, Any]:
         - 'source_path': Original data source
         - 'format': Data format name
         - 'import_time': When data was imported
-        - 'completed_stages': List of completed processing stages
-        - 'next_available_stages': Stages ready to run
+        - 'completed_stages': Completed stages, by canonical name
+          (``Stage`` values), in rerun order
+        - 'next_available_stages': Stages ready to run, by canonical name
         - 'errors': List of issues if invalid
         - 'warnings': List of warnings (always present; empty when none)
         - 'stage_environments', 'last_written_with', 'environment_drift':
@@ -2483,7 +2484,8 @@ def list_available_stages(file_path: Union[str, Path]) -> List[str]:
     Returns
     -------
     list of str
-        Names of stages that can be executed next
+        Canonical names (``Stage`` values) of the stages that can be executed
+        next, in rerun order
 
     Raises
     ------
@@ -2497,7 +2499,7 @@ def list_available_stages(file_path: Union[str, Path]) -> List[str]:
     >>> import ftmwpipeline.api as ftmw
     >>> stages = ftmw.list_available_stages("experiment.ftmw")
     >>> print(f"Available stages: {stages}")
-    >>> if 'stage1_complex_ft' in stages:
+    >>> if 'ft' in stages:
     ...     print("Ready for FT computation")
     """
     return list(get_pipeline_info(file_path)["next_available_stages"])
@@ -2532,8 +2534,8 @@ def workflow_summary(file_path: Union[str, Path]) -> str:
     Pipeline: experiment.ftmw
     Source: examples/blackchirp_data/2638/ (blackchirp format)
     Status: Valid
-    Completed: ['stage0_data_import']
-    Next available: ['stage1_complex_ft']
+    Completed: ['data']
+    Next available: ['ft']
 
     Suggested workflow:
     1. ftmw.compute_ft("experiment.ftmw", trim=(26500, 40000))
@@ -2551,7 +2553,7 @@ def workflow_summary(file_path: Union[str, Path]) -> str:
         ]
 
         # Add suggested workflow for common stages
-        if "stage1_complex_ft" in info["next_available_stages"]:
+        if "ft" in info["next_available_stages"]:
             lines.extend(
                 [
                     "",
@@ -2560,7 +2562,7 @@ def workflow_summary(file_path: Union[str, Path]) -> str:
                     f'2. ftmw.visualize_ft("{Path(file_path).name}", save_params=True)',
                 ]
             )
-        elif "stage2_noise_result" in info["next_available_stages"]:
+        elif "noise" in info["next_available_stages"]:
             lines.extend(
                 [
                     "",

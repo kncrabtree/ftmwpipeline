@@ -23,7 +23,6 @@ from ..file_manager import (
     open_pipeline_file,
     pipeline_file_path,
     stages_an_import_replaces,
-    validate_pipeline_file,
 )
 from ..io.data_loaders import (
     detect_format,
@@ -522,27 +521,3 @@ def get_pipeline_info_impl(file_path: str) -> Tuple[Path, SourceMetadata, Any, F
         raise
     except Exception as e:
         raise RuntimeError(f"Failed to get pipeline info for {file_path}: {e}")
-
-
-def validate_pipeline_file_impl(file_path: str) -> Dict[str, Any]:
-    """
-    Shared implementation for pipeline file validation.
-
-    Parameters
-    ----------
-    file_path : str
-        Path to the .ftmw pipeline file
-
-    Returns
-    -------
-    dict
-        Validation results with status and any issues found
-    """
-    try:
-        return validate_pipeline_file(file_path)
-    except Exception as e:
-        return {
-            "valid": False,
-            "errors": [f"Failed to validate pipeline file: {e}"],
-            "warnings": [],
-        }
