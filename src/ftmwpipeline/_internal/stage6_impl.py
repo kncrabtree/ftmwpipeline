@@ -38,6 +38,7 @@ from typing import (
     Dict,
     Iterable,
     List,
+    Mapping,
     NoReturn,
     Optional,
     Sequence,
@@ -52,7 +53,13 @@ import numpy as np
 
 from ..core.absent import Absent
 from ..core.calibration import CalibrationStamp, CalibrationState
-from ..core.curation import REFIT_SNAP_TOL_BINS, Frame, PeakUidToken, parse_peak_token
+from ..core.curation import (
+    REFIT_SNAP_TOL_BINS,
+    CurationAction,
+    Frame,
+    PeakUidToken,
+    parse_peak_token,
+)
 from ..core.data_structures import (
     AttentionReason,
     AuditStep,
@@ -925,6 +932,15 @@ def _resolve_frame(
     Passing ``frame=\"raw\"`` explicitly is never refused, on any file.
     """
     stamp = _current_calibration_stamp(path)
+    return _resolve_frame_against(stamp, frame), stamp
+
+
+def _resolve_frame_against(
+    stamp: Optional[_CalibrationStamp], frame: Optional[Frame]
+) -> Frame:
+    """:func:`_resolve_frame`'s rule against an already-read calibration
+    stamp -- the one place the rule lives, so a batch resolving many
+    actions' frames reads the stamp once."""
     cal_state = stamp[0] if stamp is not None else "rb_locked"
     if frame is None:
         if cal_state == "self_calibrated":
@@ -940,8 +956,8 @@ def _resolve_frame(
                 "over the statistical uncertainty, so the mistake would be "
                 "silent.",
             )
-        return "raw", stamp
-    return frame, stamp
+        return "raw"
+    return frame
 
 
 def _resolve_curation_frame(
@@ -4390,6 +4406,215 @@ def _curation_ops_have_freq(ops: Sequence[CurationOp]) -> bool:
     )
 
 
+# ---------------------------------------------------------------------------
+# Curation as data: CurationAction <-> CurationOp.
+#
+# ``review_apply`` / ``review_preview`` take either a curation-file path or a
+# sequence of :class:`~ftmwpipeline.core.curation.CurationAction` -- one
+# grammar, two spellings. Actions become exactly the ``CurationOp`` rows the
+# parser would produce for the same file, except that each action's
+# frequencies are converted to raw up front with its OWN resolved frame (a
+# batch may mix frames), and the batch then enters the file path's
+# resolution as a raw-frame batch. From there on nothing knows which
+# spelling the caller used.
+# ---------------------------------------------------------------------------
+
+CurationSource = Union[Path, str, Tuple[CurationAction, ...]]
+"""What a curation call resolves: a curation-file path, or a tuple of
+actions (normalized by :func:`curation_source`)."""
+
+
+def curation_source(
+    curation_path: Optional[Union[Path, str]],
+    actions: Optional[Iterable[Union[CurationAction, Mapping[str, Any]]]],
+) -> CurationSource:
+    """Validate a curation call's ``curation_path`` / ``actions`` pair and
+    return the one that was given.
+
+    Exactly one must be given, else ``bad_setting`` (``path`` ``"actions"``).
+    ``actions`` may hold :class:`CurationAction` instances or their wire
+    dicts (:meth:`CurationAction.from_dict`); it is returned as a tuple of
+    actions. An empty sequence is a valid, empty batch -- as an empty
+    curation file is.
+    """
+    if (curation_path is None) == (actions is None):
+        given = "both" if actions is not None else "neither"
+        raise BadSettingError(
+            "actions",
+            "exactly one of curation_path or actions",
+            None if actions is None else "<actions>",
+            message=f"pass exactly one of curation_path (a curation file) or "
+            f"actions (a sequence of CurationAction); got {given}",
+        )
+    if actions is None:
+        assert curation_path is not None
+        return curation_path
+    if isinstance(actions, (str, bytes, Mapping)):
+        raise BadSettingError(
+            "actions",
+            "a sequence of CurationAction (or their dicts)",
+            actions,
+            message="actions must be a sequence of CurationAction (or their "
+            "dicts), not a single string or mapping",
+        )
+    out: List[CurationAction] = []
+    for item in actions:
+        if isinstance(item, CurationAction):
+            out.append(item)
+        elif isinstance(item, Mapping):
+            out.append(CurationAction.from_dict(item))
+        else:
+            raise BadSettingError(
+                "actions",
+                "a sequence of CurationAction (or their dicts)",
+                item,
+                message=f"actions[{len(out)}] is not a CurationAction or a "
+                f"curation action dict: {item!r}",
+            )
+    return tuple(out)
+
+
+def _action_has_freq(action: CurationAction) -> bool:
+    """Whether *action* carries a frequency needing a frame (``peak_uid`` and
+    a bare accept do not)."""
+    return action.freq_mhz is not None or action.candidate_mhz is not None
+
+
+def _action_to_op(
+    action: CurationAction,
+    index: int,
+    *,
+    frame: Frame,
+    stamp: Optional[_CalibrationStamp],
+) -> CurationOp:
+    """One action as the :class:`CurationOp` row :func:`parse_curation_file`
+    produces for the same row, with its frequencies converted from *frame*
+    to raw by the same :func:`_frame_to_raw` the file path uses.
+
+    ``line_no`` is the action's 1-based position in the batch (it only ever
+    labels a diagnostic).
+    """
+    if action.window_id is not None:
+        window_id = action.window_id
+    elif action.action == "create":
+        window_id = _NEW_WINDOW_SENTINEL
+    else:
+        # accept requires a window (CurationAction validates it), so only
+        # add/remove reach here: the file's "auto".
+        window_id = _DERIVE_WINDOW_SENTINEL
+    freqs: List[Union[float, PeakUidToken]] = []
+    if action.peak_uid is not None:
+        freqs.append(PeakUidToken(action.peak_uid))
+    elif action.freq_mhz is not None:
+        freqs.append(_frame_to_raw(action.freq_mhz, frame=frame, stamp=stamp))
+    params: Dict[str, str] = {}
+    if action.candidate_mhz is not None:
+        # repr round-trips a float exactly; _resolve_curation_plan reads it
+        # back with float(), as it does a file's candidate= text.
+        raw_candidate = _frame_to_raw(action.candidate_mhz, frame=frame, stamp=stamp)
+        params["candidate"] = repr(raw_candidate)
+    return CurationOp(
+        action=action.action,
+        window_id=window_id,
+        freqs=freqs,
+        params=params,
+        line_no=index + 1,
+    )
+
+
+def _actions_to_ops(
+    path: str, actions: Sequence[CurationAction], frame: Optional[Frame]
+) -> Tuple[ParsedCurationFile, Optional[_CalibrationStamp], Frame]:
+    """Convert a batch of actions to raw-frame :class:`CurationOp` rows.
+
+    Each action's frame is resolved on its own: its ``frame``, else the
+    call's ``frame``, else :func:`_resolve_frame`'s rule (raw on an
+    ``epsilon == 0`` file; ``bad_setting`` ``path`` ``"frame"`` on a
+    ``self_calibrated`` file) -- only for an action that carries a
+    frequency. Returns ``(ops, stamp, advisory_frame)``: the ops are raw and
+    carry no header, so they enter :func:`_resolve_curation_ops` with
+    ``frame="raw"``. ``advisory_frame`` is the frame the A5 frame-mismatch
+    advisory is judged against: ``"raw"`` only when every frequency-bearing
+    action resolved raw, which is exactly when a file of the same rows under
+    one frame would get the advisory.
+    """
+    stamp: Optional[_CalibrationStamp] = None
+    stamp_read = False
+    advisory: Frame = "raw"
+    ops: List[CurationOp] = []
+    for index, action in enumerate(actions):
+        resolved: Frame = "raw"
+        if _action_has_freq(action):
+            if not stamp_read:
+                stamp = _current_calibration_stamp(path)
+                stamp_read = True
+            requested = action.frame if action.frame is not None else frame
+            try:
+                resolved = _resolve_frame_against(stamp, requested)
+            except BadSettingError as exc:
+                raise BadSettingError(
+                    exc.path,
+                    exc.expected,
+                    exc.value,
+                    message=f"actions[{index}] ({action.action}): {exc}",
+                ) from None
+            if resolved != "raw":
+                advisory = resolved
+        ops.append(_action_to_op(action, index, frame=resolved, stamp=stamp))
+    return ParsedCurationFile(ops, CurationFileHeader()), stamp, advisory
+
+
+def action_from_op(op: CurationOp, frame: Optional[Frame] = None) -> CurationAction:
+    """The :class:`CurationAction` a parsed curation-file row spells.
+
+    The inverse of :func:`_action_to_op` at ``frame="raw"``: the derive / new
+    window sentinels become ``window_id=None``, a ``uid:N`` token becomes
+    ``peak_uid``, and ``candidate=F`` becomes ``candidate_mhz``. *frame* is
+    the frame the row's frequencies are in (a file's ``# frame:`` header);
+    it is attached only to an action that carries a frequency. Parameters an
+    action has no field for (an ``accept`` row's keys other than
+    ``candidate``, which the file path ignores too) are dropped.
+    """
+    window_id: Optional[int] = op.window_id
+    if op.window_id in (_NEW_WINDOW_SENTINEL, _DERIVE_WINDOW_SENTINEL):
+        window_id = None
+    freq_mhz: Optional[float] = None
+    peak_uid: Optional[int] = None
+    if op.freqs:
+        token = op.freqs[0]
+        if isinstance(token, PeakUidToken):
+            peak_uid = token.uid
+        else:
+            freq_mhz = float(token)
+    cand = op.params.get("candidate") if op.action == "accept" else None
+    candidate_mhz = None if cand is None else float(cand)
+    has_freq = freq_mhz is not None or candidate_mhz is not None
+    return CurationAction(
+        action=op.action,  # type: ignore[arg-type]
+        window_id=window_id,
+        freq_mhz=freq_mhz,
+        peak_uid=peak_uid,
+        candidate_mhz=candidate_mhz,
+        frame=frame if has_freq else None,
+    )
+
+
+def actions_from_curation_file(
+    curation_path: Union[Path, str],
+) -> List[CurationAction]:
+    """Parse a curation file into :class:`CurationAction`\\ s -- the same
+    actions ``CurationAction.from_dict`` gives of their dicts.
+
+    Each frequency-bearing action carries the file's ``# frame:`` header (or
+    ``None`` without one). The header's ``# epsilon:`` stamp has no field on
+    an action and is not carried: the actions are applied against the
+    file's current calibration, so a calibrated file applied this way is not
+    checked for drift the way the file itself is.
+    """
+    ops = parse_curation_file(curation_path)
+    return [action_from_op(op, ops.header.frame) for op in ops]
+
+
 def _resolve_curation_window_ids(
     ops: Sequence[CurationOp],
     path: str,
@@ -7554,6 +7779,9 @@ class _DeferredCuration:
     ops: ParsedCurationFile
     frame: Frame
     stamp: Optional[_CalibrationStamp]
+    advisory_frame: Optional[Frame] = None
+    """The frame the frame-mismatch advisory is judged against; ``None``
+    means :attr:`frame` (see :func:`_parse_curation_call`)."""
 
     def needs_fit(self) -> bool:
         """Whether any row will mutate the fit (mirrors the planned-action
@@ -7667,7 +7895,11 @@ def _resolve_deferred_curation(
     warnings += _frame_mismatch_warnings(
         path,
         plan,
-        resolved_frame=deferred.frame,
+        resolved_frame=(
+            deferred.frame
+            if deferred.advisory_frame is None
+            else deferred.advisory_frame
+        ),
         stamp=deferred.stamp,
         fitted_freqs=index[0],
     )
@@ -8159,8 +8391,9 @@ def _resolve_created_window_structure(
 
 def apply_curation_impl(
     file_path: Union[Path, str],
-    curation_path: Union[Path, str],
+    curation_path: Optional[Union[Path, str]] = None,
     *,
+    actions: Optional[Sequence[Union[CurationAction, Mapping[str, Any]]]] = None,
     dry_run: bool = False,
     frame: Optional[Frame] = None,
     log_prefix: Optional[int] = None,
@@ -8225,9 +8458,19 @@ def apply_curation_impl(
     advisories and structure a dry run reports are read against the file,
     which at no point holds the state a shortened prefix describes.
 
+    ``actions`` is the same batch as data: a sequence of
+    :class:`~ftmwpipeline.core.curation.CurationAction` (or their dicts),
+    given instead of ``curation_path`` -- exactly one of the two, else
+    ``bad_setting`` (``path`` ``"actions"``). Each action resolves its own
+    frame (its ``frame``, else this call's ``frame``, else the default rule)
+    and is converted to raw before anything resolves; from there the batch
+    is the file's (see :func:`_actions_to_ops`), so the result, decision log
+    and file are those of the equivalent curation file.
+
     ``_shared`` is internal -- see :func:`refit_window_impl`.
     """
     path = str(file_path)
+    source = curation_source(curation_path, actions)
     if log_prefix is not None:
         log = load_stage6_review_from_file(path).decision_log
         if log_prefix < 0 or log_prefix > len(log):
@@ -8251,13 +8494,13 @@ def apply_curation_impl(
                 )
             return _apply_curation_at_prefix(
                 path,
-                curation_path,
+                source,
                 frame=frame,
                 log=log,
                 keep=log_prefix,
                 shared=_shared,
             )
-    plan, resolved_frame, stamp = _resolve_curation_call(path, curation_path, frame)
+    plan, resolved_frame, stamp = _resolve_curation_call(path, source, frame)
 
     snap_tol = resolve_snap_tol_mhz(path, None)
     # One read of the fitted peak columns for both advisory passes: the
@@ -8319,7 +8562,7 @@ def _reset_to_baseline(path: str, *, restore_fit: bool) -> None:
 
 def _apply_curation_at_prefix(
     path: str,
-    curation_path: Union[Path, str],
+    source: CurationSource,
     *,
     frame: Optional[Frame],
     log: Sequence[DecisionLogEntry],
@@ -8354,8 +8597,10 @@ def _apply_curation_at_prefix(
     as an undo followed by a failed apply would.
     """
     kept = list(log[:keep])
-    ops, resolved_frame, stamp = _parse_curation_call(path, curation_path, frame)
-    deferred = _DeferredCuration(ops=ops, frame=resolved_frame, stamp=stamp)
+    ops, resolved_frame, stamp, advisory = _parse_curation_call(path, source, frame)
+    deferred = _DeferredCuration(
+        ops=ops, frame=resolved_frame, stamp=stamp, advisory_frame=advisory
+    )
 
     has_fit_edits = any(e.kind in _FIT_EDIT_KINDS for e in log)
     baseline = _has_stage5_baseline(path)
@@ -8588,7 +8833,7 @@ class _PreviewRun:
 
 def _run_review_preview(
     file_path: Union[Path, str],
-    curation_path: Union[Path, str],
+    source: CurationSource,
     *,
     frame: Optional[Frame] = None,
     snap_tol_mhz: Optional[float] = None,
@@ -8634,7 +8879,7 @@ def _run_review_preview(
     """
     path = str(file_path)
     snap_tol = resolve_snap_tol_mhz(path, snap_tol_mhz)
-    plan, resolved_frame, stamp = _resolve_curation_call(path, curation_path, frame)
+    plan, resolved_frame, stamp = _resolve_curation_call(path, source, frame)
 
     warnings = _frame_mismatch_warnings(
         path, plan, resolved_frame=resolved_frame, stamp=stamp
@@ -8882,8 +9127,9 @@ def _run_review_preview(
 
 def review_preview_impl(
     file_path: Union[Path, str],
-    curation_path: Union[Path, str],
+    curation_path: Optional[Union[Path, str]] = None,
     *,
+    actions: Optional[Sequence[Union[CurationAction, Mapping[str, Any]]]] = None,
     frame: Optional[Frame] = None,
     snap_tol_mhz: Optional[float] = None,
 ) -> ReviewPreviewResult:
@@ -8893,9 +9139,13 @@ def review_preview_impl(
     full contract; this is the public entry point, which discards the
     internal staging state a :class:`ReviewSession` needs and a sessionless
     caller does not.
+
+    ``actions`` is :func:`apply_curation_impl`'s: the batch as data, given
+    instead of ``curation_path`` (exactly one of the two).
     """
+    source = curation_source(curation_path, actions)
     return _run_review_preview(
-        file_path, curation_path, frame=frame, snap_tol_mhz=snap_tol_mhz
+        file_path, source, frame=frame, snap_tol_mhz=snap_tol_mhz
     ).result
 
 
@@ -10348,11 +10598,16 @@ def _compute_fit_ctx_fingerprint(path: str) -> _FitCtxFingerprint:
 
 
 def _resolve_curation_call(
-    path: str, curation_path: Union[Path, str], frame: Optional[Frame]
+    path: str, source: CurationSource, frame: Optional[Frame]
 ) -> Tuple[List["PlannedAction"], Frame, Optional[_CalibrationStamp]]:
     """Parse + derive omitted add/remove window ids (W2, live-window
     coverage -- see :func:`_resolve_curation_window_ids`) + coalesce + frame-
-    convert a curation file into the ready-to-run plan.
+    convert a curation file (or a batch of actions -- :func:`curation_source`)
+    into the ready-to-run plan.
+
+    Returns ``(plan, advisory_frame, stamp)``: ``advisory_frame`` is the
+    frame the A5 frame-mismatch advisory is judged against (for a file, its
+    one resolved frame; for actions, see :func:`_actions_to_ops`).
 
     The single prologue :func:`apply_curation_impl`, :func:`_run_review_preview`,
     and :class:`ReviewSession`'s staged-plan comparison all call, so a change
@@ -10366,25 +10621,34 @@ def _resolve_curation_call(
     raw frame, since window ranges are stored raw) and is reused for the
     final plan-level conversion, so it runs exactly once per call.
     """
-    ops, resolved_frame, stamp = _parse_curation_call(path, curation_path, frame)
+    ops, resolved_frame, stamp, advisory = _parse_curation_call(path, source, frame)
     plan = _resolve_curation_ops(ops, path, frame=resolved_frame, stamp=stamp)
-    return plan, resolved_frame, stamp
+    return plan, advisory, stamp
 
 
 def _parse_curation_call(
-    path: str, curation_path: Union[Path, str], frame: Optional[Frame]
-) -> Tuple[ParsedCurationFile, Frame, Optional[_CalibrationStamp]]:
+    path: str, source: CurationSource, frame: Optional[Frame]
+) -> Tuple[ParsedCurationFile, Frame, Optional[_CalibrationStamp], Frame]:
     """The state-independent half of :func:`_resolve_curation_call`: parse
     the file and resolve its frame. Neither reads anything a curation
     decision changes (the frame comes from the calibration stamp), so a
     log-prefix apply runs this before it moves the file and defers only
-    :func:`_resolve_curation_ops` to the replayed state."""
-    ops = parse_curation_file(curation_path)
+    :func:`_resolve_curation_ops` to the replayed state.
+
+    Returns ``(ops, frame, stamp, advisory_frame)``, where ``frame`` is the
+    frame *ops* are still in (converted by :func:`_resolve_curation_ops`).
+    A batch of actions (*source* a tuple) is converted per action here
+    (:func:`_actions_to_ops`), so its ops come back raw; a file's ops keep
+    the file's one frame, which is also its advisory frame."""
+    if isinstance(source, tuple):
+        ops, stamp, advisory = _actions_to_ops(path, source, frame)
+        return ops, "raw", stamp, advisory
+    ops = parse_curation_file(source)
     resolved_frame: Frame = "raw"
-    stamp: Optional[_CalibrationStamp] = None
+    file_stamp: Optional[_CalibrationStamp] = None
     if _curation_ops_have_freq(ops):
-        resolved_frame, stamp = _resolve_curation_frame(path, ops.header, frame)
-    return ops, resolved_frame, stamp
+        resolved_frame, file_stamp = _resolve_curation_frame(path, ops.header, frame)
+    return ops, resolved_frame, file_stamp, resolved_frame
 
 
 def _resolve_curation_ops(
@@ -10424,7 +10688,9 @@ class _StagedPreview:
     """
 
     fingerprint: _FitCtxFingerprint
-    curation_path: str
+    source_key: Union[str, Tuple[CurationAction, ...]]
+    """The previewed request's source: the curation path as a string, or
+    the tuple of actions (:func:`_session_source_key`)."""
     frame: Optional[Frame]
     resolved_plan: List["PlannedAction"]
     warnings: List[str]
@@ -10439,6 +10705,15 @@ class _StagedPreview:
     (:func:`_applied_window_from_preview`) and carried for the same reason
     ``created_windows`` is: the apply that persists this preview reports the
     preview's own numbers rather than a second derivation of them."""
+
+
+def _session_source_key(
+    source: CurationSource,
+) -> Union[str, Tuple[CurationAction, ...]]:
+    """What a :class:`ReviewSession` compares to decide that an apply asks
+    for the plan it just previewed: the path as a string, or the actions
+    themselves (frozen, so equal actions compare equal)."""
+    return source if isinstance(source, tuple) else str(source)
 
 
 class ReviewSession:
@@ -10686,8 +10961,9 @@ class ReviewSession:
 
     def review_preview(
         self,
-        curation_path: Union[str, Path],
+        curation_path: Optional[Union[str, Path]] = None,
         *,
+        actions: Optional[Sequence[Union[CurationAction, Mapping[str, Any]]]] = None,
         frame: Optional[Frame] = None,
     ) -> ReviewPreviewResult:
         """Run a curation file's plan to completion in memory and report the
@@ -10701,15 +10977,16 @@ class ReviewSession:
         identical plan against an unchanged base can persist it directly
         rather than computing it a second time. See that method.
         """
+        source = curation_source(curation_path, actions)
         shared = self._sync()
         # A fresh preview supersedes any earlier drift note.
         self._pending_base_changed = False
-        run = _run_review_preview(self._path, curation_path, frame=frame, shared=shared)
+        run = _run_review_preview(self._path, source, frame=frame, shared=shared)
         if run.ctx is not None and run.review is not None:
             assert self._fingerprint is not None
             self._staged = _StagedPreview(
                 fingerprint=self._fingerprint,
-                curation_path=str(curation_path),
+                source_key=_session_source_key(source),
                 frame=frame,
                 resolved_plan=list(run.result.plan),
                 warnings=list(run.result.warnings),
@@ -10748,8 +11025,9 @@ class ReviewSession:
 
     def review_apply(
         self,
-        curation_path: Union[str, Path],
+        curation_path: Optional[Union[str, Path]] = None,
         *,
+        actions: Optional[Sequence[Union[CurationAction, Mapping[str, Any]]]] = None,
         frame: Optional[Frame] = None,
         log_prefix: Optional[int] = None,
     ) -> CurationApplyResult:
@@ -10778,6 +11056,7 @@ class ReviewSession:
         was computed against the log as it stood, so none is reused when a
         prefix is given.
         """
+        source = curation_source(curation_path, actions)
         shared = self._sync()
         base_changed = self._pending_base_changed
         self._pending_base_changed = False
@@ -10786,12 +11065,12 @@ class ReviewSession:
         if staged is not None:
             same_request = (
                 log_prefix is None
-                and staged.curation_path == str(curation_path)
+                and staged.source_key == _session_source_key(source)
                 and staged.frame == frame
                 and staged.fingerprint == self._fingerprint
             )
             if same_request:
-                plan, _, _ = _resolve_curation_call(self._path, curation_path, frame)
+                plan, _, _ = _resolve_curation_call(self._path, source, frame)
                 if plan == staged.resolved_plan:
                     self._persist_staged(staged)
                     self._staged = None
@@ -10810,7 +11089,8 @@ class ReviewSession:
 
         result = apply_curation_impl(
             self._path,
-            curation_path,
+            None if isinstance(source, tuple) else source,
+            actions=source if isinstance(source, tuple) else None,
             frame=frame,
             log_prefix=log_prefix,
             _shared=shared,

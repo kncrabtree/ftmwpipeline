@@ -12,6 +12,7 @@ from typing import (
     Any,
     Dict,
     List,
+    Mapping,
     Optional,
     Sequence,
     Tuple,
@@ -107,7 +108,7 @@ from ._internal.timebase_impl import (
     load_timebase_calibration_impl,
 )
 from .core.calibration import CalibrationStamp
-from .core.curation import Frame
+from .core.curation import CurationAction, Frame
 from .core.data_structures import (
     FID,
     ComplexFT,
@@ -2017,8 +2018,9 @@ class Pipeline:
 
     def review_apply(
         self,
-        curation_path: Union[str, Path],
+        curation_path: Optional[Union[str, Path]] = None,
         *,
+        actions: Optional[Sequence[Union[CurationAction, Mapping[str, Any]]]] = None,
         dry_run: bool = False,
         frame: Optional[Frame] = None,
         log_prefix: Optional[int] = None,
@@ -2050,7 +2052,16 @@ class Pipeline:
         Parameters
         ----------
         curation_path :
-            Path to the curation CSV to apply.
+            Path to the curation CSV to apply. Give this or ``actions``,
+            not both.
+        actions :
+            The batch as data instead of a file: a sequence of
+            :class:`~ftmwpipeline.CurationAction` (or their ``to_dict()``
+            dicts), one per curation-file row. Exactly one of
+            ``curation_path`` and ``actions`` is required, else
+            :class:`~ftmwpipeline.BadSettingError` (``path`` ``"actions"``).
+            The result, decision log and file are those of the equivalent
+            curation file.
         dry_run :
             Preview the resolved plan without writing (default ``False``).
         frame :
@@ -2060,7 +2071,10 @@ class Pipeline:
             precedence over (or must agree with) this argument; omitting
             both is an error on a ``self_calibrated`` file when the file
             carries any frequency (see
-            :data:`~ftmwpipeline.core.curation.Frame`).
+            :data:`~ftmwpipeline.core.curation.Frame`). With ``actions``,
+            each action's own ``frame`` wins and ``None`` takes this one, so
+            a batch may mix frames; the default rule then applies per
+            action that carries a frequency.
         log_prefix :
             Apply the batch as if the decision log ended after its first
             ``log_prefix`` decisions: those later in the log are dropped, the
@@ -2084,6 +2098,7 @@ class Pipeline:
         return apply_curation_impl(
             self.filepath,
             curation_path,
+            actions=actions,
             dry_run=dry_run,
             frame=frame,
             log_prefix=log_prefix,
@@ -2091,8 +2106,9 @@ class Pipeline:
 
     def review_preview(
         self,
-        curation_path: Union[str, Path],
+        curation_path: Optional[Union[str, Path]] = None,
         *,
+        actions: Optional[Sequence[Union[CurationAction, Mapping[str, Any]]]] = None,
         frame: Optional[Frame] = None,
     ) -> ReviewPreviewResult:
         """Run a curation file's resolved plan to completion in memory and
@@ -2117,7 +2133,9 @@ class Pipeline:
         Parameters
         ----------
         curation_path :
-            Path to the curation CSV to preview.
+            Path to the curation CSV to preview. Give this or ``actions``.
+        actions :
+            The batch as data -- same rules as :meth:`review_apply`.
         frame :
             The frame every frequency in the curation file is expressed in --
             same rules as :meth:`review_apply`.
@@ -2126,7 +2144,9 @@ class Pipeline:
         -------
         ReviewPreviewResult
         """
-        return review_preview_impl(self.filepath, curation_path, frame=frame)
+        return review_preview_impl(
+            self.filepath, curation_path, actions=actions, frame=frame
+        )
 
     def review_session(self) -> ReviewSession:
         """Open an amortized Stage 6 review session bound to this file (D3).

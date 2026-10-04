@@ -14,6 +14,7 @@ span, is read as one -- see ``review edit``'s description and
 
 import argparse
 import json
+import sys
 from typing import Any, List, Optional, Tuple, Union
 
 import h5py
@@ -49,7 +50,7 @@ from ..core.data_structures import (
     Stage6Review,
     WindowReviewStatus,
 )
-from ..file_manager import PipelineFileError
+from ..file_manager import BadSettingError, PipelineFileError
 from ..fitting.active_ft import active_ft_bin_spacing_mhz
 from ..io.fitting_serialization import load_spectrum_fit_from_hdf5
 from .utils import add_stage_object, setup_logging
@@ -76,6 +77,69 @@ def _add_frame_argument(parser: argparse.ArgumentParser) -> None:
             "defaults to 'raw', matching today's behavior; on a "
             "self_calibrated file, omitting it while a frequency is given "
             "is refused rather than silently assumed."
+        ),
+    )
+
+
+def _read_actions_json(source: Optional[str]) -> Optional[List[Any]]:
+    """Read ``--actions FILE`` (``-`` for stdin): a JSON array of curation
+    action dicts (``CurationAction.to_dict()``'s wire form). ``None`` when
+    the option was not given. The dicts are validated by the impl, exactly
+    as the Python interfaces validate them."""
+    if source is None:
+        return None
+    try:
+        if source == "-":
+            text = sys.stdin.read()
+        else:
+            with open(source, encoding="utf-8") as fh:
+                text = fh.read()
+    except OSError as exc:
+        raise BadSettingError(
+            "actions",
+            "a readable JSON file of curation actions, or '-' for stdin",
+            source,
+            message=f"cannot read --actions {source!r}: {exc}",
+        ) from None
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise BadSettingError(
+            "actions",
+            "a JSON array of curation action objects",
+            source,
+            message=f"--actions {source!r} is not valid JSON: {exc}",
+        ) from None
+    if not isinstance(data, list):
+        raise BadSettingError(
+            "actions",
+            "a JSON array of curation action objects",
+            type(data).__name__,
+            message=f"--actions {source!r} must hold a JSON array of curation "
+            f"action objects, got a JSON {type(data).__name__}",
+        )
+    return data
+
+
+def _add_actions_argument(parser: argparse.ArgumentParser, verb: str) -> None:
+    """Register the curation source of ``review apply`` / ``review preview``:
+    the curation CSV positional, or ``--actions`` -- exactly one."""
+    parser.add_argument(
+        "curation_file",
+        nargs="?",
+        default=None,
+        help=f"Path to the curation CSV to {verb}. Give this or --actions.",
+    )
+    parser.add_argument(
+        "--actions",
+        dest="actions",
+        default=None,
+        metavar="FILE",
+        help=(
+            "The batch as data instead of a curation CSV: a JSON array of "
+            "curation action objects (CurationAction.to_dict(), schema "
+            "ftmw/curation_action@1), '-' for stdin. Each action may carry its "
+            "own frame; null takes --frame. Same result as the equivalent CSV."
         ),
     )
 
@@ -808,11 +872,13 @@ def cmd_review_apply(args: argparse.Namespace) -> int:
     dry_run: bool = getattr(args, "dry_run", False)
     frame: Optional[Frame] = getattr(args, "frame", None)
     log_prefix: Optional[int] = getattr(args, "log_prefix", None)
+    action_dicts = _read_actions_json(getattr(args, "actions", None))
 
     try:
         result = apply_curation_impl(
             file_path,
             args.curation_file,
+            actions=action_dicts,
             dry_run=dry_run,
             frame=frame,
             log_prefix=log_prefix,
@@ -882,9 +948,12 @@ def cmd_review_preview(args: argparse.Namespace) -> int:
     setup_logging(getattr(args, "verbose", False))
     file_path = _ensure_ftmw(args.file_path)
     frame: Optional[Frame] = getattr(args, "frame", None)
+    action_dicts = _read_actions_json(getattr(args, "actions", None))
 
     try:
-        result = review_preview_impl(file_path, args.curation_file, frame=frame)
+        result = review_preview_impl(
+            file_path, args.curation_file, actions=action_dicts, frame=frame
+        )
     except PipelineFileError:
         raise
     except (ValueError, KeyError, OSError) as exc:
@@ -1181,14 +1250,17 @@ def register_review_commands(subparsers: Any) -> None:
             "each created window's identity stable across a replay.\n\n"
             "A run of add/remove rows on one window coalesces into a single\n"
             "refit; accept/create stand alone. With --dry-run the resolved\n"
-            "plan and any frequency-resolution warnings print without writing."
+            "plan and any frequency-resolution warnings print without writing.\n\n"
+            "--actions FILE gives the same batch as data instead of a CSV: a\n"
+            "JSON array of curation action objects ('-' reads stdin). Exactly\n"
+            "one of the CSV and --actions is required."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p_apply.add_argument(
         "file_path", help="Path to .ftmw pipeline file (.ftmw auto-added)"
     )
-    p_apply.add_argument("curation_file", help="Path to the curation CSV to apply.")
+    _add_actions_argument(p_apply, "apply")
     p_apply.add_argument(
         "--dry-run",
         dest="dry_run",
@@ -1243,7 +1315,7 @@ def register_review_commands(subparsers: Any) -> None:
     p_preview.add_argument(
         "file_path", help="Path to .ftmw pipeline file (.ftmw auto-added)"
     )
-    p_preview.add_argument("curation_file", help="Path to the curation CSV to preview.")
+    _add_actions_argument(p_preview, "preview")
     _add_frame_argument(p_preview)
     p_preview.add_argument(
         "--verbose",
