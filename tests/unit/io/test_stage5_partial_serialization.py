@@ -137,9 +137,10 @@ def test_round_trip_is_faithful_and_keeps_aliasing():
     assert o2.fit.fit.peaks == out.fit.fit.peaks
     assert o2.fit.fit.peak_errors[1].amplitude != o2.fit.fit.peak_errors[1].amplitude
     assert o2.fit.fit.shape is PeakShape.GAUSSIAN
-    assert o2.fit.audit_trail == out.fit.audit_trail
-    assert o2.fit.knockouts == out.fit.knockouts
-    assert o2.fixed_peaks == out.fixed_peaks
+    # repr: float repr is exact, and NaN fields compare equal by text
+    assert repr(o2.fit.audit_trail) == repr(out.fit.audit_trail)
+    assert repr(o2.fit.knockouts) == repr(out.fit.knockouts)
+    assert repr(o2.fixed_peaks) == repr(out.fixed_peaks)
     # The walk's private attributes come back too.
     assert o2._center_mhz == 100.0
     assert o2._spur_mask == out._spur_mask
