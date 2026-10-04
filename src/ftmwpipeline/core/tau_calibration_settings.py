@@ -482,9 +482,12 @@ def producer_values(
     resolved bundle a ``None`` is a field that legitimately resolved to unset.
     """
     if producer not in PRODUCER_FIELDS:
-        raise ValueError(
+        raise sf.bad_preset(
+            "producer",
+            f"one of: {', '.join(sorted(PRODUCER_FIELDS))}",
+            producer,
             f"unknown Stage 2b producer {producer!r}; expected one of "
-            f"{sorted(PRODUCER_FIELDS)}"
+            f"{sorted(PRODUCER_FIELDS)}",
         )
     return {
         block: {name: getattr(getattr(settings, block), name) for name in names}
@@ -610,7 +613,12 @@ def from_yaml_dict(data: Optional[Mapping[str, Any]]) -> TauCalibrationSettings:
     if data is None:
         return TauCalibrationSettings()
     if not isinstance(data, dict):
-        raise ValueError(f"preset YAML root must be a mapping; got {type(data)}")
+        raise sf.bad_preset(
+            "preset",
+            "a YAML mapping at the document root",
+            data,
+            f"preset YAML root must be a mapping; got {type(data)}",
+        )
     return sf.subblocks_from_yaml_dict(
         TauCalibrationSettings(),
         TauCalibrationSettings,

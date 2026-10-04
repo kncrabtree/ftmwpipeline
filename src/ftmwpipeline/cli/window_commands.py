@@ -12,6 +12,7 @@ from typing import Any
 
 from .._internal.stage4_impl import assign_windows_impl, visualize_windows_impl
 from ..core.window_planning_settings import WindowPlanningSettings
+from ..file_manager import PipelineFileError
 from ._argspec import add_settings_args, settings_from_namespace
 from .utils import add_stage_object, print_error, setup_logging
 
@@ -63,6 +64,8 @@ def cmd_assign_windows(args: argparse.Namespace) -> int:
         print(f"\nResults saved to: {file_path}")
         print("Use 'windows show' to inspect the window plan")
         return 0
+    except PipelineFileError:
+        raise
     except FileNotFoundError as e:
         print_error(f"Pipeline file not found: {e}")
         return 1
@@ -94,6 +97,8 @@ def cmd_visualize_windows(args: argparse.Namespace) -> int:
             try:
                 w, h = map(float, args.figsize.split(","))
                 figsize = (w, h)
+            except PipelineFileError:
+                raise
             except ValueError:
                 print_error(f"Invalid figsize {args.figsize!r}; use 'width,height'")
                 return 1
@@ -116,6 +121,8 @@ def cmd_visualize_windows(args: argparse.Namespace) -> int:
             plt.show()
         print("Window visualization completed successfully!")
         return 0
+    except PipelineFileError:
+        raise
     except FileNotFoundError as e:
         print_error(f"Pipeline file not found: {e}")
         return 1

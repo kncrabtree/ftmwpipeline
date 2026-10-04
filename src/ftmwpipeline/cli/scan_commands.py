@@ -22,6 +22,7 @@ import logging
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
+from ..file_manager import PipelineFileError
 from .utils import elide_path as _elide_path
 from .utils import print_error, setup_logging
 
@@ -118,6 +119,8 @@ def cmd_scan_run(args: argparse.Namespace) -> int:
 
     try:
         spec = get_knob(args.knob)
+    except PipelineFileError:
+        raise
     except KeyError as e:
         print_error(str(e))
         return 1
@@ -126,6 +129,8 @@ def cmd_scan_run(args: argparse.Namespace) -> int:
     if args.grid is not None:
         try:
             grid = [float(x) for x in args.grid.split(",") if x.strip()]
+        except PipelineFileError:
+            raise
         except ValueError:
             print_error(f"--grid must be comma-separated numbers, got {args.grid!r}")
             return 1
@@ -134,6 +139,8 @@ def cmd_scan_run(args: argparse.Namespace) -> int:
     if getattr(args, "zoom", None):
         try:
             zoom_regions = _parse_zoom(args.zoom)
+        except PipelineFileError:
+            raise
         except ValueError as e:
             print_error(
                 f"--zoom must be comma-separated lo-hi MHz ranges (lo<hi), "
@@ -165,6 +172,8 @@ def cmd_scan_run(args: argparse.Namespace) -> int:
             zoom_width_mhz=getattr(args, "zoom_width", None),
             **_fit_kwargs(args),
         )
+    except PipelineFileError:
+        raise
     except FileNotFoundError as e:
         print_error(f"Pipeline file not found: {e}")
         return 1
@@ -216,6 +225,8 @@ def cmd_scan_all(args: argparse.Namespace) -> int:
     if getattr(args, "zoom", None):
         try:
             zoom_regions = _parse_zoom(args.zoom)
+        except PipelineFileError:
+            raise
         except ValueError as e:
             print_error(
                 f"--zoom must be comma-separated lo-hi MHz ranges (lo<hi), "

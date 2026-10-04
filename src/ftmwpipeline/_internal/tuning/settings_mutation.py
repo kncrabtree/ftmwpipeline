@@ -91,7 +91,9 @@ from ...core import settings as ft_mod
 from ...core import stage_fit_settings as fit_mod
 from ...core import tau_calibration_settings as tau_mod
 from ...core import window_planning_settings as window_mod
+from ...core.peak_shape import PeakShape
 from ...core.stage_fit_settings import ClockSource, ShapeSpec, coerce_clock_sources
+from ...file_manager import BadSettingError
 from ...io.noise_settings_serialization import (
     load_noise_settings_from_h5,
     save_noise_settings_to_h5,
@@ -204,8 +206,14 @@ def _split_knob(knob: str) -> Tuple[str, Optional[str], str]:
         return parts[0], None, parts[1]
     if len(parts) == 3:
         return parts[0], parts[1], parts[2]
-    raise ValueError(
-        f"malformed knob {knob!r}; expected 'stageN.field' or " f"'stageN.sub.field'"
+    raise BadSettingError(
+        knob,
+        "a setting path 'stageN.field' or 'stageN.sub.field'",
+        knob,
+        message=(
+            f"malformed knob {knob!r}; expected 'stageN.field' or "
+            f"'stageN.sub.field'"
+        ),
     )
 
 
@@ -248,6 +256,21 @@ def _type_name(type_hint: Any) -> str:
         return str(type_hint).replace("typing.", "")
     name = getattr(type_hint, "__name__", None)
     return str(name) if name else str(type_hint).replace("typing.", "")
+
+
+def _expected_text(type_hint: Any) -> str:
+    """What a setting of ``type_hint`` accepts, for a ``bad_setting`` error."""
+    if type_hint is ShapeSpec:
+        return "a peak shape: one of " + ", ".join(m.value for m in PeakShape)
+    if type_hint is bool:
+        return "a boolean (true/false)"
+    if type_hint is int:
+        return "an integer"
+    if type_hint is float:
+        return "a number"
+    if type_hint is str:
+        return "a string"
+    return f"a value of type {_type_name(type_hint)}"
 
 
 def _coerce(type_hint: Any, raw: Any) -> Any:
@@ -403,7 +426,8 @@ def set_setting(file_path: Union[str, Path], knob: str, value: Any) -> SetResult
     ``stage2b.gaussian.snr_min`` / ``stage5.shape``). ``value`` is either a
     native Python value of the field's declared type or a string in one of the
     encodings the module docstring tabulates; it is coerced to that type, and a
-    value that does not parse raises ``ValueError`` without touching the file.
+    value that does not parse raises :class:`BadSettingError` (a ``ValueError``)
+    without touching the file, as does an unknown or malformed ``knob``.
     ``None`` unsets the field (see :func:`unset_setting`). The FT is unapodized
     and native-length, so there are no FT apodization knobs to set.
     """
@@ -415,15 +439,23 @@ def set_setting(file_path: Union[str, Path], knob: str, value: Any) -> SetResult
 
     spec = _MUT_SPECS.get(prefix)
     if spec is None:
-        raise ValueError(
-            f"unknown settings stage {prefix!r} in knob {knob!r}; settable "
-            f"stages are {sorted(_MUT_SPECS)} (and stage1 windowing knobs)"
+        raise BadSettingError(
+            knob,
+            "a known setting path",
+            knob,
+            message=(
+                f"unknown settings stage {prefix!r} in knob {knob!r}; settable "
+                f"stages are {sorted(_MUT_SPECS)} (and stage1 windowing knobs)"
+            ),
         )
     try:
         field_type, optional = _field_hint(spec.cls, sub, field)
     except KeyError:
-        raise ValueError(
-            f"unknown setting {knob!r}; no such field on {prefix} settings"
+        raise BadSettingError(
+            knob,
+            "a known setting path",
+            knob,
+            message=f"unknown setting {knob!r}; no such field on {prefix} settings",
         ) from None
     coerced = _coerce_or_unset(knob, field_type, optional, value)
 
@@ -451,12 +483,24 @@ def _coerce_or_unset(knob: str, field_type: Any, optional: bool, value: Any) -> 
     """Coerce ``value``, treating ``None`` as the unset request."""
     if value is None:
         if not optional:
-            raise ValueError(
-                f"{knob!r} is not optional and cannot be unset "
-                f"(declared {_type_name(field_type)})"
+            raise BadSettingError(
+                knob,
+                f"a {_type_name(field_type)} (the setting cannot be unset)",
+                value,
+                message=(
+                    f"{knob!r} is not optional and cannot be unset "
+                    f"(declared {_type_name(field_type)})"
+                ),
             )
         return None
-    return _coerce(field_type, value)
+    try:
+        return _coerce(field_type, value)
+    except BadSettingError:
+        raise
+    except ValueError as e:
+        raise BadSettingError(
+            knob, _expected_text(field_type), value, message=f"{knob}: {e}"
+        ) from e
 
 
 def _set_stage1(path: str, knob: str, field: str, value: Any) -> SetResult:
@@ -478,8 +522,11 @@ def _set_stage1(path: str, knob: str, field: str, value: Any) -> SetResult:
     try:
         field_type, optional = _field_hint(ft_mod.FTSettings, None, field)
     except KeyError:
-        raise ValueError(
-            f"unknown setting {knob!r}; no such field on stage1 FT settings"
+        raise BadSettingError(
+            knob,
+            "a known setting path",
+            knob,
+            message=f"unknown setting {knob!r}; no such field on stage1 FT settings",
         ) from None
     coerced = _coerce_or_unset(knob, field_type, optional, value)
 

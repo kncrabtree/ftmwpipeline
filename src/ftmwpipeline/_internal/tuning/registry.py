@@ -26,6 +26,7 @@ from ...core import (
     window_planning_settings,
 )
 from ...core.knob_metadata import field_knob_meta
+from ...file_manager import BadSettingError
 from .fit_support import reduce_plan_for_fit
 from .plots import (
     plot_fit_quality,
@@ -1476,14 +1477,32 @@ for _field in (
     )
 
 
+class UnknownKnobError(BadSettingError, KeyError):
+    """``bad_setting`` for an unregistered knob path.
+
+    Also a ``KeyError``, which is what :func:`get_knob` raised before the
+    refusal was typed, so existing ``except KeyError`` clauses keep working.
+    """
+
+    def __str__(self) -> str:
+        return self.message
+
+
 def get_knob(path: str) -> KnobSpec:
-    """Look up a knob by its dotted path, or raise ``KeyError`` with a hint."""
+    """Look up a knob by its dotted path.
+
+    Raises :class:`UnknownKnobError` (``bad_setting``; also a ``KeyError`` and a
+    ``ValueError``) with the registered paths as a hint.
+    """
     try:
         return _REGISTRY[path]
     except KeyError:
         known = ", ".join(sorted(_REGISTRY)) or "(none)"
-        raise KeyError(
-            f"unknown tuning knob {path!r}; registered knobs: {known}"
+        raise UnknownKnobError(
+            path,
+            "a registered knob path",
+            path,
+            message=f"unknown tuning knob {path!r}; registered knobs: {known}",
         ) from None
 
 

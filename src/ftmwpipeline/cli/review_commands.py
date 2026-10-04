@@ -43,13 +43,14 @@ from .._internal.stage6_impl import (
 )
 from ..core.absent import Absent
 from ..core.curation import REFIT_SNAP_TOL_BINS, Frame
-from ..fitting.active_ft import active_ft_bin_spacing_mhz
 from ..core.data_structures import (
     FittingResult,
     LedgerCandidate,
     Stage6Review,
     WindowReviewStatus,
 )
+from ..file_manager import PipelineFileError
+from ..fitting.active_ft import active_ft_bin_spacing_mhz
 from ..io.fitting_serialization import load_spectrum_fit_from_hdf5
 from .utils import add_stage_object, setup_logging
 
@@ -170,6 +171,8 @@ def cmd_review_snap_tolerance(args: argparse.Namespace) -> int:
     try:
         snap_tol_mhz = refit_snap_tol_mhz_impl(file_path)
         acquisition_us = _active_acquisition_us_for_snap(file_path)
+    except PipelineFileError:
+        raise
     except FileNotFoundError as exc:
         print(f"Error: {exc}")
         return 1
@@ -225,6 +228,8 @@ def cmd_review_show(args: argparse.Namespace) -> int:
 
     try:
         window_fits = _load_window_fits(file_path)
+    except PipelineFileError:
+        raise
     except ValueError as exc:
         print(f"Error: {exc}")
         return 1
@@ -269,9 +274,13 @@ def cmd_review_show(args: argparse.Namespace) -> int:
                 import matplotlib.pyplot as plt
 
                 plt.close(fig)
+            except PipelineFileError:
+                raise
             except Exception:
                 pass
             print(f"Saved window {window_filter} fit plot to {output_path}")
+        except PipelineFileError:
+            raise
         except ImportError:
             print("Error: matplotlib is required for --output rendering.")
             return 1
@@ -418,6 +427,8 @@ def cmd_review_show(args: argparse.Namespace) -> int:
     # ---- candidate table (--candidates [--window N]) -------------------------
     try:
         cands = get_candidate_ledger_impl(file_path, window_id=window_filter, bar=bar)
+    except PipelineFileError:
+        raise
     except (ValueError, KeyError) as exc:
         print(f"Error: {exc}")
         return 1
@@ -493,6 +504,8 @@ def _render_windows_to_dir(
         out = os.path.join(output_dir, fname)
         try:
             fig = render_fit_detail_impl(file_path, wid, bundle=bundle)
+        except PipelineFileError:
+            raise
         except (ValueError, KeyError) as exc:
             print(f"  window {wid}: skipped ({exc})")
             continue
@@ -531,6 +544,8 @@ def _fmt_edit_token(token: str) -> str:
         return token.strip()
     try:
         return f"{float(token):.4f}"
+    except PipelineFileError:
+        raise
     except ValueError:
         return token
 
@@ -569,6 +584,8 @@ def cmd_review_edit(args: argparse.Namespace) -> int:
             snap_tol_mhz=getattr(args, "snap_tol_mhz", None),
             frame=frame,
         )
+    except PipelineFileError:
+        raise
     except (ValueError, KeyError) as exc:
         print(f"Error: {exc}")
         return 1
@@ -624,6 +641,8 @@ def cmd_review_acknowledge_environment(args: argparse.Namespace) -> int:
 
     try:
         info = acknowledge_environment_impl(file_path, reason=reason)
+    except PipelineFileError:
+        raise
     except (ValueError, KeyError, OSError) as exc:
         print(f"Error: {exc}")
         return 1
@@ -667,6 +686,8 @@ def cmd_review_create(args: argparse.Namespace) -> int:
             snap_tol_mhz=getattr(args, "snap_tol_mhz", None),
             frame=frame,
         )
+    except PipelineFileError:
+        raise
     except (ValueError, KeyError) as exc:
         print(f"Error: {exc}")
         return 1
@@ -718,6 +739,8 @@ def cmd_review_accept(args: argparse.Namespace) -> int:
             snap_tol_mhz=getattr(args, "snap_tol_mhz", None),
             frame=frame,
         )
+    except PipelineFileError:
+        raise
     except (ValueError, KeyError) as exc:
         print(f"Error: {exc}")
         return 1
@@ -753,6 +776,8 @@ def cmd_review_run(args: argparse.Namespace) -> int:
             attention_candidate_evidence=attention_bar,
             sigma_floor_khz=sigma_floor_khz,
         )
+    except PipelineFileError:
+        raise
     except (ValueError, KeyError) as exc:
         print(f"Error: {exc}")
         return 1
@@ -792,6 +817,8 @@ def cmd_review_apply(args: argparse.Namespace) -> int:
             frame=frame,
             log_prefix=log_prefix,
         )
+    except PipelineFileError:
+        raise
     except (ValueError, KeyError, OSError) as exc:
         print(f"Error: {exc}")
         return 1
@@ -858,6 +885,8 @@ def cmd_review_preview(args: argparse.Namespace) -> int:
 
     try:
         result = review_preview_impl(file_path, args.curation_file, frame=frame)
+    except PipelineFileError:
+        raise
     except (ValueError, KeyError, OSError) as exc:
         print(f"Error: {exc}")
         return 1
@@ -908,6 +937,8 @@ def cmd_review_log(args: argparse.Namespace) -> int:
 
     try:
         entries = review_log_impl(file_path)
+    except PipelineFileError:
+        raise
     except (ValueError, KeyError, OSError) as exc:
         print(f"Error: {exc}")
         return 1
@@ -941,6 +972,8 @@ def cmd_review_undo(args: argparse.Namespace) -> int:
 
     try:
         result = review_undo_impl(file_path, ids, dry_run=dry_run)
+    except PipelineFileError:
+        raise
     except (ValueError, KeyError, OSError) as exc:
         print(f"Error: {exc}")
         return 1
@@ -976,6 +1009,8 @@ def cmd_review_rank(args: argparse.Namespace) -> int:
 
     try:
         ranked = rank_windows_impl(file_path, by=by, top=top)
+    except PipelineFileError:
+        raise
     except (ValueError, KeyError) as exc:
         print(f"Error: {exc}")
         return 1

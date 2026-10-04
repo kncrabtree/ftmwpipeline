@@ -13,6 +13,7 @@ from typing import Any
 from .._internal.stage5_impl import fit_peaks_impl, fit_show_impl
 from .._internal.stage5_validation_impl import validate_stage5_shape_error_impl
 from ..core.stage_fit_settings import StageFitSettings
+from ..file_manager import PipelineFileError
 from ._argspec import add_settings_args, settings_from_namespace
 from .utils import add_stage_object, print_error, setup_logging
 
@@ -87,6 +88,8 @@ def cmd_fit_peaks(args: argparse.Namespace) -> int:
         print(f"\nResults saved to: {file_path}")
         print("Use 'fit show' to inspect the fit")
         return 0
+    except PipelineFileError:
+        raise
     except FileNotFoundError as e:
         print_error(f"Pipeline file not found: {e}")
         return 1
@@ -121,6 +124,8 @@ def cmd_visualize_fit(args: argparse.Namespace) -> int:
             try:
                 w, h = map(float, args.figsize.split(","))
                 figsize = (w, h)
+            except PipelineFileError:
+                raise
             except ValueError:
                 print_error(f"Invalid figsize {args.figsize!r}; use 'width,height'")
                 return 1
@@ -182,6 +187,8 @@ def cmd_visualize_fit(args: argparse.Namespace) -> int:
             )
         print("Fit visualization completed successfully!")
         return 0
+    except PipelineFileError:
+        raise
     except FileNotFoundError as e:
         print_error(f"Pipeline file not found: {e}")
         return 1
@@ -219,6 +226,8 @@ def cmd_validate_stage5_shape_error(args: argparse.Namespace) -> int:
         )
         _print_validation_report(report)
         return 0
+    except PipelineFileError:
+        raise
     except FileNotFoundError as e:
         print_error(f"File not found: {e}")
         return 1

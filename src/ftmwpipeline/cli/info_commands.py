@@ -12,6 +12,7 @@ from typing import Any
 
 from ..api import get_pipeline_info
 from ..contract import Absent
+from ..file_manager import PipelineFileError
 from ..serialize import to_jsonable
 from .utils import print_error, setup_logging
 
@@ -26,6 +27,8 @@ def cmd_info(args: argparse.Namespace) -> int:
 
     try:
         info = get_pipeline_info(file_path)
+    except PipelineFileError:
+        raise
     except Exception as e:
         # The API raises for a file it cannot open; this command's output (the
         # JSON object and exit code 1) is unchanged by that.

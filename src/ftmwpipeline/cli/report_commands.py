@@ -23,6 +23,7 @@ from .._internal.report_impl import (
     VALID_FORMATS,
     report_table_impl,
 )
+from ..file_manager import PipelineFileError
 from .utils import add_stage_object, setup_logging
 
 
@@ -68,6 +69,8 @@ def cmd_report_table(args: argparse.Namespace) -> int:
             catalog=getattr(args, "catalog", None),
             catalog_n_sigma=getattr(args, "catalog_n_sigma", 3.0),
         )
+    except PipelineFileError:
+        raise
     except (ValueError, KeyError) as exc:
         print(f"Error: {exc}")
         return 1
@@ -113,6 +116,8 @@ def cmd_report_run(args: argparse.Namespace) -> int:
                     catalog_n_sigma=getattr(args, "catalog_n_sigma", 3.0),
                     jobs=getattr(args, "jobs", None),
                 )
+    except PipelineFileError:
+        raise
     except (ValueError, KeyError) as exc:
         print(f"Error: {exc}")
         return 1
@@ -133,6 +138,8 @@ def cmd_report_diff(args: argparse.Namespace) -> int:
             output_dir=args.output_dir,
             dpi=getattr(args, "dpi", 110),
         )
+    except PipelineFileError:
+        raise
     except (ValueError, KeyError) as exc:
         print(f"Error: {exc}")
         return 1

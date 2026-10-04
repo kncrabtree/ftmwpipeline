@@ -505,13 +505,17 @@ carries a stable ``code`` and typed attributes, and ``to_dict()`` returns::
    * - ``file_exists``
      - ``PipelineExistsError``
      - none
+   * - ``bad_setting``
+     - ``BadSettingError``
+     - ``path`` (the setting path, or ``preset`` / ``trim`` / the preset block
+       or key), ``expected`` (what the setting accepts), ``value`` (what was
+       given)
 
 The code set is introduced **wave by wave**. ``capabilities()`` lists the
 codes this installation currently implements, and a client should rely on that
-list rather than on this page. Today the ``read`` accessors, and ``read table``
-/ ``meta`` under ``--format json``, emit the error JSON described below; every
-other verb still reports a failure as ``Error: ...`` text with its usual exit
-code (the remaining verbs move to the error JSON in a later release).
+list rather than on this page. Every CLI verb reports a typed error through one
+mapping in ``main`` (see the exit-code table): ``Error: ...`` text on stderr, or
+the error JSON under ``--format json``.
 
 Route on ``code`` (or the class); the ``message`` text is for people. Each typed
 error is still a subclass of the built-in it replaced (most are
@@ -521,6 +525,31 @@ error is still a subclass of the built-in it replaced (most are
 clauses keep working. Every typed error pickles, so it survives a process
 pool.
 
+**Bad settings.** A refusal of a setting value raises ``BadSettingError``
+(``bad_setting``; also a ``ValueError``, with the message text unchanged). The
+public calls that raise it:
+
+* ``settings_set`` / ``settings_unset`` (api, ``Pipeline`` and ``settings
+  set`` / ``unset``): an unknown or malformed path (``path`` is the knob), a
+  value of the wrong type or one that does not parse, a bad ``stage5.shape``
+  choice, invalid ``stage5.spur.clocks``, or unsetting a field that is not
+  optional. The file is not touched.
+* ``set_clock_sources`` and the ``clocks=`` argument of ``fit``: an invalid
+  clock declaration (``path`` ``stage5.spur.clocks``); the ``shape=`` argument:
+  ``path`` ``stage5.shape``.
+* ``preset=`` / ``--preset`` on every stage that takes one (and
+  ``settings_show`` / ``settings_defaults``): a preset whose root or block is
+  not a mapping, or that names an unknown field or key (``path`` is
+  ``preset``, the block name, or ``block.field``).
+* ``--trim`` with a value that is not ``min:max`` with ``max > min``
+  (``path`` ``trim``).
+* ``scan_run`` / ``scan_batch`` / ``scan run`` with an unregistered knob
+  (``path`` is the knob). This one is also a ``KeyError``, and its ``str()`` is
+  the plain message.
+
+Range and choice checks at set time are not yet made: an out-of-range number
+is accepted by ``settings_set`` and fails only when a stage runs.
+
 **Missing and corrupt files.** A path that does not exist raises
 ``PipelineFileNotFoundError`` (``not_found`` with ``kind`` ``"file"``; also a
 ``FileNotFoundError``). A path that exists but cannot be opened as a pipeline
@@ -528,9 +557,12 @@ file -- not HDF5, unreadable, missing its source metadata -- raises
 ``PipelineCorruptionError`` (``file_corrupt``; also a ``RuntimeError`` and an
 ``OSError``, chained from the underlying error). A permission failure, or
 HDF5's refusal while another process holds the file open for writing, is not
-corruption: it propagates as the original ``OSError`` so a client can retry. ``Pipeline.open`` and the ``read`` entry points
+corruption: it propagates as the original ``OSError`` so a client can retry. ``Pipeline.open``, ``api.validate_pipeline`` and the ``read`` entry points
 (``api.read_table``, ``api.read_metadata``, ``read table`` / ``meta`` /
-``list``) agree on this.
+``list``) agree on this. ``validate_pipeline`` reports problems in a file that
+opens; for one that does not it raises the open error (``not_found``,
+``file_corrupt`` or ``file_incompatible``) instead of returning
+``{"valid": False}``.
 
 Previewing a source: ``preview_source``
 ---------------------------------------
@@ -628,9 +660,10 @@ default, format), ``-o/--output DIR`` and ``-v``.
   directory. This differs from ``read table`` and ``read meta``, where
   ``--output`` names a single text file.
 * A contract error is printed to **stderr** as its ``to_dict()`` JSON, always
-  for a ``read`` accessor, with the exit code from the table below. The same
-  mapping sets the exit code of ``read table``, ``read meta`` and ``read
-  list``, whose printed text is unchanged (``Error: ...``).
+  for a ``read`` accessor, with the exit code from the table below. Every other
+  verb lets a typed error reach one dispatch in ``main``, which applies the same
+  mapping: the error JSON under ``--format json``, ``Error: <message>`` on
+  stderr otherwise.
 
 .. list-table:: Exit codes
    :header-rows: 1

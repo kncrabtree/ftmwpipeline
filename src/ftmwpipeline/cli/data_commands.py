@@ -15,6 +15,7 @@ from .._internal.stage0_impl import (
     import_data_impl,
     visualize_fid_impl,
 )
+from ..file_manager import PipelineFileError
 from ..io.data_loaders import get_format_info, list_formats
 from ..io.fid_serialization import load_acquisition_segments_from_hdf5
 from .utils import add_stage_object, setup_logging
@@ -124,6 +125,8 @@ def cmd_data_load(args: argparse.Namespace) -> int:
 
         return 0
 
+    except PipelineFileError:
+        raise
     except KeyboardInterrupt:
         print("\nOperation canceled by user")
         return 1
@@ -169,6 +172,8 @@ def cmd_data_visualize(args: argparse.Namespace) -> int:
             print("FID visualization completed")
             return 0
 
+        except PipelineFileError:
+            raise
         except Exception as e:
             print(f"Error creating visualization: {e}")
             # Fall back to basic info display using pipeline info
@@ -212,6 +217,8 @@ def cmd_data_visualize(args: argparse.Namespace) -> int:
                                     f"  ({len(segs.tail) * segs.sample_dt * 1e6:.2f} µs)"
                                 )
                                 print(f"   Per-frame data stored: {has_frames}")
+                except PipelineFileError:
+                    raise
                 except Exception:
                     pass  # Segment display failure is non-fatal
 
@@ -226,10 +233,14 @@ def cmd_data_visualize(args: argparse.Namespace) -> int:
                         )
 
                 return 0
+            except PipelineFileError:
+                raise
             except Exception as info_error:
                 print(f"Error getting pipeline info: {info_error}")
                 return 1
 
+    except PipelineFileError:
+        raise
     except KeyboardInterrupt:
         print("\nOperation canceled by user")
         return 1
@@ -272,6 +283,8 @@ def cmd_data_info(args: argparse.Namespace) -> int:
                     for param, default in info["optional_parameters"].items():
                         print(f"     • {param} (default: {default})")
 
+            except PipelineFileError:
+                raise
             except ValueError as e:
                 print(f"Error: {e}")
                 return 1
@@ -298,12 +311,16 @@ def cmd_data_info(args: argparse.Namespace) -> int:
                         print(f"   Requires: {', '.join(info['required_parameters'])}")
 
                     print()
+                except PipelineFileError:
+                    raise
                 except Exception:
                     print(f"{fmt} (info unavailable)")
                     print()
 
         return 0
 
+    except PipelineFileError:
+        raise
     except Exception as e:
         print(f"Unexpected error: {e}")
         return 1

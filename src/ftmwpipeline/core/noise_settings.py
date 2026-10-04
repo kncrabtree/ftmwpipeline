@@ -46,6 +46,7 @@ from typing import Any, Dict, Mapping, Optional, Union, cast
 import yaml  # type: ignore[import-untyped]
 
 from .knob_metadata import knob_field
+from .settings_framework import bad_preset
 
 # Mirrors the marker used by io.fid_serialization for optional HDF5 attrs.
 _NONE = "__None__"
@@ -232,14 +233,23 @@ def from_yaml_dict(data: Optional[Mapping[str, Any]]) -> NoiseSettings:
     if data is None:
         return NoiseSettings()
     if not isinstance(data, dict):
-        raise ValueError(f"preset YAML root must be a mapping; got {type(data)}")
+        raise bad_preset(
+            "preset",
+            "a YAML mapping at the document root",
+            data,
+            f"preset YAML root must be a mapping; got {type(data)}",
+        )
     valid_names = {f.name for f in fields(NoiseSettings)}
     allowed = valid_names | {"name", "description"}
     unknown = set(data) - allowed
     if unknown:
-        raise ValueError(
+        first = sorted(unknown)[0]
+        raise bad_preset(
+            f"stage2.{first}",
+            f"one of the stage2 fields: {', '.join(sorted(valid_names))}",
+            data[first],
             f"unknown stage2 fields in preset: {sorted(unknown)} "
-            f"(valid: {sorted(valid_names)})"
+            f"(valid: {sorted(valid_names)})",
         )
     kwargs = {key: data[key] for key in valid_names if key in data}
     return NoiseSettings(**kwargs)
@@ -320,17 +330,23 @@ def load_preset(name_or_path: Union[str, Path]) -> NoiseSettings:
         text = candidate.read_text()
     data = yaml.safe_load(text)
     if not isinstance(data, dict):
-        raise ValueError(
+        raise bad_preset(
+            "preset",
+            "a YAML mapping at the document root",
+            data,
             f"preset YAML root must be a mapping; got {type(data)} from "
-            f"{name_or_path}"
+            f"{name_or_path}",
         )
     inner = data.get("stage2")
     if inner is None:
         return NoiseSettings()
     if not isinstance(inner, dict):
-        raise ValueError(
+        raise bad_preset(
+            "stage2",
+            "a mapping of field names to values",
+            inner,
             f"preset 'stage2' block must be a mapping; got {type(inner)} "
-            f"from {name_or_path}"
+            f"from {name_or_path}",
         )
     block = dict(inner)
     for meta in ("name", "description"):

@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from ..core.stage_fit_settings import ShapeSpec
+from ..file_manager import PipelineFileError
 from .utils import elide_path, print_error
 
 
@@ -90,6 +91,8 @@ def _print_settings_table(file_path: Optional[str], args: argparse.Namespace) ->
             include_advanced=show_all,
             preset=preset,
         )
+    except PipelineFileError:
+        raise
     except FileNotFoundError as e:
         # A bad --preset name reports the available presets.
         print_error(str(e))
@@ -180,6 +183,8 @@ def cmd_settings_set(args: argparse.Namespace) -> int:
 
     try:
         result = set_setting(file_path, args.knob, args.value)
+    except PipelineFileError:
+        raise
     except ValueError as e:
         print_error(str(e))
         return 1
@@ -209,6 +214,8 @@ def cmd_settings_unset(args: argparse.Namespace) -> int:
 
     try:
         result = unset_setting(file_path, args.knob)
+    except PipelineFileError:
+        raise
     except ValueError as e:
         print_error(str(e))
         return 1

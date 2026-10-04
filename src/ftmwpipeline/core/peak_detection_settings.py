@@ -403,7 +403,12 @@ def from_yaml_dict(data: Optional[Mapping[str, Any]]) -> PeakDetectionSettings:
     if data is None:
         return PeakDetectionSettings()
     if not isinstance(data, dict):
-        raise ValueError(f"preset YAML root must be a mapping; got {type(data)}")
+        raise sf.bad_preset(
+            "preset",
+            "a YAML mapping at the document root",
+            data,
+            f"preset YAML root must be a mapping; got {type(data)}",
+        )
     return sf.subblocks_from_yaml_dict(
         PeakDetectionSettings(),
         PeakDetectionSettings,

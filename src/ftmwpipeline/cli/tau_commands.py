@@ -24,6 +24,7 @@ from typing import Any, Optional
 from .._internal.shape_recommendation_impl import recommend_shape_impl
 from .._internal.stage2b_impl import calibrate_tau_impl
 from ..core.tau_calibration_settings import TauCalibrationSettings
+from ..file_manager import PipelineFileError
 from ._argspec import add_settings_args, settings_from_namespace
 from .utils import add_stage_object, print_error, setup_logging
 
@@ -62,6 +63,8 @@ def cmd_calibrate_tau(args: argparse.Namespace) -> int:
             settings=None if settings.is_empty() else settings,
             preset=preset,
         )
+    except PipelineFileError:
+        raise
     except FileNotFoundError as e:
         print_error(f"Pipeline file not found: {e}")
         return 1
@@ -126,6 +129,8 @@ def cmd_recommend_shape(args: argparse.Namespace) -> int:
             settings=None if settings.is_empty() else settings,
             preset=preset,
         )
+    except PipelineFileError:
+        raise
     except FileNotFoundError as e:
         print_error(f"Pipeline file not found: {e}")
         return 1
@@ -170,6 +175,8 @@ def cmd_visualize_tau_heatmap(args: argparse.Namespace) -> int:
 
     try:
         fig = plot_tau_heatmap_from_file(file_path, shape=shape)
+    except PipelineFileError:
+        raise
     except Exception as e:
         print_error(f"Failed to create tau-heatmap visualization: {e}")
         if args.verbose:
@@ -196,6 +203,8 @@ def cmd_visualize_tau_distribution(args: argparse.Namespace) -> int:
 
     try:
         fig = plot_tau_distribution_from_file(file_path, shape=shape)
+    except PipelineFileError:
+        raise
     except Exception as e:
         print_error(f"Failed to create tau-distribution visualization: {e}")
         if args.verbose:
@@ -214,6 +223,8 @@ def _handle_figure_output(fig: Any, args: argparse.Namespace) -> int:
         try:
             fig.savefig(output, dpi=150, bbox_inches="tight")
             print(f"Plot saved to: {output}")
+        except PipelineFileError:
+            raise
         except Exception as e:
             print_error(f"Failed to save plot: {e}")
             return 1
@@ -222,6 +233,8 @@ def _handle_figure_output(fig: Any, args: argparse.Namespace) -> int:
             import matplotlib.pyplot as plt
 
             plt.show()
+        except PipelineFileError:
+            raise
         except Exception as e:
             print_error(f"Could not display plot: {e}")
             return 1

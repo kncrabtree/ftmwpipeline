@@ -71,13 +71,39 @@ RECOMMENDED_PATH = "stage0_fid_data/recommended_processing"
 
 
 def _parse_trim(text: str) -> Tuple[float, float]:
-    """Parse a ``"min:max"`` MHz trim string into a ``(min, max)`` tuple."""
+    """Parse a ``"min:max"`` MHz trim string into a ``(min, max)`` tuple.
+
+    Raises :class:`~ftmwpipeline.file_manager.BadSettingError` (a
+    ``ValueError``) for a string that is not ``min:max`` with ``max > min``.
+    """
+    # Lazy: file_manager imports from core.
+    from ..file_manager import BadSettingError
+
+    expected = "'min:max' in MHz with max > min"
     parts = text.split(":")
     if len(parts) != 2:
-        raise ValueError(f"Trim must be 'min:max' in MHz, got {text!r}")
-    lo, hi = float(parts[0]), float(parts[1])
+        raise BadSettingError(
+            "trim",
+            expected,
+            text,
+            message=f"Trim must be 'min:max' in MHz, got {text!r}",
+        )
+    try:
+        lo, hi = float(parts[0]), float(parts[1])
+    except ValueError:
+        raise BadSettingError(
+            "trim",
+            expected,
+            text,
+            message=f"Trim must be 'min:max' in MHz, got {text!r}",
+        ) from None
     if hi <= lo:
-        raise ValueError(f"Trim max must exceed min, got {text!r}")
+        raise BadSettingError(
+            "trim",
+            expected,
+            text,
+            message=f"Trim max must exceed min, got {text!r}",
+        )
     return (lo, hi)
 
 
