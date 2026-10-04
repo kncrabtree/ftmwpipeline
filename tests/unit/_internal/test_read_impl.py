@@ -29,7 +29,7 @@ from ftmwpipeline._internal.read_impl import (
     write_text_impl,
 )
 from ftmwpipeline._internal.shared_utils import active_acquisition_us
-from ftmwpipeline.contract import stage_for_key
+from ftmwpipeline.contract import Absent, stage_for_key
 from ftmwpipeline.core.data_structures import (
     FittedPeak,
     FittingResult,
@@ -336,7 +336,7 @@ class TestReadTables:
             del h5f["stage5_fitting"]
         listing = read_tables_impl(ftmw_file)
         assert listing["fit_peaks"]["available"] is False
-        assert listing["fit_peaks"]["n_rows"] is None
+        assert listing["fit_peaks"]["n_rows"] is Absent.NOT_RUN
         # The column roster is still reported, so a caller can plan a read.
         assert listing["fit_peaks"]["columns"]
         assert listing["peaks"]["available"] is True
@@ -584,7 +584,11 @@ class TestTableCoverage:
     def test_tables_with_no_recorded_count_are_still_available(self, ftmw_file):
         listing = read_tables_impl(ftmw_file)
         assert listing["fit_audit"]["available"] is True
-        assert listing["fit_audit"]["n_rows"] is None
+        # No recorded count: the listing computes it rather than report an
+        # absence for a quantity that exists.
+        n_rows = listing["fit_audit"]["n_rows"]
+        assert isinstance(n_rows, int)
+        assert n_rows == read_table_impl(ftmw_file, "fit_audit")["window_id"].size
         assert read_table_impl(ftmw_file, "fit_audit")["window_id"].size >= 0
 
 

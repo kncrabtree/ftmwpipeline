@@ -141,6 +141,59 @@ Each declared accessor, with its absence cases:
   produces it: ``tau run``, ``tau run --gaussian``, ``peaks run``,
   ``windows run`` or ``fit run``, for every table. ``read read_table FILE TABLE [--columns a,b]`` writes each column to
   ``<column>.npy`` under ``--output``.
+
+  ``read_tables`` lists, per table, ``available``, ``n_rows``, ``columns`` and
+  ``group``. ``n_rows`` is ``Absent.NOT_RUN`` when the producing stage has not
+  run, and otherwise always an ``int``: a table whose stage records no count is
+  counted from the table itself. (A stored table that cannot be read at all,
+  such as a pre-1.0 fit layout, reports ``Absent.UNDEFINED``.) ``columns``
+  includes every ``<column>__status`` companion.
+
+  **Status columns.** The ``fit_peaks``, ``fit_windows``, ``fit_audit``,
+  ``fit_doublets`` and ``peaks`` tables carry a ``uint8``
+  ``<column>__status`` companion (``0`` present, ``1`` not run, ``2``
+  undefined) for each column below, inserted right after it; column selection
+  accepts them. The value column keeps its stored fill (``nan``, ``inf``,
+  ``-1`` or ``""``), which a program must not read when the status is not
+  ``0``. A column that predates the file reads as its fill with status ``1``.
+  The rules are the ones ``FinalPeak`` uses for the same quantity.
+
+  * ``fit_peaks``. Knockout: ``knockout_supported``, ``knockout_delta_chi2``,
+    ``knockout_expected_delta_chi2``, ``chi_squared``, ``knockout_p_value``,
+    ``knockout_n_eff`` and ``knockout_aicc_delta`` are ``1`` when the test did
+    not run (no record: ``knockout_supported`` is ``-1`` or the delta chi2 is
+    ``nan``); when it ran, a non-finite value is ``2``. ``frequency_error``,
+    ``amplitude_error``, ``phase``, ``phase_error``, ``decay_rate``,
+    ``decay_rate_error`` (also when tau was held fixed) and ``snr``: a
+    non-finite value is ``2``. ``detection_index``: ``-1`` (no Stage 3
+    detection seeded the line) is ``2``. ``derivation`` and ``peak_uid``:
+    ``-1`` is ``1``. ``unresolved_spread_mhz``: ``nan`` (never a merged
+    multiplet) is ``1``. ``clock_lattice``: ``1`` when the fit recorded no
+    clock declaration, ``2`` when it did and the line is off the lattice
+    (``""``), else ``0``.
+  * ``fit_windows``. ``freq_min``, ``freq_max``, ``edge_coherence_low``,
+    ``edge_coherence_high``: ``nan`` is ``1``. ``tau_fitted``: ``-1`` is ``1``.
+    ``tau_error``: ``2`` for any non-finite value (held fixed or singular).
+    ``tau_us`` (also when not positive), ``aic``, ``reduced_chi2``: a
+    non-finite value is ``2``.
+  * ``fit_audit``. ``n_eff`` and ``aicc_delta``: ``1`` on a ``seed`` or
+    ``spur-drop`` step and on a separation reject (``separation_ok`` false with
+    no ``n_eff``), else ``2`` if non-finite. ``f_statistic``: ``1`` on
+    ``spur-drop``, ``knockout-null`` and separation rejects; ``p_value``: ``1``
+    on ``spur-drop`` and separation rejects (a ``nan`` ``p_value`` on
+    ``knockout-null`` is ``2``). For a separation reject no test ran, so the
+    stored placeholder ``f_statistic`` 0.0 and ``p_value`` 1.0 read as ``nan``
+    with status ``1``. ``chi2_after`` and ``aic_after``: ``1`` on
+    ``spur-drop``, else ``2`` if non-finite.
+  * ``fit_doublets``. ``chi2r_merged``, ``delta_chi2_raw``, ``delta_aicc``,
+    ``merged_frequency_mhz``, ``merged_amplitude``, ``merged_phase``,
+    ``merged_tau_us`` and ``orth_evidence_delta_chi2``: a non-finite value is
+    ``2`` (the merged refit was attempted).
+  * ``peaks``. ``internal_snr``, ``internal_frequency``, ``leakage_pedestal``:
+    ``nan`` (the internal pass did not contribute the peak) is ``1``. ``snr``
+    and ``noise_std_local``: non-finite is ``2``. ``index`` ``-1`` and
+    ``classification`` ``""`` are ``1``. ``promoted``: ``1`` for every row when
+    the file records no promotion cutoff (it predates the record), else ``0``.
 * ``get_final_products`` -- the persisted final-products table, or ``None``
   before Stage 6 (``None`` becomes ``Absent`` in a later wave; ``read
   get_final_products`` already prints ``"items": null, "items_absent":

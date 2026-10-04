@@ -150,7 +150,7 @@ def cmd_read_list(args: argparse.Namespace) -> int:
     for name, entry in tables.items():
         if entry["available"]:
             rows = entry["n_rows"]
-            status = f"{rows} row(s)" if rows is not None else "available"
+            status = f"{rows} row(s)" if not isinstance(rows, Absent) else "available"
         else:
             status = "not available (stage not run)"
         print(f"  {name:<{width}}  {status}")
