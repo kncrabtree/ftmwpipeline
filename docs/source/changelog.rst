@@ -102,6 +102,17 @@ engine so they cannot answer differently.
   Files written earlier
   open and run unchanged; their new records read as absent.
 
+* **Machine contract: the analysis fingerprint.** ``CONTRACT_VERSION`` is now
+  ``5``. ``analysis_fingerprint`` (API, ``Pipeline`` and ``read
+  analysis_fingerprint``) returns ``ftmw/analysis_fingerprint@1``, a SHA-256
+  digest of every input that shaped the file's results as the stages recorded
+  them: their settings at the values they ran with, the values they took from
+  other stages, the acquisition parameters, the accuracy floor and each stage's
+  analysis epoch. The same digest means the same results. A file whose stages
+  predate recording everything they used raises ``incomplete_provenance``
+  listing every missing input; re-running those stages records them (see
+  :doc:`machine_contract`).
+
 * **Machine contract, Wave 2: the fitted model, evaluated.**
   ``CONTRACT_VERSION`` is now ``4``. ``window_model`` returns one window's
   fitted model with the data, the frozen-neighbour and baseline terms, and --

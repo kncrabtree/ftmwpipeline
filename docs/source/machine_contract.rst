@@ -34,7 +34,7 @@ The contract version
     if ftmwpipeline.CONTRACT_VERSION < 1:
         raise RuntimeError("needs a newer ftmwpipeline")
 
-The first published contract is version ``1``; this release is version ``4``. Additions (a new accessor,
+The first published contract is version ``1``; this release is version ``5``. Additions (a new accessor,
 field or code) raise the version by one and never break an existing field. Every machine-readable payload also carries a **schema name**
 of the form ``ftmw/<payload>@<n>``; a schema name never changes meaning.
 
@@ -593,6 +593,64 @@ writes the file. Amplitudes are in the units of the underlying spectrum, so
 
    $ ftmwpipeline read window_model experiment.ftmw 179 --components --output w179/
    $ ftmwpipeline read spectrum_model experiment.ftmw --grid display --output model/
+
+Analysis identity: ``analysis_fingerprint``
+-------------------------------------------
+
+``analysis_fingerprint(path)`` returns ``{"schema":
+"ftmw/analysis_fingerprint@1", "digest": "<64 hex>"}``: a SHA-256 digest of
+every input that shaped the file's scientific output, as each stage recorded
+it. Two files with the same FID samples and the same digest produce the same
+results. The call only reads.
+
+.. code-block:: python
+
+   ftmw.analysis_fingerprint("exp.ftmw")
+   Pipeline.open("exp.ftmw").analysis_fingerprint()
+
+.. code-block:: console
+
+   $ ftmwpipeline read analysis_fingerprint exp.ftmw
+
+**What it covers.** For every stage (``data``, ``ft``, ``noise``, ``tau``,
+``tau_g``, ``timebase``, ``peaks``, ``windows``, ``fit``, ``review``):
+
+* the settings the stage ran with, at the values it resolved (every field of
+  its settings record, including values taken from a recommendation, such as a
+  detected start time or the Stage 5 shape);
+* the values it took from another stage's result (Stage 3's gap-pass decay time
+  and shape, Stage 5's decay-time anchor, timebase epsilon, spur nominees and
+  survival floor);
+* the timebase's knobs, active region and clock declaration;
+* the acquisition parameters the analysis read (probe frequency, sideband,
+  sample spacing), after any import-time override;
+* the accuracy floor ``sigma_floor_khz`` (``0.0`` when none was declared);
+* the analysis epoch each stage was produced under.
+
+A stage that has not run is part of the digest as *not run*, so the digest
+changes as stages complete. Not covered: the FID samples themselves (hash
+``fid_samples`` if you need a spectrum identity), curation decisions (hash
+``review_log`` if you need an edit-set identity), the attention-routing
+arguments of ``review run``, write timestamps, preset names, and the package
+version and environment (code changes that move results are marked by the
+analysis epoch, which is covered).
+
+**The guarantee runs one way.** The same digest means the same results.
+Different digests do not imply different results: every recorded input is
+hashed, including a knob that another setting made ineffective in a given run,
+and nothing is inferred about which knobs mattered.
+
+``@1`` is frozen: its definition never changes. A different definition will be
+published as ``@2`` beside it.
+
+**Refusals.** A file written before its stages recorded everything they used
+cannot be fingerprinted. The call then raises ``IncompleteProvenanceError``
+(code ``incomplete_provenance``) instead of hashing incomplete inputs. Its
+``missing`` attribute lists every gap, across all stages, as dotted keys such as
+``ft.analysis_epoch``, ``tau.stft``, ``peaks.consumed`` or
+``timebase.clock_sources``. Re-running the stages named records them. A missing
+file raises ``PipelineFileNotFoundError`` (``not_found``). Through the CLI either
+error is written to stderr as JSON and the command exits 1.
 
 Serialization rules worth knowing: an enum is written as its ``.value``
 (``PeakShape.LORENTZIAN`` is ``"lorentzian"``, also as a mapping key); a
