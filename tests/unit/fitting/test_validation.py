@@ -271,10 +271,16 @@ class TestFTest:
         assert f == 0.0
         assert diff == 0.0
 
-    def test_zero_dof_change_returns_unity_p(self):
-        p, f, _ = calculate_chi_squared_improvement(1000.0, 800.0, 0, 800, 10)
-        assert p == 1.0
-        assert f == 0.0
+    def test_degenerate_test_is_undefined(self):
+        """No added parameter, no residual dof, or a non-positive chi2: nan."""
+        for args in (
+            (1000.0, 800.0, 0, 800, 10),  # dof_change 0
+            (1000.0, 800.0, 3, 10, 10),  # df_residual 0
+            (1000.0, 0.0, 3, 800, 10),  # new_chi2 0
+            (1000.0, 1000.0, 3, 10, 10),  # degenerate whatever the improvement
+        ):
+            p, f, _ = calculate_chi_squared_improvement(*args)
+            assert np.isnan(p) and np.isnan(f), args
 
     def test_real_improvement_is_significant(self):
         """A large chi-squared drop yields a tiny p-value and a positive F."""

@@ -97,8 +97,8 @@ class TestCoherentBand:
         assert s > DEFAULT_EDGE_THRESHOLD
 
     def test_degenerate_inputs(self):
-        assert coherence_statistic(np.array([]), 1.0) == 0.0
-        assert coherence_statistic(np.array([1 + 1j]), 0.0) == 0.0
+        assert np.isnan(coherence_statistic(np.array([]), 1.0))
+        assert np.isnan(coherence_statistic(np.array([1 + 1j]), 0.0))
 
 
 class TestMaxCumsum:
