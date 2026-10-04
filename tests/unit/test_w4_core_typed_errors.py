@@ -140,3 +140,212 @@ def test_bad_primary_window_names_the_setting(pipeline):
             )
         )
     assert exc.value.path == "stage3.primary_pass.primary_window"
+
+
+# ---------------------------------------------------------------------------
+# Public-interface coverage (api + Pipeline), every converted setting refusal
+# ---------------------------------------------------------------------------
+import ftmwpipeline.api as ftmw  # noqa: E402
+from ftmwpipeline.core.noise_settings import NoiseSettings  # noqa: E402
+from ftmwpipeline.core.peak_detection_settings import (  # noqa: E402
+    PeakDetectionSettings,
+    PromotionSubSettings,
+    SavgolSubSettings,
+)
+from ftmwpipeline.core.start_detection_settings import (  # noqa: E402
+    StartDetectionSettings,
+)
+from ftmwpipeline.core.tau_calibration_settings import (  # noqa: E402
+    BandSubSettings,
+    GaussianSubSettings,
+    StftSubSettings,
+    TauCalibrationSettings,
+)
+from ftmwpipeline.file_manager import StageDependencyError  # noqa: E402
+
+_TRIM = (40900.0, 41020.0)
+
+
+def _assert_bad_setting(exc, path):
+    err = exc.value
+    assert err.path == path
+    # The built-in it replaced still catches it.
+    assert isinstance(err, ValueError)
+    d = err.to_dict()
+    assert d["code"] == "bad_setting"
+    assert d["path"] == path
+    assert d["expected"]
+
+
+@pytest.fixture
+def ft_file(pipeline) -> str:
+    pipeline.compute_ft(trim=_TRIM)
+    return str(pipeline.filepath)
+
+
+@pytest.fixture
+def noise_file(ft_file) -> str:
+    ftmw.estimate_noise(ft_file)
+    return ft_file
+
+
+@pytest.mark.parametrize(
+    "kwargs, path, value",
+    [
+        ({"n_iter": 0}, "stage2.n_iter", 0),
+        ({"smoothing_percentile": 120.0}, "stage2.smoothing_percentile", 120.0),
+    ],
+)
+def test_api_estimate_noise_bad_knob(ft_file, kwargs, path, value):
+    # Mutation: the knob reaches the kernel and comes back as a flattened error.
+    with pytest.raises(BadSettingError) as exc:
+        ftmw.estimate_noise(ft_file, settings=NoiseSettings(**kwargs))
+    _assert_bad_setting(exc, path)
+    assert exc.value.value == value
+
+
+def test_api_calibrate_tau_bad_shape(noise_file):
+    # Mutation: _check_shape raises a plain ValueError.
+    with pytest.raises(BadSettingError) as exc:
+        ftmw.calibrate_tau(noise_file, shape="bogus")
+    _assert_bad_setting(exc, "shape")
+    assert exc.value.value == "bogus"
+
+
+@pytest.mark.parametrize(
+    "shape, settings, path",
+    [
+        (
+            "lorentzian",
+            TauCalibrationSettings(stft=StftSubSettings(sigma_time=-1.0)),
+            "stage2b.stft.sigma_time",
+        ),
+        (
+            "lorentzian",
+            TauCalibrationSettings(
+                band=BandSubSettings(
+                    compute_band_majorities=True, band_edges_mhz=(10.0,)
+                )
+            ),
+            "stage2b.band.band_edges_mhz",
+        ),
+        (
+            "lorentzian",
+            TauCalibrationSettings(
+                band=BandSubSettings(
+                    compute_band_majorities=True,
+                    band_edges_mhz=(40950.0,),
+                    band_labels=("a",),
+                )
+            ),
+            "stage2b.band.band_labels",
+        ),
+        (
+            "gaussian",
+            TauCalibrationSettings(gaussian=GaussianSubSettings(tau_G_bound_hi=1e-9)),
+            "stage2b.gaussian.tau_G_bound_hi",
+        ),
+        (
+            "gaussian",
+            TauCalibrationSettings(
+                gaussian=GaussianSubSettings(tau_G_upper_fraction=1.5)
+            ),
+            "stage2b.gaussian.tau_G_upper_fraction",
+        ),
+    ],
+)
+def test_api_calibrate_tau_bad_settings(noise_file, shape, settings, path):
+    # Mutation: the kernel's own ValueError reaches the caller untyped.
+    with pytest.raises(BadSettingError) as exc:
+        ftmw.calibrate_tau(noise_file, shape=shape, settings=settings)
+    _assert_bad_setting(exc, path)
+
+
+def test_api_calibrate_tau_and_recommend_shape_need_trim(pipeline):
+    # Mutation: the missing-trim refusal is a plain ValueError.
+    pipeline.compute_ft()
+    path = str(pipeline.filepath)
+    ftmw.estimate_noise(path)
+    with pytest.raises(BadSettingError) as exc:
+        ftmw.calibrate_tau(path)
+    _assert_bad_setting(exc, "ft.trim")
+    assert exc.value.value is None
+    with pytest.raises(BadSettingError) as exc:
+        ftmw.recommend_shape(path)
+    _assert_bad_setting(exc, "ft.trim")
+
+
+def test_api_recommend_shape_bad_n_seg(noise_file):
+    # Mutation: the shape-recommendation path skips the n_seg pre-check.
+    with pytest.raises(BadSettingError) as exc:
+        ftmw.recommend_shape(
+            noise_file,
+            settings=TauCalibrationSettings(stft=StftSubSettings(n_seg=100000)),
+        )
+    _assert_bad_setting(exc, "stage2b.stft.n_seg")
+
+
+@pytest.mark.parametrize(
+    "settings, path",
+    [
+        (
+            PeakDetectionSettings(promotion=PromotionSubSettings(min_snr=0.0)),
+            "stage3.promotion.min_snr",
+        ),
+        (
+            PeakDetectionSettings(savgol=SavgolSubSettings(sg_order=0)),
+            "stage3.savgol.sg_order",
+        ),
+        (
+            PeakDetectionSettings(savgol=SavgolSubSettings(sg_window=10)),
+            "stage3.savgol.sg_window",
+        ),
+    ],
+)
+def test_api_detect_peaks_bad_settings(noise_file, settings, path):
+    # Mutation: Stage 3 hands the knob to the kernel and its ValueError escapes.
+    with pytest.raises(BadSettingError) as exc:
+        ftmw.detect_peaks(noise_file, settings=settings)
+    _assert_bad_setting(exc, path)
+
+
+def test_api_detect_start_time_fid_too_short(pipeline):
+    # Mutation: the short-FID check is a plain ValueError.
+    with pytest.raises(BadSettingError) as exc:
+        ftmw.detect_start_time(
+            str(pipeline.filepath), settings=StartDetectionSettings(step_us=50.0)
+        )
+    _assert_bad_setting(exc, "stage0.step_us")
+    assert exc.value.value == 50.0
+
+
+def test_api_run_pipeline_requires_trim(tmp_path):
+    # Mutation: run_pipeline raises a plain ValueError for trim=None.
+    with pytest.raises(BadSettingError) as exc:
+        ftmw.run_pipeline(str(tmp_path / "s"), str(tmp_path / "o.ftmw"), trim=None)
+    _assert_bad_setting(exc, "trim")
+
+
+def test_read_noise_result_before_noise_is_stage_not_run(ft_file):
+    # Mutation: load_noise_result_impl raises ValueError and the wrapper
+    # flattens it to RuntimeError.
+    from ftmwpipeline._internal.stage2_impl import load_noise_result_impl
+
+    with pytest.raises(StageDependencyError) as exc:
+        load_noise_result_impl(ft_file)
+    assert isinstance(exc.value, ValueError)
+    d = exc.value.to_dict()
+    assert d["code"] == "stage_not_run"
+    assert d["missing_dependencies"] == ["noise"]
+    assert d["command"] == "noise run"
+
+
+def test_typed_error_survives_the_stage_wrappers(tmp_path):
+    # Mutation: the ``except Exception -> RuntimeError`` wrapper in stage1/stage2
+    # runs before ``except PipelineFileError: raise``.
+    from ftmwpipeline.file_manager import PipelineFileNotFoundError
+
+    missing = str(tmp_path / "nope.ftmw")
+    for call in (ftmw.compute_ft, ftmw.estimate_noise):
+        with pytest.raises(PipelineFileNotFoundError):
+            call(missing)
