@@ -165,16 +165,18 @@ def test_fit_peak_undefined_and_never_merged(tmp_path):
     assert np.isnan(t["decay_rate_error"][0])  # the value keeps its fill
 
 
-def test_synthesized_column_is_not_run(tmp_path):
+def test_synthesized_column_is_not_run_except_under_the_knockout_rule(tmp_path):
     f = _build(tmp_path / "s.ftmw", [_peak(0, knockout=_ko(True, 4.0))])
     with h5py.File(f, "r+") as h5f:
         del h5f["stage5_fitting/peaks/knockout_p_value"]
         del h5f["stage5_fitting/windows/tau_error"]
+    # The knockout rule takes precedence over the synthesized fill: the test
+    # ran, so a p-value the file predates is UNDEFINED, as on FinalPeak.
     assert list(
         read_table_impl(f, "fit_peaks", ["knockout_p_value__status"])[
             "knockout_p_value__status"
         ]
-    ) == [NR]
+    ) == [UD]
     assert list(
         read_table_impl(f, "fit_windows", ["tau_error__status"])["tau_error__status"]
     ) == [NR]

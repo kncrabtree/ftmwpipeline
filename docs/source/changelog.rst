@@ -49,6 +49,31 @@ had to reach into ``_internal`` or parse out of prose to obtain are now
 published, and the Stage 6 edit paths that carry them were collapsed onto one
 engine so they cannot answer differently.
 
+* **Machine contract, Wave 3: absence is ``Absent`` everywhere on the
+  contract (breaking).** Pre-contract fields that encoded "no value" as
+  ``None``, ``nan``, ``-1``, ``""`` or a plausible-looking ``0.0`` now carry
+  ``Absent.NOT_RUN`` (never computed in this file) or ``Absent.UNDEFINED``
+  (computed, no value); on the wire they are ``null`` plus a
+  ``"<field>_absent"`` sibling, never a bare ``null``. Storage is unchanged:
+  status is derived at read time through one set of rules, so a quantity
+  reports the same status on every surface (``FinalPeak`` and ``fit_peaks``,
+  preview and edit results). Affected: ``FinalPeak`` (phase, snr, the
+  uncertainties, window id, peak uid, derivation, clock lattice, the knockout
+  fields), ``CalibrationStamp`` (probe frequency, sideband), the curation
+  results (``chi2r_before`` / ``chi2r_after``, ``converged``, the created-window
+  fields), ``read_metadata`` values present without a value (an unrun stage's
+  keys are still omitted), ``get_pipeline_info``'s environment fields, typed
+  error ``command``, ``read_tables`` ``n_rows``, and a ``uint8``
+  ``<column>__status`` companion on the ``fit_peaks``, ``fit_windows``,
+  ``fit_audit``, ``fit_doublets`` and ``peaks`` columns that can be absent.
+  ``Absent`` is truthy: test it with ``isinstance``, never ``if x``. Two
+  values change: a line with no statistical frequency error now reports
+  ``sigma_stat_khz`` and ``sigma_f_khz`` as undefined instead of a total that
+  silently dropped the statistical term, and a ``fit_audit`` separation
+  reject's placeholder ``f_statistic`` 0.0 / ``p_value`` 1.0 (no test ran) read
+  as ``nan`` with status not run. Lines from a Stage 6 refit are now annotated
+  against the fit's clock lattice, as Stage 5's lines are. See
+  :doc:`machine_contract`.
 * **Machine contract: Stage 1's stored settings are authoritative.** Stage 1
   now records the concrete values it ran with in
   ``processing_parameters/ft_processing`` (field-set version 2): ``start_us``

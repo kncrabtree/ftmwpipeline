@@ -24,6 +24,7 @@ import numpy as np  # noqa: E402
 import pytest  # noqa: E402
 
 import ftmwpipeline.api as ftmw  # noqa: E402
+from ftmwpipeline.contract import Absent  # noqa: E402
 from ftmwpipeline._internal.report_html_impl import (  # noqa: E402
     _LIGHTBOX_JS,
     _STYLESHEET,
@@ -494,7 +495,7 @@ def test_window_peak_table_emits_peak_uid():
     assert 'data-freq="29148.001234" data-uid="15425022"' in cur
 
     legacy = _final_peak(29148.0, frequency_raw_mhz=29148.001234)
-    assert legacy.peak_uid is None
+    assert legacy.peak_uid is Absent.NOT_RUN
     old = _window_peak_table([legacy], "uV", 1e-6, window_id=217)
     assert "data-uid" not in old
     assert 'data-freq="29148.001234"' in old  # still addressable by frequency

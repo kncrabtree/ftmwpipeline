@@ -374,3 +374,21 @@ def test_stage_dependency_error_without_command_is_not_run():
     named = StageDependencyError("s", ["stage3_peaks"], Path("x"), command="peaks run")
     assert named.to_dict()["command"] == "peaks run"
     assert "command_absent" not in named.to_dict()
+
+
+@pytest.mark.integration
+def test_refit_context_carries_the_fit_clock_lattice(stage5_small_source):
+    """A Stage 6 refit annotates its lines against the fit's clock lattice, so
+    its replayed context must carry the lattice whenever the fit declared
+    clocks. Mutation: building the lattice only on the detection path (refit
+    lines would read clock_lattice UNDEFINED -- off-lattice -- untested)."""
+    from ftmwpipeline._internal.stage6_impl import _build_shared_fit_ctx
+    from ftmwpipeline.io.stage6_review_serialization import (
+        fit_declares_clocks as _declares,
+    )
+
+    path = str(stage5_small_source)
+    with h5py.File(path, "r") as h5f:
+        declared = _declares(h5f)
+    lattice = _build_shared_fit_ctx(path).fit_ctx.clock_lattice
+    assert (lattice is not None) == declared
