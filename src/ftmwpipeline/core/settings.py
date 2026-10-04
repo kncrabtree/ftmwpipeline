@@ -44,7 +44,7 @@ the local ``__None__`` HDF5 marker convention shared with
 from dataclasses import dataclass, fields
 from typing import Any, Callable, Dict, Optional, Tuple
 
-from .knob_metadata import knob_field
+from .knob_metadata import check_declared_typing, knob_field
 
 # Mirrors the marker used by io.fid_serialization for optional HDF5 attrs.
 _NONE = "__None__"
@@ -345,4 +345,6 @@ def resolve(
     for name, default in _HARD_DEFAULTS.items():
         if getattr(merged, name) is None:
             setattr(merged, name, default)
+    # Every declared choices / bounds holds whichever layer supplied the value.
+    check_declared_typing(merged, "stage1")
     return merged

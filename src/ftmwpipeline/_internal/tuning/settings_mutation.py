@@ -67,7 +67,6 @@ state unspellable in the other direction.
 from __future__ import annotations
 
 import json
-import math
 from dataclasses import dataclass, fields, is_dataclass
 from pathlib import Path
 from typing import (
@@ -91,7 +90,7 @@ from ...core import settings as ft_mod
 from ...core import stage_fit_settings as fit_mod
 from ...core import tau_calibration_settings as tau_mod
 from ...core import window_planning_settings as window_mod
-from ...core.knob_metadata import FieldTyping, field_typing_meta
+from ...core.knob_metadata import FieldTyping, check_field_typing, field_typing_meta
 from ...core.peak_shape import PeakShape
 from ...core.stage_fit_settings import ClockSource, ShapeSpec, coerce_clock_sources
 from ...file_manager import (
@@ -546,60 +545,8 @@ def _coerce_or_unset(
             knob, _expected_text(field_type), value, message=f"{knob}: {e}"
         ) from e
     if typing is not None:
-        _check_typing(knob, coerced, value, typing)
+        check_field_typing(knob, coerced, value, typing)
     return coerced
-
-
-def _bounds_text(bounds: Dict[str, Any]) -> str:
-    """Interval notation for a bounds mapping: ``[0.0, 1.0)``, ``(0, inf)``."""
-    lo, hi = bounds.get("min"), bounds.get("max")
-    left = "[" if bounds.get("min_inclusive", True) and lo is not None else "("
-    right = "]" if bounds.get("max_inclusive", True) and hi is not None else ")"
-    return f"{left}{'-inf' if lo is None else lo}, {'inf' if hi is None else hi}{right}"
-
-
-def _outside_bounds(number: Any, bounds: Dict[str, Any]) -> bool:
-    """``True`` when a numeric ``number`` violates ``bounds`` (nan always does)."""
-    if isinstance(number, bool) or not isinstance(number, (int, float)):
-        return False
-    if isinstance(number, float) and math.isnan(number):
-        return True
-    lo, hi = bounds.get("min"), bounds.get("max")
-    if lo is not None and (
-        number < lo or (number == lo and not bounds.get("min_inclusive", True))
-    ):
-        return True
-    return hi is not None and (
-        number > hi or (number == hi and not bounds.get("max_inclusive", True))
-    )
-
-
-def _check_typing(knob: str, coerced: Any, raw: Any, typing: FieldTyping) -> None:
-    """Enforce a field's declared ``choices`` and ``bounds`` on a coerced value.
-
-    ``choices`` is membership of the whole value. ``bounds`` applies to a numeric
-    scalar, or to every numeric element of a tuple / list value; a value of any
-    other kind is not bounded. ``expected`` names the declared constraint and
-    ``value`` is what the caller passed.
-    """
-    if typing.choices is not None and coerced not in typing.choices:
-        listed = ", ".join(repr(c) for c in typing.choices)
-        raise BadSettingError(
-            knob,
-            f"one of {listed}",
-            raw,
-            message=f"{knob}: {raw!r} is not one of {listed}",
-        )
-    if typing.bounds is not None:
-        items = coerced if isinstance(coerced, (tuple, list)) else (coerced,)
-        if any(_outside_bounds(item, typing.bounds) for item in items):
-            interval = _bounds_text(typing.bounds)
-            raise BadSettingError(
-                knob,
-                f"a value in {interval}",
-                raw,
-                message=f"{knob}: {raw!r} is outside {interval}",
-            )
 
 
 def _set_stage1(path: str, knob: str, field: str, value: Any) -> SetResult:

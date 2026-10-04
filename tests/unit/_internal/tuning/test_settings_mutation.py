@@ -29,7 +29,11 @@ from ftmwpipeline._internal.tuning.settings_inspection import (
 from ftmwpipeline.core import noise_settings as noise_mod
 from ftmwpipeline.core import peak_shape as ps_mod
 from ftmwpipeline.core import stage_fit_settings as fit_mod
-from ftmwpipeline.core.knob_metadata import FieldTyping, make_bounds
+from ftmwpipeline.core.knob_metadata import (
+    FieldTyping,
+    check_field_typing,
+    make_bounds,
+)
 from ftmwpipeline.file_manager import BadSettingError
 from ftmwpipeline.io.noise_settings_serialization import save_noise_settings_to_h5
 from ftmwpipeline.io.stage_fit_settings_serialization import (
@@ -312,12 +316,36 @@ def test_a_wrong_type_is_refused_before_the_choices_comparison(
     assert excinfo.value.path == _N_EFF and excinfo.value.value == 3
 
 
+def test_a_persisted_bad_choice_is_refused_at_resolution_and_repairable(
+    bare_ftmw: Path,
+) -> None:
+    """A record that bypassed ``settings set`` (an older writer, a hand edit) is
+    refused when the stage resolves its settings, naming the registry path;
+    ``settings show`` still displays it and ``settings set`` repairs it."""
+    from ftmwpipeline._internal.stage5_impl import _resolve_file_fit_settings
+
+    bad = fit_mod.StageFitSettings(
+        conservative=fit_mod.ConservativeSubSettings(n_eff_kind="bogus")
+    )
+    with atomic_write(str(bare_ftmw)):
+        save_stage_fit_settings_to_h5(str(bare_ftmw), bad)
+    with pytest.raises(BadSettingError) as excinfo:
+        _resolve_file_fit_settings(str(bare_ftmw))
+    assert excinfo.value.path == _N_EFF
+    assert excinfo.value.value == "bogus"
+
+    assert _row(bare_ftmw, _N_EFF).value == "bogus"
+    set_setting(bare_ftmw, _N_EFF, "kish_mag")
+    resolved = _resolve_file_fit_settings(str(bare_ftmw))
+    assert resolved.conservative.n_eff_kind == "kish_mag"
+
+
 # Synthetic typings: no registry field declares bounds yet, so the bounds rule
-# is exercised on ``_check_typing`` directly.
+# is exercised on ``check_field_typing`` directly.
 def _refused(value, **bounds) -> bool:
     typing = FieldTyping(bounds=make_bounds(**bounds))
     try:
-        mutation._check_typing("x.y", value, value, typing)
+        check_field_typing("x.y", value, value, typing)
     except BadSettingError as err:
         assert err.path == "x.y" and err.value == value
         return True
@@ -360,18 +388,18 @@ def test_nan_is_refused_whenever_bounds_exist() -> None:
 
 def test_bounds_apply_to_each_element_of_a_tuple_or_list() -> None:
     typing = FieldTyping(bounds=make_bounds(min=0.0, max=10.0))
-    mutation._check_typing("x.y", (1.0, 9.0), (1.0, 9.0), typing)
-    mutation._check_typing("x.y", [0.0, 10.0], [0.0, 10.0], typing)
+    check_field_typing("x.y", (1.0, 9.0), (1.0, 9.0), typing)
+    check_field_typing("x.y", [0.0, 10.0], [0.0, 10.0], typing)
     for bad in ((1.0, 11.0), [-1.0, 5.0], (float("nan"), 1.0)):
         with pytest.raises(BadSettingError) as excinfo:
-            mutation._check_typing("x.y", bad, bad, typing)
+            check_field_typing("x.y", bad, bad, typing)
         assert excinfo.value.value == bad
 
 
 def test_the_bounds_error_names_the_interval_and_the_raw_value() -> None:
     typing = FieldTyping(bounds=make_bounds(min=0.0, max=1.0, min_inclusive=False))
     with pytest.raises(BadSettingError) as excinfo:
-        mutation._check_typing("x.y", 5.0, "5", typing)
+        check_field_typing("x.y", 5.0, "5", typing)
     err = excinfo.value
     assert err.expected == "a value in (0.0, 1.0]"
     assert err.value == "5"  # what the caller passed, not the coerced number
@@ -379,13 +407,13 @@ def test_the_bounds_error_names_the_interval_and_the_raw_value() -> None:
 
 def test_bounds_do_not_apply_to_a_non_numeric_value() -> None:
     typing = FieldTyping(bounds=make_bounds(min=0.0, max=1.0))
-    mutation._check_typing("x.y", "text", "text", typing)
-    mutation._check_typing("x.y", True, True, typing)  # a bool is not a number
+    check_field_typing("x.y", "text", "text", typing)
+    check_field_typing("x.y", True, True, typing)  # a bool is not a number
 
 
 def test_no_declared_typing_checks_nothing() -> None:
-    mutation._check_typing("x.y", "anything", "anything", FieldTyping())
-    mutation._check_typing("x.y", 1e99, 1e99, FieldTyping())
+    check_field_typing("x.y", "anything", "anything", FieldTyping())
+    check_field_typing("x.y", 1e99, 1e99, FieldTyping())
 
 
 def test_coerce_or_unset_enforces_the_typing_it_is_given() -> None:
