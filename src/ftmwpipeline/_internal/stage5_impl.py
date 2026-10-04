@@ -1841,9 +1841,33 @@ def fit_peaks_impl(
                 # then fail.
                 interrupted = exc
         if interrupted is not None:
-            raise interrupted
+            _raise_after_partial_write(scope, interrupted)
         scope.finish(fit_run_summary(result))
     return result
+
+
+def _raise_after_partial_write(scope: StageScope, error: PipelineFileError) -> None:
+    """Raise ``error`` once the partial fit it kept is durable.
+
+    The partial write's invalidations (the fit and everything downstream) are
+    delivered first, as one ``Invalidated`` -- except to a callback that has
+    just failed (``error`` is then that failure). A callback that raises on
+    this ``Invalidated`` does not mask a cancel: the ``cancelled`` error is
+    raised with the callback's failure as its ``__context__``.
+    """
+    if not isinstance(error, CallbackFailedError):
+        try:
+            scope.deliver_invalidated()
+        except CallbackFailedError as failure:
+            logger.warning(
+                "The events callback raised on Invalidated after a cancelled "
+                "fit kept its partial fit: %s",
+                failure.__cause__,
+            )
+            # Raised inside the handler: the failure becomes the cancel's
+            # __context__; the cancel is what the caller sees.
+            raise error
+    raise error
 
 
 #: Set on a cancel / callback failure whose partial fit
@@ -2546,20 +2570,29 @@ def _fit_peaks_impl(
         snapshot = tracker.snapshot()
         if snapshot is None:
             return exc
-        written = write_partial_fit(
-            file_path,
-            snapshot,
-            partial_provenance,
-            resolved=resolved,
-            preset_name=preset_name,
-            events=events,
-        )
+        try:
+            written = write_partial_fit(
+                file_path,
+                snapshot,
+                partial_provenance,
+                resolved=resolved,
+                preset_name=preset_name,
+                events=events,
+            )
+        except Exception:  # noqa: BLE001 - the interruption is what is raised
+            # The partial write failed: nothing is kept (the transaction
+            # discards whatever it began), and the caller still sees the
+            # cancel / callback failure, not the write's error.
+            logger.exception(
+                "Stage 5 interrupted, but its finished windows could not be "
+                "written as a partial fit; the file is left as it was"
+            )
+            return exc
         if written:
             setattr(exc, _PARTIAL_WRITTEN, True)
             assert events is not None
             events.ops.completed_windows = list(written)
-            if isinstance(exc, OperationCancelledError):
-                exc.completed_windows = list(written)
+            exc.completed_windows = list(written)
         return exc
 
     try:

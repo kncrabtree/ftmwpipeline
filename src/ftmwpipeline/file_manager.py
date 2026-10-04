@@ -592,13 +592,25 @@ class CallbackFailedError(PipelineFileError):
     ----------
     event_schema : str
         Schema name of the event being delivered when the callback raised.
+    completed_windows : list of int
+        Window ids whose fit was kept, as for
+        :attr:`OperationCancelledError.completed_windows`: the windows an
+        interrupted Stage 5 wrote as a partial fit, sorted. ``[]`` everywhere
+        else.
     """
 
     code: ClassVar[str] = "callback_failed"
-    contract_fields: ClassVar[Tuple[str, ...]] = ("event_schema",)
+    contract_fields: ClassVar[Tuple[str, ...]] = ("event_schema", "completed_windows")
 
-    def __init__(self, event_schema: str, *, message: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        event_schema: str,
+        completed_windows: Sequence[int] = (),
+        *,
+        message: Optional[str] = None,
+    ) -> None:
         self.event_schema = str(event_schema)
+        self.completed_windows: List[int] = [int(w) for w in completed_windows]
         if message is None:
             message = (
                 f"The events callback raised while handling {self.event_schema}; "

@@ -674,8 +674,10 @@ carries a stable ``code`` and typed attributes, and ``to_dict()`` returns::
        otherwise); see *Events and cancellation* below
    * - ``callback_failed``
      - ``CallbackFailedError``
-     - ``event_schema`` (the event being delivered); the callback's exception
-       is the ``__cause__``
+     - ``event_schema`` (the event being delivered), ``completed_windows``
+       (as for ``cancelled``: the windows an interrupted fit kept as a partial
+       fit, sorted; ``[]`` otherwise); the callback's exception is the
+       ``__cause__``
    * - ``write_conflict``
      - ``WriteConflictError``
      - ``path`` (the file another process wrote while this call was writing
@@ -1171,7 +1173,10 @@ line each, and the first Ctrl-C cancels::
 **Stage 5 partial fits.** A cancel or a ``callback_failed`` during the fit
 keeps the windows whose whole per-window pass had run as a partial fit, in one
 atomic write that also discards the previous fit and everything downstream of
-it; ``completed_windows`` lists them. No window finished: nothing is written,
+it; ``completed_windows`` (of either error) lists them. The write's
+invalidations are delivered as one ``Invalidated`` (``fit`` and everything
+downstream) once the write is durable and before the error is raised -- never
+to a callback that has just failed. No window finished: nothing is written,
 any previous fit is kept. Nothing is written during the walk, so a killed fit
 leaves the file as it was. While a partial fit is present, ``status`` reports
 ``fit`` as ``partial`` (and runnable) and ``review`` as ``not_run``;

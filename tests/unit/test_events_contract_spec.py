@@ -333,6 +333,10 @@ def test_callback_failed_error_code_attributes_and_dict():
     d = err.to_dict()
     assert d["schema"] == "ftmw/error@1" and d["code"] == "callback_failed"
     assert d["event_schema"] == "ftmw/window_progress@1" and d["message"]
+    # [] everywhere except a Stage 5 interruption, which lists the kept windows.
+    assert err.completed_windows == [] and d["completed_windows"] == []
+    kept = CallbackFailedError("ftmw/window_progress@1", [4, 9])
+    assert kept.to_dict()["completed_windows"] == [4, 9]
 
 
 @pytest.mark.parametrize(

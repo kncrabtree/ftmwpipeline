@@ -482,7 +482,8 @@ writes the events to stderr; see :doc:`machine_contract`.
 finished as a *partial fit*, and ``OperationCancelledError.completed_windows``
 lists them. The same write discards the previous fit and everything built on it
 (a review, the final products); if no window had finished, nothing is written
-and the previous fit is kept. A callback that raises leaves the same. While a
+and the previous fit is kept. A callback that raises leaves the same (its
+``CallbackFailedError.completed_windows`` lists the kept windows too). While a
 partial fit is present ``status`` reports the fit as ``partial``,
 ``window_status`` reports the kept windows, and everything that reads a fit or
 the final products behaves as before Stage 5 (``review run`` and curation

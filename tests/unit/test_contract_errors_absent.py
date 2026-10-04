@@ -272,7 +272,7 @@ def _errors():
         (
             CallbackFailedError("ftmw/window_progress@1"),
             "callback_failed",
-            {"event_schema": "ftmw/window_progress@1"},
+            {"event_schema": "ftmw/window_progress@1", "completed_windows": []},
             (),
         ),
         (

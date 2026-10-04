@@ -52,8 +52,10 @@ engine so they cannot answer differently.
 * **Machine contract, Wave 5.2: Stage 5 partial fits.** ``CONTRACT_VERSION``
   is now ``11``. A cancelled (or callback-failed) fit no longer throws its work
   away: the windows that had finished are kept as a partial fit, in the call's
-  one atomic write, and ``cancelled.completed_windows`` lists them (no window
-  finished: nothing is written, as before). **Behaviour change:** that write
+  one atomic write, and ``cancelled.completed_windows`` lists them (as does
+  ``callback_failed.completed_windows``, a new field that is ``[]`` everywhere
+  else; no window finished: nothing is written, as before). The write's
+  invalidations arrive as one ``Invalidated`` before the error is raised. **Behaviour change:** that write
   discards the previous fit and everything built on it, where a cancelled fit
   used to leave the file exactly as it was. ``status`` reports ``fit`` as
   ``partial``; ``window_status`` reports the kept windows; every fit and

@@ -1627,7 +1627,7 @@ class Pipeline:
             everything downstream of it are discarded in the same write), and
             the error's ``completed_windows`` lists them; when none had
             finished the file is left exactly as it was. A raising callback
-            leaves the same.
+            leaves the same (``CallbackFailedError.completed_windows``).
 
         Returns
         -------
