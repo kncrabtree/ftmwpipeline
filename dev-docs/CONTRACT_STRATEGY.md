@@ -258,23 +258,48 @@ stage persists them). It never computes a digest over incomplete inputs.
   are marked by the analysis epoch, which *is* covered. Environment drift is
   reported separately.
 
-**Canonical form.** A JSON object keyed by registry path
-(`stage1.trim`, `stage5.peak_survival.vif_collapse_threshold`,
-`timebase.kappa_sys`, …), keys sorted by code point; finite floats as the
-shortest decimal string that round-trips to the same IEEE-754 binary64 value
-(as Python's `repr` produces, e.g. `0.1`, `1e-05`, `25.0`); `-0.0` spelled
-`-0.0`; non-finite values as the strings `"nan"`, `"inf"`, `"-inf"`; integers
-without a decimal point; booleans as `true`/`false`;
-tuples as arrays; unset as `null`; `Absent` per the wire rule; structured
-values (`ShapeSpec`, clock sources) in their documented typed-JSON form.
-UTF-8, no insignificant whitespace. The digest is SHA-256 over that byte
-string, lowercase hex.
+**Canonical form.** A JSON object keyed by the canonical stage names
+(`data`, `ft`, `noise`, `tau`, `tau_g`, `timebase`, `peaks`, `windows`, `fit`,
+`review`), each value an object of that stage's inputs nested by settings group
+(`ft.trim_min_mhz`, `fit.peak_survival.vif_collapse_threshold`,
+`tau.stft.n_seg`, `timebase.kappa_sys`, `review.sigma_floor_khz`), plus
+`<stage>.analysis_epoch`. A stage that has not run is `null` with sibling
+`"<stage>_absent": "not_run"`. The acquisition parameters live under `data`.
+Keys are sorted by code point at every level; finite floats as the shortest
+decimal string that round-trips to the same IEEE-754 binary64 value (as
+Python's `repr` produces, e.g. `0.1`, `1e-05`, `25.0`); `-0.0` spelled `-0.0`;
+non-finite values as the strings `"nan"`, `"inf"`, `"-inf"`; integers without a
+decimal point; booleans as `true`/`false`; tuples as arrays; a setting that was
+resolved to *unset* as `null`; structured values (`ShapeSpec`, clock sources)
+in their documented typed-JSON form. UTF-8, no insignificant whitespace. The
+digest is SHA-256 over that byte string, lowercase hex.
 
-Values are read through each stage's codec, never by walking the file layout.
-Every stage must persist what it resolved at run time. A stage that today
-resolves a value from a layer it does not persist (a recommendation, a
-detected value) must persist the value it used, so the fingerprint can be
-computed from the file alone.
+**Recording rules** (what every stage must persist so the fingerprint can be
+computed from the file alone, through each stage's codec, never by walking the
+layout):
+
+- **The persisted layer is authoritative.** A stage persists the values it ran
+  with, resolved. Once it has, no recommended or detected layer written later
+  can change what it is read as having used: a setting it resolved to *unset*
+  is recorded as unset and never falls through to another layer.
+- **Field-set version.** Every persisted settings record carries the version
+  of its field set. A record at the current version has every field present,
+  so `None` means "resolved to unset"; a record without a version, or at an
+  older version missing fields, is pre-provenance and raises
+  `incomplete_provenance` naming the fields.
+- **One record per producer.** Each result has its own settings record: the
+  Stage 2b Lorentzian (`tau`) and Gaussian (`tau_g`) calibrations and the
+  shape recommendation (`tau.recommendation`) never share or overwrite one.
+- **Consumed upstream values are recorded by the consumer** under
+  `<stage>.consumed`: the values a stage took from another stage's result
+  (Stage 3's gap-pass decay time and shape from Stage 2b; Stage 5's per-band
+  decay-time anchor from Stage 2b and the ε it used for the spur window from
+  the timebase). Re-running the upstream stage does not invalidate the
+  consumer; the consumer's record still says what it used.
+- **Every completed stage records its analysis epoch.** Recording it is part
+  of completing the stage, never best-effort.
+- **Only effective knobs are inputs.** A registered setting that cannot change
+  the output is a defect to fix, not an input to hash.
 
 ### Display units
 
