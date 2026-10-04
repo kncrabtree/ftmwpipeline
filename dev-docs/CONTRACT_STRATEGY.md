@@ -728,23 +728,43 @@ documented parameter. The stated default is `None`, meaning:
 The conversion stays inside the pipeline. Clients never convert frequencies
 themselves or probe signatures to discover the parameter.
 
-## Serialization *(outline)*
+## Serialization
 
 A public `ftmwpipeline.serialize.to_jsonable(obj)` covers every contract result
 and domain type, applies the missing-value rule above, and stamps the schema
 name. Enums serialize as their `.value`. Inline complex numbers are
-`{"real", "imag"}`. CLI `--format json` on every verb routes through it.
+`{"real", "imag"}`.
+
+**Machine-readable CLI output.** Every CLI verb accepts `--json`, which makes
+its output machine-readable, routed through `to_jsonable` (never
+`json.dumps(..., default=str)`). This is one uniform switch: `--format` already
+means the report file format (`report`) and the source format (`data import`,
+`run`) on some verbs. `--format json`, where a verb accepts it today (`info`,
+`review log`, `timebase state`, the `read` accessors), stays a synonym. Under
+`--json`:
+- a `read` accessor prints its envelope, as today;
+- a stage-running or curation verb prints
+  `{"schema": "ftmw/run_result@1", "verb": "<object> <verb>", "stage": <canonical name or null>,
+  "invalidated": [...], "summary": {...}}`. `summary` holds the scalars the
+  human output reports (counts, chosen values, paths written), never arrays;
+- any other verb prints its natural payload through `to_jsonable`;
+- an error prints its `ftmw/error@1` dict on stderr, as `--format json` does
+  today.
 
 Through the CLI, `--output` for a `read` accessor names a directory; each
 array field is written there as `<field path>.npy` and the JSON envelope
 names the file in the array's place. An accessor whose result holds arrays
 refuses to run without `--output`.
 
-## Capabilities *(outline)*
+## Capabilities
 
-`capabilities()` → `{"schema": "ftmw/capabilities@1", "contract_version": int, "schemas": [...],
-"accessors": [...], "codes": [...]}`, read from the same manifest the
-contract tests check.
+`capabilities()` → `{"schema": "ftmw/capabilities@1", "contract_version": int,
+"schemas": [...], "accessors": [...], "codes": [...], "stages": [...],
+"metadata_keys": [...], "tables": {name: [columns]}, "fields": {type: [fields]},
+"vocabularies": {name: [values]}, "file_bound": {accessor: bool},
+"pipeline_names": {accessor: name}}`. Every group of the manifest the contract
+tests check appears, so a client can discover the surface without importing the
+package. `read capabilities` prints it, and no file is needed.
 
 ## Open questions
 
