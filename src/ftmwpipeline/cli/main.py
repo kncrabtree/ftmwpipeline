@@ -10,8 +10,10 @@ import sys
 from typing import List, Optional, cast
 
 from .. import __version__
+from ..file_manager import PipelineFileError
 from ..workflows import validate_installation
 from .clocks_commands import register_clocks_commands
+from .contract_commands import report_contract_error
 from .data_commands import add_data_subcommands
 from .fitting_commands import register_fitting_commands
 from .ft_commands import add_ft_subcommands
@@ -192,7 +194,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         parser.print_help()
         return 1
 
-    return cast(int, args.func(args))
+    # The one place a typed contract error becomes an exit code: every verb
+    # lets a PipelineFileError propagate to here, and report_contract_error
+    # prints it (the error dict on stderr under --format json) and maps its
+    # code through contract_commands.EXIT_CODES. Any other exception keeps the
+    # verb's own handling.
+    try:
+        return cast(int, args.func(args))
+    except PipelineFileError as exc:
+        return report_contract_error(exc, getattr(args, "format", None) or "text")
 
 
 if __name__ == "__main__":

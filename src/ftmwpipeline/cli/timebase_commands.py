@@ -29,6 +29,7 @@ from .._internal.timebase_impl import (
     load_timebase_calibration_impl,
 )
 from ..contract import Absent
+from ..file_manager import PipelineFileError
 from ..serialize import to_jsonable
 from .utils import add_stage_object, print_error, setup_logging
 
@@ -71,6 +72,8 @@ def cmd_calibrate_timebase(args: argparse.Namespace) -> int:
     print(f"Running scope-timebase self-calibration for: {file_path}")
     try:
         result = calibrate_timebase_impl(file_path, **kwargs)
+    except PipelineFileError:
+        raise
     except FileNotFoundError as e:
         print_error(f"Pipeline file not found: {e}")
         return 1
@@ -109,6 +112,8 @@ def cmd_show_timebase(args: argparse.Namespace) -> int:
 
     try:
         loaded = load_timebase_calibration_impl(file_path)
+    except PipelineFileError:
+        raise
     except FileNotFoundError as e:
         print_error(f"Pipeline file not found: {e}")
         return 1
@@ -191,6 +196,8 @@ def cmd_timebase_state(args: argparse.Namespace) -> int:
 
     try:
         stamp = frequency_calibration_impl(file_path)
+    except PipelineFileError:
+        raise
     except FileNotFoundError as e:
         print_error(str(e))
         return 1

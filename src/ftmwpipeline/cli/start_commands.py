@@ -18,6 +18,7 @@ from typing import Any, Dict, Optional
 
 from .._internal.start_detection_impl import detect_start_time_impl
 from ..core.start_detection_settings import StartDetectionSettings
+from ..file_manager import PipelineFileError
 from ._argspec import add_start_detection_args, start_settings_from_namespace
 from .utils import add_stage_object, print_error, setup_logging
 
@@ -52,6 +53,8 @@ def cmd_detect_start(args: argparse.Namespace) -> int:
         out = detect_start_time_impl(
             file_path, settings=settings, stamp=not args.no_stamp
         )
+    except PipelineFileError:
+        raise
     except FileNotFoundError as e:
         print_error(f"Pipeline file not found: {e}")
         return 1
@@ -112,6 +115,8 @@ def cmd_visualize_start_detection(args: argparse.Namespace) -> int:
         fig = plot_start_detection_from_file(
             file_path, settings=_settings_from_args(args)
         )
+    except PipelineFileError:
+        raise
     except Exception as e:
         print_error(f"Failed to create start-detection visualization: {e}")
         if args.verbose:
@@ -130,6 +135,8 @@ def _handle_figure_output(fig: Any, args: argparse.Namespace) -> int:
         try:
             fig.savefig(output, dpi=150, bbox_inches="tight")
             print(f"Plot saved to: {output}")
+        except PipelineFileError:
+            raise
         except Exception as e:
             print_error(f"Failed to save plot: {e}")
             return 1
@@ -138,6 +145,8 @@ def _handle_figure_output(fig: Any, args: argparse.Namespace) -> int:
             import matplotlib.pyplot as plt
 
             plt.show()
+        except PipelineFileError:
+            raise
         except Exception as e:
             print_error(f"Could not display plot: {e}")
             return 1

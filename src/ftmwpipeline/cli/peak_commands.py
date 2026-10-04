@@ -12,6 +12,7 @@ from typing import Any
 
 from .._internal.stage3_impl import detect_peaks_impl, visualize_peaks_impl
 from ..core.peak_detection_settings import PeakDetectionSettings
+from ..file_manager import PipelineFileError
 from ._argspec import add_settings_args, settings_from_namespace
 from .utils import add_stage_object, print_error, setup_logging
 
@@ -81,6 +82,8 @@ def cmd_detect_peaks(args: argparse.Namespace) -> int:
         print(f"\nResults saved to: {file_path}")
         print("Use 'peaks show' to inspect detected peaks")
         return 0
+    except PipelineFileError:
+        raise
     except FileNotFoundError as e:
         print_error(f"Pipeline file not found: {e}")
         return 1
@@ -112,6 +115,8 @@ def cmd_visualize_peaks(args: argparse.Namespace) -> int:
             try:
                 w, h = map(float, args.figsize.split(","))
                 figsize = (w, h)
+            except PipelineFileError:
+                raise
             except ValueError:
                 print_error(f"Invalid figsize {args.figsize!r}; use 'width,height'")
                 return 1
@@ -135,6 +140,8 @@ def cmd_visualize_peaks(args: argparse.Namespace) -> int:
             plt.show()
         print("Peak visualization completed successfully!")
         return 0
+    except PipelineFileError:
+        raise
     except FileNotFoundError as e:
         print_error(f"Pipeline file not found: {e}")
         return 1

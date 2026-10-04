@@ -8,8 +8,10 @@ for basic FTMW data processing and visualization.
 import argparse
 from pathlib import Path
 
-# Import shared implementations
 from .._internal.stage1_impl import compute_ft_impl, visualize_ft_impl
+
+# Import shared implementations
+from ..file_manager import PipelineFileError
 from ._argspec import add_settings_args, settings_from_namespace
 from .utils import (
     add_stage_object,
@@ -88,6 +90,8 @@ def cmd_ft_process(args: argparse.Namespace) -> int:
 
             return 0
 
+        except PipelineFileError:
+            raise
         except FileNotFoundError:
             print_error(f"Pipeline file not found: {file_path}")
             print("")
@@ -105,6 +109,8 @@ def cmd_ft_process(args: argparse.Namespace) -> int:
             print_error(f"Failed to process FT: {e}")
             return 1
 
+    except PipelineFileError:
+        raise
     except KeyboardInterrupt:
         print_error("Processing interrupted by user", 130)
         return 130
@@ -202,6 +208,8 @@ def cmd_ft_visualize(args: argparse.Namespace) -> int:
 
             return 0
 
+        except PipelineFileError:
+            raise
         except FileNotFoundError:
             print_error(f"Pipeline file not found: {file_path}")
             print("")
@@ -219,6 +227,8 @@ def cmd_ft_visualize(args: argparse.Namespace) -> int:
             print_error(f"Failed to visualize FT: {e}")
             return 1
 
+    except PipelineFileError:
+        raise
     except KeyboardInterrupt:
         print_error("Visualization interrupted by user", 130)
         return 130

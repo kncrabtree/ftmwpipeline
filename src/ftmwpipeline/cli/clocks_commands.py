@@ -21,6 +21,7 @@ from .._internal.clocks_impl import (
     stage5_fit_present,
 )
 from ..core.stage_fit_settings import ClockSource
+from ..file_manager import PipelineFileError
 from .utils import setup_logging
 
 
@@ -29,6 +30,8 @@ def _parse_clock_token(token: str) -> ClockSource:
     parts = token.split(":")
     try:
         freq = float(parts[0])
+    except PipelineFileError:
+        raise
     except ValueError as exc:
         raise ValueError(
             f"Invalid clock frequency in {token!r}: expected a number in MHz"
@@ -77,6 +80,8 @@ def cmd_clocks_show(args: argparse.Namespace) -> int:
         print(f"Declared clock sources for {args.file_path}:")
         _print_clocks(clocks)
         return 0
+    except PipelineFileError:
+        raise
     except Exception as exc:
         print(f"Error: {exc}")
         return 1
@@ -91,6 +96,8 @@ def cmd_clocks_set(args: argparse.Namespace) -> int:
         _print_clocks(result)
         _warn_if_stale(args.file_path)
         return 0
+    except PipelineFileError:
+        raise
     except Exception as exc:
         print(f"Error: {exc}")
         return 1
@@ -105,6 +112,8 @@ def cmd_clocks_add(args: argparse.Namespace) -> int:
         _print_clocks(result)
         _warn_if_stale(args.file_path)
         return 0
+    except PipelineFileError:
+        raise
     except Exception as exc:
         print(f"Error: {exc}")
         return 1
@@ -119,6 +128,8 @@ def cmd_clocks_remove(args: argparse.Namespace) -> int:
         _print_clocks(result)
         _warn_if_stale(args.file_path)
         return 0
+    except PipelineFileError:
+        raise
     except Exception as exc:
         print(f"Error: {exc}")
         return 1
@@ -131,6 +142,8 @@ def cmd_clocks_clear(args: argparse.Namespace) -> int:
         print("Cleared clock-source declaration.")
         _warn_if_stale(args.file_path)
         return 0
+    except PipelineFileError:
+        raise
     except Exception as exc:
         print(f"Error: {exc}")
         return 1

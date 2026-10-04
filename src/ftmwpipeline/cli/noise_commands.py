@@ -8,12 +8,14 @@ for Stage 2 noise estimation and diagnostic visualization.
 import argparse
 from pathlib import Path
 
-# Import shared implementations
 from .._internal.stage2_impl import (
     compute_noise_estimation_impl,
     visualize_noise_impl,
 )
 from ..core.noise_settings import NoiseSettings
+
+# Import shared implementations
+from ..file_manager import PipelineFileError
 from ._argspec import add_settings_args, settings_from_namespace
 from .utils import (
     add_stage_object,
@@ -117,6 +119,8 @@ def cmd_estimate_noise(args: argparse.Namespace) -> int:
 
         return 0
 
+    except PipelineFileError:
+        raise
     except FileNotFoundError as e:
         print_error(f"Pipeline file not found: {e}")
         return 1
@@ -182,6 +186,8 @@ def cmd_visualize_noise(args: argparse.Namespace) -> int:
             try:
                 width, height = map(float, args.figsize.split(","))
                 viz_params["figsize"] = (width, height)
+            except PipelineFileError:
+                raise
             except ValueError:
                 print_error(
                     f"Invalid figsize format: {args.figsize}. Use 'width,height' format."
@@ -211,6 +217,8 @@ def cmd_visualize_noise(args: argparse.Namespace) -> int:
                 output_path = Path(args.output)
                 fig.savefig(str(output_path), dpi=300, bbox_inches="tight")
                 print(f"Visualization saved to: {output_path}")
+            except PipelineFileError:
+                raise
             except Exception as e:
                 print_error(f"Failed to save visualization: {e}")
                 return 1
@@ -223,11 +231,15 @@ def cmd_visualize_noise(args: argparse.Namespace) -> int:
                 import matplotlib.pyplot as plt
 
                 plt.show()
+            except PipelineFileError:
+                raise
             except Exception as e:
                 print_error(f"Warning: Could not display plot: {e}")
 
         return 0
 
+    except PipelineFileError:
+        raise
     except FileNotFoundError as e:
         print_error(f"Pipeline file not found: {e}")
         return 1
