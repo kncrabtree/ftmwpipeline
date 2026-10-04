@@ -1707,6 +1707,8 @@ class Pipeline:
         remove: Sequence[Union[float, str]] = (),
         snap_tol_mhz: Optional[float] = None,
         frame: Optional[Frame] = None,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
     ) -> RefitWindowResult:
         """User-directed single-window refit (Stage 6 ``review edit``).
 
@@ -1758,6 +1760,14 @@ class Pipeline:
             (both frames).
 
         Requires Stage 5 completed.
+
+        ``events`` / ``cancel`` follow the long-operation contract: ``events``
+        is called on this thread with each event (``StageStarted``, a
+        ``WindowProgress`` per re-fit window, warnings, ``StageFinished``); a
+        callback that raises aborts with :class:`CallbackFailedError`.
+        ``cancel`` is checked before the operation and between windows; a
+        cancelled edit raises :class:`OperationCancelledError` and persists
+        nothing of the batch.
         """
         return refit_window_impl(
             self.filepath,
@@ -1766,6 +1776,8 @@ class Pipeline:
             remove=remove,
             snap_tol_mhz=snap_tol_mhz,
             frame=frame,
+            events=events,
+            cancel=cancel,
         )
 
     def review_acknowledge_environment(
@@ -1803,6 +1815,8 @@ class Pipeline:
         *,
         snap_tol_mhz: Optional[float] = None,
         frame: Optional[Frame] = None,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
     ) -> CreateWindowResult:
         """Install a fit window covering ``anchor_mhz`` (Stage 6 ``review create``).
 
@@ -1839,12 +1853,22 @@ class Pipeline:
             (both frames).
 
         Requires Stage 5 completed.
+
+        ``events`` / ``cancel`` follow the long-operation contract: ``events``
+        is called on this thread with each event (``StageStarted``, a
+        ``WindowProgress`` per re-fit window, warnings, ``StageFinished``); a
+        callback that raises aborts with :class:`CallbackFailedError`.
+        ``cancel`` is checked before the operation and between windows; a
+        cancelled edit raises :class:`OperationCancelledError` and persists
+        nothing of the batch.
         """
         return create_window_impl(
             self.filepath,
             anchor_mhz,
             snap_tol_mhz=snap_tol_mhz,
             frame=frame,
+            events=events,
+            cancel=cancel,
         )
 
     def review_run(
@@ -1853,6 +1877,8 @@ class Pipeline:
         bar: float = DEFAULT_DISPLAY_BAR,
         attention_candidate_evidence: float = DEFAULT_ATTENTION_CANDIDATE_EVIDENCE,
         sigma_floor_khz: Optional[float] = None,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
     ) -> ReviewRunResult:
         """Build or refresh the Stage 6 curation layer and final-products table.
 
@@ -1883,12 +1909,18 @@ class Pipeline:
             Total window count, attention count, and per-kind breakdown.
 
         Requires Stage 5 completed.
+
+        ``events`` / ``cancel`` follow the long-operation contract: ``events``
+        is called on this thread with each event; ``cancel`` is checked before
+        the stage starts (:class:`OperationCancelledError`, nothing written).
         """
         return review_run_impl(
             self.filepath,
             bar=bar,
             attention_candidate_evidence=attention_candidate_evidence,
             sigma_floor_khz=sigma_floor_khz,
+            events=events,
+            cancel=cancel,
         )
 
     def set_sigma_floor(self, sigma_floor_khz: float) -> None:
@@ -1960,6 +1992,8 @@ class Pipeline:
         catalog: Optional[Union[str, Path]] = None,
         catalog_n_sigma: float = 3.0,
         jobs: Optional[int] = None,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
     ) -> Dict[str, Optional[str]]:
         """Write the default Stage 6 deliverables: the L1 table + the L3 report.
 
@@ -2005,6 +2039,12 @@ class Pipeline:
         dict
             ``{"table": <path|None>, "html": <path|None>}`` -- the path of each
             artifact written (``None`` when suppressed).
+
+        ``events`` / ``cancel`` follow the long-operation contract: ``events``
+        is called on this thread with each event (``StageStarted``, a
+        ``WindowProgress`` per rendered window, ``StageFinished``); ``cancel``
+        is checked before the report and between windows
+        (:class:`OperationCancelledError`; no HTML report is written).
         """
         return report_run_impl(
             self.filepath,
@@ -2017,6 +2057,8 @@ class Pipeline:
             catalog=catalog,
             catalog_n_sigma=catalog_n_sigma,
             jobs=jobs,
+            events=events,
+            cancel=cancel,
         )
 
     def report_diff(
@@ -2057,6 +2099,8 @@ class Pipeline:
         candidate_freq: Optional[float] = None,
         snap_tol_mhz: Optional[float] = None,
         frame: Optional[Frame] = None,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
     ) -> Optional[RefitWindowResult]:
         """Accept a window as-is or accept a specific revived candidate.
 
@@ -2091,6 +2135,14 @@ class Pipeline:
         Returns
         -------
         RefitWindowResult or None
+
+        ``events`` / ``cancel`` follow the long-operation contract: ``events``
+        is called on this thread with each event (``StageStarted``, a
+        ``WindowProgress`` per re-fit window, warnings, ``StageFinished``); a
+        callback that raises aborts with :class:`CallbackFailedError`.
+        ``cancel`` is checked before the operation and between windows; a
+        cancelled edit raises :class:`OperationCancelledError` and persists
+        nothing of the batch.
         """
         return review_accept_impl(
             self.filepath,
@@ -2098,6 +2150,8 @@ class Pipeline:
             candidate_freq=candidate_freq,
             snap_tol_mhz=snap_tol_mhz,
             frame=frame,
+            events=events,
+            cancel=cancel,
         )
 
     def review_apply(
@@ -2108,6 +2162,8 @@ class Pipeline:
         dry_run: bool = False,
         frame: Optional[Frame] = None,
         log_prefix: Optional[int] = None,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
     ) -> CurationApplyResult:
         """Apply a curation file of batched review edits.
 
@@ -2178,6 +2234,14 @@ class Pipeline:
             The resolved action plan, warnings (including a possible
             frame-mismatch advisory), the number applied, and the windows
             the plan installs or grows.
+
+        ``events`` / ``cancel`` follow the long-operation contract: ``events``
+        is called on this thread with each event (``StageStarted``, a
+        ``WindowProgress`` per re-fit window, warnings, ``StageFinished``); a
+        callback that raises aborts with :class:`CallbackFailedError`.
+        ``cancel`` is checked before the operation and between windows; a
+        cancelled edit raises :class:`OperationCancelledError` and persists
+        nothing of the batch.
         """
         return apply_curation_impl(
             self.filepath,
@@ -2186,6 +2250,8 @@ class Pipeline:
             dry_run=dry_run,
             frame=frame,
             log_prefix=log_prefix,
+            events=events,
+            cancel=cancel,
         )
 
     def review_preview(
@@ -2194,6 +2260,8 @@ class Pipeline:
         *,
         actions: Optional[Sequence[Union[CurationAction, Mapping[str, Any]]]] = None,
         frame: Optional[Frame] = None,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
     ) -> ReviewPreviewResult:
         """Run a curation file's resolved plan to completion in memory and
         report the fitted outcome, without writing anything.
@@ -2227,9 +2295,22 @@ class Pipeline:
         Returns
         -------
         ReviewPreviewResult
+
+        ``events`` / ``cancel`` follow the long-operation contract: ``events``
+        is called on this thread with each event (``StageStarted``, a
+        ``WindowProgress`` per re-fit window, warnings, ``StageFinished``); a
+        callback that raises aborts with :class:`CallbackFailedError`.
+        ``cancel`` is checked before the operation and between windows; a
+        cancelled edit raises :class:`OperationCancelledError` and persists
+        nothing of the batch.
         """
         return review_preview_impl(
-            self.filepath, curation_path, actions=actions, frame=frame
+            self.filepath,
+            curation_path,
+            actions=actions,
+            frame=frame,
+            events=events,
+            cancel=cancel,
         )
 
     def review_session(self) -> ReviewSession:
@@ -2292,6 +2373,8 @@ class Pipeline:
         ids: Sequence[int],
         *,
         dry_run: bool = False,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
     ) -> UndoResult:
         """Undo recorded decisions by id, replaying the rest from baseline.
 
@@ -2318,8 +2401,18 @@ class Pipeline:
         ValueError
             If an id is unknown, there are no decisions, or the automatic-fit
             baseline is unavailable while fit-mutating decisions exist.
+
+        ``events`` / ``cancel`` follow the long-operation contract: ``events``
+        is called on this thread with each event (``StageStarted``, a
+        ``WindowProgress`` per re-fit window, warnings, ``StageFinished``); a
+        callback that raises aborts with :class:`CallbackFailedError`.
+        ``cancel`` is checked before the restore (raising
+        :class:`OperationCancelledError` with nothing written); once the
+        restore-then-replay has begun it completes.
         """
-        return review_undo_impl(self.filepath, ids, dry_run=dry_run)
+        return review_undo_impl(
+            self.filepath, ids, dry_run=dry_run, events=events, cancel=cancel
+        )
 
     def review_status(self) -> Stage6Review:
         """Load the persisted Stage 6 review state, or return an empty one.
@@ -2676,6 +2769,8 @@ class Pipeline:
         fit_freqs: Optional[Sequence[float]] = None,
         fit_sample_seed: int = 0,
         fit_all: bool = False,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
     ) -> "SweepResult":
         """Sweep a single knob across a grid on a copy of this file.
 
@@ -2692,6 +2787,12 @@ class Pipeline:
         controls bound a Stage 5 fit sweep to a window subset (the ``fit_top_snr``
         brightest + a seeded ``fit_sample`` sample + the windows nearest
         ``fit_freqs``); ``fit_all`` re-fits every window.
+
+        ``events`` / ``cancel`` follow the long-operation contract: ``events``
+        is called on this thread with each event (``StageStarted``, a
+        ``ScanProgress`` per value, ``StageFinished``; ``stage`` is null);
+        ``cancel`` is checked before each knob and between values
+        (:class:`OperationCancelledError`).
         """
         from ._internal.tuning import get_knob, run_scan
 
@@ -2711,6 +2812,8 @@ class Pipeline:
             fit_freqs=fit_freqs,
             fit_sample_seed=fit_sample_seed,
             fit_all=fit_all,
+            events=events,
+            cancel=cancel,
         )
 
     def scan_all(
@@ -2730,6 +2833,8 @@ class Pipeline:
         fit_freqs: Optional[Sequence[float]] = None,
         fit_sample_seed: int = 0,
         fit_all: bool = False,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
     ) -> "List[BatchItem]":
         """Sweep every knob matched by ``selector`` on its default grid.
 
@@ -2742,6 +2847,12 @@ class Pipeline:
         (e.g. its required stage is absent) is recorded as a failed
         :class:`BatchItem` and the batch continues. The ``zoom_*`` controls apply
         the same explicit-regions / count-width steering to every knob's plot.
+
+        ``events`` / ``cancel`` follow the long-operation contract: ``events``
+        is called on this thread with each event (``StageStarted``, a
+        ``ScanProgress`` per value, ``StageFinished``; ``stage`` is null);
+        ``cancel`` is checked before each knob and between values
+        (:class:`OperationCancelledError`).
         """
         from ._internal.tuning import list_knobs, run_scan_batch
 
@@ -2761,6 +2872,8 @@ class Pipeline:
             fit_freqs=fit_freqs,
             fit_sample_seed=fit_sample_seed,
             fit_all=fit_all,
+            events=events,
+            cancel=cancel,
         )
 
     @staticmethod

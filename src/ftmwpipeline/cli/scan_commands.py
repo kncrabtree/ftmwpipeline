@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
 from ..file_manager import PipelineFileError
+from ._events import add_events_argument, operation_controls
 from ._json_output import json_mode, record_payload
 from .utils import elide_path as _elide_path
 from .utils import print_error, setup_logging
@@ -197,20 +198,23 @@ def cmd_scan_run(args: argparse.Namespace) -> int:
     if not getattr(args, "verbose", False):
         pkg_logger.setLevel(logging.ERROR)
     try:
-        result = run_scan(
-            spec,
-            Path(file_path),
-            grid=grid,
-            output_dir=output_dir,
-            reuse=args.reuse,
-            make_plot=not args.no_plot,
-            interactive=args.interactive,
-            quiet=args.quiet,
-            zoom_regions=zoom_regions,
-            n_zoom=getattr(args, "n_zoom", None),
-            zoom_width_mhz=getattr(args, "zoom_width", None),
-            **_fit_kwargs(args),
-        )
+        with operation_controls(args) as (events, cancel):
+            result = run_scan(
+                spec,
+                Path(file_path),
+                grid=grid,
+                output_dir=output_dir,
+                reuse=args.reuse,
+                make_plot=not args.no_plot,
+                interactive=args.interactive,
+                quiet=args.quiet,
+                zoom_regions=zoom_regions,
+                n_zoom=getattr(args, "n_zoom", None),
+                zoom_width_mhz=getattr(args, "zoom_width", None),
+                events=events,
+                cancel=cancel,
+                **_fit_kwargs(args),
+            )
     except PipelineFileError:
         raise
     except FileNotFoundError as e:
@@ -280,18 +284,21 @@ def cmd_scan_all(args: argparse.Namespace) -> int:
     if not getattr(args, "verbose", False):
         pkg_logger.setLevel(logging.ERROR)
     try:
-        items = run_scan_batch(
-            specs,
-            Path(file_path),
-            output_dir=output_dir,
-            reuse=args.reuse,
-            make_plot=not args.no_plot,
-            quiet=args.quiet,
-            zoom_regions=zoom_regions,
-            n_zoom=getattr(args, "n_zoom", None),
-            zoom_width_mhz=getattr(args, "zoom_width", None),
-            **_fit_kwargs(args),
-        )
+        with operation_controls(args) as (events, cancel):
+            items = run_scan_batch(
+                specs,
+                Path(file_path),
+                output_dir=output_dir,
+                reuse=args.reuse,
+                make_plot=not args.no_plot,
+                quiet=args.quiet,
+                zoom_regions=zoom_regions,
+                n_zoom=getattr(args, "n_zoom", None),
+                zoom_width_mhz=getattr(args, "zoom_width", None),
+                events=events,
+                cancel=cancel,
+                **_fit_kwargs(args),
+            )
     finally:
         pkg_logger.setLevel(prev_level)
 
@@ -515,6 +522,7 @@ def register_scan_commands(subparsers: Any) -> None:
     p_scan.add_argument(
         "-v", "--verbose", action="store_true", help="Enable verbose logging"
     )
+    add_events_argument(p_scan)
     p_scan.set_defaults(func=cmd_scan_run)
 
     p_scan_all = scan_sub.add_parser(
@@ -571,6 +579,7 @@ def register_scan_commands(subparsers: Any) -> None:
     p_scan_all.add_argument(
         "-v", "--verbose", action="store_true", help="Enable verbose logging"
     )
+    add_events_argument(p_scan_all)
     p_scan_all.set_defaults(func=cmd_scan_all)
 
     # 'scan' with no subcommand prints its help.

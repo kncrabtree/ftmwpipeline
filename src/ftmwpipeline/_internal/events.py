@@ -47,6 +47,7 @@ from dataclasses import dataclass
 from typing import (
     Any,
     Callable,
+    ContextManager,
     Dict,
     Iterator,
     List,
@@ -92,6 +93,7 @@ StageLike = Union[Stage, str]
 _PLAN_EXECUTION_LOGGER = "ftmwpipeline.fitting.plan_execution"
 _STAGE5_LOGGER = "ftmwpipeline._internal.stage5_impl"
 _FILE_MANAGER_LOGGER = "ftmwpipeline.file_manager"
+_STAGE6_LOGGER = "ftmwpipeline._internal.stage6_impl"
 _STAGE2_LOGGER = "ftmwpipeline._internal.stage2_impl"
 _STAGE3_LOGGER = "ftmwpipeline._internal.stage3_impl"
 _STAGE4_LOGGER = "ftmwpipeline._internal.stage4_impl"
@@ -156,7 +158,14 @@ def _fit_end_args(event: Any, detail: Mapping[str, Any]) -> Tuple[Any, ...]:
 
 #: The line a stage logs as it starts, by the stage's own verb. A verb without
 #: an entry logs no start line.
-STAGE_START_LINES: Dict[str, LogLine] = {}
+STAGE_START_LINES: Dict[str, LogLine] = {
+    "review run": LogLine(
+        _STAGE6_LOGGER,
+        logging.INFO,
+        "Stage 6 review: routing attention for %d windows in %s",
+        lambda e, d: (d["n_windows"], d["path"]),
+    ),
+}
 
 #: The line a stage logs once its results are written, by the stage's own verb.
 #: Rendered from ``StageFinished.summary``.
@@ -176,6 +185,12 @@ STAGE_END_LINES: Dict[str, LogLine] = {
             e.summary["n_promoted"],
             e.summary["promotion_min_snr"],
         ),
+    ),
+    "review run": LogLine(
+        _STAGE6_LOGGER,
+        logging.INFO,
+        "Saved Stage 6 review to %s: %d windows, %d need attention",
+        lambda e, d: (d["path"], e.summary["n_windows"], e.summary["n_attention"]),
     ),
     "windows run": LogLine(
         _STAGE4_LOGGER,
@@ -230,6 +245,14 @@ WARNING_LINES: Dict[str, LogLine] = {
         logging.WARNING,
         WALK_FALLBACK_LOG_TEMPLATE,
         lambda e, d: (e.details["reason"], e.details["n_windows"]),
+    ),
+    "epoch_acknowledged": LogLine(
+        _STAGE6_LOGGER,
+        logging.WARNING,
+        "Editing a Stage 5 fit produced under analysis epoch %s with "
+        "epoch %s; proceeding on the acknowledgement recorded in the "
+        "file. The curated fit mixes two analysis environments.",
+        lambda e, d: (e.details["file_epoch"], e.details["current_epoch"]),
     ),
 }
 
@@ -355,6 +378,9 @@ class OperationEvents:
         self.completed_windows: List[int] = []
         self.current_stage: Optional[Stage] = None
         self._environment_checked = False
+        # committing(): depth, and a callback failure held until it ends.
+        self._committing = 0
+        self._held_failure: Optional[CallbackFailedError] = None
 
     def __call__(self, event: Event) -> None:
         self.emit(event)
@@ -376,17 +402,47 @@ class OperationEvents:
             When the callback raises (chained as ``__cause__``).
         """
         render(event, verb=verb, detail=detail)
-        if self.callback is None:
+        if self.callback is None or self._held_failure is not None:
             return
         try:
             self.callback(event)
         except Exception as exc:
-            raise CallbackFailedError(event.schema) from exc
+            failure = CallbackFailedError(event.schema)
+            failure.__cause__ = exc
+            if self._committing:
+                # Inside a write that must complete: hold the failure (and
+                # stop delivering) until the write is done.
+                self._held_failure = failure
+                return
+            raise failure from exc
+
+    @contextmanager
+    def committing(self) -> Iterator[None]:
+        """A block that, once begun, completes: the final write of a stage, or
+        a restore-then-replay that must not stop half way.
+
+        Inside it a cancel is not honoured (check points pass and
+        :meth:`cancel_requested` is ``False``; the next check point after the
+        block honours it), and a callback that raises is not allowed to abort
+        the block: its :class:`CallbackFailedError` is raised when the block
+        ends, and nothing more is delivered meanwhile. Log lines still render.
+        """
+        self._committing += 1
+        try:
+            yield
+        finally:
+            self._committing -= 1
+        if not self._committing and self._held_failure is not None:
+            failure, self._held_failure = self._held_failure, None
+            raise failure
 
     # -- cancellation ------------------------------------------------------
 
     def cancel_requested(self) -> bool:
-        """True once the cancel token is set."""
+        """True once the cancel token is set (``False`` inside
+        :meth:`committing`)."""
+        if self._committing:
+            return False
         return self.cancel is not None and bool(self.cancel.is_set())
 
     def check_cancel(self) -> None:
@@ -566,6 +622,10 @@ class StageScope:
     def cancel_requested(self) -> bool:
         return self.ops.cancel_requested()
 
+    def committing(self) -> "ContextManager[None]":
+        """:meth:`OperationEvents.committing` of this stage's operation."""
+        return self.ops.committing()
+
     def warn(
         self,
         code: str,
@@ -663,17 +723,20 @@ class StageScope:
         summary: Mapping[str, Any],
         *,
         detail: Optional[Mapping[str, Any]] = None,
+        wrote: bool = True,
     ) -> None:
         """The stage's results are written: record it and emit ``StageFinished``.
 
         Call once, after the final write (and after any ``Invalidated``).
         ``detail`` carries render-only values for the verb's end line.
+        ``wrote=False`` (a dry run, a preview) finishes without recording the
+        stage in ``completed_stages`` -- it wrote nothing.
         """
         if self.finished:
             name = None if self.stage is None else self.stage.value
             raise RuntimeError(f"stage {name!r} already finished")
         self.finished = True
-        if self.stage is not None:
+        if wrote and self.stage is not None:
             self.ops.mark_completed(self.stage)
         self.emit(
             StageFinished(

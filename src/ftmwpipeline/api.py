@@ -1543,6 +1543,8 @@ def review_edit(
     remove: Sequence[Union[float, str]] = (),
     snap_tol_mhz: Optional[float] = None,
     frame: Optional[Frame] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> RefitWindowResult:
     """User-directed single-window refit (Stage 6 ``review edit``).
 
@@ -1595,9 +1597,18 @@ def review_edit(
         (both frames).
 
     Requires Stage 5 completed.
+
+    ``events`` / ``cancel``: the event callback and cancel token (see
+    :meth:`Pipeline.review_edit`).
     """
     return Pipeline.open(file_path).review_edit(
-        window_id, add=add, remove=remove, snap_tol_mhz=snap_tol_mhz, frame=frame
+        window_id,
+        add=add,
+        remove=remove,
+        snap_tol_mhz=snap_tol_mhz,
+        frame=frame,
+        events=events,
+        cancel=cancel,
     )
 
 
@@ -1632,6 +1643,8 @@ def review_create(
     *,
     snap_tol_mhz: Optional[float] = None,
     frame: Optional[Frame] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> CreateWindowResult:
     """Install a fit window covering ``anchor_mhz`` (Stage 6 ``review create``).
 
@@ -1664,9 +1677,16 @@ def review_create(
         extent, and contributor count (both frames).
 
     Requires Stage 5 completed.
+
+    ``events`` / ``cancel``: the event callback and cancel token (see
+    :meth:`Pipeline.review_create`).
     """
     return Pipeline.open(file_path).review_create(
-        anchor_mhz, snap_tol_mhz=snap_tol_mhz, frame=frame
+        anchor_mhz,
+        snap_tol_mhz=snap_tol_mhz,
+        frame=frame,
+        events=events,
+        cancel=cancel,
     )
 
 
@@ -1676,6 +1696,8 @@ def review_run(
     bar: float = DEFAULT_DISPLAY_BAR,
     attention_candidate_evidence: float = DEFAULT_ATTENTION_CANDIDATE_EVIDENCE,
     sigma_floor_khz: Optional[float] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> "ReviewRunResult":
     """Build or refresh the Stage 6 curation layer and final-products table.
 
@@ -1700,11 +1722,16 @@ def review_run(
         Total window count, attention count, and per-kind breakdown.
 
     Requires Stage 5 completed.
+
+    ``events`` / ``cancel``: the event callback and cancel token (see
+    :meth:`Pipeline.review_run`).
     """
     return Pipeline.open(file_path).review_run(
         bar=bar,
         attention_candidate_evidence=attention_candidate_evidence,
         sigma_floor_khz=sigma_floor_khz,
+        events=events,
+        cancel=cancel,
     )
 
 
@@ -1760,6 +1787,8 @@ def report_run(
     catalog: Optional[Union[str, Path]] = None,
     catalog_n_sigma: float = 3.0,
     jobs: Optional[int] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> Dict[str, Optional[str]]:
     """Write the default Stage 6 deliverables: the L1 table + the L3 report.
 
@@ -1777,6 +1806,9 @@ def report_run(
     from the ``FTMW_MAX_WORKERS`` environment variable, falling back to
     ``cpu_count() - 2``; ``1`` renders sequentially).
     Returns ``{"table": <path|None>, "html": <path|None>}``.
+
+    ``events`` / ``cancel``: the event callback and cancel token (see
+    :meth:`Pipeline.report_run`).
     """
     return Pipeline.open(file_path).report_run(
         output_dir=output_dir,
@@ -1788,6 +1820,8 @@ def report_run(
         catalog=catalog,
         catalog_n_sigma=catalog_n_sigma,
         jobs=jobs,
+        events=events,
+        cancel=cancel,
     )
 
 
@@ -1856,6 +1890,8 @@ def review_accept(
     candidate_freq: Optional[float] = None,
     snap_tol_mhz: Optional[float] = None,
     frame: Optional[Frame] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> Optional[RefitWindowResult]:
     """Accept a window as-is or accept a specific revived candidate.
 
@@ -1887,12 +1923,17 @@ def review_accept(
         ``candidate_freq`` is given (both frames).
 
     Requires Stage 5 completed.
+
+    ``events`` / ``cancel``: the event callback and cancel token (see
+    :meth:`Pipeline.review_accept`).
     """
     return Pipeline.open(file_path).review_accept(
         window_id,
         candidate_freq=candidate_freq,
         snap_tol_mhz=snap_tol_mhz,
         frame=frame,
+        events=events,
+        cancel=cancel,
     )
 
 
@@ -1904,6 +1945,8 @@ def review_apply(
     dry_run: bool = False,
     frame: Optional[Frame] = None,
     log_prefix: Optional[int] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> CurationApplyResult:
     """Apply a curation file of batched review edits.
 
@@ -1960,6 +2003,9 @@ def review_apply(
         plan installs or grows.
 
     Requires Stage 5 completed.
+
+    ``events`` / ``cancel``: the event callback and cancel token (see
+    :meth:`Pipeline.review_apply`).
     """
     return Pipeline.open(file_path).review_apply(
         curation_path,
@@ -1967,6 +2013,8 @@ def review_apply(
         dry_run=dry_run,
         frame=frame,
         log_prefix=log_prefix,
+        events=events,
+        cancel=cancel,
     )
 
 
@@ -1976,6 +2024,8 @@ def review_preview(
     *,
     actions: Optional[Sequence[Union[CurationAction, Mapping[str, Any]]]] = None,
     frame: Optional[Frame] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> ReviewPreviewResult:
     """Run a curation file's resolved plan to completion in memory and report
     the fitted outcome, without writing anything.
@@ -2010,9 +2060,12 @@ def review_preview(
     ReviewPreviewResult
 
     Requires Stage 5 completed.
+
+    ``events`` / ``cancel``: the event callback and cancel token (see
+    :meth:`Pipeline.review_preview`).
     """
     return Pipeline.open(file_path).review_preview(
-        curation_path, actions=actions, frame=frame
+        curation_path, actions=actions, frame=frame, events=events, cancel=cancel
     )
 
 
@@ -2038,6 +2091,8 @@ def review_undo(
     ids: Sequence[int],
     *,
     dry_run: bool = False,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> UndoResult:
     """Undo recorded decisions by id, replaying the rest from baseline.
 
@@ -2059,8 +2114,13 @@ def review_undo(
     Returns
     -------
     UndoResult
+
+    ``events`` / ``cancel``: the event callback and cancel token (see
+    :meth:`Pipeline.review_undo`).
     """
-    return Pipeline.open(file_path).review_undo(ids, dry_run=dry_run)
+    return Pipeline.open(file_path).review_undo(
+        ids, dry_run=dry_run, events=events, cancel=cancel
+    )
 
 
 def get_review_status(file_path: Union[str, Path]) -> Stage6Review:
@@ -2562,6 +2622,8 @@ def scan_run(
     fit_freqs: Optional[Sequence[float]] = None,
     fit_sample_seed: int = 0,
     fit_all: bool = False,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> Any:
     """Sweep a single pipeline knob across a grid, equivalent to
     :meth:`Pipeline.scan_run`.
@@ -2599,6 +2661,9 @@ def scan_run(
         brightest windows + a seeded ``fit_sample`` random sample + the windows
         nearest each ``fit_freqs`` value, rather than the whole plan.
         ``fit_all=True`` re-fits every window. Ignored by non-fit knobs.
+
+    ``events`` / ``cancel``: the event callback and cancel token (see
+    :meth:`Pipeline.scan_run`).
     """
     try:
         pipeline = Pipeline.open(file_path)
@@ -2617,6 +2682,8 @@ def scan_run(
             fit_freqs=fit_freqs,
             fit_sample_seed=fit_sample_seed,
             fit_all=fit_all,
+            events=events,
+            cancel=cancel,
         )
     except Exception as e:
         logger.error(f"Failed to scan knob {knob!r} for {file_path}: {e}")
@@ -2640,6 +2707,8 @@ def scan_all(
     fit_freqs: Optional[Sequence[float]] = None,
     fit_sample_seed: int = 0,
     fit_all: bool = False,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> Any:
     """Sweep every knob matched by ``selector`` on its default grid, equivalent
     to :meth:`Pipeline.scan_all`.
@@ -2657,6 +2726,9 @@ def scan_all(
     list of BatchItem
         One per matched knob, in registry order; ``item.ok`` / ``item.result`` /
         ``item.error`` report each knob's outcome.
+
+    ``events`` / ``cancel``: the event callback and cancel token (see
+    :meth:`Pipeline.scan_all`).
     """
     try:
         pipeline = Pipeline.open(file_path)
@@ -2675,6 +2747,8 @@ def scan_all(
             fit_freqs=fit_freqs,
             fit_sample_seed=fit_sample_seed,
             fit_all=fit_all,
+            events=events,
+            cancel=cancel,
         )
     except Exception as e:
         logger.error(f"Failed to batch-scan {selector!r} for {file_path}: {e}")

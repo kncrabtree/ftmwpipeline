@@ -19,12 +19,14 @@ from .._internal.report_diff_impl import report_diff_impl
 from .._internal.report_html_impl import (
     VALID_WINDOW_FILTERS,
     report_run_impl,
+    report_run_summary,
 )
 from .._internal.report_impl import (
     VALID_FORMATS,
     report_table_impl,
 )
 from ..file_manager import PipelineFileError
+from ._events import EVENTS_ATTR, add_events_argument, operation_controls
 from ._json_output import json_mode, record_payload, record_run_result
 from .utils import add_stage_object, setup_logging
 
@@ -105,12 +107,18 @@ def cmd_report_run(args: argparse.Namespace) -> int:
     from .._internal.progress import StageProgress
 
     verbose = getattr(args, "verbose", False)
-    show_progress = emit_html and not getattr(args, "quiet", False) and not verbose
+    # --events owns stderr's progress reporting (one JSON line per event).
+    show_progress = (
+        emit_html
+        and not getattr(args, "quiet", False)
+        and not verbose
+        and not getattr(args, EVENTS_ATTR, False)
+    )
     if not show_progress:
         setup_logging(verbose)
     reporter = StageProgress(1, enabled=show_progress)
     try:
-        with reporter.capture_logs():
+        with reporter.capture_logs(), operation_controls(args) as (events, cancel):
             with reporter.stage("rendering report"):
                 out = report_run_impl(
                     file_path,
@@ -123,6 +131,8 @@ def cmd_report_run(args: argparse.Namespace) -> int:
                     catalog=getattr(args, "catalog", None),
                     catalog_n_sigma=getattr(args, "catalog_n_sigma", 3.0),
                     jobs=getattr(args, "jobs", None),
+                    events=events,
+                    cancel=cancel,
                 )
     except PipelineFileError:
         raise
@@ -131,15 +141,9 @@ def cmd_report_run(args: argparse.Namespace) -> int:
         return 1
 
     if json_mode(args):
+        # One builder for this summary and the operation's StageFinished.
         record_run_result(
-            args,
-            stage=None,
-            invalidated=[],
-            summary={
-                "scope": scope,
-                "table": out.get("table"),
-                "html": out.get("html"),
-            },
+            args, stage=None, invalidated=[], summary=report_run_summary(out, scope)
         )
     if out.get("table") is not None:
         print(f"report run: wrote table to {out['table']}")
@@ -319,6 +323,7 @@ def register_report_commands(subparsers: Any) -> None:
         default=False,
         help="Enable verbose logging.",
     )
+    add_events_argument(p_run)
     p_run.set_defaults(func=cmd_report_run)
 
     p_diff = verbs.add_parser(
