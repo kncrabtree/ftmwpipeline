@@ -15,6 +15,7 @@ import h5py
 import numpy as np
 import pytest
 
+from ftmwpipeline._internal.absence_rules import clock_lattice_absence
 from ftmwpipeline._internal.read_impl import (
     read_table_impl,
     read_tables_impl,
@@ -22,6 +23,7 @@ from ftmwpipeline._internal.read_impl import (
 from ftmwpipeline.contract import MANIFEST, Absent
 from ftmwpipeline.core.data_structures import (
     AuditStep,
+    DoubletAlternativeInfo,
     FittedPeak,
     FittingResult,
     FitWindow,
@@ -270,3 +272,130 @@ def test_unknown_status_column_is_refused(tmp_path):
     with pytest.raises(ValueError, match="unknown column"):
         read_table_impl(f, "fit_peaks", ["shape__status"])
     json.dumps(read_tables_impl(f), default=str)
+
+
+def _doublet(**over):
+    kw = dict(
+        frequency_a_mhz=100.0,
+        frequency_b_mhz=100.1,
+        amplitude_a=1.0,
+        amplitude_b=0.5,
+        separation_res_elements=1.2,
+        amp_ratio=0.5,
+        chi2r_production=1.0,
+        chi2r_merged=1.4,
+        delta_chi2_raw=3.0,
+        delta_aicc=2.0,
+        merged_frequency_mhz=100.05,
+        merged_amplitude=1.4,
+        merged_phase=0.1,
+        merged_tau_us=5.0,
+        merged_success=True,
+        orth_evidence_delta_chi2=4.0,
+        orth_evidence_n_params=3,
+        support_bins=10,
+    )
+    kw.update(over)
+    return DoubletAlternativeInfo(**kw)
+
+
+def test_fit_doublets_failed_refit_is_undefined(tmp_path):
+    # Mutation: dropping fit_doublets from the status layout removes the
+    # companion columns (KeyError below); treating NaN as present gives 0.
+    peaks = [_peak(0)]
+    f = _build(tmp_path / "d.ftmw", peaks)
+    result = FittingResult(
+        success=True,
+        fitted_spectrum=None,
+        cost=1.0,
+        iterations=2,
+        aic=10.0,
+        reduced_chi2=1.1,
+        window=None,
+        window_id=0,
+        shape="lorentzian",
+    )
+    result.fitted_peaks = peaks
+    result.doublet_alternatives = [
+        _doublet(),
+        _doublet(
+            chi2r_merged=NAN,
+            delta_chi2_raw=NAN,
+            delta_aicc=NAN,
+            merged_frequency_mhz=NAN,
+            merged_amplitude=NAN,
+            merged_phase=NAN,
+            merged_tau_us=NAN,
+            orth_evidence_delta_chi2=NAN,
+            merged_success=False,
+        ),
+    ]
+    fit = SpectrumFit(
+        window_fits=[result], fitted_peaks=peaks, parameters={"acquisition_us": 12.7}
+    )
+    with h5py.File(f, "r+") as h5f:
+        del h5f["stage5_fitting"]
+        save_spectrum_fit_to_hdf5(fit, h5f.create_group("stage5_fitting"))
+    t = read_table_impl(f, "fit_doublets")
+    for col in (
+        "chi2r_merged",
+        "delta_chi2_raw",
+        "delta_aicc",
+        "merged_frequency_mhz",
+        "merged_amplitude",
+        "merged_phase",
+        "merged_tau_us",
+        "orth_evidence_delta_chi2",
+    ):
+        assert list(t[col + "__status"]) == [0, UD], col
+        assert t[col + "__status"].dtype == np.uint8
+    assert np.isnan(t["delta_aicc"][1])
+
+
+def test_clock_lattice_rule_and_table(tmp_path, monkeypatch):
+    # Mutation: ignoring the declaration (always UNDEFINED for '') or always
+    # NOT_RUN turns one of the asserts below red.
+    assert clock_lattice_absence("", False) is Absent.NOT_RUN
+    assert clock_lattice_absence("", True) is Absent.UNDEFINED
+    assert clock_lattice_absence("10 MHz", True) is None
+    assert clock_lattice_absence("10 MHz", False) is Absent.NOT_RUN
+    f = _build(tmp_path / "cl.ftmw", [_peak(0)])
+    t = read_table_impl(f, "fit_peaks", ["clock_lattice__status"])
+    assert list(t["clock_lattice__status"]) == [NR]  # no declaration persisted
+    import ftmwpipeline._internal.read_impl as ri
+
+    monkeypatch.setattr(ri, "clock_declaration_recorded", lambda _p: True)
+    t = read_table_impl(f, "fit_peaks", ["clock_lattice__status"])
+    assert list(t["clock_lattice__status"]) == [UD]  # declared, off the lattice
+
+
+def test_detection_index_and_window_fills(tmp_path):
+    # Mutation: detection_index -1 mapped to NOT_RUN, or tau_fitted/freq fills
+    # reported present.
+    f = _build(tmp_path / "di.ftmw", [_peak(-1), _peak(3)])
+    with h5py.File(f, "r+") as h5f:
+        h5f["stage5_fitting/windows/tau_fitted"][0] = -1
+        h5f["stage5_fitting/windows/freq_min"][0] = NAN
+        h5f["stage5_fitting/windows/freq_max"][0] = 120.0
+        h5f["stage5_fitting/windows/tau_us"][0] = 0.0
+    t = read_table_impl(f, "fit_peaks", ["detection_index", "detection_index__status"])
+    assert list(t["detection_index"]) == [-1, 3]
+    assert list(t["detection_index__status"]) == [UD, 0]
+    w = read_table_impl(f, "fit_windows")
+    assert list(w["tau_fitted__status"]) == [NR]
+    assert list(w["freq_min__status"]) == [NR]
+    assert list(w["freq_max__status"]) == [0]
+    assert list(w["tau_us__status"]) == [UD]
+    assert w["tau_fitted"][0] == -1
+
+
+def test_read_list_prints_row_counts(tmp_path, capsys):
+    # Mutation: reverting cmd_read_list to `is not None` prints the Absent
+    # repr / "available" instead of the integer count.
+    from ftmwpipeline.cli import main
+
+    f = _build(tmp_path / "rl.ftmw", [_peak(0)], [_step("seed")])
+    assert main(["read", "list", str(f)]) == 0
+    out = capsys.readouterr().out
+    assert "fit_audit" in out and "1 row(s)" in out
+    assert "fit_peaks" in out and "knockout_p_value__status" in out
