@@ -298,6 +298,12 @@ SNAPSHOT_VOCABULARIES = {
         "walk_fallback",
         "timebase_skipped",
     },
+    "restart_reason": {
+        "restart_requested",
+        "settings_changed",
+        "incomplete_provenance",
+        "thaw_refit",
+    },
 }
 
 
@@ -523,7 +529,7 @@ def test_manifest_sequences_are_tuples():
 
 
 def test_manifest_version_matches_package():
-    assert MANIFEST.contract_version == ftmwpipeline.CONTRACT_VERSION == 10
+    assert MANIFEST.contract_version == ftmwpipeline.CONTRACT_VERSION == 11
     assert isinstance(ftmwpipeline.CONTRACT_VERSION, int)
 
 

@@ -87,13 +87,14 @@ def test_contract_version_is_int():
     assert isinstance(CONTRACT_VERSION, int)
 
 
-def test_contract_version_is_ten():
+def test_contract_version_is_eleven():
     # Wave 0 published 1; Wave 1's accessors raised it to 2; the final-products
     # fit fields (Wave 2) to 3; the window_model / spectrum_model accessors to 4;
     # the analysis_fingerprint accessor to 5; CurationAction (curation as data)
     # to 6; Wave 7 to 7; Wave 8 (full capabilities) to 8; Wave 5.1 (events and
-    # cancellation) to 9; Wave 5.1b (atomic writes, write_conflict) to 10.
-    assert CONTRACT_VERSION == 10
+    # cancellation) to 9; Wave 5.1b (atomic writes, write_conflict) to 10;
+    # Wave 5.2 (Stage 5 partial fits, restart_reason) to 11.
+    assert CONTRACT_VERSION == 11
 
 
 # ---- stage vocabulary -----------------------------------------------------
@@ -271,7 +272,7 @@ def _errors():
         (
             CallbackFailedError("ftmw/window_progress@1"),
             "callback_failed",
-            {"event_schema": "ftmw/window_progress@1"},
+            {"event_schema": "ftmw/window_progress@1", "completed_windows": []},
             (),
         ),
         (

@@ -1544,6 +1544,7 @@ class Pipeline:
         settings: Optional["StageFitSettings"] = None,
         preset: Optional[str] = None,
         jobs: Optional[int] = None,
+        restart: bool = False,
         events: Optional[EventCallback] = None,
         cancel: Optional[CancelToken] = None,
     ) -> SpectrumFit:
@@ -1606,6 +1607,13 @@ class Pipeline:
             variable, falling back to ``cpu_count() - 2``; ``1`` forces a
             sequential fit. The fit result is byte-identical regardless of the
             worker count.
+        restart : bool, default False
+            Discard a partial fit and fit every window. By default a partial
+            fit (left by a cancelled or callback-failed fit) is resumed: only
+            the windows it lacks are fit, when the requested settings, the
+            values consumed from other stages and ``ANALYSIS_EPOCH`` equal the
+            partial fit's; otherwise the fit starts over (the summary's
+            ``restart_reason`` says why).
         events : callable, optional
             Called on this thread with each event (``StageStarted``, a
             ``WindowProgress`` per finished window, warnings, ``Invalidated``,
@@ -1614,8 +1622,12 @@ class Pipeline:
         cancel : CancelToken, optional
             Anything with ``is_set()`` (e.g. a :class:`threading.Event`). Once
             set, the fit stops between windows (a parallel fit within about
-            0.2 s) and raises :class:`OperationCancelledError`; the file is
-            left exactly as it was.
+            0.2 s) and raises :class:`OperationCancelledError`. The windows
+            that had finished are kept as a partial fit (the previous fit and
+            everything downstream of it are discarded in the same write), and
+            the error's ``completed_windows`` lists them; when none had
+            finished the file is left exactly as it was. A raising callback
+            leaves the same (``CallbackFailedError.completed_windows``).
 
         Returns
         -------
@@ -1642,6 +1654,7 @@ class Pipeline:
                 settings=settings,
                 preset=preset,
                 jobs=jobs,
+                restart=restart,
                 events=events,
                 cancel=cancel,
             )

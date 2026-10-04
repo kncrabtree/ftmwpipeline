@@ -466,17 +466,71 @@ with ``is_set()``, such as a ``threading.Event``) to stop the walk:
    try:
        ftmw.fit_peaks("exp_2638.ftmw", events=on_event, cancel=stop)
    except OperationCancelledError as err:
-       print("stopped; the file is as it was:", err.completed_windows)  # []
+       print("stopped; windows kept:", err.completed_windows)
+
+   ftmw.fit_peaks("exp_2638.ftmw")   # resumes: fits only the other windows
 
 The callback runs on the calling thread, never in a pool worker. A cancel is
 checked between windows. With a worker pool the parent polls about every 0.2 s
 and, once the token is set, terminates the workers instead of waiting for the
 windows still fitting; the sequential walk (``--jobs 1``) stops after the current
-window. No check is made inside a single window's least-squares fit. A cancelled
-fit writes nothing: the file is exactly as it was, with no invalidation, and
-``OperationCancelledError.completed_windows`` is always ``[]`` for now. On the
+window. No check is made inside a single window's least-squares fit. On the
 command line the first Ctrl-C cancels the same way (exit ``130``) and ``--events``
 writes the events to stderr; see :doc:`machine_contract`.
+
+**Partial fits and resuming.** A cancelled fit keeps the windows that had
+finished as a *partial fit*, and ``OperationCancelledError.completed_windows``
+lists them. The same write discards the previous fit and everything built on it
+(a review, the final products); if no window had finished, nothing is written
+and the previous fit is kept. A callback that raises leaves the same (its
+``CallbackFailedError.completed_windows`` lists the kept windows too). While a
+partial fit is present ``status`` reports the fit as ``partial``,
+``window_status`` reports the kept windows, and everything that reads a fit or
+the final products behaves as before Stage 5 (``review run`` and curation
+refuse with ``stage_not_run``).
+
+The next ``fit_peaks`` (``fit run``) resumes it: it fits only the windows not
+yet kept, then finishes as usual -- structural replan, cleanup and sorting over
+the whole fit -- and the result equals an uninterrupted fit with the same
+settings (the same lines, ``peak_uid`` values and windows; parameters to
+floating-point rounding). The settings a cancelled fit resolved are stored as
+the file's Stage 5 settings, so a plain re-run resumes with them. The fit starts
+over instead, and says why in its summary's ``restart_reason``, when you pass
+``restart=True`` (``--restart``: ``"restart_requested"``); when the requested
+settings, the values the fit takes from other stages (the decay anchor, the
+timebase epsilon, the survival floor) or the analysis epoch differ from the
+partial fit's (``"settings_changed"``); when the partial fit lacks the record
+needed to compare them (``"incomplete_provenance"``); or when a local thaw was
+accepted (``"thaw_refit"``: every window is refit sequentially, as an
+uninterrupted fit with an accepted thaw does). The summary also carries
+``resumed`` and ``windows_carried``. Anything that discards a fit discards a
+partial fit too: re-running an earlier stage, changing a ``stage5`` setting
+(``settings set`` or ``settings unset``), or a forced re-import. Clocks and the
+timebase leave a partial fit in place, as they leave a complete one; but the
+timebase epsilon is one of the values the fit takes from other stages, so a
+fit run after the timebase changed starts over (``"settings_changed"``).
+
+Nothing is written while the walk runs. The partial fit is written once, in the
+cancelled call's single atomic write, so a process killed at any point
+(``SIGKILL`` included) leaves the file as it was before the call: no partial
+fit from that call, and any earlier partial fit or fit intact. The same holds
+for a kill of the run that resumes a partial fit. To discard a partial fit
+without refitting, re-run an earlier stage or change a ``stage5`` setting; to
+refit everything, pass ``restart=True`` (``fit run --restart``):
+
+.. code-block:: console
+
+   $ ftmwpipeline fit run exp_2638.ftmw          # Ctrl-C partway: exit 130
+   $ ftmwpipeline fit run exp_2638.ftmw          # resumes the kept windows
+   $ ftmwpipeline fit run exp_2638.ftmw --restart --json   # starts over
+   {"schema": "ftmw/run_result@1", "verb": "fit run", ...,
+    "summary": {..., "resumed": false, "windows_carried": 0,
+                "restart_reason": "restart_requested"}}
+
+A partial fit is a private checkpoint, not part of the file's layout contract:
+it is stored as plain numeric arrays and JSON (nothing is pickled), reading it
+never runs code from the file, and a partial fit that cannot be read back
+safely is not resumed (``"incomplete_provenance"``) rather than trusted.
 
 .. figure:: figures/stage5_fitting.png
    :width: 95%

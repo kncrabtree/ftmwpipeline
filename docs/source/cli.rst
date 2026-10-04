@@ -68,8 +68,10 @@ Conventions
   point, between windows or between stages, and exits ``130``, printing the
   ``cancelled`` error (as the ``ftmw/error@1`` object on stderr under
   ``--json``, the last stderr line after any events). A cancelled stage leaves
-  the file as it was; stages the verb had already completed stay. A second
-  Ctrl-C interrupts at once. The events and the error are in
+  the file as it was; stages the verb had already completed stay. The one
+  exception is ``fit run``, which keeps the windows that had finished as a
+  partial fit that the next ``fit run`` resumes (see :doc:`stage5_fitting`). A
+  second Ctrl-C interrupts at once. The events and the error are in
   :ref:`machine-contract-events`.
 
 Command summary
@@ -253,7 +255,10 @@ shape (default Lorentzian); ``--tau0-us``, ``--fit-tau`` / ``--no-fit-tau``,
 thaw/replan caps (``--max-residual-rescue-rounds``, ``--max-thaw-rounds``,
 ``--max-replan-rounds``, …) bound the iterative passes. ``--tau-maj-override`` /
 ``--sigma-tau-override`` force a decay anchor for A/B work. ``-j`` / ``--jobs``
-sets the cross-window worker pool (see :doc:`performance`).
+sets the cross-window worker pool (see :doc:`performance`). A cancelled
+``fit run`` keeps its finished windows as a partial fit, and the next
+``fit run`` resumes it when its settings match; ``--restart`` discards it and
+fits every window.
 
 ``fit show`` draws the fit: with no selector, the spectrum-wide overview;
 with window selectors (``--window``, ``--window-list``, ``--freq``,

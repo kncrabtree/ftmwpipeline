@@ -139,5 +139,9 @@ stamp is refused rather than silently trusted.
 
 - Storing ComplexFT, or any large array recomputable in interactive time, is
   prohibited — it defeats the lightweight-file invariant.
+- One exception: the Stage 5 partial fit (CONTRACT_STRATEGY §Stage 5 partial
+  fits) may store dense per-window arrays, because rebuilding a carried
+  window faithfully needs them. It is a transient checkpoint that exists only
+  between a cancelled fit and the next fit, which deletes it.
 - Storage-size figures are requirements only when accompanied by a benchmark
   that measures them; otherwise they are non-normative.

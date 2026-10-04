@@ -543,7 +543,7 @@ named that does not exist, e.g. all unknown window ids of a curation batch),
 `incomplete_provenance` (`missing`), `file_exists`, `file_incompatible`
   (`file_version`, `supported_version`), `file_corrupt`, `epoch_mismatch` (`file_epoch`, `current_epoch`),
   `cancelled` (`stage`, `completed_stages`, `completed_windows`;
-  §Events and cancellation), `callback_failed` (`event_schema`),
+  §Events and cancellation), `callback_failed` (`event_schema`, `completed_windows`),
   `algorithm_failed` (`stage`), `write_conflict` (§Crash safety).
 - Each typed error remains a subclass of the built-in it replaced (most are
   `ValueError`), so existing `except` clauses keep working.
@@ -799,6 +799,11 @@ What is left in the file is the same as after a cancel at that point.
     Stage 5 therefore leaves the file as it was before the call
     (§Crash safety).
   - `cancelled.completed_windows` lists the window ids that were written.
+    So does `callback_failed.completed_windows`, which is `[]` everywhere
+    except a Stage 5 interruption.
+  - The write's invalidations are delivered as one `Invalidated` (`fit` and
+    everything downstream) after the partial write is durable and before the
+    error is raised. It is never delivered to a callback that has just failed.
 - **`status` while partial.**
   - `fit` reports `partial` and appears in `runnable`.
   - `review` reports `not_run`.
@@ -825,7 +830,10 @@ What is left in the file is the same as after a cancel at that point.
     `ANALYSIS_EPOCH`;
   - or the partial fit lacks the provenance needed for that comparison.
 
-  It never resumes on a guess.
+  It never resumes on a guess. `ANALYSIS_EPOCH` is the only guard against a
+  code change between the cancel and the resume. Every change that moves
+  per-window fit numerics raises it, so a resume never mixes windows fitted
+  by different numerics.
 - **What a resume produces.** After the remaining windows, the fit finishes as
   usual: structural replan, cleanup and sorting over the whole fit. The result
   equals an uninterrupted run with the same settings, to the same standard as

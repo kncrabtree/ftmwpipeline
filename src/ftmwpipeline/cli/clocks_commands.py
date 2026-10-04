@@ -79,7 +79,8 @@ def _record_clocks(args: argparse.Namespace, clocks: Optional[tuple]) -> None:
 def _warn_if_stale(file_path: str) -> None:
     if stage5_fit_present(file_path):
         print(
-            "\nNote: a Stage 5 fit already exists on this file and keeps the "
+            "\nNote: a Stage 5 fit (or partial fit) already exists on this file "
+            "and keeps the "
             "declaration it ran with.\n      To apply this one to spur gating, "
             "run 'settings unset FILE stage5.spur.clocks', then 'fit run FILE'."
         )

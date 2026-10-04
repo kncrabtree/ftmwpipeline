@@ -68,7 +68,10 @@ from ..core.stage_fit_settings import (
 from ..core.stage_fit_settings import resolve as resolve_stage_fit_settings
 from ..file_manager import (
     BadSettingError,
+    CallbackFailedError,
     NotFoundValueError,
+    OperationCancelledError,
+    PipelineFileError,
     StageDependencyError,
     canonical_invalidated,
     invalidate_downstream_stages,
@@ -79,6 +82,7 @@ from ..fitting.peak_model import PeakShape
 from ..fitting.plan_execution import (
     FinalizeNode,
     ReplanContext,
+    WalkTracker,
     WindowOutcome,
     execute_plan,
     refit_outcome,
@@ -97,6 +101,7 @@ from ..io.fitting_serialization import (
     load_spectrum_fit_from_hdf5,
     save_spectrum_fit_to_hdf5,
 )
+from ..io.stage5_partial_serialization import delete_stage5_partial
 from ..io.stage_fit_settings_serialization import (
     Stage5Consumed,
     load_stage_fit_settings_from_h5,
@@ -124,6 +129,13 @@ from .stage3_impl import (
     read_promotion_min_snr,
 )
 from .stage4_impl import load_windows_impl
+from .stage5_partial_impl import (
+    THAW_REFIT,
+    build_partial_provenance,
+    decide_resume,
+    plan_identity,
+    write_partial_fit,
+)
 
 if TYPE_CHECKING:
     from ..fitting.result_conversion import FittedLineView
@@ -1764,6 +1776,7 @@ def fit_peaks_impl(
     settings: Optional[StageFitSettings] = None,
     preset: Optional[str] = None,
     jobs: Optional[int] = None,
+    restart: bool = False,
     events: Optional[EventCallback] = None,
     cancel: Optional[CancelToken] = None,
 ) -> Dict[str, Any]:
@@ -1774,8 +1787,17 @@ def fit_peaks_impl(
     ``WindowProgress`` per finished window, warnings, ``Invalidated``, then
     ``StageFinished`` -- whose summary is :func:`fit_run_summary` of the result
     -- once the fit is written. A cancel (``cancel`` set) is honoured between
-    windows and before the final write; a cancelled or failed fit writes
-    nothing, so the file is exactly as it was.
+    windows and before the final write.
+
+    A cancel or a raising ``events`` callback during the fit keeps the windows
+    that finished as a *partial fit*, in this call's one atomic write (which
+    also discards the previous fit and everything downstream of it); the error
+    is raised once that write has landed, a ``cancelled`` error listing the
+    windows written in ``completed_windows``. When no window had finished
+    nothing is written and the file is exactly as it was. The next call resumes
+    the partial fit -- fitting only the remaining windows -- when its settings,
+    consumed upstream values and ``ANALYSIS_EPOCH`` match the partial fit's;
+    ``restart=True`` starts over instead (see :func:`_fit_peaks_impl`).
 
     Every per-window solve in Stage 5 is single-threaded -- the cross-window
     fork pool gets its parallelism from separate worker *processes*, not from
@@ -1797,19 +1819,61 @@ def fit_peaks_impl(
     """
     ops = operation_events("fit run", events, cancel)
     with ops.stage(Stage.FIT, verb="fit run", file_path=file_path) as scope:
+        interrupted: Optional[PipelineFileError] = None
+        result: Dict[str, Any] = {}
         with atomic_write(file_path), threadpool_limits(limits=1):
-            result = _fit_peaks_impl(
-                file_path,
-                shape=shape,
-                tau_maj_override_us=tau_maj_override_us,
-                sigma_tau_override_us=sigma_tau_override_us,
-                settings=settings,
-                preset=preset,
-                jobs=jobs,
-                events=scope,
-            )
+            try:
+                result = _fit_peaks_impl(
+                    file_path,
+                    shape=shape,
+                    tau_maj_override_us=tau_maj_override_us,
+                    sigma_tau_override_us=sigma_tau_override_us,
+                    settings=settings,
+                    preset=preset,
+                    jobs=jobs,
+                    restart=restart,
+                    events=scope,
+                )
+            except (OperationCancelledError, CallbackFailedError) as exc:
+                if not getattr(exc, _PARTIAL_WRITTEN, False):
+                    raise
+                # The partial fit is written: let the transaction commit it,
+                # then fail.
+                interrupted = exc
+        if interrupted is not None:
+            _raise_after_partial_write(scope, interrupted)
         scope.finish(fit_run_summary(result))
     return result
+
+
+def _raise_after_partial_write(scope: StageScope, error: PipelineFileError) -> None:
+    """Raise ``error`` once the partial fit it kept is durable.
+
+    The partial write's invalidations (the fit and everything downstream) are
+    delivered first, as one ``Invalidated`` -- except to a callback that has
+    just failed (``error`` is then that failure). A callback that raises on
+    this ``Invalidated`` does not mask a cancel: the ``cancelled`` error is
+    raised with the callback's failure as its ``__context__``.
+    """
+    if not isinstance(error, CallbackFailedError):
+        try:
+            scope.deliver_invalidated()
+        except CallbackFailedError as failure:
+            logger.warning(
+                "The events callback raised on Invalidated after a cancelled "
+                "fit kept its partial fit: %s",
+                failure.__cause__,
+            )
+            # Raised inside the handler: the failure becomes the cancel's
+            # __context__; the cancel is what the caller sees.
+            raise error
+    raise error
+
+
+#: Set on a cancel / callback failure whose partial fit
+#: :func:`_fit_peaks_impl` wrote, so :func:`fit_peaks_impl` commits before
+#: raising it.
+_PARTIAL_WRITTEN = "_ftmw_stage5_partial_written"
 
 
 #: The ``ftmw/run_result@1`` summary keys of ``fit run`` -- also the keys of the
@@ -1826,6 +1890,9 @@ FIT_RUN_SUMMARY_KEYS: Tuple[str, ...] = (
     "n_replan_accepted",
     "n_replan_events",
     "final_plan_revision",
+    "resumed",
+    "windows_carried",
+    "restart_reason",
 )
 
 
@@ -1843,6 +1910,7 @@ def _fit_peaks_impl(
     settings: Optional[StageFitSettings] = None,
     preset: Optional[str] = None,
     jobs: Optional[int] = None,
+    restart: bool = False,
     events: Optional[StageScope] = None,
 ) -> Dict[str, Any]:
     """Run Stage 5 per-window fitting and persist the result.
@@ -1890,6 +1958,17 @@ def _fit_peaks_impl(
         Bare preset name or path to a YAML file carrying a ``stage5:`` block.
         Seeds the preset layer beneath the persisted record; may be combined
         with ``settings``.
+    restart : bool, default False
+        Discard a partial fit instead of resuming it. Without it, a partial fit
+        (left by a cancelled or callback-failed fit) is resumed when the
+        requested settings, the consumed upstream values and
+        ``ANALYSIS_EPOCH`` equal the partial fit's: its windows are carried as
+        they are and only the others are fit, then the fit finishes as usual
+        (structural replan, cleanup, sort over the whole fit). The result's
+        ``resumed`` / ``windows_carried`` / ``restart_reason`` say what
+        happened; ``restart_reason`` is one of ``"restart_requested"``,
+        ``"settings_changed"``, ``"incomplete_provenance"``, ``"thaw_refit"``,
+        or ``None`` (a clean resume, or nothing to resume).
     events : StageScope, optional
         The ``fit`` stage's event scope (from :func:`fit_peaks_impl`); ``None``
         renders the log lines only.
@@ -2412,39 +2491,152 @@ def _fit_peaks_impl(
         float(final_add_v) if (final_add_v is not None and final_add_v > 0) else None
     )
 
-    plan_outcome = execute_plan(
-        plan,
-        active_ft,
-        rms_for_fit,
-        peak_frequencies_mhz,
-        peak_detection_passes=peak_detection_passes,
-        sideband=sideband,
-        acquisition_us=acquisition_us,
-        tau0_us=tau0_us_v,
-        fit_tau=fit_tau_v,
-        shape=shape_enum,
-        residual_edge_threshold=edge_threshold_v,
-        residual_edge_m=edge_m_v,
-        max_thaw_rounds=max_thaw_v,
-        conservative_kwargs=conservative_kwargs,
-        replan_context=replan_ctx,
-        max_residual_rescue_rounds=rescue_max_v,
-        rescue_kwargs=rescue_kwargs,
-        window_tau_overrides=window_tau_overrides if per_band_used else None,
-        spur_set=spur_set,
-        baseline_enabled=baseline_enabled_v,
-        baseline_order=baseline_order_v,
-        baseline_edge_threshold=baseline_edge_threshold_v,
-        baseline_smooth_threshold=baseline_smooth_threshold_v,
-        doublet_kwargs=doublet_kwargs,
-        jobs=jobs,
-        finalize_node=finalize_node,
-        final_add_snr_threshold=final_add_snr_v,
-        probe_freq_mhz=fit_ctx.probe_freq_mhz,
-        sample_dt_us=fit_ctx.sample_dt_us,
-        events=events,
+    # What the fit takes from other stages (persisted with the fit, and the
+    # partial-fit resume compares it): neither a Stage 2b nor a timebase re-run
+    # invalidates Stage 5, so this is what says which anchor, epsilon and
+    # survival floor the fit actually used.
+    consumed = Stage5Consumed(
+        tau_calibration_source=tau_source,
+        tau_maj_us=tau_maj_us,
+        sigma_tau_us=sigma_tau_us,
+        band_majorities=(
+            tuple(persisted_cal.band_majorities)
+            if per_band_used and persisted_cal is not None
+            else None
+        ),
+        timebase_epsilon=fit_ctx.timebase_epsilon,
+        timebase_sigma_epsilon=fit_ctx.timebase_sigma_epsilon,
+        peak_survival_snr_floor=float(peak_survival_floor_v),
+        stft_spur_nominees=fit_ctx.stft_spur_nominees,
     )
-    events.check_cancel()
+
+    # --- Partial fit: resume, or start over and say why ---------------------
+    # The provenance a partial fit records, and a resume compares: the
+    # resolved settings, the consumed values, ANALYSIS_EPOCH, and the derived
+    # context the walk reads (plan, peaks, gated spurs, active-FT geometry,
+    # decay seeds) -- equal inputs, so the carried windows are what this fit
+    # would compute.
+    partial_provenance = build_partial_provenance(
+        resolved=resolved,
+        consumed=consumed,
+        context={
+            "plan": plan_identity(plan),
+            "peaks": [peak_frequencies_mhz, peak_detection_passes],
+            "spurs": (
+                [
+                    [
+                        s.center_mhz,
+                        s.source,
+                        s.lattice,
+                        bool(s.drift),
+                        s.mask_half_width_bins,
+                    ]
+                    for s in spur_set.spurs
+                ]
+                if spur_set
+                else []
+            ),
+            "spur_mask_half_width_bins": (
+                int(spur_set.mask_half_width_bins) if spur_set else 0
+            ),
+            "acquisition_us": acquisition_us,
+            "n_active": int(active_ft.n_active),
+            "n_raw": int(active_ft.n_raw),
+            "active_ft_alpha": float(active_ft.alpha),
+            "sideband": sideband.value,
+            "probe_freq_mhz": fit_ctx.probe_freq_mhz,
+            "sample_dt_us": fit_ctx.sample_dt_us,
+            "tau0_us": tau0_us_v,
+            "window_tau_overrides": (
+                sorted([wid, tm, st] for wid, (tm, st) in window_tau_overrides.items())
+                if per_band_used
+                else None
+            ),
+        },
+    )
+    resume = decide_resume(
+        file_path,
+        partial_provenance,
+        restart=restart,
+        window_ids=[int(w.window_id) for w in plan.windows],
+    )
+    tracker = WalkTracker()
+
+    def _interrupted(exc: PipelineFileError) -> PipelineFileError:
+        # A cancel or a raising callback: keep the windows that finished as a
+        # partial fit, in this call's transaction, and mark the error so
+        # fit_peaks_impl commits before raising it. Nothing finished: nothing
+        # written, the file stays as it was.
+        snapshot = tracker.snapshot()
+        if snapshot is None:
+            return exc
+        try:
+            written = write_partial_fit(
+                file_path,
+                snapshot,
+                partial_provenance,
+                resolved=resolved,
+                preset_name=preset_name,
+                events=events,
+            )
+        except Exception:  # noqa: BLE001 - the interruption is what is raised
+            # The partial write failed: nothing is kept (the transaction
+            # discards whatever it began), and the caller still sees the
+            # cancel / callback failure, not the write's error.
+            logger.exception(
+                "Stage 5 interrupted, but its finished windows could not be "
+                "written as a partial fit; the file is left as it was"
+            )
+            return exc
+        if written:
+            setattr(exc, _PARTIAL_WRITTEN, True)
+            assert events is not None
+            events.ops.completed_windows = list(written)
+            if isinstance(exc, (OperationCancelledError, CallbackFailedError)):
+                exc.completed_windows = list(written)
+        return exc
+
+    try:
+        plan_outcome = execute_plan(
+            plan,
+            active_ft,
+            rms_for_fit,
+            peak_frequencies_mhz,
+            peak_detection_passes=peak_detection_passes,
+            sideband=sideband,
+            acquisition_us=acquisition_us,
+            tau0_us=tau0_us_v,
+            fit_tau=fit_tau_v,
+            shape=shape_enum,
+            residual_edge_threshold=edge_threshold_v,
+            residual_edge_m=edge_m_v,
+            max_thaw_rounds=max_thaw_v,
+            conservative_kwargs=conservative_kwargs,
+            replan_context=replan_ctx,
+            max_residual_rescue_rounds=rescue_max_v,
+            rescue_kwargs=rescue_kwargs,
+            window_tau_overrides=window_tau_overrides if per_band_used else None,
+            spur_set=spur_set,
+            baseline_enabled=baseline_enabled_v,
+            baseline_order=baseline_order_v,
+            baseline_edge_threshold=baseline_edge_threshold_v,
+            baseline_smooth_threshold=baseline_smooth_threshold_v,
+            doublet_kwargs=doublet_kwargs,
+            jobs=jobs,
+            finalize_node=finalize_node,
+            final_add_snr_threshold=final_add_snr_v,
+            probe_freq_mhz=fit_ctx.probe_freq_mhz,
+            sample_dt_us=fit_ctx.sample_dt_us,
+            events=events,
+            carried=resume.carried,
+            tracker=tracker,
+        )
+        events.check_cancel()
+    except (OperationCancelledError, CallbackFailedError) as exc:
+        raise _interrupted(exc)
+    restart_reason = THAW_REFIT if tracker.thaw_refit else resume.restart_reason
+    resumed = resume.carried is not None and not tracker.thaw_refit
+    windows_carried = tracker.windows_carried if resumed else 0
     # A structural replan (merge) rebuilds the plan inside ``execute_plan`` --
     # the survivor's ``freq_range`` becomes the union of the merged windows.
     # Convert and refit against that revised plan, not the pre-replan one, so a
@@ -2686,8 +2878,14 @@ def _fit_peaks_impl(
         sort_fitting_result_by_frequency(wf)
 
     # The last cancel check point: from here the fit's final write completes.
-    events.check_cancel()
+    try:
+        events.check_cancel()
+    except OperationCancelledError as exc:
+        raise _interrupted(exc)
     save_spectrum_fit_impl(file_path, spectrum_fit)
+    # The fit supersedes the partial fit it resumed (or discarded).
+    with h5open(file_path, "a") as h5f:
+        delete_stage5_partial(h5f)
     # The automatic fit is the curation baseline for 'review undo'; a fresh fit
     # supersedes any snapshot a prior edit session took, so drop it -- the next
     # user edit re-snapshots this fit.
@@ -2696,24 +2894,9 @@ def _fit_peaks_impl(
     clear_stage5_baseline(file_path)
     # Stamp the resolved settings as the persisted record for this fit so
     # a follow-up call with no explicit args inherits exactly the same
-    # knobs (the persisted layer of the resolution chain).
-    # What the fit took from other stages goes in its own record: neither a
-    # Stage 2b nor a timebase re-run invalidates Stage 5, so this is what says
-    # which anchor, epsilon and survival floor the fit actually used.
-    consumed = Stage5Consumed(
-        tau_calibration_source=tau_source,
-        tau_maj_us=tau_maj_us,
-        sigma_tau_us=sigma_tau_us,
-        band_majorities=(
-            tuple(persisted_cal.band_majorities)
-            if per_band_used and persisted_cal is not None
-            else None
-        ),
-        timebase_epsilon=fit_ctx.timebase_epsilon,
-        timebase_sigma_epsilon=fit_ctx.timebase_sigma_epsilon,
-        peak_survival_snr_floor=float(peak_survival_floor_v),
-        stft_spur_nominees=fit_ctx.stft_spur_nominees,
-    )
+    # knobs (the persisted layer of the resolution chain), with what the fit
+    # took from other stages (``consumed``, built before the walk) in its own
+    # record.
     save_stage_fit_settings_to_h5(
         file_path, resolved, preset_name=preset_name, consumed=consumed
     )
@@ -2748,6 +2931,9 @@ def _fit_peaks_impl(
         "n_replan_events": len(spectrum_fit.replan_history),
         "n_replan_accepted": n_replan_accepted,
         "final_plan_revision": spectrum_fit.final_plan_revision,
+        "resumed": resumed,
+        "windows_carried": windows_carried,
+        "restart_reason": restart_reason,
         "parameters_used": parameters,
         "active_ft": active_ft,
         "rescue_events": rescue_events_live,

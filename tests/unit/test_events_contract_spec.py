@@ -333,6 +333,10 @@ def test_callback_failed_error_code_attributes_and_dict():
     d = err.to_dict()
     assert d["schema"] == "ftmw/error@1" and d["code"] == "callback_failed"
     assert d["event_schema"] == "ftmw/window_progress@1" and d["message"]
+    # [] everywhere except a Stage 5 interruption, which lists the kept windows.
+    assert err.completed_windows == [] and d["completed_windows"] == []
+    kept = CallbackFailedError("ftmw/window_progress@1", [4, 9])
+    assert kept.to_dict()["completed_windows"] == [4, 9]
 
 
 @pytest.mark.parametrize(
@@ -449,12 +453,12 @@ def test_stage_order_is_started_other_invalidated_finished():
 # ---- manifest and capabilities ---------------------------------------------------
 
 
-def test_contract_version_is_ten():
+def test_contract_version_is_eleven():
     # 9: events and cancellation (Wave 5.1); 10: write_conflict and atomic
-    # writes (Wave 5.1b).
-    assert ftmwpipeline.CONTRACT_VERSION == 10
-    assert MANIFEST.contract_version == 10
-    assert capabilities()["contract_version"] == 10
+    # writes (Wave 5.1b); 11: Stage 5 partial fits and resume (Wave 5.2).
+    assert ftmwpipeline.CONTRACT_VERSION == 11
+    assert MANIFEST.contract_version == 11
+    assert capabilities()["contract_version"] == 11
 
 
 def test_event_schemas_are_in_the_manifest_and_capabilities():

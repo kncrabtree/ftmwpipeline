@@ -136,6 +136,7 @@ from ..io.peak_serialization import (
     read_peak_columns,
     read_peak_scalars,
 )
+from ..io.stage5_partial_serialization import read_stage5_partial_counts
 from ..io.stage6_review_serialization import (
     fit_declares_clocks,
     read_created_window_bounds,
@@ -961,15 +962,21 @@ def _window_status_rows(h5f: h5py.File) -> List[WindowStatusRow]:
         created_ids.add(wid)
 
     fitted: Optional[Dict[int, int]] = None
+    # A partial fit (a cancelled Stage 5) reports only the windows it kept;
+    # every other window stays NOT_RUN.
+    partial_only = False
     if "stage5_fitting" in h5f:
         fit = read_fit_window_columns(h5f["stage5_fitting"], ["window_id", "n_peaks"])
         fitted = {int(i): int(n) for i, n in zip(fit["window_id"], fit["n_peaks"])}
+    else:
+        fitted = read_stage5_partial_counts(h5f)
+        partial_only = fitted is not None
 
     def row(wid: int) -> WindowStatusRow:
         # The one place a window's fit state can be NOT_RUN.
         n: Union[int, Absent] = Absent.NOT_RUN
         live: Union[bool, Absent] = Absent.NOT_RUN
-        if fitted is not None:
+        if fitted is not None and (not partial_only or wid in fitted):
             n = fitted.get(wid, 0)
             live = n > 0
         lo, hi = bounds[wid]

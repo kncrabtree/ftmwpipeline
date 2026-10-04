@@ -386,7 +386,8 @@ class OperationEvents:
     completed_stages : list of str
         Canonical stages this operation finished and wrote, in order.
     completed_windows : list of int
-        Always empty until Stage 5 partial persistence (Wave 5.2).
+        The window ids a cancelled (or callback-failed) Stage 5 kept as a
+        partial fit, sorted; empty otherwise.
     current_stage : Stage or None
         The stage running now (``None`` between stages).
     """
@@ -780,6 +781,25 @@ class StageScope:
             )
         self._invalidated.update(names)
 
+    def deliver_invalidated(self) -> None:
+        """Deliver the merged ``Invalidated`` of every stage this stage has
+        invalidated so far (nothing when none), and forget them.
+
+        Call only once the write that invalidated them is durable.
+        :meth:`finish` calls it; an interrupted Stage 5 that kept a partial fit
+        calls it after that write commits, before raising its error.
+
+        Raises
+        ------
+        CallbackFailedError
+            When the callback raises on the event.
+        """
+        if not self._invalidated:
+            return
+        ordered = tuple(s for s in rerun_order() if s in self._invalidated)
+        self._invalidated = set()
+        self.ops.deliver(Invalidated(self.operation, self.stage, ordered))
+
     def finish(
         self,
         summary: Mapping[str, Any],
@@ -808,10 +828,7 @@ class StageScope:
         # A callback failure held inside committing(): the write is durable,
         # and now the call fails, with no Invalidated and no StageFinished.
         self.ops.raise_held_failure()
-        if self._invalidated:
-            ordered = tuple(s for s in rerun_order() if s in self._invalidated)
-            self._invalidated = set()
-            self.ops.deliver(Invalidated(self.operation, self.stage, ordered))
+        self.deliver_invalidated()
         self.emit(
             StageFinished(
                 self.operation,

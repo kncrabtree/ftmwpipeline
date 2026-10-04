@@ -44,6 +44,7 @@ from ftmwpipeline import (
     Invalidated,
     OperationCancelledError,
     StageFinished,
+    StageStarted,
     WindowProgress,
     WriteConflictError,
 )
@@ -347,12 +348,17 @@ def test_cancel_before_a_stage_leaves_the_bytes(baseline_2638_stage1_raw, tmp_pa
 
 
 @pytest.mark.parametrize("via", ["api", "pipeline"])
-def test_cancel_mid_fit_leaves_the_bytes(via, baseline_2638_stage4_small, tmp_path):
+def test_cancel_in_the_fit_before_any_window_finishes_leaves_the_bytes(
+    via, baseline_2638_stage4_small, tmp_path
+):
+    # Cancelled once the fit has begun but before a window finished: nothing
+    # to keep as a partial fit, so nothing is written (a cancel after a window
+    # finishes keeps a partial fit; see test_stage5_partial.py).
     fp = _copy(baseline_2638_stage4_small, tmp_path)
     before = _bytes(fp)
     inode = os.stat(fp).st_ino
     tok = Token()
-    rec = Recorder(cancel_on_nth(WindowProgress, 1, tok))
+    rec = Recorder(cancel_on_nth(StageStarted, 1, tok))
     with pytest.raises(OperationCancelledError) as info:
         if via == "api":
             ftmw.fit_peaks(fp, jobs=1, events=rec, cancel=tok)
@@ -421,14 +427,45 @@ def test_a_callback_raising_on_invalidated_leaves_the_write_in_place(
 
 
 def test_a_callback_failing_mid_call_leaves_the_bytes(
-    baseline_2638_stage4_small, tmp_path
+    baseline_2638_stage4_small, tmp_path, monkeypatch
 ):
-    """A listener that raises on an event delivered before the replace (the
-    fit walk's ``WindowProgress``) fails the call inside its transaction:
-    nothing of the call reaches the file, which is never replaced."""
+    """A listener that raises on an event delivered before the replace (here a
+    warning the fit emits before any window finishes) fails the call inside
+    its transaction: nothing of the call reaches the file, which is never
+    replaced."""
+    import ftmwpipeline.fitting.plan_execution as pe
+
     fp = _copy(baseline_2638_stage4_small, tmp_path)
     before = _bytes(fp)
     inode = os.stat(fp).st_ino
+    original = pe._walk_windows_parallel
+
+    def warn_first(plan, order, *, events, **kwargs):
+        events.warn("walk_fallback", reason="test", n_windows=len(order))
+        return original(plan, order, events=events, **kwargs)
+
+    monkeypatch.setattr(pe, "_walk_windows_parallel", warn_first)
+
+    def bad(event):
+        if getattr(event, "code", None) == "walk_fallback":
+            raise ValueError("no")
+
+    with pytest.raises(CallbackFailedError) as info:
+        ftmw.fit_peaks(fp, jobs=1, events=bad)
+    assert info.value.event_schema == "ftmw/warning@1"
+    assert _bytes(fp) == before
+    assert os.stat(fp).st_ino == inode
+    assert _copies(tmp_path) == []
+
+
+def test_a_callback_failing_after_a_window_keeps_a_partial_fit_in_one_replace(
+    baseline_2638_stage4_small, tmp_path
+):
+    """A listener that raises on a finished window's ``WindowProgress`` leaves
+    what a cancel at that point leaves: the finished window as a partial fit,
+    written in the call's one replace (no working copy left behind)."""
+    fp = _copy(baseline_2638_stage4_small, tmp_path)
+    before = _bytes(fp)
 
     def bad(event):
         if isinstance(event, WindowProgress):
@@ -437,8 +474,8 @@ def test_a_callback_failing_mid_call_leaves_the_bytes(
     with pytest.raises(CallbackFailedError) as info:
         ftmw.fit_peaks(fp, jobs=1, events=bad)
     assert info.value.event_schema == "ftmw/window_progress@1"
-    assert _bytes(fp) == before
-    assert os.stat(fp).st_ino == inode
+    assert _bytes(fp) != before
+    assert _states(fp)["fit"] == "partial"
     assert _copies(tmp_path) == []
 
 
@@ -558,6 +595,43 @@ _CHILD_RUN = _CHILD_PRELUDE + textwrap.dedent("""
     """)
 
 
+# Mid-walk: a window of the fit has finished and the fit is still running. A
+# partial fit is written only when a cancel or a failing callback interrupts the
+# walk, never during it, so a kill here leaves the file untouched.
+_CHILD_FIT_WALK = _CHILD_PRELUDE + textwrap.dedent("""
+    from ftmwpipeline import WindowProgress
+
+    def cb(event):
+        if isinstance(event, WindowProgress):
+            hang()
+
+    ftmw.fit_peaks(sys.argv[1], jobs=1, events=cb)
+    """)
+
+# Mid-write of a partial fit: the fit was cancelled after its first window and
+# has written the partial fit into its working copy; the replace is next.
+_CHILD_FIT_CANCEL = _CHILD_PRELUDE + textwrap.dedent("""
+    from ftmwpipeline import WindowProgress
+    from ftmwpipeline._internal import atomic
+
+    class Token:
+        flag = False
+
+        def is_set(self):
+            return Token.flag
+
+    def cb(event):
+        if isinstance(event, WindowProgress):
+            Token.flag = True
+
+    def commit(txn):
+        hang()
+
+    atomic._commit = commit
+    ftmw.fit_peaks(sys.argv[1], jobs=1, events=cb, cancel=Token())
+    """)
+
+
 def _spawn(code: str, *args: str, log: Path) -> subprocess.Popen:
     """Run *code* in a child (its own process group); stdout goes to
     ``<log>.out`` and stderr to *log*."""
@@ -640,6 +714,85 @@ def test_a_killed_run_pipeline_keeps_the_stages_that_finished(
     ftmw.estimate_noise(out)
     assert _copies(tmp_path) == []
     assert _states(out)["noise"] == "complete"
+
+
+@_POSIX
+def test_sigkill_during_the_fit_walk_leaves_no_partial_fit(
+    baseline_2638_stage4_small, tmp_path
+):
+    """A window has finished and the walk is running: the kill leaves the file
+    exactly as it was (no partial fit, no fit), and the next fit is a fresh one."""
+    fp = _copy(baseline_2638_stage4_small, tmp_path)
+    before = _bytes(fp)
+    log = tmp_path / "child.log"
+    proc = _spawn(_CHILD_FIT_WALK, str(fp), log=log)
+    try:
+        _wait_ready(proc, log)
+        assert _bytes(fp) == before
+    finally:
+        _kill_group(proc)
+    assert _bytes(fp) == before
+    assert _states(fp)["fit"] == "not_run"
+    with h5py.File(fp, "r") as h5f:
+        assert "stage5_partial" not in h5f
+    ftmw.settings_set(fp, "stage2.window_mhz", "111")  # sweeps the dead copy
+    assert _copies(tmp_path) == []
+
+
+@_POSIX
+def test_sigkill_while_a_partial_fit_is_being_written_leaves_the_file_as_it_was(
+    baseline_2638_stage4_small, tmp_path
+):
+    fp = _copy(baseline_2638_stage4_small, tmp_path)
+    before = _bytes(fp)
+    log = tmp_path / "child.log"
+    proc = _spawn(_CHILD_FIT_CANCEL, str(fp), log=log)
+    try:
+        _wait_ready(proc, log)
+        # The partial fit is in the working copy only.
+        assert _copies(tmp_path) == [os.path.basename(tmp_copy_name(fp, pid=proc.pid))]
+        assert _bytes(fp) == before
+    finally:
+        _kill_group(proc)
+    assert _bytes(fp) == before
+    assert _states(fp)["fit"] == "not_run"
+    with h5py.File(fp, "r") as h5f:
+        assert "stage5_partial" not in h5f
+    ftmw.settings_set(fp, "stage2.window_mhz", "111")
+    assert _copies(tmp_path) == []
+
+
+@_POSIX
+def test_sigkill_during_a_resume_keeps_the_partial_fit(
+    baseline_2638_stage4_small, tmp_path
+):
+    """The partial fit survives a kill of the run that resumes it, and a later
+    run still resumes it."""
+    fp = _copy(baseline_2638_stage4_small, tmp_path)
+    tok = Token()
+    rec = Recorder(cancel_on_nth(WindowProgress, 1, tok))
+    with pytest.raises(OperationCancelledError) as info:
+        ftmw.fit_peaks(fp, jobs=1, events=rec, cancel=tok)
+    kept = info.value.completed_windows
+    assert kept and _states(fp)["fit"] == "partial"
+    before = _bytes(fp)
+
+    log = tmp_path / "child.log"
+    proc = _spawn(_CHILD_FIT_WALK, str(fp), log=log)
+    try:
+        _wait_ready(proc, log)
+    finally:
+        _kill_group(proc)
+    assert _bytes(fp) == before
+    assert _states(fp)["fit"] == "partial"
+
+    resumed = Recorder()
+    ftmw.fit_peaks(fp, jobs=1, events=resumed)
+    (fin,) = resumed.of(StageFinished)
+    assert fin.summary["resumed"] is True
+    assert fin.summary["windows_carried"] == len(kept)
+    assert _states(fp)["fit"] == "complete"
+    assert _copies(tmp_path) == []
 
 
 @_POSIX

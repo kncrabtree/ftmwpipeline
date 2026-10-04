@@ -1402,6 +1402,7 @@ def fit_peaks(
     settings: Optional[StageFitSettings] = None,
     preset: Optional[str] = None,
     jobs: Optional[int] = None,
+    restart: bool = False,
     events: Optional[EventCallback] = None,
     cancel: Optional[CancelToken] = None,
 ) -> SpectrumFit:
@@ -1456,11 +1457,15 @@ def fit_peaks(
         default) resolves the pool from the ``FTMW_MAX_WORKERS`` environment
         variable, falling back to ``cpu_count() - 2``; ``1`` forces a sequential
         fit. The fit result is byte-identical regardless of the worker count.
+    restart : bool, default False
+        Discard a partial fit and fit every window instead of resuming it (see
+        :meth:`Pipeline.fit_peaks`).
     events : callable, optional
         Called on this thread with each event (see :meth:`Pipeline.fit_peaks`).
     cancel : CancelToken, optional
         Stops the fit between windows once set, raising
-        :class:`OperationCancelledError` and leaving the file unchanged.
+        :class:`OperationCancelledError`; the windows that had finished are
+        kept as a partial fit (see :meth:`Pipeline.fit_peaks`).
 
     Returns
     -------
@@ -1487,6 +1492,7 @@ def fit_peaks(
             settings=settings,
             preset=preset,
             jobs=jobs,
+            restart=restart,
             events=events,
             cancel=cancel,
         )

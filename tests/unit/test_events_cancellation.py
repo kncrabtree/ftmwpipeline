@@ -120,6 +120,10 @@ def test_errors_round_trip_through_pickle():
     assert OperationCancelledError(None).to_dict()["stage"] is None
     c = CallbackFailedError("ftmw/warning@1")
     assert pickle.loads(pickle.dumps(c)).to_dict()["event_schema"] == "ftmw/warning@1"
+    c.completed_windows = [3, 7]
+    back_c = pickle.loads(pickle.dumps(c))
+    assert back_c.completed_windows == [3, 7]
+    assert back_c.to_dict() == c.to_dict()
 
 
 # ---- OperationEvents -------------------------------------------------------
