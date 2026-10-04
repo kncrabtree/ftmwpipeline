@@ -49,6 +49,34 @@ had to reach into ``_internal`` or parse out of prose to obtain are now
 published, and the Stage 6 edit paths that carry them were collapsed onto one
 engine so they cannot answer differently.
 
+* **Machine contract: degenerate statistics are undefined.**
+  ``CONTRACT_VERSION`` is now ``12``. A statistic that has no value used to
+  be stored as an ordinary number; it is now stored as ``nan`` and reads as
+  undefined (``read_table`` status ``2``, value ``nan``). This covers an
+  add-loop or knockout F-test with no residual degrees of freedom or a
+  non-positive chi-squared (was ``f_statistic`` 0, ``p_value`` 1; a genuine
+  non-improvement keeps those numbers), a doublet's orthogonal evidence
+  when the weak partner had no usable support (was 0), a residual edge
+  coherence of an empty residual or a band with no positive noise (was 0),
+  and a Stage 3 SNR without positive local noise (was 0). Older files read
+  the same way wherever what they store shows the statistic was degenerate:
+  ``fit_audit``, ``fit_doublets``, ``fit_windows`` and ``peaks``. An older
+  file's degenerate *knockout* p-value cannot be recognized and keeps its
+  ``1.0``. **Behaviour change:** ``fit_windows`` ``edge_coherence_low`` /
+  ``_high`` ``nan`` is now status ``2`` for a window the fit evaluated (it
+  was always ``1``), and ``peaks`` ``internal_snr`` ``nan`` is ``2`` when the
+  internal pass contributed the peak. Every gate decision and fitted number
+  is unchanged; on the 2638 fixture the whole fit is bit-identical.
+* **Stage 6 refits mask spurs at full precision.** A Stage 6 refit (every
+  review verb that refits a window) replays the Stage 5 fit's gated spur catalog instead of re-detecting it.
+  It used to replay the spur centers as ``parameters["spur_centers_mhz"]``
+  stores them, rounded to 4 decimals for display, while the fit itself and
+  the window and spectrum models masked at full precision; it now reads the
+  full-precision catalog from the fit's ``diagnostics["gated_spurs"]``, the
+  same way the models do. A spur's mask is a whole-bin half-width, so the
+  rounding (at most 0.05 kHz) moves a masked bin only when a mask edge falls
+  within it of a bin; on the 2638 fixture no window's mask changed and every
+  refit is bit-identical. ``ANALYSIS_EPOCH`` is unchanged.
 * **Machine contract, Wave 5.2: Stage 5 partial fits.** ``CONTRACT_VERSION``
   is now ``11``. A cancelled (or callback-failed) fit no longer throws its work
   away: the windows that had finished are kept as a partial fit, in the call's

@@ -103,6 +103,7 @@ from ..fitting.validation import (
 from ..io.fitting_serialization import (
     FitWindowCoverage,
     load_spectrum_fit_from_hdf5,
+    read_fit_diagnostics,
     read_fit_parameters,
     read_fit_peak_freqs_and_uids_by_window,
     read_fit_peak_frequencies_by_window,
@@ -6119,6 +6120,7 @@ def _build_shared_fit_ctx(path: str) -> _SharedFitCtx:
         Stage5FitContext,
         _resolve_tau_calibration_for_fit,
         build_stage5_fit_context,
+        gated_spur_catalog,
     )
 
     with h5open(path, "r") as h5f:
@@ -6130,14 +6132,18 @@ def _build_shared_fit_ctx(path: str) -> _SharedFitCtx:
                 command="fit run",
                 message="No Stage 5 fit found in this file. Run 'fit run' first.",
             )
-        # The ``parameters`` attr alone, read only to seed the spur-catalog
-        # replay below -- never the whole fit, which is per-batch state that
-        # each batch reloads for itself (see ``_BatchChangeset``) and which
-        # this function has always deliberately declined to return. The spur
-        # catalog inside ``parameters`` is a Stage 5 product Stage 6 never
-        # rewrites, so reading it here, once, is not the staleness risk that
-        # retaining the fit would be.
-        fit_parameters: Dict[str, Any] = read_fit_parameters(h5f["stage5_fitting"])
+        # The ``parameters`` and ``diagnostics`` attrs alone, read only to
+        # seed the spur-catalog replay below -- never the whole fit, which is
+        # per-batch state that each batch reloads for itself (see
+        # ``_BatchChangeset``) and which this function has always deliberately
+        # declined to return. The spur catalog is a Stage 5 product Stage 6
+        # never rewrites, so reading it here, once, is not the staleness risk
+        # that retaining the fit would be. ``diagnostics`` holds the catalog
+        # at full precision (``parameters`` rounds the centers for display).
+        spur_catalog: Dict[str, Any] = gated_spur_catalog(
+            read_fit_parameters(h5f["stage5_fitting"]),
+            read_fit_diagnostics(h5f["stage5_fitting"]),
+        )
 
     base_plan: "WindowPlan" = load_windows_impl(path)["plan"]
 
@@ -6191,7 +6197,7 @@ def _build_shared_fit_ctx(path: str) -> _SharedFitCtx:
         resolved,
         persisted_cal,
         shape_enum,
-        replay_spur_catalog=fit_parameters,
+        replay_spur_catalog=spur_catalog,
     )
 
     min_freeze_snr = float(

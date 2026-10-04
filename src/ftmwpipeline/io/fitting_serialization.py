@@ -181,6 +181,7 @@ __all__ = [
     "read_fit_rescue_columns",
     "read_fit_scalars",
     "read_fit_parameters",
+    "read_fit_diagnostics",
     "read_fit_peak_frequencies_by_window",
     "read_fit_peak_uids_by_window",
     "read_fit_peak_freqs_and_uids_by_window",
@@ -1526,6 +1527,19 @@ def read_fit_parameters(h5_group: h5py.Group) -> Dict[str, Any]:
         h5_group, "parameters", {}, label="stage5_fitting"
     )
     return parameters
+
+
+def read_fit_diagnostics(h5_group: h5py.Group) -> Dict[str, Any]:
+    """Cheap substitute for ``load_spectrum_fit_from_hdf5(h5_group).diagnostics``.
+
+    Reads only the ``diagnostics`` JSON attribute, as :func:`read_fit_parameters`
+    reads ``parameters``. Returns ``{}`` when the attribute is absent, matching
+    the full loader's default.
+    """
+    diagnostics: Dict[str, Any] = load_json_attr(
+        h5_group, "diagnostics", {}, label="stage5_fitting"
+    )
+    return diagnostics
 
 
 def _window_slices(h5_group: h5py.Group) -> List[Tuple[int, int, int]]:
