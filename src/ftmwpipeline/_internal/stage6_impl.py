@@ -88,6 +88,7 @@ from ..io.fitting_serialization import (
     read_fit_window_coverage,
 )
 from ..io.frequency_calibration_serialization import (
+    frequency_calibration_provenance,
     load_frequency_calibration_from_hdf5,
     save_frequency_calibration_to_hdf5,
 )
@@ -106,7 +107,7 @@ from .stage2_impl import _update_stage_completion
 if TYPE_CHECKING:  # annotation-only imports (PEP 563 lazy)
     from ..core.data_structures import FitWindow, Peak, WindowPlan
     from ..core.environment import EnvironmentRecord
-    from ..core.stage_fit_settings import StageFitSettings
+    from ..core.stage_fit_settings import ClockSource, StageFitSettings
     from ..fitting.peak_model import PeakShape
     from ..preprocessing.window_planning import Stage6WindowProposal
     from .stage5_impl import Stage5FitContext
@@ -3253,11 +3254,7 @@ def _record_decision(
         created_windows=list(existing_review.created_windows),
     )
 
-    with h5py.File(path, "a") as h5f:
-        if "stage6_review" in h5f:
-            del h5f["stage6_review"]
-        grp = h5f.create_group("stage6_review")
-        save_stage6_review_to_hdf5(new_review, grp)
+    _write_stage6_review_only(new_review, path)
     compact_file(path)
 
 
@@ -3435,11 +3432,7 @@ def _record_bare_accept(path: str, window_id: int) -> None:
         created_windows=list(existing_review.created_windows),
     )
 
-    with h5py.File(path, "a") as h5f:
-        if "stage6_review" in h5f:
-            del h5f["stage6_review"]
-        grp = h5f.create_group("stage6_review")
-        save_stage6_review_to_hdf5(new_review, grp)
+    _write_stage6_review_only(new_review, path)
     compact_file(path)
 
 
@@ -7083,12 +7076,20 @@ def _write_stage6_review_only(review: Stage6Review, path: str) -> None:
     what an immediately-preceding preview already computed, rather than
     re-deriving and trusting the two to agree) without going through
     :func:`_derive_batch_review` a second time.
+
+    Every writer of ``/stage6_review`` goes through here, so a stored
+    final-products table always carries the clock declaration its calibration
+    state was derived from (:func:`_resolve_calibration_clocks`, read now: the
+    table being written is consistent with the file's current calibration).
     """
+    clocks = (
+        _resolve_calibration_clocks(path) if review.final_products is not None else None
+    )
     with h5py.File(path, "a") as h5f:
         if "stage6_review" in h5f:
             del h5f["stage6_review"]
         grp = h5f.create_group("stage6_review")
-        save_stage6_review_to_hdf5(review, grp)
+        save_stage6_review_to_hdf5(review, grp, calibration_clocks=clocks)
 
 
 def _persist_batch_review(ctx: _BatchCtx, path: str) -> None:
@@ -9521,6 +9522,40 @@ def get_final_products_impl(file_path: Union[Path, str]) -> Optional[FinalProduc
     return _current_final_products(existing, path)
 
 
+def _resolve_calibration_clocks(path: str) -> Tuple[ClockSource, ...]:
+    """The clock declaration the calibration state is derived from.
+
+    The same empty-versus-unset rule as the Stage 5 settings resolver: a
+    persisted Stage 5 ``spur.clocks`` that is set -- *including an empty
+    declaration* -- is authoritative; only when it is unset (no Stage 5 record,
+    or a record that never set it) does the recommended declaration
+    (``clocks set`` / a loader-injected one) apply. Consulting the recommended
+    layer matters before Stage 5 has persisted anything: ``timebase run``
+    accepts that layer, so a file can carry a real calibration measured
+    against an unlocked digitizer before any fit has run. Once a fit has
+    persisted its declaration, a later ``clocks set`` does not change the
+    state; re-running Stage 5 does.
+
+    Degrades to "no declaration" on an unreadable record, as the state's
+    derivation always has.
+    """
+    from ..io.stage_fit_settings_serialization import (
+        load_stage_fit_settings_from_h5,
+        read_recommended_clock_sources,
+    )
+
+    try:
+        persisted = load_stage_fit_settings_from_h5(path)
+    except Exception:
+        persisted = None
+    if persisted is not None and persisted.spur.clocks is not None:
+        return tuple(persisted.spur.clocks)
+    try:
+        return tuple(read_recommended_clock_sources(path) or ())
+    except Exception:
+        return ()
+
+
 def _derive_frequency_calibration(
     path: str,
 ) -> Tuple[CalibrationState, float, float]:
@@ -9538,36 +9573,9 @@ def _derive_frequency_calibration(
     - An unlocked digitizer declared but no usable timebase calibration ->
       ``"uncalibrated"``; frequencies are reported as-is (caveated).
 
-    The declaration is read at the same precedence
-    :func:`~ftmwpipeline._internal.timebase_impl._resolve_clocks` uses --
-    persisted Stage 5 ``spur.clocks`` first, then the recommended declaration
-    (``clocks set`` / a loader-injected one). Consulting the recommended layer
-    matters before Stage 5 has persisted anything: ``timebase run`` accepts
-    that layer, so a file can carry a real calibration measured against an
-    unlocked digitizer that persisted settings have never heard of, and
-    reading only the persisted layer would call that file ``rb_locked`` and
-    silently drop the epsilon it measured.
+    The declaration is :func:`_resolve_calibration_clocks`.
     """
-    from ..core.stage_fit_settings import resolve as resolve_stage_fit_settings
-    from ..io.stage_fit_settings_serialization import (
-        load_stage_fit_settings_from_h5,
-        read_recommended_clock_sources,
-    )
-
-    clocks: Tuple = ()
-    try:
-        resolved = resolve_stage_fit_settings(
-            persisted=load_stage_fit_settings_from_h5(path)
-        )
-        clocks = tuple(resolved.spur.clocks or ())
-    except Exception:
-        clocks = ()
-
-    if not clocks:
-        try:
-            clocks = tuple(read_recommended_clock_sources(path) or ())
-        except Exception:
-            clocks = ()
+    clocks = _resolve_calibration_clocks(path)
 
     has_unlocked = any(not c.locked for c in clocks)
     if not has_unlocked:
@@ -9963,6 +9971,12 @@ def review_run_impl(
         _store_sigma_floor(path, sigma_floor_khz)
     with h5py.File(path, "r") as h5f:
         floor_khz = load_frequency_calibration_from_hdf5(h5f).sigma_floor_khz
+        floor_record = frequency_calibration_provenance(h5f)
+    if floor_record is None or floor_record.is_pre_provenance:
+        # Never declared (or declared before the record carried a version):
+        # write the floor this run applies, so the record says it explicitly
+        # rather than leaving "never declared" to read as the default.
+        _store_sigma_floor(path, floor_khz)
     cal_state, epsilon, sigma_eps = _derive_frequency_calibration(path)
     final_products = _build_final_products(
         spectrum_fit,
@@ -9982,11 +9996,7 @@ def review_run_impl(
     )
 
     # Persist: write stage6_review group and mark tracker stage complete.
-    with h5py.File(path, "a") as h5f:
-        if "stage6_review" in h5f:
-            del h5f["stage6_review"]
-        grp = h5f.create_group("stage6_review")
-        save_stage6_review_to_hdf5(new_review, grp)
+    _write_stage6_review_only(new_review, path)
 
     _update_stage_completion(path, "stage6_review")
 

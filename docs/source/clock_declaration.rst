@@ -231,9 +231,13 @@ data in right now, and by how much is it corrected?" — is answered by
 ``Pipeline``: :meth:`~ftmwpipeline.pipeline.Pipeline.frequency_calibration`).
 
 This is a **derived** read, not a persisted one: it is recomputed on every call
-from the clock declaration (``clocks show`` — the persisted Stage 5
-declaration if a fit has run, otherwise the recommended layer an importer or
-``clocks set`` wrote) and, if one exists, the live timebase calibration. It
+from the clock declaration (the declaration the Stage 5 fit persisted if a fit
+has run, otherwise the recommended layer an importer or ``clocks set`` wrote)
+and, if one exists, the live timebase calibration. A fit that ran with *no*
+declaration persisted an empty one, and that is what is read, exactly as the
+fit's own settings resolution reads it: a ``clocks set`` after the fit does not
+change the state. The Stage 6 final-products table records the declaration its
+state was derived from. It
 never disagrees with what a ``frame="calibrated"`` curation call will actually
 apply, because it is derived the same way that call derives its correction.
 It is read-only and mutates nothing.
