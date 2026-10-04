@@ -31,7 +31,7 @@ import math
 import os
 import re
 import time
-from contextlib import ExitStack, nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -44,6 +44,7 @@ from typing import (
     Dict,
     FrozenSet,
     Iterable,
+    Iterator,
     List,
     Mapping,
     NoReturn,
@@ -202,7 +203,8 @@ def _review_operation(
             events = call.get("events")
             cancel = call.get("cancel")
             if _REVIEW_SCOPE.get() is not None and events is None and cancel is None:
-                return fn(*args, **kwargs)
+                with _caller_frame_ids():
+                    return fn(*args, **kwargs)
             ops = operation_events(verb, events, cancel)
             path = str(call["file_path"])
             with ops.stage(Stage.REVIEW, verb=verb, file_path=path) as scope:
@@ -211,7 +213,7 @@ def _review_operation(
                     # The whole call -- a batch with its cascade, a refit, an
                     # undo's restore-then-replay -- is one atomic write;
                     # StageFinished follows the replace.
-                    with atomic_write(path):
+                    with atomic_write(path), _caller_frame_ids():
                         result = fn(*args, **kwargs)
                 finally:
                     _REVIEW_SCOPE.reset(token)
@@ -1300,6 +1302,42 @@ def _resolve_curation_frame(
     return resolved_frame, stamp
 
 
+_WRITTEN_FREQS: ContextVar[Optional[Dict[float, float]]] = ContextVar(
+    "_WRITTEN_FREQS", default=None
+)
+"""The running curation call's raw -> as-written frequency map (see
+:func:`_caller_frame_ids`); ``None`` outside one."""
+
+
+@contextmanager
+def _caller_frame_ids() -> Iterator[None]:
+    """Report a ``not_found`` frequency in the frame the caller wrote it in.
+
+    Every caller frequency is converted to raw once, by :func:`_frame_to_raw`,
+    which records the pair here when the conversion moved it; the curation
+    machinery underneath works and refuses in raw. A ``not_found`` (kind
+    ``peak`` or ``window``) escaping the call has its frequency ``ids`` mapped
+    back to what the caller wrote, so ``ids`` can be matched against the
+    request. A uid (an ``int``) is frame-independent and stays as it is.
+    Re-entrant: a nested call reports into the outermost one.
+    """
+    if _WRITTEN_FREQS.get() is not None:
+        yield
+        return
+    written: Dict[float, float] = {}
+    token = _WRITTEN_FREQS.set(written)
+    try:
+        yield
+    except NotFoundError as exc:
+        if written and exc.kind in ("peak", "window"):
+            exc.ids = [
+                written.get(i, i) if isinstance(i, float) else i for i in exc.ids
+            ]
+        raise
+    finally:
+        _WRITTEN_FREQS.reset(token)
+
+
 def _frame_to_raw(
     freq_mhz: float, *, frame: Frame, stamp: Optional[_CalibrationStamp]
 ) -> float:
@@ -1309,14 +1347,19 @@ def _frame_to_raw(
     (``f_corr = probe + (f_raw - probe) / (1 + eps)``):
     ``f_raw = probe + (f_corr - probe) * (1 + eps)``. Identity when
     ``frame == \"raw\"``, when ``epsilon == 0`` (rb_locked/uncalibrated), or
-    when the file carries no calibration to convert against.
+    when the file carries no calibration to convert against. A conversion
+    that moves the value is recorded for :func:`_caller_frame_ids`.
     """
     if frame == "raw" or stamp is None:
         return float(freq_mhz)
     _, epsilon, _, _, probe_freq_mhz, _ = stamp
     if epsilon == 0.0:
         return float(freq_mhz)
-    return float(probe_freq_mhz + (freq_mhz - probe_freq_mhz) * (1.0 + epsilon))
+    raw = float(probe_freq_mhz + (freq_mhz - probe_freq_mhz) * (1.0 + epsilon))
+    written = _WRITTEN_FREQS.get()
+    if written is not None:
+        written[raw] = float(freq_mhz)
+    return raw
 
 
 def _frame_to_calibrated(
@@ -2402,12 +2445,14 @@ def refit_window_core(
         # a fit against data the window does not cover.
         seed_freq_mhz = float(center_mhz + s * mp.offset_mhz)
         if not (win_lo - grid_slack <= seed_freq_mhz <= win_hi + grid_slack):
-            raise ValueError(
-                f"add={float(add_freq):.4f} MHz resolves to {seed_freq_mhz:.4f} "
-                f"MHz, outside window {window_id}'s range "
+            raise CurationConflictError(
+                "target_outside_window",
+                [int(window_id)],
+                message=f"add={float(add_freq):.4f} MHz resolves to "
+                f"{seed_freq_mhz:.4f} MHz, outside window {window_id}'s range "
                 f"[{win_lo:.4f}, {win_hi:.4f}] MHz. Name the window that covers "
                 f"the frequency, or -- if no window does -- create one with "
-                f"'review create' first."
+                f"'review create' first.",
             )
         # A curated add that lands on an existing seed's identity is a
         # user-input error with a meaningful answer, so it is refused here
@@ -3353,13 +3398,21 @@ def refit_window_impl(
         anchor: float = implied_anchor
 
         def _apply_implied(ctx: _BatchCtx) -> RefitWindowResult:
-            created = _batch_apply_create(
-                ctx,
-                anchor,
-                replay_window_id=None,
-                snap_tol_mhz=snap_tol,
-                record_decision=False,
-            )
+            try:
+                created = _batch_apply_create(
+                    ctx,
+                    anchor,
+                    replay_window_id=None,
+                    snap_tol_mhz=snap_tol,
+                    record_decision=False,
+                )
+            except BadSettingError as exc:
+                if exc.path != "anchor_mhz":
+                    raise
+                # The anchor is the caller's add, not review_create's argument.
+                raise BadSettingError(
+                    "add", exc.expected, exc.value, message=str(exc)
+                ) from exc
             return _finish_implied_create_edit(
                 ctx,
                 created,
@@ -4204,6 +4257,11 @@ class CurationOp:
         default) for everything else, including an ordinary EXPLICIT
         ``create`` row followed by its own, separately-decided ``add`` row on
         the same window id -- that pair is two decisions, unaffected.
+    freq_cell : str or None
+        The ``bad_setting`` path of the row's frequency as the caller wrote
+        it (``curation[line <n>].freqs``, or ``actions[<i>].freq_mhz`` for a
+        batch of actions), which a refused ``create`` anchor is reported at;
+        ``None`` for an op replayed from the decision log.
     """
 
     action: str
@@ -4212,6 +4270,7 @@ class CurationOp:
     params: Dict[str, str]
     line_no: int
     implied_create: bool = False
+    freq_cell: Optional[str] = field(default=None, compare=False, repr=False)
 
 
 @dataclass
@@ -4317,6 +4376,10 @@ class PlannedAction:
     (:func:`_execute_curation_batch`, :func:`_run_review_preview`) suppresses
     the create's own decision and records ONE ``"add"`` entry from the edit
     half instead, carrying the structural consequence on its evidence."""
+    anchor_cell: Optional[str] = field(default=None, compare=False, repr=False)
+    """``create`` only: the ``bad_setting`` path of the anchor as the caller
+    wrote it (:attr:`CurationOp.freq_cell`), where a refused anchor is
+    reported inside a batch (:func:`_raise_curation_failure`)."""
 
 
 @dataclass
@@ -4850,6 +4913,7 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                 freqs=freqs,
                 params=params,
                 line_no=line_no,
+                freq_cell=_curation_cell(line_no, "freqs"),
             )
         )
 
@@ -5036,6 +5100,7 @@ def _action_to_op(
         freqs=freqs,
         params=params,
         line_no=index + 1,
+        freq_cell=f"actions[{index}].freq_mhz",
     )
 
 
@@ -5080,8 +5145,12 @@ def _actions_to_ops(
             try:
                 resolved = _resolve_frame_against(stamp, requested)
             except BadSettingError as exc:
+                # No frame at all (neither the action's nor the call's): the
+                # call's frame= is what is missing, as for a file without a
+                # header, so the path stays "frame"; the message names the
+                # action.
                 raise BadSettingError(
-                    f"actions[{index}].frame",
+                    exc.path,
                     exc.expected,
                     exc.value,
                     message=f"actions[{index}] ({action.action}): {exc}",
@@ -5240,8 +5309,10 @@ def _resolve_curation_window_ids(
         wid = _window_for_curation_token(coverage, freq_raw)
         if wid is None:
             if op.action != "add":
-                if float(token) not in uncovered:
-                    uncovered.append(float(token))
+                # Raw, like every refusal under the call; the call reports it
+                # in the frame the caller wrote (_caller_frame_ids).
+                if freq_raw not in uncovered:
+                    uncovered.append(freq_raw)
                 uncovered_details.append(
                     f"curation line {op.line_no}: {op.action} "
                     f"{float(token):.4f} MHz is not covered by any live "
@@ -5260,6 +5331,7 @@ def _resolve_curation_window_ids(
                     params={},
                     line_no=op.line_no,
                     implied_create=True,
+                    freq_cell=op.freq_cell,
                 )
             )
             resolved.append(replace(op, window_id=correlation_id, implied_create=True))
@@ -5298,14 +5370,16 @@ def _unknown_plan_window_ids(
     (:data:`_NEW_WINDOW_SENTINEL`, an implied-create correlation id). A
     pinned ``create`` installs its own id. A ``create`` without a pinned id
     mints an id it cannot know yet -- one above every window of the plan, so
-    above every *known* id -- and a later row may legitimately name it: such
-    an id is left to the per-action lookup once the creates have run. Given
-    *plan_window_ids* (the window plan the creates mint against), the ids the
-    unpinned creates can mint are bounded above too: the plan's ``n``
-    minting creates (unpinned and fresh implied ones) mint at most ``n`` ids
-    past the largest window id of the plan, its known windows and its pinned
-    creates. Every other unknown id cannot exist and is
-    reported here, all at once, even when the plan holds an unpinned create.
+    above every *known* id and every pinned create -- and a later row may
+    legitimately name it: such an id is left to the per-action lookup once
+    the creates have run. Given *plan_window_ids* (the window plan the
+    creates mint against), the floor is the largest window id of the plan
+    too (an unfitted plan window above every fitted one is neither known nor
+    mintable), and the ids the unpinned creates can mint are bounded above:
+    the plan's ``n`` minting creates (unpinned and fresh implied ones) mint
+    at most ``n`` ids past the floor. Every other unknown id cannot exist and
+    is reported here, all at once, even when the plan holds an unpinned
+    create.
     """
     live = set(known) | {
         int(a.window_id) for a in plan if a.kind == "create" and a.window_id >= 0
@@ -5313,17 +5387,17 @@ def _unknown_plan_window_ids(
     n_mints = sum(
         1 for a in plan if a.kind == "create" and a.window_id == _NEW_WINDOW_SENTINEL
     )
-    # A minted id is max(plan) + 1, and every known window is in the plan.
-    mint_floor = max(known, default=-1)
+    # A minted id is max(plan) + 1: above every known window, every pinned
+    # create and, given the window plan, every window of it -- an unfitted
+    # plan window above the fitted ones is neither known nor mintable.
+    mint_floor = max(live | set(plan_window_ids or ()), default=-1)
     mint_ceiling: Optional[int] = None
     if plan_window_ids is not None:
         # A fresh implied create mints too, raising the ids later creates take.
         n_implied = sum(
             1 for a in plan if a.kind == "create" and _is_implied_window_id(a.window_id)
         )
-        mint_ceiling = (
-            max(live | set(plan_window_ids), default=-1) + n_mints + n_implied
-        )
+        mint_ceiling = mint_floor + n_mints + n_implied
     unknown: List[int] = []
     for a in plan:
         wid = int(a.window_id)
@@ -5361,10 +5435,23 @@ def _raise_curation_failure(
 
     A typed :class:`PipelineFileError` keeps its type (a program routes on
     it); a ``not_found`` or ``curation_conflict`` is re-issued with the tag in
-    its message and the same attributes. Anything else becomes the historical
+    its message and the same attributes, and a create's refused anchor
+    (``bad_setting`` ``anchor_mhz``) with the tag and the path of the cell or
+    action field the anchor came from. Anything else becomes the historical
     tagged :class:`ValueError`.
     """
     tag = f"curation action {index + 1} ({describe_planned_action(action)}) failed"
+    if (
+        isinstance(exc, BadSettingError)
+        and exc.path == "anchor_mhz"
+        and action.kind == "create"
+        and action.anchor_cell is not None
+    ):
+        # A create's anchor is the cell (or action field) the caller wrote,
+        # not review_create's argument.
+        raise BadSettingError(
+            action.anchor_cell, exc.expected, exc.value, message=f"{tag}: {exc}"
+        ) from exc
     if isinstance(exc, NotFoundError):
         # The batch refused with ValueError before it was typed.
         raise NotFoundValueError(exc.kind, exc.ids, message=f"{tag}: {exc}") from exc
@@ -5433,6 +5520,7 @@ def _resolve_curation_plan(ops: Sequence[CurationOp]) -> List[PlannedAction]:
                     window_id=wid,
                     anchor=_assert_plain_freq(op.freqs[0]),
                     implied_create=op.implied_create,
+                    anchor_cell=op.freq_cell,
                 )
             )
             continue
@@ -7727,11 +7815,12 @@ def _batch_apply_create(
     else:
         existing_wf = fit_map.get(new_wid)
         if existing_wf is None:
-            raise CurationConflictError(
-                "window_not_fitted",
-                [new_wid],
-                message=f"window {new_wid} has no Stage 5 fit to widen; "
-                "re-run 'fit run' before creating windows",
+            # An invariant guard, not a route: the planner widens only a live
+            # window (live_window_ids above), so a correct caller cannot
+            # reach this.
+            raise ValueError(
+                f"window {new_wid} has no Stage 5 fit to widen; "
+                "re-run 'fit run' before creating windows"
             )
         seed_wf = existing_wf
         tau_maj_us, sigma_tau_us = _resolve_refit_window_tau(
@@ -7883,16 +7972,15 @@ def _finish_implied_create_edit(
         # An applier recorded its own entry, which carries no
         # ``created_window`` -- see this function's docstring. Refuse rather
         # than persist a decision the replay cannot reconstruct the create
-        # from.
-        raise CurationConflictError(
-            "implied_create_reinterpreted",
-            [int(created.window_id)],
-            message=f"add={float(add[0]):.4f} MHz implies creating a window, "
-            f"but inside window {created.window_id} (mode='{created.mode}') "
-            f"it was reinterpreted as an edit of an existing peak, which "
-            f"cannot record the implied create for replay. Name the window "
+        # from. An invariant guard (measured unreachable -- see the
+        # docstring), so it stays a built-in, not a typed route.
+        raise ValueError(
+            f"add={float(add[0]):.4f} MHz implies creating a window, but "
+            f"inside window {created.window_id} (mode='{created.mode}') it "
+            f"was reinterpreted as an edit of an existing peak, which cannot "
+            f"record the implied create for replay. Name the window "
             f"explicitly with a separate 'review create' plus 'review edit' "
-            f"if that reinterpretation is what you want.",
+            f"if that reinterpretation is what you want."
         )
     if created.mode == "created":
         # The window did not exist before this action, so it has no "before"
@@ -11831,7 +11919,8 @@ class ReviewSession:
         shared = self._sync()
         # A fresh preview supersedes any earlier drift note.
         self._pending_base_changed = False
-        run = _run_review_preview(self._path, source, frame=frame, shared=shared)
+        with _caller_frame_ids():
+            run = _run_review_preview(self._path, source, frame=frame, shared=shared)
         if run.ctx is not None and run.review is not None:
             assert self._fingerprint is not None
             self._staged = _StagedPreview(
@@ -11914,7 +12003,7 @@ class ReviewSession:
         # The transaction opens before the freshness check, so its
         # write_conflict stat predates every input this apply is built from
         # (the fingerprint, the staged preview, the shared context).
-        with atomic_write(self._path):
+        with _caller_frame_ids(), atomic_write(self._path):
             result = self._apply(source, frame=frame, log_prefix=log_prefix)
         self._resync_after_write()
         return result

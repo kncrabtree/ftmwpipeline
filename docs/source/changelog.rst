@@ -56,10 +56,17 @@ engine so they cannot answer differently.
   reasons are listed in :doc:`machine_contract`. Curation-file syntax errors
   raise ``bad_setting`` with ``path`` ``curation[line <n>].<column>``, and a
   refused field of an ``actions=`` batch ``actions[<i>].<field>`` (including
-  an action's frame, which was ``"frame"``). A frequency that matches no
-  fitted peak is ``not_found`` (kind ``peak``), one no live window covers is
-  ``not_found`` (kind ``window``), and unknown ``review_undo`` ids are
-  ``not_found`` (kind ``decision``), every id at once. ``import_data`` raises
+  an action frame that disagrees with ``frame=``, which was ``"frame"``; a
+  frequency with no frame at all on a ``self_calibrated`` file is still
+  ``"frame"``). A ``create`` anchor refused inside a batch names the cell or
+  field it came from (``curation[line <n>].freqs``, ``actions[<i>].freq_mhz``;
+  was ``anchor_mhz``), and ``review_edit``'s implied create names ``add``. A
+  frequency that matches no fitted peak is ``not_found`` (kind ``peak``), one
+  no live window covers is ``not_found`` (kind ``window``), and unknown
+  ``review_undo`` ids are ``not_found`` (kind ``decision``), every id at once;
+  a frequency in ``ids`` is the one the caller wrote, in its frame. An ``add``
+  that falls outside the window it names is ``curation_conflict``
+  (``target_outside_window``). ``import_data`` raises
   ``not_found`` (kind ``file``) for a missing source and ``bad_setting``
   (``path`` ``source``) for one its format's loader refuses. Every one of
   these is still the ``ValueError`` (or ``FileNotFoundError``) it replaced,

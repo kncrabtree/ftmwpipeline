@@ -684,8 +684,14 @@ A program can route on the typed error's ``code`` instead of the message
   ``params``; a ``# frame:`` or ``# epsilon:`` directive is the cell ``frame``
   or ``epsilon`` of its line). A refused field of an ``actions=`` batch is
   ``actions[1].freq_mhz``, and a ``review edit`` token is ``add`` or ``remove``.
+  A ``create`` anchor the planner refuses (outside the analysis band, or
+  already inside a window) is the cell or field it came from, including the
+  create an uncovered ``add`` implies. A missing frame on a ``self_calibrated``
+  file is ``frame``, the call's argument, whether the request is a file or
+  actions.
 * A **frequency that matches no fitted peak** is ``not_found`` (kind ``peak``),
-  listing every such frequency of the request. A **target no live window
+  listing every such frequency of the request, each as you wrote it (a
+  calibrated request gets calibrated MHz back). A **target no live window
   covers** is ``not_found`` (kind ``window``), and a **window id the plan names
   that the fit does not have** is ``not_found`` too, every id at once -- also
   when the batch creates windows, since only the id one of its creates will mint
@@ -697,8 +703,9 @@ A program can route on the typed error's ``code`` instead of the message
   (one ``review edit`` whose targets fall in different windows),
   ``orphans_created_window`` (an undo that would drop a window later decisions
   act on), ``baseline_unavailable`` (an undo or log-prefix apply with no
-  automatic-fit snapshot left), ``replay_conflict``, ``window_not_fitted`` and
-  ``implied_create_reinterpreted``.
+  automatic-fit snapshot left), ``replay_conflict`` (a replayed create that no
+  longer reproduces its window) and ``target_outside_window`` (an ``add`` whose
+  seed falls outside the window it names).
 
 Inside a batch the refusal keeps its type and the message names the action
 (``curation action 2 (edit window 4: ...) failed: ...``).

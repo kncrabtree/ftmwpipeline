@@ -437,12 +437,14 @@ def test_replay_conflict_when_the_pinned_id_is_taken(stage5_multi_file, tmp_path
     assert content_digest(f) == before
 
 
-def test_window_not_fitted_when_a_create_would_widen_an_unfitted_window(
+def test_widening_an_unfitted_window_is_an_untyped_guard(
     stage5_multi_file, monkeypatch
 ):
     """``plan_stage6_window`` only proposes widening a *live* window, so this
-    guard is unreachable on real geometry; it is forced through the planner
-    seam, as the implied-create reinterpretation guard is."""
+    guard is unreachable on real geometry: an invariant, not a route, so it
+    stays the built-in ``ValueError`` (no ``curation_conflict`` reason). It is
+    forced through the planner seam, as the implied-create reinterpretation
+    guard is."""
     f = stage5_multi_file
     live = {w for w, _, _ in _live_ranges(f)}
     unfitted = sorted(set(_plan_ranges(f)) - live)
@@ -463,18 +465,20 @@ def test_window_not_fitted_when_a_create_would_widen_an_unfitted_window(
     before = content_digest(f)
     with pytest.raises(ValueError) as exc:
         create_window_impl(str(f), anchor)
-    err = _assert_conflict(exc, "window_not_fitted", [unfitted[0]])
-    assert "no Stage 5 fit to widen" in str(err)
+    assert not isinstance(exc.value, PipelineFileError)
+    assert "no Stage 5 fit to widen" in str(exc.value)
     assert content_digest(f) == before
 
 
-def test_implied_create_reinterpreted(stage5_multi_file, monkeypatch):
+def test_implied_create_reinterpreted_is_an_untyped_guard(
+    stage5_multi_file, monkeypatch
+):
     """The reinterpretation is not reachable on real data (it needs the anchor
-    within snap tolerance of a peak in the very window it just created); it is
-    forced through the applier seam, as ``test_implied_create`` does."""
+    within snap tolerance of a peak in the very window it just created), so
+    the guard stays the built-in ``ValueError``. It is forced through the
+    applier seam, as ``test_implied_create`` does."""
     f = stage5_multi_file
     anchor = _free_anchor(f)
-    new_wid = max(_plan_ranges(f)) + 1
     orig = s6._batch_apply_edit_action
 
     def reinterpreting(ctx, window_id, add, remove, **kwargs):
@@ -493,9 +497,58 @@ def test_implied_create_reinterpreted(stage5_multi_file, monkeypatch):
     before = content_digest(f)
     with pytest.raises(ValueError) as exc:
         refit_window_impl(str(f), None, add=[anchor])
-    err = _assert_conflict(exc, "implied_create_reinterpreted", [new_wid])
-    assert "implies creating a window" in str(err)
+    assert not isinstance(exc.value, PipelineFileError)
+    assert "implies creating a window" in str(exc.value)
     assert content_digest(f) == before
+
+
+@pytest.mark.parametrize("via", ["api", "pipeline"])
+def test_target_outside_window(stage5_multi_file, via):
+    """An add whose seed falls outside the window it names: the request is
+    valid, the window is the wrong one."""
+    f = stage5_multi_file
+    wa, wb = _two_window_ids(f)
+    add = _far_from_peaks(f, wb)  # covered by wb, nowhere near wa
+    before = content_digest(f)
+    with pytest.raises(ValueError) as exc:
+        if via == "api":
+            ftmw.review_edit(f, wa, add=[add])
+        else:
+            Pipeline.open(f).review_edit(wa, add=[add])
+    err = _assert_conflict(exc, "target_outside_window", [wa])
+    assert f"outside window {wa}'s range" in str(err)
+    assert content_digest(f) == before
+
+
+def test_target_outside_window_inside_a_batch(stage5_multi_file, tmp_path):
+    f = stage5_multi_file
+    wa, wb = _two_window_ids(f)
+    add = _far_from_peaks(f, wb)
+    before = content_digest(f)
+    actions = [CurationAction("add", window_id=wa, freq_mhz=add, frame="raw")]
+    cur = _write(tmp_path, f"add,{wa},{add!r},\n")
+    for call, source in (
+        (ftmw.review_apply, {"actions": actions}),
+        (ftmw.review_preview, {"actions": actions}),
+        (ftmw.review_apply, {"curation_path": cur}),
+    ):
+        with pytest.raises(ValueError) as exc:
+            call(f, **source)
+        err = _assert_conflict(exc, "target_outside_window", [wa])
+        assert str(err).startswith("curation action 1 (")
+    assert content_digest(f) == before
+
+
+def test_target_outside_window_through_the_cli(stage5_multi_file, capsys):
+    f = stage5_multi_file
+    wa, wb = _two_window_ids(f)
+    rc, payload = _cli_error(
+        capsys, "review", "edit", f, "--window", wa, "--add", _far_from_peaks(f, wb)
+    )
+    assert rc == 1
+    assert payload["code"] == "curation_conflict"
+    assert payload["reason"] == "target_outside_window"
+    assert payload["ids"] == [wa]
 
 
 @pytest.fixture
@@ -737,6 +790,31 @@ def test_the_id_a_create_mints_is_still_accepted(create_batch, tmp_path):
     assert review_log_impl(str(b["path"]))[1].window_id == b["minted"]
 
 
+def test_an_unfitted_top_plan_window_is_unknown_and_unmintable():
+    """The largest window id of the plan is unfitted: a create mints above it,
+    so naming it is unknown even beside an unpinned create, while the id the
+    create mints is still left to the per-action check. Hand-built, since the
+    shared fixture's top plan window carries a fit."""
+    known = {0, 1, 2}
+    plan_window_ids = {0, 1, 2, 3}  # 3: planned, never fitted
+    plan = [
+        s6.PlannedAction(
+            kind="create", window_id=s6._NEW_WINDOW_SENTINEL, anchor=100.0
+        ),
+        s6.PlannedAction(kind="accept", window_id=3),
+        s6.PlannedAction(kind="accept", window_id=4),  # what the create mints
+        s6.PlannedAction(kind="accept", window_id=5),  # past one mint
+    ]
+    assert s6._unknown_plan_window_ids(known, plan, plan_window_ids) == [3, 5]
+    # A pinned create above every window raises the floor too.
+    pinned = [
+        s6.PlannedAction(kind="create", window_id=7, anchor=100.0),
+        *plan,
+        s6.PlannedAction(kind="accept", window_id=8),
+    ]
+    assert s6._unknown_plan_window_ids(known, pinned, plan_window_ids) == [3, 4, 5]
+
+
 def test_without_a_create_every_unknown_window_is_reported(create_batch, tmp_path):
     b = create_batch
     cur = _write(
@@ -816,3 +894,80 @@ def test_a_bad_action_field_is_named_by_its_index_through_the_api(stage5_multi_f
     with pytest.raises(BadSettingError) as exc:
         Pipeline.open(f).review_preview(actions=[good, good, 42])
     assert exc.value.path == "actions[2]"
+
+
+# ---------------------------------------------------------------------------
+# A create's refused anchor names the cell or field the anchor came from
+# ---------------------------------------------------------------------------
+
+OFF_BAND_MHZ = 1000.0  # far below the fixture's analysis band
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize(
+    "rows",
+    [
+        "accept,{live},,\ncreate,new,{anchor},\n",  # an explicit create
+        "accept,{live},,\nadd,,{anchor},\n",  # the create an add implies
+    ],
+)
+def test_a_batch_anchor_refusal_names_its_cell(
+    stage5_multi_file, tmp_path, rows, dry_run
+):
+    from ftmwpipeline.file_manager import BadSettingError
+
+    f = stage5_multi_file
+    live = _live_ranges(f)[0][0]
+    cur = _write(tmp_path, rows.format(live=live, anchor=OFF_BAND_MHZ))
+    before = content_digest(f)
+    with pytest.raises(BadSettingError) as exc:
+        ftmw.review_apply(f, cur, dry_run=dry_run)
+    assert exc.value.path == "curation[line 2].freqs"
+    assert exc.value.value == pytest.approx(OFF_BAND_MHZ)
+    assert "outside the analysis band" in str(exc.value)
+    assert str(exc.value).startswith("curation action ")
+    assert content_digest(f) == before
+
+
+def test_an_action_batch_anchor_refusal_names_its_field(stage5_multi_file):
+    from ftmwpipeline.file_manager import BadSettingError
+
+    f = stage5_multi_file
+    live = _live_ranges(f)[0][0]
+    for anchor_action in (
+        CurationAction("create", freq_mhz=OFF_BAND_MHZ, frame="raw"),
+        CurationAction("add", freq_mhz=OFF_BAND_MHZ, frame="raw"),
+    ):
+        actions = [CurationAction("accept", window_id=live), anchor_action]
+        for call in (ftmw.review_apply, ftmw.review_preview):
+            with pytest.raises(BadSettingError) as exc:
+                call(f, actions=actions)
+            assert exc.value.path == "actions[1].freq_mhz"
+
+
+def test_an_anchor_inside_a_window_names_its_cell(stage5_multi_file, tmp_path):
+    from ftmwpipeline.file_manager import BadSettingError
+
+    f = stage5_multi_file
+    wid, lo, hi = _live_ranges(f)[0]
+    cur = _write(tmp_path, f"create,new,{0.5 * (lo + hi)!r},\n")
+    with pytest.raises(BadSettingError) as exc:
+        ftmw.review_apply(f, cur)
+    assert exc.value.path == "curation[line 1].freqs"
+    assert "already falls inside window" in str(exc.value)
+
+
+def test_review_edit_implied_create_anchor_is_named_add(stage5_multi_file):
+    from ftmwpipeline.file_manager import BadSettingError
+
+    f = stage5_multi_file
+    before = content_digest(f)
+    with pytest.raises(BadSettingError) as exc:
+        ftmw.review_edit(f, None, add=[OFF_BAND_MHZ])
+    assert exc.value.path == "add"
+    assert "outside the analysis band" in str(exc.value)
+    # review_create names its own argument
+    with pytest.raises(BadSettingError) as exc:
+        ftmw.review_create(f, OFF_BAND_MHZ)
+    assert exc.value.path == "anchor_mhz"
+    assert content_digest(f) == before

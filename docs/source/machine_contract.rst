@@ -757,13 +757,25 @@ the message (``curation action <n> (...) failed: ...``).
   * a field of the i-th action of ``actions=`` is ``actions[<i>].<field>``:
     a dict ``CurationAction.from_dict`` refuses (an unknown key is the path's
     field), an item that is neither an action nor a dict (``actions[<i>]``),
-    an action ``frame`` that disagrees with the call's ``frame=``, a missing
-    frame on a ``self_calibrated`` file (``actions[<i>].frame``), and an
-    ``epsilon`` stamp that has drifted (``actions[<i>].epsilon``);
+    an action ``frame`` that disagrees with the call's ``frame=``
+    (``actions[<i>].frame``), and an ``epsilon`` stamp that has drifted
+    (``actions[<i>].epsilon``). A frequency with no frame at all on a
+    ``self_calibrated`` file (neither the action's nor the call's) is
+    ``frame``, the call's argument, as for a curation file without a
+    ``# frame:`` header; the message names the action;
+  * a ``create``'s anchor refused inside a batch (outside the analysis band,
+    or already inside a window) is the cell or field the anchor came from:
+    ``curation[line <n>].freqs`` or ``actions[<i>].freq_mhz``, also for the
+    create an uncovered ``add`` implies. ``review_create`` names its argument,
+    ``anchor_mhz``, and ``review_edit``'s implied create names ``add``;
   * ``review_edit``'s tokens are ``add`` / ``remove`` (a malformed token, or
     a ``uid:N`` given to ``add``).
 
 * ``not_found``:
+
+  Every frequency in ``ids`` is the one the caller wrote, in the frame it
+  was written in (a calibrated request is answered in calibrated MHz), so a
+  client can match it against its request.
 
   * ``kind`` ``"peak"``: a ``remove`` / merge / split frequency that matches
     no fitted peak within the snap tolerance (``ids`` every such frequency of
@@ -803,12 +815,9 @@ the message (``curation action <n> (...) failed: ...``).
        - replaying a recorded window creation no longer reproduces its
          window: it would widen another window, or its id is taken (the
          recorded id, then the widened window's id)
-     * - ``window_not_fitted``
-       - a create would widen a window that has no Stage 5 fit (that window)
-     * - ``implied_create_reinterpreted``
-       - an ``add`` that implies creating a window landed on an existing peak
-         of the window it produced and would be recorded as a split or merge
-         (that window)
+     * - ``target_outside_window``
+       - an ``add`` whose seed, after snapping to a ledger candidate, falls
+         outside the range of the window it names (that window)
 
   Reasons are only ever added.
 
@@ -1534,8 +1543,9 @@ file's rows parse to the actions ``from_dict`` gives of their dicts.
 
 **Frames.** Each action's frame is resolved on its own. ``None`` takes the
 call's ``frame=``, and then the call's rule applies: raw on a file whose
-``epsilon`` is 0, and ``bad_setting`` (``path`` ``"actions[<i>].frame"``) on
-a ``self_calibrated`` file when the action carries a frequency. A batch may mix
+``epsilon`` is 0, and ``bad_setting`` (``path`` ``"frame"``, the call's
+missing ``frame=``, with the message naming the action) on a
+``self_calibrated`` file when the action carries a frequency. A batch may mix
 frames. The pipeline converts each action to raw before resolving anything. A
 client never converts frequencies itself.
 
