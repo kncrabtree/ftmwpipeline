@@ -627,17 +627,63 @@ named that does not exist, e.g. all unknown window ids of a curation batch),
   `bounds`; every value round-trips as typed JSON, including `ShapeSpec` with
   its parameters and clock sources.
 
-## Curation as data *(outline)*
+## Curation as data
 
 `review_apply` / `review_preview` accept an in-memory sequence of typed,
 JSON-able curation actions as an alternative to a curation-file path, with the
 same validation, frame handling, and results. The file path remains for people.
 
+**`CurationAction`** is a public frozen dataclass in `core/curation.py`, 1:1 with a
+curation-file row:
+
+| field | type | meaning |
+|---|---|---|
+| `action` | `"add"` \| `"remove"` \| `"accept"` \| `"create"` | the row action |
+| `window_id` | `int` or `None` | the window. `None` means "derive it" on `add` / `remove` (the file's `auto`), and "a new window" on `create`. It is required on `accept`. |
+| `freq_mhz` | `float` or `None` | the row's one frequency: `add` / `remove`, or the `create` anchor |
+| `peak_uid` | `int` or `None` | `remove` only, in place of `freq_mhz` (the file's `uid:N`) |
+| `candidate_mhz` | `float` or `None` | `accept` only: a candidate to revive (`candidate=F`) |
+| `frame` | `"raw"` \| `"calibrated"` or `None` | the frame of `freq_mhz` / `candidate_mhz`; see below |
+
+- **Construction validates** the same arity rules the parser enforces:
+  - one frequency, or one `peak_uid` on `remove`;
+  - no frequency on `accept`;
+  - no `peak_uid` outside `remove`.
+
+  A violation raises `bad_setting` naming the field.
+- **Wire form.** `to_dict()` gives
+  `{"schema": "ftmw/curation_action@1", "action", "window_id", "freq_mhz",
+  "peak_uid", "candidate_mhz", "frame"}`. Every key is always present, and an
+  unused field is `null`; these are request fields, not absent results.
+  `CurationAction.from_dict()` is the inverse.
+- **Row correspondence.** `to_row()` gives the CSV row. Parsing a file yields
+  the same actions as `from_dict` of their dicts: one grammar, two spellings.
+- **Frames.** Each action's `frame` is resolved on its own: `None` takes the
+  call's `frame=`, and then the call's rule applies (raw on an `epsilon == 0`
+  file; required on a `self_calibrated` file when the action carries a
+  frequency). A batch may mix frames. The pipeline converts each action to raw
+  before resolution, exactly as it does a file's frequencies.
+- **Calls.**
+  - `review_apply(path, curation=None, *, actions=None, ...)` and
+    `review_preview(...)` take exactly one of `curation` (a file path) or
+    `actions`, else `bad_setting` (`path` `"actions"`). The first positional
+    parameter keeps its name for existing callers.
+  - `Pipeline` and the review session take the same.
+  - The CLI's `review apply` / `review preview` accept `--actions FILE`, a
+    JSON array of action dicts (`-` for stdin), as an alternative to the
+    curation CSV.
+- **Results are identical.** The same actions given as a file and as data give
+  equal results, decision logs and files.
+
 **Frames are explicit.** Every curation action and every review call that
 takes a frequency declares its frame (`"raw"` or `"calibrated"`) as a typed,
-documented parameter, with a stated default. The conversion stays inside the
-pipeline; clients never convert frequencies themselves or probe signatures to
-discover the parameter.
+documented parameter. The stated default is `None`, meaning:
+- raw on a file whose `epsilon` is 0;
+- an error (`bad_setting`, `path` `"frame"`) on a `self_calibrated` file when
+  the call carries a frequency.
+
+The conversion stays inside the pipeline. Clients never convert frequencies
+themselves or probe signatures to discover the parameter.
 
 ## Serialization *(outline)*
 
