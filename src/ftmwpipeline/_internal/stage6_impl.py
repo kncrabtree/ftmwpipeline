@@ -5373,12 +5373,10 @@ def _unknown_plan_window_ids(
     above every *known* id and every pinned create -- and a later row may
     legitimately name it: such an id is left to the per-action lookup once
     the creates have run. Given *plan_window_ids* (the window plan the
-    creates mint against), the floor is the largest window id of the plan
-    too (an unfitted plan window above every fitted one is neither known nor
-    mintable), and the ids the unpinned creates can mint are bounded above:
-    the plan's ``n`` minting creates (unpinned and fresh implied ones) mint
-    at most ``n`` ids past the floor. Every other unknown id cannot exist and
-    is reported here, all at once, even when the plan holds an unpinned
+    creates mint against), the creates are replayed in plan order to find
+    exactly the ids they can mint (an unfitted plan window above every fitted
+    one is neither known nor mintable). Every other unknown id cannot exist
+    and is reported here, all at once, even when the plan holds an unpinned
     create.
     """
     live = set(known) | {
@@ -5387,25 +5385,38 @@ def _unknown_plan_window_ids(
     n_mints = sum(
         1 for a in plan if a.kind == "create" and a.window_id == _NEW_WINDOW_SENTINEL
     )
-    # A minted id is max(plan) + 1: above every known window, every pinned
-    # create and, given the window plan, every window of it -- an unfitted
-    # plan window above the fitted ones is neither known nor mintable.
-    mint_floor = max(live | set(plan_window_ids or ()), default=-1)
-    mint_ceiling: Optional[int] = None
+    # Given the window plan the creates mint against, replay the creates in
+    # plan order: a minting create (unpinned or fresh implied) takes one above
+    # every window present when it runs -- every known and planned window (an
+    # unfitted plan window above the fitted ones is neither known nor
+    # mintable) and every create before it; a pinned create installs its own
+    # id. That gives exactly the ids the batch can mint.
+    mintable: Optional[Set[int]] = None
     if plan_window_ids is not None:
-        # A fresh implied create mints too, raising the ids later creates take.
-        n_implied = sum(
-            1 for a in plan if a.kind == "create" and _is_implied_window_id(a.window_id)
-        )
-        mint_ceiling = mint_floor + n_mints + n_implied
+        mintable = set()
+        top = max(set(known) | set(plan_window_ids), default=-1)
+        for a in plan:
+            if a.kind != "create":
+                continue
+            if a.window_id >= 0:
+                top = max(top, int(a.window_id))
+            elif a.window_id == _NEW_WINDOW_SENTINEL or _is_implied_window_id(
+                a.window_id
+            ):
+                top += 1
+                mintable.add(top)
+    mint_floor = max(live, default=-1)
     unknown: List[int] = []
     for a in plan:
         wid = int(a.window_id)
         if a.kind == "create" or wid < 0 or wid in live or wid in unknown:
             continue
-        if n_mints and wid > mint_floor:
-            if mint_ceiling is None or wid <= mint_ceiling:
+        if mintable is not None:
+            if wid in mintable:
                 continue
+        elif n_mints and wid > mint_floor:
+            # Without the window plan, any id above the known ones may be minted.
+            continue
         unknown.append(wid)
     return unknown
 

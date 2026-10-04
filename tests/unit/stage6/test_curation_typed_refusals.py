@@ -813,6 +813,19 @@ def test_an_unfitted_top_plan_window_is_unknown_and_unmintable():
         s6.PlannedAction(kind="accept", window_id=8),
     ]
     assert s6._unknown_plan_window_ids(known, pinned, plan_window_ids) == [3, 4, 5]
+    # A pinned create placed *after* the unpinned one does not lift what it
+    # mints: the create still mints 4, so naming 4 is not unknown.
+    pinned_after = [
+        *plan[:1],
+        s6.PlannedAction(kind="create", window_id=7, anchor=200.0),
+        *plan[1:],
+        s6.PlannedAction(kind="accept", window_id=8),
+    ]
+    assert s6._unknown_plan_window_ids(known, pinned_after, plan_window_ids) == [
+        3,
+        5,
+        8,
+    ]
 
 
 def test_without_a_create_every_unknown_window_is_reported(create_batch, tmp_path):
