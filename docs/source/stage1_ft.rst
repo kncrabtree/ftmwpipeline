@@ -151,7 +151,11 @@ are stored they are authoritative. A recommendation written afterwards -- a late
 used or any result built on it; to adopt it, re-run ``ft run --start-us`` with the
 new value, which invalidates the downstream work as above. A file written before
 this rule keeps its earlier behaviour, where an unset value followed the
-recommendation.
+recommendation; on such a file, a recommendation that moves the settings Stage 1
+is read with invalidates the downstream work in the same call.
+
+``compute_ft(..., from_saved_params=True)`` only reads: it recomputes the
+spectrum from the stored settings and writes nothing to the file.
 
 Inspecting the transform
 ------------------------

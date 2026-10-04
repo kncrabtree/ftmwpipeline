@@ -282,7 +282,9 @@ The same operations on the Python interfaces:
    tau = pipe.calibrate_tau()
    tau_g = pipe.calibrate_tau(shape="gaussian")
 
-Re-running Stage 2b invalidates the downstream stages that depend on it.
+Re-running Stage 2b invalidates no other stage. Stage 3 and Stage 5 each
+record the decay time and shape they took from it, so their records still say
+what they used; re-run them to pick up a new calibration.
 
 The defaults are calibrated for the reference instrument and need no adjustment
 for routine use. The behavior is controlled by the knobs below, set with

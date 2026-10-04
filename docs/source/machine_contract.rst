@@ -700,6 +700,62 @@ Every contract payload that names a stage uses the canonical vocabulary
 ``StageDependencyError.missing_dependencies`` keeps the internal keys; its
 ``to_dict()`` publishes the canonical names.
 
+No stale results, and what a run invalidated
+--------------------------------------------
+
+A ``.ftmw`` file never holds a result that disagrees with its own inputs. A
+write that would leave one either rebuilds it in the same call or deletes it
+together with everything built on it. A client therefore never has to detect
+staleness; it only has to notice what was deleted.
+
+- **Rebuilt in place.** The Stage 6 final-products table is the one stored
+  result rebuilt rather than deleted. A ``timebase run``, ``set_sigma_floor``
+  or a ``clocks`` write (``set``, ``add``, ``remove``, ``clear``, or a reused
+  import's loader declaration) that changes the file's calibration rewrites
+  the stored table in the same call. The curation record is left alone.
+- **Deleted with its dependents.** A changed Stage 1 window or trim deletes
+  every stage built on the spectrum. A changed noise recipe deletes Stage 2b
+  onward. ``settings set`` and ``settings unset`` delete the stage they
+  configure and its dependents. Re-running peaks, windows or the fit deletes
+  the stages after it. A forced re-import discards every stage the file held.
+  On a file whose Stage 1 record predates provenance, a ``start run`` stamp
+  that moves the start that record still follows deletes the stages built on
+  the spectrum. ``save_peak_parameters`` with different values deletes the
+  peaks it would otherwise misdescribe, and their dependents.
+- **Unaffected by design.** A timebase change does not invalidate the fit: the
+  fit used epsilon only to classify clock spurs and records the value it used.
+  Stage 2b and the shape recommendation invalidate nothing: their consumers
+  record the decay time and shape they took. An identical re-run (the same
+  resolved Stage 1 or noise settings) invalidates nothing.
+- **Calls that only read never write.** ``compute_ft(..., from_saved_params=True)``
+  recomputes the spectrum from the stored settings without touching the file
+  (it does not complete Stage 1 on a file that has none).
+
+**Reporting.** Every stage-running call says which stages it invalidated, as
+canonical stage names in re-run order: the topological order of the stage
+dependencies with ties broken by the order of ``Stage`` (``data``, ``ft``,
+``noise``, ``tau``, ``tau_g``, ``timebase``, ``peaks``, ``windows``, ``fit``,
+``review``). The list is empty when nothing was invalidated.
+
+- Results that are dicts gain the key ``"invalidated"`` (a list):
+  ``import_data``, and the ``_internal`` stage results the CLI reads.
+- Dataclass results gain a field ``invalidated`` (a tuple, default ``()``,
+  excluded from equality): ``NoiseResult``, ``TauCalibrationResult``,
+  ``ShapeRecommendation``, ``TimebaseCalibrationResult``, ``WindowPlan``,
+  ``SpectrumFit``, ``StartDetectionResult`` and the Stage 6 results
+  (``ReviewRunResult``, ``CurationApplyResult``, ``RefitWindowResult``,
+  ``CreateWindowResult``, ``UndoResult``). ``SetResult.invalidated`` (from
+  ``settings_set`` / ``settings_unset``) now uses the same canonical names.
+- ``compute_ft`` returns a ``ComplexFT`` whose ``invalidated`` attribute
+  carries the list; ``detect_peaks`` returns a ``PeakList``, a ``list`` of
+  ``Peak`` with the same attribute.
+- On the CLI, a run that invalidated anything prints
+  ``Invalidated (re-run to refresh): noise, peaks, ...``. ``settings set`` and
+  ``settings unset`` keep their own line, now with canonical names.
+
+A loaded result (``load_fit``, ``load_windows``, ...) carries ``()``: the field
+describes the call that produced the object, not the file.
+
 JSON from the command line
 --------------------------
 

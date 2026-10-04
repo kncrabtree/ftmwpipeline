@@ -141,7 +141,10 @@ the fit's own declaration and re-fit::
 '[...]'``). The CLI prints this when a fit already exists. The timebase calibration
 and the Stage 6 calibration state read a *non-empty* fit declaration first and
 otherwise the recommended one, so a ``clocks set`` followed by ``timebase run``
-applies the measured scale correction without a re-fit.
+applies the measured scale correction without a re-fit. When that reading of
+the calibration state changes, a ``clocks`` write also rebuilds a stored Stage 6
+final-products table in the same call, so the table never contradicts the
+file's current calibration. No stage is invalidated.
 
 Automatic population from Blackchirp
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
