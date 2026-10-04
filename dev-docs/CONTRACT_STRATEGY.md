@@ -132,7 +132,9 @@ Two distinct meanings of "no value" exist and must survive every surface:
     `docs/source/machine_contract.rst`.
   - Knockout: the test did not run (no record, a negative tri-state, or a
     `nan` Δχ²) → every knockout field is `NOT_RUN`. Otherwise each non-finite
-    knockout value is `UNDEFINED`.
+    knockout value is `UNDEFINED`. This rule takes precedence over the
+    synthesized-fill rule: a test that ran on a file predating a knockout
+    column reads that column `UNDEFINED`.
   - An uncertainty that does not exist because its parameter was held fixed
     is `UNDEFINED`, matching `FinalPeak.decay_time_error_us`.
 - **Honest uncertainty.** When a line has no statistical frequency error, its

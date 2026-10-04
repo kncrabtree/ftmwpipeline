@@ -116,6 +116,36 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _declared_clock_lattice(
+    spur_cfg: Any,
+    *,
+    user_ft: Any,
+    start_us: float,
+    end_us: float,
+    probe_freq_mhz: float,
+    sideband: Any,
+) -> Any:
+    """The clock lattice of a non-empty ``spur.clocks`` declaration, over the
+    persisted FT's band, with the bin-count tolerance resolved against the
+    active region's spacing (Requirement 8: bins are the definition)."""
+    from ..fitting.active_ft import active_ft_bin_spacing_mhz
+    from ..fitting.clock_lattice import build_clock_lattice
+
+    integer_tol_mhz = _required_float(
+        spur_cfg.integer_tol_bins, "spur.integer_tol_bins"
+    ) * active_ft_bin_spacing_mhz(end_us - start_us)
+    return build_clock_lattice(
+        spur_cfg.clocks,
+        probe_freq_mhz=probe_freq_mhz,
+        sideband=sideband,
+        band=(float(np.min(user_ft.freq_array)), float(np.max(user_ft.freq_array))),
+        tol_mhz=integer_tol_mhz,
+        drift_window_mhz=_required_float(
+            spur_cfg.drift_window_mhz, "spur.drift_window_mhz"
+        ),
+    )
+
+
 def annotate_lattice_matches(
     spectrum_fit: SpectrumFit, lattice: Optional[ClockLattice]
 ) -> None:
@@ -1380,8 +1410,7 @@ def build_stage5_fit_context(
         Self-contained shared context ready for :func:`execute_plan` or a
         single-window refit.
     """
-    from ..fitting.active_ft import active_ft_bin_spacing_mhz, compute_active_ft
-    from ..fitting.clock_lattice import build_clock_lattice
+    from ..fitting.active_ft import compute_active_ft
     from ..fitting.spur_detection import (
         build_spur_set,
         make_band_power_probe,
@@ -1494,6 +1523,17 @@ def build_stage5_fit_context(
             "(no re-detection)",
             len(spur_set.spurs),
         )
+        # The replayed mask needs no lattice, but a refit's new lines are
+        # annotated against the same one the fit's lines were.
+        if spur_cfg.clocks:
+            clock_lattice = _declared_clock_lattice(
+                spur_cfg,
+                user_ft=user_ft,
+                start_us=start_us,
+                end_us=end_us,
+                probe_freq_mhz=probe_freq_mhz,
+                sideband=sideband,
+            )
     elif spur_enabled:
         use_catalog = (
             True
@@ -1556,15 +1596,6 @@ def build_stage5_fit_context(
                         acq_segs.pre_record.size,
                         acq_segs.pre_record_us,
                     )
-        # The knob is a bin count; the lattice builder wants MHz, so resolve
-        # it once here against the active region's own spacing (Requirement 8:
-        # bins are the definition, the MHz value is an output of it).
-        integer_tol_bins_v = _required_float(
-            spur_cfg.integer_tol_bins, "spur.integer_tol_bins"
-        )
-        integer_tol_v = integer_tol_bins_v * active_ft_bin_spacing_mhz(
-            end_us - start_us
-        )
         band_power_probe = None
         lattice_kwargs: Dict[str, Any] = {}
         # Eps-aware spur match window (recommended-but-not-required): only the
@@ -1576,13 +1607,13 @@ def build_stage5_fit_context(
             drift_window_v = _required_float(
                 spur_cfg.drift_window_mhz, "spur.drift_window_mhz"
             )
-            clock_lattice = build_clock_lattice(
-                spur_cfg.clocks,
+            clock_lattice = _declared_clock_lattice(
+                spur_cfg,
+                user_ft=user_ft,
+                start_us=start_us,
+                end_us=end_us,
                 probe_freq_mhz=probe_freq_mhz,
                 sideband=sideband,
-                band=spur_band,
-                tol_mhz=integer_tol_v,
-                drift_window_mhz=drift_window_v,
             )
             with h5py.File(file_path, "r") as h5f:
                 if TIMEBASE_GROUP_PATH in h5f:
@@ -1624,7 +1655,9 @@ def build_stage5_fit_context(
             sorted_sig_c,
             band=spur_band,
             saturated_clusters=saturated_clusters,
-            integer_tol_bins=integer_tol_bins_v,
+            integer_tol_bins=_required_float(
+                spur_cfg.integer_tol_bins, "spur.integer_tol_bins"
+            ),
             narrowness_ratio=_required_float(
                 spur_cfg.narrowness_ratio, "spur.narrowness_ratio"
             ),

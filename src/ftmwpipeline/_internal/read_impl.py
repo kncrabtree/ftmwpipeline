@@ -270,7 +270,9 @@ _COMMAND_BY_GROUP: Dict[str, str] = {
 # fills) untouched; this layer adds a ``<column>__status`` companion to each
 # absent-capable column, derived at read time with the shared rules in
 # ``absence_rules`` so a quantity reports the same status here as on
-# ``FinalPeak``. The value column keeps its stored fill.
+# ``FinalPeak``. The value column keeps its stored fill, with one exception:
+# a ``fit_audit`` separation reject stored placeholder ``f_statistic`` 0.0 and
+# ``p_value`` 1.0 for a test that never ran, and those read as ``nan``.
 # ---------------------------------------------------------------------------
 
 _StatusDeriver = Callable[[h5py.Group, Dict[str, np.ndarray]], Dict[str, np.ndarray]]
@@ -567,6 +569,10 @@ class _StatusLayout:
     json_log: bool = False
     #: Post-process the raw columns (value masking) before they are returned.
     adjust: Optional[Callable[[Dict[str, np.ndarray]], None]] = None
+    #: Columns whose own rule decides a synthesized fill too. The knockout
+    #: rule takes precedence (spec): a line whose test ran but whose file
+    #: predates the p-value column reads UNDEFINED, as on ``FinalPeak``.
+    rule_over_synthesized: Tuple[str, ...] = ()
 
 
 def _status_reader(layout: _StatusLayout) -> _Reader:
@@ -596,6 +602,8 @@ def _status_reader(layout: _StatusLayout) -> _Reader:
         if wanted_status:
             status = layout.derive(h5_group, raw)
             for col in wanted_status:
+                if col in layout.rule_over_synthesized:
+                    continue
                 synth = _synthesized(h5_group, layout, col, flags, n)
                 status[col] = np.where(synth, STATUS_NOT_RUN, status[col]).astype(
                     np.uint8
@@ -639,6 +647,7 @@ _STATUS_LAYOUTS: Dict[str, _StatusLayout] = {
             needs=_FIT_PEAK_NEEDS,
             dataset_group="peaks",
             derived=("shape",),
+            rule_over_synthesized=_KNOCKOUT_COLUMNS,
         ),
         _StatusLayout(
             "fit_windows",
@@ -874,7 +883,9 @@ def read_table_impl(
         The ``fit_peaks``, ``fit_windows``, ``fit_audit``, ``fit_doublets``
         and ``peaks`` tables also carry a ``uint8`` ``<column>__status`` column
         for each absent-capable column (``0`` present, ``1`` not run, ``2``
-        undefined); the value column keeps its stored fill.
+        undefined); the value column keeps its stored fill, except that a
+        ``fit_audit`` separation reject's placeholder ``f_statistic`` /
+        ``p_value`` (no test ran) read as ``nan``.
 
     Raises
     ------

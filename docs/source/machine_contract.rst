@@ -156,7 +156,10 @@ Each declared accessor, with its absence cases:
   undefined) for each column below, inserted right after it; column selection
   accepts them. The value column keeps its stored fill (``nan``, ``inf``,
   ``-1`` or ``""``), which a program must not read when the status is not
-  ``0``. A column that predates the file reads as its fill with status ``1``.
+  ``0``. A column that predates the file reads as its fill with status ``1``,
+  except in the ``fit_peaks`` knockout block, where the knockout rule below
+  decides (a test that ran on a file predating ``knockout_p_value`` reads
+  ``2``, as on ``FinalPeak``).
   The rules are the ones ``FinalPeak`` uses for the same quantity.
 
   * ``fit_peaks``. Knockout: ``knockout_supported``, ``knockout_delta_chi2``,

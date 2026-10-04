@@ -164,7 +164,7 @@ engine so they cannot answer differently.
     It prints a schema-stamped JSON envelope: a dict or dataclass result is
     stamped directly, a list or tuple is ``{"schema", "items": [...]}``, a
     scalar is ``{"schema", "value": x}``, and ``read get_final_products``
-    before Stage 6 prints ``"items": null`` with ``"items_absent": "not_run"``
+    before Stage 6 prints ``"value": null`` with ``"value_absent": "not_run"``
     (the Python result is still ``None``). The human verbs (``info``, ``review
     log``, ``settings show``, ``timebase state``, ``report table``, ``read
     table`` / ``meta`` / ``list``) are unchanged and are not contract.

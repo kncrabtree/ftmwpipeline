@@ -2319,6 +2319,15 @@ def refit_window_core(
     if freeze_inherited and len(add) > 0:
         new_wf.fixed_parameters = dict(wf.fixed_parameters or {})
 
+    # Annotate the refit's lines against the fit's clock lattice, as Stage 5
+    # does, so a refit line's ``clock_lattice`` is a tested result (a match or
+    # off-lattice) rather than an untested blank. Informational only.
+    lattice = fit_ctx.clock_lattice
+    if lattice is not None:
+        for pk in new_wf.fitted_peaks:
+            point = lattice.match(pk.frequency_mhz)
+            pk.clock_lattice = None if point is None else point.identity
+
     return new_wf
 
 
@@ -6877,6 +6886,12 @@ def _finish_implied_create_edit(
             f"explicitly with a separate 'review create' plus 'review edit' "
             f"if that reinterpretation is what you want."
         )
+    if created.mode == "created":
+        # The window did not exist before this action, so it has no "before"
+        # fit -- the same side review preview / apply report as not run. The
+        # applier measured the freshly installed window's pre-fit state, which
+        # is not a prior fit of anything.
+        result.chi2r_before = Absent.NOT_RUN
     anchor_for_entry = float(add[0]) if add else float(created.anchor_mhz)
     ctx.changeset.decisions.append(
         {
@@ -6884,7 +6899,13 @@ def _finish_implied_create_edit(
             "frequency_mhz": anchor_for_entry,
             "kind": "add",
             "evidence": {
-                "chi2r_before": _chi2r_evidence(result.chi2r_before),
+                # A created window has no "before" fit: the key is omitted
+                # rather than stored as a number that was never a fit.
+                **(
+                    {}
+                    if result.chi2r_before is Absent.NOT_RUN
+                    else {"chi2r_before": _chi2r_evidence(result.chi2r_before)}
+                ),
                 "chi2r_after": _chi2r_evidence(result.chi2r_after),
                 "n_peaks_before": result.n_peaks_before,
                 "n_peaks_after": result.n_peaks_after,
