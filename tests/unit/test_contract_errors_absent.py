@@ -28,6 +28,7 @@ from ftmwpipeline.contract import (
     AnalysisEpochMismatchError,
     BadSettingError,
     IncompleteProvenanceError,
+    NotFoundValueError,
     NotFoundError,
     PipelineCompatibilityError,
     PipelineCorruptionError,
@@ -228,6 +229,12 @@ def _errors():
             (ValueError,),
         ),
         (
+            NotFoundValueError("peak", [7, 8]),
+            "not_found",
+            {"kind": "peak", "ids": [7, 8]},
+            (KeyError, ValueError),
+        ),
+        (
             BadSettingError("stage5.tau.tau0_us", "float > 0", -1.0),
             "bad_setting",
             {"path": "stage5.tau.tau0_us", "expected": "float > 0", "value": -1.0},
@@ -288,7 +295,11 @@ def test_error_codes_unique_per_class():
         owners.setdefault(code, []).append(cls)
     for code, classes in owners.items():
         if code == "not_found":
-            assert set(classes) == {NotFoundError, PipelineFileNotFoundError}
+            assert set(classes) == {
+                NotFoundError,
+                NotFoundValueError,
+                PipelineFileNotFoundError,
+            }
         else:
             assert len(classes) == 1, (code, classes)
 

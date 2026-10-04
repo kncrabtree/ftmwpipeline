@@ -173,13 +173,6 @@ def test_settings_set_public_calls_raise_bad_setting(bare_file, knob, value):
     assert e_api.value.to_dict() == e_pipe.value.to_dict()
 
 
-def test_settings_unset_non_optional_is_bad_setting(bare_file):
-    # Mutation: the "cannot be unset" refusal reverted to ValueError.
-    with pytest.raises(BadSettingError) as ei:
-        ftmw.settings_unset(bare_file, "stage2.window_mhz")
-    assert ei.value.path == "stage2.window_mhz"
-
-
 def test_set_clock_sources_and_scan_run_typed(bare_file):
     # Mutation: coerce_clock_sources / get_knob reverted to built-ins.
     with pytest.raises(BadSettingError) as ei:

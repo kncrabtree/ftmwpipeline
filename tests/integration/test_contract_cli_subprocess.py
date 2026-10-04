@@ -135,8 +135,9 @@ def test_read_capabilities_is_valid_json_with_exit_zero():
 def test_read_capabilities_lists_only_implemented_codes():
     payload = json.loads(_cli("read", "capabilities").stdout)
     assert payload["codes"] == list(MANIFEST.codes)
+    # A code is listed once its class exists (spec: reserved codes such as
+    # algorithm_failed are documented as such); cancelled has none yet.
     assert "cancelled" not in payload["codes"]
-    assert "algorithm_failed" not in payload["codes"]
 
 
 # ---- file-bound accessor (probe), JSON on stderr --------------------------

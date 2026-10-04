@@ -6043,7 +6043,7 @@ def _resolve_remove_uid_tokens(
             resolved.append(float(t))
     if missing:
         listed = ", ".join(f"peak_uid={u}" for u in missing)
-        raise NotFoundError(
+        raise NotFoundValueError(
             "peak",
             missing,
             message=f"window {window_id} has no fitted peak with {listed} to "

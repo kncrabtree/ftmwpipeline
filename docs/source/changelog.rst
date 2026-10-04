@@ -49,6 +49,28 @@ had to reach into ``_internal`` or parse out of prose to obtain are now
 published, and the Stage 6 edit paths that carry them were collapsed onto one
 engine so they cannot answer differently.
 
+* **Machine contract, Wave 4: typed refusals (breaking).** Refusals a program
+  can act on now raise the typed family with a stable ``code``, still as a
+  subclass of the built-in they replaced, so existing ``except`` clauses keep
+  working. ``bad_setting`` (``BadSettingError``: ``path``, ``expected``,
+  ``value``) covers ``settings set`` / ``unset``, presets, clock declarations,
+  shapes, and the value checks of every stage call (``compute_ft`` start/end/
+  trim, noise, tau, timebase, peaks, fit, ``show_fit``, report and read
+  choices, curation arguments); ``path`` is the registry path of a registry
+  setting (``stage1.trim``, ``stage5.shape``, ``stage5.spur.clocks``) and the
+  argument name otherwise. An unknown or undetectable source format is
+  ``bad_setting`` with ``path`` ``"format"`` on import and ``preview_source``
+  alike (``preview_source`` raised ``not_found`` before). ``not_found`` now
+  lists every unknown window or peak uid of a curation batch at once, and is
+  ``NotFoundValueError`` (also a ``ValueError``) where the call refused with
+  ``ValueError`` before; typed errors inside a curation batch propagate with
+  their own type instead of a flattened ``ValueError``. Reading the noise
+  result before ``noise run`` is ``stage_not_run``. ``validate_pipeline`` now
+  raises the typed open error for a file it cannot open, as ``Pipeline.open``
+  does, instead of returning ``{"valid": False}``. Every CLI verb lets typed
+  errors reach one dispatch in ``main``, which applies the documented exit
+  codes and writes the error dict to stderr under ``--format json``.
+  ``algorithm_failed`` is declared and reserved (not raised yet).
 * **Machine contract, Wave 3: absence is ``Absent`` everywhere on the
   contract (breaking).** Pre-contract fields that encoded "no value" as
   ``None``, ``nan``, ``-1``, ``""`` or a plausible-looking ``0.0`` now carry

@@ -323,7 +323,7 @@ def test_api_run_pipeline_requires_trim(tmp_path):
     # Mutation: run_pipeline raises a plain ValueError for trim=None.
     with pytest.raises(BadSettingError) as exc:
         ftmw.run_pipeline(str(tmp_path / "s"), str(tmp_path / "o.ftmw"), trim=None)
-    _assert_bad_setting(exc, "trim")
+    _assert_bad_setting(exc, "stage1.trim")
 
 
 def test_read_noise_result_before_noise_is_stage_not_run(ft_file):
