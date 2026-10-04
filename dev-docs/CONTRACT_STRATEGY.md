@@ -542,7 +542,9 @@ under `--output`.
 named that does not exist, e.g. all unknown window ids of a curation batch),
 `incomplete_provenance` (`missing`), `file_exists`, `file_incompatible`
   (`file_version`, `supported_version`), `file_corrupt`, `epoch_mismatch` (`file_epoch`, `current_epoch`),
-  `cancelled`, `callback_failed`, `algorithm_failed` (`stage`).
+  `cancelled` (`stage`, `completed_stages`, `completed_windows`;
+  §Events and cancellation), `callback_failed` (`event_schema`),
+  `algorithm_failed` (`stage`).
 - Each typed error remains a subclass of the built-in it replaced (most are
   `ValueError`), so existing `except` clauses keep working.
 - A `.ftmw` path that does not exist raises `not_found` (`kind: "file"`),
@@ -576,31 +578,150 @@ named that does not exist, e.g. all unknown window ids of a curation batch),
   Argument checks inside kernels and storage codecs, which a correct caller
   cannot trigger, stay built-in exceptions. They are bugs, not routes.
 
-## Events and cancellation *(outline)*
+## Events and cancellation
 
-- Every long operation (stage runs, `run_pipeline`, curation apply/preview,
-  scans) accepts an optional `events` callback and an optional cancel token.
-- The callback is synchronous and is always invoked on the calling thread,
-  never inside a pool worker.
-- Events (each with a schema name): stage start; stage end with the summary
-  numbers today's completion log line carries; per-window progress
-  (`index`, `total`, `window_id`, elapsed); `invalidated` (stage keys);
-  warnings with codes (`epoch`, `environment_drift`, `slow_window`,
-  `frame_mismatch`, …).
-- A callback that raises aborts the operation with a typed `callback_failed`
-  error, the callback's exception chained.
-- Cancellation is checked between windows and between stages. A cancelled
-  operation raises a typed `cancelled` error. Every completed stage stays as
-  written, and a stage interrupted mid-run leaves nothing behind, with one
-  exception: **Stage 5 keeps the windows it completed.** The `cancelled`
-  error lists them (`completed_windows`), and `status` reports Stage 5 as
-  `partial`. A later `fit run` with the same settings fits only the remaining
-  windows and must reach the same result as an uninterrupted run. Changed
-  settings discard the partial fit and start over. While Stage 5 is
-  `partial`, Stage 6 and the final products are `not_run`: they need a
-  complete fit.
-- Log output is rendered from these events, so interactive users see the same
-  lines as today.
+Wave 5.1 pins everything here except Stage 5 partial persistence and resume,
+which §Stage 5 partial fits (Wave 5.2) will pin. Until then, cancelling Stage 5
+leaves nothing behind, like any other stage.
+
+### Python surface
+
+- Every long operation takes two optional keyword arguments on all three
+  interfaces (the CLI equivalents are under §CLI below):
+  - `events: Callable[[Event], None] | None`;
+  - `cancel: CancelToken | None`. `CancelToken` is a protocol with one method,
+    `is_set() -> bool`, so a `threading.Event` qualifies.
+- The long operations:
+  - every stage run: `import_data`, `detect_start_time`, `compute_ft`,
+    `estimate_noise`, `calibrate_tau`, `recommend_shape`, `calibrate_timebase`,
+    `detect_peaks`, `assign_windows`, `fit_peaks`, `review_run`;
+  - the curation and refit calls: `review_apply`, `review_preview`,
+    `review_accept`, `review_edit`, `review_create`, `review_undo`;
+  - `report_run`, `scan_run`, `scan_all` and `run_pipeline`.
+
+  `scan_run`'s existing `progress` callback keeps working, and passing `events`
+  as well is allowed.
+- The callback is synchronous and always runs on the calling thread, never
+  inside a pool worker. Events from pool work are passed back to the parent
+  first.
+- An event is a frozen dataclass that carries its `schema`. `to_jsonable`
+  serializes it like any other contract type. `Event` is the union of the types
+  below.
+
+### Event types
+
+Every event has `schema`, `operation` (the CLI verb, such as `"fit run"`) and
+`stage` (a canonical stage name, or `null` where none applies).
+
+| Type | Schema | Further fields |
+|---|---|---|
+| `StageStarted` | `ftmw/stage_started@1` | — |
+| `StageFinished` | `ftmw/stage_finished@1` | `elapsed_s`; `summary` |
+| `WindowProgress` | `ftmw/window_progress@1` | `phase`; `index`; `total`; `window_id`; `n_peaks`; `chi2r`; `elapsed_s`; `dropped` |
+| `ScanProgress` | `ftmw/scan_progress@1` | `knob`; `value`; `index`; `total` |
+| `Invalidated` | `ftmw/invalidated@1` | `stages` |
+| `PipelineWarning` | `ftmw/warning@1` | `code`; `message`; code-specific fields |
+
+- **`StageFinished.summary`** has exactly the keys of the same verb's
+  `ftmw/run_result@1` summary. The two come from one builder.
+- **`WindowProgress`:**
+  - `phase` is `"initial"` or `"replan"`.
+  - `index` counts finished windows within the phase, starting at 1, so windows
+    can finish out of id order.
+  - `total` is the number of windows in that phase.
+  - `elapsed_s` is the window's own fitting time.
+  - A dropped window has `dropped: true`, and its `n_peaks` and `chi2r` are
+    Absent.
+
+  Stage 6 refits and cascades emit `WindowProgress` with `stage: "review"`.
+- **`Invalidated.stages`** are canonical names in `rerun_order`. The event is
+  emitted once per call that invalidates something, at the moment it
+  invalidates. It matches the result's `invalidated` field.
+- **`ScanProgress`** is emitted once per scanned value; `knob` is a registry
+  path.
+- **`PipelineWarning.code`** comes from the vocabulary `warning_code`.
+  Additions are additive.
+
+  | Code | Further fields | Emitted when |
+  |---|---|---|
+  | `slow_window` | `window_id`, `elapsed_s`, `threshold_s` | a window takes longer than the threshold |
+  | `epoch_acknowledged` | `file_epoch`, `current_epoch` | a call edits a fit under an epoch acknowledgement |
+  | `environment_drift` | `fields` | a long operation opens a file whose recorded environment differs from the running one (once per operation) |
+  | `frame_mismatch` | `actions` (indices) | the existing curation advisory |
+  | `walk_fallback` | `reason`, `n_windows` | the fit walk falls back to the sequential walk |
+  | `timebase_skipped` | — | `run_pipeline` continues past a failed timebase calibration |
+
+### Ordering
+
+- For each stage, `StageStarted` comes first, then the stage's other events,
+  then `Invalidated` (if any), then `StageFinished`.
+- `StageFinished` is emitted only after the stage's results are written.
+- A cancelled or failed stage emits no `StageFinished`.
+
+### Callback failure
+
+A callback that raises aborts the operation with `callback_failed`
+(`CallbackFailedError`). The error's `event_schema` names the schema of the
+event being delivered, and the callback's exception is chained as `__cause__`.
+What is left in the file is the same as after a cancel at that point.
+
+### Cancellation
+
+- **Where cancellation is checked:**
+  - before every stage, and between stages;
+  - between windows: the Stage 5 walk, Stage 6 refits and cascades, and the
+    report's per-window rendering;
+  - between scan values.
+- A stage with no windows (noise, FT, tau, …) checks only before it starts. Once
+  a stage has begun its final write, it completes, and the cancel is honoured
+  at the next check point.
+- A cancelled operation raises `cancelled` (`OperationCancelledError`) with
+  these fields:
+  - `stage`: the stage that was interrupted, or `null` when the cancel fell
+    between stages;
+  - `completed_stages`: the stages this operation finished and wrote, in order;
+  - `completed_windows`: a list of window ids. It is always `[]` until Wave 5.2.
+- Every completed stage stays as written. A stage interrupted mid-run leaves the
+  file exactly as it was before that stage began: nothing new, nothing deleted,
+  and no invalidation.
+- A curation batch (`review_apply`, and a refit with its cascade) is one unit:
+  a cancel discards the whole batch.
+- **Stage 5 in parallel.** A cancel stops the walk without waiting for windows
+  that are still fitting:
+  - the workers are terminated;
+  - the pool is shut down without waiting;
+  - the broken-pool state that termination causes is absorbed.
+
+  Cancel latency is the parent's poll interval (about 0.2 s). The sequential
+  walk (`jobs=1`, or no `fork`) honours a cancel after the current window. No
+  check is made inside a single window's least-squares fit.
+- **`run_pipeline`.** A cancel raises `cancelled`; it is not folded into the
+  result dict. For any other failure, the result's `error` becomes that
+  error's `ftmw/error@1` dict instead of a string, and `failed_stage` is a
+  canonical stage name.
+
+### Log rendering
+
+- These lines are rendered from events by a single renderer, at today's logger
+  name, level and text:
+  - stage start and end lines;
+  - the `window %d/%d` progress line;
+  - the per-window detail, dropped and slow-window lines;
+  - the invalidation warning;
+  - the walk-fallback warning.
+- Per-window lines are now logged by the parent process. Their ordering among
+  other parent lines may therefore differ from today's; their text does not.
+- All other log lines stay ordinary logging. Log text is still not contract
+  (§Versioning).
+
+### CLI
+
+- **Ctrl-C.** The first Ctrl-C sets the cancel token. The verb then exits 130,
+  printing the `cancelled` error (as `ftmw/error@1` on stderr under `--json`).
+  A second Ctrl-C raises `KeyboardInterrupt` at once.
+- **`--events`.** Every long verb accepts `--events`, which writes each event to
+  stderr as one JSON line. Under `--json`, an error dict follows as the last
+  stderr line.
 
 ## Status and settings
 
