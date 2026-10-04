@@ -47,6 +47,7 @@ from ftmwpipeline._internal.stage6_impl import (
 )
 from ftmwpipeline.cli.review_commands import cmd_review_edit
 from ftmwpipeline.core.data_structures import FittedPeak, FittingResult
+from ftmwpipeline.file_manager import NotFoundError
 from ftmwpipeline.io.fitting_serialization import load_spectrum_fit_from_hdf5
 from ftmwpipeline.pipeline import Pipeline
 
@@ -303,8 +304,9 @@ def test_remove_by_uid_unknown_omitted_window_errors(stage5_multi_file):
     path = stage5_multi_file
     before = _fitted_by_window(path)
 
-    with pytest.raises(ValueError, match="999999999"):
+    with pytest.raises(NotFoundError, match="999999999") as exc:
         refit_window_impl(str(path), None, remove=["uid:999999999"])
+    assert exc.value.kind == "peak" and exc.value.ids == [999999999]
 
     assert _fitted_by_window(path) == before
 
