@@ -99,6 +99,7 @@ FINAL_PRODUCTS_SCHEMA: str = FinalProducts.__ftmw_schema__
 REVIEW_LOG_SCHEMA = "ftmw/review_log@1"
 PIPELINE_INFO_SCHEMA = "ftmw/pipeline_info@1"
 DISPLAY_FT_SCHEMA = "ftmw/display_ft@1"
+RUN_RESULT_SCHEMA = "ftmw/run_result@1"
 # CURATION_ACTION_SCHEMA (imported above) names a CurationAction's wire form:
 # a request type, not a result -- review_apply / review_preview take a
 # sequence of these in place of a curation file.
@@ -451,6 +452,7 @@ _SCHEMAS: Tuple[str, ...] = (
     PIPELINE_INFO_SCHEMA,
     DISPLAY_FT_SCHEMA,
     CURATION_ACTION_SCHEMA,
+    RUN_RESULT_SCHEMA,
 )
 
 _CODES: Tuple[str, ...] = (
