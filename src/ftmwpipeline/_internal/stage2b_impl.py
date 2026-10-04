@@ -30,7 +30,9 @@ Stage 2b sits between Stage 2 (noise estimation) and Stage 3 (peak detection):
 Stage 3's gap pass consumes the band-wide ``tau_maj``, and Stage 5's per-window
 tau anchor resolves through :func:`~ftmwpipeline._internal.stage5_impl.resolve_window_tau_anchor`
 (``tau_maj`` is only its degenerate single-band fallback). Re-running Stage 2b
-invalidates Stages 3-5 downstream.
+invalidates nothing downstream: each consumer records the decay time and shape
+it took (``peaks.consumed`` / ``fit.consumed``), so its record still says what
+it used.
 
 Knob configuration follows the four-layer resolver pattern shared with Stage 5:
 the optional ``settings=`` / ``preset=`` layer composes against the persisted
@@ -45,9 +47,10 @@ from __future__ import annotations
 import copy
 import json
 import logging
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import h5py
 import numpy as np
@@ -56,6 +59,7 @@ from ..core.tau_calibration_settings import TauCalibrationSettings
 from ..file_manager import (
     BadSettingError,
     StageDependencyError,
+    canonical_invalidated,
     invalidate_downstream_stages,
 )
 from ..fitting.tau_calibration import (
@@ -259,9 +263,11 @@ def calibrate_tau_impl(
     -------
     dict
         ``{"tau_calibration": TauCalibrationResult, "parameters_used": dict,
-        "status": "success", "invalidated_stages": list}``. The
-        ``tau_calibration`` value carries ``tau_G`` semantics when
-        ``shape="gaussian"``.
+        "status": "success", "invalidated_stages": list, "invalidated": list}``.
+        The ``tau_calibration`` value carries ``tau_G`` semantics when
+        ``shape="gaussian"``. ``invalidated`` (also on the result's own
+        ``invalidated`` field) names the invalidated stages canonically, in
+        ``rerun_order``; ``invalidated_stages`` holds their storage keys.
     """
     _check_shape(shape)
     stage_name = _stage_name_for_shape(shape)
@@ -511,17 +517,21 @@ def calibrate_tau_impl(
         # build, build that twin too so Stage 5 never silently falls back to the
         # T_active/3 default.
         if _ensure_recommended_twin:
-            _build_recommended_twin(file_path, built=shape)
+            invalidated = sorted(
+                set(invalidated) | set(_build_recommended_twin(file_path, built=shape))
+            )
 
+    canonical = canonical_invalidated(invalidated)
     return {
         "status": "success",
-        "tau_calibration": result,
+        "tau_calibration": replace(result, invalidated=canonical),
         "parameters_used": parameters_used,
         "invalidated_stages": invalidated,
+        "invalidated": list(canonical),
     }
 
 
-def _build_recommended_twin(file_path: str, *, built: str) -> None:
+def _build_recommended_twin(file_path: str, *, built: str) -> List[str]:
     """Build the Stage 2b tau twin matching the recommended shape, if needed.
 
     *built* is the shape this call already produced (``"lorentzian"`` or
@@ -529,24 +539,27 @@ def _build_recommended_twin(file_path: str, *, built: str) -> None:
     shape, build that twin too (skipping its own recommendation re-run and its
     own cross-build, so the pair is computed exactly once). A vote of ``None``
     (no clear winner -> Stage 5 defaults to Lorentzian) builds nothing extra.
+    Returns the storage keys the twin's run invalidated.
     """
     from ..io.stage_fit_settings_serialization import read_stage2b_recommended_shape
 
     recommended = read_stage2b_recommended_shape(file_path)
     if recommended is None or recommended == built:
-        return
+        return []
     if recommended in _VALID_SHAPES:
         logger.info(
             "Stage 2b vote = %s; building the matching tau twin so Stage 5 has "
             "its calibration",
             recommended,
         )
-        calibrate_tau_impl(
+        twin = calibrate_tau_impl(
             file_path,
             shape=recommended,
             _run_recommendation=False,
             _ensure_recommended_twin=False,
         )
+        return list(twin["invalidated_stages"])
+    return []
 
 
 def save_tau_calibration_impl(

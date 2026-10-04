@@ -16,7 +16,17 @@ Architecture:
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, ClassVar, Dict, List, Optional, Tuple, Union, cast
+from typing import (
+    Any,
+    ClassVar,
+    Dict,
+    Iterable,
+    List,
+    Optional,
+    Tuple,
+    Union,
+    cast,
+)
 
 import numpy as np
 import scipy.fft as sfft
@@ -449,6 +459,10 @@ class ComplexFT:
         # Note: FID back-reference removed for cleaner architecture
         self.metadata = metadata or {}
 
+        # The canonical stage names a Stage 1 run (``compute_ft``) invalidated,
+        # in ``rerun_order``; empty for every other ComplexFT.
+        self.invalidated: Tuple[str, ...] = ()
+
         # Cached properties
         self._magnitude_spectrum: Optional[np.ndarray] = None
         self._freq_step: Optional[float] = None
@@ -658,6 +672,22 @@ class Peak:
     def __lt__(self, other: "Peak") -> bool:
         """Sort peaks by intensity (strongest first)."""
         return self.intensity > other.intensity
+
+
+class PeakList(List[Peak]):
+    """The peak list a Stage 3 run returns: a plain ``list`` of :class:`Peak`
+    that also says which stages the run invalidated.
+
+    ``invalidated`` holds canonical stage names in ``rerun_order``, empty when
+    none. Everything else is ``list`` behaviour; a serialized peak list is the
+    plain list.
+    """
+
+    def __init__(
+        self, peaks: Iterable[Peak] = (), invalidated: Tuple[str, ...] = ()
+    ) -> None:
+        super().__init__(peaks)
+        self.invalidated: Tuple[str, ...] = tuple(invalidated)
 
 
 @dataclass
@@ -1514,6 +1544,9 @@ class WindowPlan:
     parameters: Dict[str, Any] = field(default_factory=dict)
     diagnostics: Dict[str, Any] = field(default_factory=dict)
     plan_revision: int = 0
+    #: Canonical names of the stages the call that produced this result
+    #: invalidated, in ``rerun_order``; empty when none, and on a loaded result.
+    invalidated: Tuple[str, ...] = field(default=(), compare=False)
 
     @property
     def n_windows(self) -> int:
@@ -1835,6 +1868,9 @@ class SpectrumFit:
     final_plan_revision: int = 0
     parameters: Dict[str, Any] = field(default_factory=dict)
     diagnostics: Dict[str, Any] = field(default_factory=dict)
+    #: Canonical names of the stages the call that produced this result
+    #: invalidated, in ``rerun_order``; empty when none, and on a loaded result.
+    invalidated: Tuple[str, ...] = field(default=(), compare=False)
 
     @property
     def n_windows(self) -> int:

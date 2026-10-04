@@ -1147,6 +1147,9 @@ class RefitWindowResult:
     created_window_n_contributors: Union[int, Absent] = Absent.NOT_RUN
     created_window_depends_on: Union[List[int], Absent] = Absent.NOT_RUN
     converged: bool = True
+    #: The stages the call invalidated (canonical names, ``rerun_order``):
+    #: always ``()``, since Stage 6 invalidates no stage.
+    invalidated: Tuple[str, ...] = field(default=(), compare=False)
 
 
 def _chi2r_or_absent(value: Union[float, Absent]) -> Union[float, Absent]:
@@ -3591,6 +3594,9 @@ class CreateWindowResult:
     calibration_state: str = "rb_locked"
     epsilon: float = 0.0
     sigma_epsilon: float = 0.0
+    #: The stages the call invalidated (canonical names, ``rerun_order``):
+    #: always ``()``, since Stage 6 invalidates no stage.
+    invalidated: Tuple[str, ...] = field(default=(), compare=False)
 
 
 def _frozen_parameters_from_sources(
@@ -4149,6 +4155,9 @@ class CurationApplyResult:
     created_windows: List[PlannedWindowResult] = field(default_factory=list)
     windows: Dict[int, AppliedWindowResult] = field(default_factory=dict)
     base_changed: bool = False
+    #: The stages the call invalidated (canonical names, ``rerun_order``):
+    #: always ``()``, since Stage 6 invalidates no stage.
+    invalidated: Tuple[str, ...] = field(default=(), compare=False)
 
 
 def _parse_curation_params(raw: str, line_no: int) -> Dict[str, str]:
@@ -9219,6 +9228,9 @@ class UndoResult:
     plan: List["PlannedAction"]
     applied: int
     dry_run: bool
+    #: The stages the call invalidated (canonical names, ``rerun_order``):
+    #: always ``()``, since Stage 6 invalidates no stage.
+    invalidated: Tuple[str, ...] = field(default=(), compare=False)
 
 
 def _decision_to_op(entry: DecisionLogEntry) -> List[CurationOp]:
@@ -9512,6 +9524,9 @@ class ReviewRunResult:
     n_windows: int
     n_attention: int
     reason_counts: Dict[str, int]
+    #: The stages the call invalidated (canonical names, ``rerun_order``):
+    #: always ``()``, since Stage 6 invalidates no stage.
+    invalidated: Tuple[str, ...] = field(default=(), compare=False)
 
 
 def _compute_attention_reasons(

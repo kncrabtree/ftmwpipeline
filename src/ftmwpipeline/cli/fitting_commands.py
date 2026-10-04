@@ -15,7 +15,7 @@ from .._internal.stage5_validation_impl import validate_stage5_shape_error_impl
 from ..core.stage_fit_settings import StageFitSettings
 from ..file_manager import PipelineFileError
 from ._argspec import add_settings_args, settings_from_namespace
-from .utils import add_stage_object, print_error, setup_logging
+from .utils import add_stage_object, print_error, print_invalidated, setup_logging
 
 
 def _ensure_ftmw(path: str) -> str:
@@ -85,6 +85,7 @@ def cmd_fit_peaks(args: argparse.Namespace) -> int:
             f"of {result['n_replan_events']:,} "
             f"(final plan revision {result['final_plan_revision']})"
         )
+        print_invalidated(result["invalidated"])
         print(f"\nResults saved to: {file_path}")
         print("Use 'fit show' to inspect the fit")
         return 0

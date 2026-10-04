@@ -24,6 +24,7 @@ from ..file_manager import (
     BadSettingError,
     PipelineFileError,
     StageDependencyError,
+    canonical_invalidated,
     invalidate_downstream_stages,
 )
 from ..io.noise_result_serialization import (
@@ -174,7 +175,9 @@ def _compute_noise_scatter(
     ``previous`` is the settings record this run replaces. When the resolved
     settings differ from it, every stage built on the old sigma (Stage 2b
     onward) is invalidated, as an explicit override must; an identical re-run
-    reproduces the same sigma and leaves them standing, as Stage 1 does.
+    reproduces the same sigma and leaves them standing, as Stage 1 does. With no
+    previous record there is nothing to compare against, so any standing
+    downstream result is invalidated too.
     """
     window_mhz_v = float(_required(settings.window_mhz, "window_mhz"))
     pedestal_mhz_v = float(_required(settings.pedestal_mhz, "pedestal_mhz"))
@@ -260,9 +263,12 @@ def _compute_noise_scatter(
         # ``processing_parameters/stage2_noise`` so a no-kwargs re-run inherits
         # it via the resolver's persisted layer.
         save_noise_settings_to_h5(file_path, settings, preset_name=preset_name)
+        # No previous record means nothing says what any standing downstream
+        # result was built on (a first run has none; an old file may), so only
+        # a recorded, identical recipe leaves them standing.
         invalidated = (
             invalidate_downstream_stages(file_path, "stage2_noise_result")
-            if previous is not None and previous != settings
+            if previous is None or previous != settings
             else []
         )
         _update_stage_completion(file_path, "stage2_noise_result")
@@ -273,6 +279,7 @@ def _compute_noise_scatter(
         logger.error(f"Failed to save noise estimation results: {e}")
         raise RuntimeError(f"Noise estimation succeeded but storage failed: {e}")
 
+    noise_result.invalidated = canonical_invalidated(invalidated)
     active_freq = active_ft.freq_array
     return {
         "status": "success",
@@ -285,6 +292,7 @@ def _compute_noise_scatter(
         "noise_points": int(noise_result.noise_mask.sum()),
         "total_points": len(active_freq),
         "invalidated_stages": invalidated,
+        "invalidated": list(canonical_invalidated(invalidated)),
     }
 
 

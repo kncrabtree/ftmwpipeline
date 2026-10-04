@@ -27,7 +27,7 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import h5py
 import numpy as np
@@ -40,7 +40,7 @@ from ..core.settings import (
     FTSettings,
     resolve,
 )
-from ..file_manager import BadSettingError, PipelineFileError
+from ..file_manager import BadSettingError, PipelineFileError, canonical_invalidated
 from ..io.provenance import (
     RecordProvenance,
     group_provenance,
@@ -331,10 +331,12 @@ def compute_ft_impl(
                 )
             result["trimmed_points"] = int(np.sum(mask))
             result["trim_range"] = trim_range
+        invalidated: List[str] = []
         if persist:
-            _persist_ft_settings(
+            invalidated = _persist_ft_settings(
                 file_path, resolved, fid_duration_us=float(fid.duration_us)
             )
+        result["invalidated"] = list(canonical_invalidated(invalidated))
         return result
 
     try:
@@ -387,14 +389,17 @@ def compute_ft_impl(
     if trim_range is not None:
         result["trim_range"] = trim_range
 
+    invalidated = []
     if persist:
         # Persisting is completing Stage 1 (record + epoch stamp); a failure
         # must surface, never leave the file on the old window behind a
         # successful return.
-        _persist_ft_settings(
+        invalidated = _persist_ft_settings(
             file_path, resolved, fid_duration_us=float(fid.duration_us)
         )
         logger.info("FT settings + Stage 1 completion persisted")
+    result["invalidated"] = list(canonical_invalidated(invalidated))
+    complex_ft.invalidated = tuple(result["invalidated"])
 
     return result
 
@@ -525,25 +530,6 @@ def _build_display_and_active_fid(
     return display_ft, active_time_us, active_data
 
 
-def _dependents_of(stage: str, deps: Dict[str, Any]) -> set:
-    """Transitive set of stages that depend (directly/indirectly) on ``stage``.
-
-    Excludes ``stage`` itself. Used to invalidate everything built on the FT
-    when the persisted FT settings change.
-    """
-    result: set = set()
-    changed = True
-    while changed:
-        changed = False
-        for st, required in deps.items():
-            if st in result:
-                continue
-            if any(r == stage or r in result for r in required):
-                result.add(st)
-                changed = True
-    return result
-
-
 def _stored_fid_duration_us(file_path: str) -> Optional[float]:
     """The stored FID's duration, or ``None`` for a file that holds no FID."""
     with h5py.File(file_path, "r") as h5f:
@@ -568,7 +554,7 @@ def _persist_ft_settings(
     resolved: FTSettings,
     *,
     fid_duration_us: Optional[float] = None,
-) -> None:
+) -> List[str]:
     """Write resolved settings to ``ft_processing`` and mark Stage 1 complete.
 
     The record is written at
@@ -591,8 +577,10 @@ def _persist_ft_settings(
     Completing Stage 1 stamps its analysis epoch (``stage1_complex_ft``) before
     writing anything else; a stamp that cannot be written raises before the
     record or the completion is touched (see :mod:`ftmwpipeline.io.provenance`).
+
+    Returns the storage keys of the stages it invalidated (sorted).
     """
-    from ..file_manager import PipelineStageTracker, drop_records_of_removed_stages
+    from ..file_manager import invalidate_stages_in_file
 
     if fid_duration_us is None:
         fid_duration_us = _stored_fid_duration_us(file_path)
@@ -623,33 +611,16 @@ def _persist_ft_settings(
         ft_group.attrs["parameters"] = json.dumps(new_attrs, default=str)
         ft_group.attrs["last_updated"] = datetime.now().isoformat()
 
+        invalidated: List[str] = []
+        if old_attrs is not None and old_attrs != new_attrs:
+            invalidated = invalidate_stages_in_file(
+                h5f,
+                ["stage1_complex_ft"],
+                reason=f"FT settings changed ({old_attrs} -> {new_attrs})",
+            )
+
         stages = h5f.require_group("pipeline_stages")
         completed = json.loads(stages.attrs.get("completed_stages", "[]"))
-
-        if old_attrs is not None and old_attrs != new_attrs:
-            deps = PipelineStageTracker.STAGE_DEPENDENCIES
-            paths = PipelineStageTracker.STAGE_DATA_PATHS
-            invalidated = []
-            for st in _dependents_of("stage1_complex_ft", deps):
-                data_path = paths.get(st, st)
-                if data_path in h5f:
-                    del h5f[data_path]
-                if st in completed:
-                    completed.remove(st)
-                    invalidated.append(st)
-            drop_records_of_removed_stages(
-                h5f, _dependents_of("stage1_complex_ft", deps)
-            )
-            if invalidated:
-                logger.warning(
-                    "FT settings changed (%s -> %s); invalidated "
-                    "downstream stage(s) %s -- re-run them on the new "
-                    "spectrum.",
-                    old_attrs,
-                    new_attrs,
-                    sorted(invalidated),
-                )
-
         if "stage1_complex_ft" not in completed:
             completed.append("stage1_complex_ft")
         stages.attrs["completed_stages"] = json.dumps(completed)
@@ -658,6 +629,39 @@ def _persist_ft_settings(
     # Stage 1 stamps its own completion rather than going through
     # ``_update_stage_completion``, so it reclaims its own dead space too.
     compact_file(file_path)
+    return invalidated
+
+
+def write_recommended_ft_params(
+    file_path: str, parameters: Dict[str, Any]
+) -> List[str]:
+    """Write ``parameters`` to the import-time recommended layer (``start run``,
+    a loader-declared chirp window) without leaving a stale result behind.
+
+    An authoritative Stage 1 record never reads the recommended layer, so the
+    write changes nothing it is read as having used. A pre-provenance record
+    still falls through to it: when the write moves the settings such a record
+    resolves to, every stage built on the old spectrum is invalidated in the
+    same call. Returns the storage keys of the stages it invalidated.
+    """
+    from ..file_manager import (
+        invalidate_downstream_stages,
+        update_processing_parameters,
+    )
+
+    with h5py.File(file_path, "r") as h5f:
+        falls_through = FT_PROCESSING_PATH in h5f and not ft_record_is_authoritative(
+            h5f
+        )
+        before = resolve_ft_settings_h5(h5f) if falls_through else None
+    update_processing_parameters(file_path, parameters)
+    if before is None:
+        return []
+    duration = _stored_fid_duration_us(file_path)
+    after = _resolve_settings(file_path, None)
+    if _effective_attrs(before, duration) == _effective_attrs(after, duration):
+        return []
+    return list(invalidate_downstream_stages(file_path, "stage1_complex_ft"))
 
 
 def save_ft_parameters_impl(file_path: str, parameters: Dict[str, Any]) -> None:

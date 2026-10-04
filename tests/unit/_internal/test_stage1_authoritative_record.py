@@ -223,7 +223,7 @@ def test_upgrading_an_unchanged_old_record_invalidates_nothing(
     _make_pre_provenance(p, start_us="__None__", end_us="__None__")
     completed = _completed(p)
 
-    ftmw.compute_ft(p, from_saved_params=True)
+    ftmw.compute_ft(p)
 
     assert _completed(p) == completed
     prov = ft_settings_provenance(p)
@@ -378,3 +378,74 @@ def test_stage1_rerun_withdraws_the_shape_recommendation_record(
     with h5py.File(p, "r") as h5f:
         assert "stage2b_tau_calibration" not in h5f
         assert SHAPE_RECOMMENDATION_SETTINGS_PATH not in h5f
+
+
+# Mutation caught: compute_ft(from_saved_params=True) persists (a read that
+# writes), or recomputes a different spectrum than the stored settings give.
+def test_from_saved_params_only_reads(tmp_path: Path) -> None:
+    p = _create_ftmw(tmp_path)
+    ftmw.compute_ft(p, trim=_TRIM)
+    with open(p, "rb") as fh:
+        before = fh.read()
+    ft = ftmw.compute_ft(p, from_saved_params=True)
+    with open(p, "rb") as fh:
+        assert fh.read() == before
+    ref = compute_ft_impl(p)["complex_ft"]
+    np.testing.assert_array_equal(ft.freq_array, ref.freq_array)
+    np.testing.assert_array_equal(ft.complex_spectrum, ref.complex_spectrum)
+    assert ft.invalidated == ()
+
+
+# Mutation caught: a from_saved_params call completes Stage 1 on a fresh file.
+def test_from_saved_params_does_not_complete_stage1(tmp_path: Path) -> None:
+    p = _create_ftmw(tmp_path)
+    ftmw.compute_ft(p, from_saved_params=True)
+    assert "stage1_complex_ft" not in _completed(p)
+    assert ft_settings_provenance(p) is None
+
+
+# Mutation caught: a start stamp that moves the start a pre-provenance record
+# still falls through to leaves the stages built on the old spectrum standing.
+def test_start_stamp_through_an_old_record_invalidates_downstream(
+    tmp_path: Path,
+) -> None:
+    p = _create_ftmw(tmp_path)
+    ftmw.compute_ft(p)
+    ftmw.estimate_noise(p)
+    _make_pre_provenance(p, start_us="__None__")
+    write_recommended_chirp_window(p, ChirpWindow(chirp_end_us=1.5))
+    out = detect_start_time_impl(p, settings=_FAST, stamp=True)
+    assert out["stamped"] is True
+    assert _resolve_settings(p, None).start_us == out["start_us"]
+    assert out["invalidated"] == ["noise"]
+    assert out["start_detection"].invalidated == ("noise",)
+    assert "stage2_noise_result" not in _completed(p)
+    assert "stage1_complex_ft" in _completed(p)
+
+
+# Mutation caught: a stamp under an authoritative record reports (or performs)
+# an invalidation although nothing Stage 1 used moved.
+def test_start_stamp_under_a_current_record_invalidates_nothing(
+    tmp_path: Path,
+) -> None:
+    p = _create_ftmw(tmp_path)
+    ftmw.compute_ft(p)
+    ftmw.estimate_noise(p)
+    write_recommended_chirp_window(p, ChirpWindow(chirp_end_us=1.5))
+    out = detect_start_time_impl(p, settings=_FAST, stamp=True)
+    assert out["invalidated"] == []
+    assert "stage2_noise_result" in _completed(p)
+
+
+# Mutation caught: a Stage 1 re-run that changes the window does not report
+# what it invalidated, or reports storage keys / an unordered list.
+def test_stage1_rerun_reports_canonical_invalidated(tmp_path: Path) -> None:
+    p = _create_ftmw(tmp_path)
+    ftmw.compute_ft(p)
+    ftmw.estimate_noise(p)
+    same = ftmw.compute_ft(p)
+    assert same.invalidated == ()
+    moved = ftmw.compute_ft(p, start_us=2.0)
+    assert moved.invalidated == ("noise",)
+    result = compute_ft_impl(p, persist=True)
+    assert result["invalidated"] == []

@@ -20,6 +20,7 @@ from ._argspec import add_settings_args, settings_from_namespace
 from .utils import (
     add_stage_object,
     print_error,
+    print_invalidated,
     setup_logging,
 )
 
@@ -93,6 +94,7 @@ def cmd_estimate_noise(args: argparse.Namespace) -> int:
         print(
             f"  Frequency range: {result['frequency_range'][0]:.1f} - {result['frequency_range'][1]:.1f} MHz"
         )
+        print_invalidated(result["invalidated"])
 
         # Noise statistics
         rms_mean = noise_result.rms_noise.mean()

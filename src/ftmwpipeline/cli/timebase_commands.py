@@ -31,7 +31,7 @@ from .._internal.timebase_impl import (
 from ..contract import Absent
 from ..file_manager import PipelineFileError
 from ..serialize import to_jsonable
-from .utils import add_stage_object, print_error, setup_logging
+from .utils import add_stage_object, print_error, print_invalidated, setup_logging
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +98,7 @@ def cmd_calibrate_timebase(args: argparse.Namespace) -> int:
         for note in tc.preconditions_notes:
             if note != "ok":
                 print(f"    - {note}")
+    print_invalidated(result["invalidated"])
     print(f"\nResults saved to: {file_path}")
     print("Use 'timebase show' for the per-tone table.")
     return 0

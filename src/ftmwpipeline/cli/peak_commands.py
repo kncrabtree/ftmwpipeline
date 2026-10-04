@@ -14,7 +14,7 @@ from .._internal.stage3_impl import detect_peaks_impl, visualize_peaks_impl
 from ..core.peak_detection_settings import PeakDetectionSettings
 from ..file_manager import PipelineFileError
 from ._argspec import add_settings_args, settings_from_namespace
-from .utils import add_stage_object, print_error, setup_logging
+from .utils import add_stage_object, print_error, print_invalidated, setup_logging
 
 
 def _ensure_ftmw(path: str) -> str:
@@ -79,6 +79,7 @@ def cmd_detect_peaks(args: argparse.Namespace) -> int:
             f"    strong: {n_strong:,}   medium: {n_medium:,}   weak: {n_weak:,}"
             " (promoted only)"
         )
+        print_invalidated(result["invalidated"])
         print(f"\nResults saved to: {file_path}")
         print("Use 'peaks show' to inspect detected peaks")
         return 0

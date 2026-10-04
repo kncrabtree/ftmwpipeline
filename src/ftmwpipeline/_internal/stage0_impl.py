@@ -8,7 +8,7 @@ and functional API interfaces.
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..core.data_structures import FID, ChirpWindow
 from ..core.stage_fit_settings import coerce_clock_sources
@@ -17,9 +17,10 @@ from ..file_manager import (
     BadSettingError,
     PipelineFileError,
     SourceMetadata,
+    canonical_invalidated,
     create_pipeline_file,
     open_pipeline_file,
-    update_processing_parameters,
+    stages_an_import_replaces,
     validate_pipeline_file,
 )
 from ..io.data_loaders import (
@@ -29,10 +30,7 @@ from ..io.data_loaders import (
     validate_source,
 )
 from ..io.fid_serialization import load_fid_from_hdf5
-from ..io.stage_fit_settings_serialization import (
-    write_recommended_chirp_window,
-    write_recommended_clock_sources,
-)
+from ..io.stage_fit_settings_serialization import write_recommended_chirp_window
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +63,7 @@ def _coerce_chirp_window(value: Any) -> ChirpWindow:
     raise ValueError(f"Cannot coerce {type(value)} to ChirpWindow")
 
 
-def persist_chirp_window_metadata(file_path: str, fid: FID) -> None:
+def persist_chirp_window_metadata(file_path: str, fid: FID) -> List[str]:
     """Persist a loader-declared chirp window and derive the start hint.
 
     When the loader attached ``fid.metadata["chirp_window"]``, write it to the
@@ -74,11 +72,14 @@ def persist_chirp_window_metadata(file_path: str, fid: FID) -> None:
     derived value) -- stamp ``recommended_processing.start_us = chirp_end +
     margin`` so a later FT inherits a physically grounded start without
     running the sweep detector.  Failures are non-fatal: the declaration is
-    advisory metadata.
+    advisory metadata. Returns the storage keys of the stages the start hint
+    invalidated (only ever on a reused file with a pre-provenance Stage 1
+    record; see :func:`~.stage1_impl.write_recommended_ft_params`).
     """
     raw_chirp = fid.metadata.get("chirp_window")
     if raw_chirp is None:
-        return
+        return []
+    invalidated: List[str] = []
     try:
         chirp_window = _coerce_chirp_window(raw_chirp)
         write_recommended_chirp_window(file_path, chirp_window)
@@ -92,11 +93,15 @@ def persist_chirp_window_metadata(file_path: str, fid: FID) -> None:
             ),
         )
         if fid.processing.start_us is None:
+            from .stage1_impl import write_recommended_ft_params
+
             margin = chirp_window.start_margin_us
             if margin is None:
                 margin = StartDetectionSettings().guard_margin_us
             recommended_start = chirp_window.chirp_end_us + margin
-            update_processing_parameters(file_path, {"start_us": recommended_start})
+            invalidated = write_recommended_ft_params(
+                file_path, {"start_us": recommended_start}
+            )
             logger.info(
                 "Derived recommended start_us = %.3f us "
                 "(chirp_end %.3f + margin %.3f) from chirp window.",
@@ -106,6 +111,35 @@ def persist_chirp_window_metadata(file_path: str, fid: FID) -> None:
             )
     except Exception as exc:
         logger.warning("Could not persist declared chirp window: %s", exc)
+    return invalidated
+
+
+def persist_loader_metadata(file_path: str, fid: FID) -> List[str]:
+    """Persist what the loader declared beside the samples: the instrument
+    clock declaration and the chirp window (with its derived start hint).
+
+    Both are advisory metadata, so a failure is logged, never raised. The
+    clock declaration is written through
+    :func:`~.clocks_impl.write_declaration`, which keeps a stored
+    final-products table consistent with it when the import reuses an
+    existing file. Returns the storage keys of the stages the chirp window's
+    start hint invalidated (:func:`persist_chirp_window_metadata`).
+    """
+    raw_clocks = fid.metadata.get("clock_sources")
+    if raw_clocks is not None:
+        try:
+            from .clocks_impl import write_declaration
+
+            clock_tuple = coerce_clock_sources(raw_clocks)
+            write_declaration(str(file_path), clock_tuple)
+            logger.info(
+                "Persisted %d recommended clock source(s) from loader metadata.",
+                len(clock_tuple) if clock_tuple is not None else 0,
+            )
+        except Exception as exc:
+            logger.warning("Could not persist recommended clock sources: %s", exc)
+
+    return persist_chirp_window_metadata(str(file_path), fid)
 
 
 def import_data_impl(
@@ -214,27 +248,16 @@ def import_data_impl(
             loader_parameters=format_params,
         )
 
-        # Create the pipeline file
+        # Create the pipeline file. Overwriting a file discards every stage it
+        # held, which the result reports as invalidated.
+        invalidated = stages_an_import_replaces(file_path, force)
         pipeline_file = create_pipeline_file(
             filepath=file_path, fid=fid, source_metadata=source_metadata, force=force
         )
         logger.info(f"Pipeline file created: {pipeline_file}")
 
-        # Persist any instrument clock declaration extracted by the loader.
-        # This is written after create_pipeline_file so stage0_fid_data exists.
-        raw_clocks = fid.metadata.get("clock_sources")
-        if raw_clocks is not None:
-            try:
-                clock_tuple = coerce_clock_sources(raw_clocks)
-                write_recommended_clock_sources(str(pipeline_file), clock_tuple)
-                logger.info(
-                    "Persisted %d recommended clock source(s) from loader metadata.",
-                    len(clock_tuple) if clock_tuple is not None else 0,
-                )
-            except Exception as exc:
-                logger.warning("Could not persist recommended clock sources: %s", exc)
-
-        persist_chirp_window_metadata(str(pipeline_file), fid)
+        # Written after create_pipeline_file so stage0_fid_data exists.
+        invalidated += persist_loader_metadata(str(pipeline_file), fid)
     except PipelineFileError:
         raise
     except Exception as e:
@@ -256,6 +279,7 @@ def import_data_impl(
         "validation_metadata": validation.get("metadata", {}),
         "loader_parameters": format_params,
         "status": "success",
+        "invalidated": list(canonical_invalidated(invalidated)),
     }
 
     return result

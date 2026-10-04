@@ -16,6 +16,7 @@ from ._argspec import add_settings_args, settings_from_namespace
 from .utils import (
     add_stage_object,
     print_error,
+    print_invalidated,
     print_processing_params,
     setup_logging,
 )
@@ -76,6 +77,7 @@ def cmd_ft_process(args: argparse.Namespace) -> int:
             print(f"   Final spectrum: {result['frequency_points']:,} frequency points")
             if "trimmed_points" in result:
                 print(f"   After trimming: {result['trimmed_points']:,} points")
+            print_invalidated(result["invalidated"])
 
             print()
             print("Parameters stored for subsequent pipeline stages")

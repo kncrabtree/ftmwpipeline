@@ -211,6 +211,9 @@ class TimebaseCalibrationResult:
     preconditions_passed: bool
     preconditions_notes: Tuple[str, ...] = field(default_factory=tuple)
     clock_sources: Optional[Tuple[ClockSource, ...]] = None
+    #: Canonical names of the stages the call that produced this result
+    #: invalidated, in ``rerun_order``; empty when none, and on a loaded result.
+    invalidated: Tuple[str, ...] = field(default=(), compare=False)
 
 
 def _lattice_gcd_mhz(

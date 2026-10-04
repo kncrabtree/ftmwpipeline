@@ -64,6 +64,7 @@ from ..file_manager import (
     BadSettingError,
     NotFoundValueError,
     StageDependencyError,
+    canonical_invalidated,
     invalidate_downstream_stages,
 )
 from ..fitting.clock_lattice import ClockLattice
@@ -2660,9 +2661,10 @@ def _fit_peaks_impl(
         file_path, resolved, preset_name=preset_name, consumed=consumed
     )
     _update_stage_completion(file_path, "stage5_fitting")
-    # A Stage 5 re-fit invalidates nothing (Stage 5 is the terminal
-    # stage); this call is a no-op and a guard for future stages.
-    invalidate_downstream_stages(file_path, "stage5_fitting")
+    # A Stage 5 re-fit supersedes any Stage 6 review built on the old fit.
+    spectrum_fit.invalidated = canonical_invalidated(
+        invalidate_downstream_stages(file_path, "stage5_fitting")
+    )
 
     n_thaw_accepted = sum(1 for e in spectrum_fit.thaw_history if e.accepted)
     n_replan_accepted = sum(1 for e in spectrum_fit.replan_history if e.accepted)
@@ -2705,6 +2707,7 @@ def _fit_peaks_impl(
         "parameters_used": parameters,
         "active_ft": active_ft,
         "rescue_events": rescue_events_live,
+        "invalidated": list(spectrum_fit.invalidated),
     }
 
 

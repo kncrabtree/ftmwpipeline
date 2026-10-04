@@ -11,6 +11,11 @@ The declaration is written to the **recommended** layer
 injected declaration uses.  The Stage 5 resolver still ranks it below an
 explicit ``--clocks`` and below persisted Stage 5 settings, so editing the
 declaration never silently rewrites a reproducible fit (the D11 guarantee).
+
+The declaration does feed the file's derived frequency-calibration state (when
+the fit recorded none of its own), so every write here also carries the change
+into a stored Stage 6 final-products table (:func:`write_declaration`): the file
+never keeps a table its own calibration contradicts. No stage is invalidated.
 """
 
 import logging
@@ -36,6 +41,23 @@ logger = logging.getLogger(__name__)
 # distance on any FT grid -- it owes nothing to the active-FT bin spacing and
 # must not be converted to a bin-relative quantity.
 _FREQ_TOL_MHZ = 1e-6
+
+
+def write_declaration(
+    file_path: str, clocks: Optional[Tuple[ClockSource, ...]]
+) -> None:
+    """Write the recommended clock declaration (``None`` clears it) and rebuild
+    a stored final-products table whose calibration state it changed.
+
+    The one writer of the declaration on an existing file: the ``clocks`` verbs
+    and the import's loader-declared clocks both go through here.
+    """
+    from .compaction import compact_file
+    from .stage6_impl import refresh_persisted_final_products_impl
+
+    write_recommended_clock_sources(file_path, clocks)
+    if refresh_persisted_final_products_impl(file_path):
+        compact_file(file_path)
 
 
 def _validate_pipeline(file_path: str) -> None:
@@ -78,7 +100,7 @@ def set_clock_sources_impl(
     else:
         existing = read_recommended_clock_sources(file_path) or ()
         result = tuple(existing) + tuple(new)
-    write_recommended_clock_sources(file_path, result if result else None)
+    write_declaration(file_path, result if result else None)
     logger.info("Declared %d clock source(s) on %s", len(result), file_path)
     return result
 
@@ -109,12 +131,12 @@ def remove_clock_sources_impl(
         if not was_matched:
             logger.warning("No declared clock source near %.6f MHz to remove", t)
     result = tuple(kept)
-    write_recommended_clock_sources(file_path, result if result else None)
+    write_declaration(file_path, result if result else None)
     return result
 
 
 def clear_clock_sources_impl(file_path: str) -> None:
     """Clear the clock-source declaration (writes the no-recommendation sentinel)."""
     _validate_pipeline(file_path)
-    write_recommended_clock_sources(file_path, None)
+    write_declaration(file_path, None)
     logger.info("Cleared clock-source declaration on %s", file_path)

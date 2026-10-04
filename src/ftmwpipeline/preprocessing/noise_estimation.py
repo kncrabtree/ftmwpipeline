@@ -16,8 +16,8 @@ estimator replaced a retired level-based "adaptive" estimator that over-estimate
 """
 
 import logging
-from dataclasses import dataclass
-from typing import Any, Dict, Union, cast
+from dataclasses import dataclass, field
+from typing import Any, Dict, Tuple, Union, cast
 
 import numpy as np
 import scipy.signal as spsig
@@ -42,6 +42,9 @@ class NoiseResult:
     rms_noise: np.ndarray
     noise_mask: np.ndarray
     bin_info: Dict[str, Union[np.ndarray, int, float, str]]
+    #: Canonical names of the stages the call that produced this result
+    #: invalidated, in ``rerun_order``; empty when none, and on a loaded result.
+    invalidated: Tuple[str, ...] = field(default=(), compare=False)
 
 
 # ---------------------------------------------------------------------------

@@ -6,7 +6,7 @@ import argparse
 import logging
 import sys
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import Any, List, Optional, Sequence, Tuple
 
 
 def add_stage_object(
@@ -139,6 +139,18 @@ def print_error(message: str, exit_code: int = 1) -> None:
     """Print error message and exit."""
     print(f"Error: {message}", file=sys.stderr)
     sys.exit(exit_code)
+
+
+def print_invalidated(invalidated: Sequence[str]) -> None:
+    """Name the stages a run invalidated (canonical names, rerun order).
+
+    Prints nothing when the run invalidated nothing.
+    """
+    if invalidated:
+        print(
+            "\nInvalidated (re-run to refresh): "
+            + ", ".join(str(s) for s in invalidated)
+        )
 
 
 def elide_path(path: str, prev: Optional[str]) -> str:

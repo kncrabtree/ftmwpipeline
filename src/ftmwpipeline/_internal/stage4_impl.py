@@ -29,7 +29,11 @@ from ..core.window_planning_settings import (
 )
 from ..core.window_planning_settings import load_preset as load_window_planning_preset
 from ..core.window_planning_settings import resolve as resolve_window_planning_settings
-from ..file_manager import StageDependencyError, invalidate_downstream_stages
+from ..file_manager import (
+    StageDependencyError,
+    canonical_invalidated,
+    invalidate_downstream_stages,
+)
 from ..io.window_planning_settings_serialization import (
     load_window_planning_settings_from_h5,
     save_window_planning_settings_to_h5,
@@ -224,7 +228,9 @@ def assign_windows_impl(
     )
     _update_stage_completion(file_path, "stage4_windows")
     # Re-assignment supersedes any Stage 5 fit built on the old plan.
-    invalidate_downstream_stages(file_path, "stage4_windows")
+    plan.invalidated = canonical_invalidated(
+        invalidate_downstream_stages(file_path, "stage4_windows")
+    )
 
     n_free = sum(w.n_free_peaks for w in plan.windows)
     n_fixed = sum(len(w.fixed_contributors) for w in plan.windows)
@@ -249,6 +255,7 @@ def assign_windows_impl(
         "parameters_used": plan.parameters,
         "active_ft": active_ft,
         "active_rms": active_rms,
+        "invalidated": list(plan.invalidated),
     }
 
 

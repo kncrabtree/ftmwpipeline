@@ -229,10 +229,14 @@ def calibrate_timebase_impl(
     refresh_persisted_final_products_impl(file_path)
     _update_stage_completion(file_path, STAGE_NAME)
 
+    # No stage depends on the timebase, and Stage 5 deliberately is not one of
+    # them (it records the epsilon it used); the stored final-products table,
+    # the one result built on epsilon, was rebuilt above.
     return {
         "status": "success",
         "timebase_calibration": result,
         "parameters_used": parameters_used,
+        "invalidated": [],
     }
 
 

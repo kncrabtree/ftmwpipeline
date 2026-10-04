@@ -21,7 +21,7 @@ file-bound orchestration (band resolution + recommended-``start_us`` stamping).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, Tuple
 
 import numpy as np
@@ -77,6 +77,9 @@ class StartDetectionResult:
     # Declaration fields — absent on pure detector results (back-compat default).
     chirp_end_declared_us: Optional[float] = None
     declaration_used: bool = False
+    #: Canonical names of the stages the call that produced this result
+    #: invalidated, in ``rerun_order``; empty when none, and on a loaded result.
+    invalidated: Tuple[str, ...] = field(default=(), compare=False)
 
 
 @dataclass(frozen=True)

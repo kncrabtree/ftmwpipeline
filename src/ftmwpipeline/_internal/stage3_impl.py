@@ -39,7 +39,7 @@ from typing import Any, Dict, List, Optional, Tuple, cast
 import h5py
 import numpy as np
 
-from ..core.data_structures import ComplexFT, Peak
+from ..core.data_structures import ComplexFT, Peak, PeakList
 from ..core.peak_detection_settings import (
     PeakDetectionSettings,
 )
@@ -48,7 +48,9 @@ from ..core.peak_detection_settings import resolve as resolve_peak_detection_set
 from ..file_manager import (
     BadSettingError,
     StageDependencyError,
+    canonical_invalidated,
     invalidate_downstream_stages,
+    invalidate_stages_in_file,
 )
 from ..io.peak_detection_settings_serialization import (
     Stage3Consumed,
@@ -845,14 +847,14 @@ def detect_peaks_impl(
 
     full_params = {**params, "acquisition_us": acquisition_us}
     save_peaks_impl(file_path, peaks, parameters=full_params)
-    # ``save_peak_parameters_impl`` writes the JSON-encoded
+    # ``_write_peak_parameters_record`` writes the JSON-encoded
     # ``processing_parameters/peak_detection`` block, which the report reads for
     # its Stage 3 parameter panel (``report_impl.py``) -- a live consumer, not a
     # back-compat shim. The resolved PeakDetectionSettings below persist to
     # ``processing_parameters/stage3_peaks``, which is what the settings
     # resolver's persisted layer reads. Both blocks are live, for different
     # consumers.
-    save_peak_parameters_impl(file_path, full_params)
+    _write_peak_parameters_record(file_path, full_params)
     # What the gap pass took from Stage 2b goes in Stage 3's own record:
     # a later Stage 2b re-run does not invalidate Stage 3, so this is what
     # says which decay time and shape it actually used.
@@ -864,7 +866,9 @@ def detect_peaks_impl(
     )
     _update_stage_completion(file_path, "stage3_peaks")
     # Re-detection supersedes any Stage 4 window plan built on the old peaks.
-    invalidate_downstream_stages(file_path, "stage3_peaks")
+    invalidated = canonical_invalidated(
+        invalidate_downstream_stages(file_path, "stage3_peaks")
+    )
     n_promoted = sum(1 for p in peaks if p.properties.get("promoted"))
     logger.info(
         "Stage 3: detected %d peaks (active grid); %d promoted at SNR>=%.3g",
@@ -876,7 +880,7 @@ def detect_peaks_impl(
     n_primary = sum(1 for p in peaks if p.properties.get("detection_pass") == "primary")
     return {
         "status": "success",
-        "peaks": peaks,
+        "peaks": PeakList(peaks, invalidated=invalidated),
         "n_peaks": len(peaks),
         "n_promoted": n_promoted,
         "promotion_min_snr": promotion_v,
@@ -891,6 +895,7 @@ def detect_peaks_impl(
         "gap_ft": gap_ft,
         "primary_noise": primary_noise,
         "gap_noise": gap_noise,
+        "invalidated": list(invalidated),
     }
 
 
@@ -1115,8 +1120,8 @@ def visualize_primary_detection_impl(
     )
 
 
-def save_peak_parameters_impl(file_path: str, parameters: Dict[str, Any]) -> None:
-    """Save Stage 3 detection parameters for reuse (JSON under the group)."""
+def _write_peak_parameters_record(file_path: str, parameters: Dict[str, Any]) -> None:
+    """Write the ``processing_parameters/peak_detection`` record (JSON blob)."""
     with h5py.File(file_path, "a") as h5f:
         grp = h5f.require_group("processing_parameters")
         if "peak_detection" in grp:
@@ -1124,4 +1129,29 @@ def save_peak_parameters_impl(file_path: str, parameters: Dict[str, Any]) -> Non
         pk = grp.create_group("peak_detection")
         pk.attrs["parameters"] = json.dumps(parameters, default=str)
         pk.attrs["last_updated"] = datetime.now().isoformat()
+
+
+def save_peak_parameters_impl(file_path: str, parameters: Dict[str, Any]) -> List[str]:
+    """Save Stage 3 detection parameters for reuse (JSON under the group).
+
+    The record is what the report shows as the parameters Stage 3 ran with, so
+    replacing it with different values while Stage 3 stands would make the
+    file misdescribe its own peaks: such a write invalidates Stage 3 and every
+    stage built on it. Returns the storage keys of the invalidated stages.
+    """
+    blob = json.dumps(parameters, default=str)
+    with h5py.File(file_path, "r") as h5f:
+        old = h5f.get("processing_parameters/peak_detection")
+        changed = old is None or old.attrs.get("parameters") != blob
+        stands = "stage3_peaks" in h5f
+    _write_peak_parameters_record(file_path, parameters)
     logger.info("Saved Stage 3 parameters to %s", file_path)
+    if not (changed and stands):
+        return []
+    with h5py.File(file_path, "a") as h5f:
+        return invalidate_stages_in_file(
+            h5f,
+            ["stage3_peaks"],
+            include_roots=True,
+            reason="Stage 3 parameter record replaced",
+        )

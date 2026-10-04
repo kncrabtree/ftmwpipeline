@@ -123,7 +123,9 @@ def import_data(
     Returns
     -------
     dict
-        Import result with pipeline file path, source info, and FID metadata
+        Import result with pipeline file path, source info, and FID metadata.
+        ``invalidated`` names the stages an overwrite discarded (``force``
+        over an analysed file), canonical names in ``rerun_order``.
 
     Raises
     ------
@@ -144,6 +146,11 @@ def import_data(
     >>> print(f"Created: {result['pipeline_file']}")
     """
     try:
+        from .file_manager import canonical_invalidated, stages_an_import_replaces
+
+        # Read before the import writes: what an overwrite discards.
+        replaced = stages_an_import_replaces(file_path, force)
+
         # Create pipeline using Pipeline class
         pipeline = Pipeline.create(
             filepath=file_path,
@@ -163,6 +170,7 @@ def import_data(
             "source_path": info["source_path"],
             "format_name": info["format"],
             "status": "success",
+            "invalidated": list(canonical_invalidated(replaced)),
         }
 
         # Add FID metadata if available
@@ -445,12 +453,14 @@ def compute_ft(
         Scaling factor as power of 10. If None, uses cached default or 6.
     from_saved_params : bool, default False
         If ``True``, ignore the explicit kwargs and use only the persisted /
-        recommended settings (no explicit overrides).
+        recommended settings (no explicit overrides). Such a call only reads:
+        it recomputes the spectrum and writes nothing to the file.
 
     Returns
     -------
     ComplexFT
-        Computed frequency domain data.
+        Computed frequency domain data. Its ``invalidated`` names the stages
+        this run invalidated (canonical names in ``rerun_order``).
 
     Raises
     ------
@@ -1103,7 +1113,9 @@ def detect_peaks(
     list of Peak
         ALL detected peaks (promoted and non-promoted), sorted by frequency.
         Each peak's ``properties`` dict includes ``promoted`` (bool),
-        ``internal_snr``, ``internal_frequency``, and ``detection_pass``.
+        ``internal_snr``, ``internal_frequency``, and ``detection_pass``. The
+        list is a :class:`PeakList`, whose ``invalidated`` names the stages
+        this run invalidated.
     """
     try:
         pipeline = Pipeline.open(file_path)

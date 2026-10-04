@@ -311,6 +311,9 @@ class ShapeRecommendation:
     n_contributors: int
     notes: Tuple[str, ...]
     tau_max_us: Optional[float] = None
+    #: Canonical names of the stages the call that produced this result
+    #: invalidated, in ``rerun_order``; empty when none, and on a loaded result.
+    invalidated: Tuple[str, ...] = field(default=(), compare=False)
 
 
 def compute_band_majorities(
@@ -548,6 +551,9 @@ class TauCalibrationResult:
     # ``per_band_tau=True``; populated by extract_tau_majority when
     # ``compute_band_majorities_flag=True``.
     band_majorities: Tuple[BandMajority, ...] = field(default_factory=tuple)
+    #: Canonical names of the stages the call that produced this result
+    #: invalidated, in ``rerun_order``; empty when none, and on a loaded result.
+    invalidated: Tuple[str, ...] = field(default=(), compare=False)
 
 
 # ---------------------------------------------------------------------------

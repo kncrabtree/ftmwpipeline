@@ -20,14 +20,14 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import h5py
 
 from ..core.data_structures import ChirpWindow
 from ..core.settings import FT_PROCESSING_PATH, RECOMMENDED_PATH
 from ..core.start_detection_settings import StartDetectionSettings
-from ..file_manager import update_processing_parameters
+from ..file_manager import canonical_invalidated
 from ..io.stage_fit_settings_serialization import (
     read_recommended_chirp_window,
     read_recommended_start_detection,
@@ -39,6 +39,7 @@ from .stage1_impl import (
     _read_settings_layer,
     _resolve_settings,
     ft_record_is_authoritative,
+    write_recommended_ft_params,
 )
 
 logger = logging.getLogger(__name__)
@@ -99,7 +100,10 @@ def detect_start_time_impl(
         "start_us": float, "stamped": bool,
         "chirp_end_declared_us": float | None,
         "chirp_end_detected_us": float,
-        "declaration_used": bool}``.
+        "declaration_used": bool, "invalidated": list}``. ``invalidated``
+        (also on the result's own field) is empty unless the stamp moved the
+        settings a pre-provenance Stage 1 record falls through to (see
+        :func:`~.stage1_impl.write_recommended_ft_params`).
     """
     settings = settings or StartDetectionSettings()
     fid = load_fid_from_pipeline_impl(file_path)
@@ -174,9 +178,12 @@ def detect_start_time_impl(
         write_recommended_start_detection(file_path, settings, result)
 
     stamped = False
+    invalidated: List[str] = []
     can_stamp = declaration_used or result.chirp_detected
     if stamp and can_stamp:
-        update_processing_parameters(file_path, {"start_us": float(final_start_us)})
+        invalidated = write_recommended_ft_params(
+            file_path, {"start_us": float(final_start_us)}
+        )
         stamped = True
         _note_stage1_unaffected(file_path, float(final_start_us))
         if declaration_used and declared is not None:
@@ -199,11 +206,13 @@ def detect_start_time_impl(
                 Path(file_path).name,
             )
 
+    canonical = canonical_invalidated(invalidated)
     return {
         "status": "success",
-        "start_detection": effective_result,
+        "start_detection": replace(effective_result, invalidated=canonical),
         "start_us": float(final_start_us),
         "stamped": stamped,
+        "invalidated": list(canonical),
         "chirp_end_declared_us": (
             declared.chirp_end_us if declared is not None else None
         ),

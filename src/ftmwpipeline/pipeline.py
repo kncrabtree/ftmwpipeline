@@ -122,11 +122,7 @@ from .core.data_structures import (
 from .core.noise_settings import NoiseSettings
 from .core.peak_detection_settings import PeakDetectionSettings
 from .core.settings import FTSettings
-from .core.stage_fit_settings import (
-    ClockSource,
-    StageFitSettings,
-    coerce_clock_sources,
-)
+from .core.stage_fit_settings import ClockSource, StageFitSettings
 from .core.start_detection_settings import StartDetectionSettings
 from .core.tau_calibration_settings import TauCalibrationSettings
 from .core.window_planning_settings import WindowPlanningSettings
@@ -142,7 +138,6 @@ from .file_manager import (
 from .fitting.tau_calibration import ShapeRecommendation, TauCalibrationResult
 from .fitting.timebase_calibration import TimebaseCalibrationResult
 from .io.data_loaders import detect_format, list_formats, load_fid, validate_source
-from .io.stage_fit_settings_serialization import write_recommended_clock_sources
 from .preprocessing.noise_estimation import NoiseResult
 from .preprocessing.start_detection import StartDetectionResult
 
@@ -320,21 +315,11 @@ class Pipeline:
             filepath, fid, source_metadata, force=force
         )
 
-        # Persist any instrument clock declaration extracted by the loader so
-        # the Stage 5 resolver can surface it at the recommended layer.
-        raw_clocks = fid.metadata.get("clock_sources")
-        if raw_clocks is not None:
-            try:
-                clock_tuple = coerce_clock_sources(raw_clocks)
-                write_recommended_clock_sources(str(created_filepath), clock_tuple)
-            except Exception:  # pragma: no cover
-                pass  # non-fatal: clock metadata is advisory
+        # The loader's clock declaration, chirp window and import-time start
+        # recommendation are persisted once, in the stage 0 impl.
+        from ._internal.stage0_impl import persist_loader_metadata
 
-        # Chirp-window persistence + import-time start recommendation live
-        # once in the stage 0 impl.
-        from ._internal.stage0_impl import persist_chirp_window_metadata
-
-        persist_chirp_window_metadata(str(created_filepath), fid)
+        persist_loader_metadata(str(created_filepath), fid)
 
         # Load file info for Pipeline instance
         filepath, source_metadata, stage_tracker = open_pipeline_file(created_filepath)
@@ -441,9 +426,12 @@ class Pipeline:
         """Compute Fourier Transform (Stage 1, user-driven).
 
         Resolves settings through ``explicit > persisted > recommended`` and
-        persists the resolved settings to the ``.ftmw`` file.  Can be
-        called multiple times safely. The FT is unconditionally
-        unapodized, un-windowed, and native-length.
+        persists the resolved settings to the ``.ftmw`` file (a Stage 1 run).
+        Can be called multiple times safely. The FT is unconditionally
+        unapodized, un-windowed, and native-length. The returned
+        ``ComplexFT.invalidated`` names the stages the run invalidated
+        (canonical names in ``rerun_order``; empty when the settings did not
+        change).
 
         Parameters
         ----------
@@ -457,7 +445,9 @@ class Pipeline:
             Spectrum scaling as power of 10.
         from_saved_params : bool, default False
             If ``True``, ignore the explicit kwargs above and use only the
-            persisted / recommended settings (no explicit overrides).
+            persisted / recommended settings (no explicit overrides). Such a
+            call only reads: it recomputes the spectrum and writes nothing to
+            the file.
 
         Returns
         -------
@@ -484,7 +474,7 @@ class Pipeline:
                 file_path=str(self.filepath),
                 settings=settings,
                 validate_only=False,
-                persist=True,
+                persist=not from_saved_params,
             )
             complex_ft: ComplexFT = result["complex_ft"]
             self.logger.info(f"FT computed: {complex_ft.n_points:,} frequency points")
@@ -1236,7 +1226,8 @@ class Pipeline:
             ALL detected peaks (promoted and non-promoted), sorted by
             frequency. Each peak's ``properties`` dict includes ``promoted``
             (bool), ``internal_snr``, ``internal_frequency``, and
-            ``detection_pass``.
+            ``detection_pass``. The list is a :class:`PeakList`, whose
+            ``invalidated`` names the stages this run invalidated.
 
         Raises
         ------

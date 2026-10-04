@@ -629,3 +629,39 @@ def test_set_sigma_floor_refreshes_the_stored_table(sc_multi_file, via):
         )
     assert after.decision_log == before.decision_log
     assert after.window_statuses == before.window_statuses
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("via", ["api", "pipeline", "cli"])
+def test_clock_declaration_change_refreshes_the_stored_table(sc_multi_file, via):
+    """A fit that recorded no clocks leaves the calibration state to the
+    recommended declaration, so a ``clocks`` write that changes the state
+    rebuilds the stored table in the same call (no stale table on disk)."""
+    fp = sc_multi_file
+    persisted = load_stage_fit_settings_from_h5(str(fp))
+    assert persisted is not None
+    save_stage_fit_settings_to_h5(
+        str(fp), replace(persisted, spur=replace(persisted.spur, clocks=()))
+    )
+    ftmw.set_clock_sources(
+        str(fp),
+        [ClockSource(5120.0, locked=True), ClockSource(6250.0, locked=False)],
+    )
+    review_run_impl(str(fp))
+    stored = load_stage6_review_from_file(str(fp)).final_products
+    assert stored is not None and stored.calibration_state == "self_calibrated"
+
+    if via == "api":
+        ftmw.clear_clock_sources(str(fp))
+    elif via == "pipeline":
+        Pipeline.open(str(fp)).clear_clock_sources()
+    else:
+        from ftmwpipeline.cli.main import main
+
+        assert main(["clocks", "clear", str(fp)]) == 0
+
+    assert ftmw.frequency_calibration(str(fp)).state == "rb_locked"
+    stored = load_stage6_review_from_file(str(fp)).final_products
+    assert stored is not None
+    assert stored.calibration_state == "rb_locked"
+    assert stored.epsilon == 0.0

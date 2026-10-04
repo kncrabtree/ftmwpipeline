@@ -18,7 +18,7 @@ from .._internal.stage0_impl import (
 from ..file_manager import PipelineFileError
 from ..io.data_loaders import get_format_info, list_formats
 from ..io.fid_serialization import load_acquisition_segments_from_hdf5
-from .utils import add_stage_object, setup_logging
+from .utils import add_stage_object, print_invalidated, setup_logging
 
 
 def cmd_data_load(args: argparse.Namespace) -> int:
@@ -113,6 +113,7 @@ def cmd_data_load(args: argparse.Namespace) -> int:
         print(f"   Probe freq: {fid_info['probe_freq_mhz']:.3f} MHz")
         print(f"   Sideband: {fid_info['sideband']}")
         print(f"   Shots: {fid_info['shots']:,}")
+        print_invalidated(result["invalidated"])
 
         # Show file size
         pipeline_file = Path(result["pipeline_file"])

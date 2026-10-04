@@ -20,7 +20,7 @@ from .._internal.start_detection_impl import detect_start_time_impl
 from ..core.start_detection_settings import StartDetectionSettings
 from ..file_manager import PipelineFileError
 from ._argspec import add_start_detection_args, start_settings_from_namespace
-from .utils import add_stage_object, print_error, setup_logging
+from .utils import add_stage_object, print_error, print_invalidated, setup_logging
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +90,7 @@ def cmd_detect_start(args: argparse.Namespace) -> int:
             f"\nStamped recommended start_us = {out['start_us']:.3f} us to {file_path}."
         )
         print("A later compute_ft with no explicit start_us will inherit it.")
+        print_invalidated(out["invalidated"])
     elif not r.chirp_detected and not out["declaration_used"]:
         print(
             "\nNo chirp collapse found; nothing stamped. Provide start_us "

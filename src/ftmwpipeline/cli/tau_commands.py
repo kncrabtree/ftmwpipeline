@@ -26,7 +26,7 @@ from .._internal.stage2b_impl import calibrate_tau_impl
 from ..core.tau_calibration_settings import TauCalibrationSettings
 from ..file_manager import PipelineFileError
 from ._argspec import add_settings_args, settings_from_namespace
-from .utils import add_stage_object, print_error, setup_logging
+from .utils import add_stage_object, print_error, print_invalidated, setup_logging
 
 logger = logging.getLogger(__name__)
 
@@ -101,11 +101,7 @@ def cmd_calibrate_tau(args: argparse.Namespace) -> int:
         for note in tc.preconditions_notes:
             if note != "ok":
                 print(f"    - {note}")
-    if result.get("invalidated_stages"):
-        print(
-            "\nInvalidated downstream stages: "
-            + ", ".join(result["invalidated_stages"])
-        )
+    print_invalidated(result["invalidated"])
     print(f"\nResults saved to: {file_path}")
     if not gaussian:
         print("Use 'tau show --kind heatmap|distribution' for diagnostics.")
@@ -156,6 +152,7 @@ def cmd_recommend_shape(args: argparse.Namespace) -> int:
     print(f"  contributors       : {rec.n_contributors}")
     if result.get("groups_written"):
         print("  stamped onto       : " + ", ".join(result["groups_written"]))
+    print_invalidated(result["invalidated"])
     print(f"\nResults saved to: {file_path}")
     return 0
 

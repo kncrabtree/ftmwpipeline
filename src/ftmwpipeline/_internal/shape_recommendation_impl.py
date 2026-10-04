@@ -261,8 +261,11 @@ def recommend_shape_impl(
     # that cannot be written raises.
     stamp_stage_epoch_in_file(file_path, SHAPE_RECOMMENDATION_EPOCH_KEY)
 
+    # The verdict reaches the science only through its consumers, which record
+    # the shape they took, so a new verdict invalidates no stage.
     return {
         "status": "success",
         "shape_recommendation": verdict,
         "groups_written": groups_written,
+        "invalidated": [],
     }
