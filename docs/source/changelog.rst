@@ -49,6 +49,23 @@ had to reach into ``_internal`` or parse out of prose to obtain are now
 published, and the Stage 6 edit paths that carry them were collapsed onto one
 engine so they cannot answer differently.
 
+* **Machine contract, Wave 5.2: Stage 5 partial fits.** ``CONTRACT_VERSION``
+  is now ``11``. A cancelled (or callback-failed) fit no longer throws its work
+  away: the windows that had finished are kept as a partial fit, in the call's
+  one atomic write, and ``cancelled.completed_windows`` lists them (no window
+  finished: nothing is written, as before). **Behaviour change:** that write
+  discards the previous fit and everything built on it, where a cancelled fit
+  used to leave the file exactly as it was. ``status`` reports ``fit`` as
+  ``partial``; ``window_status`` reports the kept windows; every fit and
+  final-products accessor behaves as before Stage 5. The next ``fit_peaks`` /
+  ``fit run`` resumes it, fitting only the remaining windows, and produces the
+  fit an uninterrupted run produces; ``restart=True`` / ``--restart`` starts
+  over. The ``fit run`` summary gains ``resumed``, ``windows_carried`` and
+  ``restart_reason`` (``restart_requested``, ``settings_changed``,
+  ``incomplete_provenance``, ``thaw_refit``, or ``null``; the new
+  ``restart_reason`` vocabulary). Anything that discards a fit discards a
+  partial one. The partial fit is stored without pickling: reading a file
+  never runs code from it.
 * **Machine contract, Wave 5.1b: crash safety.** ``CONTRACT_VERSION`` is now
   ``10``. Every call that writes a ``.ftmw`` file -- a stage run, curation,
   ``settings set`` / ``unset``, ``clocks``, ``start run``, a stamp -- now writes

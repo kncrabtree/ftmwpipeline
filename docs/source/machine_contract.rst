@@ -670,7 +670,8 @@ carries a stable ``code`` and typed attributes, and ``to_dict()`` returns::
      - ``OperationCancelledError``
      - ``stage`` (the stage interrupted, or ``null`` between stages and for a
        step that is not a stage), ``completed_stages``, ``completed_windows``
-       (always ``[]`` for now); see *Events and cancellation* below
+       (the windows a cancelled fit kept as a partial fit, sorted; ``[]``
+       otherwise); see *Events and cancellation* below
    * - ``callback_failed``
      - ``CallbackFailedError``
      - ``event_schema`` (the event being delivered); the callback's exception
@@ -1056,7 +1057,8 @@ honoured) lets the replay complete and be written, and then fails the call.
 walk, of a Stage 6 refit and its cascade and of the report's rendering, and
 between scan values. A cancel raises ``cancelled``. Every stage the operation
 completed stays as written; the interrupted stage leaves the file as it was
-before it began. A curation batch (``review_apply``, and every edit with its
+before it began -- except the fit, which keeps its finished windows as a
+partial fit (*Stage 5 partial fits* below). A curation batch (``review_apply``, and every edit with its
 cascade) is one unit: a cancel discards all of it. ``review_undo`` (and an
 apply with ``log_prefix``) honours a cancel only before it restores the
 automatic fit; once the restore has begun, the replay completes. A stage that
@@ -1073,7 +1075,9 @@ and replaces the file with that copy in one ``os.replace`` when it finishes.
   stage marked complete over missing or partial results, or a file that will not
   open. A reader that already has the file open keeps the version it opened.
 * *Failure.* A cancel, a ``callback_failed`` or any other failure discards the
-  copy, so the file is left exactly as it was before the call. If the replace
+  copy, so the file is left exactly as it was before the call (a fit that kept
+  finished windows writes them as a partial fit in its one replace first). If
+  the replace
   itself fails (a platform that refuses to replace a file another process holds
   open, for example) the call raises and the file is unchanged.
 * *Events.* ``Invalidated`` and then ``StageFinished`` are emitted once the
@@ -1130,7 +1134,8 @@ codes::
    try:
        ftmw.fit_peaks("exp.ftmw", events=on_event, cancel=stop)
    except OperationCancelledError as err:
-       # err.stage == "fit" (None between stages); the file is as it was
+       # err.stage == "fit" (None between stages); the finished windows are
+       # kept as a partial fit, which the next fit_peaks resumes
        print("cancelled", err.stage, err.completed_stages, err.completed_windows)
    except CallbackFailedError as err:
        print("on_event raised while handling", err.event_schema, err.__cause__)
@@ -1161,7 +1166,38 @@ line each, and the first Ctrl-C cancels::
    $ echo $?
    130
    $ tail -1 stderr.jsonl
-   {"schema": "ftmw/error@1", "code": "cancelled", "message": "...", "stage": "fit", "completed_stages": [], "completed_windows": []}
+   {"schema": "ftmw/error@1", "code": "cancelled", "message": "...", "stage": "fit", "completed_stages": [], "completed_windows": [3, 4, 7]}
+
+**Stage 5 partial fits.** A cancel or a ``callback_failed`` during the fit
+keeps the windows whose whole per-window pass had run as a partial fit, in one
+atomic write that also discards the previous fit and everything downstream of
+it; ``completed_windows`` lists them. No window finished: nothing is written,
+any previous fit is kept. Nothing is written during the walk, so a killed fit
+leaves the file as it was. While a partial fit is present, ``status`` reports
+``fit`` as ``partial`` (and runnable) and ``review`` as ``not_run``;
+``window_status`` rows of the kept windows carry ``n_fitted_peaks`` and
+``live`` (the others stay ``not_run``); every accessor of the fit or the final
+products behaves as before Stage 5, and ``review run`` and every curation call
+refuse with ``stage_not_run``. Anything that invalidates a complete fit
+discards a partial one (an upstream re-run, ``settings set`` / ``unset`` of a
+``stage5`` setting, a forced re-import; it is then reported as an invalidated
+``fit``); clocks and the timebase leave it alone.
+
+``fit_peaks`` (``fit run``) resumes a partial fit by default: it fits only the
+remaining windows -- ``WindowProgress.index`` continues from the kept count,
+``total`` stays the full window count -- then finishes as usual, and the result
+equals an uninterrupted fit with the same settings to the same standard as the
+parallel and sequential walks (the same lines, ``peak_uid`` values and window
+structure; parameters to floating-point rounding). ``restart=True``
+(``--restart``) starts over. The ``fit run`` summary (and its
+``StageFinished.summary``) carries ``resumed``, ``windows_carried`` (``0``
+unless resumed) and ``restart_reason``: ``null`` (a clean resume, or nothing to
+resume) or one of the ``restart_reason`` vocabulary -- ``restart_requested``,
+``settings_changed`` (the resolved Stage 5 settings, the values consumed from
+other stages or ``ANALYSIS_EPOCH`` differ from the partial fit's),
+``incomplete_provenance`` (the partial fit lacks what that comparison needs) or
+``thaw_refit`` (an accepted thaw: every window is refit sequentially). It never
+resumes on a guess.
 
 Per-stage state: ``status``
 ---------------------------
@@ -1176,8 +1212,9 @@ writes::
     "rerun_order": ["data", "ft", ...]}
 
 ``state`` is one of ``complete``, ``partial`` or ``not_run``. ``partial`` is
-reserved for a Stage 5 fit interrupted by a cancel; no run produces it yet, so
-a client must accept it but will not see it. ``runnable`` lists, in enum order,
+a Stage 5 fit interrupted by a cancel (or a raising callback) that kept its
+finished windows; such a fit is still ``runnable`` (running it resumes it).
+``runnable`` lists, in enum order,
 the stages that are not complete but whose dependencies all are. ``rerun_order``
 lists every stage in the order a full refresh follows: a fixed topological
 order, ties broken by the ``Stage`` enum's order (it does not depend on the
@@ -1261,7 +1298,8 @@ Absence and refusals:
 
 * Before Stage 5, each row's ``n_fitted_peaks`` and ``live`` are
   ``Absent.NOT_RUN`` (``null`` plus ``"<field>_absent": "not_run"`` on the
-  wire).
+  wire). With a partial fit, the rows of the windows it kept carry their counts
+  and the others stay ``Absent.NOT_RUN``.
 * Once Stage 5 exists, a window it holds no entry for (for example a created
   window not yet re-fit) reports ``0`` and ``False`` with status ``0``.
 * Before Stage 4 it raises ``StageDependencyError`` (``stage_not_run``) with

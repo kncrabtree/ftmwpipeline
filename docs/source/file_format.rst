@@ -54,7 +54,9 @@ writes in a temporary copy beside it, named
 that copy in one ``os.replace``. A process killed at any point leaves either the
 file exactly as it was before the call or the file as the call completed it --
 never a half-written stage, a stage marked complete over missing results, or a
-file that will not open. A call that fails or is cancelled discards its copy.
+file that will not open. A call that fails or is cancelled discards its copy
+(a cancelled fit first writes the windows it finished as a partial fit, in that
+same single replace; see :doc:`stage5_fitting`).
 If the writer was killed, its copy may be left beside the file; it is
 harmless, and the next write to the file from the same host removes it (a client
 that knows no write is in progress may delete any file matching the pattern).
