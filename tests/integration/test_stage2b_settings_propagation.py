@@ -670,7 +670,7 @@ class TestExplicitSettingsOverridePersisted:
 # ---------------------------------------------------------------------------
 class TestAutoRecommend:
     """``RecommendationSubSettings.auto_recommend`` controls whether
-    ``calibrate_tau`` and ``calibrate_tau_G`` invoke ``recommend_shape_impl``
+    ``calibrate_tau`` and ``calibrate_tau_G`` invoke ``run_shape_recommendation``
     as part of the calibration flow. Default is ``True`` so the Stage 5
     resolver's *recommended* layer fires on every fresh Stage 2b run."""
 
@@ -678,7 +678,7 @@ class TestAutoRecommend:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> Dict[str, Any]:
-        """Patch ``recommend_shape_impl`` in both Stage 2b orchestrators.
+        """Patch ``run_shape_recommendation`` in both Stage 2b orchestrators.
 
         Returns a ``{"called": bool, ...}`` capture dict that the orchestrator
         flips when (and only when) the auto-recommend pass fires.
@@ -696,7 +696,7 @@ class TestAutoRecommend:
 
         monkeypatch.setattr(
             stage2b_impl,
-            "recommend_shape_impl",
+            "run_shape_recommendation",
             _fake_recommend,
         )
         return captured
@@ -714,7 +714,7 @@ class TestAutoRecommend:
         stage2b_impl.calibrate_tau_impl(str(variant))
 
         assert captured["called"], (
-            "default-on auto_recommend did not invoke recommend_shape_impl "
+            "default-on auto_recommend did not invoke run_shape_recommendation "
             "after calibrate_tau"
         )
         assert captured["file_path"] == str(variant)
@@ -734,7 +734,7 @@ class TestAutoRecommend:
         stage2b_impl.calibrate_tau_impl(str(variant), settings=s)
 
         assert not captured["called"], (
-            "auto_recommend=False still invoked recommend_shape_impl; "
+            "auto_recommend=False still invoked run_shape_recommendation; "
             "the flag does not gate the auto-run pass"
         )
 
@@ -751,7 +751,7 @@ class TestAutoRecommend:
         stage2b_impl.calibrate_tau_impl(str(variant), shape="gaussian")
 
         assert captured["called"], (
-            "default-on auto_recommend did not invoke recommend_shape_impl "
+            "default-on auto_recommend did not invoke run_shape_recommendation "
             "after calibrate_tau_impl(shape='gaussian')"
         )
 
