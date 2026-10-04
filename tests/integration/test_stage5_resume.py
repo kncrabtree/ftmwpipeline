@@ -18,8 +18,8 @@ why, when:
 It never resumes on a guess. A partial fit is also data from a file that may
 come from anyone: reading one never runs code from it.
 
-Writes only to pytest ``tmp_path``. The full-2638 equality checks are
-``slow``.
+Writes only to pytest ``tmp_path``. The whole-2638 equality check and the
+resume through a replan are ``slow``.
 """
 
 from __future__ import annotations
@@ -703,23 +703,19 @@ def test_clocks_alone_do_not_stop_a_resume(partial):
     assert summary["restart_reason"] is None
 
 
-# ---- the whole 2638 plan (slow) -----------------------------------------------------------
-
-
-@pytest.fixture(scope="module")
-def full_reference(baseline_2638_stage4, tmp_path_factory):
-    fp = tmp_path_factory.mktemp("resume_full_ref") / "full_ref.ftmw"
-    shutil.copy(baseline_2638_stage4, fp)
-    summary, rec = _fit(fp, jobs=None)
-    return fp, summary, rec.of(WindowProgress)
+# ---- the whole 2638 plan, and a resume through a replan (slow) ---------------------------
 
 
 @pytest.mark.slow
 @needs_fork
 def test_resuming_the_full_2638_fit_equals_an_uninterrupted_fit(
-    full_reference, baseline_2638_stage4, tmp_path
+    stage5_gaussian_2638, baseline_2638_stage4, tmp_path
 ):
-    ref, ref_summary, ref_progress = full_reference
+    """The whole plan, in parallel, cancelled at 40% and resumed. Gaussian, so
+    the reference is the session's whole-plan Gaussian fit (fitted once, with
+    the default jobs) and the plan's merged-window replan refits -- most of a
+    Lorentzian fit's time -- are not in it."""
+    ref = stage5_gaussian_2638
     fp = _copy(baseline_2638_stage4, tmp_path)
     tok = Token()
 
@@ -733,33 +729,81 @@ def test_resuming_the_full_2638_fit_equals_an_uninterrupted_fit(
 
     first = Recorder(cancel_at_40_percent)
     with pytest.raises(OperationCancelledError) as info:
-        ftmw.fit_peaks(fp, jobs=None, events=first, cancel=tok)
+        ftmw.fit_peaks(fp, shape="gaussian", jobs=None, events=first, cancel=tok)
     kept = info.value.completed_windows
     total = first.of(WindowProgress)[0].total
     assert 0 < len(kept) < total
     assert kept == sorted({e.window_id for e in first.of(WindowProgress)})
     assert _state(fp) == "partial"
 
-    summary, rec = _fit(fp, jobs=None)
+    summary, rec = _fit(fp, shape="gaussian", jobs=None)
     assert (summary["resumed"], summary["windows_carried"]) == (True, len(kept))
     assert summary["restart_reason"] is None
     initial = [e for e in rec.of(WindowProgress) if e.phase == "initial"]
     assert [e.index for e in initial] == list(range(len(kept) + 1, total + 1))
     assert {e.total for e in initial} == {total}
-    assert _counts(summary) == _counts(ref_summary)
     assert_same_fit(fp, ref)
     assert not _has_partial(fp)
 
 
+#: Five adjacent one-line windows of the 2638 plan: cheap to fit and to merge.
+_REPLAN_WINDOWS = range(95, 100)
+
+
+def _one_merge() -> Callable[..., Any]:
+    """``_dispatch_structural_round`` that requests exactly one structural
+    merge -- the lowest flagged window with its neighbour -- in the first
+    replan round, and none after. The whole 2638 plan's real replan merges its
+    largest windows (most of a Lorentzian fit's time); this one merges two
+    small ones, deterministically, through the same replan machinery."""
+    real = plan_execution._dispatch_structural_round
+
+    def dispatch(outcomes: Any, plan: Any, threshold: float) -> Any:
+        if plan.plan_revision:
+            return []
+        pending = real(outcomes, plan, -np.inf)
+        return sorted(pending, key=lambda p: (p.window_id, p.partner_id))[:1]
+
+    return dispatch
+
+
+@pytest.fixture(scope="module")
+def replan_stage4(baseline_2638_stage4, tmp_path_factory):
+    """A Stage 4 plan cut to :data:`_REPLAN_WINDOWS` (read-only)."""
+    from ftmwpipeline._internal.atomic import atomic_write
+    from ftmwpipeline._internal.stage4_impl import (
+        load_windows_impl,
+        save_window_plan_impl,
+    )
+
+    fp = tmp_path_factory.mktemp("resume_replan") / "replan.ftmw"
+    shutil.copy(baseline_2638_stage4, fp)
+    plan = load_windows_impl(str(fp))["plan"]
+    keep = {w.window_id for w in plan.windows if w.window_id in _REPLAN_WINDOWS}
+    plan.windows = [w for w in plan.windows if w.window_id in keep]
+    plan.topological_order = [w for w in plan.topological_order if w in keep]
+    plan.dependency_edges = [
+        (a, b) for (a, b) in plan.dependency_edges if a in keep and b in keep
+    ]
+    with atomic_write(str(fp)):
+        save_window_plan_impl(str(fp), plan)
+    return fp
+
+
 @pytest.mark.slow
 @needs_fork
+@pytest.mark.parametrize("jobs", [1, None], ids=["jobs1", "parallel"])
 def test_a_cancel_during_the_replan_keeps_every_initial_window(
-    full_reference, baseline_2638_stage4, tmp_path
+    jobs, replan_stage4, tmp_path, monkeypatch
 ):
-    ref, ref_summary, ref_progress = full_reference
-    if not any(e.phase == "replan" for e in ref_progress):
-        pytest.skip("the 2638 plan no longer replans")
-    fp = _copy(baseline_2638_stage4, tmp_path)
+    monkeypatch.setattr(plan_execution, "_dispatch_structural_round", _one_merge())
+    ref = _copy(replan_stage4, tmp_path, "ref.ftmw")
+    ref_summary, ref_rec = _fit(ref, jobs=jobs)
+    if not ref_summary["n_replan_accepted"]:
+        pytest.skip("the replan subset no longer merges")
+    assert [e for e in ref_rec.of(WindowProgress) if e.phase == "replan"]
+
+    fp = _copy(replan_stage4, tmp_path)
     tok = Token()
 
     def cancel_in_replan(event: Any) -> None:
@@ -768,7 +812,7 @@ def test_a_cancel_during_the_replan_keeps_every_initial_window(
 
     first = Recorder(cancel_in_replan)
     with pytest.raises(OperationCancelledError) as info:
-        ftmw.fit_peaks(fp, jobs=None, events=first, cancel=tok)
+        ftmw.fit_peaks(fp, jobs=jobs, events=first, cancel=tok)
     initial_ids = {
         e.window_id for e in first.of(WindowProgress) if e.phase == "initial"
     }
@@ -779,7 +823,7 @@ def test_a_cancel_during_the_replan_keeps_every_initial_window(
         walk = json.loads(bytes(h5f[_PROV][()]).decode())["walk"]
     assert walk["phase"] == "replan"
 
-    summary, rec = _fit(fp, jobs=None)
+    summary, rec = _fit(fp, jobs=jobs)
     assert (summary["resumed"], summary["windows_carried"]) == (True, total)
     assert summary["restart_reason"] is None
     assert not [e for e in rec.of(WindowProgress) if e.phase == "initial"]
