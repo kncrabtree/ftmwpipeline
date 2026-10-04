@@ -155,32 +155,47 @@ def parse_peak_token(token: Union[float, str]) -> Union[float, PeakUidToken]:
         ``"uid:1.5"`` all raise), or when an un-prefixed token is not a valid
         MHz value. The offending token is always named in the message.
     """
+    from ..file_manager import BadSettingError
+
+    expected = 'a frequency in MHz or a peak identifier "uid:N" (N >= 0)'
     if isinstance(token, str):
         text = token.strip()
         if text.startswith(_UID_TOKEN_PREFIX):
             digits = text[len(_UID_TOKEN_PREFIX) :]
             if not digits:
-                raise ValueError(
-                    f"malformed peak identifier {token!r}: nothing follows "
-                    f"{_UID_TOKEN_PREFIX!r}"
+                raise BadSettingError(
+                    "peak",
+                    expected,
+                    token,
+                    message=f"malformed peak identifier {token!r}: nothing follows "
+                    f"{_UID_TOKEN_PREFIX!r}",
                 )
             try:
                 uid = int(digits)
             except ValueError:
-                raise ValueError(
-                    f"malformed peak identifier {token!r}: {digits!r} is not "
-                    f"an integer"
+                raise BadSettingError(
+                    "peak",
+                    expected,
+                    token,
+                    message=f"malformed peak identifier {token!r}: {digits!r} is "
+                    f"not an integer",
                 ) from None
             if uid < 0:
-                raise ValueError(
-                    f"malformed peak identifier {token!r}: uid must be "
-                    f"non-negative, got {uid}"
+                raise BadSettingError(
+                    "peak",
+                    expected,
+                    token,
+                    message=f"malformed peak identifier {token!r}: uid must be "
+                    f"non-negative, got {uid}",
                 )
             return PeakUidToken(uid)
         try:
             return float(text)
         except ValueError:
-            raise ValueError(
-                f"malformed frequency {token!r}: not a valid MHz value"
+            raise BadSettingError(
+                "peak",
+                expected,
+                token,
+                message=f"malformed frequency {token!r}: not a valid MHz value",
             ) from None
     return float(token)

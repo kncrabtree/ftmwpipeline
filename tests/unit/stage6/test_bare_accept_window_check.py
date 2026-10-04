@@ -14,6 +14,7 @@ from ftmwpipeline._internal.stage6_impl import (
     apply_curation_impl,
     review_accept_impl,
 )
+from ftmwpipeline.file_manager import NotFoundError
 from ftmwpipeline.io.fitting_serialization import read_fit_window_coverage
 from ftmwpipeline.io.stage6_review_serialization import load_stage6_review_from_file
 
@@ -54,7 +55,7 @@ def test_curation_file_with_an_unknown_window_applies_nothing(
     cur = tmp_path / "accepts.csv"
     cur.write_text(f"accept,{wid},,\naccept,{_UNKNOWN},,\n")
     before = _review_state(stage5_small_file)
-    with pytest.raises(ValueError, match=rf"curation action 2 .*{_UNKNOWN}"):
+    with pytest.raises(NotFoundError, match=str(_UNKNOWN)):
         apply_curation_impl(str(stage5_small_file), cur)
     assert _review_state(stage5_small_file) == before
 
@@ -75,7 +76,7 @@ def test_unknown_window_in_a_fitting_batch_is_refused(stage5_small_file, tmp_pat
         f"accept,{window.window_id},,candidate={candidate!r}\n" f"accept,{_UNKNOWN},,\n"
     )
     before = _review_state(stage5_small_file)
-    with pytest.raises(ValueError, match=str(_UNKNOWN)):
+    with pytest.raises(NotFoundError, match=str(_UNKNOWN)):
         apply_curation_impl(str(stage5_small_file), cur)
     assert _review_state(stage5_small_file) == before
 

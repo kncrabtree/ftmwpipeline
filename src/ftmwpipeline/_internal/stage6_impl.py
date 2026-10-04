@@ -34,9 +34,11 @@ from typing import (
     TYPE_CHECKING,
     Any,
     Callable,
+    Collection,
     Dict,
     Iterable,
     List,
+    NoReturn,
     Optional,
     Sequence,
     Set,
@@ -68,7 +70,12 @@ from ..core.data_structures import (
     WindowReviewStatus,
     widen_for_unresolved_spread,
 )
-from ..file_manager import StageDependencyError
+from ..file_manager import (
+    BadSettingError,
+    NotFoundError,
+    PipelineFileError,
+    StageDependencyError,
+)
 from ..fitting.active_ft import active_ft_bin_spacing_mhz, peak_uid_from_offset
 from ..fitting.peak_model import ModelPeak
 from ..fitting.peak_model import molecular_frequency as _molecular_frequency
@@ -609,7 +616,11 @@ def get_candidate_ledger_impl(
     if window_id is not None:
         window_fits = [wf for wf in window_fits if wf.window_id == window_id]
         if not window_fits:
-            raise KeyError(f"window_id={window_id} not found in the Stage 5 fit")
+            raise NotFoundError(
+                "window",
+                [window_id],
+                message=f"window_id={window_id} not found in the Stage 5 fit",
+            )
 
     all_candidates: List[LedgerCandidate] = []
     for wf in window_fits:
@@ -810,7 +821,12 @@ def rank_windows_impl(
     metric = _normalize_metric(by)
     if metric not in RANK_METRICS:
         valid = ", ".join(sorted(RANK_METRICS))
-        raise ValueError(f"unknown rank metric {by!r}; choose one of: {valid}")
+        raise BadSettingError(
+            "by",
+            f"one of: {valid}",
+            by,
+            message=f"unknown rank metric {by!r}; choose one of: {valid}",
+        )
     lower_is_worse = RANK_METRICS[metric][1]
 
     path = str(file_path)
@@ -911,14 +927,17 @@ def _resolve_frame(
     cal_state = stamp[0] if stamp is not None else "rb_locked"
     if frame is None:
         if cal_state == "self_calibrated":
-            raise ValueError(
-                "frame is required on a self_calibrated file: pass "
+            raise BadSettingError(
+                "frame",
+                'one of: "raw", "calibrated" (required on a self_calibrated file)',
+                None,
+                message="frame is required on a self_calibrated file: pass "
                 'frame="raw" or frame="calibrated" explicitly rather than '
                 "relying on the default. A calibrated frequency submitted as "
                 "raw still resolves to the right peak, but is wrong by "
                 "probe_freq * eps/(1+eps) -- under the snap tolerance and "
                 "over the statistical uncertainty, so the mistake would be "
-                "silent."
+                "silent.",
             )
         return "raw", stamp
     return frame, stamp
@@ -951,11 +970,14 @@ def _resolve_curation_frame(
     failure mode the stamp exists to catch.
     """
     if header.frame is not None and frame is not None and header.frame != frame:
-        raise ValueError(
-            f"curation file frame disagreement: the file's header declares "
+        raise BadSettingError(
+            "frame",
+            f'"{header.frame}" (the frame the curation file header declares)',
+            frame,
+            message=f"curation file frame disagreement: the file's header declares "
             f'frame="{header.frame}", but frame="{frame}" was passed '
             f"explicitly. Pass a matching frame (or omit it to use the "
-            f"file's header), or edit the file's header to match."
+            f"file's header), or edit the file's header to match.",
         )
 
     if header.frame is not None:
@@ -2732,10 +2754,13 @@ def _derive_review_edit_window_id(
     rather than a silent pick -- issue separate calls instead.
     """
     if not add and not remove:
-        raise ValueError(
-            "window_id is required when add and remove are both empty (an "
+        raise BadSettingError(
+            "window_id",
+            "an integer window id (required when add and remove are both empty)",
+            None,
+            message="window_id is required when add and remove are both empty (an "
             "identity refit names the window it re-converges); pass a "
-            "window id explicitly"
+            "window id explicitly",
         )
     # Only a call shaped as exactly one add and nothing else has an
     # unambiguous single window to bind an implied create to -- see the
@@ -2743,6 +2768,14 @@ def _derive_review_edit_window_id(
     eligible_for_implied_create = len(add) == 1 and not remove
     coverage = _load_curation_window_index(path)
     resolutions: List[Tuple[str, int]] = []
+    unknown_uids = [
+        t.uid
+        for t in remove
+        if isinstance(t, PeakUidToken)
+        and _window_for_curation_token(coverage, t) is None
+    ]
+    if unknown_uids:
+        raise _unknown_peak_uids_error(unknown_uids)
     for f in add:
         wid = _window_for_curation_token(coverage, f)
         if wid is None:
@@ -2758,12 +2791,7 @@ def _derive_review_edit_window_id(
     for t in remove:
         wid = _window_for_curation_token(coverage, t)
         if wid is None:
-            if isinstance(t, PeakUidToken):
-                raise ValueError(
-                    f"remove=uid:{t.uid}: no fitted peak with "
-                    f"peak_uid={t.uid} in any window (already removed, from "
-                    f"a fit predating peak_uid, or the identifier is wrong)"
-                )
+            assert not isinstance(t, PeakUidToken)  # unknown uids raised above
             raise ValueError(
                 f"remove={float(t):.4f} MHz is not covered by any live "
                 f"window (windows are disjoint); nothing to remove there"
@@ -2928,10 +2956,13 @@ def refit_window_impl(
     for tok in add:
         parsed = parse_peak_token(tok)
         if isinstance(parsed, PeakUidToken):
-            raise ValueError(
-                f"add takes a frequency (MHz), not a peak identifier "
+            raise BadSettingError(
+                "add",
+                "a frequency in MHz, not a peak identifier",
+                f"uid:{parsed.uid}",
+                message=f"add takes a frequency (MHz), not a peak identifier "
                 f"('uid:{parsed.uid}'): a uid names a peak that already "
-                f"exists, but add creates a new one"
+                f"exists, but add creates a new one",
             )
         add_raw.append(parsed)
     remove_raw: List[Union[float, PeakUidToken]] = [
@@ -3371,6 +3402,26 @@ def review_accept_impl(
     )
 
 
+def _known_window_ids(path: str) -> Tuple[Set[int], str]:
+    """The window ids a bare accept may name, and where they were read from:
+    the Stage 5 fit's when one exists, the Stage 4 plan's otherwise."""
+    with h5py.File(path, "r") as h5f:
+        if "stage5_fitting" in h5f:
+            known = {
+                c.window_id for c in read_fit_window_coverage(h5f["stage5_fitting"])
+            }
+            return known, "Stage 5 fit"
+        if "stage4_windows" in h5f:
+            ids = read_window_plan_columns(h5f["stage4_windows"], ["window_id"])
+            return {int(w) for w in ids["window_id"]}, "Stage 4 window plan"
+        raise StageDependencyError(
+            "review accept",
+            ["stage4_windows"],
+            Path(path),
+            command="windows run",
+        )
+
+
 def _require_known_window(path: str, window_id: int) -> None:
     """Refuse a window id this file does not have.
 
@@ -3379,25 +3430,13 @@ def _require_known_window(path: str, window_id: int) -> None:
     Stage 4 plan's otherwise. Without this a typo'd id recorded a "reviewed"
     status and a decision for a window that was never there.
     """
-    with h5py.File(path, "r") as h5f:
-        if "stage5_fitting" in h5f:
-            known = {
-                c.window_id for c in read_fit_window_coverage(h5f["stage5_fitting"])
-            }
-            where = "Stage 5 fit"
-        elif "stage4_windows" in h5f:
-            ids = read_window_plan_columns(h5f["stage4_windows"], ["window_id"])
-            known = {int(w) for w in ids["window_id"]}
-            where = "Stage 4 window plan"
-        else:
-            raise StageDependencyError(
-                "review accept",
-                ["stage4_windows"],
-                Path(path),
-                command="windows run",
-            )
+    known, where = _known_window_ids(path)
     if int(window_id) not in known:
-        raise KeyError(f"window_id={window_id} not found in the {where}")
+        raise NotFoundError(
+            "window",
+            [window_id],
+            message=f"window_id={window_id} not found in the {where}",
+        )
 
 
 def _record_bare_accept(path: str, window_id: int) -> None:
@@ -4403,6 +4442,8 @@ def _resolve_curation_window_ids(
         coverage = _load_curation_window_index(path)
     resolved: List[CurationOp] = []
     next_implied_id = _FIRST_IMPLIED_WINDOW_ID
+    unknown_uids: List[int] = []
+    pending_error: Optional[ValueError] = None
     for op in ops:
         if op.window_id != _DERIVE_WINDOW_SENTINEL:
             resolved.append(op)
@@ -4411,24 +4452,23 @@ def _resolve_curation_window_ids(
         if isinstance(token, PeakUidToken):
             wid = _window_for_curation_token(coverage, token)
             if wid is None:
-                raise ValueError(
-                    f"curation line {op.line_no}: no fitted peak with "
-                    f"peak_uid={token.uid} in any window (already removed, "
-                    f"from a fit predating peak_uid, or the identifier is "
-                    f"wrong)"
-                )
+                if token.uid not in unknown_uids:
+                    unknown_uids.append(token.uid)
+                continue
             resolved.append(replace(op, window_id=wid))
             continue
         freq_raw = _frame_to_raw(float(token), frame=frame, stamp=stamp)
         wid = _window_for_curation_token(coverage, freq_raw)
         if wid is None:
             if op.action != "add":
-                raise ValueError(
-                    f"curation line {op.line_no}: {op.action} "
-                    f"{float(token):.4f} MHz is not covered by any live "
-                    f"window (windows are disjoint); nothing to remove "
-                    f"there"
-                )
+                if pending_error is None:
+                    pending_error = ValueError(
+                        f"curation line {op.line_no}: {op.action} "
+                        f"{float(token):.4f} MHz is not covered by any live "
+                        f"window (windows are disjoint); nothing to remove "
+                        f"there"
+                    )
+                continue
             # W3: implied create -- see the docstring above.
             correlation_id = next_implied_id
             next_implied_id -= 1
@@ -4445,7 +4485,78 @@ def _resolve_curation_window_ids(
             resolved.append(replace(op, window_id=correlation_id, implied_create=True))
             continue
         resolved.append(replace(op, window_id=wid))
+    if unknown_uids:
+        raise _unknown_peak_uids_error(unknown_uids)
+    if pending_error is not None:
+        raise pending_error
     return resolved
+
+
+def _unknown_peak_uids_error(uids: Sequence[int]) -> NotFoundError:
+    """The ``not_found`` refusal for peak identifiers no fitted peak carries,
+    naming every one of them (a batch reports all its unknown ids at once)."""
+    listed = ", ".join(f"peak_uid={u}" for u in uids)
+    return NotFoundError(
+        "peak",
+        list(uids),
+        message=f"no fitted peak with {listed} in any window (already removed, "
+        f"from a fit predating peak_uid, or the identifier is wrong)",
+    )
+
+
+def _unknown_plan_window_ids(
+    known: Collection[int], plan: Sequence[PlannedAction]
+) -> List[int]:
+    """Every window id *plan* names that is not in *known*, in plan order.
+
+    ``create`` rows name no existing window; a negative id is a placeholder
+    (:data:`_NEW_WINDOW_SENTINEL`, an implied-create correlation id). A plan
+    that mints windows under ids it cannot know yet (a ``create`` without a
+    pinned id) is not checked here -- a later row may legitimately name what
+    that create installs -- and falls back to the per-action lookup.
+    """
+    if any(a.kind == "create" and a.window_id == _NEW_WINDOW_SENTINEL for a in plan):
+        return []
+    live = set(known) | {int(a.window_id) for a in plan if a.kind == "create"}
+    unknown: List[int] = []
+    for a in plan:
+        wid = int(a.window_id)
+        if a.kind == "create" or wid < 0 or wid in live or wid in unknown:
+            continue
+        unknown.append(wid)
+    return unknown
+
+
+def _require_known_plan_windows(
+    known: Collection[int], plan: Sequence[PlannedAction], where: str
+) -> None:
+    """Refuse a plan naming windows the fit does not have, all of them at once."""
+    unknown = _unknown_plan_window_ids(known, plan)
+    if unknown:
+        listed = ", ".join(str(w) for w in unknown)
+        raise NotFoundError(
+            "window",
+            unknown,
+            message=f"window_id={listed} not found in the {where}",
+        )
+
+
+def _raise_curation_failure(
+    index: int, action: PlannedAction, exc: Exception
+) -> NoReturn:
+    """Re-raise a failure of plan action *index*, tagged with the action.
+
+    A typed :class:`PipelineFileError` keeps its type (a program routes on
+    it); a ``not_found`` is re-issued with the tag in its message and the same
+    ``kind`` / ``ids``. Anything else becomes the historical tagged
+    :class:`ValueError`.
+    """
+    tag = f"curation action {index + 1} ({describe_planned_action(action)}) failed"
+    if isinstance(exc, NotFoundError):
+        raise NotFoundError(exc.kind, exc.ids, message=f"{tag}: {exc}") from exc
+    if isinstance(exc, PipelineFileError):
+        raise exc
+    raise ValueError(f"{tag}: {exc}") from exc
 
 
 def _assert_plain_freq(token: Union[float, PeakUidToken]) -> float:
@@ -5672,7 +5783,11 @@ def _batch_lookup_wf(ctx: _BatchCtx, window_id: int) -> FittingResult:
         wf for wf in ctx.changeset.spectrum_fit.window_fits if wf.window_id == window_id
     ]
     if not wf_list:
-        raise KeyError(f"window_id={window_id} not found in the Stage 5 fit")
+        raise NotFoundError(
+            "window",
+            [window_id],
+            message=f"window_id={window_id} not found in the Stage 5 fit",
+        )
     return wf_list[0]
 
 
@@ -5694,9 +5809,11 @@ def _batch_apply_edit_core(
     wf = _batch_lookup_wf(ctx, window_id)
     fit_win = ctx.changeset.fit_window_map.get(window_id)
     if fit_win is None:
-        raise KeyError(
-            f"window_id={window_id} not found in the Stage 4 WindowPlan. "
-            "Stage 4 may have been re-run and changed the window geometry."
+        raise NotFoundError(
+            "window",
+            [window_id],
+            message=f"window_id={window_id} not found in the Stage 4 WindowPlan. "
+            "Stage 4 may have been re-run and changed the window geometry.",
         )
     tau_maj_us, sigma_tau_us = _resolve_refit_window_tau(
         fit_win,
@@ -5910,18 +6027,25 @@ def _resolve_remove_uid_tokens(
         return [float(t) for t in tokens]  # type: ignore[arg-type]
     wf = _batch_lookup_wf(ctx, window_id)
     resolved: List[float] = []
+    missing: List[int] = []
     for t in tokens:
         if isinstance(t, PeakUidToken):
             match = next((p for p in wf.fitted_peaks if p.peak_uid == t.uid), None)
             if match is None:
-                raise ValueError(
-                    f"window {window_id} has no fitted peak with "
-                    f"peak_uid={t.uid} to remove (already removed, from a "
-                    f"fit predating peak_uid, or the identifier is wrong)"
-                )
-            resolved.append(float(match.frequency_mhz))
+                missing.append(t.uid)
+            else:
+                resolved.append(float(match.frequency_mhz))
         else:
             resolved.append(float(t))
+    if missing:
+        listed = ", ".join(f"peak_uid={u}" for u in missing)
+        raise NotFoundError(
+            "peak",
+            missing,
+            message=f"window {window_id} has no fitted peak with {listed} to "
+            f"remove (already removed, from a fit predating peak_uid, or the "
+            f"identifier is wrong)",
+        )
     return resolved
 
 
@@ -6327,8 +6451,11 @@ def _batch_apply_split(
 
     if positions is not None:
         if len(positions) != into:
-            raise ValueError(
-                f"split: len(positions)={len(positions)} must equal into={into}"
+            raise BadSettingError(
+                "positions",
+                f"exactly into={into} frequencies",
+                list(positions),
+                message=f"split: len(positions)={len(positions)} must equal into={into}",
             )
         add_freqs = [float(p) for p in positions]
     else:
@@ -6478,7 +6605,11 @@ def _batch_apply_accept(
     ]
     if not wf_list:
         # The batch's own fit, so a window created earlier in this batch counts.
-        raise KeyError(f"window_id={window_id} not found in the Stage 5 fit")
+        raise NotFoundError(
+            "window",
+            [window_id],
+            message=f"window_id={window_id} not found in the Stage 5 fit",
+        )
     c = _window_center(wf_list[0])
     if c is not None:
         anchor_freq = c
@@ -6575,10 +6706,13 @@ def _plan_batch_create(
             max(ctx.shared.fit_ctx.trim_range),
         )
         if not (t_lo <= anchor <= t_hi):
-            raise ValueError(
-                f"anchor {anchor:.4f} MHz is outside the analysis band "
+            raise BadSettingError(
+                "anchor",
+                f"a frequency inside the analysis band [{t_lo:.4f}, {t_hi:.4f}] MHz",
+                anchor,
+                message=f"anchor {anchor:.4f} MHz is outside the analysis band "
                 f"[{t_lo:.4f}, {t_hi:.4f}] MHz. Re-run 'ft run' with a trim "
-                f"that covers it (which rebuilds the fit) if the line is real."
+                f"that covers it (which rebuilds the fit) if the line is real.",
             )
 
     params = plan.parameters
@@ -7175,15 +7309,23 @@ def _check_add_seeds_arity(
 def _check_merge_arity(peaks: Sequence[float]) -> None:
     """A merge collapses a set into one line, so it needs a set to collapse."""
     if len(peaks) < 2:
-        raise ValueError(
-            f"merge requires at least 2 peak frequencies; got {len(peaks)}"
+        raise BadSettingError(
+            "peaks",
+            "at least 2 peak frequencies",
+            list(peaks),
+            message=f"merge requires at least 2 peak frequencies; got {len(peaks)}",
         )
 
 
 def _check_split_arity(into: int) -> None:
     """A split replaces one line with several, so ``into`` must be at least 2."""
     if into < 2:
-        raise ValueError(f"split requires into >= 2; got {into}")
+        raise BadSettingError(
+            "into",
+            "an integer >= 2",
+            into,
+            message=f"split requires into >= 2; got {into}",
+        )
 
 
 def _open_batch(
@@ -7536,23 +7678,14 @@ def _apply_actions_one_by_one(path: str, plan: Sequence[PlannedAction]) -> int:
     unknown id refuses the whole file rather than leaving the rows above it
     applied -- the same all-or-nothing outcome the batch engine gives."""
 
-    def _refuse(i: int, action: PlannedAction, exc: Exception) -> ValueError:
-        return ValueError(
-            f"curation action {i + 1} ({describe_planned_action(action)}) "
-            f"failed: {exc}"
-        )
-
-    for i, action in enumerate(plan):
-        try:
-            _require_known_window(path, action.window_id)
-        except KeyError as exc:
-            raise _refuse(i, action, exc) from exc
+    known, where = _known_window_ids(path)
+    _require_known_plan_windows(known, plan, where)
     applied = 0
     for i, action in enumerate(plan):
         try:
             _execute_planned_action(path, action)
         except (ValueError, KeyError) as exc:
-            raise _refuse(i, action, exc) from exc
+            _raise_curation_failure(i, action, exc)
         applied += 1
     return applied
 
@@ -7612,6 +7745,15 @@ def _apply_batch_segment(
     # it never appears here -- the plan installed one window, not two, and
     # this is what the caller's report reads.
     created_facts: Dict[int, CreateWindowResult] = {}
+    _require_known_plan_windows(
+        {
+            int(wf.window_id)
+            for wf in ctx.changeset.spectrum_fit.window_fits
+            if wf.window_id is not None
+        },
+        plan,
+        "Stage 5 fit",
+    )
     for original_index, action in _canonicalize_batch_plan(plan):
         try:
             if action.kind == "create":
@@ -7723,10 +7865,7 @@ def _apply_batch_segment(
                         original_index
                     )
         except (ValueError, KeyError) as exc:
-            raise ValueError(
-                f"curation action {original_index + 1} "
-                f"({describe_planned_action(action)}) failed: {exc}"
-            ) from exc
+            _raise_curation_failure(original_index, action, exc)
         applied += 1
     return applied, created_facts
 
@@ -7980,10 +8119,7 @@ def _resolve_created_window_structure(
                     ),
                 )
         except (ValueError, KeyError) as exc:
-            raise ValueError(
-                f"curation action {original_index + 1} "
-                f"({describe_planned_action(action)}) failed: {exc}"
-            ) from exc
+            _raise_curation_failure(original_index, action, exc)
 
         if proposal is None:
             continue
@@ -8091,17 +8227,23 @@ def apply_curation_impl(
     if log_prefix is not None:
         log = load_stage6_review_from_file(path).decision_log
         if log_prefix < 0 or log_prefix > len(log):
-            raise ValueError(
-                f"log_prefix must be between 0 and the decision log's length "
-                f"({len(log)}), got {log_prefix}"
+            raise BadSettingError(
+                "log_prefix",
+                f"an integer between 0 and the decision log's length ({len(log)})",
+                log_prefix,
+                message=f"log_prefix must be between 0 and the decision log's length "
+                f"({len(log)}), got {log_prefix}",
             )
         if log_prefix < len(log):
             if dry_run:
-                raise ValueError(
-                    "dry_run cannot be combined with a log_prefix shorter than "
-                    "the decision log: the file never holds the state the "
+                raise BadSettingError(
+                    "dry_run",
+                    "False when log_prefix is shorter than the decision log",
+                    dry_run,
+                    message="dry_run cannot be combined with a log_prefix shorter "
+                    "than the decision log: the file never holds the state the "
                     "prefix describes, so the preview would resolve against "
-                    "the wrong fit. Undo the later decisions first, then dry-run."
+                    "the wrong fit. Undo the later decisions first, then dry-run.",
                 )
             return _apply_curation_at_prefix(
                 path,
@@ -8236,7 +8378,7 @@ def _apply_curation_at_prefix(
                 shared=shared,
                 deferred=deferred,
             )
-        except ValueError:
+        except (ValueError, KeyError):
             # Nothing was persisted; realign the file at the prefix alone.
             _execute_curation_batch(
                 path, prefix_plan, snap_tol_mhz=snap_tol, shared=shared
@@ -8533,6 +8675,7 @@ def _run_review_preview(
     # them None. A COALESCED implied create installs nothing, so it never
     # appears here -- one window, not two.
     created_facts: Dict[int, CreateWindowResult] = {}
+    _require_known_plan_windows(set(before_stats), plan, "Stage 5 fit")
     for original_index, action in _canonicalize_batch_plan(plan):
         try:
             if action.kind == "create":
@@ -8638,10 +8781,7 @@ def _run_review_preview(
                         original_index
                     )
         except (ValueError, KeyError) as exc:
-            raise ValueError(
-                f"curation action {original_index + 1} "
-                f"({describe_planned_action(action)}) failed: {exc}"
-            ) from exc
+            _raise_curation_failure(original_index, action, exc)
 
     # Direct = every window some action touched this batch, snapshotted
     # BEFORE the cascade runs (mutated_wids only grows from here). Anything
@@ -8951,7 +9091,12 @@ def review_undo_impl(
         )
     undo_set = {int(i) for i in ids}
     if not undo_set:
-        raise ValueError("no decision ids given to undo")
+        raise BadSettingError(
+            "ids",
+            "at least one decision id",
+            [int(i) for i in ids],
+            message="no decision ids given to undo",
+        )
 
     removed = [e for e in log if e.order_index in undo_set]
     surviving = [e for e in log if e.order_index not in undo_set]
@@ -9341,8 +9486,12 @@ def _store_sigma_floor(file_path: Union[Path, str], sigma_floor_khz: float) -> N
     directly, since it rebuilds the whole table itself right after."""
     floor = float(sigma_floor_khz)
     if floor < 0.0 or not math.isfinite(floor):
-        raise ValueError(
-            f"sigma_floor_khz must be finite and non-negative, got {sigma_floor_khz!r}"
+        raise BadSettingError(
+            "sigma_floor_khz",
+            "a finite float >= 0",
+            sigma_floor_khz,
+            message=f"sigma_floor_khz must be finite and non-negative, got "
+            f"{sigma_floor_khz!r}",
         )
     with h5py.File(str(file_path), "a") as h5f:
         save_frequency_calibration_to_hdf5(FrequencyCalibration(floor), h5f)
