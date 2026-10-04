@@ -58,10 +58,15 @@ from ._settings_serialization import (
     save_settings,
     settings_block_present,
 )
+from .provenance import RecordProvenance, record_provenance
 
 logger = logging.getLogger(__name__)
 
 STAGE_FIT_PATH = "processing_parameters/stage5_fit"
+
+#: Field-set version of the ``stage5_fit`` record this codec writes (see
+#: :mod:`ftmwpipeline.io.provenance`).
+STAGE5_FIT_FIELD_SET_VERSION = 1
 
 # Top-level audit attributes (always carried as-is, not part of to_attrs).
 _AUDIT_ATTRS = ("creation_time", "preset_name")
@@ -100,6 +105,7 @@ def save_stage_fit_settings_to_h5(
         file_path,
         STAGE_FIT_PATH,
         stage_fit_to_attrs(settings),
+        field_set_version=STAGE5_FIT_FIELD_SET_VERSION,
         preset_name=preset_name,
     )
 
@@ -228,6 +234,12 @@ def load_stage_fit_settings_from_h5(file_path: str) -> Optional[StageFitSettings
 def stage_fit_settings_present(file_path: str) -> bool:
     """Lightweight: does the file have a persisted ``stage5_fit`` block?"""
     return settings_block_present(file_path, STAGE_FIT_PATH)
+
+
+def stage_fit_settings_provenance(file_path: str) -> Optional[RecordProvenance]:
+    """The ``stage5_fit`` record's field-set version against
+    :data:`STAGE5_FIT_FIELD_SET_VERSION`, or ``None`` if the record is absent."""
+    return record_provenance(file_path, STAGE_FIT_PATH, STAGE5_FIT_FIELD_SET_VERSION)
 
 
 def write_stage2b_recommended_shape(
@@ -586,6 +598,8 @@ def read_recommended_start_detection(
 
 __all__ = [
     "STAGE_FIT_PATH",
+    "STAGE5_FIT_FIELD_SET_VERSION",
+    "stage_fit_settings_provenance",
     "declared_active_acquisition_us",
     "save_stage_fit_settings_to_h5",
     "load_stage_fit_settings_from_h5",

@@ -23,6 +23,8 @@ from typing import Any, Callable, Dict, Optional, Sequence
 
 import h5py
 
+from .provenance import FIELD_SET_VERSION_ATTR, write_field_set_version
+
 
 def decode_attr(value: Any) -> Any:
     """Decode an HDF5 attribute value (handles bytes -> str)."""
@@ -45,12 +47,15 @@ def save_settings(
     path: str,
     attrs: Dict[str, Any],
     *,
+    field_set_version: int,
     preset_name: Optional[str] = None,
     write_attr: Callable[[h5py.Group, str, Any], None] = _default_write_attr,
 ) -> None:
     """Persist a settings *attrs* dict to ``path``, overwriting any prior group.
 
-    ``creation_time`` is always stamped; ``preset_name`` is recorded when given.
+    ``creation_time`` and the record's ``field_set_version`` (the calling
+    codec's constant; see :mod:`ftmwpipeline.io.provenance`) are always
+    stamped; ``preset_name`` is recorded when given.
     Each ``attrs`` entry whose value is a ``dict`` is written as a subgroup (its
     fields via *write_attr*); scalar-valued entries are written as top-level
     attrs. This covers the flat (Stage 2) and sub-block (Stages 2b/3/4/5) layouts
@@ -61,6 +66,7 @@ def save_settings(
             del h5f[path]
         grp = h5f.create_group(path)
         grp.attrs["creation_time"] = datetime.now().isoformat()
+        write_field_set_version(grp.attrs, field_set_version)
         if preset_name is not None:
             grp.attrs["preset_name"] = preset_name
         for key, value in attrs.items():
@@ -113,7 +119,8 @@ def load_flat_settings(
     """Load a flat (single-group) settings record from ``path``, or ``None``.
 
     Reads every top-level attr except the *audit_attrs* bookkeeping keys and
-    hands the field map to *from_attrs* (the Stage 2 layout).
+    the field-set version, and hands the field map to *from_attrs* (the Stage 2
+    layout).
     """
     with h5py.File(file_path, "r") as h5f:
         if path not in h5f:
@@ -122,7 +129,7 @@ def load_flat_settings(
         attrs_dict: Dict[str, Any] = {
             key: decode_attr(raw)
             for key, raw in grp.attrs.items()
-            if key not in audit_attrs
+            if key not in audit_attrs and key != FIELD_SET_VERSION_ATTR
         }
     return from_attrs(attrs_dict)
 

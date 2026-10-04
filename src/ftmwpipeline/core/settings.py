@@ -47,6 +47,10 @@ _HARD_DEFAULTS: Dict[str, Any] = {
 
 # Standard HDF5 location of the persisted (user-chosen) settings.
 FT_PROCESSING_PATH = "processing_parameters/ft_processing"
+#: Field-set version of the ``ft_processing`` record Stage 1 writes (see
+#: :mod:`ftmwpipeline.io.provenance`). Stamped beside the :meth:`FTSettings.to_attrs`
+#: fields, never inside them, so it takes no part in the settings comparison.
+FT_PROCESSING_FIELD_SET_VERSION = 1
 # Import-time recommendations written by Stage 0.
 RECOMMENDED_PATH = "stage0_fid_data/recommended_processing"
 

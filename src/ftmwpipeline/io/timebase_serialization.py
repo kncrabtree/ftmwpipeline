@@ -10,7 +10,7 @@ HDF5 layout::
         attrs:
             epsilon, sigma_epsilon, lattice_g_mhz, n_used, n_detected,
             kappa_sys, snr_min, sample_dt_us, start_us, end_us, span_us,
-            preconditions_passed, creation_time
+            preconditions_passed, field_set_version, creation_time
         preconditions_notes   dataset, str
         tones                 group:
             f_bb_mhz   (float64)
@@ -33,16 +33,24 @@ from ..fitting.timebase_calibration import (
     TimebaseToneRead,
 )
 from ._hdf5_helpers import reset_group
+from .provenance import RecordProvenance, group_provenance, write_field_set_version
 
 SCHEMA_VERSION = "1.0"
 GROUP_PATH = "timebase_calibration"
+
+#: Field-set version of the timebase record's settings (the knobs and the
+#: active region it ran with); see :mod:`ftmwpipeline.io.provenance`. Distinct
+#: from :data:`SCHEMA_VERSION`, the algorithm tag in ``algorithm_info``.
+TIMEBASE_FIELD_SET_VERSION = 1
 
 
 __all__ = [
     "save_timebase_calibration_to_hdf5",
     "load_timebase_calibration_from_hdf5",
+    "timebase_calibration_provenance",
     "SCHEMA_VERSION",
     "GROUP_PATH",
+    "TIMEBASE_FIELD_SET_VERSION",
 ]
 
 
@@ -69,6 +77,7 @@ def save_timebase_calibration_to_hdf5(
     h5_group.attrs["end_us"] = float(result.end_us)
     h5_group.attrs["span_us"] = float(result.span_us)
     h5_group.attrs["preconditions_passed"] = bool(result.preconditions_passed)
+    write_field_set_version(h5_group.attrs, TIMEBASE_FIELD_SET_VERSION)
 
     notes = np.asarray(result.preconditions_notes, dtype=object)
     h5_group.create_dataset(
@@ -163,3 +172,9 @@ def load_timebase_calibration_from_hdf5(
         preconditions_passed=bool(a["preconditions_passed"]),
         preconditions_notes=notes,
     )
+
+
+def timebase_calibration_provenance(h5_group: h5py.Group) -> RecordProvenance:
+    """The timebase record's field-set version against
+    :data:`TIMEBASE_FIELD_SET_VERSION`."""
+    return group_provenance(h5_group, TIMEBASE_FIELD_SET_VERSION)

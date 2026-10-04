@@ -51,8 +51,13 @@ from ._settings_serialization import (
     save_settings,
     settings_block_present,
 )
+from .provenance import RecordProvenance, record_provenance
 
 STAGE4_WINDOWS_SETTINGS_PATH = "processing_parameters/stage4_windows"
+
+#: Field-set version of the ``stage4_windows`` record this codec writes (see
+#: :mod:`ftmwpipeline.io.provenance`).
+STAGE4_WINDOWS_FIELD_SET_VERSION = 1
 
 _SUB_NAMES = ("coherence", "clustering", "contributor", "leakage")
 
@@ -72,6 +77,7 @@ def save_window_planning_settings_to_h5(
         file_path,
         STAGE4_WINDOWS_SETTINGS_PATH,
         window_to_attrs(settings),
+        field_set_version=STAGE4_WINDOWS_FIELD_SET_VERSION,
         preset_name=preset_name,
     )
 
@@ -94,8 +100,18 @@ def window_planning_settings_present(file_path: str) -> bool:
     return settings_block_present(file_path, STAGE4_WINDOWS_SETTINGS_PATH)
 
 
+def window_planning_settings_provenance(file_path: str) -> Optional[RecordProvenance]:
+    """The ``stage4_windows`` record's field-set version against
+    :data:`STAGE4_WINDOWS_FIELD_SET_VERSION`, or ``None`` if the record is absent."""
+    return record_provenance(
+        file_path, STAGE4_WINDOWS_SETTINGS_PATH, STAGE4_WINDOWS_FIELD_SET_VERSION
+    )
+
+
 __all__ = [
     "STAGE4_WINDOWS_SETTINGS_PATH",
+    "STAGE4_WINDOWS_FIELD_SET_VERSION",
+    "window_planning_settings_provenance",
     "save_window_planning_settings_to_h5",
     "load_window_planning_settings_from_h5",
     "window_planning_settings_present",

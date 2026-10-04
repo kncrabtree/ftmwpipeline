@@ -25,10 +25,16 @@ import numpy as np
 
 from ..core.data_structures import FID, ComplexFT
 from ..core.settings import (
+    FT_PROCESSING_FIELD_SET_VERSION,
     FT_PROCESSING_PATH,
     RECOMMENDED_PATH,
     FTSettings,
     resolve,
+)
+from ..io.provenance import (
+    RecordProvenance,
+    record_provenance,
+    write_field_set_version,
 )
 from .compaction import compact_file
 from .shared_utils import fold_settings_blob
@@ -49,6 +55,15 @@ def _read_settings_layer(file_path: str, group_path: str) -> Optional[FTSettings
             return None
         attrs: Dict[str, Any] = dict(h5f[group_path].attrs)
     return FTSettings.from_attrs(fold_settings_blob(attrs))
+
+
+def ft_settings_provenance(file_path: str) -> Optional[RecordProvenance]:
+    """The ``ft_processing`` record's field-set version against
+    :data:`~ftmwpipeline.core.settings.FT_PROCESSING_FIELD_SET_VERSION`, or
+    ``None`` if Stage 1 has persisted no record."""
+    return record_provenance(
+        file_path, FT_PROCESSING_PATH, FT_PROCESSING_FIELD_SET_VERSION
+    )
 
 
 def _resolve_settings(file_path: str, explicit: Optional[FTSettings]) -> FTSettings:
@@ -414,6 +429,7 @@ def _persist_ft_settings(file_path: str, resolved: FTSettings) -> None:
         ft_group = proc.create_group("ft_processing")
         for name, value in new_attrs.items():
             ft_group.attrs[name] = value
+        write_field_set_version(ft_group.attrs, FT_PROCESSING_FIELD_SET_VERSION)
         # Human/debug mirror of the persisted record.
         ft_group.attrs["parameters"] = json.dumps(new_attrs, default=str)
         ft_group.attrs["last_updated"] = datetime.now().isoformat()

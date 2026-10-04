@@ -46,8 +46,13 @@ from ._settings_serialization import (
     save_settings,
     settings_block_present,
 )
+from .provenance import RecordProvenance, record_provenance
 
 STAGE2B_TAU_SETTINGS_PATH = "processing_parameters/stage2b_tau"
+
+#: Field-set version of the ``stage2b_tau`` record this codec writes (see
+#: :mod:`ftmwpipeline.io.provenance`).
+STAGE2B_TAU_FIELD_SET_VERSION = 1
 
 _SUB_NAMES = (
     "stft",
@@ -107,6 +112,7 @@ def save_tau_calibration_settings_to_h5(
         file_path,
         STAGE2B_TAU_SETTINGS_PATH,
         tau_settings_to_attrs(settings),
+        field_set_version=STAGE2B_TAU_FIELD_SET_VERSION,
         preset_name=preset_name,
         write_attr=_write_attr,
     )
@@ -134,8 +140,18 @@ def tau_calibration_settings_present(file_path: str) -> bool:
     return settings_block_present(file_path, STAGE2B_TAU_SETTINGS_PATH)
 
 
+def tau_calibration_settings_provenance(file_path: str) -> Optional[RecordProvenance]:
+    """The ``stage2b_tau`` record's field-set version against
+    :data:`STAGE2B_TAU_FIELD_SET_VERSION`, or ``None`` if the record is absent."""
+    return record_provenance(
+        file_path, STAGE2B_TAU_SETTINGS_PATH, STAGE2B_TAU_FIELD_SET_VERSION
+    )
+
+
 __all__ = [
     "STAGE2B_TAU_SETTINGS_PATH",
+    "STAGE2B_TAU_FIELD_SET_VERSION",
+    "tau_calibration_settings_provenance",
     "save_tau_calibration_settings_to_h5",
     "load_tau_calibration_settings_from_h5",
     "tau_calibration_settings_present",

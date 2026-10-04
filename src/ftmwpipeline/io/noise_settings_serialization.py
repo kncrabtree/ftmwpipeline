@@ -41,8 +41,13 @@ from ._settings_serialization import (
     save_settings,
     settings_block_present,
 )
+from .provenance import RecordProvenance, record_provenance
 
 STAGE2_NOISE_SETTINGS_PATH = "processing_parameters/stage2_noise"
+
+#: Field-set version of the ``stage2_noise`` record this codec writes (see
+#: :mod:`ftmwpipeline.io.provenance`).
+STAGE2_NOISE_FIELD_SET_VERSION = 1
 
 # Group-level bookkeeping attrs that are not NoiseSettings fields.
 _AUDIT_ATTRS = ("creation_time", "preset_name")
@@ -65,6 +70,7 @@ def save_noise_settings_to_h5(
         file_path,
         STAGE2_NOISE_SETTINGS_PATH,
         noise_to_attrs(settings),
+        field_set_version=STAGE2_NOISE_FIELD_SET_VERSION,
         preset_name=preset_name,
     )
 
@@ -87,8 +93,18 @@ def noise_settings_present(file_path: str) -> bool:
     return settings_block_present(file_path, STAGE2_NOISE_SETTINGS_PATH)
 
 
+def noise_settings_provenance(file_path: str) -> Optional[RecordProvenance]:
+    """The ``stage2_noise`` record's field-set version against
+    :data:`STAGE2_NOISE_FIELD_SET_VERSION`, or ``None`` if the record is absent."""
+    return record_provenance(
+        file_path, STAGE2_NOISE_SETTINGS_PATH, STAGE2_NOISE_FIELD_SET_VERSION
+    )
+
+
 __all__ = [
     "STAGE2_NOISE_SETTINGS_PATH",
+    "STAGE2_NOISE_FIELD_SET_VERSION",
+    "noise_settings_provenance",
     "save_noise_settings_to_h5",
     "load_noise_settings_from_h5",
     "noise_settings_present",
