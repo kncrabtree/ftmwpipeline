@@ -307,7 +307,8 @@ class TestThawGates:
     def test_thaw_accepts_when_the_edge_after_is_undefined(self, monkeypatch):
         """Acceptance is ``edge_after <= threshold`` with an undefined edge read
         as 0: the co-fit is accepted, and its ``edge_coherence_after`` is
-        recorded as ``nan`` (the event has no status column)."""
+        recorded as that gate value, 0.0, like ``edge_coherence_before`` (the
+        event has no status column; its ``nan`` means only a failed co-fit)."""
         out, win_a, win_b, strong, weak = _two_window_run()
         dep = _corrupt_primary(out, win_a, win_b, strong, weak)
         monkeypatch.setattr(
@@ -316,7 +317,7 @@ class TestThawGates:
         events = _round(out, win_b, dep)
         accepted = [e for e in events if e.accepted]
         assert accepted, [e.reason for e in events]
-        assert np.isnan(accepted[0].edge_coherence_after)
+        assert accepted[0].edge_coherence_after == 0.0
         assert np.isfinite(accepted[0].edge_coherence_before)
 
     def test_thaw_rejects_when_the_edge_after_is_above_threshold(self, monkeypatch):

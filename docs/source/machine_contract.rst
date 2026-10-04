@@ -237,6 +237,13 @@ Each declared accessor, with its absence cases:
     ``classification`` ``""`` are ``1``. ``promoted``: ``1`` for every row when
     the file records no promotion cutoff (it predates the record), else ``0``.
 
+  ``fit_thaw`` carries no status columns. Its ``edge_coherence_before`` and
+  ``edge_coherence_after`` are the values the thaw gate read, so an undefined
+  edge (an empty residual, or a band with no positive noise) is ``0.0`` there,
+  not ``nan``; ``edge_coherence_after`` is ``nan`` only when the joint co-fit
+  produced no usable fit (it did not converge, or returned the wrong number
+  of peaks).
+
   ``read_metadata`` has two kinds of absence. A key of a stage that has not
   run is *omitted* (read with ``.get()``). A key that is present without a
   value is ``Absent`` (``null`` plus ``"<key>_absent"`` on the wire), never

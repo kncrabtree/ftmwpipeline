@@ -1106,8 +1106,11 @@ class ThawInfo:
     edge_side : str
         ``"low"`` or ``"high"`` -- the flagged residual edge.
     edge_coherence_before, edge_coherence_after : float
-        Residual ``S_coh`` on the flagged edge before / after the co-fit.
-        ``nan`` for ``after`` if the co-fit did not converge.
+        Residual ``S_coh`` on the flagged edge before / after the co-fit, as
+        the thaw gate read it: an undefined edge (an empty residual, or a band
+        with no positive noise) is ``0.0``. ``nan`` for ``after`` only if the
+        co-fit produced no usable fit (it did not converge, or returned the
+        wrong number of peaks).
     accepted : bool
         Whether the co-fit converged and lowered the flagged-edge coherence to
         at or below the threshold.

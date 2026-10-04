@@ -290,7 +290,9 @@ residual leakage, and if so it renegotiates rather than shipping an under-fit wi
 A window edge whose coherence statistic is undefined (an empty residual, or a band
 with no positive noise) is stored as ``nan`` and never triggers either: the gates
 read it as no coherence to flag, exactly as when it was stored as ``0.0``, and a
-thaw's acceptance reads an undefined edge after the co-fit the same way.
+thaw's acceptance reads an undefined edge after the co-fit the same way. A thaw
+record stores both of its edge values as the gate read them, so there an undefined
+edge is ``0.0`` and ``nan`` means the joint co-fit produced no usable fit.
 
 Both are bounded by round caps for guaranteed termination, and every attempt,
 accepted or not, is recorded in the fit's audit trail. A window *split* is

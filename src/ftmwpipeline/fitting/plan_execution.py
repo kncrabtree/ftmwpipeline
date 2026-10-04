@@ -304,10 +304,13 @@ class ThawEvent:
         ``"low"`` or ``"high"`` -- which edge of ``dependent_window_id`` flagged.
     edge_coherence_before : float
         Residual ``S_coh`` on that edge before the thaw, in the same units as
-        :func:`~ftmwpipeline.preprocessing.edge_coherence.coherence_statistic`.
+        :func:`~ftmwpipeline.preprocessing.edge_coherence.coherence_statistic`,
+        as the gate read it (:func:`edge_gate_value`: an undefined edge is
+        ``0.0``).
     edge_coherence_after : float
-        Residual ``S_coh`` on that edge after the joint co-fit. ``NaN`` if the
-        co-fit did not converge.
+        Residual ``S_coh`` on that edge after the joint co-fit, likewise the
+        gate value. ``NaN`` only if the co-fit produced no usable fit (it did
+        not converge, or returned the wrong number of peaks).
     accepted : bool
         Whether the co-fit converged and lowered the flagged-edge coherence to
         at or below the threshold (i.e. the thaw improved things).
@@ -5093,8 +5096,12 @@ def _perform_thaw(
     dep_low_after, dep_high_after = residual_edge_coherence(
         provisional_dep_residual, dep_outcome.rms_noise, band_m=residual_edge_m
     )
-    edge_after = dep_low_after if edge_side == "low" else dep_high_after
-    accepted = edge_gate_value(edge_after) <= residual_edge_threshold
+    # Recorded as the gate reads it, like edge_coherence_before, so a NaN
+    # edge_coherence_after keeps its one meaning: the co-fit did not converge.
+    edge_after = edge_gate_value(
+        dep_low_after if edge_side == "low" else dep_high_after
+    )
+    accepted = edge_after <= residual_edge_threshold
 
     if not accepted:
         return ThawEvent(

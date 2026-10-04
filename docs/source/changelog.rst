@@ -65,8 +65,13 @@ engine so they cannot answer differently.
   ``1.0``. **Behaviour change:** ``fit_windows`` ``edge_coherence_low`` /
   ``_high`` ``nan`` is now status ``2`` for a window the fit evaluated (it
   was always ``1``), and ``peaks`` ``internal_snr`` ``nan`` is ``2`` when the
-  internal pass contributed the peak. Every gate decision and fitted number
-  is unchanged; on the 2638 fixture the whole fit is bit-identical.
+  internal pass contributed the peak. ``fit_thaw``'s ``edge_coherence_before``
+  / ``_after`` stay the values the thaw gate read (an undefined edge is
+  ``0.0``), so ``edge_coherence_after`` ``nan`` still means only that the
+  joint co-fit produced no usable fit. A window the fit never evaluated keeps
+  reading ``1`` after a Stage 6 edit to another window rewrites the fit.
+  Every gate decision and fitted number is unchanged; on the 2638 fixture the
+  whole fit is bit-identical.
 * **Stage 6 refits mask spurs at full precision.** A Stage 6 refit (every
   review verb that refits a window) replays the Stage 5 fit's gated spur
   catalog instead of re-detecting it. It used to replay the spur centers as ``parameters["spur_centers_mhz"]``
