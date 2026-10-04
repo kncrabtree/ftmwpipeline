@@ -91,3 +91,56 @@ def test_force_reimport_reports_what_it_discarded(
     assert result["invalidated"] == ["ft", "noise"]
     reused = ftmw.import_data(fp, source=exp_2638_data_path)
     assert reused["invalidated"] == []
+
+
+# Mutation caught: detect_peaks drops the list the Stage 3 impl returns (or
+# stops deleting Stage 4 when peaks are re-run).
+def test_peak_rerun_reports_and_deletes_windows(
+    baseline_2638_stage4: Path, tmp_path: Path
+) -> None:
+    fp = tmp_path / "w.ftmw"
+    shutil.copy(baseline_2638_stage4, fp)
+    assert "stage4_windows" in _completed(fp)
+    peaks = ftmw.detect_peaks(fp)
+    assert peaks.invalidated == ("windows",)
+    assert "stage4_windows" not in _completed(fp)
+    assert ftmw.detect_peaks(fp).invalidated == ()
+
+
+# Mutation caught: save_peak_parameters rewrites the record the report shows
+# as Stage 3's parameters without deleting the peaks it would misdescribe.
+def test_save_peak_parameters_with_new_values_deletes_peaks(
+    baseline_2638_stage4: Path, tmp_path: Path
+) -> None:
+    fp = tmp_path / "w.ftmw"
+    shutil.copy(baseline_2638_stage4, fp)
+    ftmw.save_peak_parameters(fp, {"min_snr": 7.0})
+    assert "stage3_peaks" not in _completed(fp)
+    assert "stage4_windows" not in _completed(fp)
+    ftmw.detect_peaks(fp)
+    ftmw.save_peak_parameters(fp, {"min_snr": 8.0})
+    assert "stage3_peaks" not in _completed(fp)
+
+
+# Mutation caught: a noise-settings change reports storage keys, or the CLI
+# settings verb stops naming the canonical stages.
+@pytest.mark.parametrize("via", ["api", "pipeline", "cli"])
+def test_settings_set_reports_canonical_names(
+    baseline_2638_stage4: Path, tmp_path: Path, via: str, capsys
+) -> None:
+    fp = tmp_path / "w.ftmw"
+    shutil.copy(baseline_2638_stage4, fp)
+    if via == "api":
+        reported = ftmw.settings_set(fp, "stage2.window_mhz", "111").invalidated
+    elif via == "pipeline":
+        reported = (
+            Pipeline.open(fp).settings_set("stage2.window_mhz", "111").invalidated
+        )
+    else:
+        capsys.readouterr()
+        assert main(["settings", "set", str(fp), "stage2.window_mhz", "111"]) == 0
+        out = capsys.readouterr().out
+        assert "noise" in out and "stage2_noise_result" not in out
+        reported = ("noise", "peaks", "windows")
+    assert reported[:2] == ("noise", "peaks") and "windows" in reported
+    assert "stage2_noise_result" not in _completed(fp)

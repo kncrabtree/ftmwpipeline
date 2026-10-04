@@ -72,7 +72,7 @@ def ft_unset_end_1231(tmp_path_factory):
     path = tmp_path_factory.mktemp("read_unset") / "unset_end_1231.ftmw"
     ftmw.import_data(path, "examples/blackchirp_data/1231")
     ftmw.settings_set(path, "stage1.trim", "26500,40000")
-    ftmw.compute_ft(path, from_saved_params=True)
+    ftmw.compute_ft(path)  # persists Stage 1 (from_saved_params only reads)
     return path
 
 
