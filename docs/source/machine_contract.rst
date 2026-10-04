@@ -642,7 +642,9 @@ carries a stable ``code`` and typed attributes, and ``to_dict()`` returns::
        refusal names no producing verb; the Python attribute is ``None``)
    * - ``not_found``
      - ``NotFoundError``
-     - ``kind``, ``ids`` (every id the request named that does not exist)
+     - ``kind`` (``"window"``, ``"peak"``, ``"file"`` or ``"decision"``),
+       ``ids`` (every id the request named that does not exist; a peak or
+       window named by frequency is reported by that frequency in MHz)
    * - ``not_found``
      - ``PipelineFileNotFoundError`` (a ``.ftmw`` path that does not exist)
      - ``kind`` (``"file"``), ``ids`` (the path)
@@ -683,6 +685,11 @@ carries a stable ``code`` and typed attributes, and ``to_dict()`` returns::
      - ``path`` (the file another process wrote while this call was writing
        it; this call's changes were discarded and the other write stands); see
        *Crash safety* below
+   * - ``curation_conflict``
+     - ``CurationConflictError`` (a ``ValueError``)
+     - ``reason`` (a stable slug, see *Curation refusals* below), ``ids``
+       (the windows, peaks or decisions involved, per ``reason``; ``[]`` when
+       it names none)
    * - ``pipeline_error``
      - ``PipelineFileError`` (the base class)
      - none. The declared fallback: a direct raise of the base class carries
@@ -729,6 +736,88 @@ public calls that raise it:
 Range and choice checks at set time are not yet made: an out-of-range number
 is accepted by ``settings_set`` and fails only when a stage runs.
 
+**Curation refusals.** The review calls (``review_edit``, ``review_apply``,
+``review_preview``, ``review_create``, ``review_accept``, ``review_undo`` and
+their ``Pipeline``, session and CLI spellings) refuse with typed errors. A
+batch refusal that names one action keeps its type and adds the action to
+the message (``curation action <n> (...) failed: ...``).
+
+* ``bad_setting``, with ``path`` naming what the caller wrote:
+
+  * a curation-file cell is ``curation[line <n>].<column>``, ``<column>``
+    one of ``action``, ``window``, ``freqs``, ``params`` (an unknown or
+    ``merge`` / ``split`` action, a window id that is not an integer or is
+    missing, a non-numeric frequency, a malformed ``uid:N``, the wrong number
+    of frequencies, unexpected or malformed parameters). A ``# frame:`` or
+    ``# epsilon:`` directive is the cell ``frame`` / ``epsilon`` of its line:
+    a bad or conflicting value, ``frame: calibrated`` without an epsilon
+    (``frame``), an epsilon without ``frame: calibrated``, and an epsilon
+    stamp that no longer matches the file's current epsilon (``epsilon``;
+    *frame drift*);
+  * a field of the i-th action of ``actions=`` is ``actions[<i>].<field>``:
+    a dict ``CurationAction.from_dict`` refuses (an unknown key is the path's
+    field), an item that is neither an action nor a dict (``actions[<i>]``),
+    an action ``frame`` that disagrees with the call's ``frame=``, a missing
+    frame on a ``self_calibrated`` file (``actions[<i>].frame``), and an
+    ``epsilon`` stamp that has drifted (``actions[<i>].epsilon``);
+  * ``review_edit``'s tokens are ``add`` / ``remove`` (a malformed token, or
+    a ``uid:N`` given to ``add``).
+
+* ``not_found``:
+
+  * ``kind`` ``"peak"``: a ``remove`` / merge / split frequency that matches
+    no fitted peak within the snap tolerance (``ids`` every such frequency of
+    the action), and a ``uid:N`` no fitted peak carries;
+  * ``kind`` ``"window"``: a window id the fit does not have (every unknown
+    id of a batch at once, including when the batch also creates windows:
+    only an id above every existing window, which a ``create`` might mint, is
+    left to the per-action check), and an omitted-window ``add`` / ``remove``
+    target that no live window covers (``ids`` the uncovered frequencies);
+  * ``kind`` ``"decision"``: ``review_undo`` ids the decision log does not
+    hold, every one of them (on a file with no recorded decisions, every
+    requested id).
+
+* ``curation_conflict`` (``CurationConflictError``), a valid request that
+  conflicts with the file's review state. ``reason`` is one of:
+
+  .. list-table::
+     :header-rows: 1
+     :widths: 30 70
+
+     * - ``reason``
+       - When (``ids``)
+     * - ``line_already_fitted``
+       - an ``add`` seeds at the birth position of a line already fitted
+         (that line's ``peak_uid``)
+     * - ``targets_span_windows``
+       - the targets of one ``review_edit`` without a window resolve to
+         different windows (those window ids)
+     * - ``orphans_created_window``
+       - ``review_undo`` would drop a window that surviving decisions act on
+         (the decisions to undo with it)
+     * - ``baseline_unavailable``
+       - ``review_undo``, or an apply at a ``log_prefix``, needs the
+         automatic-fit baseline and the file no longer holds it, e.g. the fit
+         was re-run after editing (``[]``)
+     * - ``replay_conflict``
+       - replaying a recorded window creation no longer reproduces its
+         window: it would widen another window, or its id is taken (the
+         recorded id, then the widened window's id)
+     * - ``window_not_fitted``
+       - a create would widen a window that has no Stage 5 fit (that window)
+     * - ``implied_create_reinterpreted``
+       - an ``add`` that implies creating a window landed on an existing peak
+         of the window it produced and would be recorded as a split or merge
+         (that window)
+
+  Reasons are only ever added.
+
+**Import refusals.** ``import_data`` (and ``Pipeline.create``, ``data
+import``) raises ``not_found`` (kind ``"file"``, ``ids`` the source path; a
+``PipelineFileNotFoundError``, also a ``FileNotFoundError``) for a source
+path that does not exist, and ``bad_setting`` with ``path`` ``"source"`` for a
+source the resolved format's loader does not accept.
+
 **Refused stage settings.** A stage call given a value it cannot use raises
 ``BadSettingError`` (``bad_setting``) before any work starts; ``path`` names the
 setting, so a client can point at the offending knob. The message text is
@@ -742,7 +831,8 @@ unchanged from the ``ValueError`` it replaced.
      - ``bad_setting`` ``path``
    * - ``import_data`` (stage-level, auto-detection found nothing or an unknown
        ``format_name``), ``load_fid`` / source validation
-     - ``format``
+     - ``format``; ``source`` when ``import_data``'s source does not validate
+       under the resolved format
    * - ``compute_ft``
      - ``stage1.start_us`` (negative), ``stage1.end_us`` (not after ``start_us``, or
        past the end of the recording), ``stage1.trim`` (no data points in the range)
@@ -1429,7 +1519,8 @@ A ``CurationAction`` is a frozen dataclass, one curation-file row:
 frequency, or one ``peak_uid`` on ``remove``; no frequency on ``accept``; no
 ``peak_uid`` outside ``remove``; no ``candidate_mhz`` outside ``accept``. A
 violation raises ``BadSettingError`` (``bad_setting``) whose ``path`` is the
-field.
+field. A dict refused inside an ``actions=`` batch reports the field as
+``actions[<i>].<field>``.
 
 **Wire form.** ``to_dict()`` returns ``{"schema": "ftmw/curation_action@1",
 "action", "window_id", "freq_mhz", "peak_uid", "candidate_mhz", "frame",
@@ -1443,8 +1534,8 @@ file's rows parse to the actions ``from_dict`` gives of their dicts.
 
 **Frames.** Each action's frame is resolved on its own. ``None`` takes the
 call's ``frame=``, and then the call's rule applies: raw on a file whose
-``epsilon`` is 0, and ``bad_setting`` (``path`` ``"frame"``) on a
-``self_calibrated`` file when the action carries a frequency. A batch may mix
+``epsilon`` is 0, and ``bad_setting`` (``path`` ``"actions[<i>].frame"``) on
+a ``self_calibrated`` file when the action carries a frequency. A batch may mix
 frames. The pipeline converts each action to raw before resolving anything. A
 client never converts frequencies itself.
 

@@ -49,6 +49,23 @@ had to reach into ``_internal`` or parse out of prose to obtain are now
 published, and the Stage 6 edit paths that carry them were collapsed onto one
 engine so they cannot answer differently.
 
+* **Machine contract: typed curation and import refusals.**
+  ``CONTRACT_VERSION`` is now ``12``. A new code, ``curation_conflict``
+  (``CurationConflictError``, a ``ValueError``; ``reason``, ``ids``), reports a
+  valid curation request that conflicts with the file's review state; its
+  reasons are listed in :doc:`machine_contract`. Curation-file syntax errors
+  raise ``bad_setting`` with ``path`` ``curation[line <n>].<column>``, and a
+  refused field of an ``actions=`` batch ``actions[<i>].<field>`` (including
+  an action's frame, which was ``"frame"``). A frequency that matches no
+  fitted peak is ``not_found`` (kind ``peak``), one no live window covers is
+  ``not_found`` (kind ``window``), and unknown ``review_undo`` ids are
+  ``not_found`` (kind ``decision``), every id at once. ``import_data`` raises
+  ``not_found`` (kind ``file``) for a missing source and ``bad_setting``
+  (``path`` ``source``) for one its format's loader refuses. Every one of
+  these is still the ``ValueError`` (or ``FileNotFoundError``) it replaced,
+  and messages are unchanged apart from a refused action naming its index.
+  The frame-mismatch advisory is now judged per action, so a batch's raw
+  actions are diagnosed when others in it are calibrated.
 * **Machine contract, Wave 5.2: Stage 5 partial fits.** ``CONTRACT_VERSION``
   is now ``11``. A cancelled (or callback-failed) fit no longer throws its work
   away: the windows that had finished are kept as a partial fit, in the call's
