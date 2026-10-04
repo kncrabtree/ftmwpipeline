@@ -853,7 +853,7 @@ class TestCurationActionFrames:
                 ],
                 frame="raw",
             )
-        assert ei.value.path == "frame"
+        assert ei.value.path == "actions[0].frame"
         assert self._removed(sc_file) == []
 
     def test_stamped_epsilon_refuses_drift_like_the_file(
@@ -887,7 +887,7 @@ class TestCurationActionFrames:
                     str(sc_file),
                     actions=[CurationAction("remove", window_id=wid, freq_mhz=f0)],
                 )
-            assert ei.value.path == "frame"
+            assert ei.value.path == "actions[0].frame"
 
     def test_uid_remove_and_bare_accept_need_no_frame(self, sc_file: Path) -> None:
         # Mutation: frame required for actions that carry no frequency.

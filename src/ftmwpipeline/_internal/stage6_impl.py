@@ -1279,13 +1279,20 @@ def _resolve_curation_frame(
     if header.epsilon is not None and stamp is not None:
         current_eps = stamp[1]
         if not math.isclose(header.epsilon, current_eps, rel_tol=1e-6, abs_tol=1e-12):
-            raise ValueError(
-                f"curation file frame drift: this file was staged "
+            raise BadSettingError(
+                (
+                    "epsilon"
+                    if header.epsilon_line is None
+                    else _curation_cell(header.epsilon_line, "epsilon")
+                ),
+                f"the file's current epsilon ({current_eps:.6e})",
+                header.epsilon,
+                message=f"curation file frame drift: this file was staged "
                 f"frame=calibrated at epsilon={header.epsilon:.6e}, but the "
                 f"target file's current epsilon is {current_eps:.6e}. The "
                 f"calibration has changed since this file was written (e.g. "
                 f"a timebase re-run) -- re-stage the curation file against "
-                f"the current calibration rather than applying it as-is."
+                f"the current calibration rather than applying it as-is.",
             )
 
     return resolved_frame, stamp
@@ -3272,7 +3279,7 @@ def refit_window_impl(
 
     add_raw: List[float] = []
     for tok in add:
-        parsed = parse_peak_token(tok)
+        parsed = parse_peak_token(tok, path="add")
         if isinstance(parsed, PeakUidToken):
             raise BadSettingError(
                 "add",
@@ -3284,7 +3291,7 @@ def refit_window_impl(
             )
         add_raw.append(parsed)
     remove_raw: List[Union[float, PeakUidToken]] = [
-        parse_peak_token(tok) for tok in remove
+        parse_peak_token(tok, path="remove") for tok in remove
     ]
 
     if add_raw or remove_raw:
@@ -4202,6 +4209,30 @@ class CurationFileHeader:
 
     frame: Optional[Frame] = None
     epsilon: Optional[float] = None
+    #: 1-based line of the ``# frame:`` / ``# epsilon:`` directive, naming the
+    #: cell a refusal points at (``curation[line <n>].frame`` / ``.epsilon``).
+    frame_line: Optional[int] = field(default=None, compare=False)
+    epsilon_line: Optional[int] = field(default=None, compare=False)
+
+
+def _curation_cell(line_no: int, column: str) -> str:
+    """The ``bad_setting`` path of one curation-file cell:
+    ``curation[line <n>].<column>`` (a ``# frame:`` / ``# epsilon:``
+    directive is the cell ``frame`` / ``epsilon`` of its line)."""
+    return f"curation[line {line_no}].{column}"
+
+
+def _bad_curation_cell(
+    line_no: int, column: str, expected: str, value: Any, detail: str
+) -> BadSettingError:
+    """A ``bad_setting`` refusal of one curation-file cell, with the
+    historical ``curation line <n>: ...`` message."""
+    return BadSettingError(
+        _curation_cell(line_no, column),
+        expected,
+        value,
+        message=f"curation line {line_no}: {detail}",
+    )
 
 
 class ParsedCurationFile(List[CurationOp]):
@@ -4491,9 +4522,12 @@ def _parse_curation_params(raw: str, line_no: int) -> Dict[str, str]:
         if not token:
             continue
         if "=" not in token:
-            raise ValueError(
-                f"curation line {line_no}: malformed parameter {token!r} "
-                f"(expected key=value)"
+            raise _bad_curation_cell(
+                line_no,
+                "params",
+                "';'-separated key=value parameters",
+                raw,
+                f"malformed parameter {token!r} (expected key=value)",
             )
         key, _, value = token.partition("=")
         params[key.strip().lower()] = value.strip()
@@ -4550,8 +4584,11 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
     :func:`_resolve_curation_frame` for how the header interacts with the
     per-call ``frame`` argument.
 
-    Raises ``ValueError`` (with the 1-based source line) on any malformed row
-    or header directive.
+    Raises ``BadSettingError`` (``bad_setting``, a ``ValueError``) on any
+    malformed row or header directive: ``path`` is the offending cell,
+    ``curation[line <n>].<column>`` (``action`` / ``window`` / ``freqs`` /
+    ``params``, or ``frame`` / ``epsilon`` for a directive), and the message
+    names the 1-based source line.
     """
     text = Path(curation_path).read_text()
     ops: List[CurationOp] = []
@@ -4566,16 +4603,25 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                 raw_value = m.group(1).strip()
                 value = raw_value.lower()
                 if value not in ("raw", "calibrated"):
-                    raise ValueError(
-                        f"curation line {line_no}: 'frame' header must be "
-                        f"'raw' or 'calibrated', got {raw_value!r}"
+                    raise _bad_curation_cell(
+                        line_no,
+                        "frame",
+                        "one of: raw, calibrated",
+                        raw_value,
+                        f"'frame' header must be 'raw' or 'calibrated', got "
+                        f"{raw_value!r}",
                     )
                 if header.frame is not None and header.frame != value:
-                    raise ValueError(
-                        f"curation line {line_no}: conflicting 'frame' "
-                        f"header (already declared {header.frame!r} earlier "
-                        f"in this file)"
+                    raise _bad_curation_cell(
+                        line_no,
+                        "frame",
+                        f"{header.frame} (the frame declared earlier in this file)",
+                        raw_value,
+                        f"conflicting 'frame' header (already declared "
+                        f"{header.frame!r} earlier in this file)",
                     )
+                if header.frame is None:
+                    header.frame_line = line_no
                 header.frame = value  # type: ignore[assignment]
                 continue
             m = _CURATION_EPSILON_HEADER_RE.match(line)
@@ -4584,16 +4630,25 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                 try:
                     eps_value = float(raw_eps)
                 except ValueError:
-                    raise ValueError(
-                        f"curation line {line_no}: 'epsilon' header "
-                        f"{raw_eps!r} is not a number"
+                    raise _bad_curation_cell(
+                        line_no,
+                        "epsilon",
+                        "a number",
+                        raw_eps,
+                        f"'epsilon' header {raw_eps!r} is not a number",
                     ) from None
                 if header.epsilon is not None and header.epsilon != eps_value:
-                    raise ValueError(
-                        f"curation line {line_no}: conflicting 'epsilon' "
-                        f"header (already declared {header.epsilon!r} "
-                        f"earlier in this file)"
+                    raise _bad_curation_cell(
+                        line_no,
+                        "epsilon",
+                        f"{header.epsilon!r} (the epsilon declared earlier in "
+                        f"this file)",
+                        eps_value,
+                        f"conflicting 'epsilon' header (already declared "
+                        f"{header.epsilon!r} earlier in this file)",
                     )
+                if header.epsilon is None:
+                    header.epsilon_line = line_no
                 header.epsilon = eps_value
                 continue
             continue  # an ordinary comment
@@ -4601,25 +4656,37 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
         action = fields[0].lower()
         if action == "action":  # header row
             continue
+        expected_action = "one of: " + ", ".join(_CURATION_ACTIONS)
         if action == "split":
-            raise ValueError(
-                f"curation line {line_no}: 'split' is not a curation-file "
-                f"action; write an 'add' row instead, at the frequency of the "
-                f"new component -- an add within snap tolerance of a fitted "
-                f"peak that is not itself being removed is read as a split of "
-                f"that peak"
+            raise _bad_curation_cell(
+                line_no,
+                "action",
+                expected_action,
+                fields[0],
+                "'split' is not a curation-file "
+                "action; write an 'add' row instead, at the frequency of the "
+                "new component -- an add within snap tolerance of a fitted "
+                "peak that is not itself being removed is read as a split of "
+                "that peak",
             )
         if action == "merge":
-            raise ValueError(
-                f"curation line {line_no}: 'merge' is not a curation-file "
-                f"action; write 'remove' rows for the mutually-close peaks to "
-                f"collapse, plus one 'add' row at a frequency in their span, "
-                f"instead -- that combination is read as a merge of them"
+            raise _bad_curation_cell(
+                line_no,
+                "action",
+                expected_action,
+                fields[0],
+                "'merge' is not a curation-file "
+                "action; write 'remove' rows for the mutually-close peaks to "
+                "collapse, plus one 'add' row at a frequency in their span, "
+                "instead -- that combination is read as a merge of them",
             )
         if action not in _CURATION_ACTIONS:
-            raise ValueError(
-                f"curation line {line_no}: unknown action {fields[0]!r}; "
-                f"choose one of {_CURATION_ACTIONS}"
+            raise _bad_curation_cell(
+                line_no,
+                "action",
+                expected_action,
+                fields[0],
+                f"unknown action {fields[0]!r}; choose one of {_CURATION_ACTIONS}",
             )
         raw_window = fields[1] if len(fields) > 1 else ""
         window_token = raw_window.strip().lower()
@@ -4634,66 +4701,116 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
             # _resolve_curation_plan's coalescing.
             window_id = _DERIVE_WINDOW_SENTINEL
         elif len(fields) < 2 or not fields[1]:
-            raise ValueError(f"curation line {line_no}: missing window id")
+            raise _bad_curation_cell(
+                line_no,
+                "window",
+                f"a window id (required on {action})",
+                fields[1] if len(fields) > 1 else None,
+                "missing window id",
+            )
         else:
             try:
                 window_id = int(fields[1])
             except ValueError:
-                raise ValueError(
-                    f"curation line {line_no}: window id {fields[1]!r} is not an "
-                    f"integer"
+                omit = ", or one of: new, auto, -" if action != "accept" else ""
+                raise _bad_curation_cell(
+                    line_no,
+                    "window",
+                    f"an integer window id{omit}",
+                    fields[1],
+                    f"window id {fields[1]!r} is not an integer",
                 ) from None
         freqs_raw = fields[2] if len(fields) > 2 else ""
         params_raw = fields[3] if len(fields) > 3 else ""
         freq_tokens = [x for x in freqs_raw.split(";") if x.strip()]
         freqs: List[Union[float, PeakUidToken]]
+        freqs_cell = _curation_cell(line_no, "freqs")
         if action == "remove":
             # The one action whose single token may be a "uid:N"
             # peak-identifier instead of a frequency -- see parse_peak_token.
             try:
-                freqs = [parse_peak_token(x) for x in freq_tokens]
-            except ValueError as exc:
-                raise ValueError(f"curation line {line_no}: {exc}") from None
+                freqs = [parse_peak_token(x, path=freqs_cell) for x in freq_tokens]
+            except BadSettingError as exc:
+                raise BadSettingError(
+                    exc.path,
+                    exc.expected,
+                    exc.value,
+                    message=f"curation line {line_no}: {exc}",
+                ) from None
         else:
             try:
                 freqs = [float(x) for x in freq_tokens]
             except ValueError:
-                raise ValueError(
-                    f"curation line {line_no}: non-numeric frequency in {freqs_raw!r}"
+                raise _bad_curation_cell(
+                    line_no,
+                    "freqs",
+                    "a frequency in MHz",
+                    freqs_raw,
+                    f"non-numeric frequency in {freqs_raw!r}",
                 ) from None
         params = _parse_curation_params(params_raw, line_no)
 
         # Per-action arity / parameter validation.
         if action in ("add", "remove"):
             if len(freqs) != 1:
-                raise ValueError(
-                    f"curation line {line_no}: {action} needs exactly one frequency"
+                one = (
+                    'exactly one frequency in MHz or peak identifier "uid:N"'
+                    if action == "remove"
+                    else "exactly one frequency in MHz"
+                )
+                raise _bad_curation_cell(
+                    line_no,
+                    "freqs",
+                    one,
+                    freqs_raw,
+                    f"{action} needs exactly one frequency",
                 )
             if params:
-                raise ValueError(
-                    f"curation line {line_no}: {action} takes no parameters"
+                raise _bad_curation_cell(
+                    line_no,
+                    "params",
+                    "no parameters (an empty cell)",
+                    params_raw,
+                    f"{action} takes no parameters",
                 )
         elif action == "create":
             if len(freqs) != 1:
-                raise ValueError(
-                    f"curation line {line_no}: create needs exactly one frequency "
-                    f"(the anchor the new window must cover)"
+                raise _bad_curation_cell(
+                    line_no,
+                    "freqs",
+                    "exactly one frequency in MHz (the anchor)",
+                    freqs_raw,
+                    "create needs exactly one frequency "
+                    "(the anchor the new window must cover)",
                 )
             if params:
-                raise ValueError(f"curation line {line_no}: create takes no parameters")
+                raise _bad_curation_cell(
+                    line_no,
+                    "params",
+                    "no parameters (an empty cell)",
+                    params_raw,
+                    "create takes no parameters",
+                )
         elif action == "accept":
             if freqs:
-                raise ValueError(
-                    f"curation line {line_no}: accept takes no frequency column; "
-                    f"use params candidate=F to revive a candidate"
+                raise _bad_curation_cell(
+                    line_no,
+                    "freqs",
+                    "an empty cell (revive a candidate with params candidate=F)",
+                    freqs_raw,
+                    "accept takes no frequency column; "
+                    "use params candidate=F to revive a candidate",
                 )
             if "candidate" in params:
                 try:
                     float(params["candidate"])
                 except ValueError:
-                    raise ValueError(
-                        f"curation line {line_no}: candidate="
-                        f"{params['candidate']!r} is not a number"
+                    raise _bad_curation_cell(
+                        line_no,
+                        "params",
+                        "candidate=<a frequency in MHz>",
+                        params_raw,
+                        f"candidate={params['candidate']!r} is not a number",
                     ) from None
 
         ops.append(
@@ -4707,19 +4824,27 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
         )
 
     if header.epsilon is not None and header.frame != "calibrated":
-        raise ValueError(
-            "curation file: an 'epsilon' header requires a 'frame: "
+        assert header.epsilon_line is not None
+        raise BadSettingError(
+            _curation_cell(header.epsilon_line, "epsilon"),
+            "no epsilon header unless the file declares '# frame: calibrated'",
+            header.epsilon,
+            message="curation file: an 'epsilon' header requires a 'frame: "
             "calibrated' header alongside it -- an epsilon stamp is "
             "meaningless without a calibrated-frame declaration to attach "
-            "it to"
+            "it to",
         )
     if header.frame == "calibrated" and header.epsilon is None:
-        raise ValueError(
-            "curation file: 'frame: calibrated' requires an 'epsilon' "
+        assert header.frame_line is not None
+        raise BadSettingError(
+            _curation_cell(header.frame_line, "frame"),
+            "raw, or calibrated with an '# epsilon:' header",
+            header.frame,
+            message="curation file: 'frame: calibrated' requires an 'epsilon' "
             "header stamping the epsilon the file was written under (e.g. "
             "'# epsilon: 2.2e-6') -- otherwise a later apply/preview cannot "
             "detect that the calibration has drifted since this file was "
-            "staged"
+            "staged",
         )
 
     return ParsedCurationFile(ops, header)
@@ -4806,16 +4931,34 @@ def curation_source(
         if isinstance(item, CurationAction):
             out.append(item)
         elif isinstance(item, Mapping):
-            out.append(CurationAction.from_dict(item))
+            try:
+                out.append(CurationAction.from_dict(item))
+            except BadSettingError as exc:
+                raise _action_field_error(len(out), exc) from None
         else:
             raise BadSettingError(
-                "actions",
-                "a sequence of CurationAction (or their dicts)",
+                f"actions[{len(out)}]",
+                "a CurationAction or a curation action dict",
                 item,
                 message=f"actions[{len(out)}] is not a CurationAction or a "
                 f"curation action dict: {item!r}",
             )
     return tuple(out)
+
+
+def _action_field_error(
+    index: int, exc: BadSettingError, field_name: Optional[str] = None
+) -> BadSettingError:
+    """Re-issue a refusal of one action's field with the batch path
+    ``actions[<index>].<field>`` (``field_name`` defaults to the refusal's
+    own path, which names the field) and the action named in the message."""
+    name = exc.path if field_name is None else field_name
+    return BadSettingError(
+        f"actions[{index}].{name}",
+        exc.expected,
+        exc.value,
+        message=f"actions[{index}]: {exc}",
+    )
 
 
 def _action_has_freq(action: CurationAction) -> bool:
@@ -4894,11 +5037,11 @@ def _actions_to_ops(
                 stamp_read = True
             if action.frame is not None and frame is not None and action.frame != frame:
                 # The same refusal a file whose header disagrees with frame=
-                # gets (_resolve_curation_frame).
+                # gets (_resolve_curation_frame), pointed at the action field.
                 raise BadSettingError(
-                    "frame",
-                    f'"{action.frame}" (the frame actions[{index}] declares)',
-                    frame,
+                    f"actions[{index}].frame",
+                    f'"{frame}" (the frame passed as frame=), or null',
+                    action.frame,
                     message=f"actions[{index}] ({action.action}) declares "
                     f'frame="{action.frame}", but frame="{frame}" was passed '
                     f"explicitly. Pass a matching frame, or omit one of them.",
@@ -4908,7 +5051,7 @@ def _actions_to_ops(
                 resolved = _resolve_frame_against(stamp, requested)
             except BadSettingError as exc:
                 raise BadSettingError(
-                    exc.path,
+                    f"actions[{index}].frame",
                     exc.expected,
                     exc.value,
                     message=f"actions[{index}] ({action.action}): {exc}",
@@ -4921,13 +5064,16 @@ def _actions_to_ops(
                 if not math.isclose(
                     action.epsilon, current_eps, rel_tol=1e-6, abs_tol=1e-12
                 ):
-                    raise ValueError(
-                        f"actions[{index}] ({action.action}) frame drift: it "
-                        f"was staged frame=calibrated at epsilon="
+                    raise BadSettingError(
+                        f"actions[{index}].epsilon",
+                        f"the file's current epsilon ({current_eps:.6e})",
+                        action.epsilon,
+                        message=f"actions[{index}] ({action.action}) frame "
+                        f"drift: it was staged frame=calibrated at epsilon="
                         f"{action.epsilon:.6e}, but the target file's current "
                         f"epsilon is {current_eps:.6e}. The calibration has "
                         f"changed since it was staged (e.g. a timebase re-run) "
-                        f"-- re-stage it against the current calibration."
+                        f"-- re-stage it against the current calibration.",
                     )
         ops.append(_action_to_op(action, index, frame=resolved, stamp=stamp))
     return ParsedCurationFile(ops, CurationFileHeader()), stamp, advisory
