@@ -387,7 +387,9 @@ def detect_peaks(
     -------
     list of Peak
         Classified peaks sorted by frequency ascending; each carries
-        ``properties['detection_pass']`` of ``'primary'`` or ``'gap'``.
+        ``properties['detection_pass']`` of ``'primary'`` or ``'gap'``. A
+        peak whose local noise is not positive has ``snr`` ``nan`` (undefined)
+        and is classified WEAK.
 
     Raises
     ------
@@ -420,14 +422,21 @@ def detect_peaks(
     def _score(ref_idx: int, pass_name: str) -> Tuple[int, Peak]:
         sd_local = ref_sd[ref_idx]
         intensity = float(ref_mag[ref_idx])
-        snr = float(intensity / sd_local) if sd_local > 0 else 0.0
+        # No positive local noise: the SNR is undefined (nan; earlier releases
+        # stored 0.0). It classifies WEAK, as that 0.0 did.
+        defined = bool(sd_local > 0)
+        snr = float(intensity / sd_local) if defined else float("nan")
         return ref_idx, Peak(
             frequency=float(ref_freq[ref_idx]),
             intensity=intensity,
             index=int(ref_idx),
             snr=snr,
             noise_std_local=float(sd_local),
-            classification=classify_by_snr(snr, weak_medium_snr, medium_strong_snr),
+            classification=(
+                classify_by_snr(snr, weak_medium_snr, medium_strong_snr)
+                if defined
+                else classify_by_snr(0.0, weak_medium_snr, medium_strong_snr)
+            ),
             detection_pass=pass_name,
         )
 

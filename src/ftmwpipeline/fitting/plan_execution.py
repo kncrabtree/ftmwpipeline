@@ -59,6 +59,7 @@ coupling, a Stage 4 ``replan``). The light dataclasses defined here
 from __future__ import annotations
 
 import logging
+import math
 import os
 import time
 from collections.abc import Sequence
@@ -535,9 +536,10 @@ class WindowOutcome:
         Per-window residual-rescue history (chronological). Empty unless
         ``max_residual_rescue_rounds > 0`` was set on the executor call.
     edge_coherence_low : float
-        Final residual ``S_coh`` at the low-frequency edge.
+        Final residual ``S_coh`` at the low-frequency edge; ``nan`` when it is
+        undefined (see :func:`residual_edge_coherence`) or was never computed.
     edge_coherence_high : float
-        Final residual ``S_coh`` at the high-frequency edge.
+        Final residual ``S_coh`` at the high-frequency edge; ``nan`` likewise.
     """
 
     window_id: int
@@ -551,8 +553,8 @@ class WindowOutcome:
     full_residual: np.ndarray
     thaw_events: list[ThawEvent] = field(default_factory=list)
     rescue_events: list[RescueEvent] = field(default_factory=list)
-    edge_coherence_low: float = 0.0
-    edge_coherence_high: float = 0.0
+    edge_coherence_low: float = float("nan")
+    edge_coherence_high: float = float("nan")
     # Leakage-wing baseline nuisance term (when fired). ``baseline_applied``
     # records whether the evidence-triggered complex baseline refit replaced
     # this window's fit; ``baseline_order`` / ``baseline_coeffs`` /
@@ -1173,6 +1175,20 @@ def fit_window_with_fixed_contributors(
 # ---------------------------------------------------------------------------
 # Residual edge-coherence
 # ---------------------------------------------------------------------------
+def edge_gate_value(s_coh: float) -> float:
+    """A residual edge statistic as the edge gates read it.
+
+    :func:`residual_edge_coherence` reports an undefined edge (an empty
+    residual, a band with no positive noise) as ``nan``. Every gate on the
+    statistic -- the thaw and structural-merge triggers, a thaw's acceptance,
+    the baseline trigger and its recorded ``baseline_edge_coherence`` -- reads
+    such an edge as ``0.0``: no measured coherence, nothing to flag. That is
+    the value those edges carried before the statistic became undefined, so
+    the gates decide exactly as they did.
+    """
+    return 0.0 if math.isnan(s_coh) else s_coh
+
+
 def residual_edge_coherence(
     residual: np.ndarray,
     rms_noise: NoiseLike,
@@ -1203,12 +1219,15 @@ def residual_edge_coherence(
     Returns
     -------
     tuple of float
-        ``(low_edge_S_coh, high_edge_S_coh)``.
+        ``(low_edge_S_coh, high_edge_S_coh)``. An edge whose statistic is
+        undefined -- an empty residual, or a band whose mean noise is not
+        positive -- is ``nan`` (earlier releases reported ``0.0``). The
+        gates read an undefined edge through :func:`edge_gate_value`.
     """
     z = np.asarray(residual, dtype=np.complex128)
     n = z.size
     if n == 0:
-        return 0.0, 0.0
+        return float("nan"), float("nan")
     m = max(1, min(int(band_m), n // 2 if n >= 2 else n))
 
     sigma = np.asarray(rms_noise, dtype=float)
@@ -1569,7 +1588,8 @@ def _mirror_outcome_baseline(outcome: WindowOutcome) -> None:
         outcome.baseline_order = inner.baseline_order
         outcome.baseline_coeffs = inner.baseline_coeffs
         outcome.baseline_offset_scale = inner.baseline_offset_scale
-        lo, hi = outcome.edge_coherence_low, outcome.edge_coherence_high
+        lo = edge_gate_value(outcome.edge_coherence_low)
+        hi = edge_gate_value(outcome.edge_coherence_high)
         outcome.baseline_edge_coherence = float(
             max(lo, hi) if np.isfinite(lo) and np.isfinite(hi) else 0.0
         )
@@ -4497,8 +4517,8 @@ def _dispatch_structural_round(
         if win is None:
             continue
         for edge_side, edge_coh in (
-            ("low", outcome.edge_coherence_low),
-            ("high", outcome.edge_coherence_high),
+            ("low", edge_gate_value(outcome.edge_coherence_low)),
+            ("high", edge_gate_value(outcome.edge_coherence_high)),
         ):
             if not np.isfinite(edge_coh) or edge_coh <= residual_edge_threshold:
                 continue
@@ -4868,11 +4888,10 @@ def _fit_one_window(
         outcome.baseline_order = fit_result.fit.baseline_order
         outcome.baseline_coeffs = fit_result.fit.baseline_coeffs
         outcome.baseline_offset_scale = fit_result.fit.baseline_offset_scale
+        lo = edge_gate_value(outcome.edge_coherence_low)
+        hi = edge_gate_value(outcome.edge_coherence_high)
         outcome.baseline_edge_coherence = float(
-            max(outcome.edge_coherence_low, outcome.edge_coherence_high)
-            if np.isfinite(outcome.edge_coherence_low)
-            and np.isfinite(outcome.edge_coherence_high)
-            else 0.0
+            max(lo, hi) if np.isfinite(lo) and np.isfinite(hi) else 0.0
         )
     # Diagnostic: whether the evidence-triggered edge-free skirt was adopted.
     outcome._edge_free_accepted = edge_free_accepted  # type: ignore[attr-defined]
@@ -4921,8 +4940,8 @@ def attempt_thaw_round(
     """
     events: list[ThawEvent] = []
     for edge_side, edge_coh in (
-        ("low", outcome.edge_coherence_low),
-        ("high", outcome.edge_coherence_high),
+        ("low", edge_gate_value(outcome.edge_coherence_low)),
+        ("high", edge_gate_value(outcome.edge_coherence_high)),
     ):
         if not np.isfinite(edge_coh) or edge_coh <= residual_edge_threshold:
             continue
@@ -5075,7 +5094,7 @@ def _perform_thaw(
         provisional_dep_residual, dep_outcome.rms_noise, band_m=residual_edge_m
     )
     edge_after = dep_low_after if edge_side == "low" else dep_high_after
-    accepted = edge_after <= residual_edge_threshold
+    accepted = edge_gate_value(edge_after) <= residual_edge_threshold
 
     if not accepted:
         return ThawEvent(
@@ -5618,7 +5637,10 @@ def _apply_baseline_to_outcome(
         )
         - evaluate_baseline(inner, u)
     )
-    s_coh = max(outcome.edge_coherence_low, outcome.edge_coherence_high)
+    s_coh = max(
+        edge_gate_value(outcome.edge_coherence_low),
+        edge_gate_value(outcome.edge_coherence_high),
+    )
     edge_fire = np.isfinite(s_coh) and s_coh > baseline_edge_threshold
     smooth_stat = _smooth_residual_stat(u, residual, outcome.rms_noise, baseline_order)
     smooth_fire = smooth_stat > baseline_smooth_threshold

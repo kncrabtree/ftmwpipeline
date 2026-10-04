@@ -716,8 +716,10 @@ class KnockoutInfo:
         strictly better AICc.
     p_value : float
         Diagnostic F-test p-value of the K-peak fit vs the (K-1)-peak
-        refit. ``nan`` when the refit failed to converge or for peaks
-        loaded from older files written before this column existed.
+        refit. ``nan`` when the refit failed to converge, when the test is
+        degenerate (no residual degrees of freedom or a non-positive
+        chi-squared), or for peaks loaded from older files written before
+        this column existed.
     n_eff : float
         Effective sample size used by the AICc gate. ``nan`` for older
         files written before this column existed.
@@ -1041,7 +1043,10 @@ class AuditStep:
     f_statistic, p_value : float
         Diagnostic nested-model F-test of the chi-squared improvement.
         Kept as a familiar statistic; the accept gate is
-        AICc-with-``n_eff`` (see ``n_eff`` / ``aicc_delta``).
+        AICc-with-``n_eff`` (see ``n_eff`` / ``aicc_delta``). Both ``nan``
+        when the test is degenerate (no added parameter, no residual
+        degrees of freedom, or a non-positive chi-squared); files written
+        before that stored ``f_statistic`` 0.0 and ``p_value`` 1.0 there.
     aic_before, aic_after : float
         Diagnostic AIC at the raw ``n_data``.
     separation_ok : bool
@@ -1708,7 +1713,9 @@ class DoubletAlternativeInfo:
         Nuisance-projected matched-filter delta-chi-squared of the weak
         partner template on the merged residual. Large values indicate
         genuine second-line evidence orthogonal to parent lineshape error.
-        0.0 when the support slice is degenerate; NaN on refit failure.
+        NaN when no test ran (refit failure, a degenerate support slice);
+        files written before that store 0.0 for a degenerate slice, which
+        ``support_bins`` 0 identifies.
     orth_evidence_n_params : int
         Number of peak parameters in the template (always 3).
     support_bins : int

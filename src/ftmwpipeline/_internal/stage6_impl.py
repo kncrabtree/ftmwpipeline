@@ -544,6 +544,14 @@ def _audit_step_candidates(
             # Rejected by separation / blend-split / nan-AICc path; use F-test p.
             evidence = step.p_value
             kind = "f_p"
+        elif not math.isnan(step.chi2_before - step.chi2_after):
+            # A degenerate F-test (no residual degrees of freedom, a
+            # non-positive chi-squared): its p is undefined (nan), but with
+            # both chi-squared values in hand it carries no evidence, and it
+            # ranks as p = 1 -- what it was stored as before the statistic
+            # became undefined, so the ledger is unchanged.
+            evidence = 1.0
+            kind = "f_p"
         else:
             evidence = abs(step.chi2_before - step.chi2_after)
             kind = "delta_chi2"

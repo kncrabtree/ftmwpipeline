@@ -66,13 +66,15 @@ def coherence_statistic(z: np.ndarray, sigma: float) -> float:
     Returns
     -------
     float
-        ``|sum z| / (sigma * sqrt(M))``. Returns ``0.0`` for an empty band or
-        a non-positive ``sigma`` (degenerate, nothing to test).
+        ``|sum z| / (sigma * sqrt(M))``. ``nan`` for an empty band or a
+        non-positive ``sigma``: the statistic is undefined there (earlier
+        releases returned ``0.0``). A caller that gates on it decides what an
+        undefined edge means; see :func:`rolling_coherence`.
     """
     z = np.asarray(z)
     m = z.size
     if m == 0 or sigma <= 0.0:
-        return 0.0
+        return float("nan")
     return float(np.abs(np.sum(z)) / (sigma * np.sqrt(m)))
 
 
@@ -141,6 +143,8 @@ def rolling_coherence(
         ``S_coh`` of the band centered at ``c``, or ``NaN`` near the edges. If
         the spectrum is shorter than ``band_m`` the single whole-spectrum
         statistic is placed at the midpoint and all other entries are ``NaN``.
+        A band whose mean noise is not positive scores ``0.0`` (nothing to
+        flag), unlike :func:`coherence_statistic`, which calls it undefined.
 
     Raises
     ------
@@ -162,7 +166,10 @@ def rolling_coherence(
         return out
     if n < band_m:
         sigma = float(np.mean(sd)) if sd.size else 0.0
-        out[n // 2] = coherence_statistic(z, sigma)
+        # A band with no noise scores 0.0 here (no coherence to flag), as the
+        # vectorized path below does; coherence_statistic itself calls it
+        # undefined.
+        out[n // 2] = 0.0 if sigma <= 0.0 else coherence_statistic(z, sigma)
         return out
 
     # Band [s, s+M): complex sum via cumulative sums.
