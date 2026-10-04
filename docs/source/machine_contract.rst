@@ -1006,11 +1006,20 @@ detection, the report, a scan):
 * ``StageFinished`` (``ftmw/stage_finished@1``: ``elapsed_s``, ``summary``)
   closes it once its results are written. ``summary`` has the keys of the same
   verb's ``ftmw/run_result@1`` summary.
-* ``WindowProgress`` (``ftmw/window_progress@1``: ``phase``, ``index``,
-  ``total``, ``window_id``, ``n_peaks``, ``chi2r``, ``elapsed_s``,
+* ``WindowProgress`` (``ftmw/window_progress@1``: ``phase``, ``round``,
+  ``index``, ``total``, ``window_id``, ``n_peaks``, ``chi2r``, ``elapsed_s``,
   ``dropped``) follows each window the Stage 5 walk fits, each window a Stage 6
-  call re-fits (``stage: "review"``; the directly edited windows, then the
-  cascade, each counted from 1) and each window the report renders.
+  call re-fits (``stage: "review"``) and each window the report renders.
+  Events come in **passes**, each named by its ``(phase, round)`` pair, and
+  within a pass ``index`` counts finished windows from 1 up to ``total``,
+  which is fixed when the pass begins. ``phase`` is ``"initial"`` (the fit's
+  first walk, a Stage 6 call's directly edited windows, the report's windows),
+  ``"replan"`` (a structural replan round), ``"fallback"`` (a sequential
+  re-walk after that round's parallel walk fell back, reporting windows the
+  round already reported; see ``walk_fallback``) or ``"cascade"`` (Stage 6's
+  re-fit of dependent windows). ``round`` is ``0`` for the initial walk, its
+  fallback and every Stage 6 pass, and the replan round's number (from 1) for
+  a replan round and its fallback.
 * ``ScanProgress`` (``ftmw/scan_progress@1``: ``knob``, ``value``, ``index``,
   ``total``) follows each scanned value.
 * ``Invalidated`` (``ftmw/invalidated@1``: ``stages``) is emitted once per
@@ -1090,7 +1099,7 @@ line each, and the first Ctrl-C cancels::
    $ ftmwpipeline fit run exp.ftmw --events --json 2> stderr.jsonl > result.json
    $ head -2 stderr.jsonl
    {"schema": "ftmw/stage_started@1", "operation": "fit run", "stage": "fit"}
-   {"schema": "ftmw/window_progress@1", "operation": "fit run", "stage": "fit", "phase": "initial", "index": 1, "total": 382, "window_id": 3, "n_peaks": 2, "chi2r": 1.04, "elapsed_s": 0.9, "dropped": false}
+   {"schema": "ftmw/window_progress@1", "operation": "fit run", "stage": "fit", "phase": "initial", "round": 0, "index": 1, "total": 382, "window_id": 3, "n_peaks": 2, "chi2r": 1.04, "elapsed_s": 0.9, "dropped": false}
    $ # Ctrl-C:
    $ echo $?
    130

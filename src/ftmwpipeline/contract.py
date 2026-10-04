@@ -351,8 +351,10 @@ WARNING_FIELDS: Mapping[str, Tuple[str, ...]] = MappingProxyType(
     }
 )
 
-#: The phases of a Stage 5 fit walk a :class:`WindowProgress` reports.
-WINDOW_PHASES: Tuple[str, ...] = ("initial", "replan")
+#: The ``phase`` of a :class:`WindowProgress` pass: the fit's first walk (or a
+#: Stage 6 call's own windows), a structural replan round, a sequential re-walk
+#: after a parallel walk fell back, and Stage 6's re-fit of dependent windows.
+WINDOW_PHASES: Tuple[str, ...] = ("initial", "replan", "fallback", "cascade")
 
 
 def _stage_or_none(stage: Union[Stage, str, None]) -> Optional[Stage]:
@@ -406,17 +408,26 @@ class StageFinished(_EventBase):
 class WindowProgress(_EventBase):
     """One window finished fitting.
 
-    ``phase`` is ``"initial"`` or ``"replan"``; ``index`` counts finished
-    windows within the phase from 1 (windows can finish out of id order);
-    ``total`` is the number of windows in that phase; ``elapsed_s`` the
-    window's own fitting time. A dropped window has ``dropped=True`` and its
-    ``n_peaks`` / ``chi2r`` are :class:`Absent`; a ``chi2r`` without a finite
-    value is :attr:`Absent.UNDEFINED`.
+    Events come in passes, each identified by its ``(phase, round)`` pair.
+    ``phase`` is one of :data:`WINDOW_PHASES`: ``"initial"`` (the fit's first
+    walk, or a Stage 6 call's own windows), ``"replan"`` (a structural replan
+    round), ``"fallback"`` (a sequential re-walk after the parallel walk of the
+    same round fell back; it reports windows that round's earlier pass already
+    reported) or ``"cascade"`` (Stage 6's re-fit of dependent windows).
+    ``round`` is ``0`` for the initial walk, its fallback and every Stage 6
+    pass, and the replan round's number (from 1) for a replan round and its
+    fallback. ``index`` counts finished windows within the pass from 1 (windows
+    can finish out of id order); ``total`` is the number of windows in the
+    pass, fixed when it begins; ``elapsed_s`` the window's own fitting time. A
+    dropped window has ``dropped=True`` and its ``n_peaks`` / ``chi2r`` are
+    :class:`Absent`; a ``chi2r`` without a finite value is
+    :attr:`Absent.UNDEFINED`.
     """
 
     __ftmw_schema__: ClassVar[str] = WINDOW_PROGRESS_SCHEMA
 
     phase: str
+    round: int
     index: int
     total: int
     window_id: int
@@ -917,6 +928,7 @@ _FIELDS: Dict[str, Tuple[str, ...]] = {
         "operation",
         "stage",
         "phase",
+        "round",
         "index",
         "total",
         "window_id",

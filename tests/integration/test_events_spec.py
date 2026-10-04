@@ -174,10 +174,25 @@ def test_a_stage_run_emits_one_ordered_bracket(case, request, tmp_path):
     if case == "fit":
         windows = rec.of(WindowProgress)
         assert windows, "the fit walk reports each window"
-        initial = [w for w in windows if w.phase == "initial"]
-        assert [w.index for w in initial] == list(range(1, len(initial) + 1))
-        assert {w.total for w in initial} == {len(initial)}
-        assert all(w.phase in ("initial", "replan") for w in windows)
+        assert windows[0].phase == "initial" and windows[0].round == 0
+        assert all(w.phase in ("initial", "replan", "fallback") for w in windows)
+        # Each pass (phase, round) counts its own windows from 1 to a total
+        # fixed when it begins; initial and its fallback are round 0, a replan
+        # round and its fallback are that round's number (from 1).
+        passes: dict = {}
+        for w in windows:
+            passes.setdefault((w.phase, w.round), []).append(w)
+        for ws in passes.values():
+            assert [w.index for w in ws] == list(range(1, len(ws) + 1))
+            assert {w.total for w in ws} == {len(ws)}
+        replan_rounds = {rnd for phase, rnd in passes if phase == "replan"}
+        for phase, rnd in passes:
+            if phase == "initial":
+                assert rnd == 0
+            elif phase == "replan":
+                assert rnd >= 1
+            else:  # fallback: of the initial walk or of a replan round
+                assert rnd == 0 or rnd in replan_rounds
 
 
 @pytest.mark.parametrize("case", sorted(STAGE_CASES))

@@ -32,6 +32,7 @@ def _report(wid, freq_range, *, n_peaks, reduced_chi2, elapsed_s):
         detached_scope(Stage.FIT, verb="fit run"),
         pe._WindowReport(wid, freq_range, n_peaks, reduced_chi2, elapsed_s),
         phase="initial",
+        walk_round=0,
         index=1,
         total=1,
     )

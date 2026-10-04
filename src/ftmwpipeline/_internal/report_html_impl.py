@@ -3342,7 +3342,7 @@ def _render_all_window_figures(
     With ``events`` (the ``report run`` operation's scope) a cancel is checked
     between windows (the pool's workers are terminated on one), and each
     rendered window is reported as a ``WindowProgress`` (``stage: null``,
-    phase ``"initial"``, ``elapsed_s`` the time since the previous window
+    phase ``"initial"``, round 0, ``elapsed_s`` the time since the previous window
     finished rendering).
 
     Returns ``{wid: (wid, panel_bytes, mag_geom, corr_bytes)}``. Uses a forking
@@ -3372,6 +3372,7 @@ def _render_all_window_figures(
             wf = None
         scope.window_progress(
             phase="initial",
+            round=0,
             index=i,
             total=n,
             window_id=wid,

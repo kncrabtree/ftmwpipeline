@@ -268,6 +268,7 @@ def _report_window(
     )
     scope.window_progress(
         phase="initial",
+        round=0,
         index=index,
         total=total,
         window_id=int(window_id),
@@ -2861,8 +2862,8 @@ def _cascade_refit_dependents(
     and the refreshed skirt in one fit (design §3). Mutates ``spectrum_fit``.
 
     ``events`` (the Stage 6 operation's scope) gets a ``WindowProgress`` per
-    re-fit dependent (phase ``"initial"``, ``index`` over the cascade) and is
-    checked for a cancel before each one.
+    re-fit dependent (phase ``"cascade"``, round 0, ``index`` over the
+    cascade) and is checked for a cancel before each one.
     """
     from ..fitting.result_conversion import sort_fitting_result_by_frequency
 
@@ -2928,7 +2929,8 @@ def _cascade_refit_dependents(
         cascaded.append(d)
         if events is not None:
             events.window_progress(
-                phase="initial",
+                phase="cascade",
+                round=0,
                 index=len(cascaded),
                 total=n_cascade,
                 window_id=int(d),

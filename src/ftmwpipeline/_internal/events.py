@@ -691,6 +691,7 @@ class StageScope:
         self,
         *,
         phase: str,
+        round: int,
         index: int,
         total: int,
         window_id: int,
@@ -701,12 +702,13 @@ class StageScope:
         freq_range: Tuple[float, float],
     ) -> None:
         """Emit one :class:`WindowProgress` (renders the detail/dropped and
-        ``window n/total`` lines)."""
+        ``window n/total`` lines). ``(phase, round)`` names the pass."""
         self.emit(
             WindowProgress(
                 self.operation,
                 self.stage,
                 phase,
+                int(round),
                 int(index),
                 int(total),
                 int(window_id),

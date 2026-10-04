@@ -46,7 +46,17 @@ _FORK = "fork" in multiprocessing.get_all_start_methods()
 
 def test_event_wire_form_applies_the_absent_rule():
     ev = WindowProgress(
-        "fit run", "fit", "initial", 1, 3, 7, Absent.UNDEFINED, float("nan"), 0.5, True
+        "fit run",
+        "fit",
+        "initial",
+        0,
+        1,
+        3,
+        7,
+        Absent.UNDEFINED,
+        float("nan"),
+        0.5,
+        True,
     )
     assert ev.stage is Stage.FIT and ev.chi2r is Absent.UNDEFINED
     assert to_jsonable(ev) == {
@@ -54,6 +64,7 @@ def test_event_wire_form_applies_the_absent_rule():
         "operation": "fit run",
         "stage": "fit",
         "phase": "initial",
+        "round": 0,
         "index": 1,
         "total": 3,
         "window_id": 7,
@@ -222,7 +233,8 @@ def test_walk_reports_every_window_from_the_parent(workers, monkeypatch):
     progress = [e for e in got if isinstance(e, WindowProgress)]
     assert [e.index for e in progress] == [1, 2, 3]
     assert {e.window_id for e in progress} == {0, 1, 2}
-    assert all(e.phase == "initial" and e.total == 3 for e in progress)
+    assert all(e.phase == "initial" and e.round == 0 for e in progress)
+    assert all(e.total == 3 for e in progress)
     assert set(out.window_outcomes) <= {0, 1, 2}
 
 
@@ -293,6 +305,7 @@ def test_detached_scope_renders_without_delivery(caplog):
             scope,
             pe._WindowReport(3, (1.0, 2.0), 2, 1.5, 0.1),
             phase="replan",
+            walk_round=1,
             index=1,
             total=4,
         )

@@ -82,6 +82,11 @@ def test_review_edit_reports_the_review_stage(stage5_small_file):
     assert all(e.stage is Stage.REVIEW for e in seen)
     windows = [e for e in seen if isinstance(e, WindowProgress)]
     assert [w.window_id for w in windows][:1] == [wid]
+    # The edited window is the call's own ("initial") pass; any dependents it
+    # re-fits are the "cascade" pass. Every Stage 6 pass is round 0.
+    assert windows[0].phase == "initial"
+    assert all(w.phase == "cascade" for w in windows[1:])
+    assert all(w.round == 0 for w in windows)
     assert seen[-1].summary == stage6_impl.review_edit_summary(result, (), [freqs[0]])
 
 

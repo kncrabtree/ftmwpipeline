@@ -35,6 +35,7 @@ from ftmwpipeline.cli.contract_commands import EXIT_CODES, exit_code_for
 from ftmwpipeline.contract import (
     MANIFEST,
     WARNING_FIELDS,
+    WINDOW_PHASES,
     Absent,
     Stage,
     capabilities,
@@ -53,6 +54,7 @@ EVENT_TABLE = [
         "ftmw/window_progress@1",
         (
             "phase",
+            "round",
             "index",
             "total",
             "window_id",
@@ -76,7 +78,9 @@ def _example(cls: type) -> object:
     if cls is StageFinished:
         return StageFinished("noise run", "noise", 1.5, {"n": 3, "nested": {"a": 1}})
     if cls is WindowProgress:
-        return WindowProgress("fit run", "fit", "initial", 1, 4, 7, 2, 1.25, 0.5, False)
+        return WindowProgress(
+            "fit run", "fit", "initial", 0, 1, 4, 7, 2, 1.25, 0.5, False
+        )
     if cls is ScanProgress:
         return ScanProgress("scan run", None, "stage2.window_mhz", 40.0, 1, 2)
     if cls is Invalidated:
@@ -145,6 +149,7 @@ def test_window_progress_wire_form():
         "operation": "fit run",
         "stage": "fit",
         "phase": "initial",
+        "round": 0,
         "index": 1,
         "total": 4,
         "window_id": 7,
@@ -157,7 +162,9 @@ def test_window_progress_wire_form():
 
 @pytest.mark.parametrize("absent", [Absent.NOT_RUN, Absent.UNDEFINED])
 def test_dropped_window_reports_absent_n_peaks_and_chi2r(absent):
-    ev = WindowProgress("fit run", "fit", "replan", 2, 3, 9, absent, absent, 0.1, True)
+    ev = WindowProgress(
+        "fit run", "fit", "replan", 1, 2, 3, 9, absent, absent, 0.1, True
+    )
     assert ev.dropped is True
     assert isinstance(ev.n_peaks, Absent) and isinstance(ev.chi2r, Absent)
     wire = to_jsonable(ev)
@@ -165,14 +172,16 @@ def test_dropped_window_reports_absent_n_peaks_and_chi2r(absent):
     assert wire["n_peaks"] is None and wire["n_peaks_absent"] == absent.value
     assert wire["chi2r"] is None and wire["chi2r_absent"] == absent.value
     assert wire["dropped"] is True and wire["phase"] == "replan"
+    assert wire["round"] == 1
     json.dumps(wire, allow_nan=False)
 
 
-def test_window_progress_phase_is_initial_or_replan():
-    for phase in ("initial", "replan"):
-        WindowProgress("fit run", "fit", phase, 1, 1, 0, 1, 1.0, 0.1, False)
+def test_window_progress_phase_is_one_of_the_four_passes():
+    assert WINDOW_PHASES == ("initial", "replan", "fallback", "cascade")
+    for phase in WINDOW_PHASES:
+        WindowProgress("fit run", "fit", phase, 0, 1, 1, 0, 1, 1.0, 0.1, False)
     with pytest.raises(ValueError):
-        WindowProgress("fit run", "fit", "later", 1, 1, 0, 1, 1.0, 0.1, False)
+        WindowProgress("fit run", "fit", "later", 0, 1, 1, 0, 1, 1.0, 0.1, False)
 
 
 def test_stage_finished_summary_is_carried_through():
@@ -408,6 +417,7 @@ def test_stage_order_is_started_other_invalidated_finished():
     with ops.stage(Stage.FIT) as scope:
         scope.window_progress(
             phase="initial",
+            round=0,
             index=1,
             total=1,
             window_id=0,

@@ -2347,6 +2347,7 @@ def execute_plan(
         plan.topological_order or [w.window_id for w in plan.windows],
         events=events,
         phase="initial",
+        walk_round=0,
         active_ft=active_ft,
         noise=noise,
         peak_frequencies_mhz=peak_frequencies_mhz,
@@ -2384,7 +2385,9 @@ def execute_plan(
     # --- Structural renegotiation loop -------------------------------------
     _t_replan = time.monotonic()
     if replan_context is not None:
-        for _ in range(replan_context.max_replan_rounds):
+        # Replan rounds are numbered from 1 (the initial walk is round 0): the
+        # ``round`` of the WindowProgress pass that re-fits each round's set.
+        for replan_round in range(1, replan_context.max_replan_rounds + 1):
             events.check_cancel()
             pending = _dispatch_structural_round(
                 outcomes, plan, residual_edge_threshold
@@ -2442,6 +2445,7 @@ def execute_plan(
                 affected_order,
                 events=events,
                 phase="replan",
+                walk_round=replan_round,
                 active_ft=active_ft,
                 noise=noise,
                 peak_frequencies_mhz=peak_frequencies_mhz,
@@ -2834,6 +2838,7 @@ def _report_window(
     report: _WindowReport,
     *,
     phase: str,
+    walk_round: int,
     index: int,
     total: int,
 ) -> None:
@@ -2841,7 +2846,9 @@ def _report_window(
     (rendering the detail -- or dropped -- line and the ``window n/total``
     progress line) and, when it ran long, a ``slow_window`` warning.
 
-    ``index`` is a count of windows actually *finished* in this phase, never a
+    ``(phase, walk_round)`` names the pass (the event's ``round`` is
+    ``walk_round``). ``index`` is a count of windows actually *finished* in this
+    pass, never a
     scheduling ordinal: under both parallel walks the submission order and the
     completion order differ, so a worker-side count would drive the progress bar
     backwards (and leave it stopped at whatever ordinal happened to finish last).
@@ -2849,6 +2856,7 @@ def _report_window(
     freq_range = (float(report.freq_range[0]), float(report.freq_range[1]))
     events.window_progress(
         phase=phase,
+        round=walk_round,
         index=index,
         total=total,
         window_id=report.window_id,
@@ -3148,6 +3156,7 @@ def _walk_windows_in_order(
     *,
     events: StageScope,
     phase: str,
+    walk_round: int,
     active_ft: ActiveFTResult,
     noise: np.ndarray,
     peak_frequencies_mhz: Sequence[float],
@@ -3210,8 +3219,10 @@ def _walk_windows_in_order(
        de-biases the rescue-confirmed lines and the trigger sees the
        cleanest residual; sequenced last and independent of rescue.
 
-    Each finished window is reported through ``events`` (``phase`` names the
-    walk); a cancel is honoured before each window, i.e. after the current one.
+    Each finished window is reported through ``events`` as one pass
+    (``phase``, ``walk_round``; ``index`` from 1, ``total`` the windows in
+    ``order``); a cancel is honoured before each window, i.e. after the
+    current one.
     """
     if window_tau_overrides is None:
         window_tau_overrides = {}
@@ -3253,7 +3264,14 @@ def _walk_windows_in_order(
             probe_freq_mhz=probe_freq_mhz,
             sample_dt_us=sample_dt_us,
         )
-        _report_window(events, report, phase=phase, index=n_done, total=n_total)
+        _report_window(
+            events,
+            report,
+            phase=phase,
+            walk_round=walk_round,
+            index=n_done,
+            total=n_total,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -3597,6 +3615,7 @@ def _walk_windows_dag(
     *,
     events: StageScope,
     phase: str,
+    walk_round: int,
     outcomes: dict[int, WindowOutcome],
     thaw_history: list[ThawEvent],
     rescue_history: list[RescueEvent],
@@ -3624,7 +3643,8 @@ def _walk_windows_dag(
     already dispatched read the pre-thaw primary) is handled conservatively: if
     *any* window reports an accepted thaw, the entire walk is redone via the
     sequential :func:`_walk_windows_in_order` (authoritative), discarding the
-    parallel outcomes, and a ``walk_fallback`` warning says so. Thaw-accept is 0
+    parallel outcomes, and a ``walk_fallback`` warning says so; the redo reports
+    as its own ``"fallback"`` pass of the same round. Thaw-accept is 0
     on every validated fixture, so this path does not fire in practice.
 
     The parent polls the cancel token every :data:`CANCEL_POLL_S` while workers
@@ -3712,7 +3732,12 @@ def _walk_windows_dag(
                     # the bar jump around and settle wherever the last-finishing
                     # window happened to sit in the schedule.
                     _report_window(
-                        events, report, phase=phase, index=len(results), total=n_total
+                        events,
+                        report,
+                        phase=phase,
+                        walk_round=walk_round,
+                        index=len(results),
+                        total=n_total,
                     )
                     if any(e.accepted for e in thaws):
                         accepted_thaw = True
@@ -3744,11 +3769,14 @@ def _walk_windows_dag(
         # in-order outcomes before any dependent reads them.
         if cleanup_history is not None:
             cleanup_history.clear()
+        # Reported as its own pass: phase "fallback", the same round, index
+        # from 1 over the windows re-walked (all of them).
         _walk_windows_in_order(
             plan,
             in_order,
             events=events,
-            phase=phase,
+            phase="fallback",
+            walk_round=walk_round,
             outcomes=outcomes,
             thaw_history=thaw_history,
             rescue_history=rescue_history,
@@ -3773,6 +3801,7 @@ def _walk_windows_parallel(
     *,
     events: StageScope,
     phase: str,
+    walk_round: int,
     active_ft: ActiveFTResult,
     noise: np.ndarray,
     peak_frequencies_mhz: Sequence[float],
@@ -3828,8 +3857,11 @@ def _walk_windows_parallel(
     walk sequentially (this never fires on the validated fixtures, where
     thaw-accept = 0).
 
-    Every walk reports each finished window through ``events`` from the parent
-    (``phase`` is ``"initial"`` or ``"replan"``) and honours a cancel between
+    Every walk reports each finished window through ``events`` from the parent,
+    as the pass ``(phase, walk_round)`` (``"initial"`` round 0, or ``"replan"``
+    round k); a sequential redo after a fallback is its own ``"fallback"`` pass
+    of the same round, its ``index`` from 1 and ``total`` the windows it
+    re-walks. Every walk honours a cancel between
     windows; the pool walks poll for it every :data:`CANCEL_POLL_S` and abort
     their pool on a cancel or error.
     """
@@ -3879,6 +3911,7 @@ def _walk_windows_parallel(
             order,
             events=events,
             phase=phase,
+            walk_round=walk_round,
             outcomes=outcomes,
             thaw_history=thaw_history,
             rescue_history=rescue_history,
@@ -3898,6 +3931,7 @@ def _walk_windows_parallel(
             order,
             events=events,
             phase=phase,
+            walk_round=walk_round,
             outcomes=outcomes,
             thaw_history=thaw_history,
             rescue_history=rescue_history,
@@ -3911,7 +3945,9 @@ def _walk_windows_parallel(
     levels = _levelize(order, by_id, plan.dependency_edges)
     n_total = len(order)
 
-    def _run_sequential(level: Sequence[int], n_done0: int) -> None:
+    def _run_sequential(
+        level: Sequence[int], n_done0: int, *, pass_phase: str, pass_total: int
+    ) -> None:
         nd = n_done0
         for wid in level:
             events.check_cancel()
@@ -3924,7 +3960,14 @@ def _walk_windows_parallel(
                 cleanup_history=cleanup_history,
                 **shared_kwargs,
             )
-            _report_window(events, report, phase=phase, index=nd, total=n_total)
+            _report_window(
+                events,
+                report,
+                phase=pass_phase,
+                walk_round=walk_round,
+                index=nd,
+                total=pass_total,
+            )
 
     if len(levels) > 1 or any(len(lv) > 1 for lv in levels):
         logger.info(
@@ -3940,7 +3983,7 @@ def _walk_windows_parallel(
         t_level = time.monotonic()
         # A width-1 level forks nothing -- run it in-process (no pool overhead).
         if len(level) < 2:
-            _run_sequential(level, n_done)
+            _run_sequential(level, n_done, pass_phase=phase, pass_total=n_total)
             n_done += len(level)
             continue
 
@@ -3976,6 +4019,7 @@ def _walk_windows_parallel(
                         events,
                         res[5],
                         phase=phase,
+                        walk_round=walk_round,
                         index=n_done + len(results),
                         total=n_total,
                     )
@@ -4001,7 +4045,9 @@ def _walk_windows_parallel(
                 "sequentially for cross-window correctness",
                 len(level),
             )
-            _run_sequential(level, n_done)
+            # Reported as its own pass: phase "fallback", the same round,
+            # index from 1 over this level's windows.
+            _run_sequential(level, 0, pass_phase="fallback", pass_total=len(level))
         else:
             for wid in level:
                 _, outcome, thaws, rescues, cleanups, _report = results[wid]

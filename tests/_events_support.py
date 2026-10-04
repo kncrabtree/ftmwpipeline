@@ -174,7 +174,14 @@ def wire_sequence(events: List[Any]) -> List[tuple]:
         d = e if isinstance(e, dict) else to_jsonable(e)
         row: tuple = (d["schema"], d["operation"], d["stage"])
         if d["schema"] == "ftmw/window_progress@1":
-            row += (d["phase"], d["index"], d["total"], d["window_id"], d["dropped"])
+            row += (
+                d["phase"],
+                d["round"],
+                d["index"],
+                d["total"],
+                d["window_id"],
+                d["dropped"],
+            )
         elif d["schema"] == "ftmw/stage_finished@1":
             row += (tuple(sorted(d["summary"])),)
         elif d["schema"] == "ftmw/invalidated@1":

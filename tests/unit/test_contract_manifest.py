@@ -264,6 +264,7 @@ SNAPSHOT_FIELDS: dict = {
         "operation",
         "stage",
         "phase",
+        "round",
         "index",
         "total",
         "window_id",
