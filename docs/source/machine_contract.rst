@@ -673,6 +673,11 @@ carries a stable ``code`` and typed attributes, and ``to_dict()`` returns::
      - ``CallbackFailedError``
      - ``event_schema`` (the event being delivered); the callback's exception
        is the ``__cause__``
+   * - ``pipeline_error``
+     - ``PipelineFileError`` (the base class)
+     - none. The declared fallback: a direct raise of the base class carries
+       it, and ``run_pipeline`` reports a failure that is not a typed error
+       under it (see *Events and cancellation* below)
 
 The code set is introduced **wave by wave**. ``capabilities()`` lists the
 codes this installation currently implements, and a client should rely on that

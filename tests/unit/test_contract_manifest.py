@@ -104,6 +104,7 @@ SNAPSHOT_CODES = frozenset(
         "algorithm_failed",
         "cancelled",
         "callback_failed",
+        "pipeline_error",
     }
 )
 SNAPSHOT_FILE_BOUND = {
@@ -417,7 +418,8 @@ def test_capabilities_is_declared_file_less():
 
 
 def test_every_code_maps_to_exactly_one_class():
-    classes = [c for c in _all_subclasses(PipelineFileError)]
+    # The base class owns the declared fallback code ``pipeline_error``.
+    classes = [PipelineFileError, *_all_subclasses(PipelineFileError)]
     for code in MANIFEST.codes:
         # A subclass that refines a code (PipelineFileNotFoundError is a
         # NotFoundError with kind "file") inherits it rather than declaring it.
@@ -430,9 +432,10 @@ def test_every_class_code_is_declared():
         assert cls.code in MANIFEST.codes, cls
 
 
-def test_base_fallback_code_is_not_declared():
+def test_base_fallback_code_is_declared():
+    # run_pipeline reports a failure that is not a typed error under it.
     assert PipelineFileError.code == "pipeline_error"
-    assert PipelineFileError.code not in MANIFEST.codes
+    assert PipelineFileError.code in MANIFEST.codes
 
 
 def test_cli_exit_codes_are_the_documented_table():

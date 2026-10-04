@@ -457,7 +457,7 @@ def test_event_schemas_are_in_the_manifest_and_capabilities():
 
 def test_error_codes_are_in_the_manifest_and_capabilities():
     caps = capabilities()
-    for code in ("cancelled", "callback_failed"):
+    for code in ("cancelled", "callback_failed", "pipeline_error"):
         assert code in MANIFEST.codes
         assert code in caps["codes"]
     # The manifest and the exception classes agree.

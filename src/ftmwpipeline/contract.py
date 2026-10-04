@@ -720,6 +720,9 @@ _CODES: Tuple[str, ...] = (
     AlgorithmFailedError.code,  # "algorithm_failed"
     OperationCancelledError.code,  # "cancelled"
     CallbackFailedError.code,  # "callback_failed"
+    # The base class's declared fallback: run_pipeline reports a failure that
+    # is not a typed error under it (§Events and cancellation).
+    PipelineFileError.code,  # "pipeline_error"
 )
 
 _FT_WINDOW_KEYS: Tuple[str, ...] = (
