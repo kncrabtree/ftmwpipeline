@@ -34,6 +34,7 @@ from ..core.settings import (
 from ..io.provenance import (
     RecordProvenance,
     record_provenance,
+    stamp_stage_epoch,
     write_field_set_version,
 )
 from .compaction import compact_file
@@ -412,13 +413,22 @@ def _persist_ft_settings(file_path: str, resolved: FTSettings) -> None:
     from a previously persisted record, every stage built on the FT
     (Stage 2 noise, Stage 3 peaks, ...) is invalidated: its stored result is
     removed, it is dropped from the completed set, and a loud warning is
-    logged. An identical re-persist (idempotent Jupyter re-run) changes
+    logged. An identical re-persist (idempotent Jupyter re-run) invalidates
     nothing.
+
+    Completing Stage 1 stamps its analysis epoch (``stage1_complex_ft``) before
+    writing anything else; a stamp that cannot be written raises before the
+    record or the completion is touched (see :mod:`ftmwpipeline.io.provenance`).
     """
     from ..file_manager import PipelineStageTracker
 
     new_attrs = resolved.to_attrs()
     with h5py.File(file_path, "a") as h5f:
+        # Stamp first, so a stamp that cannot be written leaves the record and
+        # the completion untouched. Stage 1 stores no computed artifact (the
+        # FT is recomputed on demand), so persisting it again never overwrites
+        # old numbers: it is not a re-run in the legacy-warning sense.
+        stamp_stage_epoch(h5f, "stage1_complex_ft", rerun=False)
         proc = h5f.require_group("processing_parameters")
         old_attrs = None
         if "ft_processing" in proc:

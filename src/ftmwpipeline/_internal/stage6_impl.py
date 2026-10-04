@@ -91,6 +91,7 @@ from ..io.frequency_calibration_serialization import (
     load_frequency_calibration_from_hdf5,
     save_frequency_calibration_to_hdf5,
 )
+from ..io.provenance import stamp_stage_epoch_in_file
 from ..io.stage6_review_serialization import (
     final_products_predate_fit_fields,
     load_stage6_review_from_file,
@@ -9482,7 +9483,8 @@ def refresh_persisted_final_products_impl(file_path: Union[Path, str]) -> bool:
     calibration contradicts. Only the table is replaced -- per-window
     provenance, attention reasons, the decision log and created windows are
     written back untouched. No-op when no table has been built yet or the
-    stored one is current.
+    stored one is current. A rewrite restamps ``stage6_review``'s analysis
+    epoch.
     """
     path = str(file_path)
     review = load_stage6_review_from_file(path)
@@ -9493,6 +9495,10 @@ def refresh_persisted_final_products_impl(file_path: Union[Path, str]) -> bool:
     if rebuilt is None:
         return False
     _write_stage6_review_only(replace(review, final_products=rebuilt), path)
+    # The rewritten products are Stage 6 output produced now, so Stage 6
+    # records the epoch that produced them; a stamp that cannot be written
+    # raises (see :mod:`ftmwpipeline.io.provenance`).
+    stamp_stage_epoch_in_file(path, "stage6_review")
     logger.info(
         "Refreshed the Stage 6 final-products table under the current "
         "calibration (epsilon=%.3e, sigma_epsilon=%.3e)",

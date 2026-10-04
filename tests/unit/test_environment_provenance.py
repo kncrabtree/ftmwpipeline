@@ -270,14 +270,20 @@ class TestPipelineStamping:
     def test_every_persisted_stage_is_stamped(self, stamped_file):
         with h5py.File(stamped_file, "r") as f:
             envs = load_stage_environments(f)
-        assert {"stage0_fid_data", "stage2_noise_result", "stage3_peaks"} <= set(envs)
+        assert {
+            "stage0_fid_data",
+            "stage1_complex_ft",
+            "stage2_noise_result",
+            "stage3_peaks",
+        } <= set(envs)
 
-    def test_stage1_is_not_stamped(self, stamped_file):
-        """Stage 1 persists no artifact (the FT is recomputed on demand), so it
-        is always the current environment and has nothing to stamp."""
+    def test_stage1_is_stamped(self, stamped_file):
+        """Stage 1 persists no computed artifact (the FT is recomputed on
+        demand), but completing it records its analysis epoch like any stage:
+        the fingerprint covers ``ft.analysis_epoch``."""
         with h5py.File(stamped_file, "r") as f:
             envs = load_stage_environments(f)
-        assert "stage1_complex_ft" not in envs
+        assert envs["stage1_complex_ft"].analysis_epoch == ANALYSIS_EPOCH
 
     def test_a_freshly_built_file_is_uniform(self, stamped_file):
         with h5py.File(stamped_file, "r") as f:

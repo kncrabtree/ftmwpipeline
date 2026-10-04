@@ -38,6 +38,7 @@ from ..fitting.tau_calibration import (
     ShapeRecommendation,
     compute_shape_recommendation,
 )
+from ..io.provenance import stamp_stage_epoch_in_file
 from ..io.stage_fit_settings_serialization import (
     write_stage2b_recommended_shape,
 )
@@ -55,6 +56,11 @@ from .tau_settings_resolution import (
 logger = logging.getLogger(__name__)
 
 STAGE_NAME = "shape_recommendation"
+
+#: The key the recommendation's analysis epoch is stamped under. Not a tracked
+#: stage, but its verdict feeds Stage 3's gap pass and Stage 5's shape, so it
+#: records the epoch it was produced under like any stage does.
+SHAPE_RECOMMENDATION_EPOCH_KEY = "stage2b_shape_recommendation"
 
 
 def _read_persisted_ft_settings(file_path: str) -> FTSettings:
@@ -211,6 +217,9 @@ def recommend_shape_impl(
         resolved,
         preset_name=preset_name,
     )
+    # Recording the epoch is part of producing the recommendation; a stamp
+    # that cannot be written raises.
+    stamp_stage_epoch_in_file(file_path, SHAPE_RECOMMENDATION_EPOCH_KEY)
 
     return {
         "status": "success",

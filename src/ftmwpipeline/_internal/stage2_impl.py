@@ -29,6 +29,7 @@ from ..io.noise_settings_serialization import (
     load_noise_settings_from_h5,
     save_noise_settings_to_h5,
 )
+from ..io.provenance import stamp_stage_epoch
 from ..preprocessing.noise_estimation import (
     NoiseResult,
     estimate_active_ft_noise,
@@ -571,8 +572,20 @@ def _update_stage_completion(file_path: str, stage_name: str) -> None:
             # re-run whose predecessor left no environment record.
             was_complete = stage_name in stage_tracker.completed_stages
 
-            # Mark stage as completed
+            # Mark stage as completed (in memory; rejects an unknown stage
+            # before anything is written)
             stage_tracker.mark_completed(stage_name)
+
+            # Stamp the environment that produced THIS stage, and warn if the
+            # file now holds artifacts from more than one. This is the one
+            # place every tracked stage after Stage 1 passes through, so the
+            # record stays complete as stages are added -- and the comparison
+            # is naturally the useful one: not "your environment differs from
+            # the file's creation" but "this file's stages no longer agree".
+            # The stamp is part of completing the stage: it is written before
+            # the completion is saved, and a failure raises (see
+            # :mod:`ftmwpipeline.io.provenance`).
+            stamp_stage_epoch(h5f, stage_name, rerun=was_complete)
 
             # Update pipeline_stages group
             if "pipeline_stages" not in h5f:
@@ -586,14 +599,6 @@ def _update_stage_completion(file_path: str, stage_name: str) -> None:
             )
             stages_group.attrs["last_updated"] = datetime.now().isoformat()
 
-            # Stamp the environment that produced THIS stage, and warn if the
-            # file now holds artifacts from more than one. This is the single
-            # place every persisted analysis stage passes through, so the
-            # record stays complete as stages are added -- and the comparison
-            # is naturally the useful one: not "your environment differs from
-            # the file's creation" but "this file's stages no longer agree".
-            _stamp_stage_environment(h5f, stage_name, rerun=was_complete)
-
     except Exception as e:
         raise RuntimeError(f"Failed to update stage completion: {e}")
 
@@ -601,63 +606,3 @@ def _update_stage_completion(file_path: str, stage_name: str) -> None:
     # so this is the one place a finished stage run reclaims the dead space
     # its rewrite left (see ``_internal.compaction``).
     compact_file(file_path)
-
-
-def _stamp_stage_environment(
-    h5f: "h5py.File", stage_name: str, *, rerun: bool = False
-) -> None:
-    """Record the current environment for *stage_name* and report any drift.
-
-    Advisory: describing the environment must never fail the stage write it
-    describes, so every failure here is logged and swallowed.
-
-    ``rerun`` says the stage was already complete before this call. Combined
-    with an absent prior stamp it identifies the one case the epoch gate cannot
-    speak to -- re-running a stage over a result produced before environment
-    recording existed, where "unknown epoch" is treated as compatible and so
-    spans an arbitrary version gap silently -- and warns about it.
-    """
-    try:
-        from ..core.environment import capture_environment, describe_environment_drift
-        from ..io.environment_serialization import (
-            load_stage_environments,
-            save_stage_environment,
-        )
-
-        current = capture_environment()
-        previous = load_stage_environments(h5f)
-        save_stage_environment(h5f, stage_name, current)
-
-        # The legacy re-run. The result just overwritten carries no record of
-        # what produced it, so nothing -- not the epoch gate, which reads an
-        # unknown epoch as compatible, and not the cross-stage drift report --
-        # can say whether the new numbers match the old ones. That is a real
-        # possibility over an arbitrary version gap and it is otherwise
-        # completely silent, so say so once, here, where the fact is known.
-        if rerun and stage_name not in previous:
-            logger.warning(
-                "%s was re-run over a result that carries no environment "
-                "stamp (this file predates environment recording), so "
-                "reproducibility against the original run cannot be verified: "
-                "any numerical change between the version that produced it and "
-                "%s applies silently. Compare the stage's outputs before and "
-                "after if the original values matter.",
-                stage_name,
-                current.ftmwpipeline or "the running version",
-            )
-
-        # Compare against what was already on the file, excluding this stage's
-        # own prior entry (re-running a stage legitimately replaces it).
-        others = {k: v for k, v in previous.items() if k != stage_name}
-        drift = describe_environment_drift(others, current)
-        if drift:
-            logger.warning(
-                "%s was written by a different environment than this file's "
-                "other stages; the file now mixes analysis environments. "
-                "Differences: %s. Run 'ftmwpipeline info' for the full "
-                "per-stage record.",
-                stage_name,
-                "; ".join(drift),
-            )
-    except Exception as exc:  # pragma: no cover - provenance is never fatal
-        logger.debug("Could not stamp the environment for %s: %s", stage_name, exc)

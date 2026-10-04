@@ -159,8 +159,16 @@ The record is **per stage, not per file**, because the pipeline is sequential
 and stateful: stages are run at different times, often across an upgrade, and
 the situation worth detecting is a file whose Stage 5 fit and Stage 6 curation
 came from different code. A single file-level stamp cannot express that. Stage 1
-is deliberately absent — it persists no artifact, since the FT is recomputed on
-demand from the persisted settings, so it is always the current environment.
+is stamped too, although it persists no computed artifact (the FT is recomputed
+on demand from the persisted settings): its epoch says which definition of the
+FT the persisted settings were chosen under. The Stage 2b shape recommendation,
+which is not a tracked stage but feeds later ones, records its own entry
+(``stage2b_shape_recommendation``), and rebuilding the Stage 6 final-products
+table under a new calibration or accuracy floor re-stamps ``stage6_review``.
+
+Recording the stamp is part of completing a stage, not a courtesy: a stamp that
+cannot be written fails the stage, which is then not marked complete. Only the
+drift *warning* that follows a stamp is advisory.
 
 ``ftmwpipeline info`` prints the record, and says ``MIXED`` with a per-stage
 breakdown when the stages disagree. The exported line table and the HTML report
