@@ -482,15 +482,16 @@ class Pipeline:
         """Compute the zero-padded, analysis-band DISPLAY FT (Stage 5 report /
         'fit show' magnitude panels).
 
-        Contrast with :meth:`compute_ft`: that FT is unpadded and
-        native-length -- the one everything downstream fits and scores on.
-        This FT zero-fills the active-region FID slice by ``pad_factor``
-        (display default ``2``, the information limit for a magnitude
-        spectrum) purely to interpolate the magnitude curve between the
-        native bins, then trims to :meth:`compute_ft`'s own frequency band
-        (``from_saved_params=True``) -- it is display-only, differs from the
-        standard FT only in bin density, never extent, and never feeds
-        fitting, noise, or chi-squared. Display magnitude is
+        The active-portion FT that Stage 5 fits (same amplitude scale, same
+        phase origin), with the active FID slice zero-filled by
+        ``pad_factor`` (display default ``2``, the information limit for a
+        magnitude spectrum) purely to interpolate between the native bins.
+        Its band runs from the first to the last active-FT bin inside Stage
+        1's trim, so it contains every bin the fit sees at exactly the same
+        frequency (for a power-of-two ``pad_factor``). It is not
+        :meth:`compute_ft` resampled: that FT covers the full record, at a
+        different bin spacing, scale and phase origin. It is display-only and
+        never feeds fitting, noise, or chi-squared. Display magnitude is
         ``abs(spectrum) * amplitude_scale``.
 
         Depends on Stage 1 (the FID plus persisted FT settings, including any
@@ -504,8 +505,9 @@ class Pipeline:
         Returns
         -------
         ComplexFT
-            ``freq_array`` sorted ascending in molecular frequency, trimmed
-            to :meth:`compute_ft`'s band at ``pad_factor``x its density.
+            ``freq_array`` sorted ascending in molecular frequency, from the
+            first to the last in-band active-FT bin at ``pad_factor``x the
+            active grid's density.
             ``complex_spectrum`` aligned to it. ``metadata`` carries
             ``amplitude_scale`` (float), ``units_label`` (str), and
             ``pad_factor`` (int).
@@ -2699,6 +2701,53 @@ class Pipeline:
         from ._internal.read_impl import window_status_impl
 
         return window_status_impl(str(self.filepath))
+
+    def window_model(
+        self,
+        window_id: int,
+        *,
+        grid: str = "active",
+        components: bool = False,
+    ) -> Dict[str, Any]:
+        """The fitted model of one window, evaluated (``ftmw/window_model@1``).
+
+        Equivalent to :func:`ftmwpipeline.api.window_model`. ``grid`` is
+        ``"active"`` (the native active-FT grid Stage 5 fits) or ``"display"``
+        (:meth:`compute_display_ft`'s grid). The payload is ``{"schema",
+        "window_id", "grid", "frame", "frequency_mhz", "data", "model", "fixed",
+        "baseline", "sigma", "excluded", "components"}``: on the active grid,
+        ``sum(|data - model|**2 / (sigma**2 / 2))`` over the bins not
+        ``excluded`` is the fit's chi-squared. Never writes.
+
+        Raises
+        ------
+        StageDependencyError
+            No Stage 5 fit (``command`` ``fit run``).
+        NotFoundError
+            ``window_id`` has no Stage 5 fit.
+        """
+        from ._internal.model_impl import window_model_impl
+
+        return window_model_impl(
+            str(self.filepath), window_id, grid=grid, components=components
+        )
+
+    def spectrum_model(self, *, grid: str = "active") -> Dict[str, Any]:
+        """The whole fitted spectrum model (``ftmw/spectrum_model@1``).
+
+        Equivalent to :func:`ftmwpipeline.api.spectrum_model`. Every line of
+        the persisted fit once, over the whole grid at its window's fitted
+        decay time, plus each window's baseline inside its own fit range;
+        ``residual`` is ``data - model``. Never writes.
+
+        Raises
+        ------
+        StageDependencyError
+            No Stage 5 fit (``command`` ``fit run``).
+        """
+        from ._internal.model_impl import spectrum_model_impl
+
+        return spectrum_model_impl(str(self.filepath), grid=grid)
 
     @staticmethod
     def preview_source(

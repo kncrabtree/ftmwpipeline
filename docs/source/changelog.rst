@@ -42,6 +42,23 @@ had to reach into ``_internal`` or parse out of prose to obtain are now
 published, and the Stage 6 edit paths that carry them were collapsed onto one
 engine so they cannot answer differently.
 
+* **Machine contract, Wave 2: the fitted model, evaluated.**
+  ``CONTRACT_VERSION`` is now ``4``. ``window_model`` returns one window's
+  fitted model with the data, the frozen-neighbour and baseline terms, and --
+  on the active grid Stage 5 fits -- the noise and spur mask the fit used, so
+  the fit's chi-squared is reproducible from the payload alone.
+  ``spectrum_model`` returns the whole fitted spectrum, its data and residual.
+  Both evaluate on the active grid or on ``compute_display_ft``'s grid, through
+  the same evaluator the fit plots use (see :doc:`machine_contract`).
+
+* **``compute_display_ft``'s band is the active grid's own.** It now runs from
+  the first to the last active-FT bin inside the Stage 1 trim. Its edges used
+  to be cut against ``compute_ft``'s band with a quarter-bin tolerance, which
+  admitted one padded bin below the first active bin on the 2638 fixture
+  (343,710 bins, now 343,709 = 2 x 171,855 - 1). Its docstrings no longer
+  claim it differs from ``compute_ft`` only in bin density: it is the
+  active-portion FT, at a different spacing, scale and phase origin.
+
 * **Machine contract, Wave 2: per-line fit fields on the final products.**
   ``CONTRACT_VERSION`` is now ``3``.
   Each ``FinalPeak`` now carries, from the Stage 5 fit of its window,

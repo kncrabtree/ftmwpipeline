@@ -34,7 +34,7 @@ The contract version
     if ftmwpipeline.CONTRACT_VERSION < 1:
         raise RuntimeError("needs a newer ftmwpipeline")
 
-The first published contract is version ``1``; this release is version ``3``. Additions (a new accessor,
+The first published contract is version ``1``; this release is version ``4``. Additions (a new accessor,
 field or code) raise the version by one and never break an existing field. Every machine-readable payload also carries a **schema name**
 of the form ``ftmw/<payload>@<n>``; a schema name never changes meaning.
 
@@ -174,8 +174,11 @@ Each declared accessor, with its absence cases:
 * ``frequency_calibration``, ``refit_snap_tol_mhz``, ``settings_show``,
   ``settings_defaults`` -- unchanged; ``settings_defaults`` needs no file.
 * ``compute_display_ft`` -- ``freq_array`` and ``complex_spectrum`` plus
-  ``metadata`` (``amplitude_scale``, ``units_label``, ``pad_factor``). It has no
-  absence case: a file without Stage 1 raises ``StageDependencyError``.
+  ``metadata`` (``amplitude_scale``, ``units_label``, ``pad_factor``). It is
+  the active-portion FT Stage 5 fits, zero-filled to ``pad_factor`` times its
+  density, from the first to the last active bin inside the Stage 1 trim, so
+  it contains every bin the fit sees. It has no absence case: a file without
+  Stage 1 raises ``StageDependencyError``.
 
 Every one raises ``PipelineFileNotFoundError`` (code ``not_found``) for a
 missing file and ``PipelineCorruptionError`` (``file_corrupt``, exit 2) for a
@@ -546,6 +549,50 @@ read never writes the file. The CLI prints the records inline:
 .. code-block:: console
 
    $ ftmwpipeline read window_status experiment.ftmw
+
+The fitted model: ``window_model`` and ``spectrum_model``
+---------------------------------------------------------
+
+``window_model(path, window_id, grid="active", components=False)`` returns
+``{"schema": "ftmw/window_model@1", "window_id", "grid", "frame",
+"frequency_mhz", "data", "model", "fixed", "baseline", "sigma", "excluded",
+"components"}`` over the window's fit range, so a program can draw the fit, and
+check it, without reimplementing the line shape. ``frame`` is always ``"raw"``.
+
+* ``model`` is everything the fit compared with the data: the window's fitted
+  lines, the frozen neighbours it held fixed, and its baseline. ``fixed`` is the
+  frozen neighbours alone, drawn at the window's fitted decay time (as the fit
+  draws them); ``baseline`` is the baseline alone, or ``Absent.NOT_RUN`` when
+  the window was fitted without one.
+* On ``grid="active"`` -- the native active-portion FT Stage 5 fits -- ``data``
+  is exactly what the fit compared with, ``sigma`` the per-bin noise it
+  weighted by and ``excluded`` the bins it left out (gated spurs), so
+  ``sum(|data - model|**2 / (sigma**2 / 2))`` over the bins not excluded is the
+  fit's chi-squared. On ``grid="display"`` (``compute_display_ft``'s grid,
+  which contains every active bin) ``sigma`` and ``excluded`` are
+  ``Absent.UNDEFINED``.
+* ``components=True`` adds one array per fitted line, keyed by ``peak_uid``;
+  ``model = sum(components) + fixed + baseline``. Unrequested, the field is
+  ``Absent.NOT_RUN``.
+
+``spectrum_model(path, grid="active")`` returns ``{"schema":
+"ftmw/spectrum_model@1", "grid", "frame", "frequency_mhz", "data", "model",
+"residual"}`` over the whole grid: every fitted line once, at its window's
+fitted decay time, plus each window's baseline only inside that window's fit
+range (the nearest window centre where ranges overlap); ``residual`` is
+``data - model``. Inside a window it differs from ``window_model`` by design --
+it carries every neighbour's full line rather than the frozen part the fit held.
+
+Both raise ``StageDependencyError`` (``command`` ``fit run``) without a Stage 5
+fit; an unknown ``window_id`` raises ``NotFoundError`` (``not_found``). Neither
+writes the file. Amplitudes are in the units of the underlying spectrum, so
+``display_units`` applies to both grids. Through the CLI the arrays go to
+``.npy`` under ``--output``:
+
+.. code-block:: console
+
+   $ ftmwpipeline read window_model experiment.ftmw 179 --components --output w179/
+   $ ftmwpipeline read spectrum_model experiment.ftmw --grid display --output model/
 
 Serialization rules worth knowing: an enum is written as its ``.value``
 (``PeakShape.LORENTZIAN`` is ``"lorentzian"``, also as a mapping key); a

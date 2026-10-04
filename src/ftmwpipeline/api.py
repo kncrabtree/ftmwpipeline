@@ -489,17 +489,17 @@ def compute_display_ft(
     Compute the zero-padded, analysis-band DISPLAY FT, equivalent to
     :meth:`Pipeline.compute_display_ft`.
 
-    This is the same 2x-zero-padded magnitude spectrum the Stage 5 report and
-    'fit show' detail panels render -- contrast with :func:`compute_ft`, the
-    standard FT, which is unpadded and native-length and is what everything
-    downstream actually fits and scores on. This FT zero-fills the
-    active-region FID slice by ``pad_factor`` (display default ``2``, the
-    information limit for a magnitude spectrum) purely to interpolate the
-    magnitude curve between the native bins, then trims to
-    :func:`compute_ft`'s own frequency band (``from_saved_params=True``) --
-    it is display-only, differs from the standard FT only in bin density,
-    never extent, and never feeds fitting, noise, or chi-squared. Display
-    magnitude is ``abs(spectrum) * amplitude_scale``.
+    This is the same zero-padded spectrum the Stage 5 report and 'fit show'
+    detail panels render: the active-portion FT that Stage 5 fits (same
+    amplitude scale, same phase origin), with the active FID slice zero-filled
+    by ``pad_factor`` (display default ``2``, the information limit for a
+    magnitude spectrum) purely to interpolate between the native bins. Its
+    band runs from the first to the last active-FT bin inside Stage 1's trim,
+    so it contains every bin the fit sees at exactly the same frequency (for a
+    power-of-two ``pad_factor``). It is not :func:`compute_ft` resampled: that
+    FT covers the full record, at a different bin spacing, scale and phase
+    origin. It is display-only and never feeds fitting, noise, or
+    chi-squared. Display magnitude is ``abs(spectrum) * amplitude_scale``.
 
     Depends on Stage 1 (the FID plus persisted FT settings, including any
     trim) only -- does not require a persisted Stage 5 fit.
@@ -515,9 +515,9 @@ def compute_display_ft(
     Returns
     -------
     ComplexFT
-        ``freq_array`` sorted ascending in molecular frequency, trimmed to
-        :func:`compute_ft`'s band at ``pad_factor``x its density.
-        ``complex_spectrum`` aligned to it. ``metadata`` carries
+        ``freq_array`` sorted ascending in molecular frequency, from the first
+        to the last in-band active-FT bin at ``pad_factor``x the active grid's
+        density. ``complex_spectrum`` aligned to it. ``metadata`` carries
         ``amplitude_scale`` (float), ``units_label`` (str), and
         ``pad_factor`` (int).
 
@@ -2621,6 +2621,58 @@ def window_status(file_path: Union[str, Path]) -> Dict[str, Any]:
         Stage 4 has not been run.
     """
     return Pipeline.open(file_path).window_status()
+
+
+def window_model(
+    file_path: Union[str, Path],
+    window_id: int,
+    *,
+    grid: str = "active",
+    components: bool = False,
+) -> Dict[str, Any]:
+    """The fitted model of one window, equivalent to :meth:`Pipeline.window_model`.
+
+    Returns the ``ftmw/window_model@1`` payload ``{"schema", "window_id",
+    "grid", "frame", "frequency_mhz", "data", "model", "fixed", "baseline",
+    "sigma", "excluded", "components"}`` on the window's fit range: ``model`` is
+    everything the fit compared with the data (the window's lines, the frozen
+    neighbours at the window's fitted decay time, the baseline). ``grid`` is
+    ``"active"`` (the native active-FT grid Stage 5 fits, with the fit's
+    ``sigma`` and spur mask ``excluded``) or ``"display"``
+    (:func:`compute_display_ft`'s grid; ``sigma`` / ``excluded`` are then
+    ``Absent.UNDEFINED``). ``baseline`` is ``Absent.NOT_RUN`` for a window fitted
+    without one; ``components`` (one array per line, keyed by ``peak_uid``) is
+    ``Absent.NOT_RUN`` unless requested. Never writes.
+
+    Raises
+    ------
+    StageDependencyError
+        No Stage 5 fit (``command`` ``fit run``).
+    NotFoundError
+        ``window_id`` has no Stage 5 fit.
+    """
+    return Pipeline.open(file_path).window_model(
+        window_id, grid=grid, components=components
+    )
+
+
+def spectrum_model(
+    file_path: Union[str, Path], *, grid: str = "active"
+) -> Dict[str, Any]:
+    """The whole fitted spectrum model, equivalent to :meth:`Pipeline.spectrum_model`.
+
+    Returns the ``ftmw/spectrum_model@1`` payload ``{"schema", "grid", "frame",
+    "frequency_mhz", "data", "model", "residual"}`` over the whole grid: every
+    line of the persisted fit once at its window's fitted decay time, plus each
+    window's baseline only inside that window's fit range (the nearest window
+    centre where fit ranges overlap). Never writes.
+
+    Raises
+    ------
+    StageDependencyError
+        No Stage 5 fit (``command`` ``fit run``).
+    """
+    return Pipeline.open(file_path).spectrum_model(grid=grid)
 
 
 def preview_source(

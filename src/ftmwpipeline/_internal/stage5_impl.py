@@ -1303,6 +1303,37 @@ class Stage5FitContext:
     user_ft: Any  # ComplexFT
 
 
+def replay_spur_set(catalog: Mapping[str, Any], sorted_freq: np.ndarray) -> Any:
+    """Rebuild a Stage 5 :class:`~ftmwpipeline.fitting.spur_detection.SpurSet`
+    from a persisted catalog, without re-running the detector.
+
+    ``catalog`` carries the ``spur_*`` entries of a persisted
+    ``SpectrumFit.parameters`` mapping (``spur_centers_mhz``, ``spur_sources``,
+    ``spur_lattice``, ``spur_drift``, ``spur_mask_half_width_bins`` and
+    ``spur_mask_half_width_bins_per_spur``). ``sorted_freq`` is the full active
+    grid in ascending order; the mask geometry's bin spacing is its median step,
+    as the detector measured it.
+    """
+    from ..fitting.spur_detection import spur_set_from_catalog
+
+    bin_spacing = (
+        float(np.median(np.abs(np.diff(sorted_freq)))) if sorted_freq.size > 1 else 0.0
+    )
+    return spur_set_from_catalog(
+        centers_mhz=list(catalog.get("spur_centers_mhz", []) or []),
+        sources=list(catalog.get("spur_sources", []) or []),
+        lattice=list(catalog.get("spur_lattice", []) or []),
+        drift=list(catalog.get("spur_drift", []) or []),
+        per_spur_mask_half_width_bins=list(
+            catalog.get("spur_mask_half_width_bins_per_spur", []) or []
+        ),
+        bin_spacing_mhz=bin_spacing,
+        default_mask_half_width_bins=int(
+            catalog.get("spur_mask_half_width_bins", 0) or 0
+        ),
+    )
+
+
 def build_stage5_fit_context(
     file_path: str,
     resolved: Any,  # StageFitSettings
@@ -1350,7 +1381,6 @@ def build_stage5_fit_context(
         make_band_power_probe,
         make_chirp_response_probe,
         make_decay_probe,
-        spur_set_from_catalog,
     )
     from ..io.fid_serialization import load_acquisition_segments_from_hdf5
     from ..preprocessing.noise_estimation import estimate_active_ft_noise
@@ -1449,25 +1479,7 @@ def build_stage5_fit_context(
         # Replay the persisted Stage 5 gated catalog verbatim (no detection):
         # the catalog is a Stage 5 product, so a later-stage refit reproduces
         # the exact residual mask the fit used instead of re-deriving it.
-        cat = replay_spur_catalog
-        bin_spacing = (
-            float(np.median(np.abs(np.diff(sorted_freq))))
-            if sorted_freq.size > 1
-            else 0.0
-        )
-        spur_set = spur_set_from_catalog(
-            centers_mhz=list(cat.get("spur_centers_mhz", []) or []),
-            sources=list(cat.get("spur_sources", []) or []),
-            lattice=list(cat.get("spur_lattice", []) or []),
-            drift=list(cat.get("spur_drift", []) or []),
-            per_spur_mask_half_width_bins=list(
-                cat.get("spur_mask_half_width_bins_per_spur", []) or []
-            ),
-            bin_spacing_mhz=bin_spacing,
-            default_mask_half_width_bins=int(
-                cat.get("spur_mask_half_width_bins", 0) or 0
-            ),
-        )
+        spur_set = replay_spur_set(replay_spur_catalog, sorted_freq)
         logger.info(
             "Stage 5 spur masking: replayed %d persisted gated spur(s) "
             "(no re-detection)",
@@ -2913,33 +2925,50 @@ def compute_display_ft_impl(
     Depends on Stage 1 (the FID plus persisted FT settings, including any
     trim) only, via :func:`_build_active_ft_inputs`.
 
-    Contrast with the standard :func:`ftmwpipeline.api.compute_ft`: that FT
-    is unpadded and native-length -- the one everything downstream fits and
-    scores on. This FT zero-fills the active-region FID slice by
-    ``pad_factor`` (display default ``2``, the information limit for a
-    magnitude spectrum) purely to interpolate the magnitude curve between the
-    native bins; it is display-only and never feeds fitting, noise, or
-    chi-squared. The padded grid is then trimmed to ``compute_ft(file_path,
-    from_saved_params=True)``'s own frequency band, so this FT differs from
-    the standard FT only in bin density (``pad_factor``x), never extent --
-    a consumer deriving a frequency window from this accessor (e.g. a
-    catalog/prediction range) sees exactly the band Stage 1 kept, not the
-    full FID active region. (The internal, unpadded-and-untrimmed variant
-    ``_resolve_detail_bundle`` builds via :func:`_padded_active_display_ft`
-    directly is unaffected -- its report/'fit show' consumers mask per-window
-    at render time regardless of the shared bundle's extent.) Display
-    magnitude is ``abs(spectrum) * amplitude_scale``; ``units_label`` names
-    the persisted display units (e.g. ``"µV"``).
+    This is the **active-portion FT** Stage 5 fits -- the ``dt_us * rfft`` of
+    the mean-removed ``[start_us, end_us]`` samples, with the same amplitude
+    scale and the same phase origin (``t = 0`` at the active start) -- with the
+    active samples zero-filled to ``pad_factor`` times their length (display
+    default ``2``, the information limit for a magnitude spectrum) purely to
+    interpolate between the native bins. It is display-only and never feeds
+    fitting, noise, or chi-squared.
+
+    It is therefore *not* the standard :func:`ftmwpipeline.api.compute_ft`
+    resampled: that FT covers the full record, so it has a different bin
+    spacing (``1 / T_record`` against ``1 / (pad_factor * T_active)`` here),
+    a different scale and a different phase origin. What the two share is the
+    analysis band (Stage 1's trim). The band here is cut on the active grid
+    itself: the display grid runs from the first to the last active-FT bin
+    inside the trim, so every native active bin the fit sees -- and no bin
+    beyond them -- is a display bin, at exactly the same frequency (for a
+    power-of-two ``pad_factor``, including the default). Display magnitude is
+    ``abs(spectrum) * amplitude_scale``; ``units_label`` names the persisted
+    display units (e.g. ``"µV"``).
 
     Returns
     -------
     ComplexFT
-        ``freq_array`` sorted ascending in molecular frequency, trimmed to
-        ``compute_ft(file_path, from_saved_params=True)``'s band at
-        ``pad_factor``x its density. ``complex_spectrum`` aligned to it.
-        ``metadata`` carries ``amplitude_scale`` (float), ``units_label``
-        (str), and ``pad_factor`` (int).
+        ``freq_array`` sorted ascending in molecular frequency, from the first
+        to the last in-band active-FT bin at ``pad_factor`` x the active grid's
+        density. ``complex_spectrum`` aligned to it. ``metadata`` carries
+        ``amplitude_scale`` (float), ``units_label`` (str), and ``pad_factor``
+        (int).
     """
+    return _display_ft_from_inputs(
+        file_path, _build_active_ft_inputs(file_path), pad_factor
+    )
+
+
+def _display_ft_from_inputs(
+    file_path: str,
+    inputs: Tuple[Any, ...],
+    pad_factor: int = _DETAIL_PAD_FACTOR,
+) -> ComplexFT:
+    """:func:`compute_display_ft_impl` on already-gathered
+    :func:`_build_active_ft_inputs` (so a caller that also needs the active
+    grid builds the inputs once)."""
+    from ..fitting.active_ft import compute_active_ft
+
     (
         fid_samples,
         sample_dt_us,
@@ -2947,11 +2976,11 @@ def compute_display_ft_impl(
         end_us,
         probe_freq_mhz,
         sideband,
-        _n_raw,
+        n_raw,
         _acquisition_us,
-        user_ft,
-        _trim_range,
-    ) = _build_active_ft_inputs(file_path)
+        _user_ft,
+        trim_range,
+    ) = inputs
 
     freq, spectrum = _padded_active_display_ft(
         fid_samples,
@@ -2963,18 +2992,33 @@ def compute_display_ft_impl(
         pad_factor=pad_factor,
     )
 
-    # Trim to compute_ft's own band (user_ft is already the standard,
-    # trim_range-applied ComplexFT from _build_active_ft_inputs). A tolerance
-    # of a quarter padded-bin guards the boundary bins against the two
-    # independent FFT paths (FID.preprocess()+compute_fft() here vs.
-    # _padded_active_display_ft's inline rfft) landing a ULP apart, without
-    # ever admitting a whole extra bin.
-    fmin = float(np.min(user_ft.freq_array))
-    fmax = float(np.max(user_ft.freq_array))
-    tol = float(freq[1] - freq[0]) / 4.0 if freq.size > 1 else 0.0
-    band = (freq >= fmin - tol) & (freq <= fmax + tol)
-    freq = np.ascontiguousarray(freq[band])
-    spectrum = np.ascontiguousarray(spectrum[band])
+    # The band is the active grid's own: from its first to its last bin inside
+    # Stage 1's trim (the grid Stage 5 fits). The padded bins at those two
+    # frequencies are the same bins, so a quarter padded-bin tolerance only
+    # absorbs a last-place rounding difference between the two frequency
+    # computations and can never admit a whole extra bin.
+    active_freq = np.asarray(
+        compute_active_ft(
+            fid_samples,
+            sample_dt_us,
+            start_us=start_us,
+            end_us=end_us,
+            probe_freq_mhz=probe_freq_mhz,
+            sideband=sideband,
+            n_raw=n_raw,
+        ).freq_mhz,
+        dtype=float,
+    )
+    if trim_range is not None:
+        t_lo, t_hi = float(min(trim_range)), float(max(trim_range))
+        active_freq = active_freq[(active_freq >= t_lo) & (active_freq <= t_hi)]
+    if active_freq.size:
+        fmin = float(np.min(active_freq))
+        fmax = float(np.max(active_freq))
+        tol = float(freq[1] - freq[0]) / 4.0 if freq.size > 1 else 0.0
+        band = (freq >= fmin - tol) & (freq <= fmax + tol)
+        freq = np.ascontiguousarray(freq[band])
+        spectrum = np.ascontiguousarray(spectrum[band])
 
     amplitude_scale, units_label, _trim_mhz = _load_display_style(file_path)
 

@@ -188,8 +188,10 @@ These exist today; the contract freezes their names and the listed fields.
   `environment_acknowledged`, and `warnings` (where an analysis-epoch
   difference is reported). Warnings gain a `code` in the typed-errors phase.
 - `compute_display_ft(path, pad_factor=...)` → `ComplexFT`: `freq_array`
-  (ascending, in the raw frame, trimmed to `compute_ft`'s band at
-  `pad_factor`× its density), `complex_spectrum` aligned to it, and
+  (ascending, in the raw frame, the native active-FT grid Stage 5 fits
+  zero-filled to `pad_factor`× its density, from its first to its last bin
+  inside the Stage 1 trim, so it contains every active bin), `complex_spectrum`
+  aligned to it, and
   `metadata` with `amplitude_scale`, `units_label`, `pad_factor`. Displayed
   magnitude is `abs(complex_spectrum) * amplitude_scale`.
 

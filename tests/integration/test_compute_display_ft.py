@@ -4,10 +4,10 @@ The 2x-zero-padded DISPLAY FT is the spectrum the Stage 5 report and
 'fit show' detail panels render (see ``_padded_active_display_ft`` in
 ``_internal/stage5_impl.py``). ``baseline_2638_stage1`` persists a real
 narrowing trim (``(26500, 40000)`` MHz, out of a wider native active
-region), so these tests exercise both invariants ``compute_display_ft``
-must hold against ``compute_ft(from_saved_params=True)``: same frequency
-EXTENT (the padding interpolates within the canonical band, it never grows
-it), at ``pad_factor``x the DENSITY. They also exercise the public accessor
+region), so these tests exercise the invariants ``compute_display_ft`` must
+hold: its band is the active grid's own (first to last in-band active-FT bin,
+never wider than ``compute_ft(from_saved_params=True)``'s band), it contains
+every active bin exactly, and ``pad_factor`` sets only the DENSITY. They also exercise the public accessor
 against the session-scoped Stage 0+1 baseline only -- proving the dependency
 is Stage 1 (the FID + canonical FT settings, including the trim), not
 Stage 5.
@@ -24,26 +24,35 @@ pytestmark = pytest.mark.integration
 
 
 class TestComputeDisplayFt:
-    def test_frequency_range_matches_canonical(self, baseline_2638_stage1):
-        """The trimmed display band's extent must match
-        ``compute_ft(from_saved_params=True)``'s own band, within one padded
-        bin at each edge -- padding must never widen the band beyond what
-        Stage 1's trim kept."""
+    def test_band_is_the_active_grid(self, baseline_2638_stage1):
+        """The display band runs from the first to the last active-FT bin
+        inside Stage 1's trim and contains every active bin at exactly its
+        frequency -- no padded bin beyond them (the old quarter-bin tolerance
+        against ``compute_ft``'s band admitted one below the first)."""
+        from ftmwpipeline._internal.active_ft_support import build_trimmed_active_ft
+        from ftmwpipeline._internal.stage5_impl import _build_active_ft_inputs
+
+        path = str(baseline_2638_stage1)
+        trim = _build_active_ft_inputs(path)[-1]
+        active = np.sort(np.asarray(build_trimmed_active_ft(path, trim).freq_array))
+        display_ft = ftmw.compute_display_ft(baseline_2638_stage1)
+        freq = np.asarray(display_ft.freq_array)
+
+        assert freq[0] == active[0]
+        assert freq[-1] == active[-1]
+        assert np.isin(active, freq).all()
+        assert display_ft.n_points == 2 * active.size - 1
+
+    def test_band_never_wider_than_canonical(self, baseline_2638_stage1):
+        """Padding never widens the band beyond what Stage 1's trim kept."""
         canonical = ftmw.compute_ft(baseline_2638_stage1, from_saved_params=True)
         display_ft = ftmw.compute_display_ft(baseline_2638_stage1)
-
-        canon_min, canon_max = (
-            float(np.min(canonical.freq_array)),
-            float(np.max(canonical.freq_array)),
+        assert float(np.min(display_ft.freq_array)) >= float(
+            np.min(canonical.freq_array)
         )
-        disp_min, disp_max = (
-            float(np.min(display_ft.freq_array)),
-            float(np.max(display_ft.freq_array)),
+        assert float(np.max(display_ft.freq_array)) <= float(
+            np.max(canonical.freq_array)
         )
-        bin_spacing = float(display_ft.freq_array[1] - display_ft.freq_array[0])
-
-        assert abs(disp_min - canon_min) < bin_spacing
-        assert abs(disp_max - canon_max) < bin_spacing
 
     def test_density_is_pad_factor_times_native(self, baseline_2638_stage1):
         """Density, not extent, is what ``pad_factor`` controls once the

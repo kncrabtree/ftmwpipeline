@@ -53,8 +53,10 @@ from ..contract import (
     SETTINGS_SCHEMA,
     SNAP_TOLERANCE_SCHEMA,
     SOURCE_PREVIEW_SCHEMA,
+    SPECTRUM_MODEL_SCHEMA,
     TABLE_SCHEMA,
     TABLES_SCHEMA,
+    WINDOW_MODEL_SCHEMA,
     WINDOW_STATUS_SCHEMA,
     Absent,
 )
@@ -247,6 +249,28 @@ def _source_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _grid_arg(parser: argparse.ArgumentParser) -> None:
+    from .._internal.model_impl import MODEL_GRIDS
+
+    parser.add_argument(
+        "--grid",
+        choices=MODEL_GRIDS,
+        default="active",
+        help="Grid to evaluate on: the native active FT the fit used "
+        "(default) or the zero-filled display FT",
+    )
+
+
+def _window_model_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("window_id", type=int, help="Window to evaluate")
+    _grid_arg(parser)
+    parser.add_argument(
+        "--components",
+        action="store_true",
+        help="Also return one array per fitted line, keyed by peak_uid",
+    )
+
+
 def register_contract_accessors(read_sub: Any) -> None:
     """Register ``read <name>`` for every manifest accessor (JSON envelopes).
 
@@ -393,6 +417,26 @@ def register_contract_accessors(read_sub: Any) -> None:
         "Format and FID table of a data source, without importing it",
         add_args=_source_args,
         call_kwargs=lambda a: {"source": a.source, "format_name": a.source_format},
+    )
+    register(
+        "window_model",
+        opened("window_model"),
+        WINDOW_MODEL_SCHEMA,
+        "One window's fitted model, data, noise and spur mask (arrays: --output)",
+        add_args=_window_model_args,
+        call_kwargs=lambda a: {
+            "window_id": a.window_id,
+            "grid": a.grid,
+            "components": a.components,
+        },
+    )
+    register(
+        "spectrum_model",
+        opened("spectrum_model"),
+        SPECTRUM_MODEL_SCHEMA,
+        "The whole fitted spectrum model, data and residual (arrays via --output)",
+        add_args=_grid_arg,
+        call_kwargs=lambda a: {"grid": a.grid},
     )
 
 

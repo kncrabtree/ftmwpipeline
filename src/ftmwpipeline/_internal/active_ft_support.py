@@ -143,6 +143,8 @@ def _persisted_scatter_knobs(file_path: str) -> dict:
 def build_trimmed_active_ft(
     file_path: str,
     trim_range: Optional[Tuple[float, float]] = None,
+    *,
+    active: Optional[ActiveFTResult] = None,
 ) -> ComplexFT:
     """Build the persisted unapodized active FT as a (trimmed) :class:`ComplexFT`.
 
@@ -150,8 +152,11 @@ def build_trimmed_active_ft(
     estimates noise on: the ``dt_us*rfft`` of the active region, wrapped as a
     ComplexFT (so it carries the ``freq_array`` / ``magnitude_spectrum``
     interface), trimmed to the analysis band when ``trim_range`` is given.
+    ``active`` is the already-built :func:`compute_persisted_active_ft` of
+    ``file_path``, when the caller has it.
     """
-    active = compute_persisted_active_ft(file_path)
+    if active is None:
+        active = compute_persisted_active_ft(file_path)
     cft = ComplexFT.from_spectrum(active.complex_spectrum, active.freq_mhz)
     if trim_range is not None:
         cft = cft.trim_to_range(trim_range[0], trim_range[1])
@@ -161,6 +166,8 @@ def build_trimmed_active_ft(
 def build_active_grid_with_noise(
     file_path: str,
     trim_range: Optional[Tuple[float, float]] = None,
+    *,
+    active: Optional[ActiveFTResult] = None,
 ) -> Tuple[ComplexFT, np.ndarray]:
     """Build the persisted active FT (trimmed) and its per-bin authority σ.
 
@@ -171,9 +178,11 @@ def build_active_grid_with_noise(
 
     ``trim_range`` restricts both to the analysis band (mirroring the
     persisted FT's trim), so the authority σ is measured region-aware over the
-    same band Stage 2 used.
+    same band Stage 2 used. ``active`` is the already-built
+    :func:`compute_persisted_active_ft` of ``file_path``, when the caller has
+    it.
     """
-    cft = build_trimmed_active_ft(file_path, trim_range)
+    cft = build_trimmed_active_ft(file_path, trim_range, active=active)
     noise = estimate_active_ft_noise(
         cft.freq_array,
         cft.complex_spectrum,

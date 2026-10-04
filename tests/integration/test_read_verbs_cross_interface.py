@@ -55,6 +55,8 @@ KINDS = {
     "fit_thresholds": ("direct", "dict"),
     "window_status": ("direct", "dict"),
     "preview_source": ("direct", "dict"),
+    "window_model": ("direct", "dict"),
+    "spectrum_model": ("direct", "dict"),
 }
 
 
@@ -82,7 +84,13 @@ EXPECTED_SCHEMA = {
     "fit_thresholds": "ftmw/fit_thresholds@1",
     "window_status": "ftmw/window_status@1",
     "preview_source": "ftmw/source_preview@1",
+    "window_model": "ftmw/window_model@1",
+    "spectrum_model": "ftmw/spectrum_model@1",
 }
+
+
+def _first_window_id(path):
+    return int(ftmw.load_fit(path).window_fits[0].window_id)
 
 
 def _py_args(name, path, source):
@@ -91,6 +99,8 @@ def _py_args(name, path, source):
         return (), {"table": "fit_peaks", "columns": ["frequency_mhz", "snr"]}
     if name == "preview_source":
         return (source,), {}
+    if name == "window_model":
+        return (_first_window_id(path),), {"components": True}
     return (), {}
 
 
@@ -99,6 +109,8 @@ def _cli_argv(name, path, source):
         return ["fit_peaks", "--columns", "frequency_mhz,snr"]
     if name == "preview_source":
         return [source]
+    if name == "window_model":
+        return [str(_first_window_id(path)), "--components"]
     return []
 
 
