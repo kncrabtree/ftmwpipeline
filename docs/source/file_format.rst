@@ -129,6 +129,43 @@ The noise estimate, peaks, window plan, fitted parameters (with covariance), and
 the finalized line list are all persisted, because they are expensive to
 recompute and are the scientific record of the analysis.
 
+.. _consumed-values:
+
+Values a stage records as having used
+-------------------------------------
+
+Re-running Stage 2b or the timebase calibration does not invalidate the stages
+that read them, so each consumer keeps its own record of what it took, in its
+settings record under a ``consumed`` block (read through that stage's codec,
+never by walking the layout):
+
+- **Stage 3** (``stage3_peaks``): the gap-pass decay time (``tau_basis_us``),
+  the shape (``gap_shape``) and which source supplied the decay time
+  (``tau_basis_source``).
+- **Stage 5** (``stage5_fit``): the decay-time anchor source
+  (``tau_calibration_source``: ``override``, ``persisted`` or ``none``), the
+  band-wide anchor (``tau_maj_us``, ``sigma_tau_us``), the per-band majorities
+  table when per-band routing was used, the timebase ε and σ\ :sub:`ε` the
+  ε-aware spur window used (both absent when it used none), and the effective
+  peak-survival SNR floor.
+
+Two more records carry the clock declaration they were derived under: the
+``timebase_calibration`` record stores the resolved declaration (with labels and
+lock flags) as ``clock_sources``, and the Stage 6 final-products table stores
+``calibration_clocks``, the declaration its calibration state was derived from.
+Stage 6 reads the declaration as the Stage 5 resolver does: a persisted
+``spur.clocks`` that is set, even empty, is authoritative, so a ``clocks set``
+made after the fit does not change the state; re-running Stage 5 does.
+``review run`` also writes ``/frequency_calibration`` (the accuracy floor it
+applied) when that record is absent or pre-dates its version.
+
+Every persisted settings record carries a field-set version. In a record at the
+current version every field is present, so ``None`` means *unset* (for example
+``leakage.tau_us``, the Stage 5 decay-time overrides and ``snr_survival_floor``);
+``tau.fit_tau`` resolves to a concrete ``True``. A record written before these
+fields existed (no version, or an older one) reads as pre-provenance and its
+``consumed`` block reads as absent; nothing is inferred for it.
+
 Provenance and safe re-import
 -----------------------------
 

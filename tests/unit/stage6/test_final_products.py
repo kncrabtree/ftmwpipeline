@@ -597,7 +597,9 @@ def test_fit_and_detection_record_what_they_consumed(stage5_small_source):
     # The fixture runs no timebase before the fit, so the spur gate used none.
     assert s5.timebase_epsilon is None and s5.timebase_sigma_epsilon is None
     settings = load_stage_fit_settings_from_h5(path)
-    assert settings is not None and settings.tau.fit_tau is True
+    assert settings is not None
+    # Concrete (not None); the codec reads bool knobs back as numpy bools.
+    assert settings.tau.fit_tau is not None and bool(settings.tau.fit_tau)
 
 
 @pytest.mark.integration

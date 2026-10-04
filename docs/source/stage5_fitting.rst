@@ -470,6 +470,13 @@ as described on :doc:`settings_and_presets`. The packaged ``defaults`` preset is
 copy-and-edit template of every knob at its default; a preset composes with explicit
 flags.
 
+The decay-time anchor the fit used (override, persisted Stage 2b calibration, or
+none; with the per-band majorities table when it routed per band), the timebase
+ε behind the ε-aware spur window (or none), and the effective peak-survival
+floor are recorded in the Stage 5 settings record (``consumed``); a later
+Stage 2b or timebase re-run does not change them. ``tau.fit_tau`` is persisted as
+a concrete value. See :ref:`consumed-values`.
+
 Inspecting, assessing, and tuning the fit
 -----------------------------------------
 
