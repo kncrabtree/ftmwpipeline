@@ -358,7 +358,9 @@ def _import_data(
             invalidated += persist_loader_metadata(
                 str(pipeline_file), fid, events=events
             )
-    except (PipelineFileError, ValueError, FileNotFoundError):
+    except (PipelineFileError, ValueError, OSError):
+        # OSError (PermissionError, a full disk, ...) propagates unwrapped, as
+        # creating the file always did on the Python interfaces.
         raise
     except Exception as e:
         raise RuntimeError(f"Failed to create pipeline file: {e}") from e
