@@ -95,11 +95,18 @@ from ..io.frequency_calibration_serialization import (
 from ..io.provenance import stamp_stage_epoch_in_file
 from ..io.stage6_review_serialization import (
     final_products_predate_fit_fields,
+    fit_declares_clocks,
     load_stage6_review_from_file,
     load_stage6_review_from_hdf5,
     save_stage6_review_to_hdf5,
 )
 from ..io.window_serialization import read_window_plan_columns
+from .absence_rules import (
+    clock_lattice_or_absent,
+    float_or_absent,
+    int_or_absent,
+    knockout_absence,
+)
 from .compaction import compact_file, deferred_compaction
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage2_impl import _update_stage_completion
@@ -1027,10 +1034,12 @@ class RefitWindowResult:
         Number of fitted peaks in the window before the refit.
     n_peaks_after : int
         Number of fitted peaks after the refit.
-    chi2r_before : float
-        Reduced chi-squared before the refit.
-    chi2r_after : float
-        Reduced chi-squared after the refit.
+    chi2r_before : float or Absent
+        Reduced chi-squared before the refit; ``Absent.UNDEFINED`` when it is
+        not finite (no degrees of freedom, or a fit that did not converge).
+    chi2r_after : float or Absent
+        Reduced chi-squared after the refit; ``Absent.UNDEFINED`` on the same
+        terms.
     fitted_peaks : list of FittedPeak
         The new per-window fitted peaks (already persisted).  Raw / fit-frame
         frequencies -- the frame the fit and the decision log are stored in.
@@ -1048,29 +1057,30 @@ class RefitWindowResult:
         ``calibration_state == \"self_calibrated\"``).
     sigma_epsilon : float
         1-sigma uncertainty on ``epsilon`` (``0.0`` when inapplicable).
-    created_window_mode : str or None
+    created_window_mode : str or Absent
         W4. ``"created"`` or ``"widened"`` when this refit was the edit half
         of an implied create (:func:`_finish_implied_create_edit`) -- i.e.
         ``window_id`` did not exist, or was too narrow to hold a fresh
-        window, before this call. ``None`` for an ordinary edit into an
-        already-live window, which installed no structure. Present whenever
-        any of the ``created_window_*`` fields below is, since a UI needs to
-        know *which* structural change happened, not just that one did.
-    created_window_freq_range : tuple of float or None
+        window, before this call. ``Absent.NOT_RUN`` for an ordinary edit
+        into an already-live window, which installed no structure. Present
+        whenever any of the ``created_window_*`` fields below is, since a UI
+        needs to know *which* structural change happened, not just that one
+        did.
+    created_window_freq_range : tuple of float or Absent
         The installed (or widened) window's ``(min_mhz, max_mhz)`` extent,
         raw frame -- :attr:`CreateWindowResult.freq_range` from the create
-        this edit's window came from. ``None`` iff ``created_window_mode``
-        is ``None``.
-    created_window_n_points : int or None
-        Grid points the window covers. ``None`` iff ``created_window_mode``
-        is ``None``.
-    created_window_n_contributors : int or None
-        Frozen leakage contributors attached to the window. ``None`` iff
-        ``created_window_mode`` is ``None``.
-    created_window_depends_on : list of int or None
-        Window ids the window reads frozen leakage from. ``None`` iff
-        ``created_window_mode`` is ``None`` (``[]`` is a legitimate value --
-        a created window with no dependencies -- and distinct from that).
+        this edit's window came from. ``Absent.NOT_RUN`` iff
+        ``created_window_mode`` is.
+    created_window_n_points : int or Absent
+        Grid points the window covers. ``Absent.NOT_RUN`` iff
+        ``created_window_mode`` is.
+    created_window_n_contributors : int or Absent
+        Frozen leakage contributors attached to the window.
+        ``Absent.NOT_RUN`` iff ``created_window_mode`` is.
+    created_window_depends_on : list of int or Absent
+        Window ids the window reads frozen leakage from. ``Absent.NOT_RUN``
+        iff ``created_window_mode`` is (``[]`` is a legitimate value -- a
+        created window with no dependencies -- and distinct from that).
     converged : bool
         Whether the joint NLS behind this refit converged
         (:attr:`FittingResult.success`). ``False`` means the solver bailed and
@@ -1085,19 +1095,35 @@ class RefitWindowResult:
     window_id: int
     n_peaks_before: int
     n_peaks_after: int
-    chi2r_before: float
-    chi2r_after: float
+    chi2r_before: Union[float, Absent]
+    chi2r_after: Union[float, Absent]
     fitted_peaks: List[FittedPeak] = field(default_factory=list)
     fitted_peaks_calibrated_mhz: List[float] = field(default_factory=list)
     calibration_state: str = "rb_locked"
     epsilon: float = 0.0
     sigma_epsilon: float = 0.0
-    created_window_mode: Optional[str] = None
-    created_window_freq_range: Optional[Tuple[float, float]] = None
-    created_window_n_points: Optional[int] = None
-    created_window_n_contributors: Optional[int] = None
-    created_window_depends_on: Optional[List[int]] = None
+    created_window_mode: Union[str, Absent] = Absent.NOT_RUN
+    created_window_freq_range: Union[Tuple[float, float], Absent] = Absent.NOT_RUN
+    created_window_n_points: Union[int, Absent] = Absent.NOT_RUN
+    created_window_n_contributors: Union[int, Absent] = Absent.NOT_RUN
+    created_window_depends_on: Union[List[int], Absent] = Absent.NOT_RUN
     converged: bool = True
+
+
+def _chi2r_or_absent(value: Union[float, Absent]) -> Union[float, Absent]:
+    """A curation result's reduced chi-squared as a contract value: a
+    non-finite one (zero degrees of freedom, a fit that did not converge) is
+    ``Absent.UNDEFINED``; an ``Absent`` passes through."""
+    return value if isinstance(value, Absent) else float_or_absent(value)
+
+
+def _chi2r_evidence(value: Union[float, Absent]) -> float:
+    """The decision-log evidence form of a result's reduced chi-squared.
+
+    Evidence is a free-form float snapshot (the review log's wire form maps a
+    non-finite value to ``null`` plus ``_absent``), so an undefined value is
+    stored as the ``inf`` the fit reports for it."""
+    return float("inf") if isinstance(value, Absent) else float(value)
 
 
 def _make_refit_result(
@@ -1106,8 +1132,8 @@ def _make_refit_result(
     window_id: int,
     n_peaks_before: int,
     n_peaks_after: int,
-    chi2r_before: float,
-    chi2r_after: float,
+    chi2r_before: Union[float, Absent],
+    chi2r_after: Union[float, Absent],
     fitted_peaks: List[FittedPeak],
     converged: bool,
 ) -> RefitWindowResult:
@@ -1128,8 +1154,8 @@ def _make_refit_result(
         window_id=window_id,
         n_peaks_before=n_peaks_before,
         n_peaks_after=n_peaks_after,
-        chi2r_before=chi2r_before,
-        chi2r_after=chi2r_after,
+        chi2r_before=_chi2r_or_absent(chi2r_before),
+        chi2r_after=_chi2r_or_absent(chi2r_after),
         fitted_peaks=fitted_peaks,
         fitted_peaks_calibrated_mhz=calibrated,
         calibration_state=shared.calibration_state,
@@ -3225,6 +3251,7 @@ def _record_decision(
 
         with h5py.File(path, "r") as h5f:
             floor_khz = load_frequency_calibration_from_hdf5(h5f).sigma_floor_khz
+            clocks_declared = fit_declares_clocks(h5f)
         cal_state, epsilon, sigma_eps = _derive_frequency_calibration(path)
         final_products = _build_final_products(
             spectrum_fit,
@@ -3234,6 +3261,7 @@ def _record_decision(
             epsilon=epsilon,
             sigma_epsilon=sigma_eps,
             sigma_floor_khz=floor_khz,
+            clocks_declared=clocks_declared,
         )
     else:
         new_reasons = (
@@ -3915,16 +3943,17 @@ class AppliedWindowResult:
         that directly targeted this window. Empty for a purely-cascaded one.
     n_peaks_before, n_peaks_after : int
         Peak count in this window before the batch / after the cascade.
-    chi2r_before, chi2r_after : float or None
-        Reduced chi-squared before the batch / after the cascade, or ``None``
-        when that side carries no fit -- most obviously ``chi2r_before`` on a
-        window the batch itself created. ``None`` rather than ``0.0`` for the
-        reason :class:`PreviewWindowResult` documents.
-    converged : bool or None
+    chi2r_before, chi2r_after : float or Absent
+        Reduced chi-squared before the batch / after the cascade.
+        ``Absent.NOT_RUN`` when that side carries no fit -- most obviously
+        ``chi2r_before`` on a window the batch itself created;
+        ``Absent.UNDEFINED`` when the fit's value is not finite. Absent rather
+        than ``0.0`` for the reason :class:`PreviewWindowResult` documents.
+    converged : bool or Absent
         Whether this window's post-cascade fit converged. ``False`` means the
         solver bailed and the window kept its seeds, so the numbers here
-        describe a fit that did not happen. ``None`` on a window with no fit
-        on the after side, exactly where ``chi2r_after`` is ``None``.
+        describe a fit that did not happen. ``Absent.NOT_RUN`` on a window
+        with no fit on the after side, exactly where ``chi2r_after`` is.
     """
 
     window_id: int
@@ -3932,9 +3961,9 @@ class AppliedWindowResult:
     action_indices: List[int] = field(default_factory=list)
     n_peaks_before: int = 0
     n_peaks_after: int = 0
-    chi2r_before: Optional[float] = None
-    chi2r_after: Optional[float] = None
-    converged: Optional[bool] = None
+    chi2r_before: Union[float, Absent] = Absent.NOT_RUN
+    chi2r_after: Union[float, Absent] = Absent.NOT_RUN
+    converged: Union[bool, Absent] = Absent.NOT_RUN
 
 
 def _applied_windows_block(
@@ -3973,9 +4002,13 @@ def _applied_windows_block(
             action_indices=sorted(action_indices.get(wid, [])),
             n_peaks_before=before[0] if before is not None else 0,
             n_peaks_after=after[0] if after is not None else 0,
-            chi2r_before=before[1] if before is not None else None,
-            chi2r_after=after[1] if after is not None else None,
-            converged=after[2] if after is not None else None,
+            chi2r_before=(
+                Absent.NOT_RUN if before is None else float_or_absent(before[1])
+            ),
+            chi2r_after=(
+                Absent.NOT_RUN if after is None else float_or_absent(after[1])
+            ),
+            converged=Absent.NOT_RUN if after is None else after[2],
         )
     return windows
 
@@ -6851,8 +6884,8 @@ def _finish_implied_create_edit(
             "frequency_mhz": anchor_for_entry,
             "kind": "add",
             "evidence": {
-                "chi2r_before": result.chi2r_before,
-                "chi2r_after": result.chi2r_after,
+                "chi2r_before": _chi2r_evidence(result.chi2r_before),
+                "chi2r_after": _chi2r_evidence(result.chi2r_after),
                 "n_peaks_before": result.n_peaks_before,
                 "n_peaks_after": result.n_peaks_after,
                 "inferred": True,
@@ -6984,6 +7017,7 @@ def _derive_batch_review(ctx: _BatchCtx, path: str) -> Stage6Review:
 
         with h5py.File(path, "r") as h5f:
             floor_khz = load_frequency_calibration_from_hdf5(h5f).sigma_floor_khz
+            clocks_declared = fit_declares_clocks(h5f)
         cal_state, epsilon, sigma_eps = _derive_frequency_calibration(path)
         final_products = _build_final_products(
             ctx.changeset.spectrum_fit,
@@ -6993,6 +7027,7 @@ def _derive_batch_review(ctx: _BatchCtx, path: str) -> Stage6Review:
             epsilon=epsilon,
             sigma_epsilon=sigma_eps,
             sigma_floor_khz=floor_khz,
+            clocks_declared=clocks_declared,
         )
 
     def _attention_reasons_for(window_id: int) -> List[AttentionReason]:
@@ -8242,13 +8277,15 @@ class PreviewWindowResult:
         window.
     n_peaks_before, n_peaks_after : int
         Peak count in this window before the batch / after the cascade.
-    chi2r_before, chi2r_after : float or None
-        Reduced chi-squared before the batch / after the cascade, or ``None``
-        when that side carries no fit to compute one against -- most obviously
-        ``chi2r_before`` on a window the batch itself *creates*, which has no
-        "before" at all.
+    chi2r_before, chi2r_after : float or Absent
+        Reduced chi-squared before the batch / after the cascade.
+        ``Absent.NOT_RUN`` when that side carries no fit to compute one
+        against -- most obviously ``chi2r_before`` on a window the batch
+        itself *creates*, which has no "before" at all. ``Absent.UNDEFINED``
+        when the fit exists but its value is not finite (no degrees of
+        freedom, or a fit that did not converge).
 
-        ``None`` rather than ``0.0`` because a reduced chi-squared of exactly
+        Absent rather than ``0.0`` because a reduced chi-squared of exactly
         zero is a value a genuine fit essentially never produces, so a
         fabricated one is indistinguishable from an extraordinary one: a
         consumer rendering "before -> after" would show ``0.00 -> 1.4`` and read
@@ -8263,33 +8300,34 @@ class PreviewWindowResult:
         three-term sigma budget, identical in shape and value to what a
         subsequent ``apply`` of the same plan would persist. Not the
         raw / stat-only ``RefitWindowResult.fitted_peaks``.
-    created_window_mode : str or None
+    created_window_mode : str or Absent
         W4, BlackQuill's acceptance condition for implicit window creation
         (``scratch/intent-driven-windowing-plan.md``, W4): ``"created"`` or
         ``"widened"`` when some action in this batch -- an implied create
         (an uncovered ``add``) or an explicit ``create`` -- installed or grew
-        this window; ``None`` for a window this batch only edited, merged,
-        split, accepted, or cascaded into, which is the common case. A UI
-        renders "this add creates a window at A-B MHz" straight off this
-        entry, without re-deriving anything -- see ``created_window_freq_range``
-        below. ``None`` here, not a fabricated ``"created"``/``"widened"``,
-        for any window the batch did not create or widen -- the same
-        absence-vs-plausible-value discipline ``chi2r_before`` documents.
-    created_window_freq_range : tuple of float or None
+        this window; ``Absent.NOT_RUN`` for a window this batch only edited,
+        merged, split, accepted, or cascaded into, which is the common case.
+        A UI renders "this add creates a window at A-B MHz" straight off this
+        entry, without re-deriving anything -- see
+        ``created_window_freq_range`` below. Absent here, not a fabricated
+        ``"created"``/``"widened"``, for any window the batch did not create
+        or widen -- the same absence-vs-plausible-value discipline
+        ``chi2r_before`` documents.
+    created_window_freq_range : tuple of float or Absent
         The installed (or widened) window's ``(min_mhz, max_mhz)`` extent,
         raw frame -- :attr:`CreateWindowResult.freq_range`, unchanged.
-        ``None`` iff ``created_window_mode`` is ``None``.
-    created_window_n_points : int or None
-        Grid points the window covers. ``None`` iff ``created_window_mode``
-        is ``None``.
-    created_window_n_contributors : int or None
-        Frozen leakage contributors attached to the window. ``None`` iff
-        ``created_window_mode`` is ``None``.
-    created_window_depends_on : list of int or None
-        Window ids the window reads frozen leakage from. ``None`` iff
-        ``created_window_mode`` is ``None`` (``[]`` is a legitimate value --
-        a created window with no dependencies -- and distinct from that).
-    converged : bool or None
+        ``Absent.NOT_RUN`` iff ``created_window_mode`` is.
+    created_window_n_points : int or Absent
+        Grid points the window covers. ``Absent.NOT_RUN`` iff
+        ``created_window_mode`` is.
+    created_window_n_contributors : int or Absent
+        Frozen leakage contributors attached to the window.
+        ``Absent.NOT_RUN`` iff ``created_window_mode`` is.
+    created_window_depends_on : list of int or Absent
+        Window ids the window reads frozen leakage from. ``Absent.NOT_RUN``
+        iff ``created_window_mode`` is (``[]`` is a legitimate value -- a
+        created window with no dependencies -- and distinct from that).
+    converged : bool or Absent
         Whether this window's fit after the batch's one combined cascade
         converged (:attr:`FittingResult.success`), read off the same
         post-cascade in-memory fit ``chi2r_after`` and ``peaks`` are -- never
@@ -8297,9 +8335,10 @@ class PreviewWindowResult:
         supersede. ``False`` means the solver bailed: the window kept its
         seeds verbatim with an infinite chi-squared, so ``chi2r_after`` is
         wild and this window's ``peaks`` are seeds rather than measurements.
-        ``None`` when the window carries no fit on the after side at all --
-        the same absence-vs-plausible-value discipline ``chi2r_after``
-        documents, and ``None`` for exactly the same windows.
+        ``Absent.NOT_RUN`` when the window carries no fit on the after side
+        at all -- the same absence-vs-plausible-value discipline
+        ``chi2r_after`` documents, and ``NOT_RUN`` for exactly the same
+        windows.
     """
 
     window_id: int
@@ -8307,15 +8346,15 @@ class PreviewWindowResult:
     action_indices: List[int] = field(default_factory=list)
     n_peaks_before: int = 0
     n_peaks_after: int = 0
-    chi2r_before: Optional[float] = None
-    chi2r_after: Optional[float] = None
+    chi2r_before: Union[float, Absent] = Absent.NOT_RUN
+    chi2r_after: Union[float, Absent] = Absent.NOT_RUN
     peaks: List["FinalPeak"] = field(default_factory=list)
-    created_window_mode: Optional[str] = None
-    created_window_freq_range: Optional[Tuple[float, float]] = None
-    created_window_n_points: Optional[int] = None
-    created_window_n_contributors: Optional[int] = None
-    created_window_depends_on: Optional[List[int]] = None
-    converged: Optional[bool] = None
+    created_window_mode: Union[str, Absent] = Absent.NOT_RUN
+    created_window_freq_range: Union[Tuple[float, float], Absent] = Absent.NOT_RUN
+    created_window_n_points: Union[int, Absent] = Absent.NOT_RUN
+    created_window_n_contributors: Union[int, Absent] = Absent.NOT_RUN
+    created_window_depends_on: Union[List[int], Absent] = Absent.NOT_RUN
+    converged: Union[bool, Absent] = Absent.NOT_RUN
 
 
 @dataclass
@@ -8593,7 +8632,7 @@ def _run_review_preview(
     peaks_by_window: Dict[int, List["FinalPeak"]] = {}
     if review.final_products is not None:
         for peak in review.final_products.peaks:
-            if peak.window_id is not None:
+            if not isinstance(peak.window_id, Absent):
                 peaks_by_window.setdefault(int(peak.window_id), []).append(peak)
 
     after_by_wid: Dict[int, Tuple[int, float, bool]] = {
@@ -8614,12 +8653,16 @@ def _run_review_preview(
         before = before_stats.get(wid)
         after = after_by_wid.get(wid)
         n_before: int = before[0] if before is not None else 0
-        chi2r_before: Optional[float] = before[1] if before is not None else None
+        chi2r_before: Union[float, Absent] = (
+            Absent.NOT_RUN if before is None else float_or_absent(before[1])
+        )
         n_after: int = after[0] if after is not None else 0
-        chi2r_after: Optional[float] = after[1] if after is not None else None
-        converged: Optional[bool] = after[2] if after is not None else None
+        chi2r_after: Union[float, Absent] = (
+            Absent.NOT_RUN if after is None else float_or_absent(after[1])
+        )
+        converged: Union[bool, Absent] = Absent.NOT_RUN if after is None else after[2]
         # W4: the structural consequence, if this batch created or widened
-        # `wid` -- absent (None) for a window it only edited/merged/split/
+        # `wid` -- absent (NOT_RUN) for a window it only edited/merged/split/
         # accepted/cascaded into. See created_facts above.
         created_fact = created_facts.get(wid)
         windows[wid] = PreviewWindowResult(
@@ -8632,18 +8675,22 @@ def _run_review_preview(
             chi2r_after=chi2r_after,
             converged=converged,
             peaks=peaks_by_window.get(wid, []),
-            created_window_mode=(None if created_fact is None else created_fact.mode),
+            created_window_mode=(
+                Absent.NOT_RUN if created_fact is None else created_fact.mode
+            ),
             created_window_freq_range=(
-                None if created_fact is None else created_fact.freq_range
+                Absent.NOT_RUN if created_fact is None else created_fact.freq_range
             ),
             created_window_n_points=(
-                None if created_fact is None else created_fact.n_points
+                Absent.NOT_RUN if created_fact is None else created_fact.n_points
             ),
             created_window_n_contributors=(
-                None if created_fact is None else created_fact.n_contributors
+                Absent.NOT_RUN if created_fact is None else created_fact.n_contributors
             ),
             created_window_depends_on=(
-                None if created_fact is None else list(created_fact.depends_on)
+                Absent.NOT_RUN
+                if created_fact is None
+                else list(created_fact.depends_on)
             ),
         )
 
@@ -9350,8 +9397,8 @@ def frequency_calibration_impl(file_path: Union[Path, str]) -> CalibrationStamp:
         epsilon=float(epsilon),
         sigma_epsilon=float(sigma_eps),
         sigma_floor_khz=float(floor_khz),
-        probe_freq_mhz=None if header is None else float(header[0]),
-        sideband=None if header is None else header[1],
+        probe_freq_mhz=Absent.NOT_RUN if header is None else float(header[0]),
+        sideband=Absent.NOT_RUN if header is None else header[1],
     )
 
 
@@ -9369,7 +9416,7 @@ def _current_calibration_stamp(
     :func:`_fid_header_for_stamp`): nothing to compare against.
     """
     stamp = frequency_calibration_impl(path)
-    if stamp.probe_freq_mhz is None or stamp.sideband is None:
+    if isinstance(stamp.probe_freq_mhz, Absent) or isinstance(stamp.sideband, Absent):
         return None
     return (
         stamp.state,
@@ -9437,6 +9484,7 @@ def _rebuild_final_products(path: str) -> Optional[FinalProducts]:
             return None
         spectrum_fit: SpectrumFit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
         floor_khz = load_frequency_calibration_from_hdf5(h5f).sigma_floor_khz
+        clocks_declared = fit_declares_clocks(h5f)
     fid = load_fid_from_pipeline_impl(path)
     sideband = Sideband.coerce(fid.sideband)
     cal_state, epsilon, sigma_eps = _derive_frequency_calibration(path)
@@ -9448,6 +9496,7 @@ def _rebuild_final_products(path: str) -> Optional[FinalProducts]:
         epsilon=epsilon,
         sigma_epsilon=sigma_eps,
         sigma_floor_khz=floor_khz,
+        clocks_declared=clocks_declared,
     )
 
 
@@ -9742,8 +9791,13 @@ def _build_final_products(
     epsilon: float,
     sigma_epsilon: float,
     sigma_floor_khz: float,
+    clocks_declared: bool,
 ) -> FinalProducts:
     """Consolidate the Stage 5 line list into the calibrated final-products table.
+
+    ``clocks_declared`` says whether the fit recorded a clock declaration
+    (:func:`~ftmwpipeline.io.stage6_review_serialization.fit_declares_clocks`):
+    it tells a line the lattice test never ran on from an off-lattice one.
 
     Applies the timebase scale correction in the baseband frame
     (``f_corr = probe + (f_raw - probe)/(1+epsilon)``, sideband-independent) and
@@ -9774,29 +9828,44 @@ def _build_final_products(
         else:
             f_corr = f_raw
 
-        sigma_stat_khz = (
-            float(pk.frequency_error) * 1.0e3 if pk.frequency_error is not None else 0.0
-        )
+        # A line with no statistical frequency error has no honest total
+        # either: both are undefined, never computed with the term dropped.
+        freq_err = float_or_absent(pk.frequency_error)
         sigma_eps_khz = float(sigma_epsilon) * f_baseband_mhz * 1.0e3
-        sigma_f_khz = math.sqrt(sigma_stat_khz**2 + sigma_eps_khz**2 + floor_khz**2)
+        sigma_stat_khz: Union[float, Absent] = Absent.UNDEFINED
+        sigma_f_khz: Union[float, Absent] = Absent.UNDEFINED
+        if not isinstance(freq_err, Absent):
+            stat = freq_err * 1.0e3
+            sigma_stat_khz = stat
+            sigma_f_khz = math.sqrt(stat**2 + sigma_eps_khz**2 + floor_khz**2)
 
         amp = float(pk.amplitude)
-        amp_err = None if pk.amplitude_error is None else float(pk.amplitude_error)
-        snr_val = None if pk.snr is None else float(pk.snr)
+        amp_err = float_or_absent(pk.amplitude_error)
+        snr_val = float_or_absent(pk.snr)
         # Propagate the amplitude error into an SNR error (SNR scales with
         # amplitude at fixed noise): sigma_snr = snr * sigma_amp / amp.
-        snr_err: Optional[float] = None
-        if snr_val is not None and amp_err is not None and amp != 0.0:
+        snr_err: Union[float, Absent] = Absent.UNDEFINED
+        if (
+            not isinstance(snr_val, Absent)
+            and not isinstance(amp_err, Absent)
+            and amp != 0.0
+        ):
             snr_err = abs(snr_val) * abs(amp_err / amp)
 
-        # Knockout significance, carried through verbatim. `None` (not nan)
-        # when the source peak has no knockout result at all, so a consumer
-        # can tell "never tested" from "tested, refit did not converge" --
-        # the latter is a genuine nan the test itself wrote.
+        # Knockout significance. Never tested -> NOT_RUN for all three;
+        # tested but non-finite (a refit that did not converge) -> UNDEFINED.
         ko = pk.knockout
-        ko_p = None if ko is None else float(ko.p_value)
-        ko_supported = None if ko is None else bool(ko.supported)
-        ko_aicc = None if ko is None else float(ko.aicc_delta)
+        ko_not_run = knockout_absence(
+            None if ko is None else ko.supported,
+            None if ko is None else ko.delta_chi2,
+        )
+        ko_p: Union[float, Absent] = Absent.NOT_RUN
+        ko_supported: Union[bool, Absent] = Absent.NOT_RUN
+        ko_aicc: Union[float, Absent] = Absent.NOT_RUN
+        if ko is not None and ko_not_run is None:
+            ko_p = float_or_absent(ko.p_value)
+            ko_supported = bool(ko.supported)
+            ko_aicc = float_or_absent(ko.aicc_delta)
 
         final_peaks.append(
             FinalPeak(
@@ -9808,16 +9877,18 @@ def _build_final_products(
                 sigma_eps_khz=sigma_eps_khz,
                 sigma_floor_khz=floor_khz,
                 amplitude=amp,
-                phase=None if pk.phase is None else float(pk.phase),
+                phase=float_or_absent(pk.phase),
                 snr=snr_val,
                 origin=str(pk.origin),
-                window_id=None if pk.window_id is None else int(pk.window_id),
+                window_id=int_or_absent(pk.window_id, sentinel=None),
                 amplitude_error=amp_err,
-                phase_error=None if pk.phase_error is None else float(pk.phase_error),
+                phase_error=float_or_absent(pk.phase_error),
                 snr_error=snr_err,
-                clock_lattice=pk.clock_lattice,
-                derivation=pk.derivation,
-                peak_uid=pk.peak_uid,
+                clock_lattice=clock_lattice_or_absent(
+                    pk.clock_lattice, declared=clocks_declared
+                ),
+                derivation=int_or_absent(pk.derivation, sentinel=None),
+                peak_uid=int_or_absent(pk.peak_uid, sentinel=None),
                 knockout_p_value=ko_p,
                 knockout_supported=ko_supported,
                 knockout_aicc_delta=ko_aicc,
@@ -9971,6 +10042,7 @@ def review_run_impl(
     with h5py.File(path, "r") as h5f:
         floor_khz = load_frequency_calibration_from_hdf5(h5f).sigma_floor_khz
         floor_record = frequency_calibration_provenance(h5f)
+        clocks_declared = fit_declares_clocks(h5f)
     if floor_record is None or floor_record.is_pre_provenance:
         # Never declared (or declared before the record carried a version):
         # write the floor this run applies, so the record says it explicitly
@@ -9985,6 +10057,7 @@ def review_run_impl(
         epsilon=epsilon,
         sigma_epsilon=sigma_eps,
         sigma_floor_khz=floor_khz,
+        clocks_declared=clocks_declared,
     )
 
     new_review = Stage6Review(

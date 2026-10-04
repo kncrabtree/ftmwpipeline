@@ -41,6 +41,7 @@ from .._internal.stage6_impl import (
     review_run_impl,
     review_undo_impl,
 )
+from ..core.absent import Absent
 from ..core.curation import REFIT_SNAP_TOL_BINS, Frame
 from ..fitting.active_ft import active_ft_bin_spacing_mhz
 from ..core.data_structures import (
@@ -105,30 +106,39 @@ def _print_not_converged(indent: str = "  ") -> None:
     )
 
 
+def _fmt_chi2r(value: Union[float, Absent], spec: str) -> str:
+    """A result's reduced chi-squared for a human: ``-`` when that side has no
+    fit (``Absent.NOT_RUN``), ``undefined`` when it is not finite."""
+    if value is Absent.NOT_RUN:
+        return "-"
+    if isinstance(value, Absent):
+        return "undefined"
+    return format(value, spec)
+
+
 def _print_created_window(
     window_id: int,
-    mode: Optional[str],
-    freq_range: Optional[Tuple[float, float]],
-    n_points: Optional[int],
-    n_contributors: Optional[int],
-    depends_on: Optional[List[int]],
+    mode: Union[str, Absent],
+    freq_range: Union[Tuple[float, float], Absent],
+    n_points: Union[int, Absent],
+    n_contributors: Union[int, Absent],
+    depends_on: Union[List[int], Absent],
 ) -> None:
     """Print one "this window was created/widened" line, in ``review
     create``'s own style (W4) -- shared by ``review edit``, ``review
     preview`` and ``review apply --dry-run`` so a human sees the same
     rendering everywhere a batch installs (or widens) structure. Call only
-    when *mode* is not ``None``; the other four arguments are then never
-    ``None`` either (see ``PreviewWindowResult`` / ``RefitWindowResult``).
-    All five are typed ``Optional`` to match the result fields as-is
-    (avoiding a re-assertion at every call site after its own ``is not
-    None`` guard); asserted here so a violation is loud rather than a
-    silently blank line.
+    when *mode* is present; the other four arguments are then never
+    ``Absent`` either (see ``PreviewWindowResult`` / ``RefitWindowResult``).
+    All five are typed as the result fields are (avoiding a re-assertion at
+    every call site after its own guard); asserted here so a violation is
+    loud rather than a silently blank line.
     """
-    assert mode is not None
-    assert freq_range is not None
-    assert n_points is not None
-    assert n_contributors is not None
-    assert depends_on is not None
+    assert not isinstance(mode, Absent)
+    assert not isinstance(freq_range, Absent)
+    assert not isinstance(n_points, Absent)
+    assert not isinstance(n_contributors, Absent)
+    assert not isinstance(depends_on, Absent)
     lo, hi = freq_range
     verb = "created" if mode == "created" else "widened"
     print(
@@ -566,11 +576,13 @@ def cmd_review_edit(args: argparse.Namespace) -> int:
     print(
         f"review edit  window={result.window_id}  "
         f"peaks {result.n_peaks_before} → {result.n_peaks_after}  "
-        f"chi2r {result.chi2r_before:.4g} → {result.chi2r_after:.4g}"
+        f"chi2r {_fmt_chi2r(result.chi2r_before, '.4g')} → "
+        f"{_fmt_chi2r(result.chi2r_after, '.4g')}"
     )
-    if not result.converged:
+    # Explicit: a convergence flag is a bool, and Absent would be truthy.
+    if result.converged is False:
         _print_not_converged()
-    if result.created_window_mode is not None:
+    if not isinstance(result.created_window_mode, Absent):
         # W4: this edit's window did not exist (or was too narrow) before
         # this call -- say so, with the same extent a typo-guard preview
         # would have shown.
@@ -716,9 +728,10 @@ def cmd_review_accept(args: argparse.Namespace) -> int:
         print(
             f"review accept  window={result.window_id}  "
             f"candidate accepted: peaks {result.n_peaks_before} → {result.n_peaks_after}  "
-            f"chi2r {result.chi2r_before:.4g} → {result.chi2r_after:.4g}"
+            f"chi2r {_fmt_chi2r(result.chi2r_before, '.4g')} → "
+            f"{_fmt_chi2r(result.chi2r_after, '.4g')}"
         )
-        if not result.converged:
+        if result.converged is False:
             _print_not_converged(indent="    ")
     return 0
 
@@ -820,8 +833,8 @@ def cmd_review_apply(args: argparse.Namespace) -> int:
         for wid in sorted(result.windows):
             aw = result.windows[wid]
             actions = ",".join(str(i + 1) for i in aw.action_indices) or "-"
-            chi2r_before = "-" if aw.chi2r_before is None else f"{aw.chi2r_before:.3f}"
-            chi2r_after = "-" if aw.chi2r_after is None else f"{aw.chi2r_after:.3f}"
+            chi2r_before = _fmt_chi2r(aw.chi2r_before, ".3f")
+            chi2r_after = _fmt_chi2r(aw.chi2r_after, ".3f")
             print(
                 f"  window {wid:>4}  [{aw.origin:>8}]  actions={actions:<8}  "
                 f"peaks {aw.n_peaks_before}->{aw.n_peaks_after}  "
@@ -862,19 +875,19 @@ def cmd_review_preview(args: argparse.Namespace) -> int:
         actions = ",".join(str(i + 1) for i in w.action_indices) or "-"
         # "-" for a side with no fit to report (a window this batch created has
         # no "before"); printing 0.000 there would read as a perfect fit.
-        chi2r_before = "-" if w.chi2r_before is None else f"{w.chi2r_before:.3f}"
-        chi2r_after = "-" if w.chi2r_after is None else f"{w.chi2r_after:.3f}"
+        chi2r_before = _fmt_chi2r(w.chi2r_before, ".3f")
+        chi2r_after = _fmt_chi2r(w.chi2r_after, ".3f")
         print(
             f"  window {wid:>4}  [{w.origin:>8}]  actions={actions:<8}  "
             f"peaks {w.n_peaks_before}->{w.n_peaks_after}  "
             f"chi2r {chi2r_before}->{chi2r_after}"
         )
-        # `converged is None` means this window has no fit on the after side
-        # at all -- nothing to warn about, same windows chi2r_after prints
-        # "-" for.
+        # `converged` is Absent.NOT_RUN when this window has no fit on the
+        # after side at all -- nothing to warn about, same windows chi2r_after
+        # prints "-" for. Absent is truthy, so test for False explicitly.
         if w.converged is False:
             _print_not_converged(indent="    ")
-        if w.created_window_mode is not None:
+        if not isinstance(w.created_window_mode, Absent):
             # W4: this batch installed or widened this window -- the typo
             # guard BlackQuill asked implicit creation be conditioned on.
             _print_created_window(

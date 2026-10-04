@@ -117,6 +117,7 @@ def _build(fit, *, epsilon=0.0, state="rb_locked"):
         epsilon=epsilon,
         sigma_epsilon=0.0,
         sigma_floor_khz=0.0,
+        clocks_declared=False,
     )
 
 

@@ -43,7 +43,12 @@ fit fields (``decay_time_us``, ``decay_time_error_us``, ``shape``,
 ``"<field>__status"`` integer using the columnar status codes (``0`` present,
 ``1`` not run, ``2`` undefined). A table written before those fields existed
 carries no ``peak_fields`` stamp; :func:`final_products_predate_fit_fields`
-detects it so a reader can rebuild the table in memory. The
+detects it so a reader can rebuild the table in memory. The pre-contract fields
+that can be absent (:data:`FINAL_PEAK_ABSENT_FIELDS`: the statistical and total
+sigma, phase, SNR, the errors, ``window_id``, ``clock_lattice``,
+``derivation``, ``peak_uid`` and the knockout fields) are stored the same way.
+A record written before their status keys existed is decoded field by field
+(:func:`_legacy_absent_field`), so it needs no rebuild. The
 created-windows subgroup holds the Stage-6 overlay on the Stage 4 window plan
 (new or widened windows a `create_window` decision installed) as a JSON list of
 serialized ``FitWindow`` objects.
@@ -55,11 +60,18 @@ Reading a group that does not exist returns an empty :class:`Stage6Review`
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import h5py
 
+from .._internal.absence_rules import (
+    clock_lattice_or_absent,
+    float_or_absent,
+    int_or_absent,
+    knockout_absence,
+)
 from ..core.absent import STATUS_PRESENT, Absent
 from ..core.data_structures import (
     AttentionReason,
@@ -72,7 +84,6 @@ from ..core.data_structures import (
     WindowReviewStatus,
 )
 from ..core.stage_fit_settings import ClockSource, coerce_clock_sources
-from ._hdf5_helpers import opt_float
 
 __all__ = [
     "save_stage6_review_to_hdf5",
@@ -81,6 +92,7 @@ __all__ = [
     "read_created_window_bounds",
     "final_products_predate_fit_fields",
     "read_final_products_calibration_clocks",
+    "fit_declares_clocks",
     "FINAL_PEAK_FIELDS_VERSION",
 ]
 
@@ -103,6 +115,26 @@ FINAL_PEAK_FIT_FIELDS: Tuple[str, ...] = (
     "fwhm_mhz",
     "detection_index",
     "fit_window_mhz",
+)
+
+#: The pre-contract ``FinalPeak`` fields that can be ``Absent``, each stored as
+#: a value plus a ``"<field>__status"`` code like the fit fields. Paired with
+#: the type a present value decodes to.
+FINAL_PEAK_ABSENT_FIELDS: Tuple[Tuple[str, type], ...] = (
+    ("sigma_f_khz", float),
+    ("sigma_stat_khz", float),
+    ("phase", float),
+    ("snr", float),
+    ("window_id", int),
+    ("amplitude_error", float),
+    ("phase_error", float),
+    ("snr_error", float),
+    ("clock_lattice", str),
+    ("derivation", int),
+    ("peak_uid", int),
+    ("knockout_p_value", float),
+    ("knockout_supported", bool),
+    ("knockout_aicc_delta", float),
 )
 
 _STATUS_KEY_SUFFIX = "__status"
@@ -170,32 +202,20 @@ def _final_peak_to_dict(p: FinalPeak) -> Dict[str, Any]:
         "frequency_mhz": p.frequency_mhz,
         "frequency_raw_mhz": p.frequency_raw_mhz,
         "f_baseband_mhz": p.f_baseband_mhz,
-        "sigma_f_khz": p.sigma_f_khz,
-        "sigma_stat_khz": p.sigma_stat_khz,
         "sigma_eps_khz": p.sigma_eps_khz,
         "sigma_floor_khz": p.sigma_floor_khz,
         "amplitude": p.amplitude,
-        "phase": p.phase,
-        "snr": p.snr,
         "origin": p.origin,
-        "window_id": p.window_id,
-        "amplitude_error": p.amplitude_error,
-        "phase_error": p.phase_error,
-        "snr_error": p.snr_error,
-        "clock_lattice": p.clock_lattice,
-        "derivation": p.derivation,
-        "peak_uid": p.peak_uid,
-        "knockout_p_value": p.knockout_p_value,
-        "knockout_supported": p.knockout_supported,
-        "knockout_aicc_delta": p.knockout_aicc_delta,
+        **_status_fields_to_dict(p, [name for name, _ in FINAL_PEAK_ABSENT_FIELDS]),
         **_fit_fields_to_dict(p),
     }
 
 
-def _fit_fields_to_dict(p: FinalPeak) -> Dict[str, Any]:
-    """The per-line fit fields as ``value`` + ``"<field>__status"`` pairs."""
+def _status_fields_to_dict(p: FinalPeak, names: List[str]) -> Dict[str, Any]:
+    """Fields of *p* that can be ``Absent`` as ``value`` + ``"<field>__status"``
+    pairs (``null`` value when absent)."""
     out: Dict[str, Any] = {}
-    for name in FINAL_PEAK_FIT_FIELDS:
+    for name in names:
         value = getattr(p, name)
         if isinstance(value, Absent):
             out[name] = None
@@ -204,6 +224,11 @@ def _fit_fields_to_dict(p: FinalPeak) -> Dict[str, Any]:
             out[name] = list(value) if isinstance(value, tuple) else value
             out[name + _STATUS_KEY_SUFFIX] = STATUS_PRESENT
     return out
+
+
+def _fit_fields_to_dict(p: FinalPeak) -> Dict[str, Any]:
+    """The per-line fit fields as ``value`` + ``"<field>__status"`` pairs."""
+    return _status_fields_to_dict(p, list(FINAL_PEAK_FIT_FIELDS))
 
 
 def _fit_fields_from_dict(d: Dict[str, Any]) -> Dict[str, Any]:
@@ -231,44 +256,80 @@ def _fit_fields_from_dict(d: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
-def _final_peak_from_dict(d: Dict[str, Any]) -> FinalPeak:
+def _legacy_absent_field(
+    name: str, d: Dict[str, Any], clocks_declared: Callable[[], bool]
+) -> Any:
+    """Decode field *name* of a record written before its status key existed.
+
+    The record stored ``None`` (or a non-finite float) for absence; the rule is
+    per field (``dev-docs/CONTRACT_STRATEGY.md`` §Missing values):
+
+    - ``window_id``, ``derivation``, ``peak_uid``: ``None`` is ``NOT_RUN``.
+    - ``phase``, ``snr`` and the errors: ``None`` or non-finite is
+      ``UNDEFINED``.
+    - ``clock_lattice``: ``None`` is ``NOT_RUN`` when the file's Stage 5 fit
+      recorded no clock declaration, ``UNDEFINED`` (off-lattice) when it did.
+    - knockout fields: no knockout record (``knockout_supported`` ``None``) is
+      ``NOT_RUN`` for all three; otherwise a non-finite value is ``UNDEFINED``.
+    - ``sigma_stat_khz``: ``0.0`` is the sentinel these records wrote for a
+      line with no frequency error, so it is ``UNDEFINED`` (a covariance error
+      is never exactly zero), and ``sigma_f_khz`` is then ``UNDEFINED`` too: a
+      total missing its statistical term is not an honest uncertainty.
+    """
+    value = d.get(name)
+    if name in ("window_id", "derivation", "peak_uid"):
+        return int_or_absent(value, sentinel=None)
+    if name == "clock_lattice":
+        return clock_lattice_or_absent(value, declared=clocks_declared())
+    if name.startswith("knockout_"):
+        not_run = knockout_absence(d.get("knockout_supported"), None)
+        if not_run is not None:
+            return not_run
+        if name == "knockout_supported":
+            return bool(value)
+        return float_or_absent(value)
+    if name in ("sigma_stat_khz", "sigma_f_khz"):
+        stat = d.get("sigma_stat_khz")
+        if stat is None or not math.isfinite(float(stat)) or float(stat) == 0.0:
+            return Absent.UNDEFINED
+        return float_or_absent(value)
+    return float_or_absent(value)
+
+
+def _absent_fields_from_dict(
+    d: Dict[str, Any], clocks_declared: Callable[[], bool]
+) -> Dict[str, Any]:
+    """Decode the :data:`FINAL_PEAK_ABSENT_FIELDS` of a stored record."""
+    out: Dict[str, Any] = {}
+    for name, kind in FINAL_PEAK_ABSENT_FIELDS:
+        status = d.get(name + _STATUS_KEY_SUFFIX)
+        value = d.get(name)
+        if status is None:
+            out[name] = _legacy_absent_field(name, d, clocks_declared)
+        elif int(status) != STATUS_PRESENT:
+            out[name] = Absent.from_status(int(status))
+        elif value is None:
+            out[name] = Absent.UNDEFINED
+        else:
+            out[name] = kind(value)
+    return out
+
+
+def _final_peak_from_dict(
+    d: Dict[str, Any], clocks_declared: Callable[[], bool] = lambda: False
+) -> FinalPeak:
+    """Decode one stored ``FinalPeak``. *clocks_declared* is asked (once a
+    record needs it) whether the file's Stage 5 fit recorded a clock
+    declaration, to decode a pre-status ``clock_lattice``."""
     return FinalPeak(
         frequency_mhz=float(d["frequency_mhz"]),
         frequency_raw_mhz=float(d["frequency_raw_mhz"]),
         f_baseband_mhz=float(d["f_baseband_mhz"]),
-        sigma_f_khz=float(d["sigma_f_khz"]),
-        sigma_stat_khz=float(d["sigma_stat_khz"]),
         sigma_eps_khz=float(d["sigma_eps_khz"]),
         sigma_floor_khz=float(d["sigma_floor_khz"]),
         amplitude=float(d["amplitude"]),
-        phase=opt_float(d, "phase"),
-        snr=opt_float(d, "snr"),
         origin=str(d.get("origin", "auto")),
-        window_id=None if d.get("window_id") is None else int(d["window_id"]),
-        amplitude_error=opt_float(d, "amplitude_error"),
-        phase_error=opt_float(d, "phase_error"),
-        snr_error=opt_float(d, "snr_error"),
-        clock_lattice=(
-            None if d.get("clock_lattice") is None else str(d["clock_lattice"])
-        ),
-        # Absent in tables written before the derivation tag; None reads as
-        # "carried through unchanged", correct for a pre-curation table.
-        derivation=(None if d.get("derivation") is None else int(d["derivation"])),
-        # Absent in tables written before peak identity; None is the honest
-        # value for a pre-existing table -- never backfilled.
-        peak_uid=(None if d.get("peak_uid") is None else int(d["peak_uid"])),
-        # Absent in tables written before the knockout statistics were carried
-        # to the final table. None reads as "no knockout result", which is the
-        # honest value for such a table -- and stays distinct from the nan the
-        # test itself writes when its refit did not converge (nan survives the
-        # JSON round-trip; json.dumps/loads handle it natively).
-        knockout_p_value=opt_float(d, "knockout_p_value"),
-        knockout_supported=(
-            None
-            if d.get("knockout_supported") is None
-            else bool(d["knockout_supported"])
-        ),
-        knockout_aicc_delta=opt_float(d, "knockout_aicc_delta"),
+        **_absent_fields_from_dict(d, clocks_declared),
         **_fit_fields_from_dict(d),
     )
 
@@ -285,9 +346,11 @@ def _final_products_to_dict(fp: FinalProducts) -> Dict[str, Any]:
     }
 
 
-def _final_products_from_dict(d: Dict[str, Any]) -> FinalProducts:
+def _final_products_from_dict(
+    d: Dict[str, Any], clocks_declared: Callable[[], bool] = lambda: False
+) -> FinalProducts:
     return FinalProducts(
-        peaks=[_final_peak_from_dict(p) for p in d.get("peaks", [])],
+        peaks=[_final_peak_from_dict(p, clocks_declared) for p in d.get("peaks", [])],
         calibration_state=str(d.get("calibration_state", "rb_locked")),
         epsilon=float(d.get("epsilon", 0.0)),
         sigma_epsilon=float(d.get("sigma_epsilon", 0.0)),
@@ -400,7 +463,17 @@ def load_stage6_review_from_hdf5(group: h5py.Group) -> Stage6Review:
     if fp_grp is not None:
         raw = fp_grp.attrs.get("data")
         if raw is not None:
-            final_products = _final_products_from_dict(json.loads(str(raw)))
+            declared: List[bool] = []
+
+            def clocks_declared() -> bool:
+                # Read once, and only when a pre-status record needs it.
+                if not declared:
+                    declared.append(fit_declares_clocks(group.file))
+                return declared[0]
+
+            final_products = _final_products_from_dict(
+                json.loads(str(raw)), clocks_declared
+            )
 
     # Absent in files written before Stage-6 window creation: an empty overlay
     # means "the effective plan is the Stage 4 plan", which is correct for them.
@@ -463,6 +536,31 @@ def read_final_products_calibration_clocks(
     if isinstance(raw, bytes):
         raw = raw.decode("utf-8")
     return coerce_clock_sources(str(raw))
+
+
+def fit_declares_clocks(h5f: h5py.File) -> bool:
+    """Whether the file's Stage 5 fit recorded a non-empty clock declaration.
+
+    Reads the persisted ``spur.clocks`` of the fit settings record -- the
+    declaration the fit's clock-lattice annotation ran with. ``False`` when
+    there is no record, no declaration, or one that does not decode. Never
+    writes.
+    """
+    from .stage_fit_settings_serialization import STAGE_FIT_PATH
+
+    spur = h5f.get(STAGE_FIT_PATH + "/spur")
+    if spur is None:
+        return False
+    raw = spur.attrs.get("clocks")
+    if raw is None:
+        return False
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8")
+    try:
+        clocks = coerce_clock_sources(str(raw))
+    except ValueError:
+        return False
+    return bool(clocks)
 
 
 def final_products_predate_fit_fields(group: Optional[h5py.Group]) -> bool:

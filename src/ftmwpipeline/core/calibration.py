@@ -13,13 +13,16 @@ Reading the state itself is
 :func:`ftmwpipeline.api.frequency_calibration` /
 :meth:`ftmwpipeline.Pipeline.frequency_calibration` (CLI: ``timebase state``).
 
-This module is intentionally dependency-free within the package (stdlib only),
-the same discipline :mod:`ftmwpipeline.core.curation` documents for itself, so
-it can be imported anywhere without a cycle.
+This module is intentionally dependency-free within the package (stdlib only,
+plus the equally dependency-free :mod:`ftmwpipeline.core.absent`), the same
+discipline :mod:`ftmwpipeline.core.curation` documents for itself, so it can be
+imported anywhere without a cycle.
 """
 
 from dataclasses import dataclass
-from typing import ClassVar, Literal, Optional
+from typing import ClassVar, Literal, Union
+
+from .absent import Absent
 
 __all__ = ["CalibrationState", "CalibrationStamp"]
 
@@ -79,13 +82,13 @@ class CalibrationStamp:
     sigma_floor_khz : float
         The user-declared systematic accuracy floor (kHz) folded into every
         peak's budget -- ``0.0`` until ``set_sigma_floor`` declares one.
-    probe_freq_mhz : float or None
+    probe_freq_mhz : float or Absent
         Probe/LO frequency (MHz) the calibrated frame is defined against.
-        ``None`` only when the file carries no FID acquisition header to read
-        it from, in which case no frame conversion is possible.
-    sideband : str or None
+        ``Absent.NOT_RUN`` only when the file carries no FID acquisition header
+        to read it from, in which case no frame conversion is possible.
+    sideband : str or Absent
         Sideband configuration (``"upper"`` / ``"lower"``), from the same
-        header, ``None`` on the same terms. Recorded for completeness: the
+        header, ``Absent.NOT_RUN`` on the same terms. Recorded for completeness: the
         ``epsilon`` correction is applied in the baseband frame and is
         sideband-independent.
     """
@@ -97,5 +100,5 @@ class CalibrationStamp:
     epsilon: float
     sigma_epsilon: float
     sigma_floor_khz: float
-    probe_freq_mhz: Optional[float]
-    sideband: Optional[str]
+    probe_freq_mhz: Union[float, Absent]
+    sideband: Union[str, Absent]

@@ -25,6 +25,7 @@ from ftmwpipeline._internal.stage6_impl import (
     review_run_impl,
     set_sigma_floor_impl,
 )
+from ftmwpipeline.contract import Absent
 from ftmwpipeline.core.data_structures import (
     FinalProducts,
     FittedPeak,
@@ -89,6 +90,7 @@ def test_baseband_is_distance_from_probe():
         epsilon=0.0,
         sigma_epsilon=0.0,
         sigma_floor_khz=0.0,
+        clocks_declared=False,
     )
     assert fp.peaks[0].f_baseband_mhz == pytest.approx(40960.0 - 30000.0)
     assert fp.peaks[1].f_baseband_mhz == pytest.approx(40960.0 - 39000.0)
@@ -104,6 +106,7 @@ def test_epsilon_correction_pushes_baseband():
         epsilon=eps,
         sigma_epsilon=0.0,
         sigma_floor_khz=0.0,
+        clocks_declared=False,
     )
     p0 = fp.peaks[0]
     expected = PROBE + (30000.0 - PROBE) / (1.0 + eps)
@@ -124,6 +127,7 @@ def test_no_correction_when_epsilon_zero():
         epsilon=0.0,
         sigma_epsilon=0.0,
         sigma_floor_khz=0.0,
+        clocks_declared=False,
     )
     for p in fp.peaks:
         assert p.frequency_mhz == p.frequency_raw_mhz
@@ -140,6 +144,7 @@ def test_three_term_budget():
         epsilon=2.0e-6,
         sigma_epsilon=sigma_eps_ppm,
         sigma_floor_khz=floor,
+        clocks_declared=False,
     )
     p0 = fp.peaks[0]
     expected_stat = 0.0002 * 1e3  # 0.2 kHz
@@ -162,6 +167,7 @@ def test_budget_eps_term_scales_with_baseband():
         epsilon=2.0e-6,
         sigma_epsilon=0.1e-6,
         sigma_floor_khz=0.0,
+        clocks_declared=False,
     )
     # peak 1 (39000) is closer to the probe than peak 0 (30000).
     assert fp.peaks[1].sigma_eps_khz < fp.peaks[0].sigma_eps_khz
@@ -176,6 +182,7 @@ def test_metadata_and_origin_carried():
         epsilon=2.0e-6,
         sigma_epsilon=0.1e-6,
         sigma_floor_khz=1.0,
+        clocks_declared=False,
     )
     assert fp.calibration_state == "self_calibrated"
     assert fp.sideband == "lower"
@@ -197,8 +204,9 @@ def test_clock_lattice_carried_and_roundtrips(tmp_path):
         epsilon=0.0,
         sigma_epsilon=0.0,
         sigma_floor_khz=0.0,
+        clocks_declared=True,
     )
-    assert [p.clock_lattice for p in fp.peaks] == ["320x6 (bb)", None]
+    assert [p.clock_lattice for p in fp.peaks] == ["320x6 (bb)", Absent.UNDEFINED]
 
     review = Stage6Review(final_products=fp)
     out = tmp_path / "review.h5"
@@ -210,7 +218,7 @@ def test_clock_lattice_carried_and_roundtrips(tmp_path):
     assert loaded.final_products is not None
     assert [p.clock_lattice for p in loaded.final_products.peaks] == [
         "320x6 (bb)",
-        None,
+        Absent.UNDEFINED,
     ]
 
 
@@ -228,8 +236,9 @@ def test_peak_uid_carried_and_roundtrips(tmp_path):
         epsilon=0.0,
         sigma_epsilon=0.0,
         sigma_floor_khz=0.0,
+        clocks_declared=False,
     )
-    assert [p.peak_uid for p in fp.peaks] == [3_000_000_00, None]
+    assert [p.peak_uid for p in fp.peaks] == [3_000_000_00, Absent.NOT_RUN]
 
     review = Stage6Review(final_products=fp)
     out = tmp_path / "review.h5"
@@ -241,14 +250,14 @@ def test_peak_uid_carried_and_roundtrips(tmp_path):
     assert loaded.final_products is not None
     assert [p.peak_uid for p in loaded.final_products.peaks] == [
         3_000_000_00,
-        None,
+        Absent.NOT_RUN,
     ]
 
 
-def test_peak_uid_absent_json_key_loads_none(tmp_path):
+def test_peak_uid_absent_json_key_loads_not_run(tmp_path):
     """A table written before ``peak_uid`` existed has no such key in its
     persisted JSON; loading it must not raise, and must not backfill an
-    identifier -- absent is the honest value."""
+    identifier -- ``NOT_RUN`` is the honest value."""
     fp = _build_final_products(
         _synthetic_fit(),
         probe_freq_mhz=PROBE,
@@ -257,6 +266,7 @@ def test_peak_uid_absent_json_key_loads_none(tmp_path):
         epsilon=0.0,
         sigma_epsilon=0.0,
         sigma_floor_khz=0.0,
+        clocks_declared=False,
     )
     review = Stage6Review(final_products=fp)
     out = tmp_path / "review.h5"
@@ -267,11 +277,12 @@ def test_peak_uid_absent_json_key_loads_none(tmp_path):
         raw = json.loads(str(h5f["stage6_review/final_products"].attrs["data"]))
         for peak in raw["peaks"]:
             peak.pop("peak_uid", None)
+            peak.pop("peak_uid__status", None)
         h5f["stage6_review/final_products"].attrs["data"] = json.dumps(raw)
     with h5py.File(out, "r") as h5f:
         loaded = load_stage6_review_from_hdf5(h5f["stage6_review"])
     assert loaded.final_products is not None
-    assert all(p.peak_uid is None for p in loaded.final_products.peaks)
+    assert all(p.peak_uid is Absent.NOT_RUN for p in loaded.final_products.peaks)
 
 
 def test_knockout_stats_carried_and_roundtrip(tmp_path):
@@ -304,6 +315,7 @@ def test_knockout_stats_carried_and_roundtrip(tmp_path):
         epsilon=0.0,
         sigma_epsilon=0.0,
         sigma_floor_khz=0.0,
+        clocks_declared=False,
     )
     assert [p.knockout_supported for p in fp.peaks] == [True, False]
     assert fp.peaks[0].knockout_p_value == pytest.approx(1.4e-3)
@@ -326,10 +338,10 @@ def test_knockout_stats_carried_and_roundtrip(tmp_path):
     assert got[1].knockout_aicc_delta == pytest.approx(-2.5)
 
 
-def test_knockout_absent_is_none_not_nan():
-    """A peak with no knockout result at all reports ``None``, which must stay
-    distinct from the ``nan`` the test itself writes when its refit failed to
-    converge: never-tested is not tested-and-uninformative."""
+def test_knockout_never_run_is_distinct_from_undefined():
+    """A peak with no knockout result at all reports ``NOT_RUN``, which must
+    stay distinct from the ``UNDEFINED`` a refit that failed to converge
+    leaves: never-tested is not tested-and-uninformative."""
     fit = _synthetic_fit()
     fit.fitted_peaks[0].knockout = None
     fit.fitted_peaks[1].knockout = KnockoutInfo(
@@ -348,22 +360,21 @@ def test_knockout_absent_is_none_not_nan():
         epsilon=0.0,
         sigma_epsilon=0.0,
         sigma_floor_khz=0.0,
+        clocks_declared=False,
     )
     p_absent, p_nan = fp.peaks
-    assert p_absent.knockout_p_value is None
-    assert p_absent.knockout_supported is None
-    assert p_absent.knockout_aicc_delta is None
+    assert p_absent.knockout_p_value is Absent.NOT_RUN
+    assert p_absent.knockout_supported is Absent.NOT_RUN
+    assert p_absent.knockout_aicc_delta is Absent.NOT_RUN
     assert p_nan.knockout_supported is False
-    assert p_nan.knockout_p_value is not None and math.isnan(p_nan.knockout_p_value)
-    assert p_nan.knockout_aicc_delta is not None and math.isnan(
-        p_nan.knockout_aicc_delta
-    )
+    assert p_nan.knockout_p_value is Absent.UNDEFINED
+    assert p_nan.knockout_aicc_delta is Absent.UNDEFINED
 
 
-def test_knockout_nan_survives_the_json_roundtrip(tmp_path):
-    """``nan`` is a value the knockout test genuinely writes, so it has to come
-    back as ``nan`` rather than as ``None`` (which would read as never tested)
-    or as an error."""
+def test_knockout_undefined_survives_the_json_roundtrip(tmp_path):
+    """The ``nan`` the knockout test genuinely writes is ``UNDEFINED``, and has
+    to come back as ``UNDEFINED`` rather than as ``NOT_RUN`` (which would read
+    as never tested) or as an error."""
     fit = _synthetic_fit()
     for pk in fit.fitted_peaks:
         pk.knockout = KnockoutInfo(
@@ -383,6 +394,7 @@ def test_knockout_nan_survives_the_json_roundtrip(tmp_path):
             epsilon=0.0,
             sigma_epsilon=0.0,
             sigma_floor_khz=0.0,
+            clocks_declared=False,
         )
     )
     out = tmp_path / "review.h5"
@@ -393,12 +405,12 @@ def test_knockout_nan_survives_the_json_roundtrip(tmp_path):
         loaded = load_stage6_review_from_hdf5(h5f["stage6_review"])
     assert loaded.final_products is not None
     for p in loaded.final_products.peaks:
-        assert p.knockout_p_value is not None and math.isnan(p.knockout_p_value)
-        assert p.knockout_aicc_delta is not None and math.isnan(p.knockout_aicc_delta)
+        assert p.knockout_p_value is Absent.UNDEFINED
+        assert p.knockout_aicc_delta is Absent.UNDEFINED
         assert p.knockout_supported is True
 
 
-def test_knockout_absent_json_keys_load_none(tmp_path):
+def test_knockout_absent_json_keys_load_not_run(tmp_path):
     """A table written before the knockout statistics reached ``FinalPeak``
     has no such keys; loading must not raise, and must not invent a value."""
     fit = _synthetic_fit()
@@ -420,6 +432,7 @@ def test_knockout_absent_json_keys_load_none(tmp_path):
             epsilon=0.0,
             sigma_epsilon=0.0,
             sigma_floor_khz=0.0,
+            clocks_declared=False,
         )
     )
     out = tmp_path / "review.h5"
@@ -435,14 +448,15 @@ def test_knockout_absent_json_keys_load_none(tmp_path):
                 "knockout_aicc_delta",
             ):
                 peak.pop(key, None)
+                peak.pop(key + "__status", None)
         h5f["stage6_review/final_products"].attrs["data"] = json.dumps(raw)
     with h5py.File(out, "r") as h5f:
         loaded = load_stage6_review_from_hdf5(h5f["stage6_review"])
     assert loaded.final_products is not None
     for p in loaded.final_products.peaks:
-        assert p.knockout_p_value is None
-        assert p.knockout_supported is None
-        assert p.knockout_aicc_delta is None
+        assert p.knockout_p_value is Absent.NOT_RUN
+        assert p.knockout_supported is Absent.NOT_RUN
+        assert p.knockout_aicc_delta is Absent.NOT_RUN
 
 
 # ---------------------------------------------------------------------------
@@ -477,6 +491,7 @@ def test_final_products_roundtrip(tmp_path):
         epsilon=2.0e-6,
         sigma_epsilon=0.1e-6,
         sigma_floor_khz=2.0,
+        clocks_declared=False,
     )
     review = Stage6Review(final_products=products)
     fp = tmp_path / "review.h5"

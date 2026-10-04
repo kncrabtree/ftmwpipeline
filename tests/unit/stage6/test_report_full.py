@@ -715,7 +715,7 @@ def test_lattice_cell_and_table_columns():
     from ftmwpipeline.core.data_structures import FinalProducts
 
     on = _final_peak(30000.0, clock_lattice="320x6 (bb)")
-    off = _final_peak(31000.0)  # clock_lattice defaults None
+    off = _final_peak(31000.0)  # clock_lattice defaults to Absent.NOT_RUN
     cell = _lattice_cell(on)
     assert 'class="badge lattice"' in cell
     assert "320x6 (bb)" in cell

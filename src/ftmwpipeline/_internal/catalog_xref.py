@@ -30,6 +30,8 @@ from typing import List, Optional, Sequence, Union
 
 import numpy as np
 
+from ..core.absent import Absent
+
 # Header keywords (substring match, case-folded) used to locate columns when the
 # catalog file carries a header row.
 _FREQ_KEYS = ("freq", "frequency", "mhz")
@@ -313,6 +315,13 @@ def _read_spcat(path: Union[str, Path]) -> List[CatalogEntry]:
 # ---------------------------------------------------------------------------
 
 
+def _sigma_or_none(value: object) -> Optional[float]:
+    """``None`` for a missing or :class:`~ftmwpipeline.contract.Absent` sigma."""
+    if value is None or isinstance(value, Absent):
+        return None
+    return float(value)  # type: ignore[arg-type]
+
+
 def match_peak(
     frequency_mhz: Optional[float],
     sigma_f_khz: Optional[float],
@@ -394,7 +403,8 @@ def build_cross_ref(
     for p in peaks:
         m = match_peak(
             getattr(p, "frequency_mhz", None),
-            getattr(p, "sigma_f_khz", None),
+            # An absent sigma_f (no statistical error) matches like a missing one.
+            _sigma_or_none(getattr(p, "sigma_f_khz", None)),
             cat_sorted,
             n_sigma,
             cat_freqs=cat_freqs,

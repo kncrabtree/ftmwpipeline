@@ -12,9 +12,9 @@ The data already existed and had no home: :class:`CreateWindowResult` (W3)
 already carries ``mode``, ``freq_range``, ``n_points``, ``n_contributors`` and
 ``depends_on``, and the ``created_window`` decision-log evidence records the
 same set. This adds five additive ``created_window_*`` fields to
-``PreviewWindowResult`` and to ``RefitWindowResult`` -- ``None`` on any window
-a batch did not create or widen -- and wires the CLI (``review preview``,
-``review apply --dry-run``, and ``review edit``) to print them.
+``PreviewWindowResult`` and to ``RefitWindowResult`` -- ``Absent.NOT_RUN``
+on any window a batch did not create or widen -- and wires the CLI (``review
+preview``, ``review apply --dry-run``, and ``review edit``) to print them.
 
 New module rather than an extension of ``test_review_preview.py``: this is a
 narrow, self-contained surface (five fields on two dataclasses, plus their CLI
@@ -45,6 +45,7 @@ from ftmwpipeline._internal.stage6_impl import (
     review_preview_impl,
 )
 from ftmwpipeline.cli.review_commands import cmd_review_apply, cmd_review_preview
+from ftmwpipeline.contract import Absent
 from ftmwpipeline.io.fitting_serialization import load_spectrum_fit_from_hdf5
 from ftmwpipeline.pipeline import Pipeline
 
@@ -144,10 +145,11 @@ def test_preview_of_implied_create_matches_the_apply(stage5_multi_file, tmp_path
     w = preview.windows[wid]
 
     assert w.created_window_mode == "created"
-    assert w.created_window_freq_range is not None
-    assert w.created_window_n_points is not None and w.created_window_n_points > 0
-    assert w.created_window_n_contributors is not None
-    assert w.created_window_depends_on is not None
+    assert w.created_window_freq_range is not Absent.NOT_RUN
+    assert w.created_window_n_points is not Absent.NOT_RUN
+    assert w.created_window_n_points > 0
+    assert w.created_window_n_contributors is not Absent.NOT_RUN
+    assert w.created_window_depends_on is not Absent.NOT_RUN
     # A preview never persists.
     assert review_log_impl(base) == []
 
@@ -180,11 +182,11 @@ def test_preview_of_ordinary_edit_leaves_structure_none(stage5_multi_file, tmp_p
     assert wid in preview.windows
     w = preview.windows[wid]
 
-    assert w.created_window_mode is None
-    assert w.created_window_freq_range is None
-    assert w.created_window_n_points is None
-    assert w.created_window_n_contributors is None
-    assert w.created_window_depends_on is None
+    assert w.created_window_mode is Absent.NOT_RUN
+    assert w.created_window_freq_range is Absent.NOT_RUN
+    assert w.created_window_n_points is Absent.NOT_RUN
+    assert w.created_window_n_contributors is Absent.NOT_RUN
+    assert w.created_window_depends_on is Absent.NOT_RUN
 
 
 def test_preview_widened_mode_is_distinguishable_from_created(
@@ -203,10 +205,10 @@ def test_preview_widened_mode_is_distinguishable_from_created(
 
     assert w.created_window_mode == "widened"
     assert w.created_window_mode != "created"
-    assert w.created_window_freq_range is not None
-    assert w.created_window_n_points is not None
-    assert w.created_window_n_contributors is not None
-    assert w.created_window_depends_on is not None
+    assert w.created_window_freq_range is not Absent.NOT_RUN
+    assert w.created_window_n_points is not Absent.NOT_RUN
+    assert w.created_window_n_contributors is not Absent.NOT_RUN
+    assert w.created_window_depends_on is not Absent.NOT_RUN
 
 
 # ---------------------------------------------------------------------------
@@ -221,10 +223,10 @@ def test_refit_result_carries_structure_for_implied_create(stage5_multi_file):
     result = refit_window_impl(str(path), None, add=[freq])
 
     assert result.created_window_mode == "created"
-    assert result.created_window_freq_range is not None
-    assert result.created_window_n_points is not None
-    assert result.created_window_n_contributors is not None
-    assert result.created_window_depends_on is not None
+    assert result.created_window_freq_range is not Absent.NOT_RUN
+    assert result.created_window_n_points is not Absent.NOT_RUN
+    assert result.created_window_n_contributors is not Absent.NOT_RUN
+    assert result.created_window_depends_on is not Absent.NOT_RUN
 
     entry = review_log_impl(path)[0]
     created = entry.evidence["created_window"]
@@ -244,11 +246,11 @@ def test_refit_result_leaves_structure_none_for_ordinary_edit(stage5_multi_file)
 
     result = refit_window_impl(str(path), wid, remove=[f"uid:{uid}"])
 
-    assert result.created_window_mode is None
-    assert result.created_window_freq_range is None
-    assert result.created_window_n_points is None
-    assert result.created_window_n_contributors is None
-    assert result.created_window_depends_on is None
+    assert result.created_window_mode is Absent.NOT_RUN
+    assert result.created_window_freq_range is Absent.NOT_RUN
+    assert result.created_window_n_points is Absent.NOT_RUN
+    assert result.created_window_n_contributors is Absent.NOT_RUN
+    assert result.created_window_depends_on is Absent.NOT_RUN
 
 
 # ---------------------------------------------------------------------------
@@ -315,7 +317,7 @@ def test_cli_review_preview_prints_the_implied_structure(
     preview = review_preview_impl(path, cur)
     wid = next(iter(preview.windows))
     w = preview.windows[wid]
-    assert w.created_window_freq_range is not None
+    assert w.created_window_freq_range is not Absent.NOT_RUN
     lo, hi = w.created_window_freq_range
 
     rc = cmd_review_preview(
@@ -339,7 +341,7 @@ def test_cli_review_apply_dry_run_prints_the_implied_structure(
     preview = review_preview_impl(path, cur)
     wid = next(iter(preview.windows))
     w = preview.windows[wid]
-    assert w.created_window_freq_range is not None
+    assert w.created_window_freq_range is not Absent.NOT_RUN
     lo, hi = w.created_window_freq_range
 
     rc = cmd_review_apply(

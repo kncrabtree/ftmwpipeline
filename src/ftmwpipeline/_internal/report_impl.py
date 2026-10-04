@@ -72,11 +72,13 @@ def _nonfinite(x: float) -> Optional[str]:
     return None
 
 
-def _g(x: Optional[float], sig: int = 4) -> str:
-    """General bounded format (``%g``): scientific for huge/tiny, never runaway."""
-    if x is None:
+def _g(x: Union[float, Absent, None], sig: int = 4) -> str:
+    """General bounded format (``%g``): scientific for huge/tiny, never runaway.
+    An absent value renders like a missing one (empty)."""
+    present = _present(x)
+    if present is None:
         return ""
-    xf = float(x)
+    xf = float(present)
     nf = _nonfinite(xf)
     if nf is not None:
         return nf
@@ -112,14 +114,17 @@ def _fit_window_bounds(p: FinalPeak) -> Tuple[Optional[float], Optional[float]]:
     return (float(bounds[0]), float(bounds[1]))
 
 
-def _scaled(x: Optional[float], unit_value: float, sig: int = 4) -> str:
+def _scaled(x: Union[float, Absent, None], unit_value: float, sig: int = 4) -> str:
     """Format ``x / unit_value`` (amplitude in the chosen SI unit)."""
-    if x is None:
+    present = _present(x)
+    if present is None:
         return ""
-    return _g(float(x) / unit_value, sig)
+    return _g(float(present) / unit_value, sig)
 
 
-def _concise(value: float, sigma: Optional[float], fallback_sig: int = 8) -> str:
+def _concise(
+    value: float, sigma: Union[float, Absent, None], fallback_sig: int = 8
+) -> str:
     """Concise ``value(uncertainty)`` notation (uncertainty in last-digit units).
 
     Rounds the uncertainty to two significant figures and the value to the same
@@ -132,9 +137,10 @@ def _concise(value: float, sigma: Optional[float], fallback_sig: int = 8) -> str
     nf = _nonfinite(v)
     if nf is not None:
         return nf
-    if sigma is None:
+    present = _present(sigma)
+    if present is None:
         return f"{v:.{fallback_sig}g}"
-    s = float(sigma)
+    s = float(present)
     if _nonfinite(s) is not None or s <= 0.0:
         return f"{v:.{fallback_sig}g}"
 
@@ -357,10 +363,10 @@ def _csv_row(p: FinalPeak, unit_value: float) -> List[str]:
         _g(p.snr),
         _g(p.snr_error),
         p.origin,
-        "" if p.window_id is None else str(p.window_id),
-        p.clock_lattice or "",
-        "" if p.derivation is None else str(p.derivation),
-        "" if p.peak_uid is None else str(p.peak_uid),
+        "" if isinstance(p.window_id, Absent) else str(p.window_id),
+        _present(p.clock_lattice) or "",
+        "" if isinstance(p.derivation, Absent) else str(p.derivation),
+        "" if isinstance(p.peak_uid, Absent) else str(p.peak_uid),
         _g(_present(p.decay_time_us), 6),
         _g(_present(p.decay_time_error_us), 3),
         _present(p.shape) or "",
@@ -401,11 +407,12 @@ def _render_csv(
     return "\n".join(comments) + "\n" + buf.getvalue()
 
 
-def _jnum(x: Optional[float]) -> Optional[float]:
-    """JSON-safe float: non-finite -> null (so the JSON stays strict-valid)."""
-    if x is None:
+def _jnum(x: Union[float, Absent, None]) -> Optional[float]:
+    """JSON-safe float: non-finite or absent -> null (strict-valid JSON)."""
+    present = _present(x)
+    if present is None:
         return None
-    xf = float(x)
+    xf = float(present)
     return xf if math.isfinite(xf) else None
 
 
@@ -438,17 +445,20 @@ def _peak_json(
         "f_baseband_mhz": _jnum(p.f_baseband_mhz),
         "amplitude": _jnum(None if p.amplitude is None else p.amplitude / unit_value),
         "amplitude_error": _jnum(
-            None if p.amplitude_error is None else p.amplitude_error / unit_value
+            None
+            if isinstance(p.amplitude_error, Absent)
+            else p.amplitude_error / unit_value
         ),
         "phase_rad": _jnum(p.phase),
         "phase_err_rad": _jnum(p.phase_error),
         "snr": _jnum(p.snr),
         "snr_error": _jnum(p.snr_error),
         "origin": p.origin,
-        "window_id": p.window_id,
-        "clock_lattice": p.clock_lattice,
-        "derivation": p.derivation,
-        "peak_uid": p.peak_uid,
+        # The report keeps its pre-contract form: an absent field is null.
+        "window_id": _present(p.window_id),
+        "clock_lattice": _present(p.clock_lattice),
+        "derivation": _present(p.derivation),
+        "peak_uid": _present(p.peak_uid),
         "decay_time_us": _jnum(_present(p.decay_time_us)),
         "decay_time_error_us": _jnum(_present(p.decay_time_error_us)),
         "shape": _present(p.shape),
@@ -564,18 +574,27 @@ def _render_latex(
     cols = [
         (
             "Frequency (MHz)",
-            lambda p, m: _concise(p.frequency_mhz, p.sigma_f_khz * 1e-3),
+            lambda p, m: _concise(
+                p.frequency_mhz,
+                (None if isinstance(p.sigma_f_khz, Absent) else p.sigma_f_khz * 1e-3),
+            ),
         ),
         (
             f"Amplitude ({_unit_latex(uname)})",
             lambda p, m: _concise(
                 p.amplitude / uval,
-                None if p.amplitude_error is None else p.amplitude_error / uval,
+                (
+                    None
+                    if isinstance(p.amplitude_error, Absent)
+                    else p.amplitude_error / uval
+                ),
             ),
         ),
         (
             "SNR",
-            lambda p, m: "--" if p.snr is None else _concise(p.snr, p.snr_error),
+            lambda p, m: (
+                "--" if isinstance(p.snr, Absent) else _concise(p.snr, p.snr_error)
+            ),
         ),
     ]
     if xref is not None:
@@ -1229,7 +1248,11 @@ def _assemble_summary(file_path: Union[Path, str]) -> _SummaryModel:
     # Per-window SNR_max from the consolidated final lines, keyed by window.
     snr_by_window: Dict[int, float] = {}
     for p in products.peaks:
-        if p.window_id is None or p.snr is None or not math.isfinite(float(p.snr)):
+        if (
+            isinstance(p.window_id, Absent)
+            or isinstance(p.snr, Absent)
+            or not math.isfinite(float(p.snr))
+        ):
             continue
         snr_by_window[p.window_id] = max(
             snr_by_window.get(p.window_id, 0.0), float(p.snr)
@@ -1284,7 +1307,8 @@ def _assemble_summary(file_path: Union[Path, str]) -> _SummaryModel:
     s_stat = [
         float(p.sigma_stat_khz)
         for p in products.peaks
-        if p.sigma_stat_khz is not None and math.isfinite(float(p.sigma_stat_khz))
+        if not isinstance(p.sigma_stat_khz, Absent)
+        and math.isfinite(float(p.sigma_stat_khz))
     ]
     # The Stage 5 NLS frequency-precision distribution (statistical sigma).
     sigma_stat_pctiles = _percentiles(s_stat)
@@ -1296,12 +1320,12 @@ def _assemble_summary(file_path: Union[Path, str]) -> _SummaryModel:
     s_f = [
         float(p.sigma_f_khz)
         for p in products.peaks
-        if p.sigma_f_khz is not None and math.isfinite(float(p.sigma_f_khz))
+        if not isinstance(p.sigma_f_khz, Absent) and math.isfinite(float(p.sigma_f_khz))
     ]
     n_stat_dom = sum(
         1
         for p in products.peaks
-        if p.sigma_stat_khz is not None
+        if not isinstance(p.sigma_stat_khz, Absent)
         and p.sigma_eps_khz is not None
         and float(p.sigma_stat_khz) >= float(p.sigma_eps_khz)
     )
@@ -1702,8 +1726,8 @@ _CAL_STATE_PHRASE = {
 # ---------------------------------------------------------------------------
 
 
-def _md_num(x: Optional[float], sig: int = 4) -> str:
-    return "n/a" if x is None else _g(x, sig)
+def _md_num(x: Union[float, Absent, None], sig: int = 4) -> str:
+    return "n/a" if _present(x) is None else _g(x, sig)
 
 
 def _md_int(x: Optional[int]) -> str:
@@ -1794,7 +1818,9 @@ def _percentile_table(
 
 def _strongest_lines(products: FinalProducts, n: int = 10) -> List[FinalPeak]:
     real = [
-        p for p in products.peaks if p.snr is not None and math.isfinite(float(p.snr))
+        p
+        for p in products.peaks
+        if not isinstance(p.snr, Absent) and math.isfinite(float(p.snr))
     ]
     real.sort(key=lambda p: float(p.snr), reverse=True)  # type: ignore[arg-type]
     return real[:n]
@@ -1923,7 +1949,7 @@ def _md_line_table(peaks: List[FinalPeak], unit_value: float, unit_name: str) ->
                     _scaled(p.amplitude, unit_value),
                     _md_num(p.snr, 3),
                     p.origin,
-                    "" if p.window_id is None else str(p.window_id),
+                    "" if isinstance(p.window_id, Absent) else str(p.window_id),
                 ]
             )
             + " |"

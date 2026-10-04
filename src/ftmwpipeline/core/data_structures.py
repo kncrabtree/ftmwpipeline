@@ -2015,12 +2015,16 @@ class FinalPeak:
     f_baseband_mhz : float
         Digitized baseband frequency ``|f_mol - probe|`` (MHz); the lever the
         ``epsilon`` correction and the ``sigma_eps`` budget term scale with.
-    sigma_f_khz : float
+    sigma_f_khz : float or Absent
         Total reported 1-sigma frequency uncertainty (kHz):
         ``sqrt(sigma_stat^2 + sigma_eps^2 + sigma_floor^2)``.
-    sigma_stat_khz : float
+        ``Absent.UNDEFINED`` when ``sigma_stat_khz`` is: a total missing its
+        statistical term is not an honest uncertainty, so it is never computed
+        without it.
+    sigma_stat_khz : float or Absent
         Statistical (NLS / Cramer-Rao) precision term, from the fitted
-        ``frequency_error`` (kHz).
+        ``frequency_error`` (kHz). ``Absent.UNDEFINED`` when the fit left the
+        line without a finite frequency error.
     sigma_eps_khz : float
         Timebase term ``sigma_epsilon * f_baseband`` (kHz); ``0.0`` when no
         calibration uncertainty applies.
@@ -2029,60 +2033,68 @@ class FinalPeak:
         (kHz); the shipped default is ``0.0``.
     amplitude : float
         Fitted amplitude (carried through from the Stage 5 peak, base SI units).
-    phase : float or None
-        Fitted phase (radians), or ``None`` when unavailable.
-    snr : float or None
-        Fitted signal-to-noise ratio, or ``None`` when unavailable.
+    phase : float or Absent
+        Fitted phase (radians). ``Absent.UNDEFINED`` when the fit gave none.
+    snr : float or Absent
+        Fitted signal-to-noise ratio. ``Absent.UNDEFINED`` when it has no
+        finite value (no usable noise estimate or decay time).
     origin : str
         Per-peak provenance, ``"auto"`` or ``"user"`` (Stage 6 curation).
-    derivation : int or None
+    derivation : int or Absent
         ``DecisionLogEntry.order_index`` of the Stage 6 decision that created or
         altered this peak, carried through from the Stage 5
-        :class:`FittedPeak`. ``None`` means the peak was carried through the
-        refit unchanged, i.e. the same line remeasured -- which is what lets a
-        consumer read the derivation instead of reconstructing it by pairing
-        peak sets across the edit.
-    window_id : int or None
-        Originating Stage 4 fit window id.
-    amplitude_error : float or None
-        1-sigma uncertainty on ``amplitude`` (same units), or ``None``.
-    phase_error : float or None
-        1-sigma uncertainty on ``phase`` (radians), or ``None``.
-    snr_error : float or None
+        :class:`FittedPeak`. ``Absent.NOT_RUN`` means no decision touched the
+        line: it was carried through the refit unchanged, i.e. the same line
+        remeasured -- which is what lets a consumer read the derivation instead
+        of reconstructing it by pairing peak sets across the edit.
+    window_id : int or Absent
+        Originating Stage 4 fit window id; ``Absent.NOT_RUN`` when the source
+        peak records none.
+    amplitude_error : float or Absent
+        1-sigma uncertainty on ``amplitude`` (same units);
+        ``Absent.UNDEFINED`` when the covariance gave no finite error.
+    phase_error : float or Absent
+        1-sigma uncertainty on ``phase`` (radians); ``Absent.UNDEFINED`` on the
+        same terms.
+    snr_error : float or Absent
         1-sigma uncertainty on ``snr``, propagated from the amplitude error
-        (``snr * amplitude_error / amplitude``), or ``None``.
-    clock_lattice : str or None
+        (``snr * amplitude_error / amplitude``). ``Absent.UNDEFINED`` when
+        ``snr`` or ``amplitude_error`` is absent or the amplitude is zero.
+    clock_lattice : str or Absent
         Carried through from the Stage 5 peak: the identity of the declared
-        clock-lattice point the line lands on (e.g. ``"320x6 (bb)"``), or
-        ``None`` when off-lattice or no clock declaration was supplied. An
-        on-lattice line is a candidate instrumental artifact that survived the
-        spur gate; the report flags it for review but never removes it.
-    peak_uid : int or None
+        clock-lattice point the line lands on (e.g. ``"320x6 (bb)"``).
+        ``Absent.NOT_RUN`` when the fit recorded no clock declaration (the
+        lattice test never ran); ``Absent.UNDEFINED`` when a declaration was
+        recorded and the line is off-lattice. An on-lattice line is a
+        candidate instrumental artifact that survived the spur gate; the
+        report flags it for review but never removes it.
+    peak_uid : int or Absent
         Point-space identifier, carried through unchanged from the Stage 5
         :class:`FittedPeak`: the peak's seed frequency in hundredths of a
         point of the active FT, stamped once at birth and never re-derived
         from a fitted position. Valid only within the one Stage 5 fit lineage
         this table was built from -- no cross-run meaning is promised.
-        ``None`` on a fit produced before this field existed.
-    knockout_p_value : float or None
+        ``Absent.NOT_RUN`` on a fit produced before this field existed.
+    knockout_p_value : float or Absent
         Diagnostic F-test p-value of the K-peak fit against the (K-1)-peak
         refit that drops this line, carried through from
-        :attr:`FittedPeak.knockout`. ``None`` when the source peak carries no
-        knockout result at all (a fit written before the test existed, or a
-        peak that never went through a window fit); ``nan`` -- a float, not
-        ``None`` -- when the test ran but its refit failed to converge. The
-        two are distinct: absent versus attempted-and-uninformative.
-    knockout_supported : bool or None
+        :attr:`FittedPeak.knockout`. ``Absent.NOT_RUN`` when the knockout test
+        never ran for the source peak (a fit written before the test existed,
+        or a peak that never went through a window fit);
+        ``Absent.UNDEFINED`` when the test ran but its value is not finite
+        (the refit failed to converge). The two are distinct: never tested
+        versus attempted-and-uninformative.
+    knockout_supported : bool or Absent
         Whether the AICc-with-``n_eff`` gate prefers keeping this line
         (:attr:`KnockoutInfo.supported`). ``False`` flags the peak as
         redundant: dropping it and refitting the survivors produces a
-        strictly better AICc. ``None`` when the source peak carries no
-        knockout result.
-    knockout_aicc_delta : float or None
+        strictly better AICc. ``Absent.NOT_RUN`` when the test never ran.
+    knockout_aicc_delta : float or Absent
         The gate statistic ``AICc(K-1 refit) - AICc(K)`` at the shared
-        ``n_eff``; negative means the simpler model wins. ``None`` when
-        absent, ``nan`` when the refit did not converge -- same distinction
-        as ``knockout_p_value``.
+        ``n_eff``; negative means the simpler model wins. ``Absent.NOT_RUN``
+        when the test never ran; ``Absent.UNDEFINED`` when it ran and the
+        statistic is not finite (a failed refit, or an AICc with too few
+        effective points) -- same distinction as ``knockout_p_value``.
 
         All three describe the fit that produced the source peak. A line held
         out of a Stage 6 refit by a **thaw** is re-attached verbatim, so its
@@ -2128,24 +2140,24 @@ class FinalPeak:
     frequency_mhz: float
     frequency_raw_mhz: float
     f_baseband_mhz: float
-    sigma_f_khz: float
-    sigma_stat_khz: float
+    sigma_f_khz: Union[float, Absent]
+    sigma_stat_khz: Union[float, Absent]
     sigma_eps_khz: float
     sigma_floor_khz: float
     amplitude: float
-    phase: Optional[float] = None
-    snr: Optional[float] = None
+    phase: Union[float, Absent] = Absent.UNDEFINED
+    snr: Union[float, Absent] = Absent.UNDEFINED
     origin: str = "auto"
-    window_id: Optional[int] = None
-    amplitude_error: Optional[float] = None
-    phase_error: Optional[float] = None
-    snr_error: Optional[float] = None
-    clock_lattice: Optional[str] = None
-    derivation: Optional[int] = None
-    peak_uid: Optional[int] = None
-    knockout_p_value: Optional[float] = None
-    knockout_supported: Optional[bool] = None
-    knockout_aicc_delta: Optional[float] = None
+    window_id: Union[int, Absent] = Absent.NOT_RUN
+    amplitude_error: Union[float, Absent] = Absent.UNDEFINED
+    phase_error: Union[float, Absent] = Absent.UNDEFINED
+    snr_error: Union[float, Absent] = Absent.UNDEFINED
+    clock_lattice: Union[str, Absent] = Absent.NOT_RUN
+    derivation: Union[int, Absent] = Absent.NOT_RUN
+    peak_uid: Union[int, Absent] = Absent.NOT_RUN
+    knockout_p_value: Union[float, Absent] = Absent.NOT_RUN
+    knockout_supported: Union[bool, Absent] = Absent.NOT_RUN
+    knockout_aicc_delta: Union[float, Absent] = Absent.NOT_RUN
     decay_time_us: Union[float, Absent] = Absent.UNDEFINED
     decay_time_error_us: Union[float, Absent] = Absent.UNDEFINED
     shape: Union[str, Absent] = Absent.UNDEFINED

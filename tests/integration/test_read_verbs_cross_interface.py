@@ -269,7 +269,7 @@ def test_dict_accessor_is_stamped_directly(stage5, tmp_path, capsys):
 # ---- get_final_products before Stage 6: absent, not an empty list ----------
 
 
-def test_final_products_before_stage6_is_items_null_not_run(
+def test_final_products_before_stage6_is_value_null_not_run(
     baseline_2638_stage5_small, tmp_path, capsys
 ):
     path = str(baseline_2638_stage5_small)
@@ -278,15 +278,20 @@ def test_final_products_before_stage6_is_items_null_not_run(
     env = _run_cli("get_final_products", path, "", tmp_path / "o", capsys)
     assert env == {
         "schema": FINAL_PRODUCTS_SCHEMA,
-        "items": None,
-        "items_absent": "not_run",
+        "value": None,
+        "value_absent": "not_run",
     }
 
 
 def test_final_products_after_stage6_is_stamped_directly(stage5, tmp_path, capsys):
     env = _run_cli("get_final_products", stage5, "", tmp_path / "o", capsys)
     assert env["schema"] == FINAL_PRODUCTS_SCHEMA
-    assert env["peaks"] and "items_absent" not in env
+    assert env["peaks"] and "value_absent" not in env
+    # No bare null: every null field of a line carries its reason.
+    for line in env["peaks"]:
+        for key, value in line.items():
+            if value is None:
+                assert line[key + "_absent"] in ("not_run", "undefined"), key
 
 
 # ---- window_status before Stage 5, and the table form ----------------------

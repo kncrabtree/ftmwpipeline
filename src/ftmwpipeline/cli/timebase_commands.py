@@ -27,6 +27,7 @@ from .._internal.timebase_impl import (
     calibrate_timebase_impl,
     load_timebase_calibration_impl,
 )
+from ..contract import Absent
 from .utils import add_stage_object, print_error, setup_logging
 
 logger = logging.getLogger(__name__)
@@ -167,6 +168,11 @@ _STATE_NOTES = {
 }
 
 
+def _or_none(value: Any) -> Any:
+    """``None`` for an :class:`~ftmwpipeline.contract.Absent` value, else it."""
+    return None if isinstance(value, Absent) else value
+
+
 def cmd_timebase_state(args: argparse.Namespace) -> int:
     """Print the derived frequency-calibration state (never mutates)."""
     setup_logging(args.verbose)
@@ -195,8 +201,10 @@ def cmd_timebase_state(args: argparse.Namespace) -> int:
                     "epsilon": stamp.epsilon,
                     "sigma_epsilon": stamp.sigma_epsilon,
                     "sigma_floor_khz": stamp.sigma_floor_khz,
-                    "probe_freq_mhz": stamp.probe_freq_mhz,
-                    "sideband": stamp.sideband,
+                    # Pre-contract verb: an absent header stays a bare null
+                    # here (``read frequency_calibration`` adds the reason).
+                    "probe_freq_mhz": _or_none(stamp.probe_freq_mhz),
+                    "sideband": _or_none(stamp.sideband),
                 },
                 indent=2,
             )
@@ -213,7 +221,7 @@ def cmd_timebase_state(args: argparse.Namespace) -> int:
         f"{stamp.sigma_epsilon * 1e6:.3f} ppm"
     )
     print(f"  sigma floor        : {stamp.sigma_floor_khz:.3f} kHz")
-    if stamp.probe_freq_mhz is None:
+    if isinstance(stamp.probe_freq_mhz, Absent):
         print("  probe / sideband   : (no FID header; no frame conversion possible)")
     else:
         print(f"  probe frequency    : {stamp.probe_freq_mhz:.6f} MHz")

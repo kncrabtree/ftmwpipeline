@@ -19,6 +19,7 @@ import pytest
 
 import ftmwpipeline.api as ftmw
 from ftmwpipeline._internal.report_impl import _amplitude_unit, report_table_impl
+from ftmwpipeline.contract import Absent
 from ftmwpipeline.core.data_structures import (
     FinalPeak,
     FinalProducts,
@@ -59,13 +60,13 @@ def _products() -> FinalProducts:
                 sigma_eps_khz=0.196,
                 sigma_floor_khz=0.500,
                 amplitude=0.02,
-                phase=None,
-                snr=None,
+                phase=Absent.UNDEFINED,
+                snr=Absent.UNDEFINED,
                 origin="user",
-                window_id=None,
-                amplitude_error=None,
-                phase_error=None,
-                snr_error=None,
+                window_id=Absent.NOT_RUN,
+                amplitude_error=Absent.UNDEFINED,
+                phase_error=Absent.UNDEFINED,
+                snr_error=Absent.UNDEFINED,
             ),
         ],
         calibration_state="self_calibrated",
@@ -230,7 +231,7 @@ def test_catastrophic_values_bounded(tmp_path):
                 sigma_stat_khz=9.5e105,
                 snr=0.0,
                 amplitude_error=float("inf"),
-                snr_error=None,
+                snr_error=Absent.UNDEFINED,
             ),
             _mk_peak(freq=30000.0, amp=1.0e-6),
         ],

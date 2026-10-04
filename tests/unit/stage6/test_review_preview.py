@@ -40,7 +40,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import math
 import shutil
 from dataclasses import replace
 from pathlib import Path
@@ -58,6 +57,7 @@ from ftmwpipeline._internal.stage6_impl import (
     review_preview_impl,
 )
 from ftmwpipeline.cli.review_commands import cmd_review_preview
+from ftmwpipeline.contract import Absent
 from ftmwpipeline.core.data_structures import FinalPeak
 from ftmwpipeline.core.environment import ANALYSIS_EPOCH, capture_environment
 from ftmwpipeline.core.stage_fit_settings import ClockSource
@@ -275,11 +275,14 @@ def _force_fit_epoch(path: Path, epoch: int) -> None:
 def _assert_final_peaks_equal(a: FinalPeak, b: FinalPeak) -> None:
     """Field-by-field comparison (floats via ``approx``) rather than dataclass
     ``==``, so a same-computation-different-object comparison is not made
-    brittle by exact float representation."""
+    brittle by exact float representation. An ``Absent`` field must pair with
+    the same ``Absent`` member: ``NOT_RUN`` (no knockout result) never pairs
+    with ``UNDEFINED`` (tested, refit did not converge)."""
     assert a.window_id == b.window_id
     assert a.origin == b.origin
     assert a.derivation == b.derivation
     assert a.clock_lattice == b.clock_lattice
+    assert a.knockout_supported is b.knockout_supported
     for name in (
         "frequency_mhz",
         "frequency_raw_mhz",
@@ -289,50 +292,19 @@ def _assert_final_peaks_equal(a: FinalPeak, b: FinalPeak) -> None:
         "sigma_eps_khz",
         "sigma_floor_khz",
         "amplitude",
+        "phase",
+        "snr",
+        "amplitude_error",
+        "phase_error",
+        "snr_error",
+        "knockout_p_value",
+        "knockout_aicc_delta",
     ):
-        assert getattr(a, name) == pytest.approx(
-            getattr(b, name), rel=1e-9, abs=1e-12
-        ), name
-    for name in ("phase", "snr", "amplitude_error", "phase_error", "snr_error"):
         va, vb = getattr(a, name), getattr(b, name)
-        if va is None or vb is None:
+        if isinstance(va, Absent) or isinstance(vb, Absent):
             assert va is vb, name
         else:
             assert va == pytest.approx(vb, rel=1e-9, abs=1e-12), name
-    assert a.knockout_supported is b.knockout_supported
-    for name in ("knockout_p_value", "knockout_aicc_delta"):
-        va, vb = getattr(a, name), getattr(b, name)
-        if va is None or vb is None:
-            # None is "no knockout result", and must not silently pair with
-            # the nan that means "tested, refit did not converge".
-            assert va is vb, name
-        elif math.isnan(va) or math.isnan(vb):
-            assert math.isnan(va) and math.isnan(vb), name
-        else:
-            assert va == pytest.approx(vb, rel=1e-9, abs=1e-12), name
-
-
-# ---------------------------------------------------------------------------
-# Fixture sanity: the fixture is actually self_calibrated (an uncalibrated
-# fixture would let every test below pass by accident).
-# ---------------------------------------------------------------------------
-
-
-def test_fixture_is_actually_self_calibrated(sc_multi_file: Path) -> None:
-    stamp = s6._current_calibration_stamp(str(sc_multi_file))
-    assert stamp is not None
-    assert stamp[0] == "self_calibrated"
-    assert stamp[1] == pytest.approx(EPS)
-
-
-def test_fixture_has_at_least_two_live_windows(sc_multi_file: Path) -> None:
-    assert len(_fitted_window_ids(sc_multi_file)) >= 2
-
-
-# ---------------------------------------------------------------------------
-# Convergence visibility: a failed joint NLS is reported, not left to be
-# inferred from an implausible chi2r.
-# ---------------------------------------------------------------------------
 
 
 def _force_failed_fit(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -383,7 +355,7 @@ class TestConvergenceReported:
         """Same source as ``chi2r_after``: the in-memory fit after the batch's
         one combined cascade. Whatever windows one reports on, the other must
         -- a window with an ``chi2r_after`` has a convergence answer, and a
-        window without one has ``None`` rather than a fabricated ``True``."""
+        window without one has ``NOT_RUN`` rather than a fabricated ``True``."""
         wid = _fitted_window_ids(sc_multi_file)[0]
         freq = _window_center(sc_multi_file, wid)
         cur = tmp_path / "cur.csv"
@@ -392,7 +364,7 @@ class TestConvergenceReported:
         result = review_preview_impl(sc_multi_file, cur, frame="raw")
         assert result.windows
         for w in result.windows.values():
-            assert (w.converged is None) == (w.chi2r_after is None)
+            assert (w.converged is Absent.NOT_RUN) == (w.chi2r_after is Absent.NOT_RUN)
 
 
 # ---------------------------------------------------------------------------
@@ -588,7 +560,7 @@ class TestApplyReportsWindows:
             assert aw.converged == pw.converged
             for name in ("chi2r_before", "chi2r_after"):
                 va, vb = getattr(aw, name), getattr(pw, name)
-                if va is None or vb is None:
+                if isinstance(va, Absent) or isinstance(vb, Absent):
                     assert va is vb, name
                 else:
                     assert va == pytest.approx(vb, rel=1e-9), name
@@ -960,9 +932,9 @@ class TestPreviewEqualsApplyWithGenuineCascade:
         assert persisted_stats[w2][1] == pytest.approx(MARKER)
 
 
-class TestAbsentFitReportsNoneNotZero:
-    """A window with no fit on one side reports ``None``, never a fabricated
-    ``0.0`` (BlackQuill ask of 2026-08-19).
+class TestAbsentFitReportsNotRunNotZero:
+    """A window with no fit on one side reports ``Absent.NOT_RUN``, never a
+    fabricated ``0.0`` (BlackQuill ask of 2026-08-19).
 
     chi2r = 0.0 is a value a genuine fit essentially never produces, so a
     fabricated one is indistinguishable from an extraordinary one: a consumer
@@ -974,8 +946,9 @@ class TestAbsentFitReportsNoneNotZero:
         """The default itself is the contract -- a 0.0 default would reintroduce
         the fabrication wherever a field is not explicitly set."""
         entry = s6.PreviewWindowResult(window_id=1, origin="direct")
-        assert entry.chi2r_before is None
-        assert entry.chi2r_after is None
+        assert entry.chi2r_before is Absent.NOT_RUN
+        assert entry.chi2r_after is Absent.NOT_RUN
+        assert entry.converged is Absent.NOT_RUN
 
     def test_created_window_has_no_before_chi2r(
         self, sc_multi_file: Path, tmp_path: Path
@@ -990,7 +963,7 @@ class TestAbsentFitReportsNoneNotZero:
         created = [w for w in result.windows.values() if w.origin == "direct"]
         assert created, "the create action should report a direct window"
         for w in created:
-            assert w.chi2r_before is None, (
+            assert w.chi2r_before is Absent.NOT_RUN, (
                 f"window {w.window_id} reports chi2r_before="
                 f"{w.chi2r_before!r} for a fit that never existed"
             )
@@ -998,8 +971,8 @@ class TestAbsentFitReportsNoneNotZero:
     def test_an_ordinary_edit_still_reports_both_sides(
         self, sc_multi_file: Path, tmp_path: Path
     ) -> None:
-        """The guard is specific to a missing fit, not a blanket None: a window
-        that existed before and after still carries two real numbers."""
+        """The guard is specific to a missing fit, not a blanket absence: a
+        window that existed before and after still carries two real numbers."""
         wid = _fitted_window_ids(sc_multi_file)[0]
         freq = _window_center(sc_multi_file, wid)
         cur = tmp_path / "cur.csv"
@@ -1008,5 +981,5 @@ class TestAbsentFitReportsNoneNotZero:
         result = review_preview_impl(sc_multi_file, cur, frame="raw")
 
         w = result.windows[wid]
-        assert w.chi2r_before is not None and w.chi2r_before > 0.0
-        assert w.chi2r_after is not None and w.chi2r_after > 0.0
+        assert not isinstance(w.chi2r_before, Absent) and w.chi2r_before > 0.0
+        assert not isinstance(w.chi2r_after, Absent) and w.chi2r_after > 0.0

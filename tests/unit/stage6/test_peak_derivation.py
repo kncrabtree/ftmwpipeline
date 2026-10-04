@@ -35,6 +35,7 @@ from ftmwpipeline._internal.stage6_impl import (
     review_undo_impl,
     split_peak_impl,
 )
+from ftmwpipeline.contract import Absent
 from ftmwpipeline.core.data_structures import SpectrumFit
 from ftmwpipeline.io.fitting_serialization import load_spectrum_fit_from_hdf5
 
@@ -219,7 +220,7 @@ class TestFinalProductsCarryTheTag:
 
         products = get_final_products_impl(str(working_file))
         assert products is not None
-        tagged = [p for p in products.peaks if p.derivation is not None]
+        tagged = [p for p in products.peaks if p.derivation is not Absent.NOT_RUN]
         assert len(tagged) == 1
         assert tagged[0].derivation == 0
 
@@ -227,11 +228,11 @@ class TestFinalProductsCarryTheTag:
         log = review_log_impl(str(working_file))
         assert any(e.order_index == tagged[0].derivation for e in log)
 
-    def test_pre_curation_table_is_all_none(self, working_file):
+    def test_pre_curation_table_is_all_not_run(self, working_file):
         review_run_impl(str(working_file))
         products = get_final_products_impl(str(working_file))
         assert products is not None
-        assert all(p.derivation is None for p in products.peaks)
+        assert all(p.derivation is Absent.NOT_RUN for p in products.peaks)
 
 
 class TestUndoRenumbersTagsWithTheLog:

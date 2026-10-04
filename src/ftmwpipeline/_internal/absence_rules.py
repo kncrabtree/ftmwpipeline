@@ -15,6 +15,7 @@ from typing import Any, Optional, Union
 from ..contract import Absent
 
 __all__ = [
+    "clock_lattice_or_absent",
     "float_or_absent",
     "int_or_absent",
     "knockout_absence",
@@ -62,3 +63,17 @@ def knockout_absence(supported: Any, delta_chi2: Any) -> Optional[Absent]:
     if delta_chi2 is not None and math.isnan(float(delta_chi2)):
         return Absent.NOT_RUN
     return None
+
+
+def clock_lattice_or_absent(value: Any, *, declared: bool) -> Union[str, Absent]:
+    """A line's stored clock-lattice identity as a contract value.
+
+    A non-empty identity is present. Otherwise the lattice test never ran when
+    the fit recorded no clock declaration (``declared`` false: ``NOT_RUN``),
+    and the line is off-lattice when it did (``UNDEFINED``). Storage writes
+    ``None`` or ``""`` for both cases; *declared* -- whether the fit's
+    recorded ``spur.clocks`` is non-empty -- tells them apart.
+    """
+    if value is not None and str(value) != "":
+        return str(value)
+    return Absent.UNDEFINED if declared else Absent.NOT_RUN

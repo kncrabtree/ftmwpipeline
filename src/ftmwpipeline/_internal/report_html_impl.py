@@ -26,6 +26,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar, Union
 
 import numpy as np
 
+from ..core.absent import Absent
 from ..core.data_structures import (
     DecisionLogEntry,
     FinalPeak,
@@ -2457,7 +2458,8 @@ def _lattice_cell(p: FinalPeak) -> str:
     lattice -- a candidate instrumental artifact that survived the spur gate.
     It is flagged for review, never an assignment and never auto-removed.
     """
-    cl = getattr(p, "clock_lattice", None)
+    # Absent (no declaration, or off-lattice) is truthy: test it explicitly.
+    cl = _present(getattr(p, "clock_lattice", None))
     if not cl:
         return ""
     title = (
@@ -2521,7 +2523,7 @@ def _index_final_table(
     rows: List[List[str]] = []
     row_attrs: List[str] = []
     for i, p in enumerate(products.peaks):
-        wid = p.window_id
+        wid = _present(p.window_id)
         win_cell = (
             f'<a href="windows/{_window_page_name(wid)}">{wid}</a>'
             if wid is not None
@@ -2607,9 +2609,13 @@ def _window_peak_table(
     rows: List[List[str]] = []
     row_attrs: List[str] = []
     for i, (lbl, p) in enumerate(zip(letters, peaks)):
-        sigma_f_mhz = None if p.sigma_f_khz is None else float(p.sigma_f_khz) / 1e3
+        sigma_f = _present(p.sigma_f_khz)
+        sigma_f_mhz = None if sigma_f is None else float(sigma_f) / 1e3
         amp = None if p.amplitude is None else float(p.amplitude) / uval
-        amp_err = None if p.amplitude_error is None else float(p.amplitude_error) / uval
+        amp_e = _present(p.amplitude_error)
+        amp_err = None if amp_e is None else float(amp_e) / uval
+        phase = _present(p.phase)
+        snr = _present(p.snr)
         row = [
             _esc(lbl),
             _esc(_concise(float(p.frequency_mhz), sigma_f_mhz)),
@@ -2618,8 +2624,8 @@ def _window_peak_table(
             _esc(_g(p.sigma_stat_khz, 3)),
             _esc(_g(p.sigma_eps_khz, 3)),
             _esc("" if amp is None else _concise(amp, amp_err)),
-            _esc("" if p.phase is None else _concise(float(p.phase), p.phase_error)),
-            _esc("" if p.snr is None else _concise(float(p.snr), p.snr_error)),
+            _esc("" if phase is None else _concise(float(phase), p.phase_error)),
+            _esc("" if snr is None else _concise(float(snr), p.snr_error)),
             _esc(p.origin),
             _lattice_cell(p),
         ]
@@ -2631,7 +2637,7 @@ def _window_peak_table(
             row.append(_peak_curation_cell())
             raw = _freq(p.frequency_raw_mhz)
             attrs = f' data-window="{window_id}" data-freq="{_esc(raw)}"'
-            if p.peak_uid is not None:
+            if not isinstance(p.peak_uid, Absent):
                 attrs += f' data-uid="{int(p.peak_uid)}"'
             row_attrs.append(attrs)
         rows.append(row)
@@ -3532,7 +3538,11 @@ def _window_page(
     chi2r = float(wf.reduced_chi2)
 
     # ε (shape-error fraction) from the FinalPeak SNR values for this window.
-    snrs = [float(p.snr) for p in peaks if p.snr is not None and np.isfinite(p.snr)]
+    snrs = [
+        float(p.snr)
+        for p in peaks
+        if not isinstance(p.snr, Absent) and np.isfinite(p.snr)
+    ]
     snr_max = max(snrs) if snrs else 0.0
     eps_val = shape_error_fraction(chi2r, snr_max, DEFAULT_CHI2R_NOISE_FLOOR)
     has_attention = status is not None and bool(status.attention_reasons)
@@ -4090,7 +4100,7 @@ def _assemble_report_site(
     # Group consolidated final peaks + user decisions by window.
     peaks_by_window: Dict[int, List[FinalPeak]] = {}
     for p in products.peaks:
-        if p.window_id is not None:
+        if not isinstance(p.window_id, Absent):
             peaks_by_window.setdefault(int(p.window_id), []).append(p)
     decisions_by_window: Dict[int, List[DecisionLogEntry]] = {}
     for d in review.decision_log:
