@@ -42,6 +42,7 @@ from typing import (
     Collection,
     ContextManager,
     Dict,
+    FrozenSet,
     Iterable,
     List,
     Mapping,
@@ -5040,23 +5041,23 @@ def _action_to_op(
 
 def _actions_to_ops(
     path: str, actions: Sequence[CurationAction], frame: Optional[Frame]
-) -> Tuple[ParsedCurationFile, Optional[_CalibrationStamp], Frame]:
+) -> Tuple[ParsedCurationFile, Optional[_CalibrationStamp], FrozenSet[float]]:
     """Convert a batch of actions to raw-frame :class:`CurationOp` rows.
 
     Each action's frame is resolved on its own: its ``frame``, else the
     call's ``frame``, else :func:`_resolve_frame`'s rule (raw on an
     ``epsilon == 0`` file; ``bad_setting`` ``path`` ``"frame"`` on a
     ``self_calibrated`` file) -- only for an action that carries a
-    frequency. Returns ``(ops, stamp, advisory_frame)``: the ops are raw and
+    frequency. Returns ``(ops, stamp, raw_targets)``: the ops are raw and
     carry no header, so they enter :func:`_resolve_curation_ops` with
-    ``frame="raw"``. ``advisory_frame`` is the frame the A5 frame-mismatch
-    advisory is judged against: ``"raw"`` only when every frequency-bearing
-    action resolved raw, which is exactly when a file of the same rows under
-    one frame would get the advisory.
+    ``frame="raw"``. ``raw_targets`` holds the frequencies of the actions
+    that resolved raw -- the ones the A5 frame-mismatch advisory judges
+    (:func:`_frame_mismatch_warnings`), action by action, so a raw action is
+    still diagnosed when others in the batch are calibrated.
     """
     stamp: Optional[_CalibrationStamp] = None
     stamp_read = False
-    advisory: Frame = "raw"
+    raw_targets: Set[float] = set()
     ops: List[CurationOp] = []
     for index, action in enumerate(actions):
         resolved: Frame = "raw"
@@ -5085,8 +5086,12 @@ def _actions_to_ops(
                     exc.value,
                     message=f"actions[{index}] ({action.action}): {exc}",
                 ) from None
-            if resolved != "raw":
-                advisory = resolved
+            if resolved == "raw":
+                raw_targets.update(
+                    float(f)
+                    for f in (action.freq_mhz, action.candidate_mhz)
+                    if f is not None
+                )
             # A stamped epsilon is the file header's drift check, per action.
             if action.epsilon is not None and stamp is not None:
                 current_eps = stamp[1]
@@ -5105,7 +5110,7 @@ def _actions_to_ops(
                         f"-- re-stage it against the current calibration.",
                     )
         ops.append(_action_to_op(action, index, frame=resolved, stamp=stamp))
-    return ParsedCurationFile(ops, CurationFileHeader()), stamp, advisory
+    return ParsedCurationFile(ops, CurationFileHeader()), stamp, frozenset(raw_targets)
 
 
 def action_from_op(
@@ -5835,7 +5840,7 @@ def _frame_mismatch_warnings(
     path: str,
     plan: Sequence[PlannedAction],
     *,
-    resolved_frame: Frame,
+    raw_targets: Optional[FrozenSet[float]],
     stamp: Optional[_CalibrationStamp],
     fitted_freqs: Optional[Dict[int, List[float]]] = None,
 ) -> List[str]:
@@ -5847,9 +5852,14 @@ def _frame_mismatch_warnings(
     heuristic that refused would be worse than none. Returns ``[]`` (inert)
     unless ALL of the following hold:
 
-    - ``resolved_frame == \"raw\"`` -- if the caller correctly declared
-      ``calibrated``, the conversion already happened and no systematic
-      residual should remain to diagnose;
+    - the candidate was submitted in the raw frame -- if the caller
+      correctly declared ``calibrated``, the conversion already happened and
+      no systematic residual should remain to diagnose. This is judged per
+      action: ``raw_targets`` holds the (raw) frequencies of the actions
+      that resolved raw, and only those candidates are judged, so a batch
+      mixing frames is still diagnosed on its raw actions. ``None`` means
+      every candidate (a curation file whose one frame is raw); an empty set
+      means none (a calibrated file);
     - the file is ``self_calibrated`` with a nonzero epsilon -- inert on
       every ``rb_locked``/``uncalibrated`` file, where epsilon is always
       ``0.0`` and the two frames coincide;
@@ -5872,7 +5882,7 @@ def _frame_mismatch_warnings(
     disqualifying checks above have failed to return, so an inert diagnostic
     still reads nothing.
     """
-    if resolved_frame != "raw" or stamp is None:
+    if stamp is None or (raw_targets is not None and not raw_targets):
         return []
     cal_state, epsilon, _sigma_eps, _floor_khz, probe_freq_mhz, _sideband = stamp
     if cal_state != "self_calibrated" or epsilon == 0.0:
@@ -5917,6 +5927,8 @@ def _frame_mismatch_warnings(
         elif action.kind == "accept" and action.candidate is not None:
             targets.append(action.candidate)
         for f in targets:
+            if raw_targets is not None and f not in raw_targets:
+                continue  # submitted calibrated: already converted
             match = nearest(wid, f)
             if match is None:
                 continue
@@ -8393,9 +8405,9 @@ class _DeferredCuration:
     ops: ParsedCurationFile
     frame: Frame
     stamp: Optional[_CalibrationStamp]
-    advisory_frame: Optional[Frame] = None
-    """The frame the frame-mismatch advisory is judged against; ``None``
-    means :attr:`frame` (see :func:`_parse_curation_call`)."""
+    raw_targets: Optional[FrozenSet[float]] = None
+    """The frequencies the frame-mismatch advisory judges (``None``: every
+    candidate; see :func:`_parse_curation_call`)."""
 
     def needs_fit(self) -> bool:
         """Whether any row will mutate the fit (mirrors the planned-action
@@ -8509,11 +8521,7 @@ def _resolve_deferred_curation(
     warnings += _frame_mismatch_warnings(
         path,
         plan,
-        resolved_frame=(
-            deferred.frame
-            if deferred.advisory_frame is None
-            else deferred.advisory_frame
-        ),
+        raw_targets=deferred.raw_targets,
         stamp=deferred.stamp,
         fitted_freqs=index[0],
     )
@@ -9179,7 +9187,7 @@ def apply_curation_impl(
                 keep=log_prefix,
                 shared=_shared,
             )
-    plan, resolved_frame, stamp = _resolve_curation_call(path, source, frame)
+    plan, raw_targets, stamp = _resolve_curation_call(path, source, frame)
 
     snap_tol = resolve_snap_tol_mhz(path, None)
     # One read of the fitted peak columns for both advisory passes: the
@@ -9192,7 +9200,7 @@ def apply_curation_impl(
     warnings += _frame_mismatch_warnings(
         path,
         plan,
-        resolved_frame=resolved_frame,
+        raw_targets=raw_targets,
         stamp=stamp,
         fitted_freqs=peak_index[0],
     )
@@ -9276,9 +9284,11 @@ def _apply_curation_at_prefix(
     as an undo followed by a failed apply would.
     """
     kept = list(log[:keep])
-    ops, resolved_frame, stamp, advisory = _parse_curation_call(path, source, frame)
+    ops, resolved_frame, stamp, raw_targets = _parse_curation_call(
+        path, source, frame
+    )
     deferred = _DeferredCuration(
-        ops=ops, frame=resolved_frame, stamp=stamp, advisory_frame=advisory
+        ops=ops, frame=resolved_frame, stamp=stamp, raw_targets=raw_targets
     )
 
     has_fit_edits = any(e.kind in _FIT_EDIT_KINDS for e in log)
@@ -9557,10 +9567,10 @@ def _run_review_preview(
     """
     path = str(file_path)
     snap_tol = resolve_snap_tol_mhz(path, snap_tol_mhz)
-    plan, resolved_frame, stamp = _resolve_curation_call(path, source, frame)
+    plan, raw_targets, stamp = _resolve_curation_call(path, source, frame)
 
     warnings = _frame_mismatch_warnings(
-        path, plan, resolved_frame=resolved_frame, stamp=stamp
+        path, plan, raw_targets=raw_targets, stamp=stamp
     )
 
     needs_fit = any(a.kind != "accept" or a.candidate is not None for a in plan)
@@ -11392,15 +11402,16 @@ def _compute_fit_ctx_fingerprint(path: str) -> _FitCtxFingerprint:
 
 def _resolve_curation_call(
     path: str, source: CurationSource, frame: Optional[Frame]
-) -> Tuple[List["PlannedAction"], Frame, Optional[_CalibrationStamp]]:
+) -> Tuple[
+    List["PlannedAction"], Optional[FrozenSet[float]], Optional[_CalibrationStamp]
+]:
     """Parse + derive omitted add/remove window ids (W2, live-window
     coverage -- see :func:`_resolve_curation_window_ids`) + coalesce + frame-
     convert a curation file (or a batch of actions -- :func:`curation_source`)
     into the ready-to-run plan.
 
-    Returns ``(plan, advisory_frame, stamp)``: ``advisory_frame`` is the
-    frame the A5 frame-mismatch advisory is judged against (for a file, its
-    one resolved frame; for actions, see :func:`_actions_to_ops`).
+    Returns ``(plan, raw_targets, stamp)``: ``raw_targets`` is what the A5
+    frame-mismatch advisory judges (see :func:`_parse_curation_call`).
 
     The single prologue :func:`apply_curation_impl`, :func:`_run_review_preview`,
     and :class:`ReviewSession`'s staged-plan comparison all call, so a change
@@ -11414,34 +11425,47 @@ def _resolve_curation_call(
     raw frame, since window ranges are stored raw) and is reused for the
     final plan-level conversion, so it runs exactly once per call.
     """
-    ops, resolved_frame, stamp, advisory = _parse_curation_call(path, source, frame)
+    ops, resolved_frame, stamp, raw_targets = _parse_curation_call(
+        path, source, frame
+    )
     plan = _resolve_curation_ops(ops, path, frame=resolved_frame, stamp=stamp)
-    return plan, advisory, stamp
+    return plan, raw_targets, stamp
 
 
 def _parse_curation_call(
     path: str, source: CurationSource, frame: Optional[Frame]
-) -> Tuple[ParsedCurationFile, Frame, Optional[_CalibrationStamp], Frame]:
+) -> Tuple[
+    ParsedCurationFile,
+    Frame,
+    Optional[_CalibrationStamp],
+    Optional[FrozenSet[float]],
+]:
     """The state-independent half of :func:`_resolve_curation_call`: parse
     the file and resolve its frame. Neither reads anything a curation
     decision changes (the frame comes from the calibration stamp), so a
     log-prefix apply runs this before it moves the file and defers only
     :func:`_resolve_curation_ops` to the replayed state.
 
-    Returns ``(ops, frame, stamp, advisory_frame)``, where ``frame`` is the
-    frame *ops* are still in (converted by :func:`_resolve_curation_ops`).
-    A batch of actions (*source* a tuple) is converted per action here
-    (:func:`_actions_to_ops`), so its ops come back raw; a file's ops keep
-    the file's one frame, which is also its advisory frame."""
+    Returns ``(ops, frame, stamp, raw_targets)``, where ``frame`` is the
+    frame *ops* are still in (converted by :func:`_resolve_curation_ops`)
+    and ``raw_targets`` is what the A5 frame-mismatch advisory judges
+    (:func:`_frame_mismatch_warnings`). A batch of actions (*source* a tuple)
+    is converted per action here (:func:`_actions_to_ops`), so its ops come
+    back raw and ``raw_targets`` holds its raw-frame actions' frequencies; a
+    file's ops keep the file's one frame, so every candidate is judged
+    (``None``) when it is raw and none (an empty set) when it is calibrated."""
     if isinstance(source, tuple):
-        ops, stamp, advisory = _actions_to_ops(path, source, frame)
-        return ops, "raw", stamp, advisory
+        ops, stamp, raw_targets = _actions_to_ops(path, source, frame)
+        return ops, "raw", stamp, raw_targets
     ops = parse_curation_file(source)
     resolved_frame: Frame = "raw"
     file_stamp: Optional[_CalibrationStamp] = None
     if _curation_ops_have_freq(ops):
         resolved_frame, file_stamp = _resolve_curation_frame(path, ops.header, frame)
-    return ops, resolved_frame, file_stamp, resolved_frame
+    file_targets: Optional[FrozenSet[float]] = (
+        None if resolved_frame == "raw" else frozenset()
+    )
+    return ops, resolved_frame, file_stamp, file_targets
 
 
 def _resolve_curation_ops(

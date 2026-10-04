@@ -244,9 +244,12 @@ One further safety net applies to a whole batch. If a plan's targets all
 resolve with a residual matching what *this* file's epsilon predicts for an
 omitted conversion — at least three matched targets, all displaced the same
 direction, each within 25 % of the predicted offset — ``review apply`` and
-``review preview`` emit an advisory naming the suspicion. It never blocks
-anything: it is a heuristic, and a heuristic that refused would be worse than
-none.
+``review preview`` emit an advisory naming the suspicion. Only targets
+submitted in the raw frame are judged: a calibrated file is never diagnosed,
+and a batch of ``CurationAction`` objects is judged action by action, so its
+raw actions are still checked when others in the batch are calibrated. It never
+blocks anything: it is a heuristic, and a heuristic that refused would be worse
+than none.
 
 .. _curation-snap-tolerance:
 
