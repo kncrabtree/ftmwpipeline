@@ -38,6 +38,7 @@ from .._internal.read_impl import (
     write_text_impl,
 )
 from ..contract import (
+    ANALYSIS_FINGERPRINT_SCHEMA,
     CALIBRATION_SCHEMA,
     CAPABILITIES_SCHEMA,
     DISPLAY_FT_SCHEMA,
@@ -437,6 +438,12 @@ def register_contract_accessors(read_sub: Any) -> None:
         "The whole fitted spectrum model, data and residual (arrays via --output)",
         add_args=_grid_arg,
         call_kwargs=lambda a: {"grid": a.grid},
+    )
+    register(
+        "analysis_fingerprint",
+        opened("analysis_fingerprint"),
+        ANALYSIS_FINGERPRINT_SCHEMA,
+        "Digest of every input that shaped the file's results",
     )
 
 

@@ -2749,6 +2749,24 @@ class Pipeline:
 
         return spectrum_model_impl(str(self.filepath), grid=grid)
 
+    def analysis_fingerprint(self) -> Dict[str, Any]:
+        """The analysis fingerprint (``ftmw/analysis_fingerprint@1``).
+
+        Equivalent to :func:`ftmwpipeline.api.analysis_fingerprint`:
+        ``{"schema", "digest"}``, the SHA-256 of every input the completed
+        stages recorded as having used. The same digest means the same results;
+        different digests do not imply different results. Never writes.
+
+        Raises
+        ------
+        IncompleteProvenanceError
+            A completed stage did not record every input it used; ``missing``
+            names each one as a dotted canonical key.
+        """
+        from ._internal.fingerprint_impl import analysis_fingerprint_impl
+
+        return analysis_fingerprint_impl(str(self.filepath))
+
     @staticmethod
     def preview_source(
         source: Union[str, Path], format_name: Optional[str] = None

@@ -58,7 +58,7 @@ from .file_manager import (
 #: The machine-contract version. The first published contract is ``1``; each
 #: release that adds (or, before 1.0.0, changes) contract elements raises it by
 #: one, so a client can gate on it as well as on :func:`capabilities`.
-CONTRACT_VERSION: int = 4
+CONTRACT_VERSION: int = 5
 
 #: Schema name of the :func:`capabilities` payload.
 CAPABILITIES_SCHEMA = "ftmw/capabilities@1"
@@ -73,6 +73,8 @@ WINDOW_STATUS_SCHEMA = "ftmw/window_status@1"
 SOURCE_PREVIEW_SCHEMA = "ftmw/source_preview@1"
 WINDOW_MODEL_SCHEMA = "ftmw/window_model@1"
 SPECTRUM_MODEL_SCHEMA = "ftmw/spectrum_model@1"
+#: Frozen once published: a different definition is published as ``@2``.
+ANALYSIS_FINGERPRINT_SCHEMA = "ftmw/analysis_fingerprint@1"
 
 #: Schema names of the declared existing accessors. Their Python results are
 #: unchanged (a dataclass, list, scalar or plain dict); the CLI envelope stamps
@@ -343,6 +345,8 @@ _ACCESSORS: Tuple[AccessorSpec, ...] = (
     # The fitted model, evaluated (Wave 2).
     AccessorSpec("window_model", file_bound=True),
     AccessorSpec("spectrum_model", file_bound=True),
+    # The analysis fingerprint (Wave 2c).
+    AccessorSpec("analysis_fingerprint", file_bound=True),
 )
 
 _SCHEMAS: Tuple[str, ...] = (
@@ -355,6 +359,7 @@ _SCHEMAS: Tuple[str, ...] = (
     SOURCE_PREVIEW_SCHEMA,
     WINDOW_MODEL_SCHEMA,
     SPECTRUM_MODEL_SCHEMA,
+    ANALYSIS_FINGERPRINT_SCHEMA,
     CALIBRATION_SCHEMA,
     SNAP_TOLERANCE_SCHEMA,
     METADATA_SCHEMA,
@@ -584,6 +589,7 @@ __all__ = [
     "SOURCE_PREVIEW_SCHEMA",
     "WINDOW_MODEL_SCHEMA",
     "SPECTRUM_MODEL_SCHEMA",
+    "ANALYSIS_FINGERPRINT_SCHEMA",
     "CALIBRATION_SCHEMA",
     "SNAP_TOLERANCE_SCHEMA",
     "METADATA_SCHEMA",

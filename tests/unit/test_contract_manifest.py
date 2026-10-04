@@ -53,6 +53,7 @@ SNAPSHOT_ACCESSORS = frozenset(
         "preview_source",
         "window_model",
         "spectrum_model",
+        "analysis_fingerprint",
     }
 )
 SNAPSHOT_SCHEMAS = frozenset(
@@ -66,6 +67,7 @@ SNAPSHOT_SCHEMAS = frozenset(
         "ftmw/source_preview@1",
         "ftmw/window_model@1",
         "ftmw/spectrum_model@1",
+        "ftmw/analysis_fingerprint@1",
         "ftmw/calibration@1",
         "ftmw/snap_tolerance@1",
         "ftmw/metadata@1",
@@ -110,6 +112,7 @@ SNAPSHOT_FILE_BOUND = {
     "preview_source": False,
     "window_model": True,
     "spectrum_model": True,
+    "analysis_fingerprint": True,
 }
 SNAPSHOT_PIPELINE_NAMES = {
     "get_final_products": "final_products",
@@ -464,7 +467,7 @@ def test_manifest_sequences_are_tuples():
 
 
 def test_manifest_version_matches_package():
-    assert MANIFEST.contract_version == ftmwpipeline.CONTRACT_VERSION == 4
+    assert MANIFEST.contract_version == ftmwpipeline.CONTRACT_VERSION == 5
     assert isinstance(ftmwpipeline.CONTRACT_VERSION, int)
 
 

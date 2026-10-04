@@ -2675,6 +2675,27 @@ def spectrum_model(
     return Pipeline.open(file_path).spectrum_model(grid=grid)
 
 
+def analysis_fingerprint(file_path: Union[str, Path]) -> Dict[str, Any]:
+    """The analysis fingerprint, equivalent to :meth:`Pipeline.analysis_fingerprint`.
+
+    Returns ``{"schema": "ftmw/analysis_fingerprint@1", "digest": "<64 hex>"}``:
+    the SHA-256 of every input that shaped the file's results, as each
+    completed stage recorded it (settings at the values the stage ran with, the
+    values it consumed from other stages, the acquisition parameters, the
+    accuracy floor and each stage's analysis epoch). The same digest means the
+    same results; different digests do not imply different results. A stage
+    that has not run is part of the digest as not run. Never writes.
+
+    Raises
+    ------
+    IncompleteProvenanceError
+        A completed stage did not record every input it used (a file written
+        before it did). ``missing`` names every such input as a dotted
+        canonical key; re-running the stage records them.
+    """
+    return Pipeline.open(file_path).analysis_fingerprint()
+
+
 def preview_source(
     source: Union[str, Path], format_name: Optional[str] = None
 ) -> Dict[str, Any]:
