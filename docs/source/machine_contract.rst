@@ -464,6 +464,149 @@ values. Array columns that can be absent come with a ``uint8`` column named
 ``<column>__status``. A setting that is merely unset reads as ``None``; that is
 not an absent value.
 
+.. _machine-contract-cli-json:
+
+Machine-readable CLI output: ``--json``
+---------------------------------------
+
+Every CLI verb accepts ``--json``. It is one uniform switch, because
+``--format`` already means the report file format (``report``) or the source
+format (``data import``, ``run``) on some verbs. Where a verb accepts
+``--format json`` today (``info``, ``timebase state``, ``review
+snap-tolerance``, ``read table`` / ``read meta``, ``report table``) that stays a
+synonym. Under ``--json``:
+
+* stdout carries **exactly one JSON document and nothing else**: the verb's
+  human printing is suppressed, and logging stays on stderr. A verb that fails
+  after printing a message prints that message on stderr instead.
+* every number is finite: JSON has no ``NaN`` or ``Infinity``. A non-finite value
+  of a named field is ``null`` with a ``"<field>_absent"`` sibling, as in the
+  rest of the contract.
+* an error is the ``ftmw/error@1`` dict on stderr (exit code as in the
+  exit-code table).
+
+A ``read <accessor>`` verb prints its envelope exactly as it does without the
+flag. A **stage-running or curation verb** prints the ``ftmw/run_result@1``
+envelope::
+
+    {"schema": "ftmw/run_result@1", "verb": "noise run", "stage": "noise",
+     "invalidated": ["tau", "peaks", "windows", "fit", "review"],
+     "summary": {"total_points": 152760, "noise_points": 150374, ...}}
+
+``verb`` is ``"<object> <verb>"`` (the canonical object name, never the
+``stageN`` synonym). ``stage`` is the canonical stage name (a
+``ftmwpipeline.Stage`` value: ``tau_g`` for ``tau run --gaussian``) or ``null``
+for a verb that is not one stage (``start run``, ``settings``, ``clocks``,
+``report run``, ``run``). ``invalidated`` is the result's own ``invalidated``
+(canonical names, in rerun order; ``[]`` when none). ``summary`` holds the
+scalars the human output reports (counts, chosen values, paths written, a
+dict of counts), never an array. A value with no measurement (an undefined
+``epsilon``) is ``null`` with its ``"<field>_absent"`` sibling.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 28 14 58
+
+   * - Verb
+     - ``stage``
+     - ``--json`` prints
+   * - ``data import``
+     - ``data``
+     - run_result: ``pipeline_file``, ``source_format``, ``n_points``,
+       ``duration_us``, ``probe_freq_mhz``, ``sideband``, ``shots``,
+       ``file_size_mb``
+   * - ``start run``
+     - ``null``
+     - run_result: band, ``chirp_detected``, chirp-end values, ``start_us``,
+       ``stamped``
+   * - ``ft run``
+     - ``ft``
+     - run_result: ``fid_points``, ``preprocessed_points``,
+       ``frequency_points``, ``trimmed_points`` (when trimmed)
+   * - ``noise run``
+     - ``noise``
+     - run_result: point counts, ``noise_fraction``, frequency range, RMS
+       statistics, estimator diagnostics
+   * - ``tau run`` / ``tau recommend``
+     - ``tau`` (``tau_g`` with ``--gaussian``)
+     - run_result: ``tau_maj_us``, ``sigma_tau_us``, contributors, bimodality,
+       preconditions / the recommended shape and vote rates
+   * - ``timebase run``
+     - ``timebase``
+     - run_result: ``epsilon``, ``sigma_epsilon``, ``lattice_g_mhz``, tones
+       used / detected, preconditions
+   * - ``peaks run``, ``windows run``, ``fit run``
+     - ``peaks``, ``windows``, ``fit``
+     - run_result: the counts the human output reports
+   * - ``review run`` / ``apply`` / ``edit`` / ``create`` / ``accept`` /
+       ``undo``
+     - ``review``
+     - run_result: window / action counts, peak counts and reduced chi-squared
+       before and after, ``converged``, created-window mode
+   * - ``settings set`` / ``unset``
+     - ``null``
+     - run_result: ``path`` (and the new ``value`` for ``set``)
+   * - ``clocks set`` / ``add`` / ``remove`` / ``clear``
+     - ``null``
+     - run_result: ``n_clock_sources`` (no stage is invalidated)
+   * - ``run``
+     - ``null``
+     - run_result: ``status``, ``pipeline_file``, ``n_completed_stages``,
+       ``failed_stage``, ``error``, ``timebase``, ``elapsed_s``, report paths. A
+       failed run still prints its envelope, with ``status`` ``"error"``, and
+       exits 1
+   * - ``report run``
+     - ``null``
+     - run_result: ``scope``, ``table`` and ``html`` paths
+   * - ``data show``, ``start show``, ``ft show``, ``noise show``, ``tau show``,
+       ``peaks show``, ``windows show``, ``fit show``, ``review show`` (with
+       ``--output`` / ``--output-dir``)
+     - n/a
+     - ``{"paths": [...]}``: the image files written (empty when none)
+   * - ``review show``
+     - n/a
+     - the table of the chosen mode: ``{"windows": [...]}``, ``{"attention":
+       [...]}``, ``{"bar", "window_id", "candidates": [...]}`` or one window's
+       detail
+   * - ``review rank`` / ``log`` / ``preview`` / ``snap-tolerance`` /
+       ``acknowledge-environment``
+     - n/a
+     - ``{"windows": [...]}`` / ``{"entries": [...]}`` / ``{"warnings",
+       "created_windows", "windows"}`` / the snap tolerance / the
+       acknowledgement
+   * - ``settings show`` / ``defaults``
+     - n/a
+     - ``{"settings": [...]}``, the rows of the table; ``settings export``
+       prints ``{"out_path", "paths"}``
+   * - ``clocks show``
+     - n/a
+     - ``{"clocks": [{"freq_mhz", "locked", "label"}, ...]}``
+   * - ``scan list`` / ``scan run`` / ``scan all``
+     - n/a
+     - ``{"knobs": [...]}`` / ``{"result": {...}}`` / ``{"items": [...],
+       "n_ok", "n_failed", "output_dir"}``; a sweep is its table, never the
+       per-value stage results
+   * - ``info``, ``timebase show`` / ``state``, ``fit check``
+     - n/a
+     - the object these verbs report, through ``to_jsonable``
+   * - ``read table`` / ``read meta`` / ``read list``
+     - n/a
+     - the table (a list of records) / the metadata / ``{"tables": {...}}``;
+       with ``--output`` the table text is written there and the payload is
+       ``{"what", "path"}``
+   * - ``report table`` / ``report diff``
+     - n/a
+     - the table as JSON, or ``{"format", "path"}`` with ``--output`` /
+       ``{"path"}``
+   * - ``formats``, ``validate``, ``version``
+     - n/a
+     - ``{"formats": [...]}`` (or one format's info) / ``{"components", "ok"}``
+       / ``{"version", "description", "has_matplotlib"}``
+
+``review merge`` and ``review split`` are not verbs (an ``edit --add`` /
+``--remove`` is read as one), so they have no envelope of their own.
+
+
 Typed errors
 ------------
 
@@ -517,7 +660,7 @@ The code set is introduced **wave by wave**. ``capabilities()`` lists the
 codes this installation currently implements, and a client should rely on that
 list rather than on this page. Every CLI verb reports a typed error through one
 mapping in ``main`` (see the exit-code table): ``Error: ...`` text on stderr, or
-the error JSON under ``--format json``.
+the error JSON under ``--json`` (or ``--format json`` where a verb takes it).
 
 Route on ``code`` (or the class); the ``message`` text is for people. Each typed
 error is still a subclass of the built-in it replaced (most are
@@ -792,7 +935,9 @@ dependencies with ties broken by the order of ``Stage`` (``data``, ``ft``,
   ``Peak`` with the same attribute.
 - On the CLI, a run that invalidated anything prints
   ``Invalidated (re-run to refresh): noise, peaks, ...``. ``settings set`` and
-  ``settings unset`` keep their own line, now with canonical names.
+  ``settings unset`` keep their own line, now with canonical names. Under
+  ``--json`` the list is the ``invalidated`` member of the ``ftmw/run_result@1``
+  envelope (see :ref:`machine-contract-cli-json`).
 
 A loaded result (``load_fit``, ``load_windows``, ...) carries ``()``: the field
 describes the call that produced the object, not the file.

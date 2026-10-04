@@ -49,6 +49,14 @@ Conventions
   ``--no-interactive``). Direct plots to an untracked location.
 * **Verbosity.** ``-v`` / ``--verbose`` enables detailed logging on every
   command.
+* **Machine-readable output.** Every command accepts ``--json``: stdout carries
+  one JSON document and nothing else (logs stay on stderr), and an error is the
+  ``ftmw/error@1`` object on stderr. A ``run`` or curation verb prints the
+  ``ftmw/run_result@1`` envelope (``verb``, ``stage``, ``invalidated``,
+  ``summary``); a ``show`` / ``list`` verb prints its natural payload, and a
+  plot verb the image paths it wrote. Where ``--format json`` exists today
+  (``info``, ``timebase state``, ``review snap-tolerance``) it is a synonym.
+  The per-verb contents are in :ref:`machine-contract-cli-json`.
 
 Command summary
 ---------------
@@ -437,7 +445,7 @@ Utility commands
 ----------------
 
 * ``info <file.ftmw>`` — print the provenance record and stage-completion status;
-  ``--format json`` for machine-readable output.
+  ``--json`` (or ``--format json``) for machine-readable output.
 * ``formats`` — list the registered input-format loaders; ``--format NAME`` for
   one loader's details.
 * ``validate`` — check the installation and its dependencies.
