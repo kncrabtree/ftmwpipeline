@@ -137,6 +137,20 @@ Two distinct meanings of "no value" exist and must survive every surface:
     column reads that column `UNDEFINED`.
   - An uncertainty that does not exist because its parameter was held fixed
     is `UNDEFINED`, matching `FinalPeak.decay_time_error_us`.
+  - **Degenerate statistics are `UNDEFINED`.** Earlier writers stored some
+    undefined quantities as ordinary numbers:
+    - an F-test with no residual degrees of freedom or a non-positive χ²
+      (stored as F = 0, p = 1);
+    - the doublet `orth_evidence` fallback and the disabled line-evidence
+      escape (stored as 0.0);
+    - edge coherence of an empty residual or of zero σ (stored as 0.0);
+    - a Stage 3 SNR whose local noise σ is ≤ 0 (stored as 0.0).
+
+    Each reads as `UNDEFINED` wherever the stored inputs show it was
+    degenerate, so old files report it too. Writers store `nan` for them from
+    now on. Gate decisions do not change.
+  - A count, creation time or plan revision attribute missing from a stage
+    group reads as `NOT_RUN`. It is never filled with `0` or `"unknown"`.
 - **Honest uncertainty.** When a line has no statistical frequency error, its
   `sigma_stat_khz` and `sigma_f_khz` are `UNDEFINED`. They are never computed
   with the statistical term silently dropped.
@@ -538,13 +552,15 @@ under `--output`.
 - Codes (initial set): `stage_not_run` (`StageDependencyError`:
   `missing_dependencies` — canonical stage names, §Status and settings —
   and `command`), `bad_setting` (`path`, `expected`,
-  `value`), `not_found` (window/peak/file: `kind`, `ids` — every id a request
-named that does not exist, e.g. all unknown window ids of a curation batch),
+  `value`), `not_found` (`kind` — `window`, `peak`, `file` or `decision` — and
+`ids`: every id a request named that does not exist, e.g. all unknown window
+ids of a curation batch),
 `incomplete_provenance` (`missing`), `file_exists`, `file_incompatible`
   (`file_version`, `supported_version`), `file_corrupt`, `epoch_mismatch` (`file_epoch`, `current_epoch`),
   `cancelled` (`stage`, `completed_stages`, `completed_windows`;
   §Events and cancellation), `callback_failed` (`event_schema`, `completed_windows`),
-  `algorithm_failed` (`stage`), `write_conflict` (§Crash safety).
+  `algorithm_failed` (`stage`), `write_conflict` (§Crash safety),
+  `curation_conflict` (`reason`, `ids`).
 - Each typed error remains a subclass of the built-in it replaced (most are
   `ValueError`), so existing `except` clauses keep working.
 - A `.ftmw` path that does not exist raises `not_found` (`kind: "file"`),
@@ -562,7 +578,12 @@ named that does not exist, e.g. all unknown window ids of a curation batch),
   - a file that cannot be opened raises the typed error `Pipeline.open`
     raises (`not_found`, `file_corrupt`, `file_incompatible`);
   - an openable file gets a report, whose `valid` and `errors` describe the
-    file's integrity.
+    file's integrity;
+  - a file that becomes unreadable while the report is built raises the
+    same typed error; the report does not swallow it.
+
+  The report, and `list_available_stages`, name stages by their canonical
+  names (§Status and settings).
 
   Validation reports problems in a pipeline file. It does not stand in for
   opening one.
@@ -573,7 +594,17 @@ named that does not exist, e.g. all unknown window ids of a curation batch),
   - a missing entity (`not_found`);
   - a missing stage (`stage_not_run`);
   - a stage algorithm that cannot produce a result from valid inputs
-    (`algorithm_failed`).
+    (`algorithm_failed`);
+  - a valid curation request that conflicts with the file's review state
+    (`curation_conflict`). Its `reason` is a stable slug, such as
+    `line_already_fitted`, `targets_span_windows`, `orphans_created_window`,
+    `baseline_unavailable` or `replay_conflict`. `ids` names the windows,
+    peaks or decisions involved.
+- **`bad_setting.path` names what the caller wrote:**
+  - a registry setting is its registry path;
+  - an argument is its name (`add`, `remove`, `format`, `source`);
+  - a curation-file cell is `curation[line <n>].<column>`;
+  - a field of the i-th `CurationAction` is `actions[<i>].<field>`.
 
   Argument checks inside kernels and storage codecs, which a correct caller
   cannot trigger, stay built-in exceptions. They are bugs, not routes.
