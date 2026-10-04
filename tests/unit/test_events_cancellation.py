@@ -117,7 +117,7 @@ def test_errors_round_trip_through_pickle():
 def test_stage_scope_order_and_completion():
     got = []
     ops = operation_events("fit run", got.append)
-    with ops.stage(Stage.FIT, verb="fit run") as scope:
+    with ops.stage(Stage.FIT) as scope:
         emit_invalidated(scope, ["stage6_review"], reason="Stage stage5_fitting re-run")
         scope.finish({"n": 1})
     assert [type(e) for e in got] == [StageStarted, Invalidated, StageFinished]

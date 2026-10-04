@@ -9,7 +9,6 @@ removed again), and an undo honours a cancel only before its restore.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 from pathlib import Path
@@ -31,6 +30,7 @@ from ftmwpipeline._internal import stage6_impl
 from ftmwpipeline.cli.main import main as cli_main
 from ftmwpipeline.contract import Stage
 from ftmwpipeline.io.fitting_serialization import load_spectrum_fit_from_hdf5
+from tests._events_support import content_digest
 
 pytestmark = [pytest.mark.integration]
 
@@ -50,31 +50,7 @@ def _content_digest(path: Path) -> str:
     """Every group, dataset and attribute -- not the bytes: a batch that took
     and then removed the undo baseline leaves the same content in a file
     whose free space differs."""
-    h = hashlib.sha256()
-
-    def add_attrs(obj: h5py.HLObject) -> None:
-        for key in sorted(obj.attrs.keys()):
-            value = obj.attrs[key]
-            h.update(key.encode())
-            h.update(
-                value.tobytes()
-                if isinstance(value, np.ndarray)
-                else repr(value).encode()
-            )
-
-    def visit(name: str, obj: h5py.HLObject) -> None:
-        h.update(name.encode())
-        add_attrs(obj)
-        if isinstance(obj, h5py.Dataset):
-            data = obj[()]
-            h.update(
-                data.tobytes() if isinstance(data, np.ndarray) else repr(data).encode()
-            )
-
-    with h5py.File(path, "r") as f:
-        add_attrs(f)
-        f.visititems(visit)
-    return h.hexdigest()
+    return content_digest(path)
 
 
 def _a_window_with_two_peaks(path: Path) -> Tuple[int, List[float]]:

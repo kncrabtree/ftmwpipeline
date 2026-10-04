@@ -28,9 +28,11 @@ from ftmwpipeline.contract import (
     AlgorithmFailedError,
     AnalysisEpochMismatchError,
     BadSettingError,
+    CallbackFailedError,
     IncompleteProvenanceError,
     NotFoundError,
     NotFoundValueError,
+    OperationCancelledError,
     PipelineCompatibilityError,
     PipelineCorruptionError,
     PipelineExistsError,
@@ -258,6 +260,18 @@ def _errors():
             "algorithm_failed",
             {"stage": "fit"},
             (RuntimeError,),
+        ),
+        (
+            OperationCancelledError("fit", ["data", "ft"], []),
+            "cancelled",
+            {"stage": "fit", "completed_stages": ["data", "ft"], "completed_windows": []},
+            (),
+        ),
+        (
+            CallbackFailedError("ftmw/window_progress@1"),
+            "callback_failed",
+            {"event_schema": "ftmw/window_progress@1"},
+            (),
         ),
     ]
 
