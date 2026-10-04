@@ -6,8 +6,8 @@ here on the 2638 baselines, through the functional API, ``Pipeline`` and the
 CLI:
 
 - after a writing call no working copy remains, and the result is correct;
-- ``StageFinished`` arrives after the replace, and a callback that raises on it
-  leaves the write in place;
+- ``Invalidated`` and ``StageFinished`` arrive after the replace, and a callback
+  that raises on either leaves the write in place;
 - a cancel, or a callback that raises while the copy is being written, leaves
   the file byte-identical (not merely equal in content);
 - reads leave the file untouched (same inode);
@@ -364,32 +364,81 @@ def test_cancel_mid_fit_leaves_the_bytes(via, baseline_2638_stage4_small, tmp_pa
     assert _copies(tmp_path) == []
 
 
-def test_a_callback_failing_while_the_copy_is_written_discards_it(
+def test_invalidated_arrives_after_the_replace(baseline_2638_stage2, tmp_path):
+    """``ft run`` with a new trim invalidates the stages built on the old FT.
+    ``Invalidated`` is delivered once the write is durable, just before
+    ``StageFinished``: the copy is gone and a reader inside the callback sees
+    the new FT and the invalidation."""
+    fp = _copy(baseline_2638_stage2, tmp_path)
+    inode_before = os.stat(fp).st_ino
+    seen: List[Any] = []
+
+    def probe(event):
+        if isinstance(event, Invalidated):
+            seen.append(
+                {
+                    "copies": _copies(tmp_path),
+                    "inode": os.stat(fp).st_ino,
+                    "states": _states(fp),
+                }
+            )
+        seen.append(type(event))
+
+    ftmw.compute_ft(fp, trim=_NEW_TRIM, events=probe)
+    got = seen[seen.index(Invalidated) - 1]
+    assert got["copies"] == []
+    assert got["inode"] != inode_before
+    assert got["states"]["ft"] == "complete"
+    assert got["states"]["noise"] == "not_run"
+    assert seen[-2:] == [Invalidated, StageFinished]
+
+
+def test_a_callback_raising_on_invalidated_leaves_the_write_in_place(
     baseline_2638_stage2, tmp_path
 ):
-    """``ft run`` with a new trim writes its FT into the working copy and
-    announces the stages it invalidated from inside that write. A listener
-    that raises on ``Invalidated`` is held until the write is done (the
-    ``committing`` rule) and then fails the call: the copy -- FT, invalidation
-    and all -- is discarded, and the file is as it was."""
+    """The write is done and replaced before ``Invalidated`` is delivered, so a
+    listener that raises on it fails the call with ``callback_failed`` but
+    cannot undo the write; no ``StageFinished`` follows."""
     fp = _copy(baseline_2638_stage2, tmp_path)
     before = _bytes(fp)
-    states_before = _states(fp)
-    copies_during: List[List[str]] = []
+    seen: List[type] = []
 
     def bad(event):
+        seen.append(type(event))
         if isinstance(event, Invalidated):
-            copies_during.append(_copies(tmp_path))
             raise ValueError("no")
 
     with pytest.raises(CallbackFailedError) as info:
         ftmw.compute_ft(fp, trim=_NEW_TRIM, events=bad)
     assert info.value.event_schema == "ftmw/invalidated@1"
-    # The callback ran while the copy existed ...
-    assert copies_during == [[os.path.basename(tmp_copy_name(fp))]]
-    # ... and nothing of it reached the file.
+    assert isinstance(info.value.__cause__, ValueError)
+    assert seen[-1] is Invalidated and StageFinished not in seen
+    # The write stands: the new FT, and the stages built on the old one gone.
+    assert _bytes(fp) != before
+    states = _states(fp)
+    assert states["ft"] == "complete" and states["noise"] == "not_run"
+    assert _copies(tmp_path) == []
+
+
+def test_a_callback_failing_mid_call_leaves_the_bytes(
+    baseline_2638_stage4_small, tmp_path
+):
+    """A listener that raises on an event delivered before the replace (the
+    fit walk's ``WindowProgress``) fails the call inside its transaction:
+    nothing of the call reaches the file, which is never replaced."""
+    fp = _copy(baseline_2638_stage4_small, tmp_path)
+    before = _bytes(fp)
+    inode = os.stat(fp).st_ino
+
+    def bad(event):
+        if isinstance(event, WindowProgress):
+            raise ValueError("no")
+
+    with pytest.raises(CallbackFailedError) as info:
+        ftmw.fit_peaks(fp, jobs=1, events=bad)
+    assert info.value.event_schema == "ftmw/window_progress@1"
     assert _bytes(fp) == before
-    assert _states(fp) == states_before
+    assert os.stat(fp).st_ino == inode
     assert _copies(tmp_path) == []
 
 
@@ -483,14 +532,16 @@ _CHILD_PRELUDE = textwrap.dedent("""
         time.sleep(600)
     """)
 
-# Mid-write: ``ft run`` with a new trim announces the invalidation from inside
-# its write, with the working copy made and half-written.
+# Mid-write: ``ft run`` with a new trim has written its whole working copy
+# (the new FT, the invalidation) and is about to replace the file with it.
 _CHILD_FT = _CHILD_PRELUDE + textwrap.dedent("""
-    def cb(event):
-        if isinstance(event, Invalidated):
-            hang()
+    from ftmwpipeline._internal import atomic
 
-    ftmw.compute_ft(sys.argv[1], trim=(27000.0, 39000.0), events=cb)
+    def commit(txn):
+        hang()
+
+    atomic._commit = commit
+    ftmw.compute_ft(sys.argv[1], trim=(27000.0, 39000.0))
     """)
 
 # Between stages of a whole run: once the noise stage starts, the data and FT

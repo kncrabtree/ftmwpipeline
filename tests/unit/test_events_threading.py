@@ -3,8 +3,9 @@
 CONTRACT_STRATEGY §Events and cancellation: every long operation takes
 ``events`` / ``cancel`` on all three interfaces, every long CLI verb takes
 ``--events``, and the plumbing the threading relies on (non-stage scopes, one
-combined ``Invalidated``, a block that completes once begun, the
-once-per-operation ``environment_drift`` check, the report pool's cancel).
+combined ``Invalidated`` delivered at finish, a block that completes once
+begun, the once-per-operation ``environment_drift`` check, the report pool's
+cancel).
 """
 
 from __future__ import annotations
@@ -153,17 +154,17 @@ def test_finish_without_a_write_records_no_completion():
     assert ops.completed_stages == []
 
 
-def test_invalidations_in_several_steps_are_one_event(caplog):
+def test_invalidations_in_several_steps_are_one_event_at_finish(caplog):
     seen: list = []
     ops = operation_events("data import", seen.append)
     with ops.stage(Stage.DATA) as scope:
-        with scope.collect_invalidations():
-            scope.invalidated([Stage.FIT], reason="first")
-            scope.invalidated([Stage.FT, Stage.FIT], reason="second")
+        scope.invalidated([Stage.FIT], reason="first")
+        scope.invalidated([Stage.FT, Stage.FIT], reason="second")
+        # Not delivered yet: the call's write is not durable before finish.
+        assert not [e for e in seen if isinstance(e, Invalidated)]
         scope.finish({})
-    inv = [e for e in seen if isinstance(e, Invalidated)]
-    assert len(inv) == 1
-    assert list(inv[0].stages) == [Stage.FT, Stage.FIT]
+    assert [type(e) for e in seen] == [StageStarted, Invalidated, StageFinished]
+    assert list(seen[1].stages) == [Stage.FT, Stage.FIT]
     # Each step logs its own line as it invalidates; only the event merges.
     lines = [r.getMessage() for r in caplog.records if "invalidated stage" in r.msg]
     assert len(lines) == 2
@@ -174,78 +175,107 @@ def test_a_step_without_a_reason_logs_nothing_but_joins_the_event(caplog):
     seen: list = []
     ops = operation_events("data import", seen.append)
     with ops.stage(Stage.DATA) as scope:
-        with scope.collect_invalidations():
-            scope.invalidated([Stage.FIT], reason=None)
+        scope.invalidated([Stage.FIT], reason=None)
         scope.finish({})
     inv = [e for e in seen if isinstance(e, Invalidated)]
     assert len(inv) == 1 and list(inv[0].stages) == [Stage.FIT]
     assert not [r for r in caplog.records if "invalidated stage" in r.msg]
 
 
-def test_collected_invalidation_is_delivered_when_a_later_step_raises():
+def test_an_invalidation_in_a_stage_that_fails_is_never_announced(caplog):
     seen: list = []
     ops = operation_events("data import", seen.append)
-    scope = ops.detached_scope(Stage.DATA)
     with pytest.raises(KeyError):
-        with scope.collect_invalidations():
+        with ops.stage(Stage.DATA) as scope:
             scope.invalidated([Stage.FIT], reason="first")
             raise KeyError("later step")
-    inv = [e for e in seen if isinstance(e, Invalidated)]
-    assert len(inv) == 1 and list(inv[0].stages) == [Stage.FIT]
+    assert [type(e) for e in seen] == [StageStarted]
+    # The line was logged when it happened.
+    assert [r for r in caplog.records if "invalidated stage" in r.msg]
 
 
-def test_a_raising_callback_does_not_mask_the_steps_exception():
+def test_a_callback_raising_on_invalidated_fails_the_finished_stage():
+    seen: list = []
+
     def cb(event):
-        raise RuntimeError("listener broke")
+        seen.append(event)
+        if isinstance(event, Invalidated):
+            raise RuntimeError("listener broke")
 
-    ops = operation_events("data import", cb)
-    scope = ops.detached_scope(Stage.DATA)
-    with pytest.raises(KeyError):
-        with scope.collect_invalidations():
-            scope.invalidated([Stage.FIT], reason="first")
-            raise KeyError("later step")
+    ops = operation_events("ft run", cb)
+    with pytest.raises(CallbackFailedError) as info:
+        with ops.stage(Stage.FT) as scope:
+            scope.invalidated([Stage.NOISE], reason="r")
+            scope.finish({})
+    assert info.value.event_schema == "ftmw/invalidated@1"
+    assert isinstance(info.value.__cause__, RuntimeError)
+    # The stage's write was done: it stays completed; no StageFinished follows.
+    assert ops.completed_stages == ["ft"]
+    assert [type(e) for e in seen] == [StageStarted, Invalidated]
 
 
-def test_committing_defers_cancel_and_callback_failure():
-    class Token:
-        flag = False
+class _Flag:
+    flag = False
 
-        def is_set(self) -> bool:
-            return self.flag
+    def is_set(self) -> bool:
+        return self.flag
 
-    token = Token()
+
+def test_committing_defers_cancel_and_callback_failure_past_the_write():
+    token = _Flag()
     delivered: list = []
 
     def cb(event):
         delivered.append(event)
-        raise RuntimeError("listener broke")
+        if isinstance(event, PipelineWarning):
+            raise RuntimeError("listener broke")
 
     ops = operation_events("review undo", cb, token)
-    scope = ops.detached_scope(Stage.REVIEW)
-    token.flag = True
     with pytest.raises(CallbackFailedError) as info:
-        with scope.committing():
-            scope.check_cancel()  # not honoured inside the block
-            assert not scope.cancel_requested()
-            scope.invalidated([Stage.FIT], reason="r")  # raises, held
-            scope.invalidated([Stage.FIT], reason="r")  # not delivered
+        with ops.stage(Stage.REVIEW) as scope:
+            token.flag = True
+            with scope.committing():
+                scope.check_cancel()  # not honoured inside the block
+                assert not scope.cancel_requested()
+                scope.warn("timebase_skipped", "skipped")
+                scope.warn("timebase_skipped", "skipped")
+                scope.invalidated([Stage.FIT], reason="r")
+            # The block completed and the failure is still held: the write
+            # (the transaction's replace) happens here, before the stage fails.
             reached = True
+            scope.finish({})
     assert reached
-    assert len(delivered) == 1
+    # Delivery stopped at the failing event; neither Invalidated nor
+    # StageFinished was delivered.
+    assert [type(e) for e in delivered] == [StageStarted, PipelineWarning]
     assert isinstance(info.value.__cause__, RuntimeError)
+    assert ops.completed_stages == ["review"]
     with pytest.raises(OperationCancelledError):
-        scope.check_cancel()  # honoured at the next check point
+        ops.check_cancel()  # honoured at the next check point
+
+
+def test_a_held_failure_is_raised_when_the_stage_ends_without_finishing():
+    def cb(event):
+        if isinstance(event, PipelineWarning):
+            raise RuntimeError("listener broke")
+
+    ops = operation_events("review undo", cb)
+    with pytest.raises(CallbackFailedError):
+        with ops.stage(Stage.REVIEW) as scope:
+            with scope.committing():
+                scope.warn("timebase_skipped", "skipped")
 
 
 def test_held_callback_failure_survives_a_raising_committing_block():
     def cb(event):
-        raise RuntimeError("listener broke")
+        if isinstance(event, PipelineWarning):
+            raise RuntimeError("listener broke")
 
     ops = operation_events("review undo", cb)
     scope = ops.detached_scope(Stage.REVIEW)
     with pytest.raises(CallbackFailedError) as info:
         with scope.committing():
-            scope.invalidated([Stage.FIT], reason="r")  # raises, held
+            scope.warn("timebase_skipped", "skipped")
             raise OSError("write failed")
     assert isinstance(info.value.__cause__, RuntimeError)
     assert isinstance(info.value.__context__, OSError)

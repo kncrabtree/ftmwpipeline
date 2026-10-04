@@ -321,7 +321,7 @@ def calibrate_tau_impl(
     with ops.stage(_tau_stage(shape), verb="tau run", file_path=file_path) as scope:
         # One transaction: the calibration, its twin and the shape
         # recommendation land together or not at all.
-        with atomic_write(file_path), scope.collect_invalidations():
+        with atomic_write(file_path):
             result, twin = _calibrate_tau(
                 file_path,
                 shape=shape,

@@ -25,7 +25,6 @@ CLI, the ``Pipeline`` class, and the functional API.
 
 import json
 import logging
-from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Tuple
@@ -651,52 +650,48 @@ def _persist_ft_settings(
     if fid_duration_us is None:
         fid_duration_us = _stored_fid_duration_us(file_path)
     new_attrs = _effective_attrs(resolved, fid_duration_us)
-    # The write completes once begun: the Invalidated event is delivered from
-    # inside the open handle, before the completion is stamped, so a raising
-    # events callback is held and raised only once the stage is whole.
-    with events.committing() if events is not None else nullcontext():
-        with h5open(file_path, "a") as h5f:
-            # Stamp first, so a stamp that cannot be written leaves the record and
-            # the completion untouched. Stage 1 stores no computed artifact (the
-            # FT is recomputed on demand), so persisting it again never overwrites
-            # old numbers: it is not a re-run in the legacy-warning sense.
-            stamp_stage_epoch(h5f, "stage1_complex_ft", rerun=False)
-            proc = h5f.require_group("processing_parameters")
-            old_attrs = None
-            if "ft_processing" in proc:
-                # Compared on the effective window, so upgrading an older record
-                # whose window was unset (and selected the whole record) to the
-                # concrete spelling of that same window is not a change and
-                # invalidates nothing.
-                old_attrs = _effective_attrs(
-                    FTSettings.from_attrs(dict(proc["ft_processing"].attrs)),
-                    fid_duration_us,
-                )
-                del proc["ft_processing"]
-            ft_group = proc.create_group("ft_processing")
-            for name, value in new_attrs.items():
-                ft_group.attrs[name] = value
-            write_field_set_version(ft_group.attrs, FT_PROCESSING_FIELD_SET_VERSION)
-            # Human/debug mirror of the persisted record.
-            ft_group.attrs["parameters"] = json.dumps(new_attrs, default=str)
-            ft_group.attrs["last_updated"] = datetime.now().isoformat()
+    with h5open(file_path, "a") as h5f:
+        # Stamp first, so a stamp that cannot be written leaves the record and
+        # the completion untouched. Stage 1 stores no computed artifact (the
+        # FT is recomputed on demand), so persisting it again never overwrites
+        # old numbers: it is not a re-run in the legacy-warning sense.
+        stamp_stage_epoch(h5f, "stage1_complex_ft", rerun=False)
+        proc = h5f.require_group("processing_parameters")
+        old_attrs = None
+        if "ft_processing" in proc:
+            # Compared on the effective window, so upgrading an older record
+            # whose window was unset (and selected the whole record) to the
+            # concrete spelling of that same window is not a change and
+            # invalidates nothing.
+            old_attrs = _effective_attrs(
+                FTSettings.from_attrs(dict(proc["ft_processing"].attrs)),
+                fid_duration_us,
+            )
+            del proc["ft_processing"]
+        ft_group = proc.create_group("ft_processing")
+        for name, value in new_attrs.items():
+            ft_group.attrs[name] = value
+        write_field_set_version(ft_group.attrs, FT_PROCESSING_FIELD_SET_VERSION)
+        # Human/debug mirror of the persisted record.
+        ft_group.attrs["parameters"] = json.dumps(new_attrs, default=str)
+        ft_group.attrs["last_updated"] = datetime.now().isoformat()
 
-            invalidated: List[str] = []
-            if old_attrs is not None and old_attrs != new_attrs:
-                invalidated = invalidate_stages_in_file(
-                    h5f,
-                    ["stage1_complex_ft"],
-                    reason=f"FT settings changed ({old_attrs} -> {new_attrs})",
-                    events=events,
-                )
+        invalidated: List[str] = []
+        if old_attrs is not None and old_attrs != new_attrs:
+            invalidated = invalidate_stages_in_file(
+                h5f,
+                ["stage1_complex_ft"],
+                reason=f"FT settings changed ({old_attrs} -> {new_attrs})",
+                events=events,
+            )
 
-            stages = h5f.require_group("pipeline_stages")
-            completed = json.loads(stages.attrs.get("completed_stages", "[]"))
-            if "stage1_complex_ft" not in completed:
-                completed.append("stage1_complex_ft")
-            stages.attrs["completed_stages"] = json.dumps(completed)
-            stages.attrs["last_updated"] = datetime.now().isoformat()
-        logger.info("FT parameters and stage tracking saved to pipeline file")
+        stages = h5f.require_group("pipeline_stages")
+        completed = json.loads(stages.attrs.get("completed_stages", "[]"))
+        if "stage1_complex_ft" not in completed:
+            completed.append("stage1_complex_ft")
+        stages.attrs["completed_stages"] = json.dumps(completed)
+        stages.attrs["last_updated"] = datetime.now().isoformat()
+    logger.info("FT parameters and stage tracking saved to pipeline file")
     return invalidated
 
 

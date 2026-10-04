@@ -344,27 +344,25 @@ def _import_data(
 
         # Create the pipeline file. Overwriting a file discards every stage it
         # held, which the result reports as invalidated. The overwrite and the
-        # loader's start hint are reported as ONE Invalidated event.
-        with events.collect_invalidations():
-            invalidated = stages_an_import_replaces(file_path, force)
-            pipeline_file = create_pipeline_file(
-                filepath=file_path,
-                fid=fid,
-                source_metadata=source_metadata,
-                force=force,
-            )
-            logger.info(f"Pipeline file created: {pipeline_file}")
-            # The overwrite logs no warning line of its own (it never did);
-            # its stages join the one delivered Invalidated event.
-            events.invalidated(
-                [stage_for_key(k) for k in invalidated],
-                reason=None,
-            )
+        # loader's start hint are reported as ONE Invalidated event (the
+        # stage scope merges them and delivers it after the replace).
+        invalidated = stages_an_import_replaces(file_path, force)
+        pipeline_file = create_pipeline_file(
+            filepath=file_path,
+            fid=fid,
+            source_metadata=source_metadata,
+            force=force,
+        )
+        logger.info(f"Pipeline file created: {pipeline_file}")
+        # The overwrite logs no warning line of its own (it never did); its
+        # stages join the one Invalidated event.
+        events.invalidated(
+            [stage_for_key(k) for k in invalidated],
+            reason=None,
+        )
 
-            # Written after create_pipeline_file so stage0_fid_data exists.
-            invalidated += persist_loader_metadata(
-                str(pipeline_file), fid, events=events
-            )
+        # Written after create_pipeline_file so stage0_fid_data exists.
+        invalidated += persist_loader_metadata(str(pipeline_file), fid, events=events)
     except (PipelineFileError, ValueError, OSError):
         # OSError (PermissionError, a full disk, ...) propagates unwrapped, as
         # creating the file always did on the Python interfaces.

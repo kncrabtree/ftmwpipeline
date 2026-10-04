@@ -1035,7 +1035,8 @@ detection, the report, a scan):
 * ``ScanProgress`` (``ftmw/scan_progress@1``: ``knob``, ``value``, ``index``,
   ``total``) follows each scanned value.
 * ``Invalidated`` (``ftmw/invalidated@1``: ``stages``) is emitted once per
-  call that drops downstream stages, and equals the result's ``invalidated``.
+  call that drops downstream stages, after the call's write is durable and
+  just before ``StageFinished``, and equals the result's ``invalidated``.
 * ``PipelineWarning`` (``ftmw/warning@1``: ``code``, ``message`` and the
   code's own fields, flattened beside them; ``capabilities()["fields"]`` lists
   them as ``PipelineWarning.<code>``) with ``code`` one of ``slow_window``, ``walk_fallback``,
@@ -1044,7 +1045,12 @@ detection, the report, a scan):
   operation, when the file's recorded environment differs from the running
   one) and ``timebase_skipped``.
 
-A callback that raises aborts the operation with ``callback_failed``.
+A callback that raises aborts the operation with ``callback_failed``. What is
+left in the file is what a cancel at that point would leave: a callback that
+raises on ``Invalidated`` or ``StageFinished`` -- both delivered after the
+write is durable -- leaves the write in place, and no ``StageFinished``
+follows; one that raises while ``review_undo`` replays (where a cancel is not
+honoured) lets the replay complete and be written, and then fails the call.
 
 ``cancel`` is checked before every stage, between the windows of the Stage 5
 walk, of a Stage 6 refit and its cascade and of the report's rendering, and
@@ -1070,9 +1076,10 @@ and replaces the file with that copy in one ``os.replace`` when it finishes.
   copy, so the file is left exactly as it was before the call. If the replace
   itself fails (a platform that refuses to replace a file another process holds
   open, for example) the call raises and the file is unchanged.
-* *Events.* ``StageFinished`` is emitted once the replace has happened;
-  ``Invalidated`` precedes it, so a call that fails at the replace may have
-  announced an invalidation that did not land.
+* *Events.* ``Invalidated`` and then ``StageFinished`` are emitted once the
+  replace has happened, so an invalidation that never landed is never
+  announced. A callback reading the file from inside either one sees the
+  call's write.
 * *Pipelines.* Within ``run_pipeline`` each stage is its own atomic write, so a
   kill keeps every stage that finished before it.
 * *Concurrent writers.* The copy is taken when the call's write begins. If

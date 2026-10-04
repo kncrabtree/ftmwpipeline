@@ -8,7 +8,6 @@ API interfaces.
 
 import json
 import logging
-from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Mapping, Optional, Tuple
@@ -335,29 +334,25 @@ def _compute_noise_scatter(
         raise ValueError(f"Noise estimation failed: {e}")
 
     try:
-        # The final write completes once begun: a raising events callback (the
-        # Invalidated event is delivered between the invalidation and the
-        # completion stamp) is held and raised only once the stage is whole.
-        with events.committing() if events is not None else nullcontext():
-            save_noise_result_impl(
-                file_path=file_path,
-                noise_result=noise_result,
-                frequencies=active_ft.freq_array,
-                magnitudes=active_ft.magnitude_spectrum,
-                parameters_used=processing_params,
+        save_noise_result_impl(
+            file_path=file_path,
+            noise_result=noise_result,
+            frequencies=active_ft.freq_array,
+            magnitudes=active_ft.magnitude_spectrum,
+            parameters_used=processing_params,
+        )
+        # Persist the resolved NoiseSettings to
+        # ``processing_parameters/stage2_noise`` so a no-kwargs re-run
+        # inherits it via the resolver's persisted layer.
+        save_noise_settings_to_h5(file_path, settings, preset_name=preset_name)
+        invalidated = (
+            invalidate_downstream_stages(
+                file_path, "stage2_noise_result", events=events
             )
-            # Persist the resolved NoiseSettings to
-            # ``processing_parameters/stage2_noise`` so a no-kwargs re-run
-            # inherits it via the resolver's persisted layer.
-            save_noise_settings_to_h5(file_path, settings, preset_name=preset_name)
-            invalidated = (
-                invalidate_downstream_stages(
-                    file_path, "stage2_noise_result", events=events
-                )
-                if previous is not None and previous != settings
-                else []
-            )
-            _update_stage_completion(file_path, "stage2_noise_result")
+            if previous is not None and previous != settings
+            else []
+        )
+        _update_stage_completion(file_path, "stage2_noise_result")
         # The "Stage 2: ... saved and marked complete" line is rendered from
         # the stage's StageFinished event (compute_noise_estimation_impl).
     except PipelineFileError:

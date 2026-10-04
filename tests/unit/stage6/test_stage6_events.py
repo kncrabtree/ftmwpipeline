@@ -4,7 +4,9 @@ A Stage 6 call reports as the ``review`` stage: ``StageStarted``, a
 ``WindowProgress`` per window it re-fits, then ``StageFinished`` whose summary
 is the verb's ``run_result`` summary. A curation batch is one unit: a cancel or
 a failing callback discards all of it (the undo baseline the batch took is
-removed again), and an undo honours a cancel only before its restore.
+removed again). An undo honours a cancel only before its restore, and a
+callback failing during its replay fails the call only once the replay is
+written.
 """
 
 from __future__ import annotations
@@ -151,6 +153,37 @@ def test_undo_honours_a_cancel_only_before_its_restore(stage5_small_file, monkey
     monkeypatch.setattr(stage6_impl, "_reset_to_baseline", restore_then_cancel)
     result = ftmw.review_undo(path, [0], cancel=token)
     assert result.removed and ftmw.review_log(path) == []
+
+
+def test_a_callback_failing_mid_replay_lets_the_undo_land(stage5_small_file):
+    """Inside the restore-then-replay a callback failure is held like a cancel:
+    the replay completes and is written, then the call fails with
+    ``callback_failed`` (and no ``StageFinished``)."""
+    path = str(stage5_small_file)
+    wid, freqs = _a_window_with_two_peaks(stage5_small_file)
+    ftmw.review_apply(
+        path,
+        actions=[
+            {"action": "remove", "window_id": wid, "freq_mhz": f, "frame": "raw"}
+            for f in freqs[:2]
+        ],
+    )
+    log = ftmw.review_log(path)
+    assert len(log) >= 2
+    seen: list = []
+
+    def fail_on_window(event: object) -> None:
+        seen.append(type(event))
+        if isinstance(event, WindowProgress):
+            raise RuntimeError("listener broke")
+
+    with pytest.raises(CallbackFailedError) as info:
+        ftmw.review_undo(path, [log[0].order_index], events=fail_on_window)
+    assert info.value.event_schema == "ftmw/window_progress@1"
+    assert WindowProgress in seen and StageFinished not in seen
+    # The undo landed: the first decision is gone, the rest were replayed.
+    remaining = ftmw.review_log(path)
+    assert len(remaining) == len(log) - 1
 
 
 def test_preview_and_dry_run_record_no_completed_stage(stage5_small_file):
