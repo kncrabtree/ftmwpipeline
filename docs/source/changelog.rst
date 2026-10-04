@@ -59,9 +59,10 @@ engine so they cannot answer differently.
   ``Pipeline``; every long CLI verb takes ``--events`` (one JSON line per event
   on stderr), and the first Ctrl-C cancels it (exit ``130``). A cancel raises
   ``cancelled`` and a failing callback ``callback_failed``; a cancelled stage
-  or curation batch leaves the file as it was. ``run_pipeline``'s ``error`` is
-  now the failure's ``ftmw/error@1`` dict and ``failed_stage`` a canonical
-  stage name. ``Pipeline.create`` now runs the same import as ``data import``,
+  or curation batch leaves the file as it was. **Breaking:** ``run_pipeline``'s
+  ``error`` is now the failure's ``ftmw/error@1`` dict (it was a string) and
+  ``failed_stage`` a canonical stage name; a cancel raises instead of being
+  reported in the result. ``Pipeline.create`` now runs the same import as ``data import``,
   and ``import_data``'s ``invalidated`` includes stages a moved start hint
   dropped. The stage start and end lines, the per-window fit lines and the
   invalidation warning are now logged from the events, with the same text.

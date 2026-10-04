@@ -978,6 +978,8 @@ and knob mappings are not one-to-one and have none.
 ``[{"stage", "storage_key", "settings_prefix", "knob_prefix",
 "depends_on"}]`` in enum order, with ``depends_on`` in canonical names.
 
+.. _machine-contract-events:
+
 Events and cancellation
 -----------------------
 
@@ -1038,6 +1040,62 @@ to stderr as one JSON line. The first Ctrl-C cancels: the verb stops at its
 next check point and exits ``130`` with the ``cancelled`` error (its
 ``ftmw/error@1`` dict on stderr under ``--json``). A second Ctrl-C interrupts
 at once.
+
+A Python client that shows progress, stops on request and routes on the two new
+codes::
+
+   import json
+   import threading
+   import ftmwpipeline.api as ftmw
+   from ftmwpipeline import (
+       CallbackFailedError, OperationCancelledError, StageFinished,
+       WindowProgress, to_jsonable,
+   )
+
+   stop = threading.Event()          # set it from any thread to cancel
+
+   def on_event(event):              # runs on this thread, never in a worker
+       if isinstance(event, WindowProgress):
+           print(f"window {event.window_id}: {event.index}/{event.total}")
+       elif isinstance(event, StageFinished):
+           print(event.stage.value, "finished in", f"{event.elapsed_s:.1f} s")
+       print(json.dumps(to_jsonable(event)))           # the wire form
+
+   try:
+       ftmw.fit_peaks("exp.ftmw", events=on_event, cancel=stop)
+   except OperationCancelledError as err:
+       # err.stage == "fit" (None between stages); the file is as it was
+       print("cancelled", err.stage, err.completed_stages, err.completed_windows)
+   except CallbackFailedError as err:
+       print("on_event raised while handling", err.event_schema, err.__cause__)
+
+``run_pipeline`` reports every stage under ``operation="run"``. A cancel
+raises, so the stages it had finished are on the error, not in a result dict;
+any other failure is a result with ``status == "error"`` whose ``error`` is the
+failure's ``ftmw/error@1`` dict (a plain string before contract version 9) and
+whose ``failed_stage`` is a canonical stage name::
+
+   try:
+       result = ftmw.run_pipeline(src, "exp.ftmw", trim=(26500, 40000),
+                                  events=on_event, cancel=stop)
+   except OperationCancelledError as err:
+       print("kept:", err.completed_stages)          # e.g. ["data", "ft", "noise"]
+   else:
+       if result["status"] == "error":
+           print(result["failed_stage"], result["error"]["code"])
+
+On the command line, ``--events`` writes the same events to stderr, one JSON
+line each, and the first Ctrl-C cancels::
+
+   $ ftmwpipeline fit run exp.ftmw --events --json 2> stderr.jsonl > result.json
+   $ head -2 stderr.jsonl
+   {"schema": "ftmw/stage_started@1", "operation": "fit run", "stage": "fit"}
+   {"schema": "ftmw/window_progress@1", "operation": "fit run", "stage": "fit", "phase": "initial", "index": 1, "total": 382, "window_id": 3, "n_peaks": 2, "chi2r": 1.04, "elapsed_s": 0.9, "dropped": false}
+   $ # Ctrl-C:
+   $ echo $?
+   130
+   $ tail -1 stderr.jsonl
+   {"schema": "ftmw/error@1", "code": "cancelled", "message": "...", "stage": "fit", "completed_stages": [], "completed_windows": []}
 
 Per-stage state: ``status``
 ---------------------------
@@ -1109,7 +1167,7 @@ default, format), ``-o/--output DIR`` and ``-v``.
      - ``130``
      - the first Ctrl-C on a long verb cancels it (the ``cancelled`` error);
        a second one interrupts at once
-   * - every other code (``not_found``, ``stage_not_run``,
+   * - every other code (``not_found``, ``stage_not_run``, ``callback_failed``,
        ``file_incompatible``, ...) and any other user error
      - ``1``
      -
