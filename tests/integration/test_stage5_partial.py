@@ -352,6 +352,39 @@ def test_nothing_is_written_during_the_walk(jobs, baseline_2638_stage4_small, tm
     assert content_digest(fp) != before  # ... and only the end of the call wrote
 
 
+@pytest.mark.skipif(not _FORK, reason="needs fork")
+@pytest.mark.parametrize("interrupt", ["cancel", "callback"])
+def test_the_legacy_level_walk_keeps_the_windows_of_an_interrupted_level(
+    interrupt, baseline_2638_stage4_small, tmp_path, monkeypatch
+):
+    """``FTMW_LEGACY_LEVEL_WALK``: the windows of the interrupted pool level that
+    already returned finished their whole pass and are mutually independent,
+    so they are kept like any other finished window."""
+    monkeypatch.setenv("FTMW_LEGACY_LEVEL_WALK", "1")
+    fp = _copy(baseline_2638_stage4_small, tmp_path)
+    seen: List[WindowProgress] = []
+    tok = Token()
+
+    def on_event(event: Any) -> None:
+        if isinstance(event, WindowProgress):
+            seen.append(event)
+            if len(seen) == 1:
+                if interrupt == "cancel":
+                    tok.set()
+                else:
+                    raise ValueError("boom")
+
+    expected = OperationCancelledError if interrupt == "cancel" else CallbackFailedError
+    with pytest.raises(expected) as info:
+        ftmw.fit_peaks(fp, jobs=2, events=on_event, cancel=tok)
+    reported = sorted({e.window_id for e in seen})
+    assert reported and info.value.completed_windows == reported == _kept_ids(fp)
+    with h5py.File(fp, "r") as h5f:
+        walk = json.loads(bytes(h5f["stage5_partial/provenance"][()]).decode())["walk"]
+    assert walk["walk_mode"] == "level"
+    assert _state(fp) == "partial"
+
+
 # ---- a raising callback writes the same ------------------------------------------------
 
 

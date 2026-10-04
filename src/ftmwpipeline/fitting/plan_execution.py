@@ -92,6 +92,7 @@ from .._internal.events import SLOW_WINDOW_LOG_TEMPLATE  # noqa: F401
 from .._internal.events import WINDOW_DETAIL_LOG_TEMPLATE  # noqa: F401
 from .._internal.events import CANCEL_POLL_S, StageScope, detached_scope
 from ..contract import Absent, Stage
+from ..file_manager import CallbackFailedError, OperationCancelledError
 from ..utils.parallelism import resolve_worker_count
 from . import validation
 from .active_ft import ActiveFTResult, PointMap
@@ -4337,6 +4338,22 @@ def _walk_windows_parallel(
             "shared": shared_kwargs,
         }
         results: dict[int, _WorkerResult] = {}
+
+        def _merge(wids: Sequence[int]) -> None:
+            for wid in wids:
+                _, outcome, thaws, rescues, cleanups, _report = results[wid]
+                # A cleanup that emptied the window returns no outcome; leave it
+                # out of ``outcomes`` (the next level reads it as absent).
+                if outcome is not None:
+                    outcomes[wid] = outcome
+                # Recorded once merged: until its level is merged, a window's
+                # outcome is not in ``outcomes``.
+                _record_window(ledger, wid, thaws, rescues, cleanups)
+                thaw_history.extend(thaws)
+                rescue_history.extend(rescues)
+                if cleanup_history is not None:
+                    cleanup_history.extend(cleanups)
+
         try:
             from concurrent.futures import ProcessPoolExecutor
 
@@ -4365,8 +4382,18 @@ def _walk_windows_parallel(
                     )
                     if abort_on_accepted_thaw and any(e.accepted for e in res[2]):
                         raise _ResumeThawRefit()
-            except BaseException:
+            except BaseException as exc:
                 _abort_pool(ex)
+                # A cancel or a failing callback: the windows of this level that
+                # already returned (and reported) finished their whole pass and
+                # are mutually independent, so they are kept -- unless one
+                # accepted a thaw, whose primary mutation only happened in its
+                # worker (then the level counts as unfinished).
+                if isinstance(exc, (OperationCancelledError, CallbackFailedError)):
+                    if not any(
+                        ev.accepted for res in results.values() for ev in res[2]
+                    ):
+                        _merge([wid for wid in level if wid in results])
                 raise
             else:
                 ex.shutdown(wait=True)
@@ -4394,20 +4421,7 @@ def _walk_windows_parallel(
                     ledger.pop(wid, None)
             _run_sequential(level, 0, pass_phase="fallback", pass_total=len(level))
         else:
-            for wid in level:
-                _, outcome, thaws, rescues, cleanups, _report = results[wid]
-                # A cleanup that emptied the window returns no outcome; leave it
-                # out of ``outcomes`` (the next level reads it as absent).
-                if outcome is not None:
-                    outcomes[wid] = outcome
-                # Recorded once merged: until its level is merged, a window's
-                # outcome is not in ``outcomes`` (an interrupted level's windows
-                # count as unfinished).
-                _record_window(ledger, wid, thaws, rescues, cleanups)
-                thaw_history.extend(thaws)
-                rescue_history.extend(rescues)
-                if cleanup_history is not None:
-                    cleanup_history.extend(cleanups)
+            _merge(level)
         n_done += len(level)
         logger.info(
             "  level %d/%d: %d windows on %d workers, %.1fs",
