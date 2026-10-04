@@ -173,6 +173,7 @@ __all__ = [
     "FIT_RESCUE_COLUMN_SPECS",
     "read_fit_peak_columns",
     "read_fit_window_columns",
+    "read_fit_window_quality_recorded",
     "read_fit_audit_columns",
     "read_fit_doublet_columns",
     "read_fit_thaw_columns",
@@ -1646,6 +1647,36 @@ class FitWindowCoverage(NamedTuple):
     window_id: int
     freq_range: Optional[Tuple[float, float]]
     peak_uids: Set[int]
+
+
+def read_fit_window_quality_recorded(
+    h5_group: h5py.Group, keys: Sequence[str]
+) -> Dict[str, np.ndarray]:
+    """Per window, whether its ``quality_metrics`` record carries each of *keys*.
+
+    One boolean array per key, rows ascending by ``window_id`` like
+    :func:`read_fit_window_columns`. A quality value the fit computed is
+    recorded even when it has no finite value (it is then ``NaN``); a window
+    the fit never evaluated (a created window not yet fit) records nothing.
+    The columnar mirrors (``edge_coherence_low`` / ``_high``) store ``NaN`` for
+    both, so this is what tells them apart. Parses one JSON cell per window.
+    """
+    windows_group = _windows_group(h5_group)
+    ids = np.asarray(windows_group["window_id"][:], dtype="i8")
+    out = {key: np.zeros(ids.size, dtype=bool) for key in keys}
+    if "quality_metrics" not in windows_group:
+        return out
+    cells = windows_group["quality_metrics"][:]
+    for row, src in enumerate(np.argsort(ids, kind="stable")):
+        raw = _decode(cells[src])
+        try:
+            blob = json.loads(raw) if raw else {}
+        except (json.JSONDecodeError, TypeError):
+            blob = {}
+        if isinstance(blob, dict):
+            for key in keys:
+                out[key][row] = key in blob
+    return out
 
 
 def read_fit_window_coverage(h5_group: h5py.Group) -> List[FitWindowCoverage]:

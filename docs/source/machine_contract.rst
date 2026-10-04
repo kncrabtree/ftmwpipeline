@@ -170,7 +170,9 @@ Each declared accessor, with its absence cases:
   undefined) for each column below, inserted right after it; column selection
   accepts them. The value column keeps its stored fill (``nan``, ``inf``,
   ``-1`` or ``""``), which a program must not read when the status is not
-  ``0``. A column that predates the file reads as its fill with status ``1``,
+  ``0``. A degenerate statistic (below) reads as ``nan`` with status ``2``
+  whether the file stores ``nan`` or an earlier release's ordinary number.
+  A column that predates the file reads as its fill with status ``1``,
   except in the ``fit_peaks`` knockout block, where the knockout rule below
   decides (a test that ran on a file predating ``knockout_p_value`` reads
   ``2``, as on ``FinalPeak``).
@@ -180,7 +182,9 @@ Each declared accessor, with its absence cases:
     ``knockout_expected_delta_chi2``, ``chi_squared``, ``knockout_p_value``,
     ``knockout_n_eff`` and ``knockout_aicc_delta`` are ``1`` when the test did
     not run (no record: ``knockout_supported`` is ``-1`` or the delta chi2 is
-    ``nan``); when it ran, a non-finite value is ``2``. ``frequency_error``,
+    ``nan``); when it ran, a non-finite value is ``2`` (``knockout_p_value``
+    is ``nan`` for a degenerate F-test; an earlier release stored ``1.0``
+    there, which the file cannot distinguish). ``frequency_error``,
     ``amplitude_error``, ``phase``, ``phase_error``, ``decay_rate``,
     ``decay_rate_error`` (also when tau was held fixed) and ``snr``: a
     non-finite value is ``2``. ``detection_index``: ``-1`` (no Stage 3
@@ -189,8 +193,12 @@ Each declared accessor, with its absence cases:
     multiplet) is ``1``. ``clock_lattice``: ``1`` when the fit recorded no
     clock declaration, ``2`` when it did and the line is off the lattice
     (``""``), else ``0``.
-  * ``fit_windows``. ``freq_min``, ``freq_max``, ``edge_coherence_low``,
-    ``edge_coherence_high``: ``nan`` is ``1``. ``tau_fitted``: ``-1`` is ``1``.
+  * ``fit_windows``. ``freq_min``, ``freq_max``: ``nan`` is ``1``.
+    ``edge_coherence_low``, ``edge_coherence_high``: ``nan`` is ``2`` when the
+    fit computed the edge and it is undefined (an empty residual, or a band
+    with no positive noise; an earlier release stored ``0.0`` there, which
+    reads as ``nan``), and ``1`` when the fit never evaluated the window.
+    ``tau_fitted``: ``-1`` is ``1``.
     ``tau_error``: ``2`` for any non-finite value (held fixed or singular).
     ``tau_us`` (also when not positive), ``aic``, ``reduced_chi2``: a
     non-finite value is ``2``.
@@ -201,15 +209,29 @@ Each declared accessor, with its absence cases:
     on ``spur-drop`` and separation rejects (a ``nan`` ``p_value`` on
     ``knockout-null`` is ``2``). For a separation reject no test ran, so the
     stored placeholder ``f_statistic`` 0.0 and ``p_value`` 1.0 read as ``nan``
-    with status ``1``. ``chi2_after`` and ``aic_after``: ``1`` on
-    ``spur-drop``, else ``2`` if non-finite.
+    with status ``1``. A degenerate F-test (no added parameter, no residual
+    degrees of freedom, or a non-positive ``chi2_after``) has no value:
+    ``f_statistic`` and ``p_value`` are ``2``. An earlier release stored
+    such a test as ``f_statistic`` 0.0 and ``p_value`` 1.0; those read as
+    ``nan`` with status ``2`` wherever the stored chi-squared values rule out
+    a genuine non-improvement (``chi2_after`` below ``chi2_before``, or not
+    positive). ``chi2_after`` and ``aic_after``: ``1`` on ``spur-drop``,
+    else ``2`` if non-finite.
   * ``fit_doublets``. ``chi2r_merged``, ``delta_chi2_raw``, ``delta_aicc``,
     ``merged_frequency_mhz``, ``merged_amplitude``, ``merged_phase``,
     ``merged_tau_us`` and ``orth_evidence_delta_chi2``: a non-finite value is
-    ``2`` (the merged refit was attempted).
+    ``2`` (the merged refit was attempted). ``orth_evidence_delta_chi2`` is
+    also ``2`` when the weak partner had no usable support
+    (``support_bins`` 0), where an earlier release stored ``0.0``, which
+    reads as ``nan``.
   * ``peaks``. ``internal_snr``, ``internal_frequency``, ``leakage_pedestal``:
-    ``nan`` (the internal pass did not contribute the peak) is ``1``. ``snr``
-    and ``noise_std_local``: non-finite is ``2``. ``index`` ``-1`` and
+    ``nan`` (the internal pass did not contribute the peak) is ``1``, except
+    that ``internal_snr`` is ``2`` when the internal pass did contribute it
+    (``internal_frequency`` is finite) and its SNR has no value (no positive
+    internal noise; an earlier release stored ``0.0``, which reads as
+    ``nan``). ``snr`` and ``noise_std_local``: non-finite is ``2``; ``snr``
+    is also ``2`` where ``noise_std_local`` is not positive (an earlier
+    release stored ``0.0``, which reads as ``nan``). ``index`` ``-1`` and
     ``classification`` ``""`` are ``1``. ``promoted``: ``1`` for every row when
     the file records no promotion cutoff (it predates the record), else ``0``.
 
