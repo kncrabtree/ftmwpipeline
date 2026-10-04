@@ -34,7 +34,7 @@ The contract version
     if ftmwpipeline.CONTRACT_VERSION < 1:
         raise RuntimeError("needs a newer ftmwpipeline")
 
-The first published contract is version ``1``; this release is version ``5``. Additions (a new accessor,
+The first published contract is version ``1``; this release is version ``6``. Additions (a new accessor,
 field or code) raise the version by one and never break an existing field. Every machine-readable payload also carries a **schema name**
 of the form ``ftmw/<payload>@<n>``; a schema name never changes meaning.
 
@@ -124,7 +124,9 @@ carries ``warnings``. Each has a schema name, a constant in
 ...): ``ftmw/calibration@1``, ``ftmw/snap_tolerance@1``, ``ftmw/metadata@1``,
 ``ftmw/tables@1``, ``ftmw/table@1``, ``ftmw/settings_defaults@1``,
 ``ftmw/settings@1``, ``ftmw/final_products@1``, ``ftmw/review_log@1``,
-``ftmw/pipeline_info@1`` and ``ftmw/display_ft@1``. ``CalibrationStamp`` and
+``ftmw/pipeline_info@1`` and ``ftmw/display_ft@1``. (``ftmw/curation_action@1``,
+also declared, names a request rather than a result: see
+:ref:`curation-as-data-contract`.) ``CalibrationStamp`` and
 ``FinalProducts`` declare theirs as ``__ftmw_schema__``; the ``read`` verb
 stamps the rest by the envelope rules above: a dict result is stamped directly,
 a list or tuple (``settings_show``, ``settings_defaults``, ``review_log``)
@@ -835,6 +837,98 @@ writes the file. Amplitudes are in the units of the underlying spectrum, so
 
    $ ftmwpipeline read window_model experiment.ftmw 179 --components --output w179/
    $ ftmwpipeline read spectrum_model experiment.ftmw --grid display --output model/
+
+.. _curation-as-data-contract:
+
+Curation as data: ``CurationAction``
+------------------------------------
+
+``review_apply`` and ``review_preview`` accept the curation batch as data:
+``actions=``, a sequence of :class:`ftmwpipeline.CurationAction` (also exported
+from ``ftmwpipeline.contract``), in place of a curation-file path. The file path
+remains for people; both spellings take the same validation and frame handling
+and give equal results, decision logs and files.
+
+.. code-block:: python
+
+   from ftmwpipeline import CurationAction
+   import ftmwpipeline.api as ftmw
+
+   ftmw.review_apply("exp.ftmw", actions=[
+       CurationAction("remove", peak_uid=15425022),
+       CurationAction("add", freq_mhz=26880.3, frame="raw"),
+   ])
+
+A ``CurationAction`` is a frozen dataclass, one curation-file row:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 18 30 52
+
+   * - Field
+     - Type
+     - Meaning
+   * - ``action``
+     - ``"add"`` | ``"remove"`` | ``"accept"`` | ``"create"``
+     - The row action.
+   * - ``window_id``
+     - ``int`` or ``None``
+     - The window. ``None`` means "derive it" on ``add`` / ``remove`` and "a
+       new window" on ``create``. Required on ``accept``.
+   * - ``freq_mhz``
+     - ``float`` or ``None``
+     - The one frequency: ``add`` / ``remove``, or the ``create`` anchor.
+   * - ``peak_uid``
+     - ``int`` or ``None``
+     - ``remove`` only, in place of ``freq_mhz``.
+   * - ``candidate_mhz``
+     - ``float`` or ``None``
+     - ``accept`` only: a ledger candidate to revive.
+   * - ``frame``
+     - ``"raw"`` | ``"calibrated"`` or ``None``
+     - The frame of ``freq_mhz`` / ``candidate_mhz``.
+
+**Validation.** Construction enforces the parser's rules for a row: one
+frequency, or one ``peak_uid`` on ``remove``; no frequency on ``accept``; no
+``peak_uid`` outside ``remove``; no ``candidate_mhz`` outside ``accept``. A
+violation raises ``BadSettingError`` (``bad_setting``) whose ``path`` is the
+field.
+
+**Wire form.** ``to_dict()`` returns ``{"schema": "ftmw/curation_action@1",
+"action", "window_id", "freq_mhz", "peak_uid", "candidate_mhz", "frame"}``. Every
+key is always present and an unused field is ``null``. These are request fields,
+so ``null`` here is "not given", not an ``Absent`` result.
+``CurationAction.from_dict()`` is the inverse. It also accepts a dict without
+``schema`` or without unused keys, and refuses an unknown key (``bad_setting``
+naming it). ``to_row()`` returns the action as a curation-file CSV row. A
+file's rows parse to the actions ``from_dict`` gives of their dicts.
+
+**Frames.** Each action's frame is resolved on its own. ``None`` takes the
+call's ``frame=``, and then the call's rule applies: raw on a file whose
+``epsilon`` is 0, and ``bad_setting`` (``path`` ``"frame"``) on a
+``self_calibrated`` file when the action carries a frequency. A batch may mix
+frames. The pipeline converts each action to raw before resolving anything. A
+client never converts frequencies itself.
+
+**Calls.** ``review_apply(path, curation_path=None, *, actions=None, ...)`` and
+``review_preview(path, curation_path=None, *, actions=None, frame=None)`` take
+exactly one of ``curation_path`` and ``actions``. Both or neither raises
+``bad_setting`` with ``path`` ``"actions"``. ``Pipeline`` and the review session
+take the same arguments, without the path. ``actions`` may hold
+``CurationAction`` objects or their dicts. On the command line, ``review apply``
+and ``review preview`` take ``--actions FILE``, a JSON array of action dicts
+(``-`` for standard input), in place of the curation CSV:
+
+.. code-block:: console
+
+   $ ftmwpipeline review apply exp.ftmw --actions edits.json --frame raw
+
+**Frames are explicit everywhere.** Every review call that takes a frequency
+(``review_edit``'s ``add`` / ``remove``, ``review_create``'s anchor,
+``review_accept``'s ``candidate_freq``, and a curation batch) has a typed
+``frame`` parameter whose default ``None`` means raw on an ``epsilon == 0``
+file and is refused on a ``self_calibrated`` file. The conversion stays
+inside the pipeline.
 
 Analysis identity: ``analysis_fingerprint``
 -------------------------------------------

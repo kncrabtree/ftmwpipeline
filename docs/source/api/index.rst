@@ -362,11 +362,12 @@ a matching :class:`~ftmwpipeline.pipeline.Pipeline` method; see
    * - :func:`~ftmwpipeline.api.review_create`
      - Install a fit window for a line no window covers.
    * - :func:`~ftmwpipeline.api.review_apply`
-     - Apply a curation file as one batch (``dry_run=True`` resolves the plan
-       without fitting or writing).
+     - Apply a curation file (or ``actions=``, the same batch as
+       :class:`~ftmwpipeline.CurationAction` data) as one batch
+       (``dry_run=True`` resolves the plan without fitting or writing).
    * - :func:`~ftmwpipeline.api.review_preview`
-     - Run a curation file's plan to completion in memory and report the
-       fitted outcome, writing nothing.
+     - Run a curation file's (or ``actions=``) plan to completion in memory
+       and report the fitted outcome, writing nothing.
    * - :func:`~ftmwpipeline.api.review_undo`
      - Roll recorded decisions back by id, replaying the survivors from the
        automatic baseline.
@@ -423,6 +424,12 @@ copy. ``merge`` and ``split`` are not verbs; they are read from what an
 
 .. autoclass:: ftmwpipeline.core.curation.PeakUidToken
    :members:
+
+.. autoclass:: ftmwpipeline.core.curation.CurationAction
+   :members: to_dict, from_dict, to_row
+
+A curation batch as data, given to ``review_apply`` / ``review_preview`` as
+``actions=`` in place of a curation file (see :ref:`curation-as-data`).
 
 Settings objects
 ----------------

@@ -483,6 +483,62 @@ it changes the file in its own right; a plain add/remove never does, even
 when curation-intent inference will read the coalesced result as a split or a
 merge once the batch actually runs.
 
+.. _curation-as-data:
+
+Curation as data
+~~~~~~~~~~~~~~~~
+
+A program does not have to write a CSV to curate. ``review_apply`` and
+``review_preview`` take ``actions=``, a sequence of
+:class:`~ftmwpipeline.CurationAction`, in place of the curation-file path. Each
+action is one curation-file row, typed:
+
+.. code-block:: python
+
+   from ftmwpipeline import CurationAction, Pipeline
+
+   actions = [
+       CurationAction("remove", peak_uid=15425022),       # remove,auto,uid:15425022,
+       CurationAction("add", freq_mhz=26880.3),           # add,auto,26880.3,
+       CurationAction("accept", window_id=10),            # accept,10,,
+       CurationAction("create", freq_mhz=26700.0),        # create,new,26700.0,
+   ]
+   result = Pipeline.open("exp_2638.ftmw").review_apply(actions=actions, frame="raw")
+
+The fields are ``action`` (``add``, ``remove``, ``accept`` or ``create``),
+``window_id``, ``freq_mhz``, ``peak_uid``, ``candidate_mhz`` and ``frame``. A
+``window_id`` of ``None`` means "derive it" on ``add`` / ``remove`` (the file's
+``auto``) and "a new window" on ``create``; ``accept`` needs one. Construction
+checks what the parser checks of a row -- one frequency, or one ``peak_uid`` on
+``remove``; no frequency on ``accept``; no ``peak_uid`` outside ``remove``; no
+``candidate_mhz`` outside ``accept`` -- and refuses with a ``BadSettingError``
+whose ``path`` names the field.
+
+**Each action carries its own frame.** ``frame=None`` takes the call's
+``frame=``; when both are ``None``, the usual rule applies to that action --
+raw on a file whose ``epsilon`` is 0, refused on a ``self_calibrated`` file when
+the action carries a frequency (see :ref:`the frame rules <curation-frames>`).
+So one batch may mix raw and calibrated frequencies. Each is converted to raw
+before anything resolves, exactly as a file's frequencies are. An action has no
+epsilon stamp, so unlike a ``# frame: calibrated`` file it is not checked for
+calibration drift. It is resolved against the file's current calibration.
+
+**Same plan, same result.** The same actions given as a file and as data give
+equal results, decision logs and files. ``to_row()`` writes an action as its CSV
+row, and parsing a file yields the actions ``CurationAction.from_dict`` gives of
+their dicts. ``to_dict()`` is the JSON wire form, schema
+``ftmw/curation_action@1`` (see :doc:`machine_contract`). Pass exactly one of
+the curation path and ``actions``; both or neither is refused
+(``BadSettingError``, ``path`` ``"actions"``).
+
+From the command line, ``--actions FILE`` gives the same batch as a JSON array
+of those dicts, in place of the CSV (``-`` reads standard input):
+
+.. code-block:: console
+
+   $ ftmwpipeline review preview exp_2638.ftmw --actions edits.json
+   $ generate-edits | ftmwpipeline review apply exp_2638.ftmw --actions - --frame raw
+
 Applying a curation file
 ------------------------
 
@@ -777,7 +833,7 @@ The bytes persisted are then guaranteed to be exactly the ones the preview
 showed, rather than a second computation trusted to agree with the first.
 
 The staging is dropped the moment it stops being valid: a different curation
-file, a different ``frame``, a resolved plan that differs, or a base that moved
+file (or different ``actions``), a different ``frame``, a resolved plan that differs, or a base that moved
 (a foreign write, or another mutating verb issued on the session in between).
 Any of those falls back to a full ordinary apply, identical to the sessionless
 one — nothing is lost but the saving. When a staged preview was dropped
