@@ -263,6 +263,21 @@ def stage5_reviewed_2638(baseline_2638_stage5_small, tmp_path_factory):
     return path
 
 
+@pytest.fixture(scope="session")
+def stage5_gaussian_2638(baseline_2638_stage4, tmp_path_factory):
+    """The WHOLE 2638 plan fitted once with the Gaussian line shape.
+
+    Unlike ``baseline_2638_stage5_small`` (two Lorentzian edge windows, none with
+    a baseline or a gated spur) this carries windows fitted with a baseline, and
+    windows the spur mask touches, which the model accessors and the fit plots
+    must reproduce. Read-only; copy before mutating.
+    """
+    fp = tmp_path_factory.mktemp("stage5_gaussian") / "stage5_gaussian_2638.ftmw"
+    shutil.copy(baseline_2638_stage4, fp)
+    ftmw.fit_peaks(str(fp), shape="gaussian")
+    return fp
+
+
 # ---------------------------------------------------------------------------
 # Module-scoped cross-interface trio fixtures (one per test module)
 # ---------------------------------------------------------------------------

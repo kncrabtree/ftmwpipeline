@@ -9,6 +9,7 @@ the fit must be bit-identical to subtracting the skirt once.
 import numpy as np
 import pytest
 
+from ftmwpipeline.core.environment import ANALYSIS_EPOCH
 from ftmwpipeline.fitting.peak_model import ModelPeak, model_spectrum
 from ftmwpipeline.fitting.plan_execution import (
     FrozenPeak,
@@ -121,3 +122,9 @@ def test_bins_restrict_the_skirt_and_follow_a_reordering():
     order = np.argsort(-U)
     d_sorted = frozen_skirt_delta((sk.reordered(order),), U[order], TAU_TRUE, T, SHAPE)
     np.testing.assert_array_equal(d_sorted, d[order])
+
+
+def test_analysis_epoch_records_the_d18_fit_change():
+    # The skirt following tau moves free-tau fits with frozen contributors, so
+    # files fitted before it must be re-fit or acknowledged.
+    assert ANALYSIS_EPOCH == 4

@@ -21,8 +21,13 @@ now follow the window's fitted decay time *during* the fit, as the Stage 5 model
 equation already wrote them (see :doc:`stage5_fitting`). Previously their
 leakage skirt was subtracted once at the starting decay time and stayed there
 while the decay time was fitted, so a free-decay window with frozen
-contributors was fit to a different model from the one it reported. Windows
-whose decay time is held are bit-identical; a file fitted under epoch 3 must be
+contributors was fit to a different model from the one it reported. Only
+those windows move: ones whose decay time is free *and* that hold frozen
+contributors (a dependent window's neighbour lines, and the inherited lines the
+Stage 5 collapse merge parks while the decay time is free). Windows whose decay
+time is held are bit-identical, and so are windows with nothing frozen. On the
+2638 fixture 6 of 262 windows moved, all through the merge's parked lines, by
+at most about 1e-3 us in decay time. A file fitted under epoch 3 must be
 re-fit, or have the mismatch accepted, before Stage 6 will splice an edit into
 it.
 
