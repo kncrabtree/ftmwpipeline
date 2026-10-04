@@ -20,6 +20,10 @@ HDF5 layout (under the caller-supplied group)::
             data          (JSON string)
             peak_fields   (int; absent on tables that predate the per-line
                            fit fields -- see FINAL_PEAK_FIELDS_VERSION)
+            calibration_clocks (JSON list of ClockSource dicts; the clock
+                           declaration the table's calibration state was
+                           derived from; absent on tables written before it
+                           was recorded)
     created_windows/ (absent in files predating Stage-6 window creation)
         .attrs:
             data  (JSON string)
@@ -67,6 +71,7 @@ from ..core.data_structures import (
     Stage6Review,
     WindowReviewStatus,
 )
+from ..core.stage_fit_settings import ClockSource, coerce_clock_sources
 from ._hdf5_helpers import opt_float
 
 __all__ = [
@@ -75,8 +80,13 @@ __all__ = [
     "load_stage6_review_from_file",
     "read_created_window_bounds",
     "final_products_predate_fit_fields",
+    "read_final_products_calibration_clocks",
     "FINAL_PEAK_FIELDS_VERSION",
 ]
+
+#: Attribute of the ``final_products`` subgroup recording the clock declaration
+#: the table's calibration state was derived from.
+_CALIBRATION_CLOCKS_ATTR = "calibration_clocks"
 
 #: Version of the per-line field set a stored final-products table carries,
 #: stamped as the ``peak_fields`` attribute of its subgroup. ``2`` added the
@@ -328,8 +338,18 @@ def _fit_window_from_dict(d: Dict[str, Any]) -> FitWindow:
     )
 
 
-def save_stage6_review_to_hdf5(review: Stage6Review, group: h5py.Group) -> None:
-    """Persist *review* into the HDF5 *group* (must already exist)."""
+def save_stage6_review_to_hdf5(
+    review: Stage6Review,
+    group: h5py.Group,
+    *,
+    calibration_clocks: Optional[Tuple[ClockSource, ...]] = None,
+) -> None:
+    """Persist *review* into the HDF5 *group* (must already exist).
+
+    ``calibration_clocks`` is the clock declaration the final-products table's
+    calibration state was derived from; it is recorded beside the table when
+    both are given (the Stage 6 writers always pass it with a table).
+    """
     group.attrs["creation_time"] = datetime.now().isoformat()
     group.attrs["n_windows"] = len(review.window_statuses)
 
@@ -347,6 +367,10 @@ def save_stage6_review_to_hdf5(review: Stage6Review, group: h5py.Group) -> None:
             _final_products_to_dict(review.final_products)
         )
         fp_grp.attrs["peak_fields"] = FINAL_PEAK_FIELDS_VERSION
+        if calibration_clocks is not None:
+            fp_grp.attrs[_CALIBRATION_CLOCKS_ATTR] = json.dumps(
+                [c.to_dict() for c in calibration_clocks]
+            )
 
     cw_grp = group.require_group("created_windows")
     cw_grp.attrs["data"] = json.dumps(
@@ -417,6 +441,28 @@ def read_created_window_bounds(
         lo, hi = (float(v) for v in d["freq_range"])
         out.append((int(d["window_id"]), min(lo, hi), max(lo, hi)))
     return out
+
+
+def read_final_products_calibration_clocks(
+    group: Optional[h5py.Group],
+) -> Optional[Tuple[ClockSource, ...]]:
+    """The clock declaration the stored final-products table was derived under.
+
+    *group* is a ``stage6_review`` group (or ``None``). ``None`` when no table
+    is stored or the table was written before the declaration was recorded;
+    an empty tuple when it was derived with no declaration. Never writes.
+    """
+    if group is None:
+        return None
+    fp_grp = group.get("final_products")
+    if fp_grp is None or fp_grp.attrs.get("data") is None:
+        return None
+    raw = fp_grp.attrs.get(_CALIBRATION_CLOCKS_ATTR)
+    if raw is None:
+        return None
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8")
+    return coerce_clock_sources(str(raw))
 
 
 def final_products_predate_fit_fields(group: Optional[h5py.Group]) -> bool:

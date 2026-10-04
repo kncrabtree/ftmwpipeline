@@ -24,6 +24,21 @@ with ``h5dump -p`` and so future shape-specific parameter blocks
           @seeder_rchi2
           ...
         conservative/  penalties/  rescue/  thaw/  ...
+        consumed/                 (what the fit took from other stages)
+          @tau_calibration_source
+          @tau_maj_us  @sigma_tau_us
+          @band_majorities        (JSON; the per-band table routed, or None)
+          @timebase_epsilon  @timebase_sigma_epsilon
+          @peak_survival_snr_floor
+
+``consumed`` (:class:`Stage5Consumed`) holds the values the fit took from
+another stage's result rather than from its knobs: the decay-time anchor from
+Stage 2b, the timebase epsilon its spur window used, and the survival floor it
+derived from the Stage 3 promotion cutoff. Neither a Stage 2b nor a timebase
+re-run invalidates Stage 5, so this is what says what the fit used. The
+settings resolver never reads it. A record written by ``settings set`` (the
+sparse user layer) carries no ``consumed`` block; the stage is then not
+complete, and the next fit writes one.
 
 Unset (Optional-None) fields encode as the ``__None__`` sentinel string,
 matching :mod:`ftmwpipeline.io.fid_serialization` and
@@ -34,8 +49,8 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import replace
-from typing import Any, Dict, Optional, Tuple
+from dataclasses import dataclass, replace
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 import h5py
 
@@ -51,6 +66,7 @@ from ..core.stage_fit_settings import from_attrs as stage_fit_from_attrs
 from ..core.stage_fit_settings import to_attrs as stage_fit_to_attrs
 from ..core.start_detection_settings import StartDetectionSettings
 from ..fitting.active_ft import active_ft_bin_spacing_mhz
+from ..fitting.tau_calibration import BandMajority
 from ..preprocessing.start_detection import StartDetectionRecord, StartDetectionResult
 from ._settings_serialization import (
     decode_attr,
@@ -65,8 +81,12 @@ logger = logging.getLogger(__name__)
 STAGE_FIT_PATH = "processing_parameters/stage5_fit"
 
 #: Field-set version of the ``stage5_fit`` record this codec writes (see
-#: :mod:`ftmwpipeline.io.provenance`).
-STAGE5_FIT_FIELD_SET_VERSION = 1
+#: :mod:`ftmwpipeline.io.provenance`). Version 2 added the ``consumed`` block
+#: and made ``tau.fit_tau`` concrete (``True`` is its hard default).
+STAGE5_FIT_FIELD_SET_VERSION = 2
+
+#: The record's subgroup holding :class:`Stage5Consumed`.
+_CONSUMED = "consumed"
 
 # Top-level audit attributes (always carried as-is, not part of to_attrs).
 _AUDIT_ATTRS = ("creation_time", "preset_name")
@@ -86,11 +106,114 @@ _STAGE2B_GROUP_PATHS = (
 _NONE_SENTINEL = "__None__"
 
 
+@dataclass(frozen=True)
+class Stage5Consumed:
+    """The values a Stage 5 fit took from other stages' results.
+
+    Attributes
+    ----------
+    tau_calibration_source : str
+        Which band-wide decay-time anchor drove the fit: ``"override"`` (the
+        ``tau.tau_maj_override_us`` / ``tau.sigma_tau_override_us`` pair),
+        ``"persisted"`` (the Stage 2b calibration of the fit's shape) or
+        ``"none"`` (no anchor).
+    tau_maj_us, sigma_tau_us : float or None
+        That band-wide anchor (us): the anchor of every window per-band
+        routing did not reach. ``None`` when ``tau_calibration_source`` is
+        ``"none"``.
+    band_majorities : tuple of BandMajority or None
+        The Stage 2b per-band table the fit routed each window's anchor
+        through (:func:`~ftmwpipeline._internal.stage5_impl.resolve_window_tau_anchor`),
+        or ``None`` when per-band routing was not used (switched off, an
+        override pair, or no per-band table).
+    timebase_epsilon, timebase_sigma_epsilon : float or None
+        The timebase scale error and its 1-sigma uncertainty the spur gate's
+        epsilon-aware match window used, or ``None`` when it used none (no
+        clock declaration, spur gating off, or no timebase calibration).
+    peak_survival_snr_floor : float
+        The effective peak-survival SNR floor: ``peak_survival.snr_survival_floor``
+        when set, otherwise the Stage 3 promotion cutoff times
+        ``peak_survival.snr_survival_factor``.
+    """
+
+    tau_calibration_source: str
+    tau_maj_us: Optional[float]
+    sigma_tau_us: Optional[float]
+    band_majorities: Optional[Tuple[BandMajority, ...]]
+    timebase_epsilon: Optional[float]
+    timebase_sigma_epsilon: Optional[float]
+    peak_survival_snr_floor: float
+
+    def to_attrs(self) -> Dict[str, Any]:
+        """The record's ``consumed`` attrs (``None`` as ``__None__``)."""
+
+        def _opt(value: Optional[float]) -> Any:
+            return _NONE_SENTINEL if value is None else float(value)
+
+        bands: Any = _NONE_SENTINEL
+        if self.band_majorities is not None:
+            bands = json.dumps(
+                [
+                    {
+                        "label": str(b.label),
+                        "freq_lo_mhz": float(b.freq_lo_mhz),
+                        "freq_hi_mhz": float(b.freq_hi_mhz),
+                        "n": int(b.n),
+                        "tau_maj_us": float(b.tau_maj_us),
+                        "sigma_tau_us": float(b.sigma_tau_us),
+                    }
+                    for b in self.band_majorities
+                ]
+            )
+        return {
+            "tau_calibration_source": str(self.tau_calibration_source),
+            "tau_maj_us": _opt(self.tau_maj_us),
+            "sigma_tau_us": _opt(self.sigma_tau_us),
+            "band_majorities": bands,
+            "timebase_epsilon": _opt(self.timebase_epsilon),
+            "timebase_sigma_epsilon": _opt(self.timebase_sigma_epsilon),
+            "peak_survival_snr_floor": float(self.peak_survival_snr_floor),
+        }
+
+    @classmethod
+    def from_attrs(cls, attrs: Mapping[str, Any]) -> "Stage5Consumed":
+        """Inverse of :meth:`to_attrs`."""
+
+        def _opt(key: str) -> Optional[float]:
+            value = decode_attr(attrs[key])
+            return None if value == _NONE_SENTINEL else float(value)
+
+        raw_bands = decode_attr(attrs["band_majorities"])
+        bands: Optional[Tuple[BandMajority, ...]] = None
+        if raw_bands != _NONE_SENTINEL:
+            bands = tuple(
+                BandMajority(
+                    label=str(d["label"]),
+                    freq_lo_mhz=float(d["freq_lo_mhz"]),
+                    freq_hi_mhz=float(d["freq_hi_mhz"]),
+                    n=int(d["n"]),
+                    tau_maj_us=float(d["tau_maj_us"]),
+                    sigma_tau_us=float(d["sigma_tau_us"]),
+                )
+                for d in json.loads(raw_bands)
+            )
+        return cls(
+            tau_calibration_source=str(decode_attr(attrs["tau_calibration_source"])),
+            tau_maj_us=_opt("tau_maj_us"),
+            sigma_tau_us=_opt("sigma_tau_us"),
+            band_majorities=bands,
+            timebase_epsilon=_opt("timebase_epsilon"),
+            timebase_sigma_epsilon=_opt("timebase_sigma_epsilon"),
+            peak_survival_snr_floor=float(attrs["peak_survival_snr_floor"]),
+        )
+
+
 def save_stage_fit_settings_to_h5(
     file_path: str,
     settings: StageFitSettings,
     *,
     preset_name: Optional[str] = None,
+    consumed: Optional[Stage5Consumed] = None,
 ) -> None:
     """Persist a resolved :class:`StageFitSettings` to ``processing_parameters/stage5_fit``.
 
@@ -99,12 +222,17 @@ def save_stage_fit_settings_to_h5(
     fit was driven by a named preset. The set ``shape`` is a ``{"kind": ...}``
     subgroup (room for future shape-specific blocks); an unset shape is the
     ``__None__`` sentinel top-level attr -- both fall out of the generic
-    dict-value-becomes-subgroup rule in ``save_settings``.
+    dict-value-becomes-subgroup rule in ``save_settings``. ``consumed`` is what
+    the fit took from other stages; a Stage 5 fit always passes it, and only
+    the sparse user layer (``settings set``) writes the record without it.
     """
+    attrs = stage_fit_to_attrs(settings)
+    if consumed is not None:
+        attrs[_CONSUMED] = consumed.to_attrs()
     save_settings(
         file_path,
         STAGE_FIT_PATH,
-        stage_fit_to_attrs(settings),
+        attrs,
         field_set_version=STAGE5_FIT_FIELD_SET_VERSION,
         preset_name=preset_name,
     )
@@ -241,6 +369,20 @@ def stage_fit_settings_provenance(file_path: str) -> Optional[RecordProvenance]:
     """The ``stage5_fit`` record's field-set version against
     :data:`STAGE5_FIT_FIELD_SET_VERSION`, or ``None`` if the record is absent."""
     return record_provenance(file_path, STAGE_FIT_PATH, STAGE5_FIT_FIELD_SET_VERSION)
+
+
+def load_stage_fit_consumed_from_h5(file_path: str) -> Optional[Stage5Consumed]:
+    """The :class:`Stage5Consumed` the last Stage 5 fit recorded, or ``None``.
+
+    ``None`` when the file has no ``stage5_fit`` record or the record has no
+    ``consumed`` block (a record written before version 2, or the sparse user
+    layer). :func:`stage_fit_settings_provenance` tells those apart.
+    """
+    with h5py.File(file_path, "r") as h5f:
+        group = h5f.get(f"{STAGE_FIT_PATH}/{_CONSUMED}")
+        if not isinstance(group, h5py.Group):
+            return None
+        return Stage5Consumed.from_attrs(group.attrs)
 
 
 def write_stage2b_recommended_shape(
@@ -600,6 +742,8 @@ def read_recommended_start_detection(
 __all__ = [
     "STAGE_FIT_PATH",
     "STAGE5_FIT_FIELD_SET_VERSION",
+    "Stage5Consumed",
+    "load_stage_fit_consumed_from_h5",
     "stage_fit_settings_provenance",
     "declared_active_acquisition_us",
     "save_stage_fit_settings_to_h5",

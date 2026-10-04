@@ -17,6 +17,7 @@ Clock-declaration resolution lives in one small function
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 from datetime import datetime
@@ -156,6 +157,9 @@ def calibrate_timebase_impl(
         kappa_sys=kappa_v,
         snr_min=snr_min_v,
     )
+    # Record the declaration the calibration ran with, typed and labelled, in
+    # its own record: every layer it was resolved from can change afterwards.
+    result = dataclasses.replace(result, clock_sources=tuple(resolved_clocks))
 
     parameters_used: Dict[str, Any] = {
         "kappa_sys": kappa_v,

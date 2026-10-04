@@ -10,7 +10,8 @@ HDF5 layout::
         attrs:
             epsilon, sigma_epsilon, lattice_g_mhz, n_used, n_detected,
             kappa_sys, snr_min, sample_dt_us, start_us, end_us, span_us,
-            preconditions_passed, field_set_version, creation_time
+            preconditions_passed, clock_sources, field_set_version,
+            creation_time
         preconditions_notes   dataset, str
         tones                 group:
             f_bb_mhz   (float64)
@@ -21,18 +22,31 @@ HDF5 layout::
             used       (bool)
             drift_control (bool)
         algorithm_info        group, attrs: method, version
+
+``clock_sources`` is the clock declaration the calibration resolved and ran
+with, as the JSON list of ``{freq_mhz, locked, label}`` a
+:class:`~ftmwpipeline.core.stage_fit_settings.ClockSource` encodes to (the
+``spur.clocks`` form). It is recorded here because the layers it was resolved
+from (an explicit argument, the Stage 5 settings, the import-time
+recommendation) can all change afterwards. ``None`` (the ``__None__``
+sentinel) only for a result saved without one, which the stage never does.
 """
 
 from __future__ import annotations
 
+import json
+from typing import Optional, Tuple
+
 import h5py
 import numpy as np
 
+from ..core.stage_fit_settings import ClockSource, coerce_clock_sources
 from ..fitting.timebase_calibration import (
     TimebaseCalibrationResult,
     TimebaseToneRead,
 )
 from ._hdf5_helpers import reset_group
+from ._settings_serialization import decode_attr
 from .provenance import RecordProvenance, group_provenance, write_field_set_version
 
 SCHEMA_VERSION = "1.0"
@@ -41,7 +55,11 @@ GROUP_PATH = "timebase_calibration"
 #: Field-set version of the timebase record's settings (the knobs and the
 #: active region it ran with); see :mod:`ftmwpipeline.io.provenance`. Distinct
 #: from :data:`SCHEMA_VERSION`, the algorithm tag in ``algorithm_info``.
-TIMEBASE_FIELD_SET_VERSION = 1
+#: Version 2 added ``clock_sources``.
+TIMEBASE_FIELD_SET_VERSION = 2
+
+_CLOCK_SOURCES_ATTR = "clock_sources"
+_NONE_SENTINEL = "__None__"
 
 
 __all__ = [
@@ -77,6 +95,7 @@ def save_timebase_calibration_to_hdf5(
     h5_group.attrs["end_us"] = float(result.end_us)
     h5_group.attrs["span_us"] = float(result.span_us)
     h5_group.attrs["preconditions_passed"] = bool(result.preconditions_passed)
+    h5_group.attrs[_CLOCK_SOURCES_ATTR] = _encode_clock_sources(result.clock_sources)
     write_field_set_version(h5_group.attrs, TIMEBASE_FIELD_SET_VERSION)
 
     notes = np.asarray(result.preconditions_notes, dtype=object)
@@ -171,7 +190,22 @@ def load_timebase_calibration_from_hdf5(
         span_us=float(a["span_us"]),
         preconditions_passed=bool(a["preconditions_passed"]),
         preconditions_notes=notes,
+        clock_sources=_decode_clock_sources(a.get(_CLOCK_SOURCES_ATTR)),
     )
+
+
+def _encode_clock_sources(clocks: Optional[Tuple[ClockSource, ...]]) -> str:
+    if clocks is None:
+        return _NONE_SENTINEL
+    return json.dumps([c.to_dict() for c in clocks])
+
+
+def _decode_clock_sources(raw: object) -> Optional[Tuple[ClockSource, ...]]:
+    """The recorded declaration; ``None`` when absent (a record written before
+    version 2) or the ``__None__`` sentinel."""
+    if raw is None:
+        return None
+    return coerce_clock_sources(decode_attr(raw))
 
 
 def timebase_calibration_provenance(h5_group: h5py.Group) -> RecordProvenance:

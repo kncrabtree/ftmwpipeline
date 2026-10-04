@@ -304,6 +304,11 @@ zero-padding (``detection_zpf``, ``gap_active_zpf``), the grid-aware Savitzky-Go
 rule (``sg_fwhm_coverage``, ``sg_min_window``), and the scatter knobs for the
 primary pass's own apodized-domain noise estimate. These rarely need touching.
 
+The decay time and shape the gap pass took from :doc:`Stage 2b <stage2b_tau>` are
+recorded in the Stage 3 settings record (``consumed``), so a later Stage 2b
+re-run does not change what this run is read as having used; see
+:ref:`consumed-values`.
+
 Inspecting the result
 ---------------------
 

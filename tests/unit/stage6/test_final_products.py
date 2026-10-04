@@ -562,6 +562,79 @@ def test_review_run_builds_final_products(stage5_small_source, tmp_path):
         assert p.sigma_f_khz == pytest.approx(p.sigma_stat_khz)
 
 
+@pytest.mark.integration
+def test_fit_and_detection_record_what_they_consumed(stage5_small_source):
+    """Stages 3 and 5 record, through their codecs, the values they took from
+    other stages: the same values their parameters blobs carry. Read-only."""
+    from ftmwpipeline.io.peak_detection_settings_serialization import (
+        load_peak_detection_consumed_from_h5,
+    )
+    from ftmwpipeline.io.stage_fit_settings_serialization import (
+        load_stage_fit_consumed_from_h5,
+        load_stage_fit_settings_from_h5,
+    )
+
+    path = str(stage5_small_source)
+    s3 = load_peak_detection_consumed_from_h5(path)
+    assert s3 is not None
+    with h5py.File(path, "r") as h5f:
+        blob = json.loads(
+            h5f["processing_parameters/peak_detection"].attrs["parameters"]
+        )
+    assert s3.tau_basis_us == blob["tau_basis_us"]
+    assert s3.gap_shape == blob["gap_shape"]
+    assert s3.tau_basis_source == blob["tau_basis_source"]
+
+    s5 = load_stage_fit_consumed_from_h5(path)
+    assert s5 is not None
+    params = ftmw.load_fit(path).parameters
+    assert s5.tau_calibration_source == params["tau_calibration_source"]
+    assert s5.tau_maj_us == params["tau_maj_us"]
+    assert s5.sigma_tau_us == params["sigma_tau_us"]
+    assert (s5.band_majorities is not None) == bool(params["per_band_tau"])
+    fit_diag = ftmw.load_fit(path).diagnostics
+    assert s5.peak_survival_snr_floor == fit_diag["peak_survival"]["snr_floor"]
+    # The fixture runs no timebase before the fit, so the spur gate used none.
+    assert s5.timebase_epsilon is None and s5.timebase_sigma_epsilon is None
+    settings = load_stage_fit_settings_from_h5(path)
+    assert settings is not None
+    # Concrete (not None); the codec reads bool knobs back as numpy bools.
+    assert settings.tau.fit_tau is not None and bool(settings.tau.fit_tau)
+
+
+@pytest.mark.integration
+def test_review_run_records_what_it_used(stage5_small_source, tmp_path):
+    """The floor it applied is written explicitly even when never declared, and
+    the table records the clock declaration its calibration state came from:
+    the one the fit persisted."""
+    from ftmwpipeline.io.frequency_calibration_serialization import (
+        frequency_calibration_provenance,
+    )
+    from ftmwpipeline.io.stage6_review_serialization import (
+        read_final_products_calibration_clocks,
+    )
+    from ftmwpipeline.io.stage_fit_settings_serialization import (
+        load_stage_fit_settings_from_h5,
+    )
+
+    fp = tmp_path / "copy.ftmw"
+    shutil.copy(stage5_small_source, fp)
+    with h5py.File(fp, "a") as h5f:
+        if "frequency_calibration" in h5f:
+            del h5f["frequency_calibration"]
+
+    review_run_impl(str(fp))
+
+    persisted = load_stage_fit_settings_from_h5(str(fp))
+    assert persisted is not None and persisted.spur.clocks
+    with h5py.File(fp, "r") as h5f:
+        record = frequency_calibration_provenance(h5f)
+        assert record is not None and record.is_current
+        assert load_frequency_calibration_from_hdf5(h5f).sigma_floor_khz == 0.0
+        clocks = read_final_products_calibration_clocks(h5f["stage6_review"])
+    assert clocks == tuple(persisted.spur.clocks)
+
+
 # ---------------------------------------------------------------------------
 # Calibration-state derivation (the three states), crafted directly
 # ---------------------------------------------------------------------------
