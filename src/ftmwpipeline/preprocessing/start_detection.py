@@ -28,6 +28,7 @@ import numpy as np
 
 from ..core.data_structures import FID
 from ..core.start_detection_settings import StartDetectionSettings
+from ..file_manager import BadSettingError
 
 
 @dataclass(frozen=True)
@@ -129,9 +130,15 @@ def detect_start_time(
     sweep_max = min(settings.sweep_max_us, max(fid.duration_us - 1.0, settings.step_us))
     starts = np.round(np.arange(0.0, sweep_max + 1e-9, settings.step_us), 6)
     if starts.size < 5:
-        raise ValueError(
-            "FID too short for start detection "
-            f"(duration {fid.duration_us:.3f} us, step {settings.step_us} us)"
+        raise BadSettingError(
+            "stage0.step_us",
+            "a sweep step that gives at least 5 start times inside the FID "
+            f"(duration {fid.duration_us:.3f} us)",
+            settings.step_us,
+            message=(
+                "FID too short for start detection "
+                f"(duration {fid.duration_us:.3f} us, step {settings.step_us} us)"
+            ),
         )
 
     summag = np.empty(starts.shape, dtype=float)

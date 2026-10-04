@@ -14,6 +14,8 @@ from ..core.data_structures import FID, ChirpWindow
 from ..core.stage_fit_settings import coerce_clock_sources
 from ..core.start_detection_settings import StartDetectionSettings
 from ..file_manager import (
+    BadSettingError,
+    PipelineFileError,
     SourceMetadata,
     create_pipeline_file,
     open_pipeline_file,
@@ -156,12 +158,28 @@ def import_data_impl(
         format_name = detect_format(source_path)
         if format_name is None:
             available_formats = ", ".join(list_formats())
-            raise ValueError(
-                f"Could not detect data format for: {source_path}. "
-                f"Available formats: {available_formats}"
+            raise BadSettingError(
+                "format",
+                f"one of: {available_formats} (auto-detection found none)",
+                None,
+                message=(
+                    f"Could not detect data format for: {source_path}. "
+                    f"Available formats: {available_formats}"
+                ),
             )
         logger.info(f"Detected format: {format_name}")
     else:
+        known_formats = list_formats()
+        if format_name not in known_formats:
+            raise BadSettingError(
+                "format",
+                f"one of: {', '.join(known_formats)}",
+                format_name,
+                message=(
+                    f"Unknown format '{format_name}'. "
+                    f"Available formats: {known_formats}"
+                ),
+            )
         logger.info(f"Using specified format: {format_name}")
 
     # Validate source with detected/specified format
@@ -181,6 +199,8 @@ def import_data_impl(
         logger.info(
             f"FID data loaded successfully: {fid.n_points:,} points, {fid.duration_us:.1f} μs"
         )
+    except PipelineFileError:
+        raise
     except Exception as e:
         raise RuntimeError(f"Failed to load FID data: {e}")
 
@@ -215,6 +235,8 @@ def import_data_impl(
                 logger.warning("Could not persist recommended clock sources: %s", exc)
 
         persist_chirp_window_metadata(str(pipeline_file), fid)
+    except PipelineFileError:
+        raise
     except Exception as e:
         raise RuntimeError(f"Failed to create pipeline file: {e}")
 
@@ -272,6 +294,8 @@ def load_fid_from_pipeline_impl(file_path: str) -> FID:
                 raise ValueError("Invalid pipeline file: missing 'fid_data' group")
             fid = load_fid_from_hdf5(h5f["stage0_fid_data"])
         return fid
+    except PipelineFileError:
+        raise
     except Exception as e:
         raise RuntimeError(f"Failed to load FID from pipeline file {file_path}: {e}")
 
@@ -329,6 +353,8 @@ def visualize_fid_impl(
         fig = plot_fid(fid, show_metadata=show_metadata, title=title, **plot_kwargs)
         logger.info("FID visualization completed successfully")
         return fig
+    except PipelineFileError:
+        raise
     except Exception as e:
         raise RuntimeError(f"Failed to create FID visualization: {e}")
 
@@ -362,6 +388,8 @@ def get_pipeline_info_impl(file_path: str) -> Tuple[Path, SourceMetadata, Any, F
         file_path_obj, source_metadata, stage_tracker = open_pipeline_file(file_path)
         fid = load_fid_from_hdf5(file_path_obj)
         return file_path_obj, source_metadata, stage_tracker, fid
+    except PipelineFileError:
+        raise
     except Exception as e:
         raise RuntimeError(f"Failed to get pipeline info for {file_path}: {e}")
 
