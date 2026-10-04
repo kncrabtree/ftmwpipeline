@@ -580,9 +580,12 @@ named that does not exist, e.g. all unknown window ids of a curation batch),
 
 ## Events and cancellation
 
-Wave 5.1 pins everything here except Stage 5 partial persistence and resume,
-which §Stage 5 partial fits (Wave 5.2) will pin. Until then, cancelling Stage 5
-leaves nothing behind, like any other stage.
+This section is built in three steps:
+- Wave 5.1 builds the events and cancellation.
+- Wave 5.1b builds §Crash safety.
+- Wave 5.2 builds §Stage 5 partial fits.
+
+Until 5.2, cancelling Stage 5 leaves nothing behind, like any other stage.
 
 ### Python surface
 
@@ -722,6 +725,95 @@ What is left in the file is the same as after a cancel at that point.
 - **`--events`.** Every long verb accepts `--events`, which writes each event to
   stderr as one JSON line. Under `--json`, an error dict follows as the last
   stderr line.
+
+### Crash safety
+
+- **Every call that writes a pipeline file writes atomically.** This covers stage
+  runs, curation, settings, clocks and stamps. The call does all its writes in a
+  temporary copy beside the file, then replaces the original with one
+  `os.replace`.
+- A process killed at any point, `SIGKILL` included, leaves one of two files: the
+  file exactly as it was before the call, or the file as the call completed it.
+  It never leaves a mix, a stage marked complete over missing or partial
+  results, or a file that will not open.
+- A reader that already has the file open keeps the version it opened.
+- If the replace fails, the call raises and the file is unchanged. This happens,
+  for example, on a platform that refuses to replace a file another process
+  holds open.
+- Within `run_pipeline`, each stage is its own atomic write, so a kill keeps
+  every stage that finished before it.
+- **Temporary copies.** The copy is created in the same directory as the target,
+  so that `os.replace` stays on one filesystem. It is named
+  `.<target basename>.ftmw-tmp.<hostname>.<pid>`, where `<pid>` is the decimal
+  process id of the writer and the basename includes its extension. Compaction
+  uses the same pattern.
+  - A kill between creating the copy and the replace leaves it behind.
+  - Before making its own copy, every write removes leftover copies of the same
+    target that were made on the same host by a process that is no longer
+    running.
+  - Copies from other hosts are never touched. Neither are copies whose pid is
+    alive, even if that pid has been reused.
+  - A client that knows no write to the file is in progress may delete every
+    copy matching the pattern.
+
+### Stage 5 partial fits
+
+- **Writing a partial fit.**
+  - When a cancel or a `callback_failed` interrupts Stage 5, the windows that
+    finished are written as a partial fit in one atomic write. "Finished"
+    means the window's whole per-window pass ran.
+  - The same write discards the previous fit and everything downstream of it.
+  - No partial fit is written during the walk. A process killed during
+    Stage 5 therefore leaves the file as it was before the call
+    (§Crash safety).
+  - `cancelled.completed_windows` lists the window ids that were written.
+- **`status` while partial.**
+  - `fit` reports `partial` and appears in `runnable`.
+  - `review` reports `not_run`.
+- **What reads and writes do while partial:**
+  - Every accessor that reads the fit or the final products behaves as it does
+    before Stage 5 has run. There is no partial line list.
+  - `window_status` rows of written windows carry `n_fitted_peaks` and
+    `live`; the other rows keep them `not_run`.
+  - `review run` and every curation call refuse with `stage_not_run`.
+- **Discard.** Anything that invalidates a complete fit also discards a partial
+  one:
+  - an upstream stage re-run;
+  - `settings set` / `settings unset` on a `stage5` setting;
+  - a forced re-import.
+
+  Clocks and the timebase leave a partial fit alone, as they leave a complete
+  fit.
+- **Resume.** `fit_peaks` (CLI: `fit run`) resumes a partial fit by default
+  and refits only the windows not yet written. `restart=True` (CLI:
+  `--restart`) discards the partial fit and starts over. The call starts over,
+  and says why, when:
+  - the requested settings differ from the partial fit's recorded effective
+    settings: the resolved Stage 5 settings, the consumed upstream values, or
+    `ANALYSIS_EPOCH`;
+  - or the partial fit lacks the provenance needed for that comparison.
+
+  It never resumes on a guess.
+- **What a resume produces.** After the remaining windows, the fit finishes as
+  usual: structural replan, cleanup and sorting over the whole fit. The result
+  equals an uninterrupted run with the same settings, to the same standard as
+  the parallel and sequential walks equal each other:
+  - the same lines, `peak_uid`s and window structure;
+  - parameters equal to floating-point rounding.
+
+  An accepted thaw during a resume refits every window sequentially, as an
+  uninterrupted run with an accepted thaw already does.
+- **Resume summary.** `fit run`'s `run_result` summary, and therefore its
+  `StageFinished.summary`, carries:
+  - `resumed` (`bool`);
+  - `windows_carried` (`int`, `0` unless resumed);
+  - `restart_reason`: `null`, `"restart_requested"`, `"settings_changed"`,
+    `"incomplete_provenance"`, or `"thaw_refit"`.
+
+  `restart_reason` is `null` both for a fresh fit with nothing to resume and
+  for a clean resume.
+- **Progress on a resume.** `WindowProgress.index` continues from the count
+  already written, and `total` stays the full window count.
 
 ## Status and settings
 
