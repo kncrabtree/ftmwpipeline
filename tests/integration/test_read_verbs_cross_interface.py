@@ -57,6 +57,7 @@ KINDS = {
     "preview_source": ("direct", "dict"),
     "window_model": ("direct", "dict"),
     "spectrum_model": ("direct", "dict"),
+    "analysis_fingerprint": ("direct", "dict"),
 }
 
 
@@ -86,6 +87,7 @@ EXPECTED_SCHEMA = {
     "preview_source": "ftmw/source_preview@1",
     "window_model": "ftmw/window_model@1",
     "spectrum_model": "ftmw/spectrum_model@1",
+    "analysis_fingerprint": "ftmw/analysis_fingerprint@1",
 }
 
 

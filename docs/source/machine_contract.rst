@@ -628,7 +628,12 @@ results. The call only reads.
 * the analysis epoch each stage was produced under.
 
 A stage that has not run is part of the digest as *not run*, so the digest
-changes as stages complete. Not covered: the FID samples themselves (hash
+changes as stages complete. A stage counts as run only when it is complete:
+a stage that was invalidated (for example by ``settings set``) is *not run*
+whatever records it left behind. When a completed review has no accuracy floor
+on record, the floor is ``0.0``, the value Stage 6 applies in that case. The
+Stage 2b shape recommendation is not hashed itself; its verdict is covered
+where it was used (the Stage 3 gap-pass shape and the Stage 5 fit shape). Not covered: the FID samples themselves (hash
 ``fid_samples`` if you need a spectrum identity), curation decisions (hash
 ``review_log`` if you need an edit-set identity), the attention-routing
 arguments of ``review run``, write timestamps, preset names, and the package

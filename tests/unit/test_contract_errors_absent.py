@@ -80,10 +80,11 @@ def test_contract_version_is_int():
     assert isinstance(CONTRACT_VERSION, int)
 
 
-def test_contract_version_is_four():
+def test_contract_version_is_five():
     # Wave 0 published 1; Wave 1's accessors raised it to 2; the final-products
-    # fit fields (Wave 2) to 3; the window_model / spectrum_model accessors to 4.
-    assert CONTRACT_VERSION == 4
+    # fit fields (Wave 2) to 3; the window_model / spectrum_model accessors to 4;
+    # the analysis_fingerprint accessor to 5.
+    assert CONTRACT_VERSION == 5
 
 
 # ---- stage vocabulary -----------------------------------------------------
