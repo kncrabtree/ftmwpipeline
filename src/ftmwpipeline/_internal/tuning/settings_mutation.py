@@ -67,7 +67,8 @@ state unspellable in the other direction.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, is_dataclass
+import math
+from dataclasses import dataclass, fields, is_dataclass
 from pathlib import Path
 from typing import (
     Any,
@@ -90,6 +91,7 @@ from ...core import settings as ft_mod
 from ...core import stage_fit_settings as fit_mod
 from ...core import tau_calibration_settings as tau_mod
 from ...core import window_planning_settings as window_mod
+from ...core.knob_metadata import FieldTyping, field_typing_meta
 from ...core.peak_shape import PeakShape
 from ...core.stage_fit_settings import ClockSource, ShapeSpec, coerce_clock_sources
 from ...file_manager import (
@@ -252,6 +254,18 @@ def _field_hint(cls: type, sub: Optional[str], field: str) -> Tuple[Any, bool]:
             return non_none[0], optional
         return hint, optional
     return hint, False
+
+
+def _field_typing(cls: type, sub: Optional[str], field: str) -> FieldTyping:
+    """The :class:`FieldTyping` (choices, bounds) a field declares; all ``None``
+    when it states none. The field must exist (see :func:`_field_hint`)."""
+    owner: Any = cls
+    if sub is not None:
+        owner = type(getattr(cls(), sub))
+    for f in fields(owner):
+        if f.name == field:
+            return field_typing_meta(f)
+    return FieldTyping()
 
 
 def _type_name(type_hint: Any) -> str:
@@ -437,7 +451,8 @@ def set_setting(file_path: Union[str, Path], knob: str, value: Any) -> SetResult
     native Python value of the field's declared type or a string in one of the
     encodings the module docstring tabulates; it is coerced to that type, and a
     value that does not parse raises :class:`BadSettingError` (a ``ValueError``)
-    without touching the file, as does an unknown or malformed ``knob``.
+    without touching the file, as does an unknown or malformed ``knob`` and a
+    value outside the field's declared ``choices`` or ``bounds``.
     ``None`` unsets the field (see :func:`unset_setting`). The FT is unapodized
     and native-length, so there are no FT apodization knobs to set.
     """
@@ -473,7 +488,9 @@ def _set_setting(path: str, knob: str, value: Any) -> SetResult:
             knob,
             message=f"unknown setting {knob!r}; no such field on {prefix} settings",
         ) from None
-    coerced = _coerce_or_unset(knob, field_type, optional, value)
+    coerced = _coerce_or_unset(
+        knob, field_type, optional, value, _field_typing(spec.cls, sub, field)
+    )
 
     settings = spec.load(path) or spec.cls()
     _assign(settings, sub, field, coerced)
@@ -496,8 +513,18 @@ def unset_setting(file_path: Union[str, Path], knob: str) -> SetResult:
     return set_setting(file_path, knob, None)
 
 
-def _coerce_or_unset(knob: str, field_type: Any, optional: bool, value: Any) -> Any:
-    """Coerce ``value``, treating ``None`` as the unset request."""
+def _coerce_or_unset(
+    knob: str,
+    field_type: Any,
+    optional: bool,
+    value: Any,
+    typing: Optional[FieldTyping] = None,
+) -> Any:
+    """Coerce ``value``, treating ``None`` as the unset request.
+
+    A coerced value is then checked against the ``choices`` and ``bounds`` the
+    field declares (``typing``); a violation raises :class:`BadSettingError`.
+    """
     if value is None:
         if not optional:
             raise BadSettingError(
@@ -511,13 +538,68 @@ def _coerce_or_unset(knob: str, field_type: Any, optional: bool, value: Any) -> 
             )
         return None
     try:
-        return _coerce(field_type, value)
+        coerced = _coerce(field_type, value)
     except BadSettingError:
         raise
     except ValueError as e:
         raise BadSettingError(
             knob, _expected_text(field_type), value, message=f"{knob}: {e}"
         ) from e
+    if typing is not None:
+        _check_typing(knob, coerced, value, typing)
+    return coerced
+
+
+def _bounds_text(bounds: Dict[str, Any]) -> str:
+    """Interval notation for a bounds mapping: ``[0.0, 1.0)``, ``(0, inf)``."""
+    lo, hi = bounds.get("min"), bounds.get("max")
+    left = "[" if bounds.get("min_inclusive", True) and lo is not None else "("
+    right = "]" if bounds.get("max_inclusive", True) and hi is not None else ")"
+    return f"{left}{'-inf' if lo is None else lo}, {'inf' if hi is None else hi}{right}"
+
+
+def _outside_bounds(number: Any, bounds: Dict[str, Any]) -> bool:
+    """``True`` when a numeric ``number`` violates ``bounds`` (nan always does)."""
+    if isinstance(number, bool) or not isinstance(number, (int, float)):
+        return False
+    if isinstance(number, float) and math.isnan(number):
+        return True
+    lo, hi = bounds.get("min"), bounds.get("max")
+    if lo is not None and (
+        number < lo or (number == lo and not bounds.get("min_inclusive", True))
+    ):
+        return True
+    return hi is not None and (
+        number > hi or (number == hi and not bounds.get("max_inclusive", True))
+    )
+
+
+def _check_typing(knob: str, coerced: Any, raw: Any, typing: FieldTyping) -> None:
+    """Enforce a field's declared ``choices`` and ``bounds`` on a coerced value.
+
+    ``choices`` is membership of the whole value. ``bounds`` applies to a numeric
+    scalar, or to every numeric element of a tuple / list value; a value of any
+    other kind is not bounded. ``expected`` names the declared constraint and
+    ``value`` is what the caller passed.
+    """
+    if typing.choices is not None and coerced not in typing.choices:
+        listed = ", ".join(repr(c) for c in typing.choices)
+        raise BadSettingError(
+            knob,
+            f"one of {listed}",
+            raw,
+            message=f"{knob}: {raw!r} is not one of {listed}",
+        )
+    if typing.bounds is not None:
+        items = coerced if isinstance(coerced, (tuple, list)) else (coerced,)
+        if any(_outside_bounds(item, typing.bounds) for item in items):
+            interval = _bounds_text(typing.bounds)
+            raise BadSettingError(
+                knob,
+                f"a value in {interval}",
+                raw,
+                message=f"{knob}: {raw!r} is outside {interval}",
+            )
 
 
 def _set_stage1(path: str, knob: str, field: str, value: Any) -> SetResult:
@@ -545,7 +627,9 @@ def _set_stage1(path: str, knob: str, field: str, value: Any) -> SetResult:
             knob,
             message=f"unknown setting {knob!r}; no such field on stage1 FT settings",
         ) from None
-    coerced = _coerce_or_unset(knob, field_type, optional, value)
+    coerced = _coerce_or_unset(
+        knob, field_type, optional, value, _field_typing(ft_mod.FTSettings, None, field)
+    )
 
     resolved = _resolve_settings(path, None)
     effective = coerced
