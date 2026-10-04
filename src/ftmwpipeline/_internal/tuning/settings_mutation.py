@@ -67,7 +67,7 @@ state unspellable in the other direction.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, is_dataclass
+from dataclasses import dataclass, fields, is_dataclass
 from pathlib import Path
 from typing import (
     Any,
@@ -90,6 +90,7 @@ from ...core import settings as ft_mod
 from ...core import stage_fit_settings as fit_mod
 from ...core import tau_calibration_settings as tau_mod
 from ...core import window_planning_settings as window_mod
+from ...core.knob_metadata import FieldTyping, check_field_typing, field_typing_meta
 from ...core.peak_shape import PeakShape
 from ...core.stage_fit_settings import ClockSource, ShapeSpec, coerce_clock_sources
 from ...file_manager import (
@@ -252,6 +253,18 @@ def _field_hint(cls: type, sub: Optional[str], field: str) -> Tuple[Any, bool]:
             return non_none[0], optional
         return hint, optional
     return hint, False
+
+
+def _field_typing(cls: type, sub: Optional[str], field: str) -> FieldTyping:
+    """The :class:`FieldTyping` (choices, bounds) a field declares; all ``None``
+    when it states none. The field must exist (see :func:`_field_hint`)."""
+    owner: Any = cls
+    if sub is not None:
+        owner = type(getattr(cls(), sub))
+    for f in fields(owner):
+        if f.name == field:
+            return field_typing_meta(f)
+    return FieldTyping()
 
 
 def _type_name(type_hint: Any) -> str:
@@ -437,7 +450,8 @@ def set_setting(file_path: Union[str, Path], knob: str, value: Any) -> SetResult
     native Python value of the field's declared type or a string in one of the
     encodings the module docstring tabulates; it is coerced to that type, and a
     value that does not parse raises :class:`BadSettingError` (a ``ValueError``)
-    without touching the file, as does an unknown or malformed ``knob``.
+    without touching the file, as does an unknown or malformed ``knob`` and a
+    value outside the field's declared ``choices`` or ``bounds``.
     ``None`` unsets the field (see :func:`unset_setting`). The FT is unapodized
     and native-length, so there are no FT apodization knobs to set.
     """
@@ -473,7 +487,9 @@ def _set_setting(path: str, knob: str, value: Any) -> SetResult:
             knob,
             message=f"unknown setting {knob!r}; no such field on {prefix} settings",
         ) from None
-    coerced = _coerce_or_unset(knob, field_type, optional, value)
+    coerced = _coerce_or_unset(
+        knob, field_type, optional, value, _field_typing(spec.cls, sub, field)
+    )
 
     settings = spec.load(path) or spec.cls()
     _assign(settings, sub, field, coerced)
@@ -496,8 +512,18 @@ def unset_setting(file_path: Union[str, Path], knob: str) -> SetResult:
     return set_setting(file_path, knob, None)
 
 
-def _coerce_or_unset(knob: str, field_type: Any, optional: bool, value: Any) -> Any:
-    """Coerce ``value``, treating ``None`` as the unset request."""
+def _coerce_or_unset(
+    knob: str,
+    field_type: Any,
+    optional: bool,
+    value: Any,
+    typing: Optional[FieldTyping] = None,
+) -> Any:
+    """Coerce ``value``, treating ``None`` as the unset request.
+
+    A coerced value is then checked against the ``choices`` and ``bounds`` the
+    field declares (``typing``); a violation raises :class:`BadSettingError`.
+    """
     if value is None:
         if not optional:
             raise BadSettingError(
@@ -511,13 +537,16 @@ def _coerce_or_unset(knob: str, field_type: Any, optional: bool, value: Any) -> 
             )
         return None
     try:
-        return _coerce(field_type, value)
+        coerced = _coerce(field_type, value)
     except BadSettingError:
         raise
     except ValueError as e:
         raise BadSettingError(
             knob, _expected_text(field_type), value, message=f"{knob}: {e}"
         ) from e
+    if typing is not None:
+        check_field_typing(knob, coerced, value, typing)
+    return coerced
 
 
 def _set_stage1(path: str, knob: str, field: str, value: Any) -> SetResult:
@@ -545,7 +574,9 @@ def _set_stage1(path: str, knob: str, field: str, value: Any) -> SetResult:
             knob,
             message=f"unknown setting {knob!r}; no such field on stage1 FT settings",
         ) from None
-    coerced = _coerce_or_unset(knob, field_type, optional, value)
+    coerced = _coerce_or_unset(
+        knob, field_type, optional, value, _field_typing(ft_mod.FTSettings, None, field)
+    )
 
     resolved = _resolve_settings(path, None)
     effective = coerced

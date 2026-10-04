@@ -29,7 +29,10 @@ numbers become ``{"real": x, "imag": y}`` (each part a named field);
 dataclasses become dicts of their fields (or of the items their
 ``__ftmw_items__()`` returns, where the wire form differs from the fields, as
 for :class:`~ftmwpipeline.contract.PipelineWarning`); :class:`~pathlib.Path` a string;
-tuples, lists and sets lists; ``date``/``datetime`` ISO-8601 strings; a
+tuples, lists and sets lists (a ``PeakList`` is the plain list of its peaks: its
+``invalidated`` attribute is not part of the wire form); a ``ComplexFT`` an
+object of its two arrays, its metadata and its ``invalidated`` stage names;
+``date``/``datetime`` ISO-8601 strings; a
 :class:`~ftmwpipeline.file_manager.PipelineFileError` its ``to_dict()``.
 Anything else raises :class:`TypeError` -- there is no ``str()`` fallback.
 
@@ -408,12 +411,14 @@ def _convert(obj: Any, path: JsonPath, arrays: Optional[ArraySink]) -> Any:
         return _object(obj.items(), path, arrays)
     if _is_complex_ft(obj):
         # ComplexFT is a plain class, not a dataclass: its contract fields are
-        # the two arrays and the metadata mapping.
+        # the two arrays, the metadata mapping and the canonical stage names
+        # the run that produced it invalidated.
         return _object(
             (
                 ("freq_array", obj.freq_array),
                 ("complex_spectrum", obj.complex_spectrum),
                 ("metadata", obj.metadata),
+                ("invalidated", list(obj.invalidated)),
             ),
             path,
             arrays,

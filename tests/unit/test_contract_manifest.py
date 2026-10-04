@@ -259,7 +259,7 @@ SNAPSHOT_FIELDS: dict = {
         "environment_acknowledged",
         "warnings",
     },
-    "ComplexFT": {"freq_array", "complex_spectrum", "metadata"},
+    "ComplexFT": {"freq_array", "complex_spectrum", "metadata", "invalidated"},
     "ComplexFT.metadata": {"amplitude_scale", "units_label", "pad_factor"},
     "StageStarted": {"schema", "operation", "stage"},
     "StageFinished": {"schema", "operation", "stage", "elapsed_s", "summary"},

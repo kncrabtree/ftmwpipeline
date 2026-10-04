@@ -907,6 +907,38 @@ class TestReadFitEventLogs:
                 read_fit_thaw_columns(h5f["stage5_fitting"])
 
 
+class TestOptionalAttrHelpers:
+    """``optional_int_attr`` / ``optional_str_attr``: a missing attribute is
+    ``None``; a present one is converted, whatever HDF5 stored it as."""
+
+    @pytest.fixture
+    def group(self, tmp_path):
+        path = tmp_path / "attrs.h5"
+        with h5py.File(path, "w") as h5f:
+            g = h5f.create_group("g")
+            g.attrs["count"] = np.int64(7)
+            g.attrs["zero"] = 0
+            g.attrs["text"] = "abc"
+            g.attrs["raw"] = np.bytes_(b"xyz")
+        with h5py.File(path, "r") as h5f:
+            yield h5f["g"]
+
+    def test_int_attr(self, group):
+        from ftmwpipeline.io._hdf5_helpers import optional_int_attr
+
+        value = optional_int_attr(group, "count")
+        assert value == 7 and type(value) is int
+        assert optional_int_attr(group, "zero") == 0  # zero is a value
+        assert optional_int_attr(group, "absent") is None
+
+    def test_str_attr(self, group):
+        from ftmwpipeline.io._hdf5_helpers import optional_str_attr
+
+        assert optional_str_attr(group, "text") == "abc"
+        assert optional_str_attr(group, "raw") == "xyz"
+        assert optional_str_attr(group, "absent") is None
+
+
 class TestReadFitScalars:
     def test_reports_the_plan_level_scalars(self, fit_file):
         with h5py.File(fit_file, "r") as h5f:
@@ -921,6 +953,48 @@ class TestReadFitScalars:
             h5f["stage5_fitting"].attrs["parameters"] = json.dumps({"tau0_us": 5.0})
         with h5py.File(fit_file, "r") as h5f:
             assert read_fit_scalars(h5f["stage5_fitting"])["acquisition_us"] is None
+
+    @pytest.mark.parametrize(
+        "attr", ["n_windows", "n_fitted_peaks", "final_plan_revision", "creation_time"]
+    )
+    def test_a_missing_attribute_reads_none_never_a_fabricated_value(
+        self, fit_file, attr
+    ):
+        """Mutation: restore the ``0`` / ``"unknown"`` defaults."""
+        with h5py.File(fit_file, "r") as h5f:
+            assert read_fit_scalars(h5f["stage5_fitting"])[attr] is not None
+        with h5py.File(fit_file, "a") as h5f:
+            del h5f["stage5_fitting"].attrs[attr]
+        with h5py.File(fit_file, "r") as h5f:
+            scalars = read_fit_scalars(h5f["stage5_fitting"])
+        assert scalars[attr] is None
+        # The other scalars are untouched.
+        assert scalars["acquisition_us"] == pytest.approx(12.73)
+        assert scalars["n_windows"] == (None if attr == "n_windows" else 3)
+
+    def test_shape_is_none_when_the_group_records_none_and_text_when_it_does(
+        self, fit_file
+    ):
+        """Mutation: default a missing ``shape`` to ``"lorentzian"``."""
+        with h5py.File(fit_file, "r") as h5f:
+            assert read_fit_scalars(h5f["stage5_fitting"])["shape"] is None
+        with h5py.File(fit_file, "a") as h5f:
+            h5f["stage5_fitting"].attrs["shape"] = "gaussian"
+        with h5py.File(fit_file, "r") as h5f:
+            assert read_fit_scalars(h5f["stage5_fitting"])["shape"] == "gaussian"
+        with h5py.File(fit_file, "a") as h5f:
+            h5f["stage5_fitting"].attrs["shape"] = b"voigt"
+        with h5py.File(fit_file, "r") as h5f:
+            assert read_fit_scalars(h5f["stage5_fitting"])["shape"] == "voigt"
+
+    def test_a_recorded_zero_count_is_a_value_not_an_absence(self, fit_file):
+        with h5py.File(fit_file, "a") as h5f:
+            h5f["stage5_fitting"].attrs["n_fitted_peaks"] = 0
+            h5f["stage5_fitting"].attrs["final_plan_revision"] = 0
+        with h5py.File(fit_file, "r") as h5f:
+            scalars = read_fit_scalars(h5f["stage5_fitting"])
+        assert scalars["n_fitted_peaks"] == 0
+        assert scalars["final_plan_revision"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -992,6 +1066,37 @@ class TestReadWindowPlanColumns:
             scalars = read_window_plan_scalars(h5f["stage4_windows"])
         assert scalars["n_windows"] == 2
         assert scalars["n_dependency_edges"] == 1
+
+    @pytest.mark.parametrize(
+        "attr, key",
+        [
+            ("n_windows", "n_windows"),
+            ("creation_time", "creation_time"),
+            ("dependency_edges", "n_dependency_edges"),
+        ],
+    )
+    def test_scalars_read_none_for_a_missing_attribute(self, plan_file, attr, key):
+        """Mutation: restore the ``0`` / ``"unknown"`` defaults, or count a
+        missing ``dependency_edges`` record as zero edges."""
+        with h5py.File(plan_file, "r") as h5f:
+            before = read_window_plan_scalars(h5f["stage4_windows"])
+        with h5py.File(plan_file, "a") as h5f:
+            del h5f["stage4_windows"].attrs[attr]
+        with h5py.File(plan_file, "r") as h5f:
+            scalars = read_window_plan_scalars(h5f["stage4_windows"])
+        assert scalars[key] is None
+        # The other scalars are unaffected by the missing attribute.
+        assert {k: v for k, v in scalars.items() if k != key} == {
+            k: v for k, v in before.items() if k != key
+        }
+
+    def test_an_empty_dependency_record_counts_zero_edges(self, plan_file):
+        """A recorded empty edge list is a real ``0``, not an absence."""
+        with h5py.File(plan_file, "a") as h5f:
+            h5f["stage4_windows"].attrs["dependency_edges"] = "[]"
+        with h5py.File(plan_file, "r") as h5f:
+            scalars = read_window_plan_scalars(h5f["stage4_windows"])
+        assert scalars["n_dependency_edges"] == 0
 
 
 class TestReadWindowLongTables:
@@ -1284,3 +1389,21 @@ class TestReadPeakColumns:
         assert scalars["n_peaks"] == 2
         assert scalars["promotion_min_snr"] == pytest.approx(5.0)
         assert scalars["internal_min_snr"] == pytest.approx(3.0)
+        assert isinstance(scalars["creation_time"], str)
+
+    @pytest.mark.parametrize("attr", ["n_peaks", "creation_time"])
+    def test_scalars_read_none_for_a_missing_attribute(self, peaks_file, attr):
+        """Mutation: restore the ``0`` / ``"unknown"`` defaults."""
+        with h5py.File(peaks_file, "a") as h5f:
+            del h5f["stage3_peaks"].attrs[attr]
+        with h5py.File(peaks_file, "r") as h5f:
+            scalars = read_peak_scalars(h5f["stage3_peaks"])
+        assert scalars[attr] is None
+        assert scalars["promotion_min_snr"] == pytest.approx(5.0)
+
+    def test_a_recorded_empty_peak_list_is_zero_not_absent(self, tmp_path):
+        path = tmp_path / "empty.h5"
+        with h5py.File(path, "w") as h5f:
+            save_peaks_to_hdf5([], h5f.create_group("stage3_peaks"), parameters={})
+        with h5py.File(path, "r") as h5f:
+            assert read_peak_scalars(h5f["stage3_peaks"])["n_peaks"] == 0

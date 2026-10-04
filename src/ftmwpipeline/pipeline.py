@@ -570,7 +570,12 @@ class Pipeline:
         units_power : int, optional
             Spectrum scaling as power of 10.
         save_params : bool, default False
-            If ``True``, persist the explicitly provided settings.
+            If ``True``, persist the explicitly provided settings. Saving a
+            changed record invalidates every result built on the old spectrum;
+            this method returns the figure, so that is reported through the
+            warning log line and the "Saved ..." info line (which names the
+            canonical stages), not in the return value. Call
+            :func:`ftmwpipeline.api.save_ft_parameters` to receive the list.
         interactive : bool, default True
             Whether to show an interactive plot.
         output_file : str or Path, optional
@@ -628,8 +633,15 @@ class Pipeline:
                     params["trim_min_mhz"] = trim[0]
                     params["trim_max_mhz"] = trim[1]
                 if params:
-                    save_ft_parameters_impl(str(self.filepath), params)
-                    self.logger.info(f"Saved {len(params)} processing parameters")
+                    invalidated = save_ft_parameters_impl(str(self.filepath), params)
+                    self.logger.info(
+                        f"Saved {len(params)} processing parameters"
+                        + (
+                            f"; invalidated {', '.join(invalidated)}"
+                            if invalidated
+                            else ""
+                        )
+                    )
                 else:
                     self.logger.info("No custom parameters to save")
 
@@ -2685,7 +2697,9 @@ class Pipeline:
         ``environment_acknowledged``.
 
         ``valid`` / ``errors`` report what validation found in a readable file.
-        A file that cannot be read at all raises instead.
+        A file that cannot be read at all raises instead. ``completed_stages``
+        and ``next_available_stages`` name stages by their canonical names
+        (``Stage`` values), in rerun order.
 
         Returns
         -------
@@ -2713,8 +2727,10 @@ class Pipeline:
             "source_path": str(self.source_metadata.source_path),
             "format": self.source_metadata.format_name,
             "import_time": self.source_metadata.import_timestamp.isoformat(),
-            "completed_stages": sorted(self.stage_tracker.completed_stages),
-            "next_available_stages": self.stage_tracker.get_next_available_stages(),
+            "completed_stages": self.stage_tracker.canonical_completed_stages(),
+            "next_available_stages": (
+                self.stage_tracker.canonical_next_available_stages()
+            ),
             **environment_info_fields(validation_report),
         }
 
@@ -2734,12 +2750,15 @@ class Pipeline:
         Returns
         -------
         dict
-            Detailed validation report
+            Detailed validation report. Stages are named by their canonical
+            names (``Stage`` values).
 
         Raises
         ------
-        PipelineCorruptionError
-            If file is corrupted and cannot be validated
+        PipelineFileError
+            If the file cannot be opened (``not_found``, ``file_corrupt``,
+            ``file_incompatible``) or becomes unreadable while the report is
+            built; the report does not swallow it.
         """
         return validate_pipeline_file(self.filepath)
 

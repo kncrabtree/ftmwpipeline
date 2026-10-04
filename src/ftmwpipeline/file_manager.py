@@ -32,6 +32,7 @@ from typing import (
     Dict,
     Iterable,
     List,
+    NoReturn,
     Optional,
     Sequence,
     Tuple,
@@ -891,11 +892,31 @@ class PipelineStageTracker:
         """Get stages that can be executed immediately."""
         return self.get_available_stages()
 
+    def canonical_completed_stages(self) -> List[str]:
+        """The completed stages as canonical stage names, in rerun order.
+
+        A key that is not a stage of this version (``STAGE_DEPENDENCIES``) has
+        no canonical name and is omitted.
+        """
+        return list(
+            canonical_invalidated(
+                key for key in self.completed_stages if key in self.STAGE_DEPENDENCIES
+            )
+        )
+
+    def canonical_next_available_stages(self) -> List[str]:
+        """The stages that can run next, as canonical stage names (rerun order)."""
+        return list(canonical_invalidated(self.get_next_available_stages()))
+
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for serialization."""
+        """Convert to dictionary for serialization.
+
+        Stages are named by their canonical names (``ftmwpipeline.Stage``
+        values), never by internal storage key.
+        """
         return {
-            "completed_stages": sorted(self.completed_stages),
-            "next_available": self.get_next_available_stages(),
+            "completed_stages": self.canonical_completed_stages(),
+            "next_available": self.canonical_next_available_stages(),
         }
 
 
@@ -1279,14 +1300,27 @@ def open_pipeline_file(
             # A valid file we could not open right now (permissions, another
             # process holding the HDF5 lock) is not ``file_corrupt``.
             raise
-        if "h5py" in str(type(e)).lower() or "hdf5" in str(e).lower():
-            raise PipelineCorruptionError(filepath, f"HDF5 error: {e}") from e
-        else:
-            raise PipelineCorruptionError(
-                filepath,
-                str(e),
-                message=f"Failed to open pipeline file {filepath}: {e}",
-            ) from e
+        raise _unreadable_file_error(filepath, e) from e
+
+
+def _unreadable_file_error(filepath: Path, exc: Exception) -> PipelineCorruptionError:
+    """The ``file_corrupt`` error for a non-transient failure reading *filepath*."""
+    if "h5py" in str(type(exc)).lower() or "hdf5" in str(exc).lower():
+        return PipelineCorruptionError(filepath, f"HDF5 error: {exc}")
+    return PipelineCorruptionError(
+        filepath,
+        str(exc),
+        message=f"Failed to open pipeline file {filepath}: {exc}",
+    )
+
+
+def _raise_unreadable(filepath: Path, exc: OSError) -> NoReturn:
+    """Raise for an ``OSError`` hit while reading *filepath*, as
+    :func:`open_pipeline_file` does: a transient one (permissions, the HDF5 lock
+    refusal) unchanged, any other as ``file_corrupt`` chained from it."""
+    if is_transient_open_error(exc):
+        raise exc
+    raise _unreadable_file_error(filepath, exc) from exc
 
 
 def _warn_active_window_past_record(h5f: "h5py.File", fid: Any) -> List[str]:
@@ -1329,6 +1363,17 @@ def _warn_active_window_past_record(h5f: "h5py.File", fid: Any) -> List[str]:
     ]
 
 
+def _canonical_stage_label(key: str) -> str:
+    """A stage's canonical name for a storage key, or ``key`` unchanged when it
+    is not a known stage's storage key (provenance records may carry others)."""
+    from .contract import stage_for_key
+
+    try:
+        return stage_for_key(key).value
+    except ValueError:
+        return key
+
+
 def validate_pipeline_file(filepath: Union[str, Path]) -> Dict[str, Any]:
     """
     Validate a pipeline file for integrity and correctness.
@@ -1341,29 +1386,49 @@ def validate_pipeline_file(filepath: Union[str, Path]) -> Dict[str, Any]:
     Returns
     -------
     dict
-        Validation results with status and any issues found
+        Validation results with status and any issues found. Stages are named
+        by their canonical names (``stages``, ``stage_environments``, the drift
+        lines and the missing-data errors).
+
+    Raises
+    ------
+    PipelineFileNotFoundError
+        If the file does not exist (``not_found``).
+    PipelineCorruptionError, PipelineCompatibilityError
+        If the file cannot be opened as a pipeline file, or cannot be read
+        while the report is built. Validation reports integrity problems in a
+        readable file; it does not stand in for opening or reading one.
+    OSError
+        A permission failure or HDF5 file-lock refusal, opening the file or
+        reading it while the report is built, propagates unchanged (as from
+        :func:`open_pipeline_file`).
     """
     filepath = Path(filepath)
     errors = []
     warnings = []
 
-    # Check file existence
-    if not pipeline_exists(filepath):
-        return {
-            "valid": False,
-            "errors": [f"File does not exist: {filepath}"],
-            "warnings": [],
-        }
-
     try:
-        # Open and validate structure
+        # Open and validate structure. A file that cannot be opened raises the
+        # typed error ``open_pipeline_file`` raises (``not_found``,
+        # ``file_corrupt``, ``file_incompatible``): validation reports problems
+        # in a file that opens; it does not stand in for opening one.
         filepath_obj, source_metadata, stage_tracker = open_pipeline_file(filepath)
 
-        # Validate source metadata
-        if not source_metadata.source_path.exists():
+        # Validate source metadata. The source is a different file from the
+        # one validated: failing to stat it is a warning, not a refusal.
+        try:
+            source_exists = source_metadata.source_path.exists()
+        except OSError as exc:
             warnings.append(
-                f"Original source file no longer exists: {source_metadata.source_path}"
+                "Cannot check the original source file "
+                f"{source_metadata.source_path}: {exc}"
             )
+        else:
+            if not source_exists:
+                warnings.append(
+                    "Original source file no longer exists: "
+                    f"{source_metadata.source_path}"
+                )
 
         # Read the format/writer version stamps (absent on legacy files) and
         # the per-stage analysis-environment record.
@@ -1389,6 +1454,9 @@ def validate_pipeline_file(filepath: Union[str, Path]) -> Dict[str, Any]:
         # invalid -- it is a legitimate and common outcome of upgrading
         # mid-analysis -- but it is the fact a reader most needs to know, since
         # no single version stamp can express it.
+        # Stages are named canonically in the report; an environment key that
+        # is not a known stage's storage key is kept as recorded.
+        stage_envs = {_canonical_stage_label(k): v for k, v in stage_envs.items()}
         env_drift = describe_environment_drift(stage_envs)
         if env_drift:
             warnings.append(
@@ -1424,7 +1492,10 @@ def validate_pipeline_file(filepath: Union[str, Path]) -> Dict[str, Any]:
             for stage in stage_tracker.completed_stages:
                 data_path = PipelineStageTracker.STAGE_DATA_PATHS.get(stage, stage)
                 if data_path not in h5f:
-                    errors.append(f"Missing data for completed stage: {stage}")
+                    errors.append(
+                        "Missing data for completed stage: "
+                        f"{_canonical_stage_label(stage)}"
+                    )
 
         # Try loading FID data
         try:
@@ -1434,6 +1505,11 @@ def validate_pipeline_file(filepath: Union[str, Path]) -> Dict[str, Any]:
                 if fid.n_points == 0:
                     errors.append("FID data is empty")
                 warnings.extend(_warn_active_window_past_record(h5f, fid))
+        except PipelineFileError:
+            raise
+        except OSError as e:
+            # The file could not be read: raised, not reported (below).
+            _raise_unreadable(filepath, e)
         except Exception as e:
             errors.append(f"Cannot load FID data: {e}")
 
@@ -1457,6 +1533,16 @@ def validate_pipeline_file(filepath: Union[str, Path]) -> Dict[str, Any]:
             "environment_acknowledged": env_ack is not None,
         }
 
+    except PipelineFileError:
+        # The file became unreadable while the report was built (or could not
+        # be opened): the typed error propagates; the report does not swallow it.
+        raise
+    except OSError as e:
+        # A file that cannot be read while the report is built raises, the way
+        # opening it would: a transient failure (permissions, the HDF5 lock)
+        # unchanged, any other as ``file_corrupt``. Only integrity problems in
+        # a readable file go in the report.
+        _raise_unreadable(filepath, e)
     except Exception as e:
         return {
             "valid": False,

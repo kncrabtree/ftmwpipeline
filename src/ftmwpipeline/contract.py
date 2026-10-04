@@ -924,7 +924,7 @@ _FIELDS: Dict[str, Tuple[str, ...]] = {
         "choices",
         "bounds",
     ),
-    "ComplexFT": ("freq_array", "complex_spectrum", "metadata"),
+    "ComplexFT": ("freq_array", "complex_spectrum", "metadata", "invalidated"),
     "ComplexFT.metadata": ("amplitude_scale", "units_label", "pad_factor"),
     # Events (Wave 5.1). Declared as their wire form. PipelineWarning's
     # code-specific fields live in ``details`` in Python and are flattened on

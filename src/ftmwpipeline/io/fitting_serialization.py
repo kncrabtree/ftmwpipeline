@@ -153,6 +153,8 @@ from ._hdf5_helpers import (
     load_json_attr,
     nan_if_none,
     none_if_nan,
+    optional_int_attr,
+    optional_str_attr,
     read_dataset_column,
     record_row,
     reset_group,
@@ -1490,25 +1492,20 @@ def read_fit_scalars(h5_group: h5py.Group) -> Dict[str, Any]:
     Reads only group attributes -- no window traversal at all. ``acquisition_us``
     is lifted out of the persisted Stage 5 ``parameters`` blob, which is where
     the fit records the active-FT acquisition length the resolution element
-    ``1 / acquisition_us`` follows from.
+    ``1 / acquisition_us`` follows from. An attribute the group does not carry
+    reads ``None`` (never a fabricated ``0``, ``"unknown"`` or default shape).
     """
     parameters = load_json_attr(h5_group, "parameters", {}, label="stage5_fitting")
     acquisition = (
         parameters.get("acquisition_us") if isinstance(parameters, dict) else None
     )
-    shape_attr = h5_group.attrs.get("shape", "lorentzian")
-    if isinstance(shape_attr, bytes):
-        shape_attr = shape_attr.decode("utf-8")
-    creation = h5_group.attrs.get("creation_time", "unknown")
-    if isinstance(creation, bytes):
-        creation = creation.decode("utf-8")
     return {
-        "n_windows": int(h5_group.attrs.get("n_windows", 0)),
-        "n_fitted_peaks": int(h5_group.attrs.get("n_fitted_peaks", 0)),
-        "shape": str(shape_attr),
-        "final_plan_revision": int(h5_group.attrs.get("final_plan_revision", 0)),
+        "n_windows": optional_int_attr(h5_group, "n_windows"),
+        "n_fitted_peaks": optional_int_attr(h5_group, "n_fitted_peaks"),
+        "shape": optional_str_attr(h5_group, "shape"),
+        "final_plan_revision": optional_int_attr(h5_group, "final_plan_revision"),
         "acquisition_us": None if acquisition is None else float(acquisition),
-        "creation_time": str(creation),
+        "creation_time": optional_str_attr(h5_group, "creation_time"),
     }
 
 

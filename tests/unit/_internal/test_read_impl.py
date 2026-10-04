@@ -370,6 +370,92 @@ class TestReadMetadataAbsence:
         assert meta["stage3.internal_min_snr"] is Absent.NOT_RUN
 
     @pytest.mark.parametrize(
+        "group, attr, key",
+        [
+            ("stage3_peaks", "n_peaks", "stage3.n_peaks"),
+            ("stage3_peaks", "creation_time", "stage3.creation_time"),
+            ("stage4_windows", "n_windows", "stage4.n_windows"),
+            ("stage4_windows", "creation_time", "stage4.creation_time"),
+            ("stage5_fitting", "n_windows", "stage5.n_windows"),
+            ("stage5_fitting", "n_fitted_peaks", "stage5.n_fitted_peaks"),
+            ("stage5_fitting", "final_plan_revision", "stage5.final_plan_revision"),
+            ("stage5_fitting", "creation_time", "stage5.creation_time"),
+        ],
+    )
+    def test_a_stage_attribute_missing_from_its_group_is_not_run(
+        self, ftmw_file, group, attr, key
+    ):
+        # Mutation: restore the ``0`` / ``"unknown"`` fallbacks in the readers.
+        assert read_metadata_impl(ftmw_file)[key] is not Absent.NOT_RUN
+        with h5py.File(ftmw_file, "a") as h5f:
+            del h5f[group].attrs[attr]
+        meta = read_metadata_impl(ftmw_file)
+        assert meta[key] is Absent.NOT_RUN
+        # Only the stripped key moved: the group's other keys keep their values.
+        assert meta["stage3.n_peaks"] == (
+            Absent.NOT_RUN if key == "stage3.n_peaks" else 1
+        )
+        assert meta["stage5.acquisition_us"] == pytest.approx(12.73)
+
+    def test_a_fit_group_that_records_no_shape_reads_not_run(self, ftmw_file):
+        # The fixture's fit group carries no ``shape`` attribute. Mutation:
+        # default it to "lorentzian".
+        assert read_metadata_impl(ftmw_file)["stage5.shape"] is Absent.NOT_RUN
+        with h5py.File(ftmw_file, "a") as h5f:
+            h5f["stage5_fitting"].attrs["shape"] = "gaussian"
+        assert read_metadata_impl(ftmw_file)["stage5.shape"] == "gaussian"
+
+    def test_a_recorded_zero_count_stays_zero(self, ftmw_file):
+        with h5py.File(ftmw_file, "a") as h5f:
+            h5f["stage5_fitting"].attrs["n_fitted_peaks"] = 0
+        assert read_metadata_impl(ftmw_file)["stage5.n_fitted_peaks"] == 0
+
+    def test_no_stage_group_carries_a_fabricated_default(self, ftmw_file):
+        """Strip every count / time attribute at once: nothing reads ``0``,
+        ``"unknown"`` or ``"lorentzian"``."""
+        with h5py.File(ftmw_file, "a") as h5f:
+            for group in ("stage3_peaks", "stage4_windows", "stage5_fitting"):
+                for attr in (
+                    "n_peaks",
+                    "n_windows",
+                    "n_fitted_peaks",
+                    "final_plan_revision",
+                    "creation_time",
+                    "shape",
+                ):
+                    if attr in h5f[group].attrs:
+                        del h5f[group].attrs[attr]
+        meta = read_metadata_impl(ftmw_file)
+        for key, value in meta.items():
+            if key.startswith(("stage3.", "stage4.", "stage5.")):
+                assert value not in ("unknown", "lorentzian"), key
+        for key in (
+            "stage3.n_peaks",
+            "stage3.creation_time",
+            "stage4.n_windows",
+            "stage4.creation_time",
+            "stage5.n_windows",
+            "stage5.n_fitted_peaks",
+            "stage5.final_plan_revision",
+            "stage5.creation_time",
+            "stage5.shape",
+        ):
+            assert meta[key] is Absent.NOT_RUN, key
+
+    def test_absent_stage_attributes_carry_null_and_absent_sibling_on_the_wire(
+        self, ftmw_file
+    ):
+        from ftmwpipeline.serialize import to_jsonable
+
+        with h5py.File(ftmw_file, "a") as h5f:
+            del h5f["stage4_windows"].attrs["n_windows"]
+        wire = to_jsonable(read_metadata_impl(ftmw_file))
+        assert wire["stage4.n_windows"] is None
+        assert wire["stage4.n_windows_absent"] == "not_run"
+        assert wire["stage3.n_peaks"] == 1
+        assert "stage3.n_peaks_absent" not in wire
+
+    @pytest.mark.parametrize(
         "parameters, expected",
         [
             ({}, Absent.NOT_RUN),
@@ -465,10 +551,25 @@ class TestReadMetadata:
             12.73
         )
 
-    def test_completed_stages_is_a_sorted_list(self, ftmw_file):
+    def test_completed_stages_are_canonical_in_rerun_order(self, ftmw_file):
+        """Mutation: restore the sorted storage keys."""
+        from ftmwpipeline.contract import rerun_order
+
         stages = read_metadata_impl(ftmw_file)["file.completed_stages"]
-        assert stages == sorted(stages)
-        assert "stage5_fitting" in stages
+        assert stages == ["data", "peaks", "windows", "fit"]
+        order = [s.value for s in rerun_order()]
+        assert stages == [s for s in order if s in stages]
+
+    def test_completed_stages_drop_a_key_no_stage_owns(self, ftmw_file):
+        with h5py.File(ftmw_file, "a") as h5f:
+            group = h5f["pipeline_stages"]
+            recorded = json.loads(group.attrs["completed_stages"])
+            group.attrs["completed_stages"] = json.dumps(
+                recorded + ["stage99_retired"]
+            )
+        stages = read_metadata_impl(ftmw_file)["file.completed_stages"]
+        assert "stage99_retired" not in stages
+        assert "fit" in stages
 
     def test_absent_stage_contributes_no_keys(self, ftmw_file):
         with h5py.File(ftmw_file, "a") as h5f:
@@ -776,7 +877,7 @@ class TestFormatting:
     def test_metadata_csv_joins_list_values(self, ftmw_file):
         text = format_metadata_impl(read_metadata_impl(ftmw_file), "csv")
         stages = dict(list(csv.reader(io.StringIO(text)))[1:])["file.completed_stages"]
-        assert "stage5_fitting" in stages.split(";")
+        assert "fit" in stages.split(";")
 
     def test_metadata_json_is_an_object(self, ftmw_file):
         blob = json.loads(format_metadata_impl(read_metadata_impl(ftmw_file), "json"))

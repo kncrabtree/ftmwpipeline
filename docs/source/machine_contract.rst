@@ -34,7 +34,7 @@ The contract version
     if ftmwpipeline.CONTRACT_VERSION < 1:
         raise RuntimeError("needs a newer ftmwpipeline")
 
-The first published contract is version ``1``; this release is version ``7``. Additions (a new accessor,
+The first published contract is version ``1``; this release is version ``12``. Additions (a new accessor,
 field or code) raise the version by one and never break an existing field. Every machine-readable payload also carries a **schema name**
 of the form ``ftmw/<payload>@<n>``; a schema name never changes meaning.
 
@@ -221,8 +221,15 @@ Each declared accessor, with its absence cases:
   - *not run* (the file predates the record): ``file.format_version``,
     ``file.created_with``, ``source.source_path`` / ``format_name`` /
     ``import_timestamp`` / ``source_hash`` (an unset import field),
-    ``stage5.acquisition_us`` (the fit recorded none), and
-    ``stage3.promotion_min_snr`` / ``stage3.internal_min_snr``.
+    ``stage5.acquisition_us`` (the fit recorded none),
+    ``stage3.promotion_min_snr`` / ``stage3.internal_min_snr``, and any count,
+    creation time, plan revision or shape attribute that a stage group does not
+    carry: ``stage3.n_peaks`` / ``creation_time``, ``stage4.n_windows`` /
+    ``creation_time``, ``stage4.n_dependency_edges`` (the group carries no
+    ``dependency_edges`` record), and ``stage5.n_windows`` / ``n_fitted_peaks``
+    / ``final_plan_revision`` / ``shape`` / ``creation_time``. A reader never
+    fills a missing attribute with ``0``, ``"unknown"`` or ``"lorentzian"``; a
+    recorded ``0`` (an empty edge list included) is a value, not an absence.
   - *undefined* (computed, no value): ``start.chirp_end_us`` when no chirp
     was detected; ``timebase.epsilon`` and ``timebase.sigma_epsilon`` when no
     lattice tone was used; ``timebase.lattice_g_mhz`` when no locked lattice
@@ -717,8 +724,16 @@ public calls that raise it:
 * ``settings_set`` / ``settings_unset`` (api, ``Pipeline`` and ``settings
   set`` / ``unset``): an unknown or malformed path (``path`` is the knob), a
   value of the wrong type or one that does not parse, a bad ``stage5.shape``
-  choice, invalid ``stage5.spur.clocks``, or unsetting a field that is not
-  optional. The file is not touched.
+  choice, invalid ``stage5.spur.clocks``, a value outside the ``choices`` or
+  ``bounds`` the field's settings row declares, or unsetting a field that is
+  not optional. The file is not touched. For a violated declaration ``path`` is
+  the knob, ``value`` is what the caller passed (before coercion), and
+  ``expected`` states the declaration: ``one of 'a', 'b', ...`` for
+  ``choices``, and ``a value in [lo, hi)`` for ``bounds`` (a square bracket
+  includes that end, a round one excludes it; an open end reads ``-inf`` /
+  ``inf``). Bounds apply to a numeric value, or to every element of a pair or
+  list, and ``nan`` is refused wherever bounds exist. ``None`` (the unset
+  request) is never checked against either.
 * ``set_clock_sources`` and the ``clocks=`` argument of ``fit``: an invalid
   clock declaration (``path`` ``stage5.spur.clocks``); the ``shape=`` argument:
   ``path`` ``stage5.shape``.
@@ -726,6 +741,16 @@ public calls that raise it:
   ``settings_show`` / ``settings_defaults``): a preset whose root or block is
   not a mapping, or that names an unknown field or key (``path`` is
   ``preset``, the block name, or ``block.field``).
+* Every stage call, when it resolves its settings: a resolved value outside
+  the ``choices`` or ``bounds`` its field declares, whichever layer supplied
+  it -- a ``settings=`` object, a preset or a persisted record (one written
+  before the check existed, or edited by hand). ``path`` is the registry path
+  (``stage5.conservative.n_eff_kind``), ``expected`` and the bracket notation
+  are as for ``settings_set``, and ``value`` is the resolved value. Only the
+  value that wins is checked: a bad value in a layer a higher one overrides is
+  never used and never refused, and an unset field falls through to its
+  default. ``settings_show`` still displays a bad persisted value, and
+  ``settings_set`` repairs it.
 * ``trim=`` / ``--trim`` with a value that is not ``min:max`` with
   ``max > min`` (``path`` ``stage1.trim``). On the CLI the option is parsed by
   argparse, which reports a bad ``--trim`` as a usage error (exit 2).
@@ -897,7 +922,19 @@ corruption: it propagates as the original ``OSError`` so a client can retry. ``P
 ``list``) agree on this. ``validate_pipeline`` reports problems in a file that
 opens; for one that does not it raises the open error (``not_found``,
 ``file_corrupt`` or ``file_incompatible``) instead of returning
-``{"valid": False}``.
+``{"valid": False}``, and so does a file that opens but cannot be read while
+the report is built: an ``OSError`` from any read -- the FID, the environment
+record, the stage-data check -- raises exactly as opening the file would (a
+permission failure or HDF5 lock refusal as the original ``OSError``, any other
+as ``file_corrupt`` chained from it), and the report never swallows a typed
+error. Only integrity problems in a readable file go in the report: an empty or
+undecodable FID, a completed stage without its data, and any other non-``OSError``
+failure while the report is built (``valid: False`` with a ``Validation
+failed`` error). ``Pipeline.validate`` is
+``validate_pipeline``, and ``Pipeline.info`` / ``get_pipeline_info`` /
+``list_available_stages`` raise for a file they cannot open, so the status
+calls and the report cannot disagree. Validation reports problems in a pipeline
+file; it does not stand in for opening one.
 
 Every verb that takes a ``.ftmw`` file refuses an unopenable one the same
 way, from its first read: a path that does not exist is ``not_found`` (exit
@@ -997,7 +1034,10 @@ Each ``SettingRow`` (and each item of ``settings show`` / ``settings defaults``
 ``units``, ``choices`` and ``bounds`` are reported only where the setting's
 declaration states them; ``None`` means "not stated", never "unrestricted". At
 present ``stage5.conservative.n_eff_kind`` is the one ``choice``, and no setting
-states bounds.
+states bounds. ``settings_set`` / ``settings set`` enforces whatever a row
+states, and so does every stage when it resolves its settings from a
+``settings=`` object, a preset or the file (see *Bad settings* above), so a
+``choice`` row's ``choices`` are exactly the strings a run accepts.
 
 ``value`` and ``hard_default`` are typed JSON: a pair or list is an array, a
 ``ShapeSpec`` is ``{"kind": "gaussian"}``, and clock sources are an array of
@@ -1015,6 +1055,18 @@ Every contract payload that names a stage uses the canonical vocabulary
 ``stage1_complex_ft`` is ``ft``). The Python attribute
 ``StageDependencyError.missing_dependencies`` keeps the internal keys; its
 ``to_dict()`` publishes the canonical names.
+
+The status calls use the same vocabulary, in re-run order: the
+``completed_stages`` and ``next_available_stages`` of ``get_pipeline_info`` /
+``Pipeline.info`` (and ``ftmwpipeline info``), the result of
+``list_available_stages``, and the ``stages`` entry of the
+``validate_pipeline`` / ``Pipeline.validate`` report. The report's
+``stage_environments`` keys, the stage names inside its drift lines and its
+"Missing data for completed stage" errors are canonical too; an environment key
+that is not a known stage's storage key is kept as the file recorded it, and a
+completed-stage key no stage of this version owns is left out of the canonical
+lists. ``read_metadata``'s ``file.completed_stages`` follows the same rule:
+canonical names in re-run order.
 
 No stale results, and what a run invalidated
 --------------------------------------------
@@ -1064,7 +1116,17 @@ dependencies with ties broken by the order of ``Stage`` (``data``, ``ft``,
   ``settings_set`` / ``settings_unset``) now uses the same canonical names.
 - ``compute_ft`` returns a ``ComplexFT`` whose ``invalidated`` attribute
   carries the list; ``detect_peaks`` returns a ``PeakList``, a ``list`` of
-  ``Peak`` with the same attribute.
+  ``Peak`` with the same attribute. A ``ComplexFT`` on the wire is an object
+  of ``freq_array``, ``complex_spectrum``, ``metadata`` and ``invalidated`` (a
+  JSON array of canonical names, ``[]`` for a display or loaded spectrum); a
+  ``PeakList`` is the plain list of its peaks, without the attribute.
+- ``save_ft_parameters`` (``ftmwpipeline.api``) returns the list: the canonical
+  names, in re-run order, of the stages that saving a changed Stage 1 record
+  discarded (``[]`` when the record did not change, or nothing was built on
+  it). It takes no ``events`` argument, so no ``Invalidated`` event is
+  delivered; the warning log line names the stages as well.
+  ``visualize_ft(save_params=True)`` still returns its figure, and names the
+  stages in its "Saved N processing parameters" log line.
 - On the CLI, a run that invalidated anything prints
   ``Invalidated (re-run to refresh): noise, peaks, ...``. ``settings set`` and
   ``settings unset`` keep their own line, now with canonical names. Under

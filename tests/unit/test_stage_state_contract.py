@@ -6,7 +6,9 @@
   ``RuntimeError`` that flattened the type. It is still a ``ValueError``.
 * Re-running Stage 2 with different settings invalidates every stage built on
   the old sigma; an identical re-run leaves them standing.
-* ``completed_stages`` comes back in one fixed order.
+* ``completed_stages`` comes back in one fixed order (the re-run order), and
+  names stages by their canonical names (``Stage`` values), never by storage
+  key.
 * The display amplitude unit follows the same Stage 1 resolution as the
   spectrum it labels, including before Stage 1 has run.
 """
@@ -19,7 +21,11 @@ import pytest
 
 import ftmwpipeline.api as ftmw
 from ftmwpipeline.core.noise_settings import NoiseSettings
-from ftmwpipeline.file_manager import PipelineFileError, StageDependencyError
+from ftmwpipeline.file_manager import (
+    PipelineFileError,
+    StageDependencyError,
+    rerun_order,
+)
 from ftmwpipeline.pipeline import Pipeline
 
 pytestmark = [pytest.mark.unit]
@@ -101,10 +107,10 @@ def test_missing_stage_error_keeps_its_actionable_message(imported):
 
 
 def test_changed_noise_settings_invalidate_downstream(peaks_file):
-    assert "stage3_peaks" in _completed(peaks_file)
+    assert "peaks" in _completed(peaks_file)
     ftmw.estimate_noise(peaks_file, settings=NoiseSettings(window_mhz=37.0))
-    assert "stage3_peaks" not in _completed(peaks_file)
-    assert "stage2_noise_result" in _completed(peaks_file)
+    assert "peaks" not in _completed(peaks_file)
+    assert "noise" in _completed(peaks_file)
     with h5py.File(peaks_file, "r") as h5f:
         assert "stage3_peaks" not in h5f
 
@@ -122,9 +128,12 @@ def test_identical_noise_rerun_keeps_downstream(peaks_file):
 # ---------------------------------------------------------------------------
 
 
-def test_completed_stages_come_back_sorted(peaks_file):
+def test_completed_stages_come_back_canonical_and_in_rerun_order(peaks_file):
+    """Mutation: name storage keys again, or sort alphabetically (which puts
+    ``fit`` before ``ft`` and ``peaks`` before ``tau``)."""
     stages = _completed(peaks_file)
-    assert stages == sorted(stages)
+    assert stages == ["data", "ft", "noise", "peaks"]
+    assert stages == [s for s in rerun_order() if s in stages]
     assert Pipeline.open(peaks_file).info()["completed_stages"] == stages
 
 

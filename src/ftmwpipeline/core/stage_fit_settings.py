@@ -1072,7 +1072,7 @@ def resolve(
         shape_resolved = ShapeSpec(kind=_HARD_DEFAULTS["shape"]["kind"])
     merged = StageFitSettings(shape=shape_resolved)
     return sf.fill_resolved_subblocks(
-        merged, StageFitSettings, _SUB_NAMES, _HARD_DEFAULTS, layers
+        merged, StageFitSettings, _SUB_NAMES, _HARD_DEFAULTS, layers, prefix="stage5"
     )
 
 

@@ -733,13 +733,20 @@ def write_recommended_ft_params(
     )
 
 
-def save_ft_parameters_impl(file_path: str, parameters: Dict[str, Any]) -> None:
-    """Persist an explicit settings dict (used by --save flows)."""
+def save_ft_parameters_impl(file_path: str, parameters: Dict[str, Any]) -> List[str]:
+    """Persist an explicit settings dict (used by --save flows).
+
+    Returns the stages the save invalidated, as canonical stage names in
+    ``rerun_order`` (empty when the record did not change). The warning line
+    for them is logged by the invalidation itself; there is no event scope on
+    this path, so nothing is delivered as an ``Invalidated`` event.
+    """
     settings = FTSettings.from_attrs(parameters)
     with atomic_write(file_path):
         resolved = _resolve_settings(file_path, settings)
-        _persist_ft_settings(file_path, resolved)
+        invalidated = _persist_ft_settings(file_path, resolved)
     logger.info("Processing parameters saved successfully")
+    return list(canonical_invalidated(invalidated))
 
 
 def compare_ft_parameters_impl(
