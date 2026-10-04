@@ -1,8 +1,9 @@
 """A bare accept refuses a window the file does not have.
 
 It used to record a "reviewed" status and a decision-log entry for any id at
-all. The windows it may name are the Stage 5 fit's (created windows included)
-when a fit exists and the Stage 4 plan's otherwise.
+all. The windows it may name are the Stage 5 fit's (created windows included);
+with no complete fit it is refused with ``stage_not_run``, like every other
+curation call.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from ftmwpipeline._internal.stage6_impl import (
     apply_curation_impl,
     review_accept_impl,
 )
-from ftmwpipeline.file_manager import NotFoundError
+from ftmwpipeline.file_manager import NotFoundError, StageDependencyError
 from ftmwpipeline.io.fitting_serialization import read_fit_window_coverage
 from ftmwpipeline.io.stage6_review_serialization import load_stage6_review_from_file
 
@@ -81,13 +82,19 @@ def test_unknown_window_in_a_fitting_batch_is_refused(stage5_small_file, tmp_pat
     assert _review_state(stage5_small_file) == before
 
 
-def test_before_stage5_the_plan_names_the_windows(stage5_small_file):
-    """A bare accept needs no fit; without one it checks the Stage 4 plan."""
+def test_before_stage5_a_bare_accept_is_refused(stage5_small_file, tmp_path):
+    """No complete fit: a bare accept (and a bare-accept-only curation file) is
+    refused with ``stage_not_run`` and records nothing."""
     wid = _window_ids(stage5_small_file)[0]
     with h5py.File(stage5_small_file, "a") as h5f:
         del h5f["stage5_fitting"]
-    with pytest.raises(KeyError, match="Stage 4 window plan"):
-        review_accept_impl(str(stage5_small_file), _UNKNOWN)
-    review_accept_impl(str(stage5_small_file), wid)
-    statuses, _ = _review_state(stage5_small_file)
-    assert statuses[wid].provenance == "reviewed"
+    before = _review_state(stage5_small_file)
+    with pytest.raises(StageDependencyError) as info:
+        review_accept_impl(str(stage5_small_file), wid)
+    assert info.value.code == "stage_not_run"
+    assert info.value.to_dict()["command"] == "fit run"
+    cur = tmp_path / "accepts.csv"
+    cur.write_text(f"accept,{wid},,\n")
+    with pytest.raises(StageDependencyError):
+        apply_curation_impl(str(stage5_small_file), cur)
+    assert _review_state(stage5_small_file) == before

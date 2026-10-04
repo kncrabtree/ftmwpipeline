@@ -3731,33 +3731,45 @@ def review_accept_impl(
     )
 
 
-def _known_window_ids(path: str) -> Tuple[Set[int], str]:
-    """The window ids a bare accept may name, and where they were read from:
-    the Stage 5 fit's when one exists, the Stage 4 plan's otherwise."""
+def _require_complete_fit(path: str, verb: str) -> None:
+    """Refuse a curation call on a file with no complete Stage 5 fit.
+
+    Never fit, or holding only a partial fit (a cancelled fit's kept windows,
+    CONTRACT_STRATEGY §Stage 5 partial fits): ``stage_not_run``, naming
+    ``fit run``.
+    """
     with h5open(path, "r") as h5f:
-        if "stage5_fitting" in h5f:
-            known = {
-                c.window_id for c in read_fit_window_coverage(h5f["stage5_fitting"])
-            }
-            return known, "Stage 5 fit"
-        if "stage4_windows" in h5f:
-            ids = read_window_plan_columns(h5f["stage4_windows"], ["window_id"])
-            return {int(w) for w in ids["window_id"]}, "Stage 4 window plan"
+        present = "stage5_fitting" in h5f
+    if not present:
         raise StageDependencyError(
-            "review accept",
-            ["stage4_windows"],
+            verb,
+            ["stage5_fitting"],
             Path(path),
-            command="windows run",
+            command="fit run",
+            message="No Stage 5 fit found in this file. Run 'fit run' first.",
         )
 
 
-def _require_known_window(path: str, window_id: int) -> None:
-    """Refuse a window id this file does not have.
+def _known_window_ids(path: str) -> Tuple[Set[int], str]:
+    """The window ids a bare accept may name (the Stage 5 fit's, which include
+    every created window), and where they were read from.
 
-    A bare accept needs no fit, so the windows it may name are the Stage 5
-    fit's when one exists (which includes every created window) and the
-    Stage 4 plan's otherwise. Without this a typo'd id recorded a "reviewed"
-    status and a decision for a window that was never there.
+    A bare accept changes no fitted number, but it is a curation decision on
+    the fit: with no complete fit (never run, or only a partial fit) it is
+    refused with ``stage_not_run`` like every other curation call.
+    """
+    _require_complete_fit(path, "review accept")
+    with h5open(path, "r") as h5f:
+        known = {c.window_id for c in read_fit_window_coverage(h5f["stage5_fitting"])}
+    return known, "Stage 5 fit"
+
+
+def _require_known_window(path: str, window_id: int) -> None:
+    """Refuse a window id this file does not have (or a file with no complete
+    fit, :func:`_known_window_ids`).
+
+    Without this a typo'd id recorded a "reviewed" status and a decision for a
+    window that was never there.
     """
     known, where = _known_window_ids(path)
     if int(window_id) not in known:
@@ -9339,7 +9351,9 @@ def _run_review_preview(
     if not needs_fit:
         # C5: bare-accept-only (or empty) plan -- no fits, no gate, nothing to
         # report. Mirrors _execute_curation_batch's own cheap path, which
-        # likewise never opens the engine for this shape.
+        # likewise never opens the engine for this shape -- and refuses, as
+        # that path does, a file with no complete fit.
+        _require_complete_fit(path, "review preview")
         return _PreviewRun(
             result=ReviewPreviewResult(windows={}, plan=plan, warnings=warnings)
         )
@@ -9813,6 +9827,7 @@ def review_undo_impl(
     undo, the same way decision ids and ``derivation`` tags are renumbered.
     """
     path = str(file_path)
+    _require_complete_fit(path, "review undo")
     review = load_stage6_review_from_file(path)
     log = list(review.decision_log)
     if not log:

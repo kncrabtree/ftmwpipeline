@@ -169,6 +169,16 @@ def _calls() -> Dict[str, Callable[[Path], Any]]:
         "review_accept_candidate": lambda f: ftmw.review_accept(
             f, 1, candidate_freq=30000.0
         ),
+        # A bare accept changes no fitted number but is a curation decision:
+        # it too needs a complete fit (it used to record a decision here).
+        "review_accept_bare": lambda f: ftmw.review_accept(f, 1),
+        "review_apply_bare_accept": lambda f: ftmw.review_apply(
+            f, actions=[CurationAction(action="accept", window_id=1)]
+        ),
+        "review_preview_bare_accept": lambda f: ftmw.review_preview(
+            f, actions=[CurationAction(action="accept", window_id=1)]
+        ),
+        "review_undo": lambda f: ftmw.review_undo(f, [0]),
         "get_candidate_ledger": lambda f: ftmw.get_candidate_ledger(f),
         "window_model": lambda f: ftmw.window_model(f, 1),
         "spectrum_model": lambda f: ftmw.spectrum_model(f),
@@ -187,6 +197,10 @@ def _calls() -> Dict[str, Callable[[Path], Any]]:
         "review_edit",
         "review_create",
         "review_accept_candidate",
+        "review_accept_bare",
+        "review_apply_bare_accept",
+        "review_preview_bare_accept",
+        "review_undo",
         "get_candidate_ledger",
         "window_model",
         "spectrum_model",
