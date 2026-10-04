@@ -554,8 +554,25 @@ named that does not exist, e.g. all unknown window ids of a curation batch),
   written to stderr. The code set is introduced wave by wave; codes not yet
   implemented are not listed by `capabilities()`.
 - Status calls (`get_pipeline_info`, `list_available_stages`) raise for a file
-  they cannot open; `validate_pipeline` and `Pipeline.validate` must agree on
-  whether an unopenable file raises or returns a report.
+  they cannot open. `validate_pipeline` and `Pipeline.validate` agree:
+  - a file that cannot be opened raises the typed error `Pipeline.open`
+    raises (`not_found`, `file_corrupt`, `file_incompatible`);
+  - an openable file gets a report, whose `valid` and `errors` describe the
+    file's integrity.
+
+  Validation reports problems in a pipeline file. It does not stand in for
+  opening one.
+- **Which refusals are typed.** A refusal is typed when a program calling a
+  public interface could act on its reason:
+  - a setting value (`bad_setting`: an unknown path, a wrong type, an
+    out-of-range value, a bad choice);
+  - a missing entity (`not_found`);
+  - a missing stage (`stage_not_run`);
+  - a stage algorithm that cannot produce a result from valid inputs
+    (`algorithm_failed`).
+
+  Argument checks inside kernels and storage codecs, which a correct caller
+  cannot trigger, stay built-in exceptions. They are bugs, not routes.
 
 ## Events and cancellation *(outline)*
 

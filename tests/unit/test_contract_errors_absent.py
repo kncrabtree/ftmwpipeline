@@ -24,7 +24,9 @@ from ftmwpipeline.contract import (
     STATUS_PRESENT,
     STATUS_UNDEFINED,
     Absent,
+    AlgorithmFailedError,
     AnalysisEpochMismatchError,
+    BadSettingError,
     IncompleteProvenanceError,
     NotFoundError,
     PipelineCompatibilityError,
@@ -224,6 +226,18 @@ def _errors():
             "incomplete_provenance",
             {"missing": ["stage2b.shape"]},
             (ValueError,),
+        ),
+        (
+            BadSettingError("stage5.tau.tau0_us", "float > 0", -1.0),
+            "bad_setting",
+            {"path": "stage5.tau.tau0_us", "expected": "float > 0", "value": -1.0},
+            (ValueError,),
+        ),
+        (
+            AlgorithmFailedError("fit", "no window could be fitted"),
+            "algorithm_failed",
+            {"stage": "fit"},
+            (RuntimeError,),
         ),
     ]
 

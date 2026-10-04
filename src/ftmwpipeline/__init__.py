@@ -60,7 +60,9 @@ from ftmwpipeline.contract import (
 
 # Exception family - typed errors callers are expected to catch and route on
 from ftmwpipeline.file_manager import (
+    AlgorithmFailedError,
     AnalysisEpochMismatchError,
+    BadSettingError,
     IncompleteProvenanceError,
     NotFoundError,
     PipelineCompatibilityError,
@@ -115,6 +117,8 @@ __all__ = [
     "NotFoundError",
     "PipelineFileNotFoundError",
     "IncompleteProvenanceError",
+    "BadSettingError",
+    "AlgorithmFailedError",
     # Machine contract
     "CONTRACT_VERSION",
     "MANIFEST",

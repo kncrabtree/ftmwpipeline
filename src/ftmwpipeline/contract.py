@@ -44,7 +44,9 @@ from .core.calibration import CalibrationStamp
 from .core.data_structures import FinalProducts
 from .file_manager import (
     ERROR_SCHEMA,
+    AlgorithmFailedError,
     AnalysisEpochMismatchError,
+    BadSettingError,
     IncompleteProvenanceError,
     NotFoundError,
     PipelineCompatibilityError,
@@ -381,6 +383,8 @@ _CODES: Tuple[str, ...] = (
     PipelineCorruptionError.code,  # "file_corrupt"
     AnalysisEpochMismatchError.code,  # "epoch_mismatch"
     PipelineExistsError.code,  # "file_exists"
+    BadSettingError.code,  # "bad_setting"
+    AlgorithmFailedError.code,  # "algorithm_failed"
 )
 
 _FT_WINDOW_KEYS: Tuple[str, ...] = (
@@ -648,4 +652,6 @@ __all__ = [
     "NotFoundError",
     "PipelineFileNotFoundError",
     "IncompleteProvenanceError",
+    "BadSettingError",
+    "AlgorithmFailedError",
 ]

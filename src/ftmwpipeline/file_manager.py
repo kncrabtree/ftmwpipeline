@@ -447,6 +447,68 @@ class IncompleteProvenanceError(PipelineFileError, ValueError):
         super().__init__(message)
 
 
+class BadSettingError(PipelineFileError, ValueError):
+    """Raised when a setting value is refused: unknown path, wrong type, or out
+    of range. Also a :class:`ValueError`.
+
+    Attributes
+    ----------
+    path : str
+        The setting's dotted registry path (``"stage5.tau.fit_tau"``), or the
+        argument name for a call-level knob.
+    expected : str
+        What the setting accepts, for people and programs (``"float > 0"``,
+        ``"one of: lorentzian, gaussian, voigt"``, ``"a known setting path"``).
+    value : Any
+        The refused value as given (its ``repr`` when it is not JSON-able).
+    """
+
+    code: ClassVar[str] = "bad_setting"
+    contract_fields: ClassVar[Tuple[str, ...]] = ("path", "expected", "value")
+
+    def __init__(
+        self,
+        path: str,
+        expected: str,
+        value: Any,
+        *,
+        message: Optional[str] = None,
+    ) -> None:
+        self.path = str(path)
+        self.expected = str(expected)
+        self.value = value
+        if message is None:
+            message = f"{self.path}: expected {self.expected}, got {value!r}"
+        super().__init__(message)
+
+    def _contract_values(self) -> Dict[str, Any]:
+        value = self.value
+        if not isinstance(value, (str, int, float, bool, list, tuple, dict)) and (
+            value is not None
+        ):
+            value = repr(value)
+        return {"path": self.path, "expected": self.expected, "value": value}
+
+
+class AlgorithmFailedError(PipelineFileError, RuntimeError):
+    """Raised when a stage's algorithm cannot produce a result from valid inputs
+    (a fit that cannot start, a calibration with nothing to calibrate on).
+    Also a :class:`RuntimeError`. The CLI exits 2 for it.
+
+    Attributes
+    ----------
+    stage : str
+        The canonical stage name (``"fit"``, ``"tau"``, ``"timebase"``, ...).
+    """
+
+    code: ClassVar[str] = "algorithm_failed"
+    contract_fields: ClassVar[Tuple[str, ...]] = ("stage",)
+
+    def __init__(self, stage: str, message: str) -> None:
+        self.stage = str(stage)
+        super().__init__(message)
+
+
 class SourceMetadata:
     """Metadata about the source data for a pipeline file."""
 

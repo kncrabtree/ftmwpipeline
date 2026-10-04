@@ -90,6 +90,8 @@ SNAPSHOT_CODES = frozenset(
         "file_corrupt",
         "epoch_mismatch",
         "file_exists",
+        "bad_setting",
+        "algorithm_failed",
     }
 )
 SNAPSHOT_FILE_BOUND = {
