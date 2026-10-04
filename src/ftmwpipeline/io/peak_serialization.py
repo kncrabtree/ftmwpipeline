@@ -50,6 +50,8 @@ from ._hdf5_helpers import (
     ColumnSpec,
     nan_if_none,
     none_if_nan,
+    optional_int_attr,
+    optional_str_attr,
     read_dataset_column,
     resolve_column_selection,
     stamp_stage_header,
@@ -322,15 +324,17 @@ def read_peak_columns(
 
 
 def read_peak_scalars(h5_group: h5py.Group) -> Dict[str, Any]:
-    """Read the cheap list-level scalars from a ``stage3_peaks`` group."""
-    creation = h5_group.attrs.get("creation_time", "unknown")
-    if isinstance(creation, bytes):
-        creation = creation.decode("utf-8")
+    """Read the cheap list-level scalars from a ``stage3_peaks`` group.
+
+    An attribute the group does not carry reads ``None``; a reader never
+    fabricates a count or a creation time (the contract surfaces map ``None``
+    to ``Absent.NOT_RUN``).
+    """
     return {
-        "n_peaks": int(h5_group.attrs.get("n_peaks", 0)),
+        "n_peaks": optional_int_attr(h5_group, "n_peaks"),
         "promotion_min_snr": _promotion_cutoff(h5_group),
         "internal_min_snr": none_if_nan(
             float(h5_group.attrs.get("internal_min_snr", float("nan")))
         ),
-        "creation_time": str(creation),
+        "creation_time": optional_str_attr(h5_group, "creation_time"),
     }

@@ -615,7 +615,10 @@ def visualize_ft(
     units_power : int, optional
         Scaling factor as power of 10. If None, uses cached default or 6.
     save_params : bool, default False
-        Whether to save parameters as defaults for this experiment
+        Whether to save parameters as defaults for this experiment. The
+        figure is returned either way; the stages a changed record invalidates
+        are reported in the warning log line (use :func:`save_ft_parameters`
+        to receive them).
     interactive : bool, default True
         Whether to show interactive plot
     output_file : str or Path, optional
@@ -664,7 +667,9 @@ def visualize_ft(
         raise
 
 
-def save_ft_parameters(file_path: Union[str, Path], parameters: Dict[str, Any]) -> None:
+def save_ft_parameters(
+    file_path: Union[str, Path], parameters: Dict[str, Any]
+) -> List[str]:
     """
     Save FT processing parameters as defaults for pipeline file.
 
@@ -681,6 +686,15 @@ def save_ft_parameters(file_path: Union[str, Path], parameters: Dict[str, Any]) 
         - 'units_power': Scaling factor
         - 'trim_min_mhz', 'trim_max_mhz': Frequency trimming range
 
+    Returns
+    -------
+    list of str
+        The stages the save invalidated, as canonical stage names (``Stage``
+        values) in rerun order; empty when the saved record did not change.
+        Saving a changed record drops every result built on the old spectrum.
+        This call takes no ``events`` callback, so the stages are reported
+        here and in the warning log line, not as an ``Invalidated`` event.
+
     Raises
     ------
     FileNotFoundError
@@ -695,14 +709,15 @@ def save_ft_parameters(file_path: Union[str, Path], parameters: Dict[str, Any]) 
     ...     'trim_min_mhz': 26500,
     ...     'trim_max_mhz': 40000
     ... }
-    >>> ftmw.save_ft_parameters("experiment.ftmw", params)
+    >>> invalidated = ftmw.save_ft_parameters("experiment.ftmw", params)
     """
     try:
         # Use internal implementation for parameter saving
         from ._internal.stage1_impl import save_ft_parameters_impl
 
-        save_ft_parameters_impl(str(file_path), parameters)
+        invalidated = save_ft_parameters_impl(str(file_path), parameters)
         logger.info(f"Saved {len(parameters)} FT parameters to {file_path}")
+        return invalidated
     except Exception as e:
         logger.error(f"Failed to save FT parameters to {file_path}: {e}")
         raise
@@ -2439,8 +2454,9 @@ def get_pipeline_info(file_path: Union[str, Path]) -> Dict[str, Any]:
         - 'source_path': Original data source
         - 'format': Data format name
         - 'import_time': When data was imported
-        - 'completed_stages': List of completed processing stages
-        - 'next_available_stages': Stages ready to run
+        - 'completed_stages': Completed stages, by canonical name
+          (``Stage`` values), in rerun order
+        - 'next_available_stages': Stages ready to run, by canonical name
         - 'errors': List of issues if invalid
         - 'warnings': List of warnings (always present; empty when none)
         - 'stage_environments', 'last_written_with', 'environment_drift':
@@ -2483,7 +2499,8 @@ def list_available_stages(file_path: Union[str, Path]) -> List[str]:
     Returns
     -------
     list of str
-        Names of stages that can be executed next
+        Canonical names (``Stage`` values) of the stages that can be executed
+        next, in rerun order
 
     Raises
     ------
@@ -2497,7 +2514,7 @@ def list_available_stages(file_path: Union[str, Path]) -> List[str]:
     >>> import ftmwpipeline.api as ftmw
     >>> stages = ftmw.list_available_stages("experiment.ftmw")
     >>> print(f"Available stages: {stages}")
-    >>> if 'stage1_complex_ft' in stages:
+    >>> if 'ft' in stages:
     ...     print("Ready for FT computation")
     """
     return list(get_pipeline_info(file_path)["next_available_stages"])
@@ -2532,8 +2549,8 @@ def workflow_summary(file_path: Union[str, Path]) -> str:
     Pipeline: experiment.ftmw
     Source: examples/blackchirp_data/2638/ (blackchirp format)
     Status: Valid
-    Completed: ['stage0_data_import']
-    Next available: ['stage1_complex_ft']
+    Completed: ['data']
+    Next available: ['ft']
 
     Suggested workflow:
     1. ftmw.compute_ft("experiment.ftmw", trim=(26500, 40000))
@@ -2551,7 +2568,7 @@ def workflow_summary(file_path: Union[str, Path]) -> str:
         ]
 
         # Add suggested workflow for common stages
-        if "stage1_complex_ft" in info["next_available_stages"]:
+        if "ft" in info["next_available_stages"]:
             lines.extend(
                 [
                     "",
@@ -2560,7 +2577,7 @@ def workflow_summary(file_path: Union[str, Path]) -> str:
                     f'2. ftmw.visualize_ft("{Path(file_path).name}", save_params=True)',
                 ]
             )
-        elif "stage2_noise_result" in info["next_available_stages"]:
+        elif "noise" in info["next_available_stages"]:
             lines.extend(
                 [
                     "",

@@ -49,6 +49,116 @@ had to reach into ``_internal`` or parse out of prose to obtain are now
 published, and the Stage 6 edit paths that carry them were collapsed onto one
 engine so they cannot answer differently.
 
+* **Machine contract, cleanup wave: typed curation and import refusals.**
+  ``CONTRACT_VERSION`` is now ``12`` (for the whole cleanup wave). A new code, ``curation_conflict``
+  (``CurationConflictError``, a ``ValueError``; ``reason``, ``ids``), reports a
+  valid curation request that conflicts with the file's review state; its
+  reasons are listed in :doc:`machine_contract`. Curation-file syntax errors
+  raise ``bad_setting`` with ``path`` ``curation[line <n>].<column>``, and a
+  refused field of an ``actions=`` batch ``actions[<i>].<field>`` (including
+  an action frame that disagrees with ``frame=``, which was ``"frame"``; a
+  frequency with no frame at all on a ``self_calibrated`` file is still
+  ``"frame"``). A ``create`` anchor refused inside a batch names the cell or
+  field it came from (``curation[line <n>].freqs``, ``actions[<i>].freq_mhz``;
+  was ``anchor_mhz``), and ``review_edit``'s implied create names ``add``. A
+  frequency that matches no fitted peak is ``not_found`` (kind ``peak``), one
+  no live window covers is ``not_found`` (kind ``window``), and unknown
+  ``review_undo`` ids are ``not_found`` (kind ``decision``), every id at once;
+  a frequency in ``ids`` is the one the caller wrote, in its frame. An ``add``
+  that falls outside the window it names is ``curation_conflict``
+  (``target_outside_window``). ``import_data`` raises
+  ``not_found`` (kind ``file``) for a missing source and ``bad_setting``
+  (``path`` ``source``) for one its format's loader refuses. Every one of
+  these is still the ``ValueError`` (or ``FileNotFoundError``) it replaced,
+  and messages are unchanged apart from a refused action naming its index.
+  The frame-mismatch advisory is now judged per action, so a batch's raw
+  actions are diagnosed when others in it are calibrated.
+* **Machine contract, cleanup wave: status, validation and settings honesty.**
+
+  * ``ComplexFT`` gains the wire field ``invalidated`` (the canonical names of
+    the stages the run that produced it discarded; ``[]`` for a display or
+    loaded spectrum). A ``PeakList`` still serializes as the plain list.
+  * **Behaviour change:** ``api.save_ft_parameters`` returns the canonical
+    names, in re-run order, of the stages that saving a changed Stage 1 record
+    invalidated (``[]`` when nothing changed), where it returned ``None``. The
+    call has no ``events`` argument, so no ``Invalidated`` event is delivered;
+    the warning log line names them too. ``visualize_ft(save_params=True)``
+    still returns its figure and now names the stages in its log line.
+  * **Behaviour change:** ``get_pipeline_info``, ``Pipeline.info``,
+    ``list_available_stages``, ``ftmwpipeline info`` and the ``validate_pipeline``
+    report name stages by their canonical names (``data``, ``ft``, ``noise``,
+    ...) in re-run order, where they listed storage keys such as
+    ``stage1_complex_ft`` in alphabetical order. The report's
+    ``stage_environments`` keys, drift lines and "Missing data for completed
+    stage" errors follow. Code that tested ``"stage1_complex_ft" in
+    list_available_stages(path)`` must test ``"ft"``.
+  * **Behaviour change:** ``validate_pipeline`` / ``Pipeline.validate`` raise
+    the typed open error (``not_found``, ``file_corrupt``, ``file_incompatible``)
+    for a file that cannot be opened, and for one that cannot be read while the
+    report is built, where they returned ``{"valid": False, ...}``. An
+    ``OSError`` from any read while the report is built (the FID included,
+    which used to be reported as "Cannot load FID data") raises as opening the
+    file would: a permission failure or HDF5 lock refusal as the original
+    ``OSError``, any other as ``file_corrupt``. A readable file still gets a
+    report of its integrity problems.
+  * **Behaviour change:** ``read_metadata``'s ``file.completed_stages`` lists
+    canonical stage names (``data``, ``ft``, ...) in re-run order, where it
+    listed sorted storage keys such as ``stage1_complex_ft``; a recorded key
+    no stage of this version owns is left out, as in the status calls.
+  * **Behaviour change:** ``settings set`` / ``settings_set`` refuse a value
+    outside the ``choices`` or ``bounds`` a settings row declares
+    (``bad_setting`` with the knob as ``path``, the declaration as ``expected``,
+    the caller's value as ``value``), leaving the file untouched. Only
+    ``stage5.conservative.n_eff_kind`` declares choices today
+    (``perplexity_log1p_snr``, ``kish_mag_sq``, ``kish_mag``, ``hard_radius``);
+    no setting declares bounds yet. Previously any string was stored and the
+    fit failed later.
+  * **Behaviour change:** every stage holds its resolved settings to the same
+    declared ``choices`` and ``bounds``, whichever layer supplied the value --
+    a ``settings=`` object, a preset or a persisted record -- and refuses a
+    violation as ``bad_setting`` naming the registry path (for example
+    ``stage5.conservative.n_eff_kind``); the file is left as it was. Only the
+    winning value is checked; ``settings show`` still displays a bad persisted
+    value and ``settings set`` repairs it.
+  * **Behaviour change:** ``read_metadata`` reports ``Absent.NOT_RUN`` for a
+    count, creation time, plan revision or shape attribute a stage group does
+    not carry, where it returned ``0``, ``"unknown"`` or ``"lorentzian"``, and
+    for ``stage4.n_dependency_edges`` when the plan carries no
+    ``dependency_edges`` record, where it counted zero edges.
+
+* **Machine contract, cleanup wave: degenerate statistics are undefined.**
+  A statistic that has no value used to
+  be stored as an ordinary number; it is now stored as ``nan`` and reads as
+  undefined (``read_table`` status ``2``, value ``nan``). This covers an
+  add-loop or knockout F-test with no residual degrees of freedom or a
+  non-positive chi-squared (was ``f_statistic`` 0, ``p_value`` 1; a genuine
+  non-improvement keeps those numbers), a doublet's orthogonal evidence
+  when the weak partner had no usable support (was 0), a residual edge
+  coherence of an empty residual or a band with no positive noise (was 0),
+  and a Stage 3 SNR without positive local noise (was 0). Older files read
+  the same way wherever what they store shows the statistic was degenerate:
+  ``fit_audit``, ``fit_doublets``, ``fit_windows`` and ``peaks``. An older
+  file's degenerate *knockout* p-value cannot be recognized and keeps its
+  ``1.0``. **Behaviour change:** ``fit_windows`` ``edge_coherence_low`` /
+  ``_high`` ``nan`` is now status ``2`` for a window the fit evaluated (it
+  was always ``1``), and ``peaks`` ``internal_snr`` ``nan`` is ``2`` when the
+  internal pass contributed the peak. ``fit_thaw``'s ``edge_coherence_before``
+  / ``_after`` stay the values the thaw gate read (an undefined edge is
+  ``0.0``), so ``edge_coherence_after`` ``nan`` still means only that the
+  joint co-fit produced no usable fit. A window the fit never evaluated keeps
+  reading ``1`` after a Stage 6 edit to another window rewrites the fit.
+  Every gate decision and fitted number is unchanged; on the 2638 fixture the
+  whole fit is bit-identical.
+* **Stage 6 refits mask spurs at full precision.** A Stage 6 refit (every
+  review verb that refits a window) replays the Stage 5 fit's gated spur
+  catalog instead of re-detecting it. It used to replay the spur centers as ``parameters["spur_centers_mhz"]``
+  stores them, rounded to 4 decimals for display, while the fit itself and
+  the window and spectrum models masked at full precision; it now reads the
+  full-precision catalog from the fit's ``diagnostics["gated_spurs"]``, the
+  same way the models do. A spur's mask is a whole-bin half-width, so the
+  rounding (at most 0.05 kHz) moves a masked bin only when a mask edge falls
+  within it of a bin; on the 2638 fixture no window's mask changed and every
+  refit is bit-identical. ``ANALYSIS_EPOCH`` is unchanged.
 * **Machine contract, Wave 5.2: Stage 5 partial fits.** ``CONTRACT_VERSION``
   is now ``11``. A cancelled (or callback-failed) fit no longer throws its work
   away: the windows that had finished are kept as a partial fit, in the call's

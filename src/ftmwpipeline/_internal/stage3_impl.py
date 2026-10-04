@@ -474,7 +474,12 @@ def _snap_to_active_grid(
         sd = float(snap_rms[ui])
         pedestal = float(snap_pedestal[ui])
         excess = max(intensity - pedestal, 0.0)
-        snr = excess / sd if sd > 0 else 0.0
+        if not sd > 0:
+            # No positive local noise: the SNR is undefined, and an undefined
+            # SNR never clears the (validated positive) floor -- the 0.0 it
+            # was scored as before never did either.
+            continue
+        snr = excess / sd
         if snr < internal_min_snr:
             continue
         snapped = Peak(

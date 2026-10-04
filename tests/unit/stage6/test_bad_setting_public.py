@@ -60,10 +60,13 @@ def test_review_edit_and_apply_bad_arguments(stage5_small_file, tmp_path):
     with pytest.raises(ValueError) as exc:
         api.review_edit(f, _first_window(f), add=["uid:7"])
     _check(exc, "add")
-    # malformed peak token
+    # malformed peak token: named by the argument the caller wrote
     with pytest.raises(ValueError) as exc:
         api.review_edit(f, _first_window(f), remove=["not-a-peak"])
-    _check(exc, "peak")
+    _check(exc, "remove")
+    with pytest.raises(ValueError) as exc:
+        api.review_edit(f, _first_window(f), add=["not-a-peak"])
+    _check(exc, "add")
     # log_prefix beyond the (empty) decision log
     cur = tmp_path / "c.csv"
     cur.write_text("")

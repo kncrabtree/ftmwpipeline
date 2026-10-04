@@ -34,7 +34,7 @@ The contract version
     if ftmwpipeline.CONTRACT_VERSION < 1:
         raise RuntimeError("needs a newer ftmwpipeline")
 
-The first published contract is version ``1``; this release is version ``7``. Additions (a new accessor,
+The first published contract is version ``1``; this release is version ``12``. Additions (a new accessor,
 field or code) raise the version by one and never break an existing field. Every machine-readable payload also carries a **schema name**
 of the form ``ftmw/<payload>@<n>``; a schema name never changes meaning.
 
@@ -170,7 +170,9 @@ Each declared accessor, with its absence cases:
   undefined) for each column below, inserted right after it; column selection
   accepts them. The value column keeps its stored fill (``nan``, ``inf``,
   ``-1`` or ``""``), which a program must not read when the status is not
-  ``0``. A column that predates the file reads as its fill with status ``1``,
+  ``0``. A degenerate statistic (below) reads as ``nan`` with status ``2``
+  whether the file stores ``nan`` or an earlier release's ordinary number.
+  A column that predates the file reads as its fill with status ``1``,
   except in the ``fit_peaks`` knockout block, where the knockout rule below
   decides (a test that ran on a file predating ``knockout_p_value`` reads
   ``2``, as on ``FinalPeak``).
@@ -180,7 +182,9 @@ Each declared accessor, with its absence cases:
     ``knockout_expected_delta_chi2``, ``chi_squared``, ``knockout_p_value``,
     ``knockout_n_eff`` and ``knockout_aicc_delta`` are ``1`` when the test did
     not run (no record: ``knockout_supported`` is ``-1`` or the delta chi2 is
-    ``nan``); when it ran, a non-finite value is ``2``. ``frequency_error``,
+    ``nan``); when it ran, a non-finite value is ``2`` (``knockout_p_value``
+    is ``nan`` for a degenerate F-test; an earlier release stored ``1.0``
+    there, which the file cannot distinguish). ``frequency_error``,
     ``amplitude_error``, ``phase``, ``phase_error``, ``decay_rate``,
     ``decay_rate_error`` (also when tau was held fixed) and ``snr``: a
     non-finite value is ``2``. ``detection_index``: ``-1`` (no Stage 3
@@ -189,8 +193,12 @@ Each declared accessor, with its absence cases:
     multiplet) is ``1``. ``clock_lattice``: ``1`` when the fit recorded no
     clock declaration, ``2`` when it did and the line is off the lattice
     (``""``), else ``0``.
-  * ``fit_windows``. ``freq_min``, ``freq_max``, ``edge_coherence_low``,
-    ``edge_coherence_high``: ``nan`` is ``1``. ``tau_fitted``: ``-1`` is ``1``.
+  * ``fit_windows``. ``freq_min``, ``freq_max``: ``nan`` is ``1``.
+    ``edge_coherence_low``, ``edge_coherence_high``: ``nan`` is ``2`` when the
+    fit computed the edge and it is undefined (an empty residual, or a band
+    with no positive noise; an earlier release stored ``0.0`` there, which
+    reads as ``nan``), and ``1`` when the fit never evaluated the window.
+    ``tau_fitted``: ``-1`` is ``1``.
     ``tau_error``: ``2`` for any non-finite value (held fixed or singular).
     ``tau_us`` (also when not positive), ``aic``, ``reduced_chi2``: a
     non-finite value is ``2``.
@@ -201,17 +209,40 @@ Each declared accessor, with its absence cases:
     on ``spur-drop`` and separation rejects (a ``nan`` ``p_value`` on
     ``knockout-null`` is ``2``). For a separation reject no test ran, so the
     stored placeholder ``f_statistic`` 0.0 and ``p_value`` 1.0 read as ``nan``
-    with status ``1``. ``chi2_after`` and ``aic_after``: ``1`` on
-    ``spur-drop``, else ``2`` if non-finite.
+    with status ``1``. A degenerate F-test (no added parameter, no residual
+    degrees of freedom, or a non-positive ``chi2_after``) has no value:
+    ``f_statistic`` and ``p_value`` are ``2``. An earlier release stored
+    such a test as ``f_statistic`` 0.0 and ``p_value`` 1.0; those read as
+    ``nan`` with status ``2`` wherever the stored chi-squared values rule out
+    a genuine non-improvement (``chi2_after`` below ``chi2_before``, or not
+    positive). ``chi2_after`` and ``aic_after``: ``1`` on ``spur-drop``,
+    else ``2`` if non-finite.
   * ``fit_doublets``. ``chi2r_merged``, ``delta_chi2_raw``, ``delta_aicc``,
     ``merged_frequency_mhz``, ``merged_amplitude``, ``merged_phase``,
     ``merged_tau_us`` and ``orth_evidence_delta_chi2``: a non-finite value is
-    ``2`` (the merged refit was attempted).
+    ``2`` (the merged refit was attempted). ``orth_evidence_delta_chi2`` is
+    also ``2`` when the weak partner had no usable support
+    (``support_bins`` 0), where an earlier release stored ``0.0``, which
+    reads as ``nan``. (An earlier release's ``0.0`` from a disabled
+    line-evidence escape sits on a usable support, so the file cannot tell it
+    from a measured zero; it reads as present.)
   * ``peaks``. ``internal_snr``, ``internal_frequency``, ``leakage_pedestal``:
-    ``nan`` (the internal pass did not contribute the peak) is ``1``. ``snr``
-    and ``noise_std_local``: non-finite is ``2``. ``index`` ``-1`` and
+    ``nan`` (the internal pass did not contribute the peak) is ``1``, except
+    that ``internal_snr`` is ``2`` when the internal pass did contribute it
+    (``internal_frequency`` is finite) and its SNR has no value (no positive
+    internal noise; an earlier release stored ``0.0``, which reads as
+    ``nan``). ``snr`` and ``noise_std_local``: non-finite is ``2``; ``snr``
+    is also ``2`` where ``noise_std_local`` is not positive (an earlier
+    release stored ``0.0``, which reads as ``nan``). ``index`` ``-1`` and
     ``classification`` ``""`` are ``1``. ``promoted``: ``1`` for every row when
     the file records no promotion cutoff (it predates the record), else ``0``.
+
+  ``fit_thaw`` carries no status columns. Its ``edge_coherence_before`` and
+  ``edge_coherence_after`` are the values the thaw gate read, so an undefined
+  edge (an empty residual, or a band with no positive noise) is ``0.0`` there,
+  not ``nan``; ``edge_coherence_after`` is ``nan`` only when the joint co-fit
+  produced no usable fit (it did not converge, or returned the wrong number
+  of peaks).
 
   ``read_metadata`` has two kinds of absence. A key of a stage that has not
   run is *omitted* (read with ``.get()``). A key that is present without a
@@ -221,8 +252,15 @@ Each declared accessor, with its absence cases:
   - *not run* (the file predates the record): ``file.format_version``,
     ``file.created_with``, ``source.source_path`` / ``format_name`` /
     ``import_timestamp`` / ``source_hash`` (an unset import field),
-    ``stage5.acquisition_us`` (the fit recorded none), and
-    ``stage3.promotion_min_snr`` / ``stage3.internal_min_snr``.
+    ``stage5.acquisition_us`` (the fit recorded none),
+    ``stage3.promotion_min_snr`` / ``stage3.internal_min_snr``, and any count,
+    creation time, plan revision or shape attribute that a stage group does not
+    carry: ``stage3.n_peaks`` / ``creation_time``, ``stage4.n_windows`` /
+    ``creation_time``, ``stage4.n_dependency_edges`` (the group carries no
+    ``dependency_edges`` record), and ``stage5.n_windows`` / ``n_fitted_peaks``
+    / ``final_plan_revision`` / ``shape`` / ``creation_time``. A reader never
+    fills a missing attribute with ``0``, ``"unknown"`` or ``"lorentzian"``; a
+    recorded ``0`` (an empty edge list included) is a value, not an absence.
   - *undefined* (computed, no value): ``start.chirp_end_us`` when no chirp
     was detected; ``timebase.epsilon`` and ``timebase.sigma_epsilon`` when no
     lattice tone was used; ``timebase.lattice_g_mhz`` when no locked lattice
@@ -642,7 +680,9 @@ carries a stable ``code`` and typed attributes, and ``to_dict()`` returns::
        refusal names no producing verb; the Python attribute is ``None``)
    * - ``not_found``
      - ``NotFoundError``
-     - ``kind``, ``ids`` (every id the request named that does not exist)
+     - ``kind`` (``"window"``, ``"peak"``, ``"file"`` or ``"decision"``),
+       ``ids`` (every id the request named that does not exist; a peak or
+       window named by frequency is reported by that frequency in MHz)
    * - ``not_found``
      - ``PipelineFileNotFoundError`` (a ``.ftmw`` path that does not exist)
      - ``kind`` (``"file"``), ``ids`` (the path)
@@ -683,6 +723,11 @@ carries a stable ``code`` and typed attributes, and ``to_dict()`` returns::
      - ``path`` (the file another process wrote while this call was writing
        it; this call's changes were discarded and the other write stands); see
        *Crash safety* below
+   * - ``curation_conflict``
+     - ``CurationConflictError`` (a ``ValueError``)
+     - ``reason`` (a stable slug, see *Curation refusals* below), ``ids``
+       (the windows, peaks or decisions involved, per ``reason``; ``[]`` when
+       it names none)
    * - ``pipeline_error``
      - ``PipelineFileError`` (the base class)
      - none. The declared fallback: a direct raise of the base class carries
@@ -710,8 +755,16 @@ public calls that raise it:
 * ``settings_set`` / ``settings_unset`` (api, ``Pipeline`` and ``settings
   set`` / ``unset``): an unknown or malformed path (``path`` is the knob), a
   value of the wrong type or one that does not parse, a bad ``stage5.shape``
-  choice, invalid ``stage5.spur.clocks``, or unsetting a field that is not
-  optional. The file is not touched.
+  choice, invalid ``stage5.spur.clocks``, a value outside the ``choices`` or
+  ``bounds`` the field's settings row declares, or unsetting a field that is
+  not optional. The file is not touched. For a violated declaration ``path`` is
+  the knob, ``value`` is what the caller passed (before coercion), and
+  ``expected`` states the declaration: ``one of 'a', 'b', ...`` for
+  ``choices``, and ``a value in [lo, hi)`` for ``bounds`` (a square bracket
+  includes that end, a round one excludes it; an open end reads ``-inf`` /
+  ``inf``). Bounds apply to a numeric value, or to every element of a pair or
+  list, and ``nan`` is refused wherever bounds exist. ``None`` (the unset
+  request) is never checked against either.
 * ``set_clock_sources`` and the ``clocks=`` argument of ``fit``: an invalid
   clock declaration (``path`` ``stage5.spur.clocks``); the ``shape=`` argument:
   ``path`` ``stage5.shape``.
@@ -719,6 +772,16 @@ public calls that raise it:
   ``settings_show`` / ``settings_defaults``): a preset whose root or block is
   not a mapping, or that names an unknown field or key (``path`` is
   ``preset``, the block name, or ``block.field``).
+* Every stage call, when it resolves its settings: a resolved value outside
+  the ``choices`` or ``bounds`` its field declares, whichever layer supplied
+  it -- a ``settings=`` object, a preset or a persisted record (one written
+  before the check existed, or edited by hand). ``path`` is the registry path
+  (``stage5.conservative.n_eff_kind``), ``expected`` and the bracket notation
+  are as for ``settings_set``, and ``value`` is the resolved value. Only the
+  value that wins is checked: a bad value in a layer a higher one overrides is
+  never used and never refused, and an unset field falls through to its
+  default. ``settings_show`` still displays a bad persisted value, and
+  ``settings_set`` repairs it.
 * ``trim=`` / ``--trim`` with a value that is not ``min:max`` with
   ``max > min`` (``path`` ``stage1.trim``). On the CLI the option is parsed by
   argparse, which reports a bad ``--trim`` as a usage error (exit 2).
@@ -728,6 +791,97 @@ public calls that raise it:
 
 Range and choice checks at set time are not yet made: an out-of-range number
 is accepted by ``settings_set`` and fails only when a stage runs.
+
+**Curation refusals.** The review calls (``review_edit``, ``review_apply``,
+``review_preview``, ``review_create``, ``review_accept``, ``review_undo`` and
+their ``Pipeline``, session and CLI spellings) refuse with typed errors. A
+batch refusal that names one action keeps its type and adds the action to
+the message (``curation action <n> (...) failed: ...``).
+
+* ``bad_setting``, with ``path`` naming what the caller wrote:
+
+  * a curation-file cell is ``curation[line <n>].<column>``, ``<column>``
+    one of ``action``, ``window``, ``freqs``, ``params`` (an unknown or
+    ``merge`` / ``split`` action, a window id that is not an integer or is
+    missing, a non-numeric frequency, a malformed ``uid:N``, the wrong number
+    of frequencies, unexpected or malformed parameters). A ``# frame:`` or
+    ``# epsilon:`` directive is the cell ``frame`` / ``epsilon`` of its line:
+    a bad or conflicting value, ``frame: calibrated`` without an epsilon
+    (``frame``), an epsilon without ``frame: calibrated``, and an epsilon
+    stamp that no longer matches the file's current epsilon (``epsilon``;
+    *frame drift*);
+  * a field of the i-th action of ``actions=`` is ``actions[<i>].<field>``:
+    a dict ``CurationAction.from_dict`` refuses (an unknown key is the path's
+    field), an item that is neither an action nor a dict (``actions[<i>]``),
+    an action ``frame`` that disagrees with the call's ``frame=``
+    (``actions[<i>].frame``), and an ``epsilon`` stamp that has drifted
+    (``actions[<i>].epsilon``). A frequency with no frame at all on a
+    ``self_calibrated`` file (neither the action's nor the call's) is
+    ``frame``, the call's argument, as for a curation file without a
+    ``# frame:`` header; the message names the action;
+  * a ``create``'s anchor refused inside a batch (outside the analysis band,
+    or already inside a window) is the cell or field the anchor came from:
+    ``curation[line <n>].freqs`` or ``actions[<i>].freq_mhz``, also for the
+    create an uncovered ``add`` implies. ``review_create`` names its argument,
+    ``anchor_mhz``, and ``review_edit``'s implied create names ``add``;
+  * ``review_edit``'s tokens are ``add`` / ``remove`` (a malformed token, or
+    a ``uid:N`` given to ``add``).
+
+* ``not_found``:
+
+  Every frequency in ``ids`` is the one the caller wrote, in the frame it
+  was written in (a calibrated request is answered in calibrated MHz), so a
+  client can match it against its request.
+
+  * ``kind`` ``"peak"``: a ``remove`` / merge / split frequency that matches
+    no fitted peak within the snap tolerance (``ids`` every such frequency of
+    the action), and a ``uid:N`` no fitted peak carries;
+  * ``kind`` ``"window"``: a window id the fit does not have (every unknown
+    id of a batch at once, including when the batch also creates windows:
+    only an id one of the batch's ``create`` rows could mint is left to the
+    per-action check), and an omitted-window ``add`` / ``remove``
+    target that no live window covers (``ids`` the uncovered frequencies);
+  * ``kind`` ``"decision"``: ``review_undo`` ids the decision log does not
+    hold, every one of them (on a file with no recorded decisions, every
+    requested id).
+
+* ``curation_conflict`` (``CurationConflictError``), a valid request that
+  conflicts with the file's review state. ``reason`` is one of:
+
+  .. list-table::
+     :header-rows: 1
+     :widths: 30 70
+
+     * - ``reason``
+       - When (``ids``)
+     * - ``line_already_fitted``
+       - an ``add`` seeds at the birth position of a line already fitted
+         (that line's ``peak_uid``)
+     * - ``targets_span_windows``
+       - the targets of one ``review_edit`` without a window resolve to
+         different windows (those window ids)
+     * - ``orphans_created_window``
+       - ``review_undo`` would drop a window that surviving decisions act on
+         (the decisions to undo with it)
+     * - ``baseline_unavailable``
+       - ``review_undo``, or an apply at a ``log_prefix``, needs the
+         automatic-fit baseline and the file no longer holds it, e.g. the fit
+         was re-run after editing (``[]``)
+     * - ``replay_conflict``
+       - replaying a recorded window creation no longer reproduces its
+         window: it would widen another window, or its id is taken (the
+         recorded id, then the widened window's id)
+     * - ``target_outside_window``
+       - an ``add`` whose seed, after snapping to a ledger candidate, falls
+         outside the range of the window it names (that window)
+
+  Reasons are only ever added.
+
+**Import refusals.** ``import_data`` (and ``Pipeline.create``, ``data
+import``) raises ``not_found`` (kind ``"file"``, ``ids`` the source path; a
+``PipelineFileNotFoundError``, also a ``FileNotFoundError``) for a source
+path that does not exist, and ``bad_setting`` with ``path`` ``"source"`` for a
+source the resolved format's loader does not accept.
 
 **Refused stage settings.** A stage call given a value it cannot use raises
 ``BadSettingError`` (``bad_setting``) before any work starts; ``path`` names the
@@ -742,7 +896,8 @@ unchanged from the ``ValueError`` it replaced.
      - ``bad_setting`` ``path``
    * - ``import_data`` (stage-level, auto-detection found nothing or an unknown
        ``format_name``), ``load_fid`` / source validation
-     - ``format``
+     - ``format``; ``source`` when ``import_data``'s source does not validate
+       under the resolved format
    * - ``compute_ft``
      - ``stage1.start_us`` (negative), ``stage1.end_us`` (not after ``start_us``, or
        past the end of the recording), ``stage1.trim`` (no data points in the range)
@@ -798,7 +953,19 @@ corruption: it propagates as the original ``OSError`` so a client can retry. ``P
 ``list``) agree on this. ``validate_pipeline`` reports problems in a file that
 opens; for one that does not it raises the open error (``not_found``,
 ``file_corrupt`` or ``file_incompatible``) instead of returning
-``{"valid": False}``.
+``{"valid": False}``, and so does a file that opens but cannot be read while
+the report is built: an ``OSError`` from any read -- the FID, the environment
+record, the stage-data check -- raises exactly as opening the file would (a
+permission failure or HDF5 lock refusal as the original ``OSError``, any other
+as ``file_corrupt`` chained from it), and the report never swallows a typed
+error. Only integrity problems in a readable file go in the report: an empty or
+undecodable FID, a completed stage without its data, and any other non-``OSError``
+failure while the report is built (``valid: False`` with a ``Validation
+failed`` error). ``Pipeline.validate`` is
+``validate_pipeline``, and ``Pipeline.info`` / ``get_pipeline_info`` /
+``list_available_stages`` raise for a file they cannot open, so the status
+calls and the report cannot disagree. Validation reports problems in a pipeline
+file; it does not stand in for opening one.
 
 Every verb that takes a ``.ftmw`` file refuses an unopenable one the same
 way, from its first read: a path that does not exist is ``not_found`` (exit
@@ -898,7 +1065,10 @@ Each ``SettingRow`` (and each item of ``settings show`` / ``settings defaults``
 ``units``, ``choices`` and ``bounds`` are reported only where the setting's
 declaration states them; ``None`` means "not stated", never "unrestricted". At
 present ``stage5.conservative.n_eff_kind`` is the one ``choice``, and no setting
-states bounds.
+states bounds. ``settings_set`` / ``settings set`` enforces whatever a row
+states, and so does every stage when it resolves its settings from a
+``settings=`` object, a preset or the file (see *Bad settings* above), so a
+``choice`` row's ``choices`` are exactly the strings a run accepts.
 
 ``value`` and ``hard_default`` are typed JSON: a pair or list is an array, a
 ``ShapeSpec`` is ``{"kind": "gaussian"}``, and clock sources are an array of
@@ -916,6 +1086,18 @@ Every contract payload that names a stage uses the canonical vocabulary
 ``stage1_complex_ft`` is ``ft``). The Python attribute
 ``StageDependencyError.missing_dependencies`` keeps the internal keys; its
 ``to_dict()`` publishes the canonical names.
+
+The status calls use the same vocabulary, in re-run order: the
+``completed_stages`` and ``next_available_stages`` of ``get_pipeline_info`` /
+``Pipeline.info`` (and ``ftmwpipeline info``), the result of
+``list_available_stages``, and the ``stages`` entry of the
+``validate_pipeline`` / ``Pipeline.validate`` report. The report's
+``stage_environments`` keys, the stage names inside its drift lines and its
+"Missing data for completed stage" errors are canonical too; an environment key
+that is not a known stage's storage key is kept as the file recorded it, and a
+completed-stage key no stage of this version owns is left out of the canonical
+lists. ``read_metadata``'s ``file.completed_stages`` follows the same rule:
+canonical names in re-run order.
 
 No stale results, and what a run invalidated
 --------------------------------------------
@@ -965,7 +1147,17 @@ dependencies with ties broken by the order of ``Stage`` (``data``, ``ft``,
   ``settings_set`` / ``settings_unset``) now uses the same canonical names.
 - ``compute_ft`` returns a ``ComplexFT`` whose ``invalidated`` attribute
   carries the list; ``detect_peaks`` returns a ``PeakList``, a ``list`` of
-  ``Peak`` with the same attribute.
+  ``Peak`` with the same attribute. A ``ComplexFT`` on the wire is an object
+  of ``freq_array``, ``complex_spectrum``, ``metadata`` and ``invalidated`` (a
+  JSON array of canonical names, ``[]`` for a display or loaded spectrum); a
+  ``PeakList`` is the plain list of its peaks, without the attribute.
+- ``save_ft_parameters`` (``ftmwpipeline.api``) returns the list: the canonical
+  names, in re-run order, of the stages that saving a changed Stage 1 record
+  discarded (``[]`` when the record did not change, or nothing was built on
+  it). It takes no ``events`` argument, so no ``Invalidated`` event is
+  delivered; the warning log line names the stages as well.
+  ``visualize_ft(save_params=True)`` still returns its figure, and names the
+  stages in its "Saved N processing parameters" log line.
 - On the CLI, a run that invalidated anything prints
   ``Invalidated (re-run to refresh): noise, peaks, ...``. ``settings set`` and
   ``settings unset`` keep their own line, now with canonical names. Under
@@ -1429,7 +1621,8 @@ A ``CurationAction`` is a frozen dataclass, one curation-file row:
 frequency, or one ``peak_uid`` on ``remove``; no frequency on ``accept``; no
 ``peak_uid`` outside ``remove``; no ``candidate_mhz`` outside ``accept``. A
 violation raises ``BadSettingError`` (``bad_setting``) whose ``path`` is the
-field.
+field. A dict refused inside an ``actions=`` batch reports the field as
+``actions[<i>].<field>``.
 
 **Wire form.** ``to_dict()`` returns ``{"schema": "ftmw/curation_action@1",
 "action", "window_id", "freq_mhz", "peak_uid", "candidate_mhz", "frame",
@@ -1443,7 +1636,8 @@ file's rows parse to the actions ``from_dict`` gives of their dicts.
 
 **Frames.** Each action's frame is resolved on its own. ``None`` takes the
 call's ``frame=``, and then the call's rule applies: raw on a file whose
-``epsilon`` is 0, and ``bad_setting`` (``path`` ``"frame"``) on a
+``epsilon`` is 0, and ``bad_setting`` (``path`` ``"frame"``, the call's
+missing ``frame=``, with the message naming the action) on a
 ``self_calibrated`` file when the action carries a frequency. A batch may mix
 frames. The pipeline converts each action to raw before resolving anything. A
 client never converts frequencies itself.

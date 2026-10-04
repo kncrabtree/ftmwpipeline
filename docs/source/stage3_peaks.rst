@@ -167,6 +167,12 @@ line is sharp, so its own height is diluted across the coherence band and barely
 enters the pedestal, leaving its SNR essentially unchanged, while broad leakage is
 removed. The raw magnitude is still reported as the amplitude.
 
+A peak whose local noise is not positive has no SNR: it is stored as ``nan`` (it
+reads ``UNDEFINED``, never ``0``), classified ``weak``, and dropped when the peak
+is re-measured on the active grid, since an undefined SNR cannot clear the
+(positive) detection floor. Peaks whose excess over the pedestal is clamped to zero
+on a positive noise keep a measured SNR of ``0.0``.
+
 Re-measuring on the active grid also corrects two position artifacts. The
 second-derivative locator lands a few points off the true apex for ultra-narrow
 lines, so each detection is **apex-snapped** to the nearest local maximum on the

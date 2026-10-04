@@ -853,7 +853,7 @@ class TestCurationActionFrames:
                 ],
                 frame="raw",
             )
-        assert ei.value.path == "frame"
+        assert ei.value.path == "actions[0].frame"
         assert self._removed(sc_file) == []
 
     def test_stamped_epsilon_refuses_drift_like_the_file(
@@ -870,12 +870,16 @@ class TestCurationActionFrames:
         csv.write_text(
             f"# frame: calibrated\n# epsilon: {stale!r}\nremove,{wid},{f_cal!r},\n"
         )
-        with pytest.raises(ValueError, match="drift"):
+        with pytest.raises(BadSettingError, match="drift") as ei:
             ftmw.review_apply(str(sc_file), str(csv))
+        assert ei.value.path == "curation[line 2].epsilon"
         actions = actions_from_curation_file(csv)
         assert actions[0].epsilon == stale
-        with pytest.raises(ValueError, match="drift"):
+        with pytest.raises(BadSettingError, match="drift") as ei:
             ftmw.review_apply(str(sc_file), actions=actions)
+        # the same refusal, pointed at the action's own field
+        assert ei.value.path == "actions[0].epsilon"
+        assert ei.value.value == stale
         assert self._removed(sc_file) == []
 
     def test_omitted_frame_refused_on_self_calibrated(self, sc_file: Path) -> None:
@@ -887,7 +891,40 @@ class TestCurationActionFrames:
                     str(sc_file),
                     actions=[CurationAction("remove", window_id=wid, freq_mhz=f0)],
                 )
+            # the call's frame= is what is missing, as for a headerless file
             assert ei.value.path == "frame"
+
+    def test_frame_refusals_name_the_index_of_the_offending_action(
+        self, sc_file: Path
+    ) -> None:
+        # Mutation: every refusal pointed at actions[0] (or the disagreement
+        # at "frame").
+        f0, f1, eps, probe, wid = self._two_peaks(sc_file)
+        ok = CurationAction("remove", window_id=wid, freq_mhz=f0, frame="raw")
+        # an omitted frame on a self_calibrated file, as the second action:
+        # the missing value is the call's frame=, and the message names the
+        # action that needed it
+        with pytest.raises(BadSettingError) as ei:
+            ftmw.review_apply(
+                str(sc_file),
+                actions=[ok, CurationAction("remove", window_id=wid, freq_mhz=f1)],
+            )
+        assert ei.value.path == "frame"
+        assert str(ei.value).startswith("actions[1] (remove): ")
+        # a frame that disagrees with the call's, as the second action
+        with pytest.raises(BadSettingError) as ei:
+            ftmw.review_preview(
+                str(sc_file),
+                actions=[
+                    ok,
+                    CurationAction(
+                        "remove", window_id=wid, freq_mhz=f1, frame="calibrated"
+                    ),
+                ],
+                frame="raw",
+            )
+        assert ei.value.path == "actions[1].frame"
+        assert self._removed(sc_file) == []
 
     def test_uid_remove_and_bare_accept_need_no_frame(self, sc_file: Path) -> None:
         # Mutation: frame required for actions that carry no frequency.
@@ -926,3 +963,117 @@ class TestCurationActionFrames:
         )
         assert self._removed(sc_file) == self._removed(other)
         assert self._removed(other)[0] == pytest.approx(f0, abs=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# A not_found frequency comes back in the frame the caller wrote it in
+# (docs/source/machine_contract.rst, Curation refusals).
+# ---------------------------------------------------------------------------
+
+
+class TestNotFoundIdsInTheCallersFrame:
+    """Mutation: the ids carry the raw frequency the refusal was found in --
+    ~eps * (f - probe) off what a calibrated caller sent, so a client
+    matching ``ids`` against its request finds nothing."""
+
+    @staticmethod
+    def _misses(sc_file: Path) -> Tuple[int, float, float, float, float]:
+        """``(wid, miss_raw, miss_cal, unc_raw, unc_cal)``: a point inside
+        window ``wid`` far from its peaks, and one no window covers."""
+        wf = _first_fitted_window(sc_file)
+        wid = int(wf.window_id)
+        plan = load_windows_impl(str(sc_file))["plan"]
+        lo, hi = sorted(next(w for w in plan.windows if w.window_id == wid).freq_range)
+        peaks = [float(p.frequency_mhz) for p in wf.fitted_peaks]
+        grid = [lo + (hi - lo) * k / 512 for k in range(1, 512)]
+        miss_raw = max(grid, key=lambda g: min(abs(g - p) for p in peaks))
+        unc_raw = min(min(w.freq_range) for w in plan.windows) - 1000.0
+        stamp = _current_calibration_stamp(str(sc_file))
+        assert stamp is not None
+        eps, probe = stamp[1], stamp[4]
+        miss_cal = _ref_calibrated(miss_raw, probe=probe, eps=eps)
+        unc_cal = _ref_calibrated(unc_raw, probe=probe, eps=eps)
+        assert miss_cal != pytest.approx(miss_raw, abs=1e-6)
+        return wid, miss_raw, miss_cal, unc_raw, unc_cal
+
+    @staticmethod
+    def _ids(exc: pytest.ExceptionInfo, kind: str) -> list:
+        from ftmwpipeline.file_manager import NotFoundError
+
+        assert isinstance(exc.value, NotFoundError)
+        assert exc.value.kind == kind
+        assert exc.value.to_dict()["ids"] == exc.value.ids
+        return list(exc.value.ids)
+
+    def test_review_edit(self, sc_file: Path) -> None:
+        wid, _, miss_cal, _, unc_cal = self._misses(sc_file)
+        with pytest.raises(ValueError) as exc:
+            ftmw.review_edit(str(sc_file), wid, remove=[miss_cal], frame="calibrated")
+        assert self._ids(exc, "peak") == [miss_cal]
+        with pytest.raises(ValueError) as exc:
+            Pipeline.open(sc_file).review_edit(
+                None, remove=[unc_cal], frame="calibrated"
+            )
+        assert self._ids(exc, "window") == [unc_cal]
+
+    def test_raw_frame_ids_stay_raw(self, sc_file: Path) -> None:
+        wid, miss_raw, _, _, _ = self._misses(sc_file)
+        with pytest.raises(ValueError) as exc:
+            ftmw.review_edit(str(sc_file), wid, remove=[miss_raw], frame="raw")
+        assert self._ids(exc, "peak") == [miss_raw]
+
+    @pytest.mark.parametrize("call_name", ["review_apply", "review_preview"])
+    def test_action_batch(self, sc_file: Path, call_name: str) -> None:
+        wid, miss_raw, miss_cal, _, unc_cal = self._misses(sc_file)
+        call = getattr(ftmw, call_name)
+        with pytest.raises(ValueError) as exc:
+            call(
+                str(sc_file),
+                actions=[
+                    CurationAction(
+                        "remove", window_id=wid, freq_mhz=miss_cal, frame="calibrated"
+                    )
+                ],
+            )
+        assert self._ids(exc, "peak") == [miss_cal]
+        # an uncovered omitted-window target, beside a raw action
+        with pytest.raises(ValueError) as exc:
+            call(
+                str(sc_file),
+                actions=[
+                    CurationAction("remove", freq_mhz=unc_cal, frame="calibrated"),
+                    CurationAction("accept", window_id=wid),
+                ],
+            )
+        assert self._ids(exc, "window") == [unc_cal]
+
+    @pytest.mark.parametrize("call_name", ["review_apply", "review_preview"])
+    def test_curation_file(self, sc_file: Path, tmp_path: Path, call_name) -> None:
+        wid, _, miss_cal, _, unc_cal = self._misses(sc_file)
+        stamp = _current_calibration_stamp(str(sc_file))
+        assert stamp is not None
+        header = f"# frame: calibrated\n# epsilon: {stamp[1]!r}\n"
+        call = getattr(ftmw, call_name)
+        peak_csv = tmp_path / "peak.csv"
+        peak_csv.write_text(header + f"remove,{wid},{miss_cal!r},\n")
+        with pytest.raises(ValueError) as exc:
+            call(str(sc_file), str(peak_csv))
+        assert self._ids(exc, "peak") == [miss_cal]
+        window_csv = tmp_path / "window.csv"
+        window_csv.write_text(header + f"remove,,{unc_cal!r},\n")
+        with pytest.raises(ValueError) as exc:
+            call(str(sc_file), str(window_csv))
+        assert self._ids(exc, "window") == [unc_cal]
+
+    def test_review_session(self, sc_file: Path) -> None:
+        wid, _, miss_cal, _, _ = self._misses(sc_file)
+        action = CurationAction(
+            "remove", window_id=wid, freq_mhz=miss_cal, frame="calibrated"
+        )
+        with Pipeline.open(sc_file).review_session() as session:
+            with pytest.raises(ValueError) as exc:
+                session.review_preview(actions=[action])
+            assert self._ids(exc, "peak") == [miss_cal]
+            with pytest.raises(ValueError) as exc:
+                session.review_apply(actions=[action])
+            assert self._ids(exc, "peak") == [miss_cal]

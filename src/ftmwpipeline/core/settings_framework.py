@@ -33,6 +33,8 @@ from typing import Any, Callable, Dict, Optional, Sequence, Type, TypeVar, Union
 
 import yaml  # type: ignore[import-untyped]
 
+from .knob_metadata import check_declared_typing
+
 # Mirrors the marker used by io.fid_serialization for optional HDF5 attrs.
 NONE = "__None__"
 
@@ -115,12 +117,22 @@ def fill_resolved_subblocks(
     sub_names: Sequence[str],
     hard_defaults: Dict[str, Dict[str, Any]],
     layers: Sequence[Any],
+    *,
+    prefix: str,
 ) -> T:
-    """Resolve every sub-block on *merged* in place and return it."""
+    """Resolve every sub-block on *merged* in place and return it.
+
+    The resolved settings are then held to every field's declared ``choices``
+    and ``bounds`` (:func:`~ftmwpipeline.core.knob_metadata.check_declared_typing`
+    under the stage's registry ``prefix``), so a violation from any layer -- a
+    ``settings=`` object, a preset, a persisted record -- raises
+    ``BadSettingError`` naming the registry path.
+    """
     for sub_name in sub_names:
         setattr(
             merged, sub_name, resolve_sub(sub_name, settings_cls, hard_defaults, layers)
         )
+    check_declared_typing(merged, prefix)
     return merged
 
 

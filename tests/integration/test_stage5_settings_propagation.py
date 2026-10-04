@@ -159,7 +159,7 @@ PROPAGATION_FIELDS: list[tuple[str, Callable[..., None], Any, str, str]] = [
     (
         "conservative.n_eff_kind",
         _t("conservative", "n_eff_kind"),
-        "ess_lp_log1p_snr",
+        "kish_mag",
         "n_eff_kind",
         "conservative",
     ),

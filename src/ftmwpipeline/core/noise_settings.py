@@ -45,7 +45,7 @@ from typing import Any, Dict, Mapping, Optional, Union, cast
 
 import yaml  # type: ignore[import-untyped]
 
-from .knob_metadata import knob_field
+from .knob_metadata import check_declared_typing, knob_field
 from .settings_framework import bad_preset
 
 # Mirrors the marker used by io.fid_serialization for optional HDF5 attrs.
@@ -184,6 +184,8 @@ def resolve(
         if value is None:
             value = _HARD_DEFAULTS.get(f.name)
         setattr(merged, f.name, value)
+    # Every declared choices / bounds holds whichever layer supplied the value.
+    check_declared_typing(merged, "stage2")
     return merged
 
 

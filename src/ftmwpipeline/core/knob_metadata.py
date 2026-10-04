@@ -24,6 +24,7 @@ import it without cycles.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field, fields, is_dataclass
 from typing import Any, Callable, Iterator, Optional, Tuple
 
@@ -268,7 +269,95 @@ def field_knob_meta(cls: type, dotted_tail: str) -> KnobMeta:
     raise KeyError(f"{cls.__name__} has no field {dotted_tail!r}")
 
 
+# ---------------------------------------------------------------------------
+# Enforcing declared choices / bounds
+# ---------------------------------------------------------------------------
+def _bounds_text(bounds: dict[str, Any]) -> str:
+    """Interval notation for a bounds mapping: ``[0.0, 1.0)``, ``(0, inf)``."""
+    lo, hi = bounds.get("min"), bounds.get("max")
+    left = "[" if bounds.get("min_inclusive", True) and lo is not None else "("
+    right = "]" if bounds.get("max_inclusive", True) and hi is not None else ")"
+    return f"{left}{'-inf' if lo is None else lo}, {'inf' if hi is None else hi}{right}"
+
+
+def _outside_bounds(number: Any, bounds: dict[str, Any]) -> bool:
+    """``True`` when a numeric ``number`` violates ``bounds`` (nan always does)."""
+    if isinstance(number, bool) or not isinstance(number, (int, float)):
+        return False
+    if isinstance(number, float) and math.isnan(number):
+        return True
+    lo, hi = bounds.get("min"), bounds.get("max")
+    if lo is not None and (
+        number < lo or (number == lo and not bounds.get("min_inclusive", True))
+    ):
+        return True
+    return hi is not None and (
+        number > hi or (number == hi and not bounds.get("max_inclusive", True))
+    )
+
+
+def check_field_typing(path: str, value: Any, raw: Any, typing: FieldTyping) -> None:
+    """Enforce a field's declared ``choices`` and ``bounds`` on ``value``.
+
+    ``choices`` is membership of the whole value. ``bounds`` applies to a
+    numeric scalar, or to every numeric element of a tuple / list value; a
+    value of any other kind is not bounded. A violation raises
+    :class:`~ftmwpipeline.file_manager.BadSettingError` with ``path`` (the
+    registry path), the declared constraint as ``expected`` and ``raw`` (what
+    the caller supplied) as ``value``. ``None`` (unset) is never checked here.
+    """
+    # Imported lazily: ``file_manager`` imports from ``core``.
+    from ..file_manager import BadSettingError
+
+    if typing.choices is not None and value not in typing.choices:
+        listed = ", ".join(repr(c) for c in typing.choices)
+        raise BadSettingError(
+            path,
+            f"one of {listed}",
+            raw,
+            message=f"{path}: {raw!r} is not one of {listed}",
+        )
+    if typing.bounds is not None:
+        items = value if isinstance(value, (tuple, list)) else (value,)
+        if any(_outside_bounds(item, typing.bounds) for item in items):
+            interval = _bounds_text(typing.bounds)
+            raise BadSettingError(
+                path,
+                f"a value in {interval}",
+                raw,
+                message=f"{path}: {raw!r} is outside {interval}",
+            )
+
+
+def check_declared_typing(settings: Any, prefix: str) -> None:
+    """Enforce every declared ``choices`` / ``bounds`` on a settings object.
+
+    Walks the settings dataclass the way the registry does -- a scalar field is
+    ``<prefix>.<field>``, a sub-block field ``<prefix>.<sub>.<field>`` -- and
+    checks each set (non-``None``) value with :func:`check_field_typing`. The
+    stage resolvers call it on the merged result, so a value from any layer
+    (``settings=`` object, preset, persisted record) is held to the same
+    declaration ``settings set`` enforces.
+    """
+    for f in fields(settings):
+        value = getattr(settings, f.name)
+        if is_dataclass(value) and not isinstance(value, type):
+            for sub_f in fields(value):
+                sub_value = getattr(value, sub_f.name)
+                if sub_value is not None:
+                    check_field_typing(
+                        f"{prefix}.{f.name}.{sub_f.name}",
+                        sub_value,
+                        sub_value,
+                        field_typing_meta(sub_f),
+                    )
+        elif value is not None:
+            check_field_typing(f"{prefix}.{f.name}", value, value, field_typing_meta(f))
+
+
 __all__ = [
+    "check_declared_typing",
+    "check_field_typing",
     "CliSpec",
     "FieldTyping",
     "KnobMeta",

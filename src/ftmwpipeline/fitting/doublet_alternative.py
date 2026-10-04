@@ -135,8 +135,9 @@ class DoubletAdjudication:
         that the merged fit leaves behind structure that the weak
         partner's lineshape alone (not lineshape-error of the parent)
         explains — evidence for a genuine second transition.
-        0.0 when the support slice is degenerate; ``nan`` on refit
-        failure.
+        ``nan`` when no test ran (refit failure, a degenerate support
+        slice, or the escape disabled); earlier releases stored 0.0 for a
+        degenerate slice.
     orth_evidence_n_params : int
         Number of peak parameters in the template (always 3: amplitude,
         offset, phase).
@@ -505,7 +506,9 @@ def adjudicate_close_pairs(
                 n_params_peak=3,
             )
         except Exception:  # noqa: BLE001
-            orth_delta = 0.0
+            # No test ran: the evidence is undefined (``nan``), and
+            # ``support_bins`` 0 records that it never ran.
+            orth_delta = float("nan")
             support_bins = 0
 
         results.append(

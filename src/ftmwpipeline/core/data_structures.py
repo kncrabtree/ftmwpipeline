@@ -716,8 +716,10 @@ class KnockoutInfo:
         strictly better AICc.
     p_value : float
         Diagnostic F-test p-value of the K-peak fit vs the (K-1)-peak
-        refit. ``nan`` when the refit failed to converge or for peaks
-        loaded from older files written before this column existed.
+        refit. ``nan`` when the refit failed to converge, when the test is
+        degenerate (no residual degrees of freedom or a non-positive
+        chi-squared), or for peaks loaded from older files written before
+        this column existed.
     n_eff : float
         Effective sample size used by the AICc gate. ``nan`` for older
         files written before this column existed.
@@ -1041,7 +1043,10 @@ class AuditStep:
     f_statistic, p_value : float
         Diagnostic nested-model F-test of the chi-squared improvement.
         Kept as a familiar statistic; the accept gate is
-        AICc-with-``n_eff`` (see ``n_eff`` / ``aicc_delta``).
+        AICc-with-``n_eff`` (see ``n_eff`` / ``aicc_delta``). Both ``nan``
+        when the test is degenerate (no added parameter, no residual
+        degrees of freedom, or a non-positive chi-squared); files written
+        before that stored ``f_statistic`` 0.0 and ``p_value`` 1.0 there.
     aic_before, aic_after : float
         Diagnostic AIC at the raw ``n_data``.
     separation_ok : bool
@@ -1101,8 +1106,11 @@ class ThawInfo:
     edge_side : str
         ``"low"`` or ``"high"`` -- the flagged residual edge.
     edge_coherence_before, edge_coherence_after : float
-        Residual ``S_coh`` on the flagged edge before / after the co-fit.
-        ``nan`` for ``after`` if the co-fit did not converge.
+        Residual ``S_coh`` on the flagged edge before / after the co-fit, as
+        the thaw gate read it: an undefined edge (an empty residual, or a band
+        with no positive noise) is ``0.0``. ``nan`` for ``after`` only if the
+        co-fit produced no usable fit (it did not converge, or returned the
+        wrong number of peaks).
     accepted : bool
         Whether the co-fit converged and lowered the flagged-edge coherence to
         at or below the threshold.
@@ -1708,7 +1716,9 @@ class DoubletAlternativeInfo:
         Nuisance-projected matched-filter delta-chi-squared of the weak
         partner template on the merged residual. Large values indicate
         genuine second-line evidence orthogonal to parent lineshape error.
-        0.0 when the support slice is degenerate; NaN on refit failure.
+        NaN when no test ran (refit failure, a degenerate support slice);
+        files written before that store 0.0 for a degenerate slice, which
+        ``support_bins`` 0 identifies.
     orth_evidence_n_params : int
         Number of peak parameters in the template (always 3).
     support_bins : int

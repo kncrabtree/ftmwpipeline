@@ -1722,7 +1722,9 @@ class AddStep:
         Diagnostic nested-model F-test of the chi-squared improvement.
         Kept as a familiar statistic; the accept gate is
         :func:`~ftmwpipeline.fitting.validation.gate_aicc_pair` evaluated at
-        the shared ``n_eff`` (see ``n_eff`` / ``aicc_delta``).
+        the shared ``n_eff`` (see ``n_eff`` / ``aicc_delta``). Both ``nan``
+        when the test is degenerate (see
+        :func:`~ftmwpipeline.fitting.validation.calculate_chi_squared_improvement`).
     aic_before, aic_after : float
         Diagnostic AIC at the raw ``n_data``.
     separation_ok : bool
@@ -1806,8 +1808,10 @@ class KnockoutResult:
     p_value : float
         Diagnostic F-test p-value of the K-peak fit vs the (K-1)-peak
         refit (not freeze-others); kept as a familiar statistic but no
-        longer the decision rule. ``nan`` for an empty fit or when the
-        refit failed to converge.
+        longer the decision rule. ``nan`` for an empty fit, when the
+        refit failed to converge, or when the F-test is degenerate (no
+        residual degrees of freedom or a non-positive chi-squared; see
+        :func:`~ftmwpipeline.fitting.validation.calculate_chi_squared_improvement`).
     n_eff : float
         Effective sample size used by the gate; computed once from the
         K-fit model magnitude (kind set by ``n_eff_kind``) and shared

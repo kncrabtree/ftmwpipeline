@@ -152,6 +152,56 @@ class TestTwoPassDriver:
         assert peaks[0].properties["detection_pass"] == "primary"
 
 
+class TestUndefinedSnr:
+    """A peak whose local noise is not positive has no SNR: ``nan``, and WEAK.
+
+    ``classify_by_snr(nan)`` would fall through both comparisons to STRONG, so
+    the classification of an undefined SNR is explicit (spec: gate decisions do
+    not change; the 0.0 stored before classified WEAK).
+    """
+
+    @pytest.mark.parametrize("with_gap", [True, False])
+    def test_zero_local_noise_is_nan_snr_and_weak(self, two_pass_spectra, with_gap):
+        freq, primary_mag, gap_mag, sd = two_pass_spectra
+        score_sd = sd.copy()
+        score_sd[np.abs(freq - 10000.0) < 3.0] = 0.0  # no noise under the strong line
+        if with_gap:  # scored on the gap (reference) spectrum
+            peaks = detect_peaks(
+                freq, primary_mag, sd, freq, gap_mag, score_sd, min_snr=3.0
+            )
+        else:  # no gap spectrum: scored on the primary one
+            peaks = detect_peaks(freq, primary_mag, score_sd, min_snr=3.0)
+        strong = [p for p in peaks if abs(p.frequency - 10000.0) < 3.0]
+        assert len(strong) == 1
+        peak = strong[0]
+        assert np.isnan(peak.snr)
+        assert peak.noise_std_local == 0.0
+        # Without the explicit branch an nan SNR would classify as STRONG.
+        assert peak.classification is PeakClassification.WEAK
+
+    def test_negative_local_noise_is_also_undefined(self, two_pass_spectra):
+        freq, primary_mag, gap_mag, sd = two_pass_spectra
+        score_sd = sd.copy()
+        score_sd[np.abs(freq - 10000.0) < 3.0] = -1.0
+        peaks = detect_peaks(
+            freq, primary_mag, sd, freq, gap_mag, score_sd, min_snr=3.0
+        )
+        strong = [p for p in peaks if abs(p.frequency - 10000.0) < 3.0]
+        assert np.isnan(strong[0].snr)
+        assert strong[0].classification is PeakClassification.WEAK
+
+    def test_positive_noise_elsewhere_keeps_a_finite_snr(self, two_pass_spectra):
+        freq, primary_mag, gap_mag, sd = two_pass_spectra
+        score_sd = sd.copy()
+        score_sd[np.abs(freq - 10000.0) < 3.0] = 0.0
+        peaks = detect_peaks(
+            freq, primary_mag, sd, freq, gap_mag, score_sd, min_snr=3.0
+        )
+        weak = [p for p in peaks if abs(p.frequency - 10500.0) < 3.0]
+        assert len(weak) == 1 and np.isfinite(weak[0].snr)
+        assert weak[0].classification is PeakClassification.WEAK
+
+
 class TestValidation:
     def test_nonpositive_min_snr_rejected(self):
         x = np.linspace(0.0, 10.0, 100)

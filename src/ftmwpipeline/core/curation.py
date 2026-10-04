@@ -138,7 +138,9 @@ class PeakUidToken:
     uid: int
 
 
-def parse_peak_token(token: Union[float, str]) -> Union[float, PeakUidToken]:
+def parse_peak_token(
+    token: Union[float, str], *, path: str = "peak"
+) -> Union[float, PeakUidToken]:
     """Parse one caller-supplied ``add``/``remove`` token into a frequency
     (MHz) or a :class:`PeakUidToken`.
 
@@ -156,13 +158,18 @@ def parse_peak_token(token: Union[float, str]) -> Union[float, PeakUidToken]:
     names a peak that already exists and neither of those verbs addresses an
     existing peak.
 
+    *path* names what the caller wrote, for the refusal's ``bad_setting``
+    ``path``: the argument (``"add"``, ``"remove"``) or the curation-file
+    cell (``"curation[line 3].freqs"``).
+
     Raises
     ------
-    ValueError
-        When the token is prefixed ``"uid:"`` but what follows is not a
-        non-negative integer (``"uid:"``, ``"uid:abc"``, ``"uid:-3"``,
-        ``"uid:1.5"`` all raise), or when an un-prefixed token is not a valid
-        MHz value. The offending token is always named in the message.
+    BadSettingError
+        (``bad_setting``, a :class:`ValueError`, ``path`` *path*) When the
+        token is prefixed ``"uid:"`` but what follows is not a non-negative
+        integer (``"uid:"``, ``"uid:abc"``, ``"uid:-3"``, ``"uid:1.5"`` all
+        raise), or when an un-prefixed token is not a valid MHz value. The
+        offending token is always named in the message.
     """
     from ..file_manager import BadSettingError
 
@@ -173,7 +180,7 @@ def parse_peak_token(token: Union[float, str]) -> Union[float, PeakUidToken]:
             digits = text[len(_UID_TOKEN_PREFIX) :]
             if not digits:
                 raise BadSettingError(
-                    "peak",
+                    path,
                     expected,
                     token,
                     message=f"malformed peak identifier {token!r}: nothing follows "
@@ -183,7 +190,7 @@ def parse_peak_token(token: Union[float, str]) -> Union[float, PeakUidToken]:
                 uid = int(digits)
             except ValueError:
                 raise BadSettingError(
-                    "peak",
+                    path,
                     expected,
                     token,
                     message=f"malformed peak identifier {token!r}: {digits!r} is "
@@ -191,7 +198,7 @@ def parse_peak_token(token: Union[float, str]) -> Union[float, PeakUidToken]:
                 ) from None
             if uid < 0:
                 raise BadSettingError(
-                    "peak",
+                    path,
                     expected,
                     token,
                     message=f"malformed peak identifier {token!r}: uid must be "
@@ -202,7 +209,7 @@ def parse_peak_token(token: Union[float, str]) -> Union[float, PeakUidToken]:
             return float(text)
         except ValueError:
             raise BadSettingError(
-                "peak",
+                path,
                 expected,
                 token,
                 message=f"malformed frequency {token!r}: not a valid MHz value",

@@ -31,7 +31,7 @@ import math
 import os
 import re
 import time
-from contextlib import ExitStack, nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -42,7 +42,9 @@ from typing import (
     Collection,
     ContextManager,
     Dict,
+    FrozenSet,
     Iterable,
+    Iterator,
     List,
     Mapping,
     NoReturn,
@@ -85,6 +87,7 @@ from ..core.data_structures import (
 )
 from ..file_manager import (
     BadSettingError,
+    CurationConflictError,
     NotFoundError,
     NotFoundValueError,
     PipelineFileError,
@@ -103,6 +106,7 @@ from ..fitting.validation import (
 from ..io.fitting_serialization import (
     FitWindowCoverage,
     load_spectrum_fit_from_hdf5,
+    read_fit_diagnostics,
     read_fit_parameters,
     read_fit_peak_freqs_and_uids_by_window,
     read_fit_peak_frequencies_by_window,
@@ -200,7 +204,8 @@ def _review_operation(
             events = call.get("events")
             cancel = call.get("cancel")
             if _REVIEW_SCOPE.get() is not None and events is None and cancel is None:
-                return fn(*args, **kwargs)
+                with _caller_frame_ids():
+                    return fn(*args, **kwargs)
             ops = operation_events(verb, events, cancel)
             path = str(call["file_path"])
             with ops.stage(Stage.REVIEW, verb=verb, file_path=path) as scope:
@@ -209,7 +214,7 @@ def _review_operation(
                     # The whole call -- a batch with its cascade, a refit, an
                     # undo's restore-then-replay -- is one atomic write;
                     # StageFinished follows the replace.
-                    with atomic_write(path):
+                    with atomic_write(path), _caller_frame_ids():
                         result = fn(*args, **kwargs)
                 finally:
                     _REVIEW_SCOPE.reset(token)
@@ -543,6 +548,14 @@ def _audit_step_candidates(
         elif not math.isnan(step.p_value):
             # Rejected by separation / blend-split / nan-AICc path; use F-test p.
             evidence = step.p_value
+            kind = "f_p"
+        elif not math.isnan(step.chi2_before - step.chi2_after):
+            # A degenerate F-test (no residual degrees of freedom, a
+            # non-positive chi-squared): its p is undefined (nan), but with
+            # both chi-squared values in hand it carries no evidence, and it
+            # ranks as p = 1 -- what it was stored as before the statistic
+            # became undefined, so the ledger is unchanged.
+            evidence = 1.0
             kind = "f_p"
         else:
             evidence = abs(step.chi2_before - step.chi2_after)
@@ -1279,16 +1292,59 @@ def _resolve_curation_frame(
     if header.epsilon is not None and stamp is not None:
         current_eps = stamp[1]
         if not math.isclose(header.epsilon, current_eps, rel_tol=1e-6, abs_tol=1e-12):
-            raise ValueError(
-                f"curation file frame drift: this file was staged "
+            raise BadSettingError(
+                (
+                    "epsilon"
+                    if header.epsilon_line is None
+                    else _curation_cell(header.epsilon_line, "epsilon")
+                ),
+                f"the file's current epsilon ({current_eps:.6e})",
+                header.epsilon,
+                message=f"curation file frame drift: this file was staged "
                 f"frame=calibrated at epsilon={header.epsilon:.6e}, but the "
                 f"target file's current epsilon is {current_eps:.6e}. The "
                 f"calibration has changed since this file was written (e.g. "
                 f"a timebase re-run) -- re-stage the curation file against "
-                f"the current calibration rather than applying it as-is."
+                f"the current calibration rather than applying it as-is.",
             )
 
     return resolved_frame, stamp
+
+
+_WRITTEN_FREQS: ContextVar[Optional[Dict[float, float]]] = ContextVar(
+    "_WRITTEN_FREQS", default=None
+)
+"""The running curation call's raw -> as-written frequency map (see
+:func:`_caller_frame_ids`); ``None`` outside one."""
+
+
+@contextmanager
+def _caller_frame_ids() -> Iterator[None]:
+    """Report a ``not_found`` frequency in the frame the caller wrote it in.
+
+    Every caller frequency is converted to raw once, by :func:`_frame_to_raw`,
+    which records the pair here when the conversion moved it; the curation
+    machinery underneath works and refuses in raw. A ``not_found`` (kind
+    ``peak`` or ``window``) escaping the call has its frequency ``ids`` mapped
+    back to what the caller wrote, so ``ids`` can be matched against the
+    request. A uid (an ``int``) is frame-independent and stays as it is.
+    Re-entrant: a nested call reports into the outermost one.
+    """
+    if _WRITTEN_FREQS.get() is not None:
+        yield
+        return
+    written: Dict[float, float] = {}
+    token = _WRITTEN_FREQS.set(written)
+    try:
+        yield
+    except NotFoundError as exc:
+        if written and exc.kind in ("peak", "window"):
+            exc.ids = [
+                written.get(i, i) if isinstance(i, float) else i for i in exc.ids
+            ]
+        raise
+    finally:
+        _WRITTEN_FREQS.reset(token)
 
 
 def _frame_to_raw(
@@ -1300,14 +1356,19 @@ def _frame_to_raw(
     (``f_corr = probe + (f_raw - probe) / (1 + eps)``):
     ``f_raw = probe + (f_corr - probe) * (1 + eps)``. Identity when
     ``frame == \"raw\"``, when ``epsilon == 0`` (rb_locked/uncalibrated), or
-    when the file carries no calibration to convert against.
+    when the file carries no calibration to convert against. A conversion
+    that moves the value is recorded for :func:`_caller_frame_ids`.
     """
     if frame == "raw" or stamp is None:
         return float(freq_mhz)
     _, epsilon, _, _, probe_freq_mhz, _ = stamp
     if epsilon == 0.0:
         return float(freq_mhz)
-    return float(probe_freq_mhz + (freq_mhz - probe_freq_mhz) * (1.0 + epsilon))
+    raw = float(probe_freq_mhz + (freq_mhz - probe_freq_mhz) * (1.0 + epsilon))
+    written = _WRITTEN_FREQS.get()
+    if written is not None:
+        written[raw] = float(freq_mhz)
+    return raw
 
 
 def _frame_to_calibrated(
@@ -2200,6 +2261,10 @@ def refit_window_core(
     # A "remove" on a thawed line drops it entirely (not frozen): the user
     # decided to remove it, so it is neither re-fit nor re-appended.
     forbidden_offsets: List[float] = []
+    # Every remove that matches no fitted peak, reported together (not_found
+    # names every unknown id of a request at once).
+    unmatched_removes: List[float] = []
+    unmatched_details: List[str] = []
     for rm_freq in remove:
         rm_offset = float(s * (float(rm_freq) - center_mhz))
 
@@ -2223,10 +2288,12 @@ def refit_window_core(
             continue
 
         if not seed_peaks_with_origin:
-            raise ValueError(
+            unmatched_removes.append(float(rm_freq))
+            unmatched_details.append(
                 f"remove={rm_freq:.4f} MHz: no fitted peaks in window "
                 f"{window_id} to remove"
             )
+            continue
         closest_idx = min(
             range(len(seed_peaks_with_origin)),
             key=lambda i: abs(seed_peaks_with_origin[i][0].offset_mhz - rm_offset),
@@ -2238,15 +2305,21 @@ def refit_window_core(
             closest_mol_freq = (
                 center_mhz + s * seed_peaks_with_origin[closest_idx][0].offset_mhz
             )
-            raise ValueError(
+            unmatched_removes.append(float(rm_freq))
+            unmatched_details.append(
                 f"remove={rm_freq:.4f} MHz: no fitted peak within "
                 f"{snap_tol_mhz:.3f} MHz (closest is at "
                 f"{closest_mol_freq:.4f} MHz, "
                 f"distance={closest_dist_val:.4f} MHz)"
             )
+            continue
         # Record the exact fitted offset as forbidden (rescue must not re-add it).
         removed_offset = seed_peaks_with_origin.pop(closest_idx)[0].offset_mhz
         forbidden_offsets.append(removed_offset)
+    if unmatched_removes:
+        raise NotFoundValueError(
+            "peak", unmatched_removes, message="; ".join(unmatched_details)
+        )
 
     # Recompute background and data_minus_bg with the final frozen_peaks set
     # (which now includes any thawed peaks that were not removed).  This
@@ -2381,12 +2454,14 @@ def refit_window_core(
         # a fit against data the window does not cover.
         seed_freq_mhz = float(center_mhz + s * mp.offset_mhz)
         if not (win_lo - grid_slack <= seed_freq_mhz <= win_hi + grid_slack):
-            raise ValueError(
-                f"add={float(add_freq):.4f} MHz resolves to {seed_freq_mhz:.4f} "
-                f"MHz, outside window {window_id}'s range "
+            raise CurationConflictError(
+                "target_outside_window",
+                [int(window_id)],
+                message=f"add={float(add_freq):.4f} MHz resolves to "
+                f"{seed_freq_mhz:.4f} MHz, outside window {window_id}'s range "
                 f"[{win_lo:.4f}, {win_hi:.4f}] MHz. Name the window that covers "
                 f"the frequency, or -- if no window does -- create one with "
-                f"'review create' first."
+                f"'review create' first.",
             )
         # A curated add that lands on an existing seed's identity is a
         # user-input error with a meaningful answer, so it is refused here
@@ -2412,8 +2487,10 @@ def refit_window_core(
             )
             if clash is not None:
                 clash_freq = float(center_mhz + s * clash.offset_mhz)
-                raise ValueError(
-                    f"add={float(add_freq):.4f} MHz seeds at "
+                raise CurationConflictError(
+                    "line_already_fitted",
+                    [int(mp.peak_uid)],
+                    message=f"add={float(add_freq):.4f} MHz seeds at "
                     f"{seed_freq_mhz:.4f} MHz, which is the birth position of "
                     f"the line already fitted at {clash_freq:.4f} MHz (both "
                     f"carry peak_uid={mp.peak_uid}). Two lines cannot be born "
@@ -2421,7 +2498,7 @@ def refit_window_core(
                     f"then add the second frequency near the resulting fitted "
                     f"line in a later edit -- an add within snap tolerance of "
                     f"a fitted peak that is not itself being removed is read "
-                    f"as a split of it."
+                    f"as a split of it.",
                 )
         add_derivation = (
             add_derivations[i]
@@ -3088,39 +3165,53 @@ def _derive_review_edit_window_id(
     ]
     if unknown_uids:
         raise _unknown_peak_uids_error(unknown_uids)
+    # Every target no live window covers, reported together (not_found kind
+    # "window", ids the uncovered frequencies).
+    uncovered: List[float] = []
+    uncovered_details: List[str] = []
     for f in add:
         wid = _window_for_curation_token(coverage, f)
         if wid is None:
             if eligible_for_implied_create:
                 return None, float(f)
-            raise ValueError(
+            uncovered.append(float(f))
+            uncovered_details.append(
                 f"add={float(f):.4f} MHz is not covered by any live window "
                 f"(windows are disjoint); create a window at this "
                 f"frequency first with 'review create', or name the window "
                 f"explicitly"
             )
+            continue
         resolutions.append((f"add={float(f):.4f}", wid))
     for t in remove:
         wid = _window_for_curation_token(coverage, t)
         if wid is None:
             assert not isinstance(t, PeakUidToken)  # unknown uids raised above
-            raise ValueError(
+            uncovered.append(float(t))
+            uncovered_details.append(
                 f"remove={float(t):.4f} MHz is not covered by any live "
                 f"window (windows are disjoint); nothing to remove there"
             )
+            continue
         label = (
             f"remove=uid:{t.uid}"
             if isinstance(t, PeakUidToken)
             else f"remove={float(t):.4f}"
         )
         resolutions.append((label, wid))
+    if uncovered:
+        raise NotFoundValueError(
+            "window", uncovered, message="; ".join(uncovered_details)
+        )
     wids = {wid for _, wid in resolutions}
     if len(wids) > 1:
         detail = "; ".join(f"{label} -> window {wid}" for label, wid in resolutions)
-        raise ValueError(
-            f"add/remove targets in this edit resolve to different windows "
-            f"({detail}); issue separate 'review edit' calls, one per "
-            f"window, or pass a window id explicitly"
+        raise CurationConflictError(
+            "targets_span_windows",
+            sorted(wids),
+            message=f"add/remove targets in this edit resolve to different "
+            f"windows ({detail}); issue separate 'review edit' calls, one per "
+            f"window, or pass a window id explicitly",
         )
     return next(iter(wids)), None
 
@@ -3272,7 +3363,7 @@ def refit_window_impl(
 
     add_raw: List[float] = []
     for tok in add:
-        parsed = parse_peak_token(tok)
+        parsed = parse_peak_token(tok, path="add")
         if isinstance(parsed, PeakUidToken):
             raise BadSettingError(
                 "add",
@@ -3284,7 +3375,7 @@ def refit_window_impl(
             )
         add_raw.append(parsed)
     remove_raw: List[Union[float, PeakUidToken]] = [
-        parse_peak_token(tok) for tok in remove
+        parse_peak_token(tok, path="remove") for tok in remove
     ]
 
     if add_raw or remove_raw:
@@ -3316,13 +3407,21 @@ def refit_window_impl(
         anchor: float = implied_anchor
 
         def _apply_implied(ctx: _BatchCtx) -> RefitWindowResult:
-            created = _batch_apply_create(
-                ctx,
-                anchor,
-                replay_window_id=None,
-                snap_tol_mhz=snap_tol,
-                record_decision=False,
-            )
+            try:
+                created = _batch_apply_create(
+                    ctx,
+                    anchor,
+                    replay_window_id=None,
+                    snap_tol_mhz=snap_tol,
+                    record_decision=False,
+                )
+            except BadSettingError as exc:
+                if exc.path != "anchor_mhz":
+                    raise
+                # The anchor is the caller's add, not review_create's argument.
+                raise BadSettingError(
+                    "add", exc.expected, exc.value, message=str(exc)
+                ) from exc
             return _finish_implied_create_edit(
                 ctx,
                 created,
@@ -4167,6 +4266,11 @@ class CurationOp:
         default) for everything else, including an ordinary EXPLICIT
         ``create`` row followed by its own, separately-decided ``add`` row on
         the same window id -- that pair is two decisions, unaffected.
+    freq_cell : str or None
+        The ``bad_setting`` path of the row's frequency as the caller wrote
+        it (``curation[line <n>].freqs``, or ``actions[<i>].freq_mhz`` for a
+        batch of actions), which a refused ``create`` anchor is reported at;
+        ``None`` for an op replayed from the decision log.
     """
 
     action: str
@@ -4175,6 +4279,7 @@ class CurationOp:
     params: Dict[str, str]
     line_no: int
     implied_create: bool = False
+    freq_cell: Optional[str] = field(default=None, compare=False, repr=False)
 
 
 @dataclass
@@ -4202,6 +4307,30 @@ class CurationFileHeader:
 
     frame: Optional[Frame] = None
     epsilon: Optional[float] = None
+    #: 1-based line of the ``# frame:`` / ``# epsilon:`` directive, naming the
+    #: cell a refusal points at (``curation[line <n>].frame`` / ``.epsilon``).
+    frame_line: Optional[int] = field(default=None, compare=False)
+    epsilon_line: Optional[int] = field(default=None, compare=False)
+
+
+def _curation_cell(line_no: int, column: str) -> str:
+    """The ``bad_setting`` path of one curation-file cell:
+    ``curation[line <n>].<column>`` (a ``# frame:`` / ``# epsilon:``
+    directive is the cell ``frame`` / ``epsilon`` of its line)."""
+    return f"curation[line {line_no}].{column}"
+
+
+def _bad_curation_cell(
+    line_no: int, column: str, expected: str, value: Any, detail: str
+) -> BadSettingError:
+    """A ``bad_setting`` refusal of one curation-file cell, with the
+    historical ``curation line <n>: ...`` message."""
+    return BadSettingError(
+        _curation_cell(line_no, column),
+        expected,
+        value,
+        message=f"curation line {line_no}: {detail}",
+    )
 
 
 class ParsedCurationFile(List[CurationOp]):
@@ -4256,6 +4385,10 @@ class PlannedAction:
     (:func:`_execute_curation_batch`, :func:`_run_review_preview`) suppresses
     the create's own decision and records ONE ``"add"`` entry from the edit
     half instead, carrying the structural consequence on its evidence."""
+    anchor_cell: Optional[str] = field(default=None, compare=False, repr=False)
+    """``create`` only: the ``bad_setting`` path of the anchor as the caller
+    wrote it (:attr:`CurationOp.freq_cell`), where a refused anchor is
+    reported inside a batch (:func:`_raise_curation_failure`)."""
 
 
 @dataclass
@@ -4491,9 +4624,12 @@ def _parse_curation_params(raw: str, line_no: int) -> Dict[str, str]:
         if not token:
             continue
         if "=" not in token:
-            raise ValueError(
-                f"curation line {line_no}: malformed parameter {token!r} "
-                f"(expected key=value)"
+            raise _bad_curation_cell(
+                line_no,
+                "params",
+                "';'-separated key=value parameters",
+                raw,
+                f"malformed parameter {token!r} (expected key=value)",
             )
         key, _, value = token.partition("=")
         params[key.strip().lower()] = value.strip()
@@ -4550,8 +4686,11 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
     :func:`_resolve_curation_frame` for how the header interacts with the
     per-call ``frame`` argument.
 
-    Raises ``ValueError`` (with the 1-based source line) on any malformed row
-    or header directive.
+    Raises ``BadSettingError`` (``bad_setting``, a ``ValueError``) on any
+    malformed row or header directive: ``path`` is the offending cell,
+    ``curation[line <n>].<column>`` (``action`` / ``window`` / ``freqs`` /
+    ``params``, or ``frame`` / ``epsilon`` for a directive), and the message
+    names the 1-based source line.
     """
     text = Path(curation_path).read_text()
     ops: List[CurationOp] = []
@@ -4566,16 +4705,25 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                 raw_value = m.group(1).strip()
                 value = raw_value.lower()
                 if value not in ("raw", "calibrated"):
-                    raise ValueError(
-                        f"curation line {line_no}: 'frame' header must be "
-                        f"'raw' or 'calibrated', got {raw_value!r}"
+                    raise _bad_curation_cell(
+                        line_no,
+                        "frame",
+                        "one of: raw, calibrated",
+                        raw_value,
+                        f"'frame' header must be 'raw' or 'calibrated', got "
+                        f"{raw_value!r}",
                     )
                 if header.frame is not None and header.frame != value:
-                    raise ValueError(
-                        f"curation line {line_no}: conflicting 'frame' "
-                        f"header (already declared {header.frame!r} earlier "
-                        f"in this file)"
+                    raise _bad_curation_cell(
+                        line_no,
+                        "frame",
+                        f"{header.frame} (the frame declared earlier in this file)",
+                        raw_value,
+                        f"conflicting 'frame' header (already declared "
+                        f"{header.frame!r} earlier in this file)",
                     )
+                if header.frame is None:
+                    header.frame_line = line_no
                 header.frame = value  # type: ignore[assignment]
                 continue
             m = _CURATION_EPSILON_HEADER_RE.match(line)
@@ -4584,16 +4732,25 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                 try:
                     eps_value = float(raw_eps)
                 except ValueError:
-                    raise ValueError(
-                        f"curation line {line_no}: 'epsilon' header "
-                        f"{raw_eps!r} is not a number"
+                    raise _bad_curation_cell(
+                        line_no,
+                        "epsilon",
+                        "a number",
+                        raw_eps,
+                        f"'epsilon' header {raw_eps!r} is not a number",
                     ) from None
                 if header.epsilon is not None and header.epsilon != eps_value:
-                    raise ValueError(
-                        f"curation line {line_no}: conflicting 'epsilon' "
-                        f"header (already declared {header.epsilon!r} "
-                        f"earlier in this file)"
+                    raise _bad_curation_cell(
+                        line_no,
+                        "epsilon",
+                        f"{header.epsilon!r} (the epsilon declared earlier in "
+                        f"this file)",
+                        eps_value,
+                        f"conflicting 'epsilon' header (already declared "
+                        f"{header.epsilon!r} earlier in this file)",
                     )
+                if header.epsilon is None:
+                    header.epsilon_line = line_no
                 header.epsilon = eps_value
                 continue
             continue  # an ordinary comment
@@ -4601,25 +4758,37 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
         action = fields[0].lower()
         if action == "action":  # header row
             continue
+        expected_action = "one of: " + ", ".join(_CURATION_ACTIONS)
         if action == "split":
-            raise ValueError(
-                f"curation line {line_no}: 'split' is not a curation-file "
-                f"action; write an 'add' row instead, at the frequency of the "
-                f"new component -- an add within snap tolerance of a fitted "
-                f"peak that is not itself being removed is read as a split of "
-                f"that peak"
+            raise _bad_curation_cell(
+                line_no,
+                "action",
+                expected_action,
+                fields[0],
+                "'split' is not a curation-file "
+                "action; write an 'add' row instead, at the frequency of the "
+                "new component -- an add within snap tolerance of a fitted "
+                "peak that is not itself being removed is read as a split of "
+                "that peak",
             )
         if action == "merge":
-            raise ValueError(
-                f"curation line {line_no}: 'merge' is not a curation-file "
-                f"action; write 'remove' rows for the mutually-close peaks to "
-                f"collapse, plus one 'add' row at a frequency in their span, "
-                f"instead -- that combination is read as a merge of them"
+            raise _bad_curation_cell(
+                line_no,
+                "action",
+                expected_action,
+                fields[0],
+                "'merge' is not a curation-file "
+                "action; write 'remove' rows for the mutually-close peaks to "
+                "collapse, plus one 'add' row at a frequency in their span, "
+                "instead -- that combination is read as a merge of them",
             )
         if action not in _CURATION_ACTIONS:
-            raise ValueError(
-                f"curation line {line_no}: unknown action {fields[0]!r}; "
-                f"choose one of {_CURATION_ACTIONS}"
+            raise _bad_curation_cell(
+                line_no,
+                "action",
+                expected_action,
+                fields[0],
+                f"unknown action {fields[0]!r}; choose one of {_CURATION_ACTIONS}",
             )
         raw_window = fields[1] if len(fields) > 1 else ""
         window_token = raw_window.strip().lower()
@@ -4634,66 +4803,116 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
             # _resolve_curation_plan's coalescing.
             window_id = _DERIVE_WINDOW_SENTINEL
         elif len(fields) < 2 or not fields[1]:
-            raise ValueError(f"curation line {line_no}: missing window id")
+            raise _bad_curation_cell(
+                line_no,
+                "window",
+                f"a window id (required on {action})",
+                fields[1] if len(fields) > 1 else None,
+                "missing window id",
+            )
         else:
             try:
                 window_id = int(fields[1])
             except ValueError:
-                raise ValueError(
-                    f"curation line {line_no}: window id {fields[1]!r} is not an "
-                    f"integer"
+                omit = ", or one of: new, auto, -" if action != "accept" else ""
+                raise _bad_curation_cell(
+                    line_no,
+                    "window",
+                    f"an integer window id{omit}",
+                    fields[1],
+                    f"window id {fields[1]!r} is not an integer",
                 ) from None
         freqs_raw = fields[2] if len(fields) > 2 else ""
         params_raw = fields[3] if len(fields) > 3 else ""
         freq_tokens = [x for x in freqs_raw.split(";") if x.strip()]
         freqs: List[Union[float, PeakUidToken]]
+        freqs_cell = _curation_cell(line_no, "freqs")
         if action == "remove":
             # The one action whose single token may be a "uid:N"
             # peak-identifier instead of a frequency -- see parse_peak_token.
             try:
-                freqs = [parse_peak_token(x) for x in freq_tokens]
-            except ValueError as exc:
-                raise ValueError(f"curation line {line_no}: {exc}") from None
+                freqs = [parse_peak_token(x, path=freqs_cell) for x in freq_tokens]
+            except BadSettingError as exc:
+                raise BadSettingError(
+                    exc.path,
+                    exc.expected,
+                    exc.value,
+                    message=f"curation line {line_no}: {exc}",
+                ) from None
         else:
             try:
                 freqs = [float(x) for x in freq_tokens]
             except ValueError:
-                raise ValueError(
-                    f"curation line {line_no}: non-numeric frequency in {freqs_raw!r}"
+                raise _bad_curation_cell(
+                    line_no,
+                    "freqs",
+                    "a frequency in MHz",
+                    freqs_raw,
+                    f"non-numeric frequency in {freqs_raw!r}",
                 ) from None
         params = _parse_curation_params(params_raw, line_no)
 
         # Per-action arity / parameter validation.
         if action in ("add", "remove"):
             if len(freqs) != 1:
-                raise ValueError(
-                    f"curation line {line_no}: {action} needs exactly one frequency"
+                one = (
+                    'exactly one frequency in MHz or peak identifier "uid:N"'
+                    if action == "remove"
+                    else "exactly one frequency in MHz"
+                )
+                raise _bad_curation_cell(
+                    line_no,
+                    "freqs",
+                    one,
+                    freqs_raw,
+                    f"{action} needs exactly one frequency",
                 )
             if params:
-                raise ValueError(
-                    f"curation line {line_no}: {action} takes no parameters"
+                raise _bad_curation_cell(
+                    line_no,
+                    "params",
+                    "no parameters (an empty cell)",
+                    params_raw,
+                    f"{action} takes no parameters",
                 )
         elif action == "create":
             if len(freqs) != 1:
-                raise ValueError(
-                    f"curation line {line_no}: create needs exactly one frequency "
-                    f"(the anchor the new window must cover)"
+                raise _bad_curation_cell(
+                    line_no,
+                    "freqs",
+                    "exactly one frequency in MHz (the anchor)",
+                    freqs_raw,
+                    "create needs exactly one frequency "
+                    "(the anchor the new window must cover)",
                 )
             if params:
-                raise ValueError(f"curation line {line_no}: create takes no parameters")
+                raise _bad_curation_cell(
+                    line_no,
+                    "params",
+                    "no parameters (an empty cell)",
+                    params_raw,
+                    "create takes no parameters",
+                )
         elif action == "accept":
             if freqs:
-                raise ValueError(
-                    f"curation line {line_no}: accept takes no frequency column; "
-                    f"use params candidate=F to revive a candidate"
+                raise _bad_curation_cell(
+                    line_no,
+                    "freqs",
+                    "an empty cell (revive a candidate with params candidate=F)",
+                    freqs_raw,
+                    "accept takes no frequency column; "
+                    "use params candidate=F to revive a candidate",
                 )
             if "candidate" in params:
                 try:
                     float(params["candidate"])
                 except ValueError:
-                    raise ValueError(
-                        f"curation line {line_no}: candidate="
-                        f"{params['candidate']!r} is not a number"
+                    raise _bad_curation_cell(
+                        line_no,
+                        "params",
+                        "candidate=<a frequency in MHz>",
+                        params_raw,
+                        f"candidate={params['candidate']!r} is not a number",
                     ) from None
 
         ops.append(
@@ -4703,23 +4922,32 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                 freqs=freqs,
                 params=params,
                 line_no=line_no,
+                freq_cell=_curation_cell(line_no, "freqs"),
             )
         )
 
     if header.epsilon is not None and header.frame != "calibrated":
-        raise ValueError(
-            "curation file: an 'epsilon' header requires a 'frame: "
+        assert header.epsilon_line is not None
+        raise BadSettingError(
+            _curation_cell(header.epsilon_line, "epsilon"),
+            "no epsilon header unless the file declares '# frame: calibrated'",
+            header.epsilon,
+            message="curation file: an 'epsilon' header requires a 'frame: "
             "calibrated' header alongside it -- an epsilon stamp is "
             "meaningless without a calibrated-frame declaration to attach "
-            "it to"
+            "it to",
         )
     if header.frame == "calibrated" and header.epsilon is None:
-        raise ValueError(
-            "curation file: 'frame: calibrated' requires an 'epsilon' "
+        assert header.frame_line is not None
+        raise BadSettingError(
+            _curation_cell(header.frame_line, "frame"),
+            "raw, or calibrated with an '# epsilon:' header",
+            header.frame,
+            message="curation file: 'frame: calibrated' requires an 'epsilon' "
             "header stamping the epsilon the file was written under (e.g. "
             "'# epsilon: 2.2e-6') -- otherwise a later apply/preview cannot "
             "detect that the calibration has drifted since this file was "
-            "staged"
+            "staged",
         )
 
     return ParsedCurationFile(ops, header)
@@ -4806,16 +5034,34 @@ def curation_source(
         if isinstance(item, CurationAction):
             out.append(item)
         elif isinstance(item, Mapping):
-            out.append(CurationAction.from_dict(item))
+            try:
+                out.append(CurationAction.from_dict(item))
+            except BadSettingError as exc:
+                raise _action_field_error(len(out), exc) from None
         else:
             raise BadSettingError(
-                "actions",
-                "a sequence of CurationAction (or their dicts)",
+                f"actions[{len(out)}]",
+                "a CurationAction or a curation action dict",
                 item,
                 message=f"actions[{len(out)}] is not a CurationAction or a "
                 f"curation action dict: {item!r}",
             )
     return tuple(out)
+
+
+def _action_field_error(
+    index: int, exc: BadSettingError, field_name: Optional[str] = None
+) -> BadSettingError:
+    """Re-issue a refusal of one action's field with the batch path
+    ``actions[<index>].<field>`` (``field_name`` defaults to the refusal's
+    own path, which names the field) and the action named in the message."""
+    name = exc.path if field_name is None else field_name
+    return BadSettingError(
+        f"actions[{index}].{name}",
+        exc.expected,
+        exc.value,
+        message=f"actions[{index}]: {exc}",
+    )
 
 
 def _action_has_freq(action: CurationAction) -> bool:
@@ -4863,28 +5109,29 @@ def _action_to_op(
         freqs=freqs,
         params=params,
         line_no=index + 1,
+        freq_cell=f"actions[{index}].freq_mhz",
     )
 
 
 def _actions_to_ops(
     path: str, actions: Sequence[CurationAction], frame: Optional[Frame]
-) -> Tuple[ParsedCurationFile, Optional[_CalibrationStamp], Frame]:
+) -> Tuple[ParsedCurationFile, Optional[_CalibrationStamp], FrozenSet[float]]:
     """Convert a batch of actions to raw-frame :class:`CurationOp` rows.
 
     Each action's frame is resolved on its own: its ``frame``, else the
     call's ``frame``, else :func:`_resolve_frame`'s rule (raw on an
     ``epsilon == 0`` file; ``bad_setting`` ``path`` ``"frame"`` on a
     ``self_calibrated`` file) -- only for an action that carries a
-    frequency. Returns ``(ops, stamp, advisory_frame)``: the ops are raw and
+    frequency. Returns ``(ops, stamp, raw_targets)``: the ops are raw and
     carry no header, so they enter :func:`_resolve_curation_ops` with
-    ``frame="raw"``. ``advisory_frame`` is the frame the A5 frame-mismatch
-    advisory is judged against: ``"raw"`` only when every frequency-bearing
-    action resolved raw, which is exactly when a file of the same rows under
-    one frame would get the advisory.
+    ``frame="raw"``. ``raw_targets`` holds the frequencies of the actions
+    that resolved raw -- the ones the A5 frame-mismatch advisory judges
+    (:func:`_frame_mismatch_warnings`), action by action, so a raw action is
+    still diagnosed when others in the batch are calibrated.
     """
     stamp: Optional[_CalibrationStamp] = None
     stamp_read = False
-    advisory: Frame = "raw"
+    raw_targets: Set[float] = set()
     ops: List[CurationOp] = []
     for index, action in enumerate(actions):
         resolved: Frame = "raw"
@@ -4894,11 +5141,11 @@ def _actions_to_ops(
                 stamp_read = True
             if action.frame is not None and frame is not None and action.frame != frame:
                 # The same refusal a file whose header disagrees with frame=
-                # gets (_resolve_curation_frame).
+                # gets (_resolve_curation_frame), pointed at the action field.
                 raise BadSettingError(
-                    "frame",
-                    f'"{action.frame}" (the frame actions[{index}] declares)',
-                    frame,
+                    f"actions[{index}].frame",
+                    f'"{frame}" (the frame passed as frame=), or null',
+                    action.frame,
                     message=f"actions[{index}] ({action.action}) declares "
                     f'frame="{action.frame}", but frame="{frame}" was passed '
                     f"explicitly. Pass a matching frame, or omit one of them.",
@@ -4907,30 +5154,41 @@ def _actions_to_ops(
             try:
                 resolved = _resolve_frame_against(stamp, requested)
             except BadSettingError as exc:
+                # No frame at all (neither the action's nor the call's): the
+                # call's frame= is what is missing, as for a file without a
+                # header, so the path stays "frame"; the message names the
+                # action.
                 raise BadSettingError(
                     exc.path,
                     exc.expected,
                     exc.value,
                     message=f"actions[{index}] ({action.action}): {exc}",
                 ) from None
-            if resolved != "raw":
-                advisory = resolved
+            if resolved == "raw":
+                raw_targets.update(
+                    float(f)
+                    for f in (action.freq_mhz, action.candidate_mhz)
+                    if f is not None
+                )
             # A stamped epsilon is the file header's drift check, per action.
             if action.epsilon is not None and stamp is not None:
                 current_eps = stamp[1]
                 if not math.isclose(
                     action.epsilon, current_eps, rel_tol=1e-6, abs_tol=1e-12
                 ):
-                    raise ValueError(
-                        f"actions[{index}] ({action.action}) frame drift: it "
-                        f"was staged frame=calibrated at epsilon="
+                    raise BadSettingError(
+                        f"actions[{index}].epsilon",
+                        f"the file's current epsilon ({current_eps:.6e})",
+                        action.epsilon,
+                        message=f"actions[{index}] ({action.action}) frame "
+                        f"drift: it was staged frame=calibrated at epsilon="
                         f"{action.epsilon:.6e}, but the target file's current "
                         f"epsilon is {current_eps:.6e}. The calibration has "
                         f"changed since it was staged (e.g. a timebase re-run) "
-                        f"-- re-stage it against the current calibration."
+                        f"-- re-stage it against the current calibration.",
                     )
         ops.append(_action_to_op(action, index, frame=resolved, stamp=stamp))
-    return ParsedCurationFile(ops, CurationFileHeader()), stamp, advisory
+    return ParsedCurationFile(ops, CurationFileHeader()), stamp, frozenset(raw_targets)
 
 
 def action_from_op(
@@ -4984,9 +5242,7 @@ def actions_from_curation_file(
     the actions are checked for drift exactly as the file is.
     """
     ops = parse_curation_file(curation_path)
-    return [
-        action_from_op(op, ops.header.frame, ops.header.epsilon) for op in ops
-    ]
+    return [action_from_op(op, ops.header.frame, ops.header.epsilon) for op in ops]
 
 
 def _resolve_curation_window_ids(
@@ -5043,7 +5299,8 @@ def _resolve_curation_window_ids(
     resolved: List[CurationOp] = []
     next_implied_id = _FIRST_IMPLIED_WINDOW_ID
     unknown_uids: List[int] = []
-    pending_error: Optional[ValueError] = None
+    uncovered: List[float] = []
+    uncovered_details: List[str] = []
     for op in ops:
         if op.window_id != _DERIVE_WINDOW_SENTINEL:
             resolved.append(op)
@@ -5061,13 +5318,16 @@ def _resolve_curation_window_ids(
         wid = _window_for_curation_token(coverage, freq_raw)
         if wid is None:
             if op.action != "add":
-                if pending_error is None:
-                    pending_error = ValueError(
-                        f"curation line {op.line_no}: {op.action} "
-                        f"{float(token):.4f} MHz is not covered by any live "
-                        f"window (windows are disjoint); nothing to remove "
-                        f"there"
-                    )
+                # Raw, like every refusal under the call; the call reports it
+                # in the frame the caller wrote (_caller_frame_ids).
+                if freq_raw not in uncovered:
+                    uncovered.append(freq_raw)
+                uncovered_details.append(
+                    f"curation line {op.line_no}: {op.action} "
+                    f"{float(token):.4f} MHz is not covered by any live "
+                    f"window (windows are disjoint); nothing to remove "
+                    f"there"
+                )
                 continue
             # W3: implied create -- see the docstring above.
             correlation_id = next_implied_id
@@ -5080,6 +5340,7 @@ def _resolve_curation_window_ids(
                     params={},
                     line_no=op.line_no,
                     implied_create=True,
+                    freq_cell=op.freq_cell,
                 )
             )
             resolved.append(replace(op, window_id=correlation_id, implied_create=True))
@@ -5087,8 +5348,10 @@ def _resolve_curation_window_ids(
         resolved.append(replace(op, window_id=wid))
     if unknown_uids:
         raise _unknown_peak_uids_error(unknown_uids)
-    if pending_error is not None:
-        raise pending_error
+    if uncovered:
+        raise NotFoundValueError(
+            "window", uncovered, message="; ".join(uncovered_details)
+        )
     return resolved
 
 
@@ -5105,33 +5368,77 @@ def _unknown_peak_uids_error(uids: Sequence[int]) -> NotFoundValueError:
 
 
 def _unknown_plan_window_ids(
-    known: Collection[int], plan: Sequence[PlannedAction]
+    known: Collection[int],
+    plan: Sequence[PlannedAction],
+    plan_window_ids: Optional[Collection[int]] = None,
 ) -> List[int]:
-    """Every window id *plan* names that is not in *known*, in plan order.
+    """Every window id *plan* names that is not in *known* and that no
+    ``create`` of the plan can install, in plan order.
 
     ``create`` rows name no existing window; a negative id is a placeholder
-    (:data:`_NEW_WINDOW_SENTINEL`, an implied-create correlation id). A plan
-    that mints windows under ids it cannot know yet (a ``create`` without a
-    pinned id) is not checked here -- a later row may legitimately name what
-    that create installs -- and falls back to the per-action lookup.
+    (:data:`_NEW_WINDOW_SENTINEL`, an implied-create correlation id). A
+    pinned ``create`` installs its own id. A ``create`` without a pinned id
+    mints an id it cannot know yet -- one above every window of the plan, so
+    above every *known* id and every pinned create -- and a later row may
+    legitimately name it: such an id is left to the per-action lookup once
+    the creates have run. Given *plan_window_ids* (the window plan the
+    creates mint against), the creates are replayed in plan order to find
+    exactly the ids they can mint (an unfitted plan window above every fitted
+    one is neither known nor mintable). Every other unknown id cannot exist
+    and is reported here, all at once, even when the plan holds an unpinned
+    create.
     """
-    if any(a.kind == "create" and a.window_id == _NEW_WINDOW_SENTINEL for a in plan):
-        return []
-    live = set(known) | {int(a.window_id) for a in plan if a.kind == "create"}
+    live = set(known) | {
+        int(a.window_id) for a in plan if a.kind == "create" and a.window_id >= 0
+    }
+    n_mints = sum(
+        1 for a in plan if a.kind == "create" and a.window_id == _NEW_WINDOW_SENTINEL
+    )
+    # Given the window plan the creates mint against, replay the creates in
+    # plan order: a minting create (unpinned or fresh implied) takes one above
+    # every window present when it runs -- every known and planned window (an
+    # unfitted plan window above the fitted ones is neither known nor
+    # mintable) and every create before it; a pinned create installs its own
+    # id. That gives exactly the ids the batch can mint.
+    mintable: Optional[Set[int]] = None
+    if plan_window_ids is not None:
+        mintable = set()
+        top = max(set(known) | set(plan_window_ids), default=-1)
+        for a in plan:
+            if a.kind != "create":
+                continue
+            if a.window_id >= 0:
+                top = max(top, int(a.window_id))
+            elif a.window_id == _NEW_WINDOW_SENTINEL or _is_implied_window_id(
+                a.window_id
+            ):
+                top += 1
+                mintable.add(top)
+    mint_floor = max(live, default=-1)
     unknown: List[int] = []
     for a in plan:
         wid = int(a.window_id)
         if a.kind == "create" or wid < 0 or wid in live or wid in unknown:
+            continue
+        if mintable is not None:
+            if wid in mintable:
+                continue
+        elif n_mints and wid > mint_floor:
+            # Without the window plan, any id above the known ones may be minted.
             continue
         unknown.append(wid)
     return unknown
 
 
 def _require_known_plan_windows(
-    known: Collection[int], plan: Sequence[PlannedAction], where: str
+    known: Collection[int],
+    plan: Sequence[PlannedAction],
+    where: str,
+    plan_window_ids: Optional[Collection[int]] = None,
 ) -> None:
-    """Refuse a plan naming windows the fit does not have, all of them at once."""
-    unknown = _unknown_plan_window_ids(known, plan)
+    """Refuse a plan naming windows the fit does not have, all of them at once
+    (see :func:`_unknown_plan_window_ids`)."""
+    unknown = _unknown_plan_window_ids(known, plan, plan_window_ids)
     if unknown:
         listed = ", ".join(str(w) for w in unknown)
         raise NotFoundValueError(
@@ -5147,15 +5454,30 @@ def _raise_curation_failure(
     """Re-raise a failure of plan action *index*, tagged with the action.
 
     A typed :class:`PipelineFileError` keeps its type (a program routes on
-    it); a ``not_found`` is re-issued with the tag in its message and the same
-    ``kind`` / ``ids``. Anything else becomes the historical tagged
-    :class:`ValueError`.
+    it); a ``not_found`` or ``curation_conflict`` is re-issued with the tag in
+    its message and the same attributes, and a create's refused anchor
+    (``bad_setting`` ``anchor_mhz``) with the tag and the path of the cell or
+    action field the anchor came from. Anything else becomes the historical
+    tagged :class:`ValueError`.
     """
     tag = f"curation action {index + 1} ({describe_planned_action(action)}) failed"
+    if (
+        isinstance(exc, BadSettingError)
+        and exc.path == "anchor_mhz"
+        and action.kind == "create"
+        and action.anchor_cell is not None
+    ):
+        # A create's anchor is the cell (or action field) the caller wrote,
+        # not review_create's argument.
+        raise BadSettingError(
+            action.anchor_cell, exc.expected, exc.value, message=f"{tag}: {exc}"
+        ) from exc
     if isinstance(exc, NotFoundError):
         # The batch refused with ValueError before it was typed.
-        raise NotFoundValueError(
-            exc.kind, exc.ids, message=f"{tag}: {exc}"
+        raise NotFoundValueError(exc.kind, exc.ids, message=f"{tag}: {exc}") from exc
+    if isinstance(exc, CurationConflictError):
+        raise CurationConflictError(
+            exc.reason, exc.ids, message=f"{tag}: {exc}"
         ) from exc
     if isinstance(exc, PipelineFileError):
         raise exc
@@ -5218,6 +5540,7 @@ def _resolve_curation_plan(ops: Sequence[CurationOp]) -> List[PlannedAction]:
                     window_id=wid,
                     anchor=_assert_plain_freq(op.freqs[0]),
                     implied_create=op.implied_create,
+                    anchor_cell=op.freq_cell,
                 )
             )
             continue
@@ -5641,7 +5964,7 @@ def _frame_mismatch_warnings(
     path: str,
     plan: Sequence[PlannedAction],
     *,
-    resolved_frame: Frame,
+    raw_targets: Optional[FrozenSet[float]],
     stamp: Optional[_CalibrationStamp],
     fitted_freqs: Optional[Dict[int, List[float]]] = None,
 ) -> List[str]:
@@ -5653,9 +5976,14 @@ def _frame_mismatch_warnings(
     heuristic that refused would be worse than none. Returns ``[]`` (inert)
     unless ALL of the following hold:
 
-    - ``resolved_frame == \"raw\"`` -- if the caller correctly declared
-      ``calibrated``, the conversion already happened and no systematic
-      residual should remain to diagnose;
+    - the candidate was submitted in the raw frame -- if the caller
+      correctly declared ``calibrated``, the conversion already happened and
+      no systematic residual should remain to diagnose. This is judged per
+      action: ``raw_targets`` holds the (raw) frequencies of the actions
+      that resolved raw, and only those candidates are judged, so a batch
+      mixing frames is still diagnosed on its raw actions. ``None`` means
+      every candidate (a curation file whose one frame is raw); an empty set
+      means none (a calibrated file);
     - the file is ``self_calibrated`` with a nonzero epsilon -- inert on
       every ``rb_locked``/``uncalibrated`` file, where epsilon is always
       ``0.0`` and the two frames coincide;
@@ -5678,7 +6006,7 @@ def _frame_mismatch_warnings(
     disqualifying checks above have failed to return, so an inert diagnostic
     still reads nothing.
     """
-    if resolved_frame != "raw" or stamp is None:
+    if stamp is None or (raw_targets is not None and not raw_targets):
         return []
     cal_state, epsilon, _sigma_eps, _floor_khz, probe_freq_mhz, _sideband = stamp
     if cal_state != "self_calibrated" or epsilon == 0.0:
@@ -5723,6 +6051,8 @@ def _frame_mismatch_warnings(
         elif action.kind == "accept" and action.candidate is not None:
             targets.append(action.candidate)
         for f in targets:
+            if raw_targets is not None and f not in raw_targets:
+                continue  # submitted calibrated: already converted
             match = nearest(wid, f)
             if match is None:
                 continue
@@ -5801,7 +6131,10 @@ def _restore_stage5_baseline(path: str) -> None:
     """Replace ``/stage5_fitting`` with the baseline snapshot (kept for reuse)."""
     with h5open(path, "a") as h5f:
         if STAGE5_BASELINE_GROUP not in h5f:
-            raise ValueError("no automatic-fit baseline to restore")
+            raise CurationConflictError(
+                "baseline_unavailable",
+                message="no automatic-fit baseline to restore",
+            )
         if "stage5_fitting" in h5f:
             del h5f["stage5_fitting"]
         h5f.copy(STAGE5_BASELINE_GROUP, "stage5_fitting")
@@ -6111,6 +6444,7 @@ def _build_shared_fit_ctx(path: str) -> _SharedFitCtx:
         Stage5FitContext,
         _resolve_tau_calibration_for_fit,
         build_stage5_fit_context,
+        gated_spur_catalog,
     )
 
     with h5open(path, "r") as h5f:
@@ -6122,14 +6456,18 @@ def _build_shared_fit_ctx(path: str) -> _SharedFitCtx:
                 command="fit run",
                 message="No Stage 5 fit found in this file. Run 'fit run' first.",
             )
-        # The ``parameters`` attr alone, read only to seed the spur-catalog
-        # replay below -- never the whole fit, which is per-batch state that
-        # each batch reloads for itself (see ``_BatchChangeset``) and which
-        # this function has always deliberately declined to return. The spur
-        # catalog inside ``parameters`` is a Stage 5 product Stage 6 never
-        # rewrites, so reading it here, once, is not the staleness risk that
-        # retaining the fit would be.
-        fit_parameters: Dict[str, Any] = read_fit_parameters(h5f["stage5_fitting"])
+        # The ``parameters`` and ``diagnostics`` attrs alone, read only to
+        # seed the spur-catalog replay below -- never the whole fit, which is
+        # per-batch state that each batch reloads for itself (see
+        # ``_BatchChangeset``) and which this function has always deliberately
+        # declined to return. The spur catalog is a Stage 5 product Stage 6
+        # never rewrites, so reading it here, once, is not the staleness risk
+        # that retaining the fit would be. ``diagnostics`` holds the catalog
+        # at full precision (``parameters`` rounds the centers for display).
+        spur_catalog: Dict[str, Any] = gated_spur_catalog(
+            read_fit_parameters(h5f["stage5_fitting"]),
+            read_fit_diagnostics(h5f["stage5_fitting"]),
+        )
 
     base_plan: "WindowPlan" = load_windows_impl(path)["plan"]
 
@@ -6183,7 +6521,7 @@ def _build_shared_fit_ctx(path: str) -> _SharedFitCtx:
         resolved,
         persisted_cal,
         shape_enum,
-        replay_spur_catalog=fit_parameters,
+        replay_spur_catalog=spur_catalog,
     )
 
     min_freeze_snr = float(
@@ -6354,6 +6692,20 @@ def _build_batch_ctx(
         shared = _build_shared_fit_ctx(path)
     changeset = _build_batch_changeset(path, shared, snap_tol_mhz=snap_tol_mhz)
     return _BatchCtx(shared=shared, changeset=changeset)
+
+
+def _batch_plan_window_ids(
+    ctx: _BatchCtx, plan: Sequence["PlannedAction"]
+) -> Optional[Set[int]]:
+    """The window ids of the plan this batch's creates mint against, for
+    bounding the ids an unpinned create can mint
+    (:func:`_unknown_plan_window_ids`); ``None`` (no bound) when the plan
+    has no unpinned create, so the overlay is only built when it is needed."""
+    if not any(
+        a.kind == "create" and a.window_id == _NEW_WINDOW_SENTINEL for a in plan
+    ):
+        return None
+    return {int(w.window_id) for w in _batch_effective_plan(ctx).windows}
 
 
 def _batch_effective_plan(ctx: _BatchCtx) -> "WindowPlan":
@@ -6879,6 +7231,8 @@ def _batch_apply_merge(
     wf = _batch_lookup_wf(ctx, window_id)
 
     matched: List[FittedPeak] = []
+    unmatched: List[float] = []
+    unmatched_details: List[str] = []
     for req_freq in peaks:
         req_freq_f = float(req_freq)
         best: Optional[FittedPeak] = None
@@ -6889,16 +7243,22 @@ def _batch_apply_merge(
                 best_dist = d
                 best = fp
         if best is None or best_dist > snap_tol_mhz:
-            raise ValueError(
+            unmatched.append(req_freq_f)
+            unmatched_details.append(
                 f"merge: no fitted peak within {snap_tol_mhz:.3f} MHz of "
                 f"{req_freq_f:.4f} MHz (closest distance: {best_dist:.4f} MHz)"
             )
+            continue
         if any(m.frequency_mhz == best.frequency_mhz for m in matched):
             raise ValueError(
                 f"merge: frequency {req_freq_f:.4f} MHz matched the same "
                 f"fitted peak twice"
             )
         matched.append(best)
+    if unmatched:
+        raise NotFoundValueError(
+            "peak", unmatched, message="; ".join(unmatched_details)
+        )
 
     weights: List[float] = []
     for fp in matched:
@@ -7059,9 +7419,11 @@ def _batch_apply_split(
             best_dist = d
             best = fp
     if best is None or best_dist > snap_tol_mhz:
-        raise ValueError(
-            f"split: no fitted peak within {snap_tol_mhz:.3f} MHz of "
-            f"{peak_f:.4f} MHz (closest distance: {best_dist:.4f} MHz)"
+        raise NotFoundValueError(
+            "peak",
+            [peak_f],
+            message=f"split: no fitted peak within {snap_tol_mhz:.3f} MHz of "
+            f"{peak_f:.4f} MHz (closest distance: {best_dist:.4f} MHz)",
         )
     matched_freq = float(best.frequency_mhz)
     matched_amp = float(best.amplitude)
@@ -7357,17 +7719,21 @@ def _plan_batch_create(
     if replay_window_id is not None and int(replay_window_id) != new_wid:
         want = int(replay_window_id)
         if proposal.mode == "widened":
-            raise ValueError(
-                f"replaying the window created at {anchor:.4f} MHz now widens "
-                f"window {new_wid} instead of creating window {want}; the base "
-                f"plan or the surviving edit set has changed"
+            raise CurationConflictError(
+                "replay_conflict",
+                [want, new_wid],
+                message=f"replaying the window created at {anchor:.4f} MHz now "
+                f"widens window {new_wid} instead of creating window {want}; "
+                f"the base plan or the surviving edit set has changed",
             )
         taken = {int(w.window_id) for w in plan.windows}
         if want in taken:
-            raise ValueError(
-                f"replaying the window created at {anchor:.4f} MHz wants id "
-                f"{want}, which is already in use; the base plan or the "
-                f"surviving edit set has changed"
+            raise CurationConflictError(
+                "replay_conflict",
+                [want],
+                message=f"replaying the window created at {anchor:.4f} MHz wants "
+                f"id {want}, which is already in use; the base plan or the "
+                f"surviving edit set has changed",
             )
         proposal.window.window_id = want
 
@@ -7474,6 +7840,9 @@ def _batch_apply_create(
     else:
         existing_wf = fit_map.get(new_wid)
         if existing_wf is None:
+            # An invariant guard, not a route: the planner widens only a live
+            # window (live_window_ids above), so a correct caller cannot
+            # reach this.
             raise ValueError(
                 f"window {new_wid} has no Stage 5 fit to widen; "
                 "re-run 'fit run' before creating windows"
@@ -7628,7 +7997,8 @@ def _finish_implied_create_edit(
         # An applier recorded its own entry, which carries no
         # ``created_window`` -- see this function's docstring. Refuse rather
         # than persist a decision the replay cannot reconstruct the create
-        # from.
+        # from. An invariant guard (measured unreachable -- see the
+        # docstring), so it stays a built-in, not a typed route.
         raise ValueError(
             f"add={float(add[0]):.4f} MHz implies creating a window, but "
             f"inside window {created.window_id} (mode='{created.mode}') it "
@@ -8178,9 +8548,9 @@ class _DeferredCuration:
     ops: ParsedCurationFile
     frame: Frame
     stamp: Optional[_CalibrationStamp]
-    advisory_frame: Optional[Frame] = None
-    """The frame the frame-mismatch advisory is judged against; ``None``
-    means :attr:`frame` (see :func:`_parse_curation_call`)."""
+    raw_targets: Optional[FrozenSet[float]] = None
+    """The frequencies the frame-mismatch advisory judges (``None``: every
+    candidate; see :func:`_parse_curation_call`)."""
 
     def needs_fit(self) -> bool:
         """Whether any row will mutate the fit (mirrors the planned-action
@@ -8294,11 +8664,7 @@ def _resolve_deferred_curation(
     warnings += _frame_mismatch_warnings(
         path,
         plan,
-        resolved_frame=(
-            deferred.frame
-            if deferred.advisory_frame is None
-            else deferred.advisory_frame
-        ),
+        raw_targets=deferred.raw_targets,
         stamp=deferred.stamp,
         fitted_freqs=index[0],
     )
@@ -8388,6 +8754,7 @@ def _apply_batch_segment(
         },
         plan,
         "Stage 5 fit",
+        _batch_plan_window_ids(ctx, plan),
     )
     # One WindowProgress per action that fits (every kind but a bare accept),
     # naming the window it targeted; a cancel is honoured before each action.
@@ -8964,7 +9331,7 @@ def apply_curation_impl(
                 keep=log_prefix,
                 shared=_shared,
             )
-    plan, resolved_frame, stamp = _resolve_curation_call(path, source, frame)
+    plan, raw_targets, stamp = _resolve_curation_call(path, source, frame)
 
     snap_tol = resolve_snap_tol_mhz(path, None)
     # One read of the fitted peak columns for both advisory passes: the
@@ -8977,7 +9344,7 @@ def apply_curation_impl(
     warnings += _frame_mismatch_warnings(
         path,
         plan,
-        resolved_frame=resolved_frame,
+        raw_targets=raw_targets,
         stamp=stamp,
         fitted_freqs=peak_index[0],
     )
@@ -9061,18 +9428,19 @@ def _apply_curation_at_prefix(
     as an undo followed by a failed apply would.
     """
     kept = list(log[:keep])
-    ops, resolved_frame, stamp, advisory = _parse_curation_call(path, source, frame)
+    ops, resolved_frame, stamp, raw_targets = _parse_curation_call(path, source, frame)
     deferred = _DeferredCuration(
-        ops=ops, frame=resolved_frame, stamp=stamp, advisory_frame=advisory
+        ops=ops, frame=resolved_frame, stamp=stamp, raw_targets=raw_targets
     )
 
     has_fit_edits = any(e.kind in _FIT_EDIT_KINDS for e in log)
     baseline = _has_stage5_baseline(path)
     if has_fit_edits and not baseline:
-        raise ValueError(
-            "cannot apply at a log prefix: the automatic-fit baseline is "
-            "unavailable (the fit may have been re-run after editing). Rebuild "
-            "from the source and re-edit."
+        raise CurationConflictError(
+            "baseline_unavailable",
+            message="cannot apply at a log prefix: the automatic-fit baseline "
+            "is unavailable (the fit may have been re-run after editing). "
+            "Rebuild from the source and re-edit.",
         )
     prefix_plan = [a for e in kept for a in _resolve_curation_plan(_decision_to_op(e))]
     # The restore-then-replay is one unit: gate first, so a refusal leaves the
@@ -9341,10 +9709,10 @@ def _run_review_preview(
     """
     path = str(file_path)
     snap_tol = resolve_snap_tol_mhz(path, snap_tol_mhz)
-    plan, resolved_frame, stamp = _resolve_curation_call(path, source, frame)
+    plan, raw_targets, stamp = _resolve_curation_call(path, source, frame)
 
     warnings = _frame_mismatch_warnings(
-        path, plan, resolved_frame=resolved_frame, stamp=stamp
+        path, plan, raw_targets=raw_targets, stamp=stamp
     )
 
     needs_fit = any(a.kind != "accept" or a.candidate is not None for a in plan)
@@ -9388,7 +9756,9 @@ def _run_review_preview(
     # them None. A COALESCED implied create installs nothing, so it never
     # appears here -- one window, not two.
     created_facts: Dict[int, CreateWindowResult] = {}
-    _require_known_plan_windows(set(before_stats), plan, "Stage 5 fit")
+    _require_known_plan_windows(
+        set(before_stats), plan, "Stage 5 fit", _batch_plan_window_ids(ctx, plan)
+    )
     # One WindowProgress per action that fits (every kind but a bare accept),
     # naming the window it targeted; a cancel is honoured before each action.
     fit_total = sum(1 for a in plan if a.kind != "accept" or a.candidate is not None)
@@ -9801,9 +10171,14 @@ def review_undo_impl(
     anything :class:`_SharedFitCtx` derives from (settings, tau calibration,
     the base window plan, or the calibration stamp).
 
-    Raises ``ValueError`` if an id is unknown, there are no decisions, or the
-    automatic-fit baseline is unavailable while fit-mutating decisions exist
-    (e.g. Stage 5 was re-run after editing -- rebuild and re-edit instead).
+    Raises ``not_found`` (kind ``"decision"``, every unknown id; a
+    :class:`ValueError`) if an id is unknown -- on a file with no recorded
+    decisions, every id is -- ``bad_setting`` (``path`` ``"ids"``) when no id
+    is given, and ``curation_conflict`` when undoing would orphan a window an
+    undone decision created (``orphans_created_window``, ``ids`` the
+    decisions to undo with it) or the automatic-fit baseline is unavailable
+    while fit-mutating decisions exist (``baseline_unavailable``; e.g. Stage
+    5 was re-run after editing -- rebuild and re-edit instead).
 
     What undo promises for ``peak_uid`` is replay equivalence: the surviving
     decisions are replayed in order, each as its own action against the state
@@ -9830,15 +10205,20 @@ def review_undo_impl(
     _require_complete_fit(path, "review undo")
     review = load_stage6_review_from_file(path)
     log = list(review.decision_log)
-    if not log:
-        raise ValueError("no recorded decisions to undo")
-
     valid_ids = {e.order_index for e in log}
-    unknown = sorted({int(i) for i in ids} - valid_ids)
+    # Every requested id the log does not hold, in request order -- on an
+    # empty log, every requested id.
+    unknown: List[int] = []
+    for i in ids:
+        if int(i) not in valid_ids and int(i) not in unknown:
+            unknown.append(int(i))
     if unknown:
-        raise ValueError(
-            f"unknown decision id(s) {unknown}; run 'review log' for valid ids"
+        detail = (
+            f"no recorded decisions to undo (decision id(s) {unknown} do not exist)"
+            if not log
+            else f"unknown decision id(s) {unknown}; run 'review log' for valid ids"
         )
+        raise NotFoundValueError("decision", unknown, message=detail)
     undo_set = {int(i) for i in ids}
     if not undo_set:
         raise BadSettingError(
@@ -9874,19 +10254,23 @@ def review_undo_impl(
         e.order_index for e in surviving if int(e.window_id) in dropped_windows
     )
     if orphaned:
-        raise ValueError(
-            f"cannot undo: decision(s) {orphaned} act on window(s) "
+        raise CurationConflictError(
+            "orphans_created_window",
+            orphaned,
+            message=f"cannot undo: decision(s) {orphaned} act on window(s) "
             f"{sorted(dropped_windows)}, which the undone decision(s) "
             f"installed (a 'create_window' decision, or an implied create on "
-            f"an 'add'). Undo them together."
+            f"an 'add'). Undo them together.",
         )
 
     has_fit_edits = any(e.kind in _FIT_EDIT_KINDS for e in log)
     baseline = _has_stage5_baseline(path)
     if has_fit_edits and not baseline:
-        raise ValueError(
-            "cannot undo: the automatic-fit baseline is unavailable (the fit may "
-            "have been re-run after editing). Rebuild from the source and re-edit."
+        raise CurationConflictError(
+            "baseline_unavailable",
+            message="cannot undo: the automatic-fit baseline is unavailable (the "
+            "fit may have been re-run after editing). Rebuild from the source "
+            "and re-edit.",
         )
 
     # Each decision was originally applied as its own action, against the
@@ -11160,15 +11544,16 @@ def _compute_fit_ctx_fingerprint(path: str) -> _FitCtxFingerprint:
 
 def _resolve_curation_call(
     path: str, source: CurationSource, frame: Optional[Frame]
-) -> Tuple[List["PlannedAction"], Frame, Optional[_CalibrationStamp]]:
+) -> Tuple[
+    List["PlannedAction"], Optional[FrozenSet[float]], Optional[_CalibrationStamp]
+]:
     """Parse + derive omitted add/remove window ids (W2, live-window
     coverage -- see :func:`_resolve_curation_window_ids`) + coalesce + frame-
     convert a curation file (or a batch of actions -- :func:`curation_source`)
     into the ready-to-run plan.
 
-    Returns ``(plan, advisory_frame, stamp)``: ``advisory_frame`` is the
-    frame the A5 frame-mismatch advisory is judged against (for a file, its
-    one resolved frame; for actions, see :func:`_actions_to_ops`).
+    Returns ``(plan, raw_targets, stamp)``: ``raw_targets`` is what the A5
+    frame-mismatch advisory judges (see :func:`_parse_curation_call`).
 
     The single prologue :func:`apply_curation_impl`, :func:`_run_review_preview`,
     and :class:`ReviewSession`'s staged-plan comparison all call, so a change
@@ -11182,34 +11567,45 @@ def _resolve_curation_call(
     raw frame, since window ranges are stored raw) and is reused for the
     final plan-level conversion, so it runs exactly once per call.
     """
-    ops, resolved_frame, stamp, advisory = _parse_curation_call(path, source, frame)
+    ops, resolved_frame, stamp, raw_targets = _parse_curation_call(path, source, frame)
     plan = _resolve_curation_ops(ops, path, frame=resolved_frame, stamp=stamp)
-    return plan, advisory, stamp
+    return plan, raw_targets, stamp
 
 
 def _parse_curation_call(
     path: str, source: CurationSource, frame: Optional[Frame]
-) -> Tuple[ParsedCurationFile, Frame, Optional[_CalibrationStamp], Frame]:
+) -> Tuple[
+    ParsedCurationFile,
+    Frame,
+    Optional[_CalibrationStamp],
+    Optional[FrozenSet[float]],
+]:
     """The state-independent half of :func:`_resolve_curation_call`: parse
     the file and resolve its frame. Neither reads anything a curation
     decision changes (the frame comes from the calibration stamp), so a
     log-prefix apply runs this before it moves the file and defers only
     :func:`_resolve_curation_ops` to the replayed state.
 
-    Returns ``(ops, frame, stamp, advisory_frame)``, where ``frame`` is the
-    frame *ops* are still in (converted by :func:`_resolve_curation_ops`).
-    A batch of actions (*source* a tuple) is converted per action here
-    (:func:`_actions_to_ops`), so its ops come back raw; a file's ops keep
-    the file's one frame, which is also its advisory frame."""
+    Returns ``(ops, frame, stamp, raw_targets)``, where ``frame`` is the
+    frame *ops* are still in (converted by :func:`_resolve_curation_ops`)
+    and ``raw_targets`` is what the A5 frame-mismatch advisory judges
+    (:func:`_frame_mismatch_warnings`). A batch of actions (*source* a tuple)
+    is converted per action here (:func:`_actions_to_ops`), so its ops come
+    back raw and ``raw_targets`` holds its raw-frame actions' frequencies; a
+    file's ops keep the file's one frame, so every candidate is judged
+    (``None``) when it is raw and none (an empty set) when it is calibrated."""
     if isinstance(source, tuple):
-        ops, stamp, advisory = _actions_to_ops(path, source, frame)
-        return ops, "raw", stamp, advisory
+        ops, stamp, raw_targets = _actions_to_ops(path, source, frame)
+        return ops, "raw", stamp, raw_targets
     ops = parse_curation_file(source)
     resolved_frame: Frame = "raw"
     file_stamp: Optional[_CalibrationStamp] = None
     if _curation_ops_have_freq(ops):
         resolved_frame, file_stamp = _resolve_curation_frame(path, ops.header, frame)
-    return ops, resolved_frame, file_stamp, resolved_frame
+    file_targets: Optional[FrozenSet[float]] = (
+        None if resolved_frame == "raw" else frozenset()
+    )
+    return ops, resolved_frame, file_stamp, file_targets
 
 
 def _resolve_curation_ops(
@@ -11548,7 +11944,8 @@ class ReviewSession:
         shared = self._sync()
         # A fresh preview supersedes any earlier drift note.
         self._pending_base_changed = False
-        run = _run_review_preview(self._path, source, frame=frame, shared=shared)
+        with _caller_frame_ids():
+            run = _run_review_preview(self._path, source, frame=frame, shared=shared)
         if run.ctx is not None and run.review is not None:
             assert self._fingerprint is not None
             self._staged = _StagedPreview(
@@ -11631,7 +12028,7 @@ class ReviewSession:
         # The transaction opens before the freshness check, so its
         # write_conflict stat predates every input this apply is built from
         # (the fingerprint, the staged preview, the shared context).
-        with atomic_write(self._path):
+        with _caller_frame_ids(), atomic_write(self._path):
             result = self._apply(source, frame=frame, log_prefix=log_prefix)
         self._resync_after_write()
         return result

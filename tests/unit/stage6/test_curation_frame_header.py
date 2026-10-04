@@ -17,7 +17,7 @@ class's docstring for the red-state record.
 
 from __future__ import annotations
 
-import argparse
+import json
 import shutil
 from dataclasses import replace
 from pathlib import Path
@@ -27,6 +27,7 @@ import h5py
 import pytest
 
 import ftmwpipeline.api as ftmw
+from ftmwpipeline import CurationAction, PipelineWarning
 from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline._internal.stage6_impl import (
     FittingResult,
@@ -35,9 +36,10 @@ from ftmwpipeline._internal.stage6_impl import (
     parse_curation_file,
     review_preview_impl,
 )
-from ftmwpipeline.cli.review_commands import cmd_review_apply
+from ftmwpipeline.cli.main import main
 from ftmwpipeline.core.data_structures import SpectrumFit
 from ftmwpipeline.core.stage_fit_settings import ClockSource
+from ftmwpipeline.file_manager import BadSettingError
 from ftmwpipeline.fitting.timebase_calibration import TimebaseCalibrationResult
 from ftmwpipeline.io.fitting_serialization import load_spectrum_fit_from_hdf5
 from ftmwpipeline.io.stage6_review_serialization import load_stage6_review_from_file
@@ -354,6 +356,10 @@ class TestHeaderEpsilonDrift:
         msg = str(excinfo.value)
         assert f"{EPS_1:.6e}" in msg
         assert f"{EPS_2:.6e}" in msg
+        # bad_setting on the epsilon directive's own cell (line 2 of the file)
+        assert isinstance(excinfo.value, BadSettingError)
+        assert excinfo.value.path == "curation[line 2].epsilon"
+        assert excinfo.value.value == pytest.approx(EPS_1)
 
         # Refused calls leave the file untouched.
         review = load_stage6_review_from_file(str(sc_file))
@@ -363,8 +369,9 @@ class TestHeaderEpsilonDrift:
         cur, _wid, _f_raw = self._stage_calibrated_remove(sc_file, tmp_path)
         _stamp_timebase(sc_file, epsilon=EPS_2, sigma_epsilon=SIGMA_EPS)
 
-        with pytest.raises(ValueError, match="frame drift"):
+        with pytest.raises(BadSettingError, match="frame drift") as excinfo:
             review_preview_impl(str(sc_file), cur)
+        assert excinfo.value.path == "curation[line 2].epsilon"
 
     def test_apply_succeeds_when_epsilon_unchanged(
         self, sc_file: Path, tmp_path: Path
@@ -522,7 +529,7 @@ class TestCrossInterfaceHeader:
         return cur
 
     def test_drift_refusal_agrees_across_interfaces(
-        self, sc_file: Path, tmp_path: Path
+        self, sc_file: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         paths: Dict[str, Path] = {}
         curs: Dict[str, Path] = {}
@@ -534,23 +541,24 @@ class TestCrossInterfaceHeader:
         for p in paths.values():
             _stamp_timebase(p, epsilon=EPS_2, sigma_epsilon=SIGMA_EPS)
 
-        with pytest.raises(ValueError, match="frame drift"):
-            apply_curation_impl(str(paths["impl"]), curs["impl"])
-        with pytest.raises(ValueError, match="frame drift"):
-            Pipeline.open(paths["pipe"]).review_apply(curs["pipe"])
-        with pytest.raises(ValueError, match="frame drift"):
-            ftmw.review_apply(str(paths["api"]), curs["api"])
+        for call in (
+            lambda: apply_curation_impl(str(paths["impl"]), curs["impl"]),
+            lambda: Pipeline.open(paths["pipe"]).review_apply(curs["pipe"]),
+            lambda: ftmw.review_apply(str(paths["api"]), curs["api"]),
+        ):
+            with pytest.raises(BadSettingError, match="frame drift") as excinfo:
+                call()
+            assert excinfo.value.path == "curation[line 2].epsilon"
 
-        rc = cmd_review_apply(
-            argparse.Namespace(
-                file_path=str(paths["cli"]),
-                curation_file=str(curs["cli"]),
-                dry_run=False,
-                frame=None,
-                verbose=False,
-            )
-        )
+        # The verb lets the typed refusal reach main, which exits 1 and writes
+        # the error dict to stderr under --json.
+        capsys.readouterr()
+        rc = main(["review", "apply", str(paths["cli"]), str(curs["cli"]), "--json"])
         assert rc == 1
+        err_lines = [ln for ln in capsys.readouterr().err.splitlines() if ln.strip()]
+        payload = json.loads(err_lines[-1])
+        assert payload["code"] == "bad_setting"
+        assert payload["path"] == "curation[line 2].epsilon"
 
         for p in paths.values():
             assert not load_stage6_review_from_file(str(p)).decision_log
@@ -685,3 +693,124 @@ class TestFrameMismatchDiagnostic:
         )
         result = apply_curation_impl(str(sc_multi_file), cur, frame="raw")
         assert result.applied >= 1  # not raised, not zero
+
+
+class TestFrameAdvisoryPerAction:
+    """A5 judges a batch of ``CurationAction`` s action by action: only the
+    targets submitted raw are diagnosed, so a batch that mixes frames is still
+    caught on its raw actions (and its calibrated ones, which were converted
+    correctly, neither hide the signature nor count towards it).
+
+    Mutation: judging the whole batch by one frame (as a file is) silences the
+    mixed batch -- one calibrated action made every other target "calibrated".
+    """
+
+    @staticmethod
+    def _actions(sc_file: Path, *, n_raw: int, n_cal: int) -> List[CurationAction]:
+        """``n_raw`` removes whose calibrated-equivalent frequency is declared
+        ``raw`` (the omitted-conversion mistake), then ``n_cal`` removes of other
+        peaks declared ``calibrated`` (correct)."""
+        stamp = _current_calibration_stamp(str(sc_file))
+        assert stamp is not None
+        eps, probe = stamp[1], stamp[4]
+        peaks = [
+            (int(wf.window_id), float(p.frequency_mhz))
+            for wf in _load_spectrum_fit(sc_file).window_fits
+            if wf.window_id is not None
+            for p in wf.fitted_peaks
+        ]
+        assert len(peaks) >= n_raw + n_cal, "fixture has too few fitted peaks"
+        out: List[CurationAction] = []
+        for i, (wid, f_raw) in enumerate(peaks[: n_raw + n_cal]):
+            out.append(
+                CurationAction(
+                    "remove",
+                    window_id=wid,
+                    freq_mhz=_ref_calibrated(f_raw, probe=probe, eps=eps),
+                    frame="raw" if i < n_raw else "calibrated",
+                )
+            )
+        return out
+
+    @staticmethod
+    def _frame_events(events: List[object]) -> List[PipelineWarning]:
+        return [
+            e
+            for e in events
+            if isinstance(e, PipelineWarning) and e.code == "frame_mismatch"
+        ]
+
+    def test_mixed_batch_fires_the_advisory_and_the_event(
+        self, sc_multi_file: Path
+    ) -> None:
+        actions = self._actions(sc_multi_file, n_raw=3, n_cal=1)
+        events: List[object] = []
+        preview = ftmw.review_preview(
+            str(sc_multi_file), actions=actions, events=events.append
+        )
+        assert len(preview.warnings) == 1
+        assert "calibrated" in preview.warnings[0].lower()
+        (event,) = self._frame_events(events)
+        assert event.details["actions"]  # the plan positions that matched
+
+    def test_apply_fires_it_too_and_still_applies(self, sc_multi_file: Path) -> None:
+        actions = self._actions(sc_multi_file, n_raw=3, n_cal=1)
+        events: List[object] = []
+        result = ftmw.review_apply(
+            str(sc_multi_file), actions=actions, events=events.append
+        )
+        assert result.applied >= 1  # advisory only: never a refusal
+        assert len(result.warnings) == 1
+        assert len(self._frame_events(events)) == 1
+
+    def test_the_same_raw_actions_alone_fire_identically(
+        self, sc_multi_file: Path
+    ) -> None:
+        mixed = ftmw.review_preview(
+            str(sc_multi_file), actions=self._actions(sc_multi_file, n_raw=3, n_cal=1)
+        )
+        raw_only = ftmw.review_preview(
+            str(sc_multi_file), actions=self._actions(sc_multi_file, n_raw=3, n_cal=0)
+        )
+        assert len(raw_only.warnings) == len(mixed.warnings) == 1
+
+    def test_all_calibrated_actions_are_never_diagnosed(
+        self, sc_multi_file: Path
+    ) -> None:
+        events: List[object] = []
+        result = ftmw.review_preview(
+            str(sc_multi_file),
+            actions=self._actions(sc_multi_file, n_raw=0, n_cal=4),
+            events=events.append,
+        )
+        assert result.warnings == []
+        assert self._frame_events(events) == []
+
+    def test_calibrated_actions_do_not_count_towards_the_minimum(
+        self, sc_multi_file: Path
+    ) -> None:
+        """Two displaced raw actions are below the three-candidate floor however
+        many correct calibrated ones accompany them."""
+        events: List[object] = []
+        result = ftmw.review_preview(
+            str(sc_multi_file),
+            actions=self._actions(sc_multi_file, n_raw=2, n_cal=2),
+            events=events.append,
+        )
+        assert result.warnings == []
+        assert self._frame_events(events) == []
+
+    def test_a_calibrated_curation_file_still_gets_none(
+        self, sc_multi_file: Path, tmp_path: Path
+    ) -> None:
+        stamp = _current_calibration_stamp(str(sc_multi_file))
+        assert stamp is not None
+        eps = stamp[1]
+        lines = "".join(
+            f"remove,{a.window_id},{a.freq_mhz!r},\n"
+            for a in self._actions(sc_multi_file, n_raw=4, n_cal=0)
+        )
+        cur = _write_curation(
+            tmp_path, f"# frame: calibrated\n# epsilon: {eps!r}\n{lines}"
+        )
+        assert ftmw.review_preview(str(sc_multi_file), cur).warnings == []

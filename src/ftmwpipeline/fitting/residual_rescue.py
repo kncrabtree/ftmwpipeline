@@ -748,7 +748,7 @@ def iterative_aicc_cleanup(
     ) -> Tuple[bool, float]:
         """Line-evidence escape for a would-be drop candidate (see docstring)."""
         if validation.DEFAULT_GATE_LINE_ESCAPE_LAMBDA is None:
-            return False, 0.0
+            return False, float("nan")
         template = model_spectrum(
             u, [peak], tau_locked, acquisition_us, shape=shape_coerced
         )

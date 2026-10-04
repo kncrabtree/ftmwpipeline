@@ -1382,6 +1382,35 @@ class Stage5FitContext:
     stft_spur_nominees: Optional[Tuple[Tuple[float, bool], ...]] = None
 
 
+def gated_spur_catalog(
+    parameters: Mapping[str, Any], diagnostics: Optional[Mapping[str, Any]]
+) -> Dict[str, Any]:
+    """The gated spur catalog a persisted Stage 5 fit masked with, at full precision.
+
+    ``parameters`` is the fit's persisted ``SpectrumFit.parameters`` and
+    ``diagnostics`` its ``SpectrumFit.diagnostics``. The ``spur_*`` lists in
+    ``parameters`` round ``spur_centers_mhz`` to 4 decimals for display;
+    ``diagnostics["gated_spurs"]`` carries the same spurs, in the same order,
+    with full-precision centers and their per-spur mask overrides, so its
+    entries replace the lists when present (a fit with nothing gated, or one
+    predating that record, keeps the lists as stored). The result is a copy of
+    ``parameters`` and is what :func:`replay_spur_set` takes: every reader that
+    rebuilds the fit's spur mask (the Stage 6 refits, the window and spectrum
+    models) goes through here, so they mask exactly the bins the fit did.
+    """
+    catalog: Dict[str, Any] = dict(parameters)
+    gated = (diagnostics or {}).get("gated_spurs")
+    if gated:
+        catalog["spur_centers_mhz"] = [float(g["center_mhz"]) for g in gated]
+        catalog["spur_sources"] = [str(g.get("source", "narrow")) for g in gated]
+        catalog["spur_lattice"] = [g.get("lattice") for g in gated]
+        catalog["spur_drift"] = [bool(g.get("drift", False)) for g in gated]
+        catalog["spur_mask_half_width_bins_per_spur"] = [
+            g.get("mask_half_width_bins") for g in gated
+        ]
+    return catalog
+
+
 def replay_spur_set(catalog: Mapping[str, Any], sorted_freq: np.ndarray) -> Any:
     """Rebuild a Stage 5 :class:`~ftmwpipeline.fitting.spur_detection.SpurSet`
     from a persisted catalog, without re-running the detector.
@@ -1389,7 +1418,8 @@ def replay_spur_set(catalog: Mapping[str, Any], sorted_freq: np.ndarray) -> Any:
     ``catalog`` carries the ``spur_*`` entries of a persisted
     ``SpectrumFit.parameters`` mapping (``spur_centers_mhz``, ``spur_sources``,
     ``spur_lattice``, ``spur_drift``, ``spur_mask_half_width_bins`` and
-    ``spur_mask_half_width_bins_per_spur``). ``sorted_freq`` is the full active
+    ``spur_mask_half_width_bins_per_spur``), as :func:`gated_spur_catalog`
+    builds it at full precision. ``sorted_freq`` is the full active
     grid in ascending order; the mask geometry's bin spacing is its median step,
     as the detector measured it.
     """
