@@ -30,6 +30,7 @@ from typing import Any, Callable, Iterator, Optional, Tuple
 # Metadata sub-keys on a ``dataclasses.Field``.
 _KNOB_KEY = "knob"
 _CLI_KEY = "cli"
+_TYPING_KEY = "typing"
 
 
 @dataclass(frozen=True)
@@ -40,6 +41,46 @@ class CliSpec:
     argtype: Optional[Callable[[str], Any]]
     metavar: Optional[str]
     is_flag: bool
+
+
+@dataclass(frozen=True)
+class FieldTyping:
+    """Machine-readable typing a field states about itself.
+
+    Every member is ``None`` unless the declaration states it -- nothing is
+    inferred from a name or a default. ``bounds`` is the contract mapping
+    ``{"min", "max", "min_inclusive", "max_inclusive"}``.
+    """
+
+    units: Optional[str] = None
+    choices: Optional[Tuple[Any, ...]] = None
+    bounds: Optional[dict[str, Any]] = None
+
+
+def make_bounds(
+    *,
+    min: Optional[float] = None,
+    max: Optional[float] = None,
+    min_inclusive: bool = True,
+    max_inclusive: bool = True,
+) -> dict[str, Any]:
+    """A bounds mapping in the contract's shape (``None`` end = unbounded)."""
+    return {
+        "min": min,
+        "max": max,
+        "min_inclusive": min_inclusive,
+        "max_inclusive": max_inclusive,
+    }
+
+
+def _typing_meta(
+    units: Optional[str],
+    choices: Optional[Tuple[Any, ...]],
+    bounds: Optional[dict[str, Any]],
+) -> dict[str, Any]:
+    if units is None and choices is None and bounds is None:
+        return {}
+    return {_TYPING_KEY: {"units": units, "choices": choices, "bounds": bounds}}
 
 
 @dataclass(frozen=True)
@@ -68,6 +109,9 @@ def knob_field(
     argtype: Optional[Callable[[str], Any]] = None,
     metavar: Optional[str] = None,
     is_flag: bool = False,
+    units: Optional[str] = None,
+    choices: Optional[Tuple[Any, ...]] = None,
+    bounds: Optional[dict[str, Any]] = None,
 ) -> Any:
     """Declare a settings-dataclass field as a tunable knob.
 
@@ -103,6 +147,9 @@ def knob_field(
     is_flag:
         Tri-state boolean rendered with ``BooleanOptionalAction``
         (``--x`` / ``--no-x``).
+    units, choices, bounds:
+        Machine-readable typing (see :class:`FieldTyping`), stated only where
+        unambiguous; ``None`` otherwise.
     """
     meta: dict[str, Any] = {
         _KNOB_KEY: {
@@ -119,7 +166,31 @@ def knob_field(
             "metavar": metavar,
             "is_flag": is_flag,
         }
+    meta.update(_typing_meta(units, choices, bounds))
     return field(default=None, metadata=meta)
+
+
+def field_typing(
+    *,
+    units: Optional[str] = None,
+    choices: Optional[Tuple[Any, ...]] = None,
+    bounds: Optional[dict[str, Any]] = None,
+) -> Any:
+    """Declare typing for a settings field that is *not* a ``knob_field``.
+
+    Same ``None`` default and typing metadata as :func:`knob_field`, without the
+    knob (no help, tier or scan grid), so the field stays out of the knob
+    registry.
+    """
+    return field(default=None, metadata=_typing_meta(units, choices, bounds))
+
+
+def field_typing_meta(f: Any) -> FieldTyping:
+    """:class:`FieldTyping` of a ``dataclasses.Field`` (all ``None`` if unstated)."""
+    t = f.metadata.get(_TYPING_KEY)
+    if t is None:
+        return FieldTyping()
+    return FieldTyping(units=t["units"], choices=t["choices"], bounds=t["bounds"])
 
 
 def knob_meta(f: Any) -> Optional[KnobMeta]:
@@ -199,8 +270,12 @@ def field_knob_meta(cls: type, dotted_tail: str) -> KnobMeta:
 
 __all__ = [
     "CliSpec",
+    "FieldTyping",
     "KnobMeta",
     "knob_field",
+    "field_typing",
+    "field_typing_meta",
+    "make_bounds",
     "knob_meta",
     "iter_knob_fields",
     "field_knob_meta",

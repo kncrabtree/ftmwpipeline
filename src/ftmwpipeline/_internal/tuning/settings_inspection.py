@@ -34,7 +34,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass, fields, is_dataclass
 from pathlib import Path
-from typing import Any, Callable, List, Optional, Tuple, Union
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Tuple,
+    Union,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 from ...core import noise_settings as noise_mod
 from ...core import peak_detection_settings as peak_mod
@@ -42,7 +53,8 @@ from ...core import settings as ft_mod
 from ...core import stage_fit_settings as fit_mod
 from ...core import tau_calibration_settings as tau_mod
 from ...core import window_planning_settings as window_mod
-from ...core.stage_fit_settings import ShapeSpec, SpurSubSettings
+from ...core.knob_metadata import field_typing_meta
+from ...core.stage_fit_settings import ClockSource, ShapeSpec, SpurSubSettings
 from ...io.noise_settings_serialization import load_noise_settings_from_h5
 from ...io.peak_detection_settings_serialization import (
     load_peak_detection_settings_from_h5,
@@ -80,6 +92,17 @@ class SettingRow:
     the resolved hard default for reference (what ``source == "default"`` uses).
     ``tier`` / ``help`` are the registry enrichment (``"advanced"`` / ``""`` when
     no knob is registered for the path).
+
+    The typing fields are for a machine client. ``type`` is one of
+    :data:`SETTING_TYPES`, derived from the field's declared type (a ``str``
+    field that declares ``choices`` is ``"choice"``). ``nullable`` is true when
+    the setting can legitimately resolve to no value: its hard default is
+    ``None`` (an unset ``trim``, an unset ``tau_max_us``), so ``value`` may be
+    ``None`` for a client to render as "not set"; every field can be *unset*
+    through ``settings_unset`` regardless. ``units`` (``"MHz"``, ``"us"``),
+    ``choices`` (a list) and ``bounds`` (``{"min", "max", "min_inclusive",
+    "max_inclusive"}``) are reported only where the field's declaration states
+    them, and are ``None`` otherwise -- never a guess.
     """
 
     path: str
@@ -88,6 +111,57 @@ class SettingRow:
     hard_default: Any
     tier: str
     help: str
+    type: str
+    nullable: bool
+    units: Optional[str]
+    choices: Optional[List[Any]]
+    bounds: Optional[Dict[str, Any]]
+
+
+#: The ``SettingRow.type`` vocabulary.
+SETTING_TYPES = (
+    "float",
+    "int",
+    "bool",
+    "str",
+    "choice",
+    "float_pair",
+    "float_list",
+    "str_list",
+    "shape_spec",
+    "clock_sources",
+)
+
+
+def _setting_type(annotation: Any, has_choices: bool, path: str) -> str:
+    """Contract ``type`` for a field annotation (``Optional`` stripped)."""
+    args = [a for a in get_args(annotation) if a is not type(None)]
+    inner = (
+        args[0] if get_origin(annotation) is Union and len(args) == 1 else annotation
+    )
+    if inner is bool:
+        return "bool"
+    if inner is int:
+        return "int"
+    if inner is float:
+        return "float"
+    if inner is str:
+        return "choice" if has_choices else "str"
+    if inner is ShapeSpec:
+        return "shape_spec"
+    if get_origin(inner) is tuple:
+        targs = get_args(inner)
+        if len(targs) == 2 and targs[1] is Ellipsis:
+            elem = targs[0]
+            if elem is float:
+                return "float_list"
+            if elem is str:
+                return "str_list"
+            if elem is ClockSource:
+                return "clock_sources"
+        elif targs == (float, float):
+            return "float_pair"
+    raise TypeError(f"setting {path}: no contract type for annotation {annotation!r}")
 
 
 @dataclass(frozen=True)
@@ -199,6 +273,26 @@ _STAGE_SPECS: Tuple[_StageSpec, ...] = (
         load_recommended=_fit_recommended,
     ),
 )
+
+
+def _field_typing(
+    cls: type, sub: Optional[str], name: str, path: str
+) -> Tuple[str, Optional[str], Optional[List[Any]], Optional[Dict[str, Any]]]:
+    """``(type, units, choices, bounds)`` of one settings field."""
+    owner: Any = cls
+    if sub is not None:
+        owner = type(getattr(cls(), sub))
+    f = next(f for f in fields(owner) if f.name == name)
+    meta = field_typing_meta(f)
+    annotation = get_type_hints(owner)[name]
+    choices = None if meta.choices is None else list(meta.choices)
+    bounds = None if meta.bounds is None else dict(meta.bounds)
+    return (
+        _setting_type(annotation, choices is not None, path),
+        meta.units,
+        choices,
+        bounds,
+    )
 
 
 def _enumerate_fields(cls: type) -> List[Tuple[Optional[str], str]]:
@@ -337,6 +431,7 @@ def resolve_settings_view(
             else:
                 source, value = SOURCE_DEFAULT, hard_default
 
+            type_, units, choices, bounds = _field_typing(spec.cls, sub, name, path)
             rows.append(
                 SettingRow(
                     path=path,
@@ -345,6 +440,11 @@ def resolve_settings_view(
                     hard_default=hard_default,
                     tier=tier,
                     help=help_text,
+                    type=type_,
+                    nullable=hard_default is None,
+                    units=units,
+                    choices=choices,
+                    bounds=bounds,
                 )
             )
     return tuple(rows)

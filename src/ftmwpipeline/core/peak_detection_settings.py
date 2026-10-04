@@ -178,6 +178,7 @@ class PrimaryPassSubSettings:
         argtype=str,
     )
     min_exclusion_mhz: Optional[float] = knob_field(
+        units="MHz",
         help="Half-width (MHz) around each primary peak the gap pass excludes "
         "from its mask.",
         tier="primary",
@@ -198,11 +199,13 @@ class PrimaryPassSubSettings:
         grid=(0.0, 0.5, 1.0, 2.0, 3.0),
     )
     noise_window_mhz: Optional[float] = knob_field(
+        units="MHz",
         help="Apodized-domain σ: scatter-MAD window width (MHz).",
         inst_sensitivity="Y",
         grid=(40.0, 60.0, 80.0, 120.0, 160.0),
     )
     noise_pedestal_mhz: Optional[float] = knob_field(
+        units="MHz",
         help="Apodized-domain σ: high-pass running-median width (MHz).",
         inst_sensitivity="Y",
         grid=(10.0, 20.0, 40.0, 80.0),
@@ -223,6 +226,7 @@ class PrimaryPassSubSettings:
         grid=(False, True),
     )
     noise_smoothing_mhz: Optional[float] = knob_field(
+        units="MHz",
         help="Apodized-domain σ: broad lower-envelope median width (MHz; " "0=off).",
         inst_sensitivity="Y",
         grid=(0.0, 400.0, 800.0, 1200.0),
@@ -233,6 +237,7 @@ class PrimaryPassSubSettings:
         grid=(25.0, 50.0, 75.0),
     )
     noise_convolve_mhz: Optional[float] = knob_field(
+        units="MHz",
         help="Apodized-domain σ: step-removing second-pass Gaussian σ (MHz; " "0=off).",
         inst_sensitivity="N",
         grid=(0.0, 100.0, 200.0, 400.0),

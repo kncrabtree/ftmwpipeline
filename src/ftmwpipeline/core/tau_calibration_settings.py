@@ -54,7 +54,7 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Tuple, Union
 
 from . import settings_framework as sf
-from .knob_metadata import knob_field
+from .knob_metadata import field_typing, knob_field
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +82,7 @@ class StftSubSettings:
         argtype=float,
     )
     tau_max_us: Optional[float] = knob_field(
+        units="us",
         help="Hard upper clip on recovered tau (saturation -> spur candidate); "
         "unset -> derived.",
         inst_sensitivity="maybe",
@@ -167,6 +168,7 @@ class AggregationSubSettings:
         argtype=float,
     )
     sigma_tau_floor_us: Optional[float] = knob_field(
+        units="us",
         help="Floor on the reported sigma_tau (guards against over-tight " "spreads).",
         inst_sensitivity="maybe",
         grid=(0.0, 0.5, 1.0),
@@ -188,7 +190,7 @@ class BandSubSettings:
         inst_sensitivity="Y",
         grid=(False, True),
     )
-    band_edges_mhz: Optional[Tuple[float, ...]] = None
+    band_edges_mhz: Optional[Tuple[float, ...]] = field_typing(units="MHz")
     band_labels: Optional[Tuple[str, ...]] = None
     min_contributors_per_band: Optional[int] = knob_field(
         help="Min contributors for a band to use its own tau majority (else "
@@ -220,6 +222,7 @@ class GaussianSubSettings:
         argtype=float,
     )
     tau_G_bound_lo: Optional[float] = knob_field(
+        units="us",
         help="Gaussian tau_G lower fit bound (us).",
         inst_sensitivity="maybe",
         grid=(0.2, 0.5, 1.0),
@@ -228,6 +231,7 @@ class GaussianSubSettings:
         flag="--tau-g-bound-lo",
     )
     tau_G_bound_hi: Optional[float] = knob_field(
+        units="us",
         help="Gaussian tau_G upper fit bound (us).",
         inst_sensitivity="maybe",
         grid=(50.0, 100.0, 200.0),
@@ -283,12 +287,14 @@ class RecommendationSubSettings:
         grid=(10.0, 15.0, 20.0, 30.0),
     )
     tau_bound_lo: Optional[float] = knob_field(
+        units="us",
         help="Shape vote: lower tau fit bound shared by the per-bin model "
         "fits (us).",
         inst_sensitivity="maybe",
         grid=(0.2, 0.5, 1.0),
     )
     tau_bound_hi: Optional[float] = knob_field(
+        units="us",
         help="Shape vote: upper tau fit bound shared by the per-bin model "
         "fits (us).",
         inst_sensitivity="maybe",
