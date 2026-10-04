@@ -27,7 +27,7 @@ import pytest
 import ftmwpipeline.api as ftmw
 from ftmwpipeline import Pipeline
 from ftmwpipeline.core.data_structures import FID, ComplexFT
-from ftmwpipeline.file_manager import StageDependencyError
+from ftmwpipeline.file_manager import PipelineFileError, StageDependencyError
 from ftmwpipeline.preprocessing.noise_estimation import NoiseResult
 
 
@@ -961,10 +961,11 @@ class TestErrorConsistency:
         validation_pipeline = pipe.validate()
         assert not validation_pipeline["valid"], "Pipeline should detect corruption"
 
-        validation_functional = ftmw.validate_pipeline(test_file)
-        assert not validation_functional[
-            "valid"
-        ], "Functional API should detect corruption"
+        # An unopenable file raises the typed open error rather than being
+        # reported as a failed validation.
+        with pytest.raises(PipelineFileError) as excinfo:
+            ftmw.validate_pipeline(test_file)
+        assert excinfo.value.code == "file_corrupt"
 
         # CLI should also detect corruption (though exact command may vary)
         result = subprocess.run(
