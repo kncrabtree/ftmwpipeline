@@ -49,6 +49,23 @@ had to reach into ``_internal`` or parse out of prose to obtain are now
 published, and the Stage 6 edit paths that carry them were collapsed onto one
 engine so they cannot answer differently.
 
+* **Machine contract: Stage 1's stored settings are authoritative.** Stage 1
+  now records the concrete values it ran with in
+  ``processing_parameters/ft_processing`` (field-set version 2): ``start_us``
+  is ``0.0`` when there was no windowing, ``end_us`` is the FID duration when
+  unset, and an unset ``trim`` means "no trim". Every reader -- Stages 2-5,
+  Stage 2b, the shape recommendation, the timebase, the report and the
+  ``read_metadata`` ``ft.start_us`` / ``ft.end_us`` keys (which now report
+  ``0.0`` and the duration, not ``None``) -- resolves them through one
+  resolver and never falls through to the recommended layer. A later
+  ``start run`` or chirp-window stamp still updates the recommendation for
+  display but changes nothing Stage 1 is read as having used; ``start run``
+  now warns that adopting the new start takes ``ft run --start-us``. A fresh
+  run is bit-identical. Old files keep today's behaviour, except that Stage 2b,
+  the shape recommendation and the timebase now agree with Stages 2-5 when an
+  old record has an unset window or trim and a recommendation was stamped
+  afterwards (they previously read ``0.0`` / the duration).
+
 * **Machine contract, Wave 2: the fitted model, evaluated.**
   ``CONTRACT_VERSION`` is now ``4``. ``window_model`` returns one window's
   fitted model with the data, the frozen-neighbour and baseline terms, and --

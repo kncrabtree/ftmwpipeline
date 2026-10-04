@@ -85,6 +85,8 @@ def _make_pre_provenance(p: str, **attrs: object) -> None:
             group.attrs[key] = value
 
 
+# Mutation caught: _persist_ft_settings writes unset (__None__) bounds, skips
+# the version stamp, or stamps below the current field-set version.
 def test_stage1_records_the_concrete_window_it_ran_with(tmp_path: Path) -> None:
     p = _create_ftmw(tmp_path)
     duration = float(ftmw.load_fid(p).duration_us)
@@ -100,6 +102,8 @@ def test_stage1_records_the_concrete_window_it_ran_with(tmp_path: Path) -> None:
     assert prov is not None and prov.is_current
 
 
+# Mutation caught: the concrete window is off by a sample (e.g. end = duration
+# - dt), which would move a fresh run.
 def test_concrete_window_selects_the_same_spectrum(tmp_path: Path) -> None:
     """0.0 / the duration select exactly what unset bounds selected."""
     p = _create_ftmw(tmp_path)
@@ -111,6 +115,9 @@ def test_concrete_window_selects_the_same_spectrum(tmp_path: Path) -> None:
     np.testing.assert_array_equal(concrete.freq_mhz, unset.freq_mhz)
 
 
+# Mutation caught: resolve_ft_settings_h5 reads the recommended layer on a
+# current record, or a consumer (compute_ft_impl / persisted_ft_settings /
+# compute_persisted_active_ft) goes back to its own reader.
 def test_a_later_recommended_start_changes_nothing_stage1_used(
     tmp_path: Path,
 ) -> None:
@@ -138,6 +145,8 @@ def test_a_later_recommended_start_changes_nothing_stage1_used(
         assert h5f[RECOMMENDED_PATH].attrs["start_us"] == 3.0
 
 
+# Mutation caught: an unset trim in a current record falls through to the
+# recommended trim.
 def test_an_unset_trim_does_not_fall_through(tmp_path: Path) -> None:
     p = _create_ftmw(tmp_path)
     ftmw.compute_ft(p)
@@ -148,6 +157,8 @@ def test_an_unset_trim_does_not_fall_through(tmp_path: Path) -> None:
     assert compute_ft_impl(p).get("trim_range") is None
 
 
+# Mutation caught: a start stamp after Stage 1 alters the resolved start or
+# invalidates Stage 1, or the 'ft run --start-us' warning is lost.
 def test_start_run_after_stage1_warns_and_leaves_it(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -163,6 +174,8 @@ def test_start_run_after_stage1_warns_and_leaves_it(
     assert _completed(p) == completed
 
 
+# Mutation caught: an explicit re-run is swallowed, or leaves a stale downstream
+# result when the effective window changes.
 def test_explicit_rerun_adopts_a_new_start_and_invalidates(tmp_path: Path) -> None:
     p = _create_ftmw(tmp_path)
     ftmw.compute_ft(p)
@@ -173,6 +186,8 @@ def test_explicit_rerun_adopts_a_new_start_and_invalidates(tmp_path: Path) -> No
     assert "stage2_noise_result" not in _completed(p)
 
 
+# Mutation caught: a current record with no recommendation classifies as
+# 'manual' because start_us is now concrete.
 def test_nothing_recommended_reads_as_none_provenance(tmp_path: Path) -> None:
     p = _create_ftmw(tmp_path)
     ftmw.compute_ft(p)
@@ -181,6 +196,8 @@ def test_nothing_recommended_reads_as_none_provenance(tmp_path: Path) -> None:
     assert prov.start_us == 0.0
 
 
+# Mutation caught: the authoritative rule is applied to old records, or
+# Stage 2b/timebase read 0.0 again instead of the shared resolver.
 def test_pre_provenance_record_keeps_its_fall_through(tmp_path: Path) -> None:
     """An older record with an unset start resolves it from the recommended
     layer, and every reader -- Stage 2-5's FT and the Stage 2b / timebase
@@ -195,6 +212,8 @@ def test_pre_provenance_record_keeps_its_fall_through(tmp_path: Path) -> None:
     assert persisted_ft_settings(p, "x", duration).start_us == 3.0
 
 
+# Mutation caught: the re-persist compares raw None against 0.0/duration and
+# wipes downstream stages on an old file.
 def test_upgrading_an_unchanged_old_record_invalidates_nothing(
     tmp_path: Path,
 ) -> None:
@@ -212,6 +231,7 @@ def test_upgrading_an_unchanged_old_record_invalidates_nothing(
     assert _record(p)["start_us"] == 0.0
 
 
+# Mutation caught: 'settings unset' records None, reopening the fall-through.
 def test_settings_unset_re_resolves_from_the_recommendation(tmp_path: Path) -> None:
     p = _create_ftmw(tmp_path)
     update_processing_parameters(p, {"start_us": 1.25})
@@ -219,3 +239,97 @@ def test_settings_unset_re_resolves_from_the_recommendation(tmp_path: Path) -> N
     assert _record(p)["start_us"] == 2.5
     ftmw.settings_unset(p, "stage1.start_us")
     assert _record(p)["start_us"] == 1.25
+
+
+# Mutation caught: FTSettings.to_attrs / from_attrs lose the concrete window or
+# turn "no trim" into something other than None.
+def test_record_round_trips_through_its_codec_at_the_current_version(
+    tmp_path: Path,
+) -> None:
+    from ftmwpipeline.core.settings import FTSettings
+
+    p = _create_ftmw(tmp_path)
+    ftmw.compute_ft(p, start_us=1.5, end_us=12.0, trim=_TRIM)
+    attrs = _record(p)
+    back = FTSettings.from_attrs(attrs)
+    assert attrs[FIELD_SET_VERSION_ATTR] == FT_PROCESSING_FIELD_SET_VERSION
+    assert (back.start_us, back.end_us, back.trim) == (1.5, 12.0, _TRIM)
+    assert FTSettings.from_attrs(back.to_attrs()) == back
+
+    q = _create_ftmw(tmp_path, "notrim.ftmw")
+    ftmw.compute_ft(q, start_us=1.5)
+    none_back = FTSettings.from_attrs(_record(q))
+    assert none_back.trim is None
+    assert none_back.start_us == 1.5
+
+
+# Mutation caught: ft_settings_provenance counts version 1 / a missing version
+# as current, so old records are silently treated as authoritative.
+@pytest.mark.parametrize("version", [None, 1])
+def test_old_record_is_reported_pre_provenance(tmp_path: Path, version: object) -> None:
+    p = _create_ftmw(tmp_path)
+    ftmw.compute_ft(p)
+    with h5py.File(p, "a") as h5f:
+        attrs = h5f[FT_PROCESSING_PATH].attrs
+        if version is None:
+            del attrs[FIELD_SET_VERSION_ATTR]
+        else:
+            attrs[FIELD_SET_VERSION_ATTR] = version
+    prov = ft_settings_provenance(p)
+    assert prov is not None
+    assert prov.is_pre_provenance and not prov.is_current
+
+
+# Mutation caught: a v1/unversioned record is treated as authoritative, so its
+# recommended-layer fall-through for trim is lost.
+def test_old_record_with_unset_trim_still_falls_through(tmp_path: Path) -> None:
+    p = _create_ftmw(tmp_path)
+    ftmw.compute_ft(p)
+    _make_pre_provenance(p)
+    with h5py.File(p, "a") as h5f:
+        h5f[RECOMMENDED_PATH].attrs["trim_min_mhz"] = _TRIM[0]
+        h5f[RECOMMENDED_PATH].attrs["trim_max_mhz"] = _TRIM[1]
+    assert _resolve_settings(p, None).trim == _TRIM
+
+
+# Mutation caught: Stage 1 resolves the recommended trim lazily, so a
+# recommendation present at run time is not recorded and later edits leak in.
+def test_a_recommended_trim_present_at_the_run_is_recorded_then_frozen(
+    tmp_path: Path,
+) -> None:
+    p = _create_ftmw(tmp_path)
+    with h5py.File(p, "a") as h5f:
+        h5f[RECOMMENDED_PATH].attrs["trim_min_mhz"] = _TRIM[0]
+        h5f[RECOMMENDED_PATH].attrs["trim_max_mhz"] = _TRIM[1]
+    ftmw.compute_ft(p)
+    attrs = _record(p)
+    assert (attrs["trim_min_mhz"], attrs["trim_max_mhz"]) == _TRIM
+    with h5py.File(p, "a") as h5f:
+        h5f[RECOMMENDED_PATH].attrs["trim_min_mhz"] = 910.0
+        h5f[RECOMMENDED_PATH].attrs["trim_max_mhz"] = 960.0
+    assert _resolve_settings(p, None).trim == _TRIM
+    duration = float(ftmw.load_fid(p).duration_us)
+    assert persisted_ft_settings(p, "x", duration).trim == _TRIM
+
+
+# Mutation caught: a consumer (timebase / Stage 2b / shape recommendation)
+# reads its own view instead of persisted_ft_settings.
+def test_consumers_read_the_window_from_the_persisted_record(
+    tmp_path: Path,
+) -> None:
+    p = _create_ftmw(tmp_path)
+    ftmw.compute_ft(p, start_us=2.0, end_us=11.0, trim=_TRIM)
+    update_processing_parameters(p, {"start_us": 4.0, "end_us": 9.0})
+    duration = float(ftmw.load_fid(p).duration_us)
+    got = persisted_ft_settings(p, "timebase_calibration", duration)
+    assert got.active_window_us() == (2.0, 11.0)
+
+
+# Mutation caught: persisted_ft_settings returns defaults when Stage 1 has not
+# persisted instead of raising the dependency error.
+def test_persisted_reader_requires_a_stage1_record(tmp_path: Path) -> None:
+    from ftmwpipeline.file_manager import StageDependencyError
+
+    p = _create_ftmw(tmp_path)
+    with pytest.raises(StageDependencyError):
+        persisted_ft_settings(p, "timebase_calibration", 20.0)
