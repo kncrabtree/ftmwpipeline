@@ -29,7 +29,11 @@ place). It is persisted with a small typed graph codec:
 Decoding never runs code from the file: it parses JSON, builds instances of the
 allow-listed types with ``object.__new__`` and sets their attributes, and makes
 numeric arrays. Nothing is pickled. A value outside the allow-list cannot be
-written; the window is then not kept (the resume refits it).
+written; the window is then not kept (the resume refits it). An instance may
+carry only its declared fields and the walk's known private stashes
+(:data:`_STASHED`), and every decoded attribute is checked against its type
+annotation (and a :class:`WindowOutcome`'s arrays against its grid): anything
+malformed is a :class:`PartialCodecError`, so the resume starts over.
 
 Layout::
 
