@@ -10,11 +10,12 @@ import argparse
 from pathlib import Path
 from typing import Any
 
-from .._internal.stage5_impl import fit_peaks_impl, fit_show_impl
+from .._internal.stage5_impl import fit_peaks_impl, fit_run_summary, fit_show_impl
 from .._internal.stage5_validation_impl import validate_stage5_shape_error_impl
 from ..core.stage_fit_settings import StageFitSettings
 from ..file_manager import PipelineFileError
 from ._argspec import add_settings_args, settings_from_namespace
+from ._events import add_events_argument, operation_controls
 from ._json_output import json_mode, record_payload, record_run_result
 from .utils import add_stage_object, print_error, print_invalidated, setup_logging
 
@@ -58,36 +59,22 @@ def cmd_fit_peaks(args: argparse.Namespace) -> int:
         # are the explicit layer, the preset the preset layer beneath persisted.
         settings = settings_from_namespace(args, StageFitSettings)
         print(f"Fitting peaks for: {file_path}")
-        result = fit_peaks_impl(
-            file_path=file_path,
-            shape=args.shape,
-            tau_maj_override_us=args.tau_maj_override_us,
-            sigma_tau_override_us=args.sigma_tau_override_us,
-            settings=None if settings.is_empty() else settings,
-            preset=args.preset,
-            jobs=args.jobs,
-        )
+        with operation_controls(args) as (events, cancel):
+            result = fit_peaks_impl(
+                file_path=file_path,
+                shape=args.shape,
+                tau_maj_override_us=args.tau_maj_override_us,
+                sigma_tau_override_us=args.sigma_tau_override_us,
+                settings=None if settings.is_empty() else settings,
+                preset=args.preset,
+                jobs=args.jobs,
+                events=events,
+                cancel=cancel,
+            )
         if json_mode(args):
+            # One builder for this summary and the fit's StageFinished.summary.
             record_run_result(
-                args,
-                stage="fit",
-                result=result,
-                summary={
-                    k: result[k]
-                    for k in (
-                        "n_windows",
-                        "n_fitted_peaks",
-                        "n_thaw_accepted",
-                        "n_thaw_events",
-                        "n_rescue_accepted",
-                        "n_rescue_events",
-                        "n_rescue_added",
-                        "n_rescue_origin_pruned",
-                        "n_replan_accepted",
-                        "n_replan_events",
-                        "final_plan_revision",
-                    )
-                },
+                args, stage="fit", result=result, summary=fit_run_summary(result)
             )
         print("\nFitting completed successfully!")
         print(f"  Windows fitted: {result['n_windows']:,}")
@@ -390,6 +377,7 @@ def register_fitting_commands(subparsers: Any) -> None:
     p_fit.add_argument(
         "file_path", help="Path to .ftmw pipeline file (.ftmw auto-added)"
     )
+    add_events_argument(p_fit)
     # Per-knob flags, generated from StageFitSettings field metadata (the
     # single declaration site shared with `settings` / `scan`). This is the
     # curated cli=True subset: --tau0-us, --fit-tau/--no-fit-tau,
