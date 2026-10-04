@@ -8,6 +8,7 @@ Tests functional file operations rather than interface pedantry, focusing on:
 - Error handling and edge cases that would break user workflows
 """
 
+import os
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -421,6 +422,88 @@ class TestFileManagerFunctions:
         )
         with pytest.raises(PipelineCorruptionError):
             validate_pipeline_file(filepath)
+
+    @pytest.mark.skipif(
+        not hasattr(os, "geteuid") or os.geteuid() == 0,
+        reason="permission bits do not bind root",
+    )
+    def test_validate_an_unreadable_file_raises_permission_error(
+        self, temp_dir, sample_fid, sample_source_metadata
+    ):
+        """A permission failure is not ``file_corrupt`` and is not reported:
+        the original ``PermissionError`` propagates so a client can retry."""
+        filepath = temp_dir / "locked.ftmw"
+        with atomic_write(filepath):
+            create_pipeline_file(filepath, sample_fid, sample_source_metadata)
+        filepath.chmod(0)
+        try:
+            with pytest.raises(PermissionError) as exc_info:
+                validate_pipeline_file(filepath)
+            assert not isinstance(exc_info.value, PipelineCorruptionError)
+        finally:
+            filepath.chmod(0o644)
+
+    def test_validate_a_truncated_file_raises_file_corrupt(
+        self, temp_dir, sample_fid, sample_source_metadata
+    ):
+        filepath = temp_dir / "truncated.ftmw"
+        with atomic_write(filepath):
+            create_pipeline_file(filepath, sample_fid, sample_source_metadata)
+        data = filepath.read_bytes()
+        filepath.write_bytes(data[: len(data) // 2])
+        with pytest.raises(PipelineCorruptionError) as exc_info:
+            validate_pipeline_file(filepath)
+        assert exc_info.value.code == "file_corrupt"
+
+    @pytest.mark.parametrize(
+        "target",
+        [
+            "ftmwpipeline.file_manager.load_fid_from_hdf5",
+            "ftmwpipeline.io.environment_serialization.load_stage_environments",
+        ],
+    )
+    def test_a_read_failure_mid_report_raises_file_corrupt(
+        self, temp_dir, sample_fid, sample_source_metadata, monkeypatch, target
+    ):
+        """An ``OSError`` reading a file that opened -- in the FID block or the
+        later reads -- raises ``file_corrupt`` chained from it; it is not
+        reported as ``Cannot load FID data`` / ``Validation failed``."""
+        filepath = temp_dir / "unreadable_dataset.ftmw"
+        with atomic_write(filepath):
+            create_pipeline_file(filepath, sample_fid, sample_source_metadata)
+        cause = OSError("Can't read data (wrong B-tree signature)")
+
+        def _unreadable(*args, **kwargs):
+            raise cause
+
+        monkeypatch.setattr(target, _unreadable)
+        with pytest.raises(PipelineCorruptionError) as exc_info:
+            validate_pipeline_file(filepath)
+        assert exc_info.value.code == "file_corrupt"
+        assert exc_info.value.__cause__ is cause
+
+    @pytest.mark.parametrize(
+        "target",
+        [
+            "ftmwpipeline.file_manager.load_fid_from_hdf5",
+            "ftmwpipeline.io.environment_serialization.load_stage_environments",
+        ],
+    )
+    def test_a_transient_read_failure_mid_report_propagates_unchanged(
+        self, temp_dir, sample_fid, sample_source_metadata, monkeypatch, target
+    ):
+        filepath = temp_dir / "lock_refused.ftmw"
+        with atomic_write(filepath):
+            create_pipeline_file(filepath, sample_fid, sample_source_metadata)
+        cause = OSError("unable to lock file, errno = 11")
+
+        def _locked(*args, **kwargs):
+            raise cause
+
+        monkeypatch.setattr(target, _locked)
+        with pytest.raises(OSError) as exc_info:
+            validate_pipeline_file(filepath)
+        assert exc_info.value is cause
 
     def test_an_untyped_failure_mid_report_is_still_reported(
         self, temp_dir, sample_fid, sample_source_metadata, monkeypatch

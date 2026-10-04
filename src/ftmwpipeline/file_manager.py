@@ -32,6 +32,7 @@ from typing import (
     Dict,
     Iterable,
     List,
+    NoReturn,
     Optional,
     Sequence,
     Tuple,
@@ -1256,14 +1257,27 @@ def open_pipeline_file(
             # A valid file we could not open right now (permissions, another
             # process holding the HDF5 lock) is not ``file_corrupt``.
             raise
-        if "h5py" in str(type(e)).lower() or "hdf5" in str(e).lower():
-            raise PipelineCorruptionError(filepath, f"HDF5 error: {e}") from e
-        else:
-            raise PipelineCorruptionError(
-                filepath,
-                str(e),
-                message=f"Failed to open pipeline file {filepath}: {e}",
-            ) from e
+        raise _unreadable_file_error(filepath, e) from e
+
+
+def _unreadable_file_error(filepath: Path, exc: Exception) -> PipelineCorruptionError:
+    """The ``file_corrupt`` error for a non-transient failure reading *filepath*."""
+    if "h5py" in str(type(exc)).lower() or "hdf5" in str(exc).lower():
+        return PipelineCorruptionError(filepath, f"HDF5 error: {exc}")
+    return PipelineCorruptionError(
+        filepath,
+        str(exc),
+        message=f"Failed to open pipeline file {filepath}: {exc}",
+    )
+
+
+def _raise_unreadable(filepath: Path, exc: OSError) -> NoReturn:
+    """Raise for an ``OSError`` hit while reading *filepath*, as
+    :func:`open_pipeline_file` does: a transient one (permissions, the HDF5 lock
+    refusal) unchanged, any other as ``file_corrupt`` chained from it."""
+    if is_transient_open_error(exc):
+        raise exc
+    raise _unreadable_file_error(filepath, exc) from exc
 
 
 def _warn_active_window_past_record(h5f: "h5py.File", fid: Any) -> List[str]:
@@ -1338,9 +1352,13 @@ def validate_pipeline_file(filepath: Union[str, Path]) -> Dict[str, Any]:
     PipelineFileNotFoundError
         If the file does not exist (``not_found``).
     PipelineCorruptionError, PipelineCompatibilityError
-        If the file cannot be opened as a pipeline file, or becomes unreadable
-        while the report is built. Validation reports problems in a file that
-        opens; it does not stand in for opening one.
+        If the file cannot be opened as a pipeline file, or cannot be read
+        while the report is built. Validation reports integrity problems in a
+        readable file; it does not stand in for opening or reading one.
+    OSError
+        A permission failure or HDF5 file-lock refusal, opening the file or
+        reading it while the report is built, propagates unchanged (as from
+        :func:`open_pipeline_file`).
     """
     filepath = Path(filepath)
     errors = []
@@ -1353,11 +1371,21 @@ def validate_pipeline_file(filepath: Union[str, Path]) -> Dict[str, Any]:
         # in a file that opens; it does not stand in for opening one.
         filepath_obj, source_metadata, stage_tracker = open_pipeline_file(filepath)
 
-        # Validate source metadata
-        if not source_metadata.source_path.exists():
+        # Validate source metadata. The source is a different file from the
+        # one validated: failing to stat it is a warning, not a refusal.
+        try:
+            source_exists = source_metadata.source_path.exists()
+        except OSError as exc:
             warnings.append(
-                f"Original source file no longer exists: {source_metadata.source_path}"
+                "Cannot check the original source file "
+                f"{source_metadata.source_path}: {exc}"
             )
+        else:
+            if not source_exists:
+                warnings.append(
+                    "Original source file no longer exists: "
+                    f"{source_metadata.source_path}"
+                )
 
         # Read the format/writer version stamps (absent on legacy files) and
         # the per-stage analysis-environment record.
@@ -1436,6 +1464,9 @@ def validate_pipeline_file(filepath: Union[str, Path]) -> Dict[str, Any]:
                 warnings.extend(_warn_active_window_past_record(h5f, fid))
         except PipelineFileError:
             raise
+        except OSError as e:
+            # The file could not be read: raised, not reported (below).
+            _raise_unreadable(filepath, e)
         except Exception as e:
             errors.append(f"Cannot load FID data: {e}")
 
@@ -1463,6 +1494,12 @@ def validate_pipeline_file(filepath: Union[str, Path]) -> Dict[str, Any]:
         # The file became unreadable while the report was built (or could not
         # be opened): the typed error propagates; the report does not swallow it.
         raise
+    except OSError as e:
+        # A file that cannot be read while the report is built raises, the way
+        # opening it would: a transient failure (permissions, the HDF5 lock)
+        # unchanged, any other as ``file_corrupt``. Only integrity problems in
+        # a readable file go in the report.
+        _raise_unreadable(filepath, e)
     except Exception as e:
         return {
             "valid": False,
