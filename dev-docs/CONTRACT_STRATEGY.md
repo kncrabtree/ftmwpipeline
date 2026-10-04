@@ -602,30 +602,67 @@ named that does not exist, e.g. all unknown window ids of a curation batch),
 - Log output is rendered from these events, so interactive users see the same
   lines as today.
 
-## Status and settings *(outline)*
+## Status and settings
 
 - One canonical **stage vocabulary**, the public enum `ftmwpipeline.Stage`,
   whose values are the CLI object names: `data`, `ft`, `noise`, `tau`,
-  `tau_g`, `timebase`, `peaks`, `windows`, `fit`, `review`. It carries a
-  documented mapping to every other spelling (settings prefix, knob label,
-  internal storage key). Every contract payload that names a stage uses these
-  values.
-- `status(path)` → each stage's state (`complete`, `partial` — Stage 5 after a
-  cancel — or `not_run`), the dependency graph, and the re-run order a full
-  refresh would follow.
+  `tau_g`, `timebase`, `peaks`, `windows`, `fit`, `review`. Every contract
+  payload that names a stage uses these values.
+- **Mappings.** Each spelling has one read-only mapping in `contract.py`:
+  - `STAGE_KEYS`: the storage key;
+  - `STAGE_SETTINGS_PREFIX`: the settings / preset prefix, such as `stage2b`
+    (it covers both `tau` and `tau_g`), or `None` for a stage with no settings
+    record;
+  - `STAGE_KNOB_PREFIX`: the tuning-registry knob prefix, or `None`.
+
+  Each has a `*_for_*` inverse where the mapping is one-to-one. They are
+  exposed in `capabilities()` under `"stages"`, as
+  `[{"stage", "storage_key", "settings_prefix", "knob_prefix", "depends_on"}]`.
+- **`status(path)`** returns `{"schema": "ftmw/status@1", "stages": [{"stage",
+  "state", "depends_on"}], "runnable": [...], "rerun_order": [...]}`.
+  - `state` is `complete`, `partial` (Stage 5 after a cancel; no producer
+    yet) or `not_run`.
+  - `depends_on` lists canonical stage names.
+  - `runnable` lists the stages that are not complete but whose dependencies
+    all are.
+  - `rerun_order` lists every stage in the dependency-respecting order a full
+    refresh follows: a fixed topological order with ties broken by the enum's
+    order.
+  - It is file-bound on all three interfaces, and the CLI verb is
+    `read status`.
 - **No stale results persist.** A write that makes a stored result
-  inconsistent with its inputs either rebuilds that result in the same write
-  (as the final-products table is rebuilt after a timebase or σ-floor change)
-  or deletes it and its downstream results. "Stale" is therefore never a
-  state a client can observe.
+  inconsistent with its inputs does one of two things in the same write:
+  - rebuilds that result, as the final-products table is rebuilt after a
+    timebase or σ-floor change;
+  - or deletes it and its downstream results.
+
+  "Stale" is therefore never a state a client can observe. A call that only
+  reads never writes. `compute_ft(..., from_saved_params=True)` recomputes
+  the spectrum without persisting.
 - A timebase change does not invalidate Stage 5. The fit uses ε only to
   classify clock spurs, and that classification is deliberately not redone.
   The change reaches the calibrated frequencies and their errors through the
   final-products rebuild.
-- Every stage-running call reports the stages it invalidated.
-- Settings registry rows add `type`, `nullable`, `units`, and `choices` or
-  `bounds`; every value round-trips as typed JSON, including `ShapeSpec` with
-  its parameters and clock sources.
+- **Every stage-running call reports the stages it invalidated.** Its result
+  carries `invalidated`, a list of canonical stage names in `rerun_order`
+  order, which is empty when nothing was invalidated. On the CLI, the human
+  output names them and `--format json` includes them.
+- Settings registry rows (`SettingRow`, from `settings_show` /
+  `settings_defaults`) add these fields:
+  - `type`: one of `"float"`, `"int"`, `"bool"`, `"str"`, `"choice"`,
+    `"float_pair"`, `"float_list"`, `"str_list"`, `"shape_spec"`,
+    `"clock_sources"`;
+  - `nullable` (`bool`);
+  - `units` (a string such as `"MHz"` or `"us"`, or `None`);
+  - `choices` (a list, or `None`);
+  - `bounds` (`{"min", "max", "min_inclusive", "max_inclusive"}`, or `None`).
+
+  Every value round-trips as typed JSON, including `ShapeSpec` with its
+  parameters, and clock sources. Bounds and choices come from the knob
+  metadata; a knob without them reports `None`, never a guess.
+- **Every verb types an unopenable file.** A path that exists but is not a
+  readable pipeline file raises `file_corrupt` (exit 2) from every verb, not
+  only from those that open through `open_pipeline_file`.
 
 ## Curation as data
 
