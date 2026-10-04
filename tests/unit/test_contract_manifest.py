@@ -83,6 +83,12 @@ SNAPSHOT_SCHEMAS = frozenset(
         "ftmw/curation_action@1",
         "ftmw/status@1",
         "ftmw/run_result@1",
+        "ftmw/stage_started@1",
+        "ftmw/stage_finished@1",
+        "ftmw/window_progress@1",
+        "ftmw/scan_progress@1",
+        "ftmw/invalidated@1",
+        "ftmw/warning@1",
     }
 )
 SNAPSHOT_CODES = frozenset(
@@ -96,6 +102,8 @@ SNAPSHOT_CODES = frozenset(
         "file_exists",
         "bad_setting",
         "algorithm_failed",
+        "cancelled",
+        "callback_failed",
     }
 )
 SNAPSHOT_FILE_BOUND = {
@@ -249,11 +257,37 @@ SNAPSHOT_FIELDS: dict = {
     },
     "ComplexFT": {"freq_array", "complex_spectrum", "metadata"},
     "ComplexFT.metadata": {"amplitude_scale", "units_label", "pad_factor"},
+    "StageStarted": {"schema", "operation", "stage"},
+    "StageFinished": {"schema", "operation", "stage", "elapsed_s", "summary"},
+    "WindowProgress": {
+        "schema",
+        "operation",
+        "stage",
+        "phase",
+        "index",
+        "total",
+        "window_id",
+        "n_peaks",
+        "chi2r",
+        "elapsed_s",
+        "dropped",
+    },
+    "ScanProgress": {"schema", "operation", "stage", "knob", "value", "index", "total"},
+    "Invalidated": {"schema", "operation", "stage", "stages"},
+    "PipelineWarning": {"schema", "operation", "stage", "code", "message", "details"},
 }
 SNAPSHOT_VOCABULARIES = {
     "decision_kind": {"add", "remove", "merge", "split", "accept", "create_window"},
     "decision_provenance": {"user"},
     "stage_state": {"complete", "partial", "not_run"},
+    "warning_code": {
+        "slow_window",
+        "epoch_acknowledged",
+        "environment_drift",
+        "frame_mismatch",
+        "walk_fallback",
+        "timebase_skipped",
+    },
 }
 
 
@@ -477,7 +511,7 @@ def test_manifest_sequences_are_tuples():
 
 
 def test_manifest_version_matches_package():
-    assert MANIFEST.contract_version == ftmwpipeline.CONTRACT_VERSION == 8
+    assert MANIFEST.contract_version == ftmwpipeline.CONTRACT_VERSION == 9
     assert isinstance(ftmwpipeline.CONTRACT_VERSION, int)
 
 
@@ -569,9 +603,11 @@ def _type_registry() -> dict:
     from ftmwpipeline._internal.tuning.settings_inspection import SettingRow
     from ftmwpipeline.core.calibration import CalibrationStamp
     from ftmwpipeline.core.curation import CurationAction
+    from ftmwpipeline.contract import EVENT_TYPES
     from ftmwpipeline.core.data_structures import DecisionLogEntry, FinalPeak
 
     return {
+        **{cls.__name__: cls for cls in EVENT_TYPES},
         "CalibrationStamp": CalibrationStamp,
         "FinalPeak": FinalPeak,
         "DecisionLogEntry": DecisionLogEntry,
