@@ -6,8 +6,10 @@ Two modes:
 * **Overview** (``window_id=None``): the persisted high-resolution magnitude
   spectrum overlaid with the fitted model (sum of every window's
   contribution), with each fit window's span shaded. The model is
-  re-evaluated on the persisted grid via :func:`model_spectrum`, which is
-  grid-agnostic, so the display grid is independent of the fit-time active-FT.
+  re-evaluated on the persisted grid by the shared evaluator
+  (:mod:`ftmwpipeline.fitting.model_eval`, the ``spectrum_model`` accessor's),
+  which is grid-agnostic, so the display grid is independent of the fit-time
+  active-FT.
 * **Per-window detail** (``window_id=int``): four panels for one window --
   real and imaginary parts of the model-on-data with their residuals, the
   magnitude with its residual, the time-domain envelope (intuition only),
@@ -35,7 +37,8 @@ from ..core.data_structures import (
     Sideband,
     SpectrumFit,
 )
-from ..fitting.peak_model import ModelPeak, model_spectrum, sideband_sign
+from ..fitting.model_eval import evaluate_spectrum_model, evaluate_window_terms
+from ..fitting.peak_model import sideband_sign
 from .report_style import (
     AGGIE_BLUE,
     AGGIE_GOLD,
@@ -80,6 +83,26 @@ def _persisted_phase_ramp(
     return cast(np.ndarray, np.exp(-1j * 2.0 * np.pi * f_bb * float(start_us)))
 
 
+def _to_persisted_frame(
+    model: np.ndarray,
+    model_amplitude_scale: float = 1.0,
+    persisted_phase_ramp: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """Move an active-FT-frame model onto the persisted-FT grid's convention.
+
+    The one step that is specific to drawing on the persisted Stage 1 grid,
+    kept apart from the model evaluation itself: the amplitude scale between
+    the two transforms and the per-bin phase ramp between their time origins
+    (:func:`_persisted_phase_ramp`).
+    """
+    out = np.asarray(model, dtype=np.complex128)
+    if model_amplitude_scale != 1.0:
+        out = out * model_amplitude_scale
+    if persisted_phase_ramp is not None:
+        out = out * persisted_phase_ramp
+    return cast(np.ndarray, out)
+
+
 def _window_model_on_persisted_grid(
     frequencies: np.ndarray,
     fit: SpectrumFit,
@@ -90,13 +113,14 @@ def _window_model_on_persisted_grid(
 ) -> np.ndarray:
     """Sum the fitted model over every window, on the persisted grid.
 
-    Each window's per-peak ``(amplitude, frequency_mhz, phase)`` and shared
-    ``tau_us`` are converted into the window's signed baseband-offset
-    parameterization, then :func:`model_spectrum` is evaluated on the
-    persisted-grid offsets (``u = s*(f - f_c)``). Frequencies outside any
-    window contribute zero -- but the leakage skirt of each fitted line
-    naturally reaches across the persisted grid through the closed-form
-    ``h_T``.
+    The whole-spectrum model of the shared evaluator
+    (:func:`~ftmwpipeline.fitting.model_eval.evaluate_spectrum_model`, the
+    ``spectrum_model`` accessor's): every fitted line once at its window's
+    fitted ``tau`` and shape, with its leakage skirt reaching across the grid
+    through the closed-form ``h_T``, plus each window's baseline inside its
+    own fit range. It is evaluated in the fit's active-FT frame and then moved
+    onto the persisted grid's convention as a separate step
+    (:func:`_to_persisted_frame`).
 
     ``model_amplitude_scale`` converts amplitudes from the fit-time active-FT
     amplitude units (``dt_us * rfft(active)``) to the persisted-FT units
@@ -110,35 +134,13 @@ def _window_model_on_persisted_grid(
     ``[0, T_full]`` phase frame so the overlay matches the data's complex
     parts. See :func:`_persisted_phase_ramp`.
     """
-    s = sideband_sign(sideband)
-    total = np.zeros(frequencies.shape, dtype=np.complex128)
-    f = np.asarray(frequencies, dtype=float)
-    for window_fit in fit.window_fits:
-        if window_fit.window is None:
-            continue
-        center = 0.5 * (
-            window_fit.window.freq_range[0] + window_fit.window.freq_range[1]
-        )
-        tau_us = float(window_fit.shared_parameters.get("tau_us", {}).get("value", 0.0))
-        if tau_us <= 0:
-            continue
-        peaks = [
-            ModelPeak(
-                amplitude=float(p.amplitude),
-                offset_mhz=float(s * (p.frequency_mhz - center)),
-                phase=float(p.phase if p.phase is not None else 0.0),
-            )
-            for p in window_fit.fitted_peaks
-        ]
-        if not peaks:
-            continue
-        u = s * (f - center)
-        total += model_spectrum(u, peaks, tau_us, acquisition_us)
-    if model_amplitude_scale != 1.0:
-        total *= model_amplitude_scale
-    if persisted_phase_ramp is not None:
-        total *= persisted_phase_ramp
-    return cast(np.ndarray, total)
+    model = evaluate_spectrum_model(
+        np.asarray(frequencies, dtype=float),
+        fit,
+        acquisition_us=acquisition_us,
+        sideband=sideband,
+    )
+    return _to_persisted_frame(model, model_amplitude_scale, persisted_phase_ramp)
 
 
 def _shade_windows(ax: plt.Axes, fit: SpectrumFit) -> None:
@@ -445,55 +447,25 @@ def _plot_per_window_detail(
             f"window {window_id} has no attached SpectralWindow -- the fit was "
             "loaded but the window context is missing (cannot plot detail)"
         )
-    s = sideband_sign(sideband)
     lo, hi = window_fit.window.freq_range
     mask = (frequencies >= min(lo, hi)) & (frequencies <= max(lo, hi))
     f_slice = frequencies[mask]
     z_slice = complex_spectrum[mask]
     sigma_slice = rms_noise[mask]
     center = 0.5 * (lo + hi)
-    u_slice = s * (f_slice - center)
 
-    tau_us = float(window_fit.shared_parameters.get("tau_us", {}).get("value", 0.0))
-    peaks = [
-        ModelPeak(
-            amplitude=float(p.amplitude),
-            offset_mhz=float(s * (p.frequency_mhz - center)),
-            phase=float(p.phase if p.phase is not None else 0.0),
-        )
-        for p in window_fit.fitted_peaks
-    ]
-    # Add the frozen-contributor leakage: each FixedContributor names a
-    # strong line fit freely in its primary window; the converted
-    # ``fixed_parameters`` dict carries the line's refined molecular freq
-    # plus amplitude / phase from the primary fit. We evaluate them in this
-    # window's offset frame using THIS window's tau -- matching
-    # ``subtract_frozen_background``, which the fit itself uses to build
-    # the background it subtracts from the data.
-    frozen_peaks: list[ModelPeak] = []
-    for key, fp_data in window_fit.fixed_parameters.items():
-        if not key.startswith("frozen_peak_"):
-            continue
-        contrib_freq = float(fp_data["frequency_mhz"])
-        contrib_amp = float(fp_data["amplitude"])
-        contrib_phase = float(fp_data.get("phase", 0.0) or 0.0)
-        frozen_peaks.append(
-            ModelPeak(
-                amplitude=contrib_amp,
-                offset_mhz=float(s * (contrib_freq - center)),
-                phase=contrib_phase,
-            )
-        )
-    all_peaks = peaks + frozen_peaks
-    model_slice = (
-        model_spectrum(u_slice, all_peaks, tau_us, acquisition_us)
-        if all_peaks and tau_us > 0
-        else np.zeros_like(z_slice)
+    # The shared evaluator (``fitting.model_eval``): the window's lines, its
+    # frozen contributors at the window's fitted tau and its baseline, with
+    # the fit's line shape -- exactly what the fit compared with the data and
+    # what the ``window_model`` accessor delivers -- then moved onto the
+    # persisted grid's convention as a separate step.
+    model_slice = _to_persisted_frame(
+        evaluate_window_terms(
+            f_slice, window_fit, acquisition_us=acquisition_us, sideband=sideband
+        ).model,
+        model_amplitude_scale,
+        persisted_phase_ramp[mask] if persisted_phase_ramp is not None else None,
     )
-    if model_amplitude_scale != 1.0:
-        model_slice = model_slice * model_amplitude_scale
-    if persisted_phase_ramp is not None:
-        model_slice = model_slice * persisted_phase_ramp[mask]
     residual = z_slice - model_slice
 
     # Per-component noise band: sigma_c = sigma_complex / sqrt(2).

@@ -59,6 +59,12 @@ engine so they cannot answer differently.
   claim it differs from ``compute_ft`` only in bin density: it is the
   active-portion FT, at a different spacing, scale and phase origin.
 
+* **The Stage 5 fit plots draw the fitted model.** ``visualize_fit``'s overview and
+  per-window figures carried their own model, which ignored the line shape and
+  the baseline; both now use the shared evaluator. On a window fitted with a
+  Gaussian shape and a baseline the drawn residual now matches the fit (2638
+  window 179: chi-squared 45213.95 before, 23023.91 now, equal to the fit's).
+
 * **Machine contract, Wave 2: per-line fit fields on the final products.**
   ``CONTRACT_VERSION`` is now ``3``.
   Each ``FinalPeak`` now carries, from the Stage 5 fit of its window,
