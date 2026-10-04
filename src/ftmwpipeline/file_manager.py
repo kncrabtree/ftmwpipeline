@@ -534,7 +534,9 @@ class OperationCancelledError(PipelineFileError):
     """Raised when a long operation stops because its cancel token was set.
 
     Every completed stage stays as written; the interrupted stage left the file
-    exactly as it was before it began. The CLI exits 130 for it.
+    exactly as it was before it began -- except Stage 5, which keeps the
+    windows that had finished as a partial fit (``completed_windows``). The CLI
+    exits 130 for it.
 
     Attributes
     ----------
@@ -544,8 +546,9 @@ class OperationCancelledError(PipelineFileError):
     completed_stages : list of str
         The canonical stages this operation finished and wrote, in order.
     completed_windows : list of int
-        Window ids whose fit was kept. Always ``[]`` until Stage 5 partial
-        persistence exists.
+        Window ids whose fit was kept: the windows an interrupted Stage 5
+        wrote as a partial fit, sorted. ``[]`` when no window was kept (and
+        for every other stage).
     """
 
     code: ClassVar[str] = "cancelled"
@@ -706,6 +709,14 @@ class SourceMetadata:
         metadata.source_hash = data["source_hash"]
         metadata.import_timestamp = datetime.fromisoformat(data["import_timestamp"])
         return metadata
+
+
+#: Group holding a Stage 5 *partial* fit: the windows a cancelled (or
+#: callback-failed) fit finished, kept for the next ``fit run`` to resume from
+#: (:mod:`ftmwpipeline.io.stage5_partial_serialization`). Never a completed
+#: stage; everything that discards a complete fit discards it too
+#: (:func:`invalidate_stages_in_file`).
+STAGE5_PARTIAL_PATH = "stage5_partial"
 
 
 class PipelineStageTracker:
@@ -975,9 +986,14 @@ def stages_an_import_replaces(filepath: Union[str, Path], force: bool) -> List[s
                 if group is not None
                 else []
             )
+            partial = STAGE5_PARTIAL_PATH in h5f
     except (OSError, KeyError, ValueError):
         return []
-    return sorted(stage for stage in completed if stage != "stage0_fid_data")
+    replaced = {stage for stage in completed if stage != "stage0_fid_data"}
+    if partial:
+        # The overwrite discards a partial fit as it does a complete one.
+        replaced.add("stage5_fitting")
+    return sorted(replaced)
 
 
 _LEGACY_FT_APODIZATION_KEYS = ("zpf", "expf_us", "window_function", "winf")
@@ -1514,6 +1530,10 @@ def invalidate_stages_in_file(
     empty if none. An ``Invalidated`` event (through ``events``, the running
     stage's scope) names them and renders the loud warning line; ``reason``
     says why (default: the roots were re-run).
+
+    A Stage 5 partial fit (:data:`STAGE5_PARTIAL_PATH`) is discarded whenever
+    Stage 5 is among the targets, and then counts as an invalidated
+    ``stage5_fitting``.
     """
     root_list = list(roots)
     targets = set(_dependents_of(root_list))
@@ -1536,6 +1556,10 @@ def invalidate_stages_in_file(
         if stage in completed:
             completed.remove(stage)
             invalidated.append(stage)
+        elif stage == "stage5_fitting" and STAGE5_PARTIAL_PATH in h5f:
+            invalidated.append(stage)
+        if stage == "stage5_fitting" and STAGE5_PARTIAL_PATH in h5f:
+            del h5f[STAGE5_PARTIAL_PATH]
     drop_records_of_removed_stages(h5f, targets)
     if invalidated and stages_group is not None:
         stages_group.attrs["completed_stages"] = json.dumps(completed)

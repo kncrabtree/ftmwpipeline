@@ -386,7 +386,8 @@ class OperationEvents:
     completed_stages : list of str
         Canonical stages this operation finished and wrote, in order.
     completed_windows : list of int
-        Always empty until Stage 5 partial persistence (Wave 5.2).
+        The window ids a cancelled (or callback-failed) Stage 5 kept as a
+        partial fit, sorted; empty otherwise.
     current_stage : Stage or None
         The stage running now (``None`` between stages).
     """
