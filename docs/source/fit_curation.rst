@@ -231,6 +231,8 @@ assumption:
    is wrong by probe_freq * eps/(1+eps) -- under the snap tolerance and over
    the statistical uncertainty, so the mistake would be silent.
 
+The refusal is ``bad_setting`` (``path`` ``frame`` for a curation file, and
+``actions[<i>].frame`` for the i-th action of an ``actions=`` batch).
 Passing ``frame="raw"`` explicitly is never an error on any file, so a script
 that always declares its frame works everywhere. Use
 :func:`~ftmwpipeline.api.frequency_calibration` (or ``ftmwpipeline timebase
@@ -429,6 +431,9 @@ against the wrong peaks:
    epsilon is 2.310000e-06. The calibration has changed since this file was
    written (e.g. a timebase re-run) -- re-stage the curation file against the
    current calibration rather than applying it as-is.
+
+The refusal is ``bad_setting`` whose ``path`` is the stamp's own line,
+``curation[line 2].epsilon``.
 
 ``# epsilon:`` without ``# frame: calibrated`` is rejected at parse time: an
 epsilon stamp is meaningless with no calibrated-frame declaration to attach it
@@ -663,6 +668,40 @@ same Python entry points are available on the functional API and the
    print(result.applied)   # number of actions refit
    for wid, w in sorted(result.windows.items()):
        print(wid, w.origin, w.n_peaks_before, "->", w.n_peaks_after, w.converged)
+
+.. _curation-refusals:
+
+What a refusal tells a program
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Every refusal below leaves the file exactly as it was, and each is still the
+``ValueError`` it always was (a missing import source, the ``FileNotFoundError``).
+A program can route on the typed error's ``code`` instead of the message
+(:doc:`machine_contract`, *Curation refusals*):
+
+* A **malformed row or directive** is ``bad_setting``. Its ``path`` is the cell,
+  ``curation[line 3].freqs`` (columns ``action``, ``window``, ``freqs``,
+  ``params``; a ``# frame:`` or ``# epsilon:`` directive is the cell ``frame``
+  or ``epsilon`` of its line). A refused field of an ``actions=`` batch is
+  ``actions[1].freq_mhz``, and a ``review edit`` token is ``add`` or ``remove``.
+* A **frequency that matches no fitted peak** is ``not_found`` (kind ``peak``),
+  listing every such frequency of the request. A **target no live window
+  covers** is ``not_found`` (kind ``window``), and a **window id the plan names
+  that the fit does not have** is ``not_found`` too, every id at once -- also
+  when the batch creates windows, since only the id one of its creates will mint
+  is left to the per-action check. ``review undo`` ids the decision log does not
+  hold are ``not_found`` (kind ``decision``).
+* A **valid request that conflicts with the file's state** is
+  ``curation_conflict``, whose ``reason`` is a stable slug: ``line_already_fitted``
+  (an ``add`` at the birth position of a fitted line), ``targets_span_windows``
+  (one ``review edit`` whose targets fall in different windows),
+  ``orphans_created_window`` (an undo that would drop a window later decisions
+  act on), ``baseline_unavailable`` (an undo or log-prefix apply with no
+  automatic-fit snapshot left), ``replay_conflict``, ``window_not_fitted`` and
+  ``implied_create_reinterpreted``.
+
+Inside a batch the refusal keeps its type and the message names the action
+(``curation action 2 (edit window 4: ...) failed: ...``).
 
 .. _curation-preview:
 
