@@ -27,7 +27,7 @@ from ftmwpipeline.core.calibration import CalibrationStamp, CalibrationState
 # Public curation tolerances (the values the Stage 6 verbs themselves pair at).
 # The snap tolerance is a bin count, so its MHz value is per-file: read it with
 # ``ftmwpipeline.api.refit_snap_tol_mhz`` / ``Pipeline.refit_snap_tol_mhz``.
-from ftmwpipeline.core.curation import REFIT_SNAP_TOL_BINS, Frame
+from ftmwpipeline.core.curation import REFIT_SNAP_TOL_BINS, CurationAction, Frame
 
 # Core data structures
 from ftmwpipeline.core.data_structures import (
@@ -105,6 +105,7 @@ __all__ = [
     # Public curation tolerances and frame vocabulary
     "REFIT_SNAP_TOL_BINS",
     "Frame",
+    "CurationAction",
     # Public frequency-calibration vocabulary
     "CalibrationState",
     "CalibrationStamp",

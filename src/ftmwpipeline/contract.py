@@ -41,6 +41,7 @@ from typing import Any, Dict, Mapping, NamedTuple, Optional, Tuple, Union
 
 from .core.absent import STATUS_NOT_RUN, STATUS_PRESENT, STATUS_UNDEFINED, Absent
 from .core.calibration import CalibrationStamp
+from .core.curation import CURATION_ACTION_SCHEMA, CurationAction
 from .core.data_structures import FinalProducts
 from .file_manager import (
     ERROR_SCHEMA,
@@ -61,7 +62,7 @@ from .file_manager import (
 #: The machine-contract version. The first published contract is ``1``; each
 #: release that adds (or, before 1.0.0, changes) contract elements raises it by
 #: one, so a client can gate on it as well as on :func:`capabilities`.
-CONTRACT_VERSION: int = 5
+CONTRACT_VERSION: int = 6
 
 #: Schema name of the :func:`capabilities` payload.
 CAPABILITIES_SCHEMA = "ftmw/capabilities@1"
@@ -96,6 +97,9 @@ FINAL_PRODUCTS_SCHEMA: str = FinalProducts.__ftmw_schema__
 REVIEW_LOG_SCHEMA = "ftmw/review_log@1"
 PIPELINE_INFO_SCHEMA = "ftmw/pipeline_info@1"
 DISPLAY_FT_SCHEMA = "ftmw/display_ft@1"
+# CURATION_ACTION_SCHEMA (imported above) names a CurationAction's wire form:
+# a request type, not a result -- review_apply / review_preview take a
+# sequence of these in place of a curation file.
 
 #: ``ftmw/<payload>@<n>``: lowercase payload name, positive integer revision.
 SCHEMA_NAME_RE = re.compile(r"^ftmw/[a-z][a-z0-9_]*@[1-9][0-9]*$")
@@ -374,6 +378,7 @@ _SCHEMAS: Tuple[str, ...] = (
     REVIEW_LOG_SCHEMA,
     PIPELINE_INFO_SCHEMA,
     DISPLAY_FT_SCHEMA,
+    CURATION_ACTION_SCHEMA,
 )
 
 _CODES: Tuple[str, ...] = (
@@ -627,6 +632,8 @@ __all__ = [
     "REVIEW_LOG_SCHEMA",
     "PIPELINE_INFO_SCHEMA",
     "DISPLAY_FT_SCHEMA",
+    "CURATION_ACTION_SCHEMA",
+    "CurationAction",
     "WindowStatusRow",
     "FidPreviewRow",
     "ERROR_SCHEMA",
