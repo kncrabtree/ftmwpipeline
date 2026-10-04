@@ -1796,7 +1796,7 @@ def fit_peaks_impl(
     :func:`_fit_peaks_impl` for the parameters and return value.
     """
     ops = operation_events("fit run", events, cancel)
-    with ops.stage(Stage.FIT, verb="fit run") as scope:
+    with ops.stage(Stage.FIT, verb="fit run", file_path=file_path) as scope:
         with threadpool_limits(limits=1):
             result = _fit_peaks_impl(
                 file_path,
