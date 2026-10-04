@@ -107,6 +107,7 @@ from ._internal.timebase_impl import (
     calibrate_timebase_impl,
     load_timebase_calibration_impl,
 )
+from .contract import CancelToken, EventCallback
 from .core.calibration import CalibrationStamp
 from .core.curation import CurationAction, Frame
 from .core.data_structures import (
@@ -362,6 +363,8 @@ class Pipeline:
         *,
         trim: Optional[Tuple[float, float]] = None,
         output: Optional[Union[str, Path]] = None,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         """Drive *source* through every stage end-to-end and return the result.
@@ -377,11 +380,20 @@ class Pipeline:
         ``report_output_dir``, ``sigma_floor_khz``, ``force``, ``progress``, …).
 
         Returns the structured run result (``pipeline_file``, ``status``,
-        ``completed_stages``, ``failed_stage``, ``error``, ``timebase``,
+        ``completed_stages``, ``failed_stage`` -- a canonical stage name --,
+        ``error`` -- the failure's ``ftmw/error@1`` dict --, ``timebase``,
         ``report``, ``elapsed_s``). Open the finished file with
         :meth:`Pipeline.open` (``result["pipeline_file"]``).
+
+        ``events`` receives every event (``operation="run"``) on this thread;
+        ``cancel`` is checked before every stage and inside the stages that
+        check it. A cancel raises :class:`OperationCancelledError` and a failing
+        callback :class:`CallbackFailedError`; neither is folded into the
+        result.
         """
-        return run_pipeline_impl(source, output, trim=trim, **kwargs)
+        return run_pipeline_impl(
+            source, output, trim=trim, events=events, cancel=cancel, **kwargs
+        )
 
     def load_data(self) -> FID:
         """
@@ -1469,6 +1481,8 @@ class Pipeline:
         settings: Optional["StageFitSettings"] = None,
         preset: Optional[str] = None,
         jobs: Optional[int] = None,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
     ) -> SpectrumFit:
         """Fit each Stage 4 window's lines (Stage 5).
 
@@ -1529,6 +1543,16 @@ class Pipeline:
             variable, falling back to ``cpu_count() - 2``; ``1`` forces a
             sequential fit. The fit result is byte-identical regardless of the
             worker count.
+        events : callable, optional
+            Called on this thread with each event (``StageStarted``, a
+            ``WindowProgress`` per finished window, warnings, ``Invalidated``,
+            ``StageFinished``). A callback that raises aborts the fit with
+            :class:`CallbackFailedError`.
+        cancel : CancelToken, optional
+            Anything with ``is_set()`` (e.g. a :class:`threading.Event`). Once
+            set, the fit stops between windows (a parallel fit within about
+            0.2 s) and raises :class:`OperationCancelledError`; the file is
+            left exactly as it was.
 
         Returns
         -------
@@ -1539,6 +1563,10 @@ class Pipeline:
         ------
         StageDependencyError
             If Stage 4 has not been completed.
+        OperationCancelledError
+            If ``cancel`` was set.
+        CallbackFailedError
+            If ``events`` raised.
         RuntimeError
             If fitting fails.
         """
@@ -1551,6 +1579,8 @@ class Pipeline:
                 settings=settings,
                 preset=preset,
                 jobs=jobs,
+                events=events,
+                cancel=cancel,
             )
             self.logger.info(
                 "Stage 5: %d windows, %d fitted peaks; thaw %d/%d, "

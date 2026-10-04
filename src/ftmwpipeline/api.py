@@ -57,6 +57,7 @@ from ._internal.stage6_impl import (
     ReviewRunResult,
     UndoResult,
 )
+from .contract import CancelToken, EventCallback
 from .core.calibration import CalibrationStamp
 from .core.curation import CurationAction, Frame
 from .core.data_structures import (
@@ -1339,6 +1340,8 @@ def fit_peaks(
     settings: Optional[StageFitSettings] = None,
     preset: Optional[str] = None,
     jobs: Optional[int] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> SpectrumFit:
     """Fit each Stage 4 window's lines (Stage 5), equivalent to Pipeline.fit_peaks().
 
@@ -1391,6 +1394,11 @@ def fit_peaks(
         default) resolves the pool from the ``FTMW_MAX_WORKERS`` environment
         variable, falling back to ``cpu_count() - 2``; ``1`` forces a sequential
         fit. The fit result is byte-identical regardless of the worker count.
+    events : callable, optional
+        Called on this thread with each event (see :meth:`Pipeline.fit_peaks`).
+    cancel : CancelToken, optional
+        Stops the fit between windows once set, raising
+        :class:`OperationCancelledError` and leaving the file unchanged.
 
     Returns
     -------
@@ -1401,6 +1409,10 @@ def fit_peaks(
     ------
     StageDependencyError
         If Stage 4 has not been completed.
+    OperationCancelledError
+        If ``cancel`` was set.
+    CallbackFailedError
+        If ``events`` raised.
     RuntimeError
         If fitting fails.
     """
@@ -1413,6 +1425,8 @@ def fit_peaks(
             settings=settings,
             preset=preset,
             jobs=jobs,
+            events=events,
+            cancel=cancel,
         )
     except Exception as e:
         logger.error(f"Failed to fit peaks for {file_path}: {e}")
@@ -1739,6 +1753,8 @@ def run_pipeline(
     output: Optional[Union[str, Path]] = None,
     *,
     trim: Optional[Tuple[float, float]] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
     **kwargs: Any,
 ) -> Dict[str, Any]:
     """Drive a raw *source* through every pipeline stage end-to-end.
@@ -1757,10 +1773,18 @@ def run_pipeline(
     it warns and skips when no clock declaration is resolvable), ``report`` /
     ``report_output_dir`` emit the report, and ``progress=False`` silences the
     display.  Returns the structured run result (``pipeline_file``, ``status``,
-    ``completed_stages``, ``failed_stage``, ``error``, ``timebase``, ``report``,
-    ``elapsed_s``); stops at the first failing stage.
+    ``completed_stages``, ``failed_stage`` -- a canonical stage name --,
+    ``error`` -- the failure's ``ftmw/error@1`` dict --, ``timebase``,
+    ``report``, ``elapsed_s``); stops at the first failing stage.
+
+    ``events`` receives every event (``operation="run"``) on this thread;
+    ``cancel`` is checked before every stage and inside the stages that check
+    it. A cancel raises :class:`OperationCancelledError` and a failing callback
+    :class:`CallbackFailedError`; neither is folded into the result.
     """
-    return Pipeline.build(source, trim=trim, output=output, **kwargs)
+    return Pipeline.build(
+        source, trim=trim, output=output, events=events, cancel=cancel, **kwargs
+    )
 
 
 def review_accept(
