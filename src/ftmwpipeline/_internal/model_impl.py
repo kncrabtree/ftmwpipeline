@@ -32,6 +32,7 @@ import numpy as np
 from ..contract import SPECTRUM_MODEL_SCHEMA, WINDOW_MODEL_SCHEMA, Absent
 from ..core.data_structures import FittingResult, Sideband, SpectrumFit
 from ..file_manager import (
+    BadSettingError,
     IncompleteProvenanceError,
     NotFoundError,
     StageDependencyError,
@@ -155,8 +156,11 @@ def _load_model_context(
     )
 
     if grid not in MODEL_GRIDS:
-        raise ValueError(
-            f"unknown grid {grid!r}; choose one of {', '.join(MODEL_GRIDS)}"
+        raise BadSettingError(
+            "grid",
+            f"one of: {', '.join(MODEL_GRIDS)}",
+            grid,
+            message=f"unknown grid {grid!r}; choose one of {', '.join(MODEL_GRIDS)}",
         )
     _require_fit(file_path, accessor)
     path = str(file_path)

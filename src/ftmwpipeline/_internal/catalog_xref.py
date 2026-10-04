@@ -31,6 +31,7 @@ from typing import List, Optional, Sequence, Union
 import numpy as np
 
 from ..core.absent import Absent
+from ..file_manager import BadSettingError
 
 # Header keywords (substring match, case-folded) used to locate columns when the
 # catalog file carries a header row.
@@ -445,12 +446,20 @@ def load_cross_ref(
         return None
     path = Path(catalog_path)
     if not path.exists():
-        raise ValueError(f"catalog file not found: {catalog_path}")
+        raise BadSettingError(
+            "catalog",
+            "the path of an existing catalog file",
+            str(catalog_path),
+            message=f"catalog file not found: {catalog_path}",
+        )
     catalog = read_catalog(path)
     if not catalog:
-        raise ValueError(
-            f"catalog file {catalog_path} parsed to zero entries; expected a CSV "
-            "of frequency_mhz[, uncertainty_khz[, label]]"
+        raise BadSettingError(
+            "catalog",
+            "a CSV of frequency_mhz[, uncertainty_khz[, label]] with at least one entry",
+            str(catalog_path),
+            message=f"catalog file {catalog_path} parsed to zero entries; expected a CSV "
+            "of frequency_mhz[, uncertainty_khz[, label]]",
         )
     return build_cross_ref(
         peaks, catalog, catalog_path=str(catalog_path), n_sigma=n_sigma

@@ -100,6 +100,7 @@ from ..contract import (
 from ..core.absent import STATUS_NOT_RUN, STATUS_PRESENT
 from ..core.settings_framework import NONE as NONE_SENTINEL
 from ..file_manager import (
+    BadSettingError,
     PipelineCorruptionError,
     PipelineFileNotFoundError,
     StageDependencyError,
@@ -811,8 +812,12 @@ def normalize_table_name(table: str) -> str:
     """
     name = str(table).strip().lower().replace("-", "_")
     if name not in _TABLE_SPECS:
-        raise ValueError(
-            f"unknown table {table!r}; available tables are {list(READ_TABLES)}"
+        raise BadSettingError(
+            "table",
+            f"one of: {', '.join(READ_TABLES)}",
+            table,
+            message=f"unknown table {table!r}; available tables are "
+            f"{list(READ_TABLES)}",
         )
     return name
 
@@ -1507,8 +1512,12 @@ def format_table_impl(table: Dict[str, np.ndarray], fmt: str = "csv") -> str:
     strict-valid JSON).
     """
     if fmt not in VALID_READ_FORMATS:
-        raise ValueError(
-            f"unknown format {fmt!r}; expected one of {list(VALID_READ_FORMATS)}"
+        raise BadSettingError(
+            "format",
+            f"one of: {', '.join(VALID_READ_FORMATS)}",
+            fmt,
+            message=f"unknown format {fmt!r}; expected one of "
+            f"{list(VALID_READ_FORMATS)}",
         )
     names = list(table)
     n = _rows(table)
@@ -1532,8 +1541,12 @@ def format_table_impl(table: Dict[str, np.ndarray], fmt: str = "csv") -> str:
 def format_metadata_impl(metadata: Dict[str, Any], fmt: str = "csv") -> str:
     """Render the flat metadata mapping as ``key,value`` rows or JSON."""
     if fmt not in VALID_READ_FORMATS:
-        raise ValueError(
-            f"unknown format {fmt!r}; expected one of {list(VALID_READ_FORMATS)}"
+        raise BadSettingError(
+            "format",
+            f"one of: {', '.join(VALID_READ_FORMATS)}",
+            fmt,
+            message=f"unknown format {fmt!r}; expected one of "
+            f"{list(VALID_READ_FORMATS)}",
         )
     if fmt == "json":
         safe = {key: _json_value(value) for key, value in metadata.items()}

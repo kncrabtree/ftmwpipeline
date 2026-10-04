@@ -34,7 +34,7 @@ from ..core.data_structures import (
     LedgerCandidate,
     WindowReviewStatus,
 )
-from ..file_manager import StageDependencyError
+from ..file_manager import BadSettingError, StageDependencyError
 from ..fitting.peak_model import sideband_sign as _sideband_sign
 from ..fitting.validation import DEFAULT_CHI2R_NOISE_FLOOR, shape_error_fraction
 from ..io.stage6_review_serialization import load_stage6_review_from_file
@@ -4024,9 +4024,12 @@ def _assemble_report_site(
 
     key = str(windows).lower()
     if key not in VALID_WINDOW_FILTERS:
-        raise ValueError(
-            f"unknown windows filter {windows!r}; choose one of "
-            f"{VALID_WINDOW_FILTERS}"
+        raise BadSettingError(
+            "windows",
+            f"one of: {', '.join(VALID_WINDOW_FILTERS)}",
+            windows,
+            message=f"unknown windows filter {windows!r}; choose one of "
+            f"{VALID_WINDOW_FILTERS}",
         )
 
     path = str(file_path)
@@ -4454,8 +4457,11 @@ def report_full_impl(
     import tempfile
 
     if scope not in REPORT_SCOPES:
-        raise ValueError(
-            f"unknown report scope {scope!r}; choose one of {REPORT_SCOPES}"
+        raise BadSettingError(
+            "scope",
+            f"one of: {', '.join(REPORT_SCOPES)}",
+            scope,
+            message=f"unknown report scope {scope!r}; choose one of {REPORT_SCOPES}",
         )
 
     final_dir = Path(output_dir)
@@ -4531,8 +4537,11 @@ def report_run_impl(
         unreadable catalog).
     """
     if not emit_table and not emit_html:
-        raise ValueError(
-            "nothing to do: both the table and the HTML report are disabled"
+        raise BadSettingError(
+            "emit_table",
+            "True unless emit_html is True (at least one artifact must be written)",
+            emit_table,
+            message="nothing to do: both the table and the HTML report are disabled",
         )
 
     stem = Path(str(file_path)).stem
