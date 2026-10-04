@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import math
+from types import SimpleNamespace
 from typing import Any, Dict
 
 import pytest
@@ -20,6 +21,7 @@ from ftmwpipeline._internal.read_impl import (
     format_metadata_impl,
 )
 from ftmwpipeline.cli.info_commands import _print_environment
+from ftmwpipeline.cli.timebase_commands import _print_epsilon_and_lattice
 from ftmwpipeline.contract import Absent
 
 _ENV = {
@@ -184,3 +186,29 @@ def test_info_cli_prints_partial_stamp(capsys: pytest.CaptureFixture) -> None:
         }
     )
     assert "Absent" not in capsys.readouterr().out
+
+
+def test_timebase_cli_names_the_undefined_cases(
+    capsys: pytest.CaptureFixture,
+) -> None:
+    # Mutation: print eps/lattice unconditionally ("+0.000 +- inf ppm").
+    _print_epsilon_and_lattice(
+        SimpleNamespace(
+            n_used=0, epsilon=0.0, sigma_epsilon=math.inf, lattice_g_mhz=0.0
+        )
+    )
+    out = capsys.readouterr().out
+    assert "undefined; no usable lattice tones" in out
+    assert "undefined; no locked lattice" in out
+    assert "inf" not in out
+
+
+def test_timebase_cli_prints_measured_values(capsys: pytest.CaptureFixture) -> None:
+    _print_epsilon_and_lattice(
+        SimpleNamespace(
+            n_used=11, epsilon=2e-6, sigma_epsilon=7e-8, lattice_g_mhz=640.0
+        )
+    )
+    out = capsys.readouterr().out
+    assert "+2.000 +- 0.070 ppm" in out
+    assert "640.0 MHz" in out
