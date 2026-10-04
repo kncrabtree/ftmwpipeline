@@ -76,6 +76,30 @@ class ClockSource:
         }
 
 
+def _bad_clocks(value: Any, message: str) -> Exception:
+    """``bad_setting`` for ``stage5.spur.clocks`` (lazy: file_manager imports core)."""
+    from ..file_manager import BadSettingError
+
+    return BadSettingError(
+        "stage5.spur.clocks",
+        "a list of {freq_mhz > 0, locked, label} mappings",
+        value if isinstance(value, (str, list, tuple, dict)) else repr(value),
+        message=message,
+    )
+
+
+def _bad_shape(value: Any, message: str) -> Exception:
+    """``bad_setting`` for ``stage5.shape``."""
+    from ..file_manager import BadSettingError
+
+    return BadSettingError(
+        "stage5.shape",
+        "a peak shape: one of " + ", ".join(m.value for m in PeakShape),
+        value if isinstance(value, (str, list, tuple, dict)) else repr(value),
+        message=message,
+    )
+
+
 def coerce_clock_sources(
     value: Any,
 ) -> Optional[Tuple[ClockSource, ...]]:
@@ -93,29 +117,39 @@ def coerce_clock_sources(
         try:
             value = json.loads(value)
         except json.JSONDecodeError as e:
-            raise ValueError(f"cannot parse clock declaration from {value!r}") from e
+            raise _bad_clocks(
+                value, f"cannot parse clock declaration from {value!r}"
+            ) from e
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
-        raise ValueError(f"clock declaration must be a sequence; got {type(value)}")
+        raise _bad_clocks(
+            value, f"clock declaration must be a sequence; got {type(value)}"
+        )
     out: List[ClockSource] = []
     for entry in value:
         if isinstance(entry, ClockSource):
             out.append(entry)
             continue
         if not isinstance(entry, Mapping):
-            raise ValueError(
-                f"clock entry must be a mapping with 'freq_mhz'; got {entry!r}"
+            raise _bad_clocks(
+                entry, f"clock entry must be a mapping with 'freq_mhz'; got {entry!r}"
             )
         if "freq_mhz" not in entry:
-            raise ValueError(f"clock entry missing 'freq_mhz': {entry!r}")
+            raise _bad_clocks(entry, f"clock entry missing 'freq_mhz': {entry!r}")
         unknown = set(entry) - {"freq_mhz", "locked", "label"}
         if unknown:
-            raise ValueError(
+            raise _bad_clocks(
+                entry,
                 f"unknown clock entry keys {sorted(unknown)} in {entry!r} "
-                f"(valid: freq_mhz, locked, label)"
+                f"(valid: freq_mhz, locked, label)",
             )
-        freq = float(entry["freq_mhz"])
+        try:
+            freq = float(entry["freq_mhz"])
+        except (TypeError, ValueError) as e:
+            raise _bad_clocks(
+                entry, f"clock freq_mhz must be a number; got {entry['freq_mhz']!r}"
+            ) from e
         if not freq > 0:
-            raise ValueError(f"clock freq_mhz must be positive; got {freq}")
+            raise _bad_clocks(entry, f"clock freq_mhz must be positive; got {freq}")
         out.append(
             ClockSource(
                 freq_mhz=freq,
@@ -156,14 +190,21 @@ class ShapeSpec:
         if isinstance(value, PeakShape):
             return cls(kind=value)
         if isinstance(value, str):
-            return cls(kind=PeakShape.coerce(value))
+            return cls(kind=cls._coerce_kind(value))
         if isinstance(value, Mapping):
             if "kind" not in value:
-                raise ValueError(
-                    f"ShapeSpec mapping must carry a 'kind' key; got {value!r}"
+                raise _bad_shape(
+                    value, f"ShapeSpec mapping must carry a 'kind' key; got {value!r}"
                 )
-            return cls(kind=PeakShape.coerce(value["kind"]))
-        raise ValueError(f"cannot coerce {value!r} to ShapeSpec")
+            return cls(kind=cls._coerce_kind(value["kind"]))
+        raise _bad_shape(value, f"cannot coerce {value!r} to ShapeSpec")
+
+    @staticmethod
+    def _coerce_kind(kind: Any) -> PeakShape:
+        try:
+            return PeakShape.coerce(kind)
+        except ValueError as e:
+            raise _bad_shape(kind, str(e)) from e
 
 
 # ---------------------------------------------------------------------------
@@ -1093,7 +1134,12 @@ def from_yaml_dict(data: Optional[Dict[str, Any]]) -> StageFitSettings:
     if data is None:
         return StageFitSettings()
     if not isinstance(data, dict):
-        raise ValueError(f"preset YAML root must be a mapping; got {type(data)}")
+        raise sf.bad_preset(
+            "preset",
+            "a YAML mapping at the document root",
+            data,
+            f"preset YAML root must be a mapping; got {type(data)}",
+        )
     settings = StageFitSettings()
     if "shape" in data:
         settings.shape = ShapeSpec.coerce(data["shape"])
@@ -1155,9 +1201,12 @@ def load_preset(name_or_path: Union[str, Path]) -> StageFitSettings:
     has_fit = "fit" in data and isinstance(data["fit"], dict)
     has_stage5 = "stage5" in data and isinstance(data["stage5"], dict)
     if has_fit and has_stage5:
-        raise ValueError(
+        raise sf.bad_preset(
+            "preset",
+            "a preset with either a 'stage5:' or a legacy 'fit:' wrapper, not both",
+            str(name_or_path),
             f"preset {name_or_path!r} carries both 'fit:' (legacy) and "
-            f"'stage5:' (current) wrappers; pick one"
+            f"'stage5:' (current) wrappers; pick one",
         )
     inner_block: Optional[Dict[str, Any]] = None
     if has_stage5:

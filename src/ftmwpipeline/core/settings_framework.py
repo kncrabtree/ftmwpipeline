@@ -43,6 +43,18 @@ Codec = Callable[[str, Any], Any]
 T = TypeVar("T")
 
 
+def bad_preset(path: str, expected: str, value: Any, message: str) -> Exception:
+    """The typed ``bad_setting`` refusal for a preset's content.
+
+    ``path`` is the offending dotted setting path (or ``"preset"`` / the block
+    name for a structural problem). Imported lazily: ``file_manager`` imports
+    from ``core``.
+    """
+    from ..file_manager import BadSettingError
+
+    return BadSettingError(path, expected, value, message=message)
+
+
 # ---------------------------------------------------------------------------
 # Default value codecs (None <-> __None__, bytes decode); identity otherwise
 # ---------------------------------------------------------------------------
@@ -206,25 +218,36 @@ def subblocks_from_yaml_dict(
             continue
         block = data[sub_name]  # type: ignore[index]
         if not isinstance(block, dict):
-            raise ValueError(
-                f"preset block {sub_name!r} must be a mapping; got {type(block)}"
+            raise bad_preset(
+                sub_name,
+                "a mapping of field names to values",
+                block,
+                f"preset block {sub_name!r} must be a mapping; got {type(block)}",
             )
         template = getattr(settings_cls(), sub_name)
         valid_names = {f.name for f in fields(template)}
         unknown = set(block) - valid_names
         if unknown:
-            raise ValueError(
+            first = sorted(unknown)[0]
+            raise bad_preset(
+                f"{sub_name}.{first}",
+                f"one of the {sub_name!r} fields: {', '.join(sorted(valid_names))}",
+                block[first],
                 f"unknown {sub_name!r} fields in preset: {sorted(unknown)} "
-                f"(valid: {sorted(valid_names)})"
+                f"(valid: {sorted(valid_names)})",
             )
         kwargs = {k: yaml_coerce(k, v) for k, v in block.items()}
         setattr(settings, sub_name, type(template)(**kwargs))
     allowed = set(sub_names) | {"name", "description"} | set(allowed_top)
     extra_top = set(data) - allowed  # type: ignore[arg-type]
     if extra_top:
-        raise ValueError(
+        first = sorted(extra_top)[0]
+        raise bad_preset(
+            first,
+            f"one of the preset keys: {', '.join(sorted(allowed))}",
+            data[first],  # type: ignore[index]
             f"unknown top-level preset keys: {sorted(extra_top)} "
-            f"(allowed: {sorted(allowed)})"
+            f"(allowed: {sorted(allowed)})",
         )
     return settings
 
@@ -292,9 +315,12 @@ def read_preset_root(name_or_path: Union[str, Path]) -> Dict[str, Any]:
         text = candidate.read_text()
     data = yaml.safe_load(text)
     if not isinstance(data, dict):
-        raise ValueError(
+        raise bad_preset(
+            "preset",
+            "a YAML mapping at the document root",
+            data,
             f"preset YAML root must be a mapping; got {type(data)} from "
-            f"{name_or_path}"
+            f"{name_or_path}",
         )
     return data
 
@@ -312,9 +338,12 @@ def extract_stage_block(
     if inner is None:
         return None
     if not isinstance(inner, dict):
-        raise ValueError(
+        raise bad_preset(
+            block_key,
+            "a mapping of field names to values",
+            inner,
             f"preset {block_key!r} block must be a mapping; got {type(inner)} "
-            f"from {name_or_path}"
+            f"from {name_or_path}",
         )
     block = dict(inner)
     for meta in ("name", "description"):
