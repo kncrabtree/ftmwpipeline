@@ -664,6 +664,15 @@ carries a stable ``code`` and typed attributes, and ``to_dict()`` returns::
      - ``BadSettingError`` (a ``ValueError``)
      - ``path`` (the registry path of the setting, or the argument name),
        ``expected`` (what would have been accepted), ``value`` (what was given)
+   * - ``cancelled``
+     - ``OperationCancelledError``
+     - ``stage`` (the stage interrupted, or ``null`` between stages and for a
+       step that is not a stage), ``completed_stages``, ``completed_windows``
+       (always ``[]`` for now); see *Events and cancellation* below
+   * - ``callback_failed``
+     - ``CallbackFailedError``
+     - ``event_schema`` (the event being delivered); the callback's exception
+       is the ``__cause__``
 
 The code set is introduced **wave by wave**. ``capabilities()`` lists the
 codes this installation currently implements, and a client should rely on that
@@ -969,6 +978,67 @@ and knob mappings are not one-to-one and have none.
 ``[{"stage", "storage_key", "settings_prefix", "knob_prefix",
 "depends_on"}]`` in enum order, with ``depends_on`` in canonical names.
 
+Events and cancellation
+-----------------------
+
+Every long operation takes two optional keyword arguments on the API and on
+``Pipeline``: ``events``, a callable that receives each event, and ``cancel``,
+anything with an ``is_set()`` method (a ``threading.Event`` will do). The long
+operations are every stage run (``import_data`` / ``Pipeline.create``,
+``detect_start_time``, ``compute_ft``, ``estimate_noise``, ``calibrate_tau``,
+``recommend_shape``, ``calibrate_timebase``, ``detect_peaks``,
+``assign_windows``, ``fit_peaks``, ``review_run``), the curation calls
+(``review_apply``, ``review_preview``, ``review_accept``, ``review_edit``,
+``review_create``, ``review_undo``), ``report_run``, ``scan_run``,
+``scan_all`` and ``run_pipeline``.
+
+The callback runs on the calling thread, never in a worker process. Each event
+is a frozen dataclass exported from ``ftmwpipeline`` and serializes through
+``to_jsonable``; every one carries ``schema``, ``operation`` (the CLI verb,
+such as ``"fit run"``, or ``"run"`` for ``run_pipeline``) and ``stage`` (a
+canonical stage name, or ``null`` for a step that is not a stage: start
+detection, the report, a scan):
+
+* ``StageStarted`` (``ftmw/stage_started@1``) opens a stage, after the cancel
+  check.
+* ``StageFinished`` (``ftmw/stage_finished@1``: ``elapsed_s``, ``summary``)
+  closes it once its results are written. ``summary`` has the keys of the same
+  verb's ``ftmw/run_result@1`` summary.
+* ``WindowProgress`` (``ftmw/window_progress@1``: ``phase``, ``index``,
+  ``total``, ``window_id``, ``n_peaks``, ``chi2r``, ``elapsed_s``,
+  ``dropped``) follows each window the Stage 5 walk fits, each window a Stage 6
+  call re-fits (``stage: "review"``; the directly edited windows, then the
+  cascade, each counted from 1) and each window the report renders.
+* ``ScanProgress`` (``ftmw/scan_progress@1``: ``knob``, ``value``, ``index``,
+  ``total``) follows each scanned value.
+* ``Invalidated`` (``ftmw/invalidated@1``: ``stages``) is emitted once per
+  call that drops downstream stages, and equals the result's ``invalidated``.
+* ``PipelineWarning`` (``ftmw/warning@1``: ``code``, ``message`` and the
+  code's own fields) with ``code`` one of ``slow_window``, ``walk_fallback``,
+  ``epoch_acknowledged``, ``frame_mismatch`` (the curation advisory, which
+  stays in the result's ``warnings`` too), ``environment_drift`` (once per
+  operation, when the file's recorded environment differs from the running
+  one) and ``timebase_skipped``.
+
+A callback that raises aborts the operation with ``callback_failed``.
+
+``cancel`` is checked before every stage, between the windows of the Stage 5
+walk, of a Stage 6 refit and its cascade and of the report's rendering, and
+between scan values. A cancel raises ``cancelled``. Every stage the operation
+completed stays as written; the interrupted stage leaves the file as it was
+before it began. A curation batch (``review_apply``, and every edit with its
+cascade) is one unit: a cancel discards all of it. ``review_undo`` (and an
+apply with ``log_prefix``) honours a cancel only before it restores the
+automatic fit; once the restore has begun, the replay completes. A stage that
+has begun its final write completes, and the cancel is honoured at the next
+check point.
+
+On the command line every long verb takes ``--events``, which writes each event
+to stderr as one JSON line. The first Ctrl-C cancels: the verb stops at its
+next check point and exits ``130`` with the ``cancelled`` error (its
+``ftmw/error@1`` dict on stderr under ``--json``). A second Ctrl-C interrupts
+at once.
+
 Per-stage state: ``status``
 ---------------------------
 
@@ -1037,7 +1107,8 @@ default, format), ``-o/--output DIR`` and ``-v``.
      - not yet raised; reserved for a later wave
    * - ``cancelled``, or Ctrl-C
      - ``130``
-     - ``cancelled`` is not yet raised; an interrupt exits ``130`` now
+     - the first Ctrl-C on a long verb cancels it (the ``cancelled`` error);
+       a second one interrupts at once
    * - every other code (``not_found``, ``stage_not_run``,
        ``file_incompatible``, ...) and any other user error
      - ``1``
