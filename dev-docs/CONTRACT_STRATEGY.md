@@ -544,7 +544,7 @@ named that does not exist, e.g. all unknown window ids of a curation batch),
   (`file_version`, `supported_version`), `file_corrupt`, `epoch_mismatch` (`file_epoch`, `current_epoch`),
   `cancelled` (`stage`, `completed_stages`, `completed_windows`;
   §Events and cancellation), `callback_failed` (`event_schema`),
-  `algorithm_failed` (`stage`).
+  `algorithm_failed` (`stage`), `write_conflict` (§Crash safety).
 - Each typed error remains a subclass of the built-in it replaced (most are
   `ValueError`), so existing `except` clauses keep working.
 - A `.ftmw` path that does not exist raises `not_found` (`kind: "file"`),
@@ -761,6 +761,15 @@ What is left in the file is the same as after a cancel at that point.
   holds open.
 - Within `run_pipeline`, each stage is its own atomic write, so a kill keeps
   every stage that finished before it.
+- **Concurrent writers.** A call's copy is taken when its write begins. If the
+  file on disk changed after that, because another process wrote it, the call
+  raises `write_conflict` (`WriteConflictError`, exit 1) instead of replacing
+  the file, and the other write stands. Writes from one process to one file
+  are serialized.
+- A cancel, a `callback_failed` or any other failure discards the copy, so
+  the file is left exactly as it was before the call.
+- Compaction happens when the copy is made: the copy is written compacted.
+  The space a write frees is reclaimed by the next write.
 - **Temporary copies.** The copy is created in the same directory as the target,
   so that `os.replace` stays on one filesystem. It is named
   `.<target basename>.ftmw-tmp.<hostname>.<pid>`, where `<pid>` is the decimal
