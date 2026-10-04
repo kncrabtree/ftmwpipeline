@@ -140,6 +140,7 @@ def test_read_capabilities_lists_only_implemented_codes():
     assert "cancelled" in payload["codes"]
     assert "callback_failed" in payload["codes"]
     assert "write_conflict" in payload["codes"]
+    assert "curation_conflict" in payload["codes"]
 
 
 # ---- file-bound accessor (probe), JSON on stderr --------------------------

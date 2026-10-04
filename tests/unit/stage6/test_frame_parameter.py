@@ -870,12 +870,16 @@ class TestCurationActionFrames:
         csv.write_text(
             f"# frame: calibrated\n# epsilon: {stale!r}\nremove,{wid},{f_cal!r},\n"
         )
-        with pytest.raises(ValueError, match="drift"):
+        with pytest.raises(BadSettingError, match="drift") as ei:
             ftmw.review_apply(str(sc_file), str(csv))
+        assert ei.value.path == "curation[line 2].epsilon"
         actions = actions_from_curation_file(csv)
         assert actions[0].epsilon == stale
-        with pytest.raises(ValueError, match="drift"):
+        with pytest.raises(BadSettingError, match="drift") as ei:
             ftmw.review_apply(str(sc_file), actions=actions)
+        # the same refusal, pointed at the action's own field
+        assert ei.value.path == "actions[0].epsilon"
+        assert ei.value.value == stale
         assert self._removed(sc_file) == []
 
     def test_omitted_frame_refused_on_self_calibrated(self, sc_file: Path) -> None:
@@ -888,6 +892,35 @@ class TestCurationActionFrames:
                     actions=[CurationAction("remove", window_id=wid, freq_mhz=f0)],
                 )
             assert ei.value.path == "actions[0].frame"
+
+    def test_frame_refusals_name_the_index_of_the_offending_action(
+        self, sc_file: Path
+    ) -> None:
+        # Mutation: every refusal pointed at actions[0] (or at "frame").
+        f0, f1, eps, probe, wid = self._two_peaks(sc_file)
+        ok = CurationAction("remove", window_id=wid, freq_mhz=f0, frame="raw")
+        # an omitted frame on a self_calibrated file, as the second action
+        with pytest.raises(BadSettingError) as ei:
+            ftmw.review_apply(
+                str(sc_file),
+                actions=[ok, CurationAction("remove", window_id=wid, freq_mhz=f1)],
+            )
+        assert ei.value.path == "actions[1].frame"
+        assert str(ei.value).startswith("actions[1] (remove): ")
+        # a frame that disagrees with the call's, as the second action
+        with pytest.raises(BadSettingError) as ei:
+            ftmw.review_preview(
+                str(sc_file),
+                actions=[
+                    ok,
+                    CurationAction(
+                        "remove", window_id=wid, freq_mhz=f1, frame="calibrated"
+                    ),
+                ],
+                frame="raw",
+            )
+        assert ei.value.path == "actions[1].frame"
+        assert self._removed(sc_file) == []
 
     def test_uid_remove_and_bare_accept_need_no_frame(self, sc_file: Path) -> None:
         # Mutation: frame required for actions that carry no frequency.
