@@ -21,14 +21,13 @@ never keeps a table its own calibration contradicts. No stage is invalidated.
 import logging
 from typing import Any, List, Optional, Sequence, Tuple
 
-import h5py
-
 from ..core.stage_fit_settings import ClockSource, coerce_clock_sources
 from ..file_manager import open_pipeline_file
 from ..io.stage_fit_settings_serialization import (
     read_recommended_clock_sources,
     write_recommended_clock_sources,
 )
+from .atomic import atomic_write, h5open
 
 logger = logging.getLogger(__name__)
 
@@ -50,14 +49,13 @@ def write_declaration(
     a stored final-products table whose calibration state it changed.
 
     The one writer of the declaration on an existing file: the ``clocks`` verbs
-    and the import's loader-declared clocks both go through here.
+    and the import's loader-declared clocks both go through here. Called inside
+    the caller's transaction (:func:`~.atomic.atomic_write`).
     """
-    from .compaction import compact_file
     from .stage6_impl import refresh_persisted_final_products_impl
 
     write_recommended_clock_sources(file_path, clocks)
-    if refresh_persisted_final_products_impl(file_path):
-        compact_file(file_path)
+    refresh_persisted_final_products_impl(file_path)
 
 
 def _validate_pipeline(file_path: str) -> None:
@@ -74,7 +72,7 @@ def get_clock_sources_impl(file_path: str) -> Optional[Tuple[ClockSource, ...]]:
 def stage5_fit_present(file_path: str) -> bool:
     """Return ``True`` if a Stage 5 fit exists (so a clock edit post-dates it)."""
     try:
-        with h5py.File(file_path, "r") as h5f:
+        with h5open(file_path, "r") as h5f:
             return "stage5_fitting" in h5f
     except OSError:
         return False
@@ -95,12 +93,13 @@ def set_clock_sources_impl(
     """
     _validate_pipeline(file_path)
     new = coerce_clock_sources(clocks) or ()
-    if replace:
-        result = tuple(new)
-    else:
-        existing = read_recommended_clock_sources(file_path) or ()
-        result = tuple(existing) + tuple(new)
-    write_declaration(file_path, result if result else None)
+    with atomic_write(file_path):
+        if replace:
+            result = tuple(new)
+        else:
+            existing = read_recommended_clock_sources(file_path) or ()
+            result = tuple(existing) + tuple(new)
+        write_declaration(file_path, result if result else None)
     logger.info("Declared %d clock source(s) on %s", len(result), file_path)
     return result
 
@@ -115,6 +114,14 @@ def remove_clock_sources_impl(
     declaration; a frequency that matches nothing is reported via the log.
     """
     _validate_pipeline(file_path)
+    with atomic_write(file_path):
+        return _remove_clock_sources(file_path, freqs_mhz)
+
+
+def _remove_clock_sources(
+    file_path: str, freqs_mhz: Sequence[float]
+) -> Tuple[ClockSource, ...]:
+    """The body of :func:`remove_clock_sources_impl` (inside its transaction)."""
     existing = read_recommended_clock_sources(file_path) or ()
     targets = [float(f) for f in freqs_mhz]
     kept: List[ClockSource] = []
@@ -138,5 +145,6 @@ def remove_clock_sources_impl(
 def clear_clock_sources_impl(file_path: str) -> None:
     """Clear the clock-source declaration (writes the no-recommendation sentinel)."""
     _validate_pipeline(file_path)
-    write_declaration(file_path, None)
+    with atomic_write(file_path):
+        write_declaration(file_path, None)
     logger.info("Cleared clock-source declaration on %s", file_path)

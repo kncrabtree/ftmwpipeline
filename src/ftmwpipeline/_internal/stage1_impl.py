@@ -50,7 +50,7 @@ from ..io.provenance import (
     stamp_stage_epoch,
     write_field_set_version,
 )
-from .compaction import compact_file
+from .atomic import atomic_write, h5open
 from .shared_utils import fold_settings_blob
 from .stage0_impl import load_fid_from_pipeline_impl
 
@@ -67,7 +67,7 @@ def _read_settings_layer(file_path: str, group_path: str) -> Optional[FTSettings
     ``parameters`` blob: its keys are folded in so those files still resolve
     sensibly.
     """
-    with h5py.File(file_path, "r") as h5f:
+    with h5open(file_path, "r") as h5f:
         return _layer_from_h5(h5f, group_path)
 
 
@@ -136,7 +136,7 @@ def resolve_ft_settings_h5(
 
 def _resolve_settings(file_path: str, explicit: Optional[FTSettings]) -> FTSettings:
     """Resolve the FT settings for ``file_path`` (:func:`resolve_ft_settings_h5`)."""
-    with h5py.File(file_path, "r") as h5f:
+    with h5open(file_path, "r") as h5f:
         return resolve_ft_settings_h5(h5f, explicit)
 
 
@@ -154,7 +154,7 @@ def persisted_ft_settings(
     """
     from ..file_manager import StageDependencyError
 
-    with h5py.File(file_path, "r") as h5f:
+    with h5open(file_path, "r") as h5f:
         if FT_PROCESSING_PATH not in h5f:
             raise StageDependencyError(
                 stage_name,
@@ -268,13 +268,14 @@ def ft_run_impl(
 
     ops = operation_events("ft run", events, cancel)
     with ops.stage(Stage.FT, verb="ft run", file_path=file_path) as scope:
-        result = compute_ft_impl(
-            file_path,
-            settings=settings,
-            validate_only=validate_only,
-            persist=persist,
-            _events=scope,
-        )
+        with atomic_write(file_path):
+            result = compute_ft_impl(
+                file_path,
+                settings=settings,
+                validate_only=validate_only,
+                persist=persist,
+                _events=scope,
+            )
         scope.finish(ft_run_summary(result), wrote=persist and not validate_only)
     return result
 
@@ -596,7 +597,7 @@ def _build_display_and_active_fid(
 
 def _stored_fid_duration_us(file_path: str) -> Optional[float]:
     """The stored FID's duration, or ``None`` for a file that holds no FID."""
-    with h5py.File(file_path, "r") as h5f:
+    with h5open(file_path, "r") as h5f:
         if "stage0_fid_data" not in h5f:
             return None
     return float(load_fid_from_pipeline_impl(file_path).duration_us)
@@ -654,7 +655,7 @@ def _persist_ft_settings(
     # inside the open handle, before the completion is stamped, so a raising
     # events callback is held and raised only once the stage is whole.
     with events.committing() if events is not None else nullcontext():
-        with h5py.File(file_path, "a") as h5f:
+        with h5open(file_path, "a") as h5f:
             # Stamp first, so a stamp that cannot be written leaves the record and
             # the completion untouched. Stage 1 stores no computed artifact (the
             # FT is recomputed on demand), so persisting it again never overwrites
@@ -696,9 +697,6 @@ def _persist_ft_settings(
             stages.attrs["completed_stages"] = json.dumps(completed)
             stages.attrs["last_updated"] = datetime.now().isoformat()
         logger.info("FT parameters and stage tracking saved to pipeline file")
-        # Stage 1 stamps its own completion rather than going through
-        # ``_update_stage_completion``, so it reclaims its own dead space too.
-        compact_file(file_path)
     return invalidated
 
 
@@ -723,7 +721,7 @@ def write_recommended_ft_params(
         update_processing_parameters,
     )
 
-    with h5py.File(file_path, "r") as h5f:
+    with h5open(file_path, "r") as h5f:
         falls_through = FT_PROCESSING_PATH in h5f and not ft_record_is_authoritative(
             h5f
         )
@@ -743,8 +741,9 @@ def write_recommended_ft_params(
 def save_ft_parameters_impl(file_path: str, parameters: Dict[str, Any]) -> None:
     """Persist an explicit settings dict (used by --save flows)."""
     settings = FTSettings.from_attrs(parameters)
-    resolved = _resolve_settings(file_path, settings)
-    _persist_ft_settings(file_path, resolved)
+    with atomic_write(file_path):
+        resolved = _resolve_settings(file_path, settings)
+        _persist_ft_settings(file_path, resolved)
     logger.info("Processing parameters saved successfully")
 
 

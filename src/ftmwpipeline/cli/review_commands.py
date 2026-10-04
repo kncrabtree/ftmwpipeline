@@ -17,8 +17,7 @@ import json
 import sys
 from typing import Any, List, Optional, Tuple, Union
 
-import h5py
-
+from .._internal.atomic import h5open
 from .._internal.stage6_impl import (
     DEFAULT_ATTENTION_CANDIDATE_EVIDENCE,
     DEFAULT_DISPLAY_BAR,
@@ -155,7 +154,7 @@ def _add_actions_argument(parser: argparse.ArgumentParser, verb: str) -> None:
 def _load_window_fits(file_path: str) -> List[FittingResult]:
     """Return per-window FittingResult objects from the persisted Stage 5 fit."""
     require_pipeline_file(file_path)
-    with h5py.File(file_path, "r") as h5f:
+    with h5open(file_path, "r") as h5f:
         if "stage5_fitting" not in h5f:
             raise ValueError("No Stage 5 fit found. Run 'fit run' first.")
         spectrum_fit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])

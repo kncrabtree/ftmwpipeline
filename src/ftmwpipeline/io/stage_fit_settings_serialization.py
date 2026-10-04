@@ -54,6 +54,7 @@ from typing import Any, Dict, Mapping, Optional, Tuple
 
 import h5py
 
+from .._internal.atomic import h5open
 from .._internal.shared_utils import active_acquisition_us
 from ..core.data_structures import ChirpWindow
 from ..core.stage_fit_settings import (
@@ -342,7 +343,7 @@ def _migrate_integer_tol(
     """
     if settings is None or settings.spur.integer_tol_bins is not None:
         return settings
-    with h5py.File(file_path, "r") as h5f:
+    with h5open(file_path, "r") as h5f:
         group = h5f.get(f"{STAGE_FIT_PATH}/spur")
         if group is None or _LEGACY_INTEGER_TOL_ATTR not in group.attrs:
             return settings
@@ -398,7 +399,7 @@ def load_stage_fit_consumed_from_h5(file_path: str) -> Optional[Stage5Consumed]:
     ``consumed`` block (a record written before version 2, or the sparse user
     layer). :func:`stage_fit_settings_provenance` tells those apart.
     """
-    with h5py.File(file_path, "r") as h5f:
+    with h5open(file_path, "r") as h5f:
         group = h5f.get(f"{STAGE_FIT_PATH}/{_CONSUMED}")
         if not isinstance(group, h5py.Group):
             return None
@@ -433,7 +434,7 @@ def write_stage2b_recommended_shape(
     """
     encoded = _NONE_SENTINEL if shape is None else str(shape)
     encoded_votes = None if vote_rates is None else json.dumps(dict(vote_rates))
-    with h5py.File(file_path, "a") as h5f:
+    with h5open(file_path, "a") as h5f:
         for path in _STAGE2B_GROUP_PATHS:
             if path not in h5f:
                 continue
@@ -456,7 +457,7 @@ def read_stage2b_recommended_shape(file_path: str) -> Optional[str]:
     Gaussian-twin group is consulted.
     """
     try:
-        with h5py.File(file_path, "r") as h5f:
+        with h5open(file_path, "r") as h5f:
             for path in _STAGE2B_GROUP_PATHS:
                 if path not in h5f:
                     continue
@@ -481,7 +482,7 @@ def read_stage2b_vote_rates(file_path: str) -> Dict[str, float]:
     group is checked first, then the Gaussian twin.
     """
     try:
-        with h5py.File(file_path, "r") as h5f:
+        with h5open(file_path, "r") as h5f:
             for path in _STAGE2B_GROUP_PATHS:
                 if path not in h5f:
                     continue
@@ -526,7 +527,7 @@ def write_recommended_clock_sources(
     else:
         encoded = json.dumps([c.to_dict() for c in clock_sources])
     try:
-        with h5py.File(file_path, "a") as h5f:
+        with h5open(file_path, "a") as h5f:
             if _STAGE0_GROUP not in h5f:
                 return
             h5f[_STAGE0_GROUP].attrs[_RECOMMENDED_CLOCKS_ATTR] = encoded
@@ -544,7 +545,7 @@ def read_recommended_clock_sources(
     recommendation."
     """
     try:
-        with h5py.File(file_path, "r") as h5f:
+        with h5open(file_path, "r") as h5f:
             if _STAGE0_GROUP not in h5f:
                 return None
             attr = h5f[_STAGE0_GROUP].attrs.get(_RECOMMENDED_CLOCKS_ATTR)
@@ -595,7 +596,7 @@ def write_recommended_chirp_window(
             }
         )
     try:
-        with h5py.File(file_path, "a") as h5f:
+        with h5open(file_path, "a") as h5f:
             if _STAGE0_GROUP not in h5f:
                 return
             h5f[_STAGE0_GROUP].attrs[_RECOMMENDED_CHIRP_WINDOW_ATTR] = encoded
@@ -612,7 +613,7 @@ def read_recommended_chirp_window(
     sentinel, or any parse error.
     """
     try:
-        with h5py.File(file_path, "r") as h5f:
+        with h5open(file_path, "r") as h5f:
             if _STAGE0_GROUP not in h5f:
                 return None
             attr = h5f[_STAGE0_GROUP].attrs.get(_RECOMMENDED_CHIRP_WINDOW_ATTR)
@@ -694,7 +695,7 @@ def write_recommended_start_detection(
         }
     )
     try:
-        with h5py.File(file_path, "a") as h5f:
+        with h5open(file_path, "a") as h5f:
             if _STAGE0_GROUP not in h5f:
                 return
             h5f[_STAGE0_GROUP].attrs[_RECOMMENDED_START_DETECTION_ATTR] = encoded
@@ -715,7 +716,7 @@ def read_recommended_start_detection(
     on this file.
     """
     try:
-        with h5py.File(file_path, "r") as h5f:
+        with h5open(file_path, "r") as h5f:
             if _STAGE0_GROUP not in h5f:
                 return None
             attr = h5f[_STAGE0_GROUP].attrs.get(_RECOMMENDED_START_DETECTION_ATTR)

@@ -21,6 +21,7 @@ import hashlib
 import inspect
 import json
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import (
@@ -42,6 +43,8 @@ from typing import (
 import h5py
 
 from . import __version__
+from ._internal.atomic import exists as pipeline_exists
+from ._internal.atomic import h5open, resolve
 from .core.data_structures import FID
 from .io.fid_serialization import load_fid_from_hdf5, save_fid_to_hdf5
 
@@ -601,6 +604,38 @@ class CallbackFailedError(PipelineFileError):
         super().__init__(message)
 
 
+class WriteConflictError(PipelineFileError):
+    """Raised when another process wrote a pipeline file while a call was
+    writing it (§Crash safety).
+
+    A call's working copy is taken when its write begins; if the file on disk
+    changed after that, the call does not replace it -- its own changes are
+    discarded and the other write stands. Retrying the call applies it to the
+    file as it is now. The CLI exits 1 for it.
+
+    Attributes
+    ----------
+    path : str
+        The pipeline file that changed underneath the call.
+    """
+
+    code: ClassVar[str] = "write_conflict"
+    contract_fields: ClassVar[Tuple[str, ...]] = ("path",)
+
+    def __init__(
+        self, path: Union[str, "os.PathLike[str]"], *, message: Optional[str] = None
+    ) -> None:
+        self.path = os.fspath(path)
+        if message is None:
+            message = (
+                f"{self.path} was changed by another writer while this call was "
+                "writing it; this call's changes were discarded and the other "
+                "write stands. Re-run the call to apply it to the file as it "
+                "is now."
+            )
+        super().__init__(message)
+
+
 class SourceMetadata:
     """Metadata about the source data for a pipeline file."""
 
@@ -832,11 +867,7 @@ def create_pipeline_file(
     RuntimeError
         If file creation fails
     """
-    filepath = Path(filepath)
-
-    # Add .ftmw extension if not present
-    if filepath.suffix != ".ftmw":
-        filepath = filepath.with_suffix(".ftmw")
+    filepath = pipeline_file_path(filepath)
 
     # Check for existing file
     if filepath.exists() and not force:
@@ -857,7 +888,7 @@ def create_pipeline_file(
     filepath.parent.mkdir(parents=True, exist_ok=True)
 
     try:
-        with h5py.File(filepath, "w") as h5f:
+        with h5open(filepath, "w") as h5f:
             # Stamp the file-format and writer-package versions at the root for
             # forward/backward-compatibility checks on open.
             h5f.attrs["ftmw_format_version"] = FTMW_FORMAT_VERSION
@@ -906,13 +937,19 @@ def create_pipeline_file(
         return filepath
 
     except Exception as e:
-        # Clean up partial file on error
-        if filepath.exists():
-            try:
-                filepath.unlink()
-            except Exception:
-                pass
+        # Nothing to clean up: the write went to the import's working copy,
+        # which the failing transaction discards (the file on disk, if any,
+        # is untouched).
         raise RuntimeError(f"Failed to create pipeline file {filepath}: {e}") from e
+
+
+def pipeline_file_path(filepath: Union[str, Path]) -> Path:
+    """The path :func:`create_pipeline_file` writes for *filepath*: the
+    ``.ftmw`` suffix is added when missing."""
+    path = Path(filepath)
+    if path.suffix != ".ftmw":
+        path = path.with_suffix(".ftmw")
+    return path
 
 
 def stages_an_import_replaces(filepath: Union[str, Path], force: bool) -> List[str]:
@@ -925,15 +962,13 @@ def stages_an_import_replaces(filepath: Union[str, Path], force: bool) -> List[s
     one with a different source is refused, so neither discards anything.
     Read before the import writes; empty when there is no readable file.
     """
-    path = Path(filepath)
-    if path.suffix != ".ftmw":
-        path = path.with_suffix(".ftmw")
+    path = pipeline_file_path(filepath)
     if not path.exists():
         return []
     try:
         if not force and _load_source_metadata(path) is not None:
             return []
-        with h5py.File(path, "r") as h5f:
+        with h5open(path, "r") as h5f:
             group = h5f.get("pipeline_stages")
             completed = (
                 json.loads(group.attrs.get("completed_stages", "[]"))
@@ -1057,7 +1092,7 @@ def require_pipeline_file(filepath: Union[str, Path]) -> Path:
     the provenance record, so it changes nothing for a file that works today.
     """
     path = Path(filepath)
-    if not path.exists():
+    if not pipeline_exists(path):
         raise PipelineFileNotFoundError(
             path,
             message=(
@@ -1069,7 +1104,7 @@ def require_pipeline_file(filepath: Union[str, Path]) -> Path:
             ),
         )
     try:
-        h5f = h5py.File(path, "r")
+        h5f = h5open(path, "r")
     except OSError as exc:
         if is_transient_open_error(exc):
             raise
@@ -1138,7 +1173,7 @@ def open_pipeline_file(
     filepath = Path(filepath)
 
     # Check file existence
-    if not filepath.exists():
+    if not pipeline_exists(filepath):
         raise PipelineFileNotFoundError(
             filepath,
             message=(
@@ -1151,7 +1186,7 @@ def open_pipeline_file(
         )
 
     try:
-        with h5py.File(filepath, "r") as h5f:
+        with h5open(filepath, "r") as h5f:
             # Load metadata and stage information
             source_metadata = _load_source_metadata(filepath, h5f)
             stage_tracker = _load_stage_tracker(filepath, h5f)
@@ -1242,7 +1277,7 @@ def validate_pipeline_file(filepath: Union[str, Path]) -> Dict[str, Any]:
     warnings = []
 
     # Check file existence
-    if not filepath.exists():
+    if not pipeline_exists(filepath):
         return {
             "valid": False,
             "errors": [f"File does not exist: {filepath}"],
@@ -1272,7 +1307,7 @@ def validate_pipeline_file(filepath: Union[str, Path]) -> Dict[str, Any]:
             load_stage_environments,
         )
 
-        with h5py.File(filepath, "r") as h5f:
+        with h5open(filepath, "r") as h5f:
             file_format_version = h5f.attrs.get("ftmw_format_version")
             created_with = h5f.attrs.get("created_with_ftmwpipeline")
             stage_envs = load_stage_environments(h5f)
@@ -1314,7 +1349,7 @@ def validate_pipeline_file(filepath: Union[str, Path]) -> Dict[str, Any]:
         # Validate stage data. Each completed stage must have its persisted
         # data present at its known HDF5 location (which is not always a group
         # named after the stage - e.g. Stage 1 is lightweight).
-        with h5py.File(filepath, "r") as h5f:
+        with h5open(filepath, "r") as h5f:
             for stage in stage_tracker.completed_stages:
                 data_path = PipelineStageTracker.STAGE_DATA_PATHS.get(stage, stage)
                 if data_path not in h5f:
@@ -1322,7 +1357,7 @@ def validate_pipeline_file(filepath: Union[str, Path]) -> Dict[str, Any]:
 
         # Try loading FID data
         try:
-            with h5py.File(filepath, "r") as h5f:
+            with h5open(filepath, "r") as h5f:
                 stage0_group = h5f["stage0_fid_data"]
                 fid = load_fid_from_hdf5(stage0_group)
                 if fid.n_points == 0:
@@ -1335,7 +1370,7 @@ def validate_pipeline_file(filepath: Union[str, Path]) -> Dict[str, Any]:
             "valid": len(errors) == 0,
             "errors": errors,
             "warnings": warnings,
-            "file_size": filepath.stat().st_size,
+            "file_size": os.stat(resolve(filepath)).st_size,
             "stages": stage_tracker.to_dict(),
             "format_version": (
                 str(file_format_version) if file_format_version is not None else None
@@ -1365,7 +1400,7 @@ def _load_source_metadata(
     """Load source metadata from pipeline file."""
     should_close = h5f is None
     if h5f is None:
-        h5f = h5py.File(filepath, "r")
+        h5f = h5open(filepath, "r")
 
     try:
         if "source_metadata" not in h5f:
@@ -1395,7 +1430,7 @@ def _load_stage_tracker(
     """Load stage tracker from pipeline file."""
     should_close = h5f is None
     if h5f is None:
-        h5f = h5py.File(filepath, "r")
+        h5f = h5open(filepath, "r")
 
     try:
         if "pipeline_stages" not in h5f:
@@ -1545,7 +1580,7 @@ def invalidate_downstream_stages(
     """
     if not _dependents_of([stage_name]):
         return []
-    with h5py.File(filepath, "a") as h5f:
+    with h5open(filepath, "a") as h5f:
         if "pipeline_stages" not in h5f:
             return []
         return invalidate_stages_in_file(
@@ -1608,11 +1643,11 @@ def update_processing_parameters(
     """
     filepath = Path(filepath)
 
-    if not filepath.exists():
+    if not pipeline_exists(filepath):
         raise FileNotFoundError(f"Pipeline file does not exist: {filepath}")
 
     try:
-        with h5py.File(filepath, "r+") as h5f:
+        with h5open(filepath, "r+") as h5f:
             # Locate the recommended_processing group
             fid_group_path = "stage0_fid_data/recommended_processing"
             if fid_group_path not in h5f:

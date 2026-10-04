@@ -54,7 +54,6 @@ from typing import (
     Union,
 )
 
-import h5py
 import numpy as np
 
 from ..contract import CancelToken, EventCallback, Stage
@@ -86,10 +85,8 @@ from ..core.data_structures import (
 )
 from ..file_manager import (
     BadSettingError,
-    CallbackFailedError,
     NotFoundError,
     NotFoundValueError,
-    OperationCancelledError,
     PipelineFileError,
     StageDependencyError,
     requires_pipeline_file,
@@ -132,7 +129,9 @@ from .absence_rules import (
     int_or_absent,
     knockout_absence,
 )
-from .compaction import compact_file, deferred_compaction
+from .atomic import atomic_write
+from .atomic import exists as pipeline_exists
+from .atomic import h5open, resolve
 from .events import StageScope, detached_scope, operation_events
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage2_impl import _update_stage_completion
@@ -207,7 +206,11 @@ def _review_operation(
             with ops.stage(Stage.REVIEW, verb=verb, file_path=path) as scope:
                 token = _REVIEW_SCOPE.set(scope)
                 try:
-                    result = fn(*args, **kwargs)
+                    # The whole call -- a batch with its cascade, a refit, an
+                    # undo's restore-then-replay -- is one atomic write;
+                    # StageFinished follows the replace.
+                    with atomic_write(path):
+                        result = fn(*args, **kwargs)
                 finally:
                     _REVIEW_SCOPE.reset(token)
                 scope.finish(summary(result, call), wrote=wrote(result, call))
@@ -861,7 +864,7 @@ def get_candidate_ledger_impl(
     path = str(file_path)
 
     if spectrum_fit is None or sideband is None:
-        with h5py.File(path, "r") as h5f:
+        with h5open(path, "r") as h5f:
             if "stage5_fitting" not in h5f:
                 raise StageDependencyError(
                     "review",
@@ -1100,7 +1103,7 @@ def rank_windows_impl(
     lower_is_worse = RANK_METRICS[metric][1]
 
     path = str(file_path)
-    with h5py.File(path, "r") as h5f:
+    with h5open(path, "r") as h5f:
         if "stage5_fitting" not in h5f:
             raise StageDependencyError(
                 "review",
@@ -1505,7 +1508,7 @@ def _active_acquisition_us_for_snap(path: str) -> float:
     fitted = _persisted_acquisition_us(path)
     if fitted > 0.0:
         return fitted
-    with h5py.File(path, "r") as h5f:
+    with h5open(path, "r") as h5f:
         declared = declared_active_acquisition_us(h5f)
     return float(declared) if declared is not None and declared > 0.0 else 0.0
 
@@ -1546,7 +1549,7 @@ def refit_snap_tol_mhz_impl(file_path: Union[Path, str]) -> float:
     from ..file_manager import StageDependencyError
 
     path = str(file_path)
-    if not Path(path).exists():
+    if not pipeline_exists(path):
         raise FileNotFoundError(
             f"Pipeline file not found: {path}\n\n"
             f"To create a new pipeline:\n"
@@ -1703,7 +1706,7 @@ def require_splice_compatible_environment(path: str) -> None:
     )
 
     try:
-        with h5py.File(path, "r") as h5f:
+        with h5open(path, "r") as h5f:
             envs = load_stage_environments(h5f)
             ack = load_environment_ack(h5f)
     except OSError:  # pragma: no cover - the caller's own open reports this
@@ -1777,12 +1780,12 @@ def acknowledge_environment_impl(
 
     path = str(file_path)
     current = capture_environment()
-    with h5py.File(path, "r") as h5f:
+    with h5open(path, "r") as h5f:
         envs = load_stage_environments(h5f)
     fit_env = envs.get("stage5_fitting")
     mismatch = gating_fields_differ(current, fit_env)
 
-    with h5py.File(path, "a") as h5f:
+    with atomic_write(path), h5open(path, "a") as h5f:
         save_environment_ack(h5f, current, reason=reason)
 
     logger.info(
@@ -1869,7 +1872,7 @@ def _next_decision_index(path: str) -> int:
     the id of the decision it is about to record *before* running the fit -- the
     hook the per-peak derivation tag hangs on.
     """
-    with h5py.File(path, "r") as h5f:
+    with h5open(path, "r") as h5f:
         if "stage6_review" not in h5f:
             return 0
         review = load_stage6_review_from_hdf5(h5f["stage6_review"])
@@ -2987,7 +2990,7 @@ def _load_curation_window_index(path: str) -> List[FitWindowCoverage]:
     column -- not the ~30 attrs/datasets per window a full fit load pulls
     (see :func:`~ftmwpipeline.io.fitting_serialization.read_fit_window_coverage`).
     """
-    with h5py.File(path, "r") as h5f:
+    with h5open(path, "r") as h5f:
         if "stage5_fitting" not in h5f:
             raise StageDependencyError(
                 "review",
@@ -3543,7 +3546,7 @@ def _record_decision(
     (the caller's edit may have resolved a misfit); when Stage 5 is absent the
     existing reasons are preserved.
     """
-    with h5py.File(path, "r") as h5f:
+    with h5open(path, "r") as h5f:
         existing_review: Stage6Review = (
             load_stage6_review_from_hdf5(h5f["stage6_review"])
             if "stage6_review" in h5f
@@ -3604,7 +3607,7 @@ def _record_decision(
                 else []
             )
 
-        with h5py.File(path, "r") as h5f:
+        with h5open(path, "r") as h5f:
             floor_khz = load_frequency_calibration_from_hdf5(h5f).sigma_floor_khz
             clocks_declared = fit_declares_clocks(h5f)
         cal_state, epsilon, sigma_eps = _derive_frequency_calibration(path)
@@ -3640,7 +3643,6 @@ def _record_decision(
     )
 
     _write_stage6_review_only(new_review, path)
-    compact_file(path)
 
 
 @requires_pipeline_file()
@@ -3726,7 +3728,7 @@ def review_accept_impl(
 def _known_window_ids(path: str) -> Tuple[Set[int], str]:
     """The window ids a bare accept may name, and where they were read from:
     the Stage 5 fit's when one exists, the Stage 4 plan's otherwise."""
-    with h5py.File(path, "r") as h5f:
+    with h5open(path, "r") as h5f:
         if "stage5_fitting" in h5f:
             known = {
                 c.window_id for c in read_fit_window_coverage(h5f["stage5_fitting"])
@@ -3769,7 +3771,7 @@ def _record_bare_accept(path: str, window_id: int) -> None:
     # entry is a marker, and a window with no fit still accepts).
     anchor_freq = 0.0
     try:
-        with h5py.File(path, "r") as h5f:
+        with h5open(path, "r") as h5f:
             if "stage5_fitting" in h5f:
                 sf: SpectrumFit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
                 wf_list = [wf for wf in sf.window_fits if wf.window_id == window_id]
@@ -3789,7 +3791,7 @@ def _record_bare_accept(path: str, window_id: int) -> None:
     except Exception:
         pass
 
-    with h5py.File(path, "r") as h5f:
+    with h5open(path, "r") as h5f:
         existing_review: Stage6Review = (
             load_stage6_review_from_hdf5(h5f["stage6_review"])
             if "stage6_review" in h5f
@@ -3832,7 +3834,6 @@ def _record_bare_accept(path: str, window_id: int) -> None:
     )
 
     _write_stage6_review_only(new_review, path)
-    compact_file(path)
 
 
 # ---------------------------------------------------------------------------
@@ -5307,7 +5308,7 @@ def _fitted_freqs_by_window(path: str) -> Dict[int, List[float]]:
     loader's now-unreachable-in-practice ``wf.window_id is None`` skip has no
     cheap-path equivalent to reproduce.
     """
-    with h5py.File(path, "r") as h5f:
+    with h5open(path, "r") as h5f:
         if "stage5_fitting" not in h5f:
             return {}
         return read_fit_peak_frequencies_by_window(h5f["stage5_fitting"])
@@ -5325,7 +5326,7 @@ def _fitted_uids_by_window(path: str) -> Dict[int, Set[int]]:
     ``peak_uid`` column per window (see
     :func:`~ftmwpipeline.io.fitting_serialization.read_fit_peak_uids_by_window`).
     """
-    with h5py.File(path, "r") as h5f:
+    with h5open(path, "r") as h5f:
         if "stage5_fitting" not in h5f:
             return {}
         return read_fit_peak_uids_by_window(h5f["stage5_fitting"])
@@ -5354,7 +5355,7 @@ def _fitted_peak_index(
     )
     if not has_uid_target:
         return _fitted_freqs_by_window(path), {}
-    with h5py.File(path, "r") as h5f:
+    with h5open(path, "r") as h5f:
         if "stage5_fitting" not in h5f:
             return {}, {}
         return read_fit_peak_freqs_and_uids_by_window(h5f["stage5_fitting"])
@@ -5385,7 +5386,7 @@ def _planned_window_ranges(path: str) -> Dict[int, Tuple[float, float]]:
     raising, so the advisory pass degrades to the checks it can still make.
     """
     try:
-        with h5py.File(path, "r") as h5f:
+        with h5open(path, "r") as h5f:
             if "stage4_windows" not in h5f:
                 return {}
             columns = read_window_plan_columns(
@@ -5611,7 +5612,7 @@ def _persisted_acquisition_us(path: str) -> float:
     ~30 attrs/datasets per window a full load would pull that this function
     ever looks at.
     """
-    with h5py.File(path, "r") as h5f:
+    with h5open(path, "r") as h5f:
         if "stage5_fitting" not in h5f:
             return 0.0
         parameters = read_fit_parameters(h5f["stage5_fitting"])
@@ -5761,26 +5762,26 @@ _FIT_EDIT_KINDS = ("add", "remove", "merge", "split", "create_window")
 
 def _snapshot_stage5_baseline(path: str) -> None:
     """Copy ``/stage5_fitting`` to the baseline group if not already snapshotted."""
-    with h5py.File(path, "a") as h5f:
+    with h5open(path, "a") as h5f:
         if "stage5_fitting" in h5f and STAGE5_BASELINE_GROUP not in h5f:
             h5f.copy("stage5_fitting", STAGE5_BASELINE_GROUP)
 
 
 def clear_stage5_baseline(path: Union[Path, str]) -> None:
     """Drop the automatic-fit baseline snapshot (a fresh fit supersedes it)."""
-    with h5py.File(str(path), "a") as h5f:
+    with h5open(str(path), "a") as h5f:
         if STAGE5_BASELINE_GROUP in h5f:
             del h5f[STAGE5_BASELINE_GROUP]
 
 
 def _has_stage5_baseline(path: str) -> bool:
-    with h5py.File(path, "r") as h5f:
+    with h5open(path, "r") as h5f:
         return STAGE5_BASELINE_GROUP in h5f
 
 
 def _restore_stage5_baseline(path: str) -> None:
     """Replace ``/stage5_fitting`` with the baseline snapshot (kept for reuse)."""
-    with h5py.File(path, "a") as h5f:
+    with h5open(path, "a") as h5f:
         if STAGE5_BASELINE_GROUP not in h5f:
             raise ValueError("no automatic-fit baseline to restore")
         if "stage5_fitting" in h5f:
@@ -5893,7 +5894,7 @@ def _fit_group_fingerprint(path: str) -> Optional[Tuple[str, int, int]]:
     ``None`` when the file carries no fit -- never equal to itself, so a
     cache stamped against it can never be reused.
     """
-    with h5py.File(path, "r") as h5f:
+    with h5open(path, "r") as h5f:
         if "stage5_fitting" not in h5f:
             return None
         attrs = h5f["stage5_fitting"].attrs
@@ -6066,13 +6067,6 @@ class _BatchCtx:
     """The Stage 6 operation's scope (:data:`_REVIEW_SCOPE` when the batch was
     opened), through which the batch reports its windows and checks for a
     cancel; ``None`` reports nothing and never cancels."""
-    baseline_created: bool = False
-    """Whether THIS batch's :func:`_open_batch` created the undo baseline (it
-    did not exist before). A batch discarded before its persist removes it
-    again (:func:`_discard_batch`), so the file is exactly as before."""
-    persist_started: bool = False
-    """Set by :func:`_finish_batch` as its persist begins; from there the batch
-    completes and is never discarded."""
 
 
 def _build_shared_fit_ctx(path: str) -> _SharedFitCtx:
@@ -6101,7 +6095,7 @@ def _build_shared_fit_ctx(path: str) -> _SharedFitCtx:
         build_stage5_fit_context,
     )
 
-    with h5py.File(path, "r") as h5f:
+    with h5open(path, "r") as h5f:
         if "stage5_fitting" not in h5f:
             raise StageDependencyError(
                 "review",
@@ -6298,7 +6292,7 @@ def _build_batch_changeset(
     """
     spectrum_fit: Optional[SpectrumFit] = shared.fit_cache.take(path)
     if spectrum_fit is None:
-        with h5py.File(path, "r") as h5f:
+        with h5open(path, "r") as h5f:
             if "stage5_fitting" not in h5f:
                 raise StageDependencyError(
                     "review",
@@ -7744,7 +7738,7 @@ def _derive_batch_review(ctx: _BatchCtx, path: str) -> Stage6Review:
     the write so a preview (a later unit) can derive the would-be review
     in memory and never call :func:`_persist_batch_review` at all.
     """
-    with h5py.File(path, "r") as h5f:
+    with h5open(path, "r") as h5f:
         existing_review: Stage6Review = (
             load_stage6_review_from_hdf5(h5f["stage6_review"])
             if "stage6_review" in h5f
@@ -7775,7 +7769,7 @@ def _derive_batch_review(ctx: _BatchCtx, path: str) -> Stage6Review:
         sideband = Sideband.coerce(fid.sideband)
         merged_window_freqs = _auto_merged_window_freqs(ctx.changeset.spectrum_fit)
 
-        with h5py.File(path, "r") as h5f:
+        with h5open(path, "r") as h5f:
             floor_khz = load_frequency_calibration_from_hdf5(h5f).sigma_floor_khz
             clocks_declared = fit_declares_clocks(h5f)
         cal_state, epsilon, sigma_eps = _derive_frequency_calibration(path)
@@ -7882,7 +7876,7 @@ def _write_stage6_review_only(review: Stage6Review, path: str) -> None:
     clocks = (
         _resolve_calibration_clocks(path) if review.final_products is not None else None
     )
-    with h5py.File(path, "a") as h5f:
+    with h5open(path, "a") as h5f:
         if "stage6_review" in h5f:
             del h5f["stage6_review"]
         grp = h5f.create_group("stage6_review")
@@ -7965,29 +7959,18 @@ def _open_batch(
     # operation that can mix two analysis models inside one artifact. Checked
     # before the snapshot so a refused batch leaves the file untouched.
     require_splice_compatible_environment(path)
-    baseline_created = False
     if snapshot:
         # Snapshot the automatic fit before the first edit mutates it in place
         # (a no-op after the first time), so 'review undo' can restore it and
-        # replay. Whether this call created it is remembered, so a batch
-        # cancelled before its persist can take it back (_discard_batch).
-        baseline_created = not _has_stage5_baseline(path)
+        # replay. A batch abandoned before its persist (a cancel, a failing
+        # events callback) takes the snapshot back with everything else: the
+        # whole call is one transaction (atomic_write), whose working copy is
+        # discarded.
         _snapshot_stage5_baseline(path)
     ctx = _build_batch_ctx(path, snap_tol_mhz=snap_tol_mhz, shared=shared)
     ctx.baseline_taken = snapshot
-    ctx.baseline_created = baseline_created
     ctx.events = _REVIEW_SCOPE.get()
     return ctx
-
-
-def _discard_batch(ctx: _BatchCtx, path: str) -> None:
-    """Undo the one write an opened batch makes before its persist: the undo
-    baseline, when this batch created it. For a batch abandoned on a cancel
-    or a failing events callback, which leaves the file exactly as it was.
-    A batch whose persist has begun is never discarded."""
-    if ctx.baseline_created and not ctx.persist_started:
-        clear_stage5_baseline(path)
-        ctx.baseline_created = False
 
 
 def _cascade_batch(ctx: _BatchCtx, *, snap_tol_mhz: float) -> List[int]:
@@ -8070,9 +8053,7 @@ def _finish_batch(
     if cascaded is None:
         cascaded = _cascade_batch(ctx, snap_tol_mhz=snap_tol_mhz)
 
-    # The batch's final write: from here it completes (no cancel check point
-    # and no events below), so it is never discarded.
-    ctx.persist_started = True
+    # The batch's final write (no cancel check point and no events below).
     shape_attr = str(ctx.changeset.spectrum_fit.parameters.get("shape", "lorentzian"))
     # Only the windows this batch touched are rewritten (S4). The batch knows
     # exactly which those are -- ``mutated_wids`` is what the cascade above
@@ -8080,7 +8061,7 @@ def _finish_batch(
     # the entire window table on every edit, plus ~919 kB of unreclaimed file
     # growth per write, since deleting an HDF5 group does not return its
     # space. A file with no fit yet still takes the full writer.
-    with h5py.File(path, "a") as h5f:
+    with h5open(path, "a") as h5f:
         if "stage5_fitting" not in h5f:
             grp = h5f.create_group("stage5_fitting")
             save_spectrum_fit_to_hdf5(ctx.changeset.spectrum_fit, grp)
@@ -8098,11 +8079,9 @@ def _finish_batch(
 
     # S5: publish the just-persisted fit for the next batch in this same
     # session, stamped with the fit group's write stamp so the next batch can
-    # tell whether anything has rewritten it since.
+    # tell whether anything has rewritten it since. The stamp is three attrs
+    # on the fit group, which the next write's compacted copy preserves.
     ctx.shared.fit_cache.install(ctx.changeset.spectrum_fit, path)
-    # The fit-cache stamp above is three attrs on the fit group, which the
-    # compaction copy preserves, so the order of these two does not matter.
-    compact_file(path)
     return cascaded
 
 
@@ -8127,19 +8106,16 @@ def _run_single_action(
     reuse it (``ReviewSession``, D3); a fresh one is built when omitted,
     exactly as before.
     """
+    # A cancel or a failing events callback before the persist leaves nothing
+    # of the action: the call's transaction discards its working copy.
     ctx = _open_batch(path, snap_tol_mhz=snap_tol_mhz, shared=shared)
-    try:
-        _check_cancel()
-        t0 = time.monotonic()
-        result = apply(ctx)
-        wid = getattr(result, "window_id", None)
-        if isinstance(wid, int):
-            _report_window(ctx, wid, index=1, total=1, elapsed_s=time.monotonic() - t0)
-        _finish_batch(ctx, path, snap_tol_mhz=snap_tol_mhz)
-    except (OperationCancelledError, CallbackFailedError):
-        # Nothing of the action persists: the file is as it was.
-        _discard_batch(ctx, path)
-        raise
+    _check_cancel()
+    t0 = time.monotonic()
+    result = apply(ctx)
+    wid = getattr(result, "window_id", None)
+    if isinstance(wid, int):
+        _report_window(ctx, wid, index=1, total=1, elapsed_s=time.monotonic() - t0)
+    _finish_batch(ctx, path, snap_tol_mhz=snap_tol_mhz)
     return result
 
 
@@ -8612,16 +8588,12 @@ def _execute_curation_batch(
     # all-``accept`` plan whose accepts carry candidates is fit-mutating but
     # reads as non-mutating to the callers' "any non-accept action" pre-check,
     # so a caller-side gate alone would let that shape through.
+    # A curation batch is one unit: a cancel (or a failing events callback)
+    # before its persist discards all of it with the call's transaction.
     ctx = _open_batch(path, snap_tol_mhz=snap_tol_mhz, shared=shared)
-    try:
-        return _run_curation_batch(
-            ctx, path, plan, snap_tol_mhz=snap_tol_mhz, deferred=deferred
-        )
-    except (OperationCancelledError, CallbackFailedError):
-        # A curation batch is one unit: a cancel (or a failing events
-        # callback) before its persist discards all of it.
-        _discard_batch(ctx, path)
-        raise
+    return _run_curation_batch(
+        ctx, path, plan, snap_tol_mhz=snap_tol_mhz, deferred=deferred
+    )
 
 
 def _run_curation_batch(
@@ -9028,7 +9000,7 @@ def _reset_to_baseline(path: str, *, restore_fit: bool) -> None:
     replays both start here."""
     if restore_fit:
         _restore_stage5_baseline(path)
-    with h5py.File(path, "a") as h5f:
+    with h5open(path, "a") as h5f:
         if "stage6_review" in h5f:
             del h5f["stage6_review"]
     review_run_impl(path)
@@ -9094,22 +9066,17 @@ def _apply_curation_at_prefix(
     # The restore-then-replay is one unit: a cancel is honoured here, before
     # the restore, and never once it has begun.
     _check_cancel()
-    with deferred_compaction(), _committing():
+    # A refusal inside the replay (ValueError, KeyError) discards the whole
+    # call with its transaction, so the file stays as it was before the call.
+    with _committing():
         _reset_to_baseline(path, restore_fit=baseline)
-        try:
-            outcome = _execute_curation_batch(
-                path,
-                prefix_plan,
-                snap_tol_mhz=snap_tol,
-                shared=shared,
-                deferred=deferred,
-            )
-        except (ValueError, KeyError):
-            # Nothing was persisted; realign the file at the prefix alone.
-            _execute_curation_batch(
-                path, prefix_plan, snap_tol_mhz=snap_tol, shared=shared
-            )
-            raise
+        outcome = _execute_curation_batch(
+            path,
+            prefix_plan,
+            snap_tol_mhz=snap_tol,
+            shared=shared,
+            deferred=deferred,
+        )
 
     assert outcome.resolved_deferred is not None  # a deferred segment always resolves
     plan, warnings = outcome.resolved_deferred
@@ -9935,7 +9902,7 @@ def review_undo_impl(
     # surviving decision. Restore-then-replay is one unit: a cancel is honoured
     # here, before the restore, and never once it has begun.
     _check_cancel()
-    with deferred_compaction(), _committing():
+    with _committing():
         _reset_to_baseline(path, restore_fit=baseline)
         outcome = _execute_curation_batch(
             path, plan, snap_tol_mhz=resolve_snap_tol_mhz(path, None), shared=_shared
@@ -10244,9 +10211,9 @@ def set_sigma_floor_impl(file_path: Union[Path, str], sigma_floor_khz: float) ->
     :func:`refresh_persisted_final_products_impl`), so the file never carries a
     ``sigma_f`` budget its own floor contradicts.
     """
-    _store_sigma_floor(file_path, sigma_floor_khz)
-    if refresh_persisted_final_products_impl(file_path):
-        compact_file(str(file_path))
+    with atomic_write(file_path):
+        _store_sigma_floor(file_path, sigma_floor_khz)
+        refresh_persisted_final_products_impl(file_path)
 
 
 def _store_sigma_floor(file_path: Union[Path, str], sigma_floor_khz: float) -> None:
@@ -10261,7 +10228,7 @@ def _store_sigma_floor(file_path: Union[Path, str], sigma_floor_khz: float) -> N
             message=f"sigma_floor_khz must be finite and non-negative, got "
             f"{sigma_floor_khz!r}",
         )
-    with h5py.File(str(file_path), "a") as h5f:
+    with h5open(str(file_path), "a") as h5f:
         save_frequency_calibration_to_hdf5(FrequencyCalibration(floor), h5f)
 
 
@@ -10283,7 +10250,7 @@ def _fid_header_for_stamp(path: str) -> Optional[Tuple[float, str]]:
     carries only a hand-built ``stage6_review`` group, as some report-table
     tests do) -- nothing to compare a stamp against, not evidence of staleness.
     """
-    with h5py.File(path, "r") as h5f:
+    with h5open(path, "r") as h5f:
         fid_grp = h5f.get("stage0_fid_data")
         if fid_grp is None:
             return None
@@ -10321,7 +10288,7 @@ def frequency_calibration_impl(file_path: Union[Path, str]) -> CalibrationStamp:
     the *file*, not the Stage 6 products, and predates them.
     """
     path = str(file_path)
-    if not Path(path).exists():
+    if not pipeline_exists(path):
         raise FileNotFoundError(
             f"Pipeline file not found: {path}\n\n"
             f"To create a new pipeline:\n"
@@ -10329,7 +10296,7 @@ def frequency_calibration_impl(file_path: Union[Path, str]) -> CalibrationStamp:
         )
     cal_state, epsilon, sigma_eps = _derive_frequency_calibration(path)
     header = _fid_header_for_stamp(path)
-    with h5py.File(path, "r") as h5f:
+    with h5open(path, "r") as h5f:
         floor_khz = load_frequency_calibration_from_hdf5(h5f).sigma_floor_khz
     return CalibrationStamp(
         state=cal_state,
@@ -10406,7 +10373,7 @@ def _persisted_table_predates_fit_fields(path: str) -> bool:
     is rebuilt from the raw fit -- in memory on a read, persisted by the next
     write that stores the table. Read-only."""
     try:
-        with h5py.File(path, "r") as h5f:
+        with h5open(path, "r") as h5f:
             group = h5f.get("stage6_review")
             return final_products_predate_fit_fields(group)
     except OSError:
@@ -10418,7 +10385,7 @@ def _rebuild_final_products(path: str) -> Optional[FinalProducts]:
     file's current calibration. Pure derivation, read-only -- touches no file
     and does not require a Stage 6 action. Returns ``None`` when there is no
     Stage 5 fit to derive from."""
-    with h5py.File(path, "r") as h5f:
+    with h5open(path, "r") as h5f:
         if "stage5_fitting" not in h5f:
             return None
         spectrum_fit: SpectrumFit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
@@ -10918,7 +10885,7 @@ def review_run_impl(
     """
     path = str(file_path)
 
-    with h5py.File(path, "r") as h5f:
+    with h5open(path, "r") as h5f:
         if "stage5_fitting" not in h5f:
             raise StageDependencyError(
                 "review",
@@ -10953,20 +10920,21 @@ def review_run_impl(
         detail={"n_windows": len(spectrum_fit.window_fits), "path": path},
         file_path=path,
     ) as scope:
-        result, final_products = _review_run(
-            path,
-            spectrum_fit,
-            existing_review,
-            fid,
-            spur_centers_mhz=spur_centers_mhz,
-            acquisition_us=acquisition_us,
-            merged_window_freqs=merged_window_freqs,
-            bar=bar,
-            attention_candidate_evidence=attention_candidate_evidence,
-            kappa=kappa,
-            noise_floor=noise_floor,
-            sigma_floor_khz=sigma_floor_khz,
-        )
+        with atomic_write(path):
+            result, final_products = _review_run(
+                path,
+                spectrum_fit,
+                existing_review,
+                fid,
+                spur_centers_mhz=spur_centers_mhz,
+                acquisition_us=acquisition_us,
+                merged_window_freqs=merged_window_freqs,
+                bar=bar,
+                attention_candidate_evidence=attention_candidate_evidence,
+                kappa=kappa,
+                noise_floor=noise_floor,
+                sigma_floor_khz=sigma_floor_khz,
+            )
         scope.finish(review_run_summary(result, final_products), detail={"path": path})
     return result
 
@@ -11027,7 +10995,7 @@ def _review_run(
     # reflects exactly what the record carries (never a transient flag).
     if sigma_floor_khz is not None:
         _store_sigma_floor(path, sigma_floor_khz)
-    with h5py.File(path, "r") as h5f:
+    with h5open(path, "r") as h5f:
         floor_khz = load_frequency_calibration_from_hdf5(h5f).sigma_floor_khz
         floor_record = frequency_calibration_provenance(h5f)
         clocks_declared = fit_declares_clocks(h5f)
@@ -11111,7 +11079,7 @@ def _fit_ctx_stage_provenance(path: str) -> Tuple[Any, ...]:
     size -- defense in depth behind the fast path, not a replacement for it
     (see :func:`_compute_fit_ctx_fingerprint`).
     """
-    with h5py.File(path, "r") as h5f:
+    with h5open(path, "r") as h5f:
         stages_attrs = h5f["pipeline_stages"].attrs if "pipeline_stages" in h5f else {}
         completed = str(stages_attrs.get("completed_stages", "[]"))
         last_updated = str(stages_attrs.get("last_updated", ""))
@@ -11153,7 +11121,7 @@ def _compute_fit_ctx_fingerprint(path: str) -> _FitCtxFingerprint:
     decision 7 in ``scratch/preview-session-plan.md``: no on-disk generation
     counter -- this re-read is the substitute).
     """
-    st = os.stat(path)
+    st = os.stat(resolve(path))
     return (st.st_mtime_ns, st.st_size, _fit_ctx_stage_provenance(path))
 
 
@@ -11573,15 +11541,18 @@ class ReviewSession:
         rather than a second computation trusted to agree with the first.
         """
         snap_tol = resolve_snap_tol_mhz(self._path, None)
-        gate_ctx = _open_batch(self._path, snap_tol_mhz=snap_tol, shared=self._shared)
-        staged.ctx.baseline_taken = gate_ctx.baseline_taken
-        return _finish_batch(
-            staged.ctx,
-            self._path,
-            snap_tol_mhz=snap_tol,
-            cascaded=staged.cascaded_wids,
-            precomputed_review=staged.review,
-        )
+        with atomic_write(self._path):
+            gate_ctx = _open_batch(
+                self._path, snap_tol_mhz=snap_tol, shared=self._shared
+            )
+            staged.ctx.baseline_taken = gate_ctx.baseline_taken
+            return _finish_batch(
+                staged.ctx,
+                self._path,
+                snap_tol_mhz=snap_tol,
+                cascaded=staged.cascaded_wids,
+                precomputed_review=staged.review,
+            )
 
     def review_apply(
         self,

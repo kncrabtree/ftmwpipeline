@@ -118,6 +118,7 @@ from ...io.window_planning_settings_serialization import (
     load_window_planning_settings_from_h5,
     save_window_planning_settings_to_h5,
 )
+from ..atomic import atomic_write, h5open
 
 
 @dataclass(frozen=True)
@@ -441,6 +442,12 @@ def set_setting(file_path: Union[str, Path], knob: str, value: Any) -> SetResult
     and native-length, so there are no FT apodization knobs to set.
     """
     path = str(file_path)
+    with atomic_write(path):
+        return _set_setting(path, knob, value)
+
+
+def _set_setting(path: str, knob: str, value: Any) -> SetResult:
+    """The body of :func:`set_setting` (inside its transaction)."""
     prefix, sub, field = _split_knob(knob)
 
     if prefix == "stage1":
@@ -563,9 +570,8 @@ def _assign(settings: Any, sub: Optional[str], field: str, value: Any) -> None:
 def _invalidate_inclusive(path: str, own_stages: Tuple[str, ...]) -> Tuple[str, ...]:
     """Drop ``own_stages`` (results + completion) and every stage that depends on
     them, returning the invalidated stages as canonical names in rerun order."""
-    import h5py
 
-    with h5py.File(path, "a") as h5f:
+    with h5open(path, "a") as h5f:
         if "pipeline_stages" not in h5f:
             return ()
         invalidated = invalidate_stages_in_file(

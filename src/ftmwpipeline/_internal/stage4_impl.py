@@ -21,8 +21,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Mapping, Optional, Tuple
 
-import h5py
-
 from ..contract import CancelToken, EventCallback, Stage
 from ..core.data_structures import ComplexFT, WindowPlan
 from ..core.window_planning_settings import (
@@ -48,6 +46,7 @@ from ..preprocessing.window_planning import (
     build_window_plan,
 )
 from .active_ft_support import build_active_grid_with_noise
+from .atomic import atomic_write, h5open
 from .shared_utils import active_acquisition_us, require_resolved
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage1_impl import compute_ft_impl
@@ -134,9 +133,10 @@ def assign_windows_impl(
 
     ops = operation_events("windows run", events, cancel)
     with ops.stage(Stage.WINDOWS, verb="windows run", file_path=file_path) as scope:
-        result = _assign_windows(
-            file_path, settings=settings, preset=preset, events=scope
-        )
+        with atomic_write(file_path):
+            result = _assign_windows(
+                file_path, settings=settings, preset=preset, events=scope
+            )
         scope.finish(windows_run_summary(result))
     return result
 
@@ -149,7 +149,7 @@ def _assign_windows(
     events: "StageScope",
 ) -> Dict[str, Any]:
     """The body of :func:`assign_windows_impl` (inside its stage scope)."""
-    with h5py.File(file_path, "r") as h5f:
+    with h5open(file_path, "r") as h5f:
         if "stage3_peaks" not in h5f:
             raise StageDependencyError(
                 "stage4_windows",
@@ -301,7 +301,7 @@ def _assign_windows(
 
 def save_window_plan_impl(file_path: str, plan: WindowPlan) -> None:
     """Persist a window plan to ``/stage4_windows`` (overwriting any existing)."""
-    with h5py.File(file_path, "a") as h5f:
+    with h5open(file_path, "a") as h5f:
         if "stage4_windows" in h5f:
             del h5f["stage4_windows"]
         grp = h5f.create_group("stage4_windows")
@@ -311,7 +311,7 @@ def save_window_plan_impl(file_path: str, plan: WindowPlan) -> None:
 
 def load_windows_impl(file_path: str) -> Dict[str, Any]:
     """Load the persisted Stage 4 window plan (validates structure loudly)."""
-    with h5py.File(file_path, "r") as h5f:
+    with h5open(file_path, "r") as h5f:
         if "stage4_windows" not in h5f:
             raise StageDependencyError(
                 "load windows",
@@ -380,7 +380,7 @@ def visualize_windows_impl(
 
 def save_window_parameters_impl(file_path: str, parameters: Dict[str, Any]) -> None:
     """Save Stage 4 parameters for reuse (JSON under processing_parameters)."""
-    with h5py.File(file_path, "a") as h5f:
+    with atomic_write(file_path), h5open(file_path, "a") as h5f:
         grp = h5f.require_group("processing_parameters")
         if "window_assignment" in grp:
             del grp["window_assignment"]

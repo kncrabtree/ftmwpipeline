@@ -23,6 +23,7 @@ from typing import Any, Callable, Dict, Optional, Sequence
 
 import h5py
 
+from .._internal.atomic import h5open
 from .provenance import FIELD_SET_VERSION_ATTR, write_field_set_version
 
 
@@ -61,7 +62,7 @@ def save_settings(
     attrs. This covers the flat (Stage 2) and sub-block (Stages 2b/3/4/5) layouts
     and Stage 5's ``shape`` subgroup-or-sentinel.
     """
-    with h5py.File(file_path, "a") as h5f:
+    with h5open(file_path, "a") as h5f:
         if path in h5f:
             del h5f[path]
         grp = h5f.create_group(path)
@@ -94,7 +95,7 @@ def load_subblock_settings(
     via *extra_top* (Stage 5's ``shape``), then hands the assembled nested dict
     to *from_attrs*.
     """
-    with h5py.File(file_path, "r") as h5f:
+    with h5open(file_path, "r") as h5f:
         if path not in h5f:
             return None
         grp = h5f[path]
@@ -122,7 +123,7 @@ def load_flat_settings(
     the field-set version, and hands the field map to *from_attrs* (the Stage 2
     layout).
     """
-    with h5py.File(file_path, "r") as h5f:
+    with h5open(file_path, "r") as h5f:
         if path not in h5f:
             return None
         grp = h5f[path]
@@ -137,7 +138,7 @@ def load_flat_settings(
 def settings_block_present(file_path: str, path: str) -> bool:
     """Lightweight: does the file carry a persisted settings group at ``path``?"""
     try:
-        with h5py.File(file_path, "r") as h5f:
+        with h5open(file_path, "r") as h5f:
             return path in h5f
     except (OSError, KeyError):
         return False

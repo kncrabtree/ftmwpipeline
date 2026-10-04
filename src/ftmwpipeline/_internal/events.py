@@ -18,7 +18,10 @@ one :class:`OperationEvents`, built once at the top of the operation by
   check *between* stages), emits ``StageStarted``, and yields a
   :class:`StageScope`; the stage calls :meth:`StageScope.finish` after its
   results are written, which emits ``StageFinished``. A stage that raises emits
-  no ``StageFinished``.
+  no ``StageFinished``. "Written" means durable: a writing stage runs its body
+  inside :func:`~ftmwpipeline._internal.atomic.atomic_write` *within* the
+  stage scope and calls ``finish`` after that block, i.e. after the replace
+  (§Crash safety).
 
 With no callback and no token the same object still renders every log line, so
 call sites never branch on whether a caller is listening, and a call site that
@@ -79,6 +82,7 @@ from ..file_manager import (
     CallbackFailedError,
     OperationCancelledError,
 )
+from .atomic import h5open
 
 #: The parent's cancel poll interval while pool workers fit (seconds). Bounds the
 #: cancel latency of the parallel Stage 5 walk.
@@ -457,6 +461,11 @@ class OperationEvents:
         the block: its :class:`CallbackFailedError` is raised when the block
         ends, and nothing more is delivered meanwhile. Log lines still render.
 
+        Inside a transaction (:func:`~ftmwpipeline._internal.atomic.atomic_write`)
+        the held failure, raised when the block ends, still aborts the call:
+        the transaction discards its working copy, so the file is left as it
+        was before the call (§Crash safety).
+
         If the block itself raises an ordinary exception while a callback
         failure is held, the caller still sees ``callback_failed``: the held
         :class:`CallbackFailedError` is raised (its ``__cause__`` stays the
@@ -595,12 +604,11 @@ class OperationEvents:
         if self.callback is None:
             return
         try:
-            import h5py
 
             from ..core.environment import capture_environment, describe_runtime_drift
             from ..io.environment_serialization import load_stage_environments
 
-            with h5py.File(os.fspath(file_path), "r") as h5f:
+            with h5open(os.fspath(file_path), "r") as h5f:
                 envs = load_stage_environments(h5f)
             lines = describe_runtime_drift(envs, capture_environment())
         except (OSError, KeyError, ValueError):

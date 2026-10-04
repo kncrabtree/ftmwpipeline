@@ -21,6 +21,7 @@ from ..file_manager import (
     canonical_invalidated,
     create_pipeline_file,
     open_pipeline_file,
+    pipeline_file_path,
     stages_an_import_replaces,
     validate_pipeline_file,
 )
@@ -32,6 +33,7 @@ from ..io.data_loaders import (
 )
 from ..io.fid_serialization import load_fid_from_hdf5
 from ..io.stage_fit_settings_serialization import write_recommended_chirp_window
+from .atomic import atomic_write, h5open
 
 if TYPE_CHECKING:
     from .events import StageScope
@@ -242,15 +244,20 @@ def import_data_impl(
 
     ops = operation_events("data import", events, cancel)
     with ops.stage(Stage.DATA, verb="data import") as scope:
-        result = _import_data(
-            file_path,
-            source,
-            format_name,
-            force,
-            fid_index=fid_index,
-            events=scope,
-            format_params=format_params,
-        )
+        # One atomic write of the file the import creates (or overwrites):
+        # ``create_pipeline_file`` adds the ``.ftmw`` suffix, so the
+        # transaction is on the suffixed path. StageFinished follows the
+        # replace.
+        with atomic_write(pipeline_file_path(file_path)):
+            result = _import_data(
+                file_path,
+                source,
+                format_name,
+                force,
+                fid_index=fid_index,
+                events=scope,
+                format_params=format_params,
+            )
         scope.finish(data_import_summary(result))
     return result
 
@@ -413,9 +420,8 @@ def load_fid_from_pipeline_impl(file_path: str) -> FID:
         file_path_obj, source_metadata, stage_tracker = open_pipeline_file(file_path)
 
         # Load FID data from the validated file
-        import h5py
 
-        with h5py.File(file_path_obj, "r") as h5f:
+        with h5open(file_path_obj, "r") as h5f:
             if "stage0_fid_data" not in h5f:
                 raise ValueError("Invalid pipeline file: missing 'fid_data' group")
             fid = load_fid_from_hdf5(h5f["stage0_fid_data"])

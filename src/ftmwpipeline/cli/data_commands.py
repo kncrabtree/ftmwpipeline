@@ -8,8 +8,7 @@ formats and visualizing FID data for validation.
 import argparse
 from pathlib import Path
 
-import h5py
-
+from .._internal.atomic import h5open
 from .._internal.stage0_impl import (
     data_import_summary,
     get_pipeline_info_impl,
@@ -205,7 +204,7 @@ def cmd_data_visualize(args: argparse.Namespace) -> int:
 
                 # Show acquisition segment map when present
                 try:
-                    with h5py.File(file_path, "r") as h5f:
+                    with h5open(file_path, "r") as h5f:
                         if "stage0_fid_data" in h5f:
                             segs = load_acquisition_segments_from_hdf5(
                                 h5f["stage0_fid_data"]

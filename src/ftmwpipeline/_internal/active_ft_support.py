@@ -19,7 +19,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
-import h5py
 import numpy as np
 
 from ..core.data_structures import ComplexFT, Sideband
@@ -29,6 +28,7 @@ from ..fitting.active_ft import ActiveFTResult, compute_active_ft
 from ..io.noise_result_serialization import load_noise_result_from_hdf5
 from ..io.noise_settings_serialization import load_noise_settings_from_h5
 from ..preprocessing.noise_estimation import NoiseResult, estimate_active_ft_noise
+from .atomic import h5open
 from .shared_utils import active_acquisition_us
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage1_impl import compute_ft_impl
@@ -203,7 +203,7 @@ def load_persisted_active_noise(
         If Stage 2 (noise estimation) has not been completed.
     """
     active_ft = compute_persisted_active_ft(file_path)
-    with h5py.File(file_path, "r") as h5f:
+    with h5open(file_path, "r") as h5f:
         if "stage2_noise_result" not in h5f:
             raise StageDependencyError(
                 "load noise",

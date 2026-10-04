@@ -51,6 +51,7 @@ from typing import Any, Mapping, Optional
 import h5py
 import numpy as np
 
+from .._internal.atomic import h5open
 from ..core.environment import EnvironmentRecord
 
 logger = logging.getLogger(__name__)
@@ -124,7 +125,7 @@ def record_provenance(
 ) -> Optional[RecordProvenance]:
     """The :class:`RecordProvenance` of the record at *path*, or ``None`` if
     the file holds no such record."""
-    with h5py.File(file_path, "r") as h5f:
+    with h5open(file_path, "r") as h5f:
         group = h5f.get(path)
         if not isinstance(group, h5py.Group):
             return None
@@ -166,7 +167,7 @@ def stamp_stage_epoch_in_file(
     file_path: str, stage_name: str, *, rerun: bool = False
 ) -> EnvironmentRecord:
     """:func:`stamp_stage_epoch` on a file path (opens it for append)."""
-    with h5py.File(file_path, "a") as h5f:
+    with h5open(file_path, "a") as h5f:
         return stamp_stage_epoch(h5f, stage_name, rerun=rerun)
 
 

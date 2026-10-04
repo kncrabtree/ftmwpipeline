@@ -22,8 +22,6 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Tuple
 
-import h5py
-
 from ..contract import CancelToken, EventCallback
 from ..core.data_structures import ChirpWindow
 from ..core.settings import FT_PROCESSING_PATH, RECOMMENDED_PATH
@@ -35,6 +33,7 @@ from ..io.stage_fit_settings_serialization import (
     write_recommended_start_detection,
 )
 from ..preprocessing.start_detection import StartDetectionResult, detect_start_time
+from .atomic import atomic_write, h5open
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage1_impl import (
     _read_settings_layer,
@@ -143,9 +142,10 @@ def detect_start_time_impl(
 
     ops = operation_events("start run", events, cancel)
     with ops.stage(None, verb="start run", file_path=file_path) as scope:
-        out = _detect_start_time(
-            file_path, settings=settings, stamp=stamp, events=scope
-        )
+        with atomic_write(file_path):
+            out = _detect_start_time(
+                file_path, settings=settings, stamp=stamp, events=scope
+            )
         scope.finish(start_run_summary(out))
     return out
 
@@ -288,7 +288,7 @@ def _note_stage1_unaffected(file_path: str, recommended_start_us: float) -> None
     the old spectrum), but a user who just ran ``start run`` should hear that
     adopting the new value is an explicit Stage 1 re-run.
     """
-    with h5py.File(file_path, "r") as h5f:
+    with h5open(file_path, "r") as h5f:
         if not ft_record_is_authoritative(h5f):
             return
     persisted = _read_settings_layer(file_path, FT_PROCESSING_PATH)
@@ -362,7 +362,7 @@ def resolve_start_provenance(file_path: str) -> StartProvenance:
     """
     ft = _read_settings_layer(file_path, FT_PROCESSING_PATH)
     rec = _read_settings_layer(file_path, RECOMMENDED_PATH)
-    with h5py.File(file_path, "r") as h5f:
+    with h5open(file_path, "r") as h5f:
         authoritative = ft_record_is_authoritative(h5f)
     effective_start = ft.start_us if ft is not None else None
     recommended_start = rec.start_us if rec is not None else None

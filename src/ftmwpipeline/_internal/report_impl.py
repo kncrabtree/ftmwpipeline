@@ -44,6 +44,7 @@ from ..fitting.validation import (
     snr_aware_chi2_pass,
 )
 from ..io.peak_serialization import load_peaks_from_hdf5
+from .atomic import h5open
 from .catalog_xref import CatalogCrossRef, CatalogMatch, load_cross_ref
 
 VALID_FORMATS = ("csv", "json", "latex")
@@ -219,7 +220,7 @@ def _environment_provenance(file_path: Union[Path, str]) -> List[Tuple[str, str]
     )
 
     try:
-        with h5py.File(str(file_path), "r") as h5f:
+        with h5open(str(file_path), "r") as h5f:
             envs = load_stage_environments(h5f)
             ack = load_environment_ack(h5f)
     except (OSError, KeyError):  # pragma: no cover - report already opened it
@@ -924,7 +925,7 @@ def _noise_band_table(
         cft = build_trimmed_active_ft(file_path, trim)
         freqs = np.asarray(cft.freq_array, dtype=float)
         mags = np.asarray(cft.magnitude_spectrum, dtype=float)
-        with h5py.File(file_path, "r") as h5f:
+        with h5open(file_path, "r") as h5f:
             noise = load_noise_result_from_hdf5(h5f["stage2_noise_result"], freqs, mags)
         sigma = np.asarray(noise.rms_noise, dtype=float)
         mask = np.asarray(noise.noise_mask, dtype=bool)
@@ -1024,7 +1025,7 @@ def _assemble_summary(file_path: Union[Path, str]) -> _SummaryModel:
     timebase_lattice_g: Optional[float] = None
     ft_settings = _resolve_settings(path, None)
 
-    with h5py.File(path, "r") as h5f:
+    with h5open(path, "r") as h5f:
         # --- provenance -----------------------------------------------------
         src = h5f.get("source_metadata")
         source_path = ""

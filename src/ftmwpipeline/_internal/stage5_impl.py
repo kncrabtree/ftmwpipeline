@@ -39,7 +39,6 @@ from typing import (
     cast,
 )
 
-import h5py
 import numpy as np
 from threadpoolctl import threadpool_limits
 
@@ -112,6 +111,7 @@ from .active_ft_support import (
     build_active_grid_with_noise,
     default_tau0_us,
 )
+from .atomic import atomic_write, h5open
 from .events import StageScope, detached_scope, operation_events
 from .read_impl import _open
 from .shared_utils import active_acquisition_us, require_resolved
@@ -1595,7 +1595,7 @@ def build_stage5_fit_context(
             sideband=sideband,
         )
         chirp_response_probe = None
-        with h5py.File(file_path, "r") as h5f:
+        with h5open(file_path, "r") as h5f:
             if "stage0_fid_data" in h5f:
                 acq_segs = load_acquisition_segments_from_hdf5(h5f["stage0_fid_data"])
                 if acq_segs is not None:
@@ -1646,7 +1646,7 @@ def build_stage5_fit_context(
                 probe_freq_mhz=probe_freq_mhz,
                 sideband=sideband,
             )
-            with h5py.File(file_path, "r") as h5f:
+            with h5open(file_path, "r") as h5f:
                 if TIMEBASE_GROUP_PATH in h5f:
                     tb = load_timebase_calibration_from_hdf5(h5f[TIMEBASE_GROUP_PATH])
                     tb_epsilon = float(tb.epsilon)
@@ -1797,7 +1797,7 @@ def fit_peaks_impl(
     """
     ops = operation_events("fit run", events, cancel)
     with ops.stage(Stage.FIT, verb="fit run", file_path=file_path) as scope:
-        with threadpool_limits(limits=1):
+        with atomic_write(file_path), threadpool_limits(limits=1):
             result = _fit_peaks_impl(
                 file_path,
                 shape=shape,
@@ -2057,7 +2057,7 @@ def _fit_peaks_impl(
     )
 
     # --- Validate Stage 4 prerequisite up front ----------------------------
-    with h5py.File(file_path, "r") as h5f:
+    with h5open(file_path, "r") as h5f:
         if "stage4_windows" not in h5f:
             raise StageDependencyError(
                 "stage5_fitting",
@@ -2762,7 +2762,7 @@ def save_spectrum_fit_impl(file_path: str, fit: SpectrumFit) -> None:
     # group attrs so consumers can branch on shape without having to load
     # the full SpectrumFit struct first.
     shape_attr = str(fit.parameters.get("shape", PeakShape.LORENTZIAN.value))
-    with h5py.File(file_path, "a") as h5f:
+    with h5open(file_path, "a") as h5f:
         if "stage5_fitting" in h5f:
             del h5f["stage5_fitting"]
         grp = h5f.create_group("stage5_fitting")
@@ -2869,7 +2869,7 @@ def read_fit_thresholds_impl(file_path: Union[str, Path]) -> Dict[str, Any]:
 
 def load_fit_impl(file_path: str) -> Dict[str, Any]:
     """Load the persisted Stage 5 fit (validates structure loudly)."""
-    with h5py.File(file_path, "r") as h5f:
+    with h5open(file_path, "r") as h5f:
         if "stage5_fitting" not in h5f:
             raise StageDependencyError(
                 "load fit",

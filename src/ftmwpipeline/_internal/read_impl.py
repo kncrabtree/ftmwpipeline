@@ -169,6 +169,8 @@ from .absence_rules import (
     int_or_absent,
     knockout_absence,
 )
+from .atomic import exists as pipeline_exists
+from .atomic import h5open
 from .shared_utils import active_acquisition_us
 
 __all__ = [
@@ -833,7 +835,7 @@ def _open(file_path: Union[str, Path]) -> h5py.File:
     reject exactly the same files.
     """
     path = Path(file_path)
-    if not path.exists():
+    if not pipeline_exists(path):
         raise PipelineFileNotFoundError(
             path,
             message=(
@@ -843,7 +845,7 @@ def _open(file_path: Union[str, Path]) -> h5py.File:
             ),
         )
     try:
-        h5f = h5py.File(path, "r")
+        h5f = h5open(path, "r")
     except OSError as exc:
         if is_transient_open_error(exc):
             raise
