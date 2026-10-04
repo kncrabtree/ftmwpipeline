@@ -85,6 +85,7 @@ from ..core.data_structures import (
 )
 from ..file_manager import (
     BadSettingError,
+    CurationConflictError,
     NotFoundError,
     NotFoundValueError,
     PipelineFileError,
@@ -2207,6 +2208,10 @@ def refit_window_core(
     # A "remove" on a thawed line drops it entirely (not frozen): the user
     # decided to remove it, so it is neither re-fit nor re-appended.
     forbidden_offsets: List[float] = []
+    # Every remove that matches no fitted peak, reported together (not_found
+    # names every unknown id of a request at once).
+    unmatched_removes: List[float] = []
+    unmatched_details: List[str] = []
     for rm_freq in remove:
         rm_offset = float(s * (float(rm_freq) - center_mhz))
 
@@ -2230,10 +2235,12 @@ def refit_window_core(
             continue
 
         if not seed_peaks_with_origin:
-            raise ValueError(
+            unmatched_removes.append(float(rm_freq))
+            unmatched_details.append(
                 f"remove={rm_freq:.4f} MHz: no fitted peaks in window "
                 f"{window_id} to remove"
             )
+            continue
         closest_idx = min(
             range(len(seed_peaks_with_origin)),
             key=lambda i: abs(seed_peaks_with_origin[i][0].offset_mhz - rm_offset),
@@ -2245,15 +2252,21 @@ def refit_window_core(
             closest_mol_freq = (
                 center_mhz + s * seed_peaks_with_origin[closest_idx][0].offset_mhz
             )
-            raise ValueError(
+            unmatched_removes.append(float(rm_freq))
+            unmatched_details.append(
                 f"remove={rm_freq:.4f} MHz: no fitted peak within "
                 f"{snap_tol_mhz:.3f} MHz (closest is at "
                 f"{closest_mol_freq:.4f} MHz, "
                 f"distance={closest_dist_val:.4f} MHz)"
             )
+            continue
         # Record the exact fitted offset as forbidden (rescue must not re-add it).
         removed_offset = seed_peaks_with_origin.pop(closest_idx)[0].offset_mhz
         forbidden_offsets.append(removed_offset)
+    if unmatched_removes:
+        raise NotFoundValueError(
+            "peak", unmatched_removes, message="; ".join(unmatched_details)
+        )
 
     # Recompute background and data_minus_bg with the final frozen_peaks set
     # (which now includes any thawed peaks that were not removed).  This
@@ -2419,8 +2432,10 @@ def refit_window_core(
             )
             if clash is not None:
                 clash_freq = float(center_mhz + s * clash.offset_mhz)
-                raise ValueError(
-                    f"add={float(add_freq):.4f} MHz seeds at "
+                raise CurationConflictError(
+                    "line_already_fitted",
+                    [int(mp.peak_uid)],
+                    message=f"add={float(add_freq):.4f} MHz seeds at "
                     f"{seed_freq_mhz:.4f} MHz, which is the birth position of "
                     f"the line already fitted at {clash_freq:.4f} MHz (both "
                     f"carry peak_uid={mp.peak_uid}). Two lines cannot be born "
@@ -2428,7 +2443,7 @@ def refit_window_core(
                     f"then add the second frequency near the resulting fitted "
                     f"line in a later edit -- an add within snap tolerance of "
                     f"a fitted peak that is not itself being removed is read "
-                    f"as a split of it."
+                    f"as a split of it.",
                 )
         add_derivation = (
             add_derivations[i]
@@ -3095,39 +3110,53 @@ def _derive_review_edit_window_id(
     ]
     if unknown_uids:
         raise _unknown_peak_uids_error(unknown_uids)
+    # Every target no live window covers, reported together (not_found kind
+    # "window", ids the uncovered frequencies).
+    uncovered: List[float] = []
+    uncovered_details: List[str] = []
     for f in add:
         wid = _window_for_curation_token(coverage, f)
         if wid is None:
             if eligible_for_implied_create:
                 return None, float(f)
-            raise ValueError(
+            uncovered.append(float(f))
+            uncovered_details.append(
                 f"add={float(f):.4f} MHz is not covered by any live window "
                 f"(windows are disjoint); create a window at this "
                 f"frequency first with 'review create', or name the window "
                 f"explicitly"
             )
+            continue
         resolutions.append((f"add={float(f):.4f}", wid))
     for t in remove:
         wid = _window_for_curation_token(coverage, t)
         if wid is None:
             assert not isinstance(t, PeakUidToken)  # unknown uids raised above
-            raise ValueError(
+            uncovered.append(float(t))
+            uncovered_details.append(
                 f"remove={float(t):.4f} MHz is not covered by any live "
                 f"window (windows are disjoint); nothing to remove there"
             )
+            continue
         label = (
             f"remove=uid:{t.uid}"
             if isinstance(t, PeakUidToken)
             else f"remove={float(t):.4f}"
         )
         resolutions.append((label, wid))
+    if uncovered:
+        raise NotFoundValueError(
+            "window", uncovered, message="; ".join(uncovered_details)
+        )
     wids = {wid for _, wid in resolutions}
     if len(wids) > 1:
         detail = "; ".join(f"{label} -> window {wid}" for label, wid in resolutions)
-        raise ValueError(
-            f"add/remove targets in this edit resolve to different windows "
-            f"({detail}); issue separate 'review edit' calls, one per "
-            f"window, or pass a window id explicitly"
+        raise CurationConflictError(
+            "targets_span_windows",
+            sorted(wids),
+            message=f"add/remove targets in this edit resolve to different "
+            f"windows ({detail}); issue separate 'review edit' calls, one per "
+            f"window, or pass a window id explicitly",
         )
     return next(iter(wids)), None
 
@@ -5189,7 +5218,8 @@ def _resolve_curation_window_ids(
     resolved: List[CurationOp] = []
     next_implied_id = _FIRST_IMPLIED_WINDOW_ID
     unknown_uids: List[int] = []
-    pending_error: Optional[ValueError] = None
+    uncovered: List[float] = []
+    uncovered_details: List[str] = []
     for op in ops:
         if op.window_id != _DERIVE_WINDOW_SENTINEL:
             resolved.append(op)
@@ -5207,13 +5237,14 @@ def _resolve_curation_window_ids(
         wid = _window_for_curation_token(coverage, freq_raw)
         if wid is None:
             if op.action != "add":
-                if pending_error is None:
-                    pending_error = ValueError(
-                        f"curation line {op.line_no}: {op.action} "
-                        f"{float(token):.4f} MHz is not covered by any live "
-                        f"window (windows are disjoint); nothing to remove "
-                        f"there"
-                    )
+                if float(token) not in uncovered:
+                    uncovered.append(float(token))
+                uncovered_details.append(
+                    f"curation line {op.line_no}: {op.action} "
+                    f"{float(token):.4f} MHz is not covered by any live "
+                    f"window (windows are disjoint); nothing to remove "
+                    f"there"
+                )
                 continue
             # W3: implied create -- see the docstring above.
             correlation_id = next_implied_id
@@ -5233,8 +5264,10 @@ def _resolve_curation_window_ids(
         resolved.append(replace(op, window_id=wid))
     if unknown_uids:
         raise _unknown_peak_uids_error(unknown_uids)
-    if pending_error is not None:
-        raise pending_error
+    if uncovered:
+        raise NotFoundValueError(
+            "window", uncovered, message="; ".join(uncovered_details)
+        )
     return resolved
 
 
@@ -5253,21 +5286,32 @@ def _unknown_peak_uids_error(uids: Sequence[int]) -> NotFoundValueError:
 def _unknown_plan_window_ids(
     known: Collection[int], plan: Sequence[PlannedAction]
 ) -> List[int]:
-    """Every window id *plan* names that is not in *known*, in plan order.
+    """Every window id *plan* names that is not in *known* and that no
+    ``create`` of the plan can install, in plan order.
 
     ``create`` rows name no existing window; a negative id is a placeholder
-    (:data:`_NEW_WINDOW_SENTINEL`, an implied-create correlation id). A plan
-    that mints windows under ids it cannot know yet (a ``create`` without a
-    pinned id) is not checked here -- a later row may legitimately name what
-    that create installs -- and falls back to the per-action lookup.
+    (:data:`_NEW_WINDOW_SENTINEL`, an implied-create correlation id). A
+    pinned ``create`` installs its own id. A ``create`` without a pinned id
+    mints an id it cannot know yet -- one above every window of the plan, so
+    above every *known* id -- and a later row may legitimately name it: such
+    an id is left to the per-action lookup once the creates have run. Every
+    other unknown id cannot exist and is reported here, all at once, even
+    when the plan holds an unpinned create.
     """
-    if any(a.kind == "create" and a.window_id == _NEW_WINDOW_SENTINEL for a in plan):
-        return []
-    live = set(known) | {int(a.window_id) for a in plan if a.kind == "create"}
+    live = set(known) | {
+        int(a.window_id) for a in plan if a.kind == "create" and a.window_id >= 0
+    }
+    mints = any(
+        a.kind == "create" and a.window_id == _NEW_WINDOW_SENTINEL for a in plan
+    )
+    # A minted id is max(plan) + 1, and every known window is in the plan.
+    mint_floor = max(known, default=-1)
     unknown: List[int] = []
     for a in plan:
         wid = int(a.window_id)
         if a.kind == "create" or wid < 0 or wid in live or wid in unknown:
+            continue
+        if mints and wid > mint_floor:
             continue
         unknown.append(wid)
     return unknown
@@ -5293,15 +5337,19 @@ def _raise_curation_failure(
     """Re-raise a failure of plan action *index*, tagged with the action.
 
     A typed :class:`PipelineFileError` keeps its type (a program routes on
-    it); a ``not_found`` is re-issued with the tag in its message and the same
-    ``kind`` / ``ids``. Anything else becomes the historical tagged
-    :class:`ValueError`.
+    it); a ``not_found`` or ``curation_conflict`` is re-issued with the tag in
+    its message and the same attributes. Anything else becomes the historical
+    tagged :class:`ValueError`.
     """
     tag = f"curation action {index + 1} ({describe_planned_action(action)}) failed"
     if isinstance(exc, NotFoundError):
         # The batch refused with ValueError before it was typed.
         raise NotFoundValueError(
             exc.kind, exc.ids, message=f"{tag}: {exc}"
+        ) from exc
+    if isinstance(exc, CurationConflictError):
+        raise CurationConflictError(
+            exc.reason, exc.ids, message=f"{tag}: {exc}"
         ) from exc
     if isinstance(exc, PipelineFileError):
         raise exc
@@ -5947,7 +5995,10 @@ def _restore_stage5_baseline(path: str) -> None:
     """Replace ``/stage5_fitting`` with the baseline snapshot (kept for reuse)."""
     with h5open(path, "a") as h5f:
         if STAGE5_BASELINE_GROUP not in h5f:
-            raise ValueError("no automatic-fit baseline to restore")
+            raise CurationConflictError(
+                "baseline_unavailable",
+                message="no automatic-fit baseline to restore",
+            )
         if "stage5_fitting" in h5f:
             del h5f["stage5_fitting"]
         h5f.copy(STAGE5_BASELINE_GROUP, "stage5_fitting")
@@ -7025,6 +7076,8 @@ def _batch_apply_merge(
     wf = _batch_lookup_wf(ctx, window_id)
 
     matched: List[FittedPeak] = []
+    unmatched: List[float] = []
+    unmatched_details: List[str] = []
     for req_freq in peaks:
         req_freq_f = float(req_freq)
         best: Optional[FittedPeak] = None
@@ -7035,16 +7088,22 @@ def _batch_apply_merge(
                 best_dist = d
                 best = fp
         if best is None or best_dist > snap_tol_mhz:
-            raise ValueError(
+            unmatched.append(req_freq_f)
+            unmatched_details.append(
                 f"merge: no fitted peak within {snap_tol_mhz:.3f} MHz of "
                 f"{req_freq_f:.4f} MHz (closest distance: {best_dist:.4f} MHz)"
             )
+            continue
         if any(m.frequency_mhz == best.frequency_mhz for m in matched):
             raise ValueError(
                 f"merge: frequency {req_freq_f:.4f} MHz matched the same "
                 f"fitted peak twice"
             )
         matched.append(best)
+    if unmatched:
+        raise NotFoundValueError(
+            "peak", unmatched, message="; ".join(unmatched_details)
+        )
 
     weights: List[float] = []
     for fp in matched:
@@ -7205,9 +7264,11 @@ def _batch_apply_split(
             best_dist = d
             best = fp
     if best is None or best_dist > snap_tol_mhz:
-        raise ValueError(
-            f"split: no fitted peak within {snap_tol_mhz:.3f} MHz of "
-            f"{peak_f:.4f} MHz (closest distance: {best_dist:.4f} MHz)"
+        raise NotFoundValueError(
+            "peak",
+            [peak_f],
+            message=f"split: no fitted peak within {snap_tol_mhz:.3f} MHz of "
+            f"{peak_f:.4f} MHz (closest distance: {best_dist:.4f} MHz)",
         )
     matched_freq = float(best.frequency_mhz)
     matched_amp = float(best.amplitude)
@@ -7503,17 +7564,21 @@ def _plan_batch_create(
     if replay_window_id is not None and int(replay_window_id) != new_wid:
         want = int(replay_window_id)
         if proposal.mode == "widened":
-            raise ValueError(
-                f"replaying the window created at {anchor:.4f} MHz now widens "
-                f"window {new_wid} instead of creating window {want}; the base "
-                f"plan or the surviving edit set has changed"
+            raise CurationConflictError(
+                "replay_conflict",
+                [want, new_wid],
+                message=f"replaying the window created at {anchor:.4f} MHz now "
+                f"widens window {new_wid} instead of creating window {want}; "
+                f"the base plan or the surviving edit set has changed",
             )
         taken = {int(w.window_id) for w in plan.windows}
         if want in taken:
-            raise ValueError(
-                f"replaying the window created at {anchor:.4f} MHz wants id "
-                f"{want}, which is already in use; the base plan or the "
-                f"surviving edit set has changed"
+            raise CurationConflictError(
+                "replay_conflict",
+                [want],
+                message=f"replaying the window created at {anchor:.4f} MHz wants "
+                f"id {want}, which is already in use; the base plan or the "
+                f"surviving edit set has changed",
             )
         proposal.window.window_id = want
 
@@ -7620,9 +7685,11 @@ def _batch_apply_create(
     else:
         existing_wf = fit_map.get(new_wid)
         if existing_wf is None:
-            raise ValueError(
-                f"window {new_wid} has no Stage 5 fit to widen; "
-                "re-run 'fit run' before creating windows"
+            raise CurationConflictError(
+                "window_not_fitted",
+                [new_wid],
+                message=f"window {new_wid} has no Stage 5 fit to widen; "
+                "re-run 'fit run' before creating windows",
             )
         seed_wf = existing_wf
         tau_maj_us, sigma_tau_us = _resolve_refit_window_tau(
@@ -7775,13 +7842,15 @@ def _finish_implied_create_edit(
         # ``created_window`` -- see this function's docstring. Refuse rather
         # than persist a decision the replay cannot reconstruct the create
         # from.
-        raise ValueError(
-            f"add={float(add[0]):.4f} MHz implies creating a window, but "
-            f"inside window {created.window_id} (mode='{created.mode}') it "
-            f"was reinterpreted as an edit of an existing peak, which cannot "
-            f"record the implied create for replay. Name the window "
+        raise CurationConflictError(
+            "implied_create_reinterpreted",
+            [int(created.window_id)],
+            message=f"add={float(add[0]):.4f} MHz implies creating a window, "
+            f"but inside window {created.window_id} (mode='{created.mode}') "
+            f"it was reinterpreted as an edit of an existing peak, which "
+            f"cannot record the implied create for replay. Name the window "
             f"explicitly with a separate 'review create' plus 'review edit' "
-            f"if that reinterpretation is what you want."
+            f"if that reinterpretation is what you want.",
         )
     if created.mode == "created":
         # The window did not exist before this action, so it has no "before"
@@ -9215,10 +9284,11 @@ def _apply_curation_at_prefix(
     has_fit_edits = any(e.kind in _FIT_EDIT_KINDS for e in log)
     baseline = _has_stage5_baseline(path)
     if has_fit_edits and not baseline:
-        raise ValueError(
-            "cannot apply at a log prefix: the automatic-fit baseline is "
-            "unavailable (the fit may have been re-run after editing). Rebuild "
-            "from the source and re-edit."
+        raise CurationConflictError(
+            "baseline_unavailable",
+            message="cannot apply at a log prefix: the automatic-fit baseline "
+            "is unavailable (the fit may have been re-run after editing). "
+            "Rebuild from the source and re-edit.",
         )
     prefix_plan = [a for e in kept for a in _resolve_curation_plan(_decision_to_op(e))]
     # The restore-then-replay is one unit: gate first, so a refusal leaves the
@@ -9947,9 +10017,14 @@ def review_undo_impl(
     anything :class:`_SharedFitCtx` derives from (settings, tau calibration,
     the base window plan, or the calibration stamp).
 
-    Raises ``ValueError`` if an id is unknown, there are no decisions, or the
-    automatic-fit baseline is unavailable while fit-mutating decisions exist
-    (e.g. Stage 5 was re-run after editing -- rebuild and re-edit instead).
+    Raises ``not_found`` (kind ``"decision"``, every unknown id; a
+    :class:`ValueError`) if an id is unknown -- on a file with no recorded
+    decisions, every id is -- ``bad_setting`` (``path`` ``"ids"``) when no id
+    is given, and ``curation_conflict`` when undoing would orphan a window an
+    undone decision created (``orphans_created_window``, ``ids`` the
+    decisions to undo with it) or the automatic-fit baseline is unavailable
+    while fit-mutating decisions exist (``baseline_unavailable``; e.g. Stage
+    5 was re-run after editing -- rebuild and re-edit instead).
 
     What undo promises for ``peak_uid`` is replay equivalence: the surviving
     decisions are replayed in order, each as its own action against the state
@@ -9976,15 +10051,22 @@ def review_undo_impl(
     _require_complete_fit(path, "review undo")
     review = load_stage6_review_from_file(path)
     log = list(review.decision_log)
-    if not log:
-        raise ValueError("no recorded decisions to undo")
-
     valid_ids = {e.order_index for e in log}
-    unknown = sorted({int(i) for i in ids} - valid_ids)
+    # Every requested id the log does not hold, in request order -- on an
+    # empty log, every requested id.
+    unknown: List[int] = []
+    for i in ids:
+        if int(i) not in valid_ids and int(i) not in unknown:
+            unknown.append(int(i))
     if unknown:
-        raise ValueError(
-            f"unknown decision id(s) {unknown}; run 'review log' for valid ids"
+        detail = (
+            f"no recorded decisions to undo (decision id(s) {unknown} do not "
+            f"exist)"
+            if not log
+            else f"unknown decision id(s) {unknown}; run 'review log' for "
+            f"valid ids"
         )
+        raise NotFoundValueError("decision", unknown, message=detail)
     undo_set = {int(i) for i in ids}
     if not undo_set:
         raise BadSettingError(
@@ -10020,19 +10102,23 @@ def review_undo_impl(
         e.order_index for e in surviving if int(e.window_id) in dropped_windows
     )
     if orphaned:
-        raise ValueError(
-            f"cannot undo: decision(s) {orphaned} act on window(s) "
+        raise CurationConflictError(
+            "orphans_created_window",
+            orphaned,
+            message=f"cannot undo: decision(s) {orphaned} act on window(s) "
             f"{sorted(dropped_windows)}, which the undone decision(s) "
             f"installed (a 'create_window' decision, or an implied create on "
-            f"an 'add'). Undo them together."
+            f"an 'add'). Undo them together.",
         )
 
     has_fit_edits = any(e.kind in _FIT_EDIT_KINDS for e in log)
     baseline = _has_stage5_baseline(path)
     if has_fit_edits and not baseline:
-        raise ValueError(
-            "cannot undo: the automatic-fit baseline is unavailable (the fit may "
-            "have been re-run after editing). Rebuild from the source and re-edit."
+        raise CurationConflictError(
+            "baseline_unavailable",
+            message="cannot undo: the automatic-fit baseline is unavailable (the "
+            "fit may have been re-run after editing). Rebuild from the source "
+            "and re-edit.",
         )
 
     # Each decision was originally applied as its own action, against the
