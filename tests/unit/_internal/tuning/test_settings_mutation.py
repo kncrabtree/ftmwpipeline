@@ -347,7 +347,8 @@ def _refused(value, **bounds) -> bool:
     try:
         check_field_typing("x.y", value, value, typing)
     except BadSettingError as err:
-        assert err.path == "x.y" and err.value == value
+        assert err.path == "x.y"
+        assert err.value is value or (value != value and err.value != err.value)
         return True
     return False
 

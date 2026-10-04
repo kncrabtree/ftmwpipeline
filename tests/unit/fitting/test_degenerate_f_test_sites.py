@@ -49,7 +49,12 @@ class TestAddLoop:
             seeder_max_k=1,
             candidate_passes=["primary", "gap"],
         )
-        degenerate = [s for s in res.audit_trail if np.isnan(s.f_statistic)]
+        # A knockout-null row stores F = nan by design, with the knockout's p.
+        degenerate = [
+            s
+            for s in res.audit_trail
+            if np.isnan(s.f_statistic) and s.decision != "knockout-null"
+        ]
         assert degenerate, [(s.decision, s.f_statistic) for s in res.audit_trail]
         for step in degenerate:
             assert np.isnan(step.p_value)

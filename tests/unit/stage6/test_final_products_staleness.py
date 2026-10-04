@@ -606,7 +606,7 @@ def test_timebase_run_refreshes_the_stored_table(sc_multi_file, monkeypatch):
     with h5py.File(str(fp), "r") as h5f:
         # Stage 5 was not re-run: the fit on disk is the same one.
         assert h5f["stage5_fitting"].attrs["creation_time"] == fit_before
-    assert "stage5_fitting" in ftmw.get_pipeline_info(str(fp))["completed_stages"]
+    assert "fit" in ftmw.get_pipeline_info(str(fp))["completed_stages"]
 
 
 @pytest.mark.integration
