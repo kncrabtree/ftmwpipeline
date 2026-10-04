@@ -508,6 +508,72 @@ def test_a_missing_directory_entry_is_not_an_error(tmp_path: Path) -> None:
     remove_stale_copies(tmp_path / "no_such_dir" / "x.ftmw")  # no raise
 
 
+@pytest.mark.parametrize(
+    "pid_text",
+    [
+        "9" * 40,  # out of range for any pid
+        "\u0661\u0662\u0663",  # non-ASCII digits (str.isdigit() is True)
+        "\u00b2",  # a superscript digit: isdigit() but not int()-able
+    ],
+)
+def test_an_unusable_pid_never_raises_and_is_left_alone(
+    target: Path, pid_text: str
+) -> None:
+    odd = _fabricate(target.parent, target.name, socket.gethostname(), pid_text)
+    remove_stale_copies(target)  # no raise
+    with atomic_write(target):
+        with h5open(target, "a") as f:
+            f.attrs["x"] = 1
+    assert odd.exists()
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="POSIX fork")
+def test_a_forked_child_never_deadlocks_on_a_lock_held_at_the_fork(
+    target: Path,
+) -> None:
+    """A lock another parent thread holds at the fork is never released in the
+    child; the child gets fresh locks, reads as its parent did, and its
+    write-mode open still hits the forked-child guard."""
+    from ftmwpipeline._internal import atomic
+
+    held, release = threading.Event(), threading.Event()
+
+    def hold() -> None:
+        with atomic._registry_lock:
+            held.set()
+            release.wait(10)
+
+    holder = threading.Thread(target=hold)
+    holder.start()
+    held.wait(10)
+    try:
+        with atomic_write(target):
+            with h5open(target, "a") as f:
+                f.attrs["x"] = 1
+            r, w = os.pipe()
+            pid = os.fork()
+            if pid == 0:  # pragma: no cover - the child
+                code = 1
+                try:
+                    with h5open(target, "r") as f:
+                        sees = int(f.attrs.get("x", 0))
+                    try:
+                        h5open(target, "a")
+                    except RuntimeError as exc:
+                        code = 0 if (sees == 1 and "forked" in str(exc)) else 2
+                finally:
+                    os.write(w, bytes([code]))
+                    os._exit(0)
+            os.close(w)
+            got = os.read(r, 1)
+            os.close(r)
+            os.waitpid(pid, 0)
+    finally:
+        release.set()
+        holder.join()
+    assert got == bytes([0])
+
+
 # ---- write_conflict ----------------------------------------------------------
 
 
@@ -596,6 +662,36 @@ def test_the_next_write_after_a_conflict_works(target: Path, tmp_path: Path) -> 
             f.attrs["retry"] = 1
     with h5py.File(target, "r") as f:
         assert f.attrs["retry"] == 1 and f.attrs["other_writer"] == "them"
+
+
+def test_a_working_copy_that_vanished_is_a_write_conflict(target: Path) -> None:
+    before = _digest(target)
+    with pytest.raises(WriteConflictError):
+        with atomic_write(target):
+            with h5open(target, "a") as f:
+                f.attrs["x"] = 1
+            os.remove(tmp_copy_name(target))  # another process removed it
+    assert _digest(target) == before
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="POSIX permissions (root ignores them)",
+)
+def test_a_target_this_process_may_not_write_is_refused(target: Path) -> None:
+    before = _digest(target)
+    os.chmod(target, 0o444)
+    try:
+        with atomic_write(target):  # a transaction that only reads is fine
+            with h5open(target, "r") as f:
+                assert f.attrs["format"] == "1.0"
+        with pytest.raises(PermissionError):
+            with atomic_write(target):
+                h5open(target, "a")
+    finally:
+        os.chmod(target, 0o644)
+    assert _digest(target) == before
+    assert _copies(target.parent) == []
 
 
 def test_write_conflict_error_contract() -> None:

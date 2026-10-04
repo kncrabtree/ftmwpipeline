@@ -42,10 +42,14 @@ Concurrency:
 Before a transaction makes its working copy, every leftover copy of the same
 file made on this host by a process that is no longer running is removed.
 Copies from other hosts, and copies whose pid is alive, are never touched.
+
+A forked child (a report or Stage 5 pool worker) gets fresh registry locks
+(:func:`os.register_at_fork`), so a lock held at the fork never deadlocks it.
 """
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import shutil
@@ -82,11 +86,35 @@ class _Transaction:
     owner: int
     stat: _Stat
     materialized: bool = False
+    #: A write-mode open of the working copy succeeded: from then on the copy
+    #: holds this call's writes, and losing it is a conflict, not a no-op.
+    opened: bool = False
 
 
 _registry_lock = threading.Lock()
 _target_locks: Dict[str, "threading.RLock"] = {}
 _active: Dict[str, _Transaction] = {}
+
+
+def _reinit_after_fork() -> None:
+    """Give a forked child fresh locks.
+
+    A fork copies a lock in whatever state it had, and the thread that held it
+    does not exist in the child, so a lock held by any other parent thread at
+    the fork would never be released there. The child (a report ``fork_map``
+    worker, a Stage 5 pool worker) only reads; it keeps a snapshot of the
+    active transactions -- so its reads resolve as its parent's did, and a
+    write-mode open still hits the forked-child guard in :func:`h5open` --
+    behind new, unheld locks.
+    """
+    global _registry_lock, _target_locks, _active
+    _registry_lock = threading.Lock()
+    _target_locks = {}
+    _active = dict(_active)
+
+
+if hasattr(os, "register_at_fork"):  # POSIX
+    os.register_at_fork(after_in_child=_reinit_after_fork)
 
 
 # ---------------------------------------------------------------------------
@@ -163,9 +191,18 @@ def remove_stale_copies(target: PathLike) -> None:
         if not name.startswith(prefix):
             continue
         copy_host, sep, pid_text = name[len(prefix) :].rpartition(".")
-        if not sep or copy_host != host or not pid_text.isdigit():
+        if (
+            not sep
+            or copy_host != host
+            or not pid_text.isascii()
+            or not pid_text.isdigit()
+        ):
             continue
-        if _pid_alive(int(pid_text)):
+        try:
+            alive = _pid_alive(int(pid_text))
+        except Exception:  # an unparsable or out-of-range pid: never ours
+            alive = True
+        if alive:
             continue
         try:
             os.remove(os.path.join(directory, name))
@@ -257,6 +294,14 @@ def _materialize(txn: _Transaction, *, truncate: bool) -> None:
     create."""
     if txn.materialized:
         return
+    if os.path.exists(txn.target) and not os.access(txn.target, os.W_OK):
+        # Refused as an in-place write-mode open of the file would be: the
+        # replace would otherwise land on a file this process may not write.
+        raise PermissionError(
+            errno.EACCES,
+            "Permission denied: cannot write the pipeline file",
+            txn.target,
+        )
     if not truncate and os.path.exists(txn.target):
         try:
             copy_compacted(txn.target, txn.copy)
@@ -289,6 +334,9 @@ def h5open(path: PathLike, mode: str = "r", **kwargs: Any) -> h5py.File:
         For a write-mode open (``"a"``, ``"r+"``, ``"w"``, ``"w-"``, ``"x"``)
         with no transaction on *path*: a bug guard -- every write must be inside
         :func:`atomic_write`.
+    PermissionError
+        For the first write-mode open of a transaction whose target exists and
+        is not writable by this process (as an in-place open would be).
     """
     txn = _current(path)
     if mode not in WRITE_MODES:
@@ -311,7 +359,9 @@ def h5open(path: PathLike, mode: str = "r", **kwargs: Any) -> h5py.File:
     if mode == "r+" and not txn.materialized and not os.path.exists(txn.target):
         raise FileNotFoundError(f"No such pipeline file: {os.fspath(path)}")
     _materialize(txn, truncate=truncating)
-    return h5py.File(txn.copy, "w" if truncating else mode, **kwargs)
+    handle = h5py.File(txn.copy, "w" if truncating else mode, **kwargs)
+    txn.opened = True
+    return handle
 
 
 @contextmanager
@@ -368,14 +418,26 @@ def atomic_write(path: PathLike) -> Iterator[None]:
 
 def _commit(txn: _Transaction) -> None:
     """Replace the target with the working copy (or do nothing when nothing
-    was written)."""
-    if not txn.materialized or not os.path.exists(txn.copy):
+    was written).
+
+    Raises
+    ------
+    WriteConflictError
+        When the target changed on disk since the transaction began, or when
+        the working copy this call wrote into has vanished (removed by another
+        process): either way this call's writes cannot land as written.
+    """
+    from ..file_manager import WriteConflictError
+
+    if not txn.materialized:
         _remove(txn.copy)
         return
+    if not os.path.exists(txn.copy):
+        if txn.opened:
+            raise WriteConflictError(txn.target)
+        return  # a truncating open that never created the copy: nothing written
     try:
         if _stat(txn.target) != txn.stat:
-            from ..file_manager import WriteConflictError
-
             raise WriteConflictError(txn.target)
         if txn.stat is not None:
             shutil.copymode(txn.target, txn.copy)
