@@ -3531,9 +3531,9 @@ def _abort_pool(ex: Any) -> None:
     ``_processes`` mapping (pid -> ``Process``; CPython 3.9-3.13) to terminate
     the workers, and closes the parent's write end of the private
     ``_result_queue`` pipe (see below). Those are the only private-API uses,
-    kept in this one helper. The broken-pool state the termination causes (``BrokenProcessPool`` on the
-    abandoned futures, raised in the executor's manager thread) is absorbed: the
-    futures are never read again.
+    kept in this one helper. The broken-pool state the termination causes
+    (``BrokenProcessPool`` on the abandoned futures, raised in the executor's
+    manager thread) is absorbed: the futures are never read again.
     """
     processes = list((getattr(ex, "_processes", None) or {}).values())
     # Terminate first: it is the step that must happen even if this helper is
