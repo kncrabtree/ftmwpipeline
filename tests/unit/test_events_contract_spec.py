@@ -449,12 +449,12 @@ def test_stage_order_is_started_other_invalidated_finished():
 # ---- manifest and capabilities ---------------------------------------------------
 
 
-def test_contract_version_is_ten():
+def test_contract_version_is_eleven():
     # 9: events and cancellation (Wave 5.1); 10: write_conflict and atomic
-    # writes (Wave 5.1b).
-    assert ftmwpipeline.CONTRACT_VERSION == 10
-    assert MANIFEST.contract_version == 10
-    assert capabilities()["contract_version"] == 10
+    # writes (Wave 5.1b); 11: Stage 5 partial fits and resume (Wave 5.2).
+    assert ftmwpipeline.CONTRACT_VERSION == 11
+    assert MANIFEST.contract_version == 11
+    assert capabilities()["contract_version"] == 11
 
 
 def test_event_schemas_are_in_the_manifest_and_capabilities():

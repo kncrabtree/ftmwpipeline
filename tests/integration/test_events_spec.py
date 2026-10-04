@@ -274,7 +274,7 @@ def _fit_cancelled(fp: Path, *, jobs: int):
     "jobs",
     [1, pytest.param(2, marks=pytest.mark.skipif(not _FORK, reason="needs fork"))],
 )
-def test_fit_cancelled_mid_walk_returns_promptly_and_leaves_the_file(
+def test_fit_cancelled_mid_walk_returns_promptly_and_keeps_a_partial_fit(
     jobs, baseline_2638_stage4_small, tmp_path
 ):
     fp = _copy(baseline_2638_stage4_small, tmp_path)
@@ -283,7 +283,10 @@ def test_fit_cancelled_mid_walk_returns_promptly_and_leaves_the_file(
 
     assert err.code == "cancelled"
     assert err.stage == "fit"
-    assert err.completed_windows == []
+    # The windows that finished (each reported its WindowProgress) are kept as
+    # a partial fit (Wave 5.2), and the error lists them.
+    reported = sorted({e.window_id for e in rec.of(WindowProgress)})
+    assert reported and err.completed_windows == reported
     assert err.completed_stages == []
     # Prompt: the parent polls every ~0.2 s and does not wait for a running
     # window, so the cancel reaches the caller well inside this bound.
@@ -292,9 +295,8 @@ def test_fit_cancelled_mid_walk_returns_promptly_and_leaves_the_file(
         # The sequential walk honours a cancel after the current window.
         assert len(rec.of(WindowProgress)) == 1
     assert not rec.of(StageFinished)
-    # Nothing new, nothing deleted, no invalidation: the file is as it was.
-    assert content_digest(fp) == before
-    assert _states(fp)["fit"] == "not_run"
+    assert content_digest(fp) != before
+    assert _states(fp)["fit"] == "partial"
     # No worker left behind.
     assert not wait_no_new_children(children)
 
@@ -320,7 +322,10 @@ def test_fit_callback_failure_aborts_like_a_cancel(
     assert info.value.code == "callback_failed"
     assert info.value.event_schema == "ftmw/window_progress@1"
     assert info.value.__cause__ is boom
-    assert content_digest(fp) == before
+    # The window whose WindowProgress failed had finished: it is kept as a
+    # partial fit, as after a cancel at that point.
+    assert content_digest(fp) != before
+    assert _states(fp)["fit"] == "partial"
     assert not wait_no_new_children(children)
 
 
@@ -614,7 +619,7 @@ def test_cli_cancel_in_text_mode_also_exits_130(
     assert "cancel" in err.lower()
 
 
-def test_cli_fit_cancelled_mid_walk_exits_130_and_leaves_the_file(
+def test_cli_fit_cancelled_mid_walk_exits_130_and_keeps_a_partial_fit(
     baseline_2638_stage4_small, tmp_path, capsys, monkeypatch
 ):
     """The first Ctrl-C, modelled as a token that the events writer sets on the
@@ -644,12 +649,14 @@ def test_cli_fit_cancelled_mid_walk_exits_130_and_leaves_the_file(
     assert rc == 130, err
     assert out.strip() == ""
     events = _event_lines(err)
-    assert sum(e["schema"] == "ftmw/window_progress@1" for e in events) == 1
+    progress = [e for e in events if e["schema"] == "ftmw/window_progress@1"]
+    assert len(progress) == 1
     assert not [e for e in events if e["schema"] == "ftmw/stage_finished@1"]
     error = _last_json(err)
     assert error["code"] == "cancelled" and error["stage"] == "fit"
-    assert error["completed_windows"] == []
-    assert content_digest(fp) == before
+    assert error["completed_windows"] == [progress[0]["window_id"]]
+    assert content_digest(fp) != before
+    assert _states(fp)["fit"] == "partial"
 
 
 @pytest.mark.skipif(

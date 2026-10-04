@@ -68,6 +68,7 @@ def cmd_fit_peaks(args: argparse.Namespace) -> int:
                 settings=None if settings.is_empty() else settings,
                 preset=args.preset,
                 jobs=args.jobs,
+                restart=args.restart,
                 events=events,
                 cancel=cancel,
             )
@@ -77,6 +78,13 @@ def cmd_fit_peaks(args: argparse.Namespace) -> int:
                 args, stage="fit", result=result, summary=fit_run_summary(result)
             )
         print("\nFitting completed successfully!")
+        if result["resumed"]:
+            print(
+                f"  Resumed a partial fit: {result['windows_carried']:,} "
+                "window(s) carried"
+            )
+        elif result["restart_reason"] is not None:
+            print(f"  Partial fit discarded ({result['restart_reason']})")
         print(f"  Windows fitted: {result['n_windows']:,}")
         print(f"  Fitted peaks:   {result['n_fitted_peaks']:,}")
         print(
@@ -440,6 +448,18 @@ def register_fitting_commands(subparsers: Any) -> None:
         help=(
             "Worker processes for the cross-window fit pool "
             "(default: CPU count minus 2; or set FTMW_MAX_WORKERS)."
+        ),
+    )
+    p_fit.add_argument(
+        "--restart",
+        dest="restart",
+        action="store_true",
+        default=False,
+        help=(
+            "Discard a partial fit (left by a cancelled fit) and fit every "
+            "window. Without it, a partial fit is resumed when its settings, "
+            "the values it took from other stages and the analysis epoch "
+            "match this run's; otherwise the fit starts over and says why."
         ),
     )
     p_fit.add_argument(

@@ -298,6 +298,12 @@ SNAPSHOT_VOCABULARIES = {
         "walk_fallback",
         "timebase_skipped",
     },
+    "restart_reason": {
+        "restart_requested",
+        "settings_changed",
+        "incomplete_provenance",
+        "thaw_refit",
+    },
 }
 
 

@@ -84,7 +84,7 @@ from .file_manager import (
 #: The machine-contract version. The first published contract is ``1``; each
 #: release that adds (or, before 1.0.0, changes) contract elements raises it by
 #: one, so a client can gate on it as well as on :func:`capabilities`.
-CONTRACT_VERSION: int = 10
+CONTRACT_VERSION: int = 11
 
 #: Schema name of the :func:`capabilities` payload.
 CAPABILITIES_SCHEMA = "ftmw/capabilities@1"
@@ -954,8 +954,18 @@ _FIELDS.update(
 )
 
 #: The ``state`` values of a :func:`~ftmwpipeline.api.status` stage entry.
-#: ``partial`` (Stage 5 after a cancelled run) has no producer yet.
+#: ``partial``: Stage 5 after a cancelled (or callback-failed) run kept the
+#: windows that finished.
 STAGE_STATES: Tuple[str, ...] = ("complete", "partial", "not_run")
+
+#: The non-null ``restart_reason`` values of a ``fit run`` summary: why a fit
+#: with a partial fit present started over instead of resuming it.
+FIT_RESTART_REASONS: Tuple[str, ...] = (
+    "restart_requested",
+    "settings_changed",
+    "incomplete_provenance",
+    "thaw_refit",
+)
 
 #: Frozen closed vocabularies. ``decision_kind`` / ``decision_provenance`` are
 #: checked against ``core.data_structures.DECISION_KINDS`` /
@@ -965,6 +975,7 @@ _VOCABULARIES: Dict[str, Tuple[str, ...]] = {
     "decision_provenance": ("user",),
     "stage_state": STAGE_STATES,
     "warning_code": tuple(WARNING_FIELDS),
+    "restart_reason": FIT_RESTART_REASONS,
 }
 
 MANIFEST = ContractManifest(
@@ -1026,6 +1037,7 @@ def capabilities() -> Dict[str, Any]:
 
 __all__ = [
     "CONTRACT_VERSION",
+    "FIT_RESTART_REASONS",
     "CAPABILITIES_SCHEMA",
     "FID_SAMPLES_SCHEMA",
     "DISPLAY_UNITS_SCHEMA",
