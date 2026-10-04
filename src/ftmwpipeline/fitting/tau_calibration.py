@@ -31,7 +31,7 @@ validation, 2638 application, LSQ cross-validation, and polish design
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional, Sequence, Tuple, cast
 
 import numpy as np
@@ -298,6 +298,11 @@ class ShapeRecommendation:
         with all three fits converged and finite τ inside the bound).
     notes : tuple of str
         Diagnostic strings, one per acceptance / tiebreaker step.
+    tau_max_us : float or None
+        The effective upper clip on the classifier's per-bin τ (the explicit
+        ``tau_max_us``, or ``tau_max_factor * T_full`` when that was unset).
+        Set by :func:`compute_shape_recommendation`; ``None`` on a verdict
+        built without a classifier run.
     """
 
     recommended_shape: Optional[str]
@@ -305,6 +310,7 @@ class ShapeRecommendation:
     median_d_aicc: Dict[str, float]
     n_contributors: int
     notes: Tuple[str, ...]
+    tau_max_us: Optional[float] = None
 
 
 def compute_band_majorities(
@@ -1361,6 +1367,7 @@ def stft_calibration(
     n_seg: int = DEFAULT_N_SEG,
     t_sigma: float = DEFAULT_T_SIGMA,
     tau_max_us: Optional[float] = None,
+    tau_max_factor: float = DEFAULT_TAU_MAX_FACTOR,
     rss_gate_factor: float = DEFAULT_RSS_GATE_FACTOR,
     relative_gate_fraction: float = DEFAULT_RELATIVE_GATE_FRACTION,
     sigma_x_full: Optional[float] = None,
@@ -1413,7 +1420,10 @@ def stft_calibration(
         Above-threshold gate factor (the contributor floor on per-frame SNR).
     tau_max_us : float, optional
         Upper clip on recovered tau; saturation = spur candidate. Defaults to
-        ``DEFAULT_TAU_MAX_FACTOR * T_full``.
+        ``tau_max_factor * T_full``.
+    tau_max_factor : float, default :data:`DEFAULT_TAU_MAX_FACTOR`
+        The clip as a multiple of the full STFT-input duration ``T_full``,
+        used only when ``tau_max_us`` is ``None``.
     rss_gate_factor : float, default :data:`DEFAULT_RSS_GATE_FACTOR`
         Bad-fit gate strength (relative-or-absolute hybrid).
     relative_gate_fraction : float, default :data:`DEFAULT_RELATIVE_GATE_FRACTION`
@@ -1462,7 +1472,7 @@ def stft_calibration(
     N = fid_arr.size
     T_full_us = N * sample_dt_us
     if tau_max_us is None:
-        tau_max_us = DEFAULT_TAU_MAX_FACTOR * T_full_us
+        tau_max_us = tau_max_factor * T_full_us
 
     mag, a_centers_us, freq_bb_mhz = sliding_stft(fid_arr, sample_dt_us, n_seg)
 
@@ -1971,6 +1981,7 @@ def extract_tau_majority(
     n_seg: int = DEFAULT_N_SEG,
     t_sigma: float = DEFAULT_T_SIGMA,
     tau_max_us: Optional[float] = None,
+    tau_max_factor: float = DEFAULT_TAU_MAX_FACTOR,
     rss_gate_factor: float = DEFAULT_RSS_GATE_FACTOR,
     relative_gate_fraction: float = DEFAULT_RELATIVE_GATE_FRACTION,
     spur_cluster_multiplier: float = DEFAULT_SPUR_CLUSTER_MULTIPLIER,
@@ -2016,7 +2027,8 @@ def extract_tau_majority(
     sigma_time : float, optional
         Time-domain white-noise RMS. When ``None``, estimated from the FID
         active-region tail (see :func:`estimate_sigma_time_from_tail`).
-    n_seg, t_sigma, tau_max_us, rss_gate_factor, relative_gate_fraction
+    n_seg, t_sigma, tau_max_us, tau_max_factor, rss_gate_factor,
+    relative_gate_fraction
         STFT calibration knobs; defaults match the acceptance gate.
     spur_cluster_multiplier : float
         Cluster-gap multiplier in units of ``n_seg`` full-record bins.
@@ -2126,6 +2138,7 @@ def extract_tau_majority(
         n_seg=n_seg,
         t_sigma=t_sigma,
         tau_max_us=tau_max_us,
+        tau_max_factor=tau_max_factor,
         rss_gate_factor=rss_gate_factor,
         relative_gate_fraction=relative_gate_fraction,
         sigma_x_full=sigma_x_full,
@@ -2388,6 +2401,7 @@ def extract_tau_G_majority(
     n_seg: int = DEFAULT_N_SEG,
     t_sigma: float = DEFAULT_T_SIGMA,
     tau_max_us: Optional[float] = None,
+    tau_max_factor: float = DEFAULT_TAU_MAX_FACTOR,
     rss_gate_factor: float = DEFAULT_RSS_GATE_FACTOR,
     relative_gate_fraction: float = DEFAULT_RELATIVE_GATE_FRACTION,
     spur_cluster_multiplier: float = DEFAULT_SPUR_CLUSTER_MULTIPLIER,
@@ -2443,8 +2457,8 @@ def extract_tau_G_majority(
     ----------
     fid, sample_dt_us, start_us, end_us, probe_freq_mhz, sideband,
     trim_lo_mhz, trim_hi_mhz, sigma_time, n_seg, t_sigma, tau_max_us,
-    rss_gate_factor, relative_gate_fraction, spur_cluster_multiplier,
-    sigma_x_full
+    tau_max_factor, rss_gate_factor, relative_gate_fraction,
+    spur_cluster_multiplier, sigma_x_full
         STFT calibration knobs; defaults match the pure-exp twin so the
         same bin classifier produces the same contributor pool.
     snr_min : float, default :data:`DEFAULT_TAU_G_SNR_MIN`
@@ -2537,6 +2551,7 @@ def extract_tau_G_majority(
         n_seg=n_seg,
         t_sigma=t_sigma,
         tau_max_us=tau_max_us,
+        tau_max_factor=tau_max_factor,
         rss_gate_factor=rss_gate_factor,
         relative_gate_fraction=relative_gate_fraction,
         sigma_x_full=sigma_x_full,
@@ -2826,6 +2841,7 @@ def compute_shape_recommendation(
     n_seg: int = DEFAULT_N_SEG,
     t_sigma: float = DEFAULT_T_SIGMA,
     tau_max_us: Optional[float] = None,
+    tau_max_factor: float = DEFAULT_TAU_MAX_FACTOR,
     rss_gate_factor: float = DEFAULT_RSS_GATE_FACTOR,
     relative_gate_fraction: float = DEFAULT_RELATIVE_GATE_FRACTION,
     snr_min: float = DEFAULT_TAU_G_SNR_MIN,
@@ -2865,7 +2881,7 @@ def compute_shape_recommendation(
     ----------
     fid, sample_dt_us, start_us, end_us, probe_freq_mhz, sideband,
     trim_lo_mhz, trim_hi_mhz, sigma_time, n_seg, t_sigma, tau_max_us,
-    rss_gate_factor, relative_gate_fraction, sigma_x_full
+    tau_max_factor, rss_gate_factor, relative_gate_fraction, sigma_x_full
         STFT classifier knobs (identical defaults to
         :func:`extract_tau_majority` /
         :func:`extract_tau_G_majority` so the same contributor pool
@@ -2924,6 +2940,7 @@ def compute_shape_recommendation(
         n_seg=n_seg,
         t_sigma=t_sigma,
         tau_max_us=tau_max_us,
+        tau_max_factor=tau_max_factor,
         rss_gate_factor=rss_gate_factor,
         relative_gate_fraction=relative_gate_fraction,
         sigma_x_full=sigma_x_full,
@@ -2957,6 +2974,7 @@ def compute_shape_recommendation(
         rows,
         pure_margin_threshold=float(pure_margin_threshold),
     )
+    verdict = replace(verdict, tau_max_us=float(cal.tau_max_us))
 
     logger.info(
         "3-way shape recommendation: n_contributors=%d, vote rates "

@@ -19,6 +19,7 @@ from ftmwpipeline.fitting.tau_calibration import (
     DEFAULT_N_SEG,
     DEFAULT_SIGMA_TAU_FLOOR_US,
     DEFAULT_TAU_G_BOUND_HI,
+    DEFAULT_TAU_MAX_FACTOR,
     BandMajority,
     ShapeRecommendation,
     _aggregate_shape_verdict,
@@ -170,6 +171,46 @@ class TestStftCalibrationSpur:
         assert cal.classification[spur_bin] == 1, "spur bin should classify as spur"
         # tau saturates near the upper bound.
         assert cal.tau_per_bin[spur_bin] >= 0.95 * cal.tau_max_us
+
+
+class TestStftCalibrationTauMaxFactor:
+    """``tau_max_factor`` sets the clip when ``tau_max_us`` is unset."""
+
+    def _fid(self) -> tuple:
+        rng = np.random.default_rng(20260525 + 2)
+        N = int(round(T_FULL_US / SAMPLE_DT_US))
+        N = (N // DEFAULT_N_SEG) * DEFAULT_N_SEG
+        return _synth_fid(
+            rng=rng,
+            n_samples=N,
+            line_bins=[N // 4],
+            line_taus_us=[7.5],
+            line_snrs=[100.0],
+        )
+
+    def test_default_factor_is_the_kernel_constant(self):
+        fid, sigma_t = self._fid()
+        default = stft_calibration(fid, SAMPLE_DT_US, sigma_t)
+        explicit = stft_calibration(
+            fid, SAMPLE_DT_US, sigma_t, tau_max_factor=DEFAULT_TAU_MAX_FACTOR
+        )
+        t_full = fid.size * SAMPLE_DT_US
+        assert default.tau_max_us == DEFAULT_TAU_MAX_FACTOR * t_full
+        assert explicit.tau_max_us == default.tau_max_us
+        np.testing.assert_array_equal(explicit.tau_per_bin, default.tau_per_bin)
+        np.testing.assert_array_equal(explicit.classification, default.classification)
+
+    def test_factor_scales_the_clip(self):
+        fid, sigma_t = self._fid()
+        cal = stft_calibration(fid, SAMPLE_DT_US, sigma_t, tau_max_factor=2.0)
+        assert cal.tau_max_us == pytest.approx(2.0 * fid.size * SAMPLE_DT_US)
+
+    def test_explicit_tau_max_us_wins_over_factor(self):
+        fid, sigma_t = self._fid()
+        cal = stft_calibration(
+            fid, SAMPLE_DT_US, sigma_t, tau_max_us=40.0, tau_max_factor=2.0
+        )
+        assert cal.tau_max_us == 40.0
 
 
 # ---------------------------------------------------------------------------
@@ -840,6 +881,10 @@ class TestComputeShapeRecommendation:
             "voigt_vs_gauss",
         }
         assert rec.recommended_shape in (None, "lorentzian", "gaussian")
+        # The effective clip the classifier used rides on the verdict.
+        assert rec.tau_max_us == pytest.approx(
+            DEFAULT_TAU_MAX_FACTOR * N * SAMPLE_DT_US
+        )
 
     def test_rejects_bad_sideband(self):
         with pytest.raises(ValueError, match="sideband"):

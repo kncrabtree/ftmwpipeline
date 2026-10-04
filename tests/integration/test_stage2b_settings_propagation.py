@@ -69,6 +69,12 @@ CALIBRATE_TAU_FIELDS: list[tuple[str, Callable[..., None], str, Any]] = [
     ("stft.t_sigma", _sub_set("stft", "t_sigma", 7.5), "t_sigma", 7.5),
     ("stft.tau_max_us", _sub_set("stft", "tau_max_us", 60.0), "tau_max_us", 60.0),
     (
+        "stft.tau_max_factor",
+        _sub_set("stft", "tau_max_factor", 9.0),
+        "tau_max_factor",
+        9.0,
+    ),
+    (
         "stft.rss_gate_factor",
         _sub_set("stft", "rss_gate_factor", 3.0),
         "rss_gate_factor",
@@ -202,6 +208,12 @@ CALIBRATE_TAU_G_FIELDS: list[tuple[str, Callable[..., None], str, Any]] = [
     ("stft.n_seg", _sub_set("stft", "n_seg", 6), "n_seg", 6),
     ("stft.t_sigma", _sub_set("stft", "t_sigma", 4.0), "t_sigma", 4.0),
     ("stft.tau_max_us", _sub_set("stft", "tau_max_us", 80.0), "tau_max_us", 80.0),
+    (
+        "stft.tau_max_factor",
+        _sub_set("stft", "tau_max_factor", 7.0),
+        "tau_max_factor",
+        7.0,
+    ),
     (
         "stft.rss_gate_factor",
         _sub_set("stft", "rss_gate_factor", 3.5),
@@ -370,6 +382,12 @@ RECOMMEND_SHAPE_FIELDS: list[tuple[str, Callable[..., None], str, Any]] = [
     ("stft.n_seg", _sub_set("stft", "n_seg", 14), "n_seg", 14),
     ("stft.t_sigma", _sub_set("stft", "t_sigma", 6.0), "t_sigma", 6.0),
     ("stft.tau_max_us", _sub_set("stft", "tau_max_us", 50.0), "tau_max_us", 50.0),
+    (
+        "stft.tau_max_factor",
+        _sub_set("stft", "tau_max_factor", 3.0),
+        "tau_max_factor",
+        3.0,
+    ),
     (
         "stft.rss_gate_factor",
         _sub_set("stft", "rss_gate_factor", 4.5),

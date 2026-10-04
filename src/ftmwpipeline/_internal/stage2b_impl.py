@@ -222,6 +222,7 @@ def calibrate_tau_impl(
     band = resolved.band
     n_seg_v = _required_int(stft.n_seg, "stft.n_seg")
     t_sigma_v = _required_float(stft.t_sigma, "stft.t_sigma")
+    tau_max_factor_v = _required_float(stft.tau_max_factor, "stft.tau_max_factor")
     rss_gate_v = _required_float(stft.rss_gate_factor, "stft.rss_gate_factor")
     relative_gate_v = _required_float(
         stft.relative_gate_fraction, "stft.relative_gate_fraction"
@@ -250,6 +251,7 @@ def calibrate_tau_impl(
         n_seg=n_seg_v,
         t_sigma=t_sigma_v,
         tau_max_us=stft.tau_max_us,
+        tau_max_factor=tau_max_factor_v,
         rss_gate_factor=rss_gate_v,
         relative_gate_fraction=relative_gate_v,
         spur_cluster_multiplier=spur_mult_v,
