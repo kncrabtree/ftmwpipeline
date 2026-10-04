@@ -10,10 +10,15 @@ import argparse
 from pathlib import Path
 from typing import Any
 
-from .._internal.stage4_impl import assign_windows_impl, visualize_windows_impl
+from .._internal.stage4_impl import (
+    assign_windows_impl,
+    visualize_windows_impl,
+    windows_run_summary,
+)
 from ..core.window_planning_settings import WindowPlanningSettings
 from ..file_manager import PipelineFileError
 from ._argspec import add_settings_args, settings_from_namespace
+from ._events import add_events_argument, operation_controls
 from ._json_output import json_mode, record_run_result
 from .utils import add_stage_object, print_error, print_invalidated, setup_logging
 
@@ -41,27 +46,23 @@ def cmd_assign_windows(args: argparse.Namespace) -> int:
         # are the explicit layer, the preset the preset layer beneath persisted.
         settings = settings_from_namespace(args, WindowPlanningSettings)
         print(f"Assigning windows for: {file_path}")
-        result = assign_windows_impl(
-            file_path=file_path,
-            settings=None if settings.is_empty() else settings,
-            preset=args.preset,
-        )
+        with operation_controls(args) as (events, cancel):
+            result = assign_windows_impl(
+                file_path=file_path,
+                settings=None if settings.is_empty() else settings,
+                preset=args.preset,
+                events=events,
+                cancel=cancel,
+            )
         plan = result["plan"]
         unexplained = plan.diagnostics.get("unexplained_coherent_regions_mhz")
         if json_mode(args):
+            # One builder for this summary and the stage's StageFinished.
             record_run_result(
                 args,
                 stage="windows",
                 result=result,
-                summary={
-                    "n_promoted": result["n_promoted"],
-                    "n_windows": result["n_windows"],
-                    "n_free_peaks": result["n_free_peaks"],
-                    "n_fixed_contributors": result["n_fixed_contributors"],
-                    "n_dependencies": result["n_dependencies"],
-                    "n_batches": result["n_batches"],
-                    "n_unexplained_coherent_regions": len(unexplained or ()),
-                },
+                summary=windows_run_summary(result),
             )
         print("\nWindow assignment completed successfully!")
         print(f"  Promoted peaks consumed: {result['n_promoted']:,}")
@@ -199,6 +200,7 @@ def register_window_commands(subparsers: Any) -> None:
     p_assign.add_argument(
         "-v", "--verbose", action="store_true", help="Verbose diagnostics"
     )
+    add_events_argument(p_assign)
     p_assign.set_defaults(func=cmd_assign_windows)
 
     p_vis = verbs.add_parser(

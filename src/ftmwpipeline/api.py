@@ -97,6 +97,9 @@ def import_data(
     format_name: Optional[str] = None,
     fid_index: Optional[int] = None,
     force: bool = False,
+    *,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
     **loader_params: Any,
 ) -> Dict[str, Any]:
     """
@@ -118,6 +121,10 @@ def import_data(
         FID index for multi-FID formats (e.g., Blackchirp)
     force : bool, default False
         If True, overwrite existing file even with different source
+    events : callable, optional
+        Called on this thread with each event (see :meth:`Pipeline.create`).
+    cancel : CancelToken, optional
+        Checked before the import starts (see :meth:`Pipeline.create`).
     **loader_params
         Additional parameters for data loader
 
@@ -125,8 +132,9 @@ def import_data(
     -------
     dict
         Import result with pipeline file path, source info, and FID metadata.
-        ``invalidated`` names the stages an overwrite discarded (``force``
-        over an analysed file), canonical names in ``rerun_order``.
+        ``invalidated`` names the stages the import discarded (an overwrite
+        with ``force`` over an analysed file, or a moved start hint), canonical
+        names in ``rerun_order``.
 
     Raises
     ------
@@ -147,18 +155,16 @@ def import_data(
     >>> print(f"Created: {result['pipeline_file']}")
     """
     try:
-        from .file_manager import canonical_invalidated, stages_an_import_replaces
-
-        # Read before the import writes: what an overwrite discards.
-        replaced = stages_an_import_replaces(file_path, force)
-
-        # Create pipeline using Pipeline class
-        pipeline = Pipeline.create(
-            filepath=file_path,
-            source=source,
+        # Create pipeline using Pipeline class (its import result carries what
+        # the import invalidated -- the same list its Invalidated event names).
+        pipeline, imported = Pipeline._create(
+            file_path,
+            source,
             format_name=format_name,
             fid_index=fid_index,
             force=force,
+            events=events,
+            cancel=cancel,
             **loader_params,
         )
 
@@ -171,7 +177,7 @@ def import_data(
             "source_path": info["source_path"],
             "format_name": info["format"],
             "status": "success",
-            "invalidated": list(canonical_invalidated(replaced)),
+            "invalidated": list(imported["invalidated"]),
         }
 
         # Add FID metadata if available
@@ -350,6 +356,8 @@ def detect_start_time(
     band: Optional[Tuple[float, float]] = None,
     stamp: bool = True,
     settings: Optional[StartDetectionSettings] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> StartDetectionResult:
     """Infer a good FID ``start_us`` from the data, equivalent to
     :meth:`Pipeline.detect_start_time`.
@@ -377,6 +385,9 @@ def detect_start_time(
         :class:`~ftmwpipeline.core.start_detection_settings.StartDetectionSettings`
         with the fields to override (``sweep_max_us`` / ``step_us`` /
         ``guard_margin_us`` / ``floor_factor`` / …).
+    events, cancel : optional
+        The event callback and cancel token (see
+        :meth:`Pipeline.detect_start_time`).
 
     Returns
     -------
@@ -389,6 +400,8 @@ def detect_start_time(
             band=band,
             stamp=stamp,
             settings=settings,
+            events=events,
+            cancel=cancel,
         )
     except Exception as e:
         logger.error(f"Failed to detect start time for {file_path}: {e}")
@@ -431,6 +444,8 @@ def compute_ft(
     end_us: Optional[float] = None,
     units_power: Optional[int] = None,
     from_saved_params: bool = False,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> ComplexFT:
     """
     Compute Fourier Transform with specified processing parameters.
@@ -456,6 +471,10 @@ def compute_ft(
         If ``True``, ignore the explicit kwargs and use only the persisted /
         recommended settings (no explicit overrides). Such a call only reads:
         it recomputes the spectrum and writes nothing to the file.
+    events : callable, optional
+        Called on this thread with each event (see :meth:`Pipeline.compute_ft`).
+    cancel : CancelToken, optional
+        Checked before the stage starts (see :meth:`Pipeline.compute_ft`).
 
     Returns
     -------
@@ -489,6 +508,8 @@ def compute_ft(
             end_us=end_us,
             units_power=units_power,
             from_saved_params=from_saved_params,
+            events=events,
+            cancel=cancel,
         )
     except Exception as e:
         logger.error(f"Failed to compute FT for {file_path}: {e}")
@@ -697,6 +718,8 @@ def estimate_noise(
     *,
     settings: Optional[NoiseSettings] = None,
     preset: Optional[str] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> NoiseResult:
     """
     Estimate frequency-dependent noise with the scatter (high-pass) estimator.
@@ -717,6 +740,8 @@ def estimate_noise(
         ``convolve_mhz`` / …) are set on the ``NoiseSettings`` instance; the
         explicit layer outranks the persisted record, which outranks the preset
         (per D11), so a no-arg call reproduces the persisted recipe.
+    events, cancel : optional
+        The event callback and cancel token (see :meth:`Pipeline.estimate_noise`).
 
     Returns
     -------
@@ -751,6 +776,8 @@ def estimate_noise(
         return pipeline.estimate_noise(
             settings=settings,
             preset=preset,
+            events=events,
+            cancel=cancel,
         )
 
     except Exception as e:
@@ -847,6 +874,8 @@ def calibrate_tau(
     shape: str = "lorentzian",
     settings: Optional[TauCalibrationSettings] = None,
     preset: Optional[str] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> TauCalibrationResult:
     """Run the Stage 2b data-driven tau calibration, equivalent to
     :meth:`Pipeline.calibrate_tau`.
@@ -865,6 +894,9 @@ def calibrate_tau(
     YAML preset's ``stage2b:`` block. The resolved settings are stamped to the
     shared ``processing_parameters/stage2b_tau`` block so a no-arg follow-up call
     reproduces the same recipe.
+
+    ``events`` / ``cancel``: the event callback and cancel token (see
+    :meth:`Pipeline.calibrate_tau`).
     """
     try:
         pipeline = Pipeline.open(file_path)
@@ -872,6 +904,8 @@ def calibrate_tau(
             shape=shape,
             settings=settings,
             preset=preset,
+            events=events,
+            cancel=cancel,
         )
     except Exception as e:
         logger.error(f"Failed to calibrate tau for {file_path}: {e}")
@@ -895,6 +929,8 @@ def calibrate_timebase(
     clocks: Optional[Any] = None,
     kappa_sys: Optional[float] = None,
     snr_min: Optional[float] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> TimebaseCalibrationResult:
     """Measure the scope-timebase scale error ``eps``, equivalent to
     :meth:`Pipeline.calibrate_timebase`.
@@ -916,12 +952,17 @@ def calibrate_timebase(
     Applying ``f_raw / (1 + eps)`` instead is wrong by exactly
     ``probe_freq * eps / (1 + eps)``, a constant sideband-independent offset.
     See :class:`~ftmwpipeline.fitting.timebase_calibration.TimebaseCalibrationResult`.
+
+    ``events`` / ``cancel``: the event callback and cancel token (see
+    :meth:`Pipeline.calibrate_timebase`).
     """
     try:
         return Pipeline.open(file_path).calibrate_timebase(
             clocks=clocks,
             kappa_sys=kappa_sys,
             snr_min=snr_min,
+            events=events,
+            cancel=cancel,
         )
     except Exception as e:
         logger.error(f"Failed to calibrate timebase for {file_path}: {e}")
@@ -993,6 +1034,8 @@ def recommend_shape(
     *,
     settings: Optional[TauCalibrationSettings] = None,
     preset: Optional[str] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> ShapeRecommendation:
     """Run the 3-way L/G/V shape-recommendation hook, equivalent to
     :meth:`Pipeline.recommend_shape`.
@@ -1013,11 +1056,16 @@ def recommend_shape(
     record, while the ``preset`` seeds only the fields neither the explicit
     layer nor the persisted record has fixed (the persisted record outranks the
     preset, per D11).
+
+    ``events`` / ``cancel``: the event callback and cancel token (see
+    :meth:`Pipeline.recommend_shape`).
     """
     try:
         return Pipeline.open(file_path).recommend_shape(
             settings=settings,
             preset=preset,
+            events=events,
+            cancel=cancel,
         )
     except Exception as e:
         logger.error(f"Failed to recommend shape for {file_path}: {e}")
@@ -1078,6 +1126,8 @@ def detect_peaks(
     *,
     settings: Optional[PeakDetectionSettings] = None,
     preset: Optional[str] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> List[Peak]:
     """Detect and classify peaks (Stage 3), equivalent to Pipeline.detect_peaks().
 
@@ -1117,12 +1167,17 @@ def detect_peaks(
         ``internal_snr``, ``internal_frequency``, and ``detection_pass``. The
         list is a :class:`PeakList`, whose ``invalidated`` names the stages
         this run invalidated.
+
+    ``events`` / ``cancel``: the event callback and cancel token (see
+    :meth:`Pipeline.detect_peaks`).
     """
     try:
         pipeline = Pipeline.open(file_path)
         return pipeline.detect_peaks(
             settings=settings,
             preset=preset,
+            events=events,
+            cancel=cancel,
         )
     except Exception as e:
         logger.error(f"Failed to detect peaks for {file_path}: {e}")
@@ -1214,6 +1269,8 @@ def assign_windows(
     *,
     settings: Optional[WindowPlanningSettings] = None,
     preset: Optional[str] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> WindowPlan:
     """Assign analysis windows (Stage 4), equivalent to Pipeline.assign_windows().
 
@@ -1250,12 +1307,17 @@ def assign_windows(
     WindowPlan
         The fit plan: disjoint windows, dependency DAG, topological order,
         parallel batches, parameters and diagnostics.
+
+    ``events`` / ``cancel``: the event callback and cancel token (see
+    :meth:`Pipeline.assign_windows`).
     """
     try:
         pipeline = Pipeline.open(file_path)
         return pipeline.assign_windows(
             settings=settings,
             preset=preset,
+            events=events,
+            cancel=cancel,
         )
     except Exception as e:
         logger.error(f"Failed to assign windows for {file_path}: {e}")

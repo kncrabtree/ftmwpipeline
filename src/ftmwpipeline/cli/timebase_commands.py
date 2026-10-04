@@ -26,9 +26,11 @@ from .._internal.stage6_impl import frequency_calibration_impl
 from .._internal.timebase_impl import (
     calibrate_timebase_impl,
     load_timebase_calibration_impl,
+    timebase_summary,
 )
 from ..contract import Absent
 from ..file_manager import PipelineFileError
+from ._events import add_events_argument, operation_controls
 from ._json_output import json_mode, record_payload, record_run_result
 from .utils import add_stage_object, print_error, print_invalidated, setup_logging
 
@@ -55,24 +57,6 @@ def _print_epsilon_and_lattice(tc: Any) -> None:
         print("  lattice g          : (undefined; no locked lattice)")
 
 
-def _timebase_summary(tc: Any) -> Dict[str, Any]:
-    """The scalars ``timebase run`` / ``show`` report (undefined cases marked)."""
-    undefined = tc.n_used == 0 or not math.isfinite(tc.sigma_epsilon)
-    return {
-        "epsilon": Absent.UNDEFINED if undefined else tc.epsilon,
-        "sigma_epsilon": Absent.UNDEFINED if undefined else tc.sigma_epsilon,
-        "lattice_g_mhz": (
-            tc.lattice_g_mhz if tc.lattice_g_mhz > 0.0 else Absent.UNDEFINED
-        ),
-        "n_used": tc.n_used,
-        "n_detected": tc.n_detected,
-        "preconditions_passed": bool(tc.preconditions_passed),
-        "preconditions_notes": "; ".join(
-            n for n in tc.preconditions_notes if n != "ok"
-        ),
-    }
-
-
 def cmd_calibrate_timebase(args: argparse.Namespace) -> int:
     """Run the timebase self-calibration and persist the result."""
     setup_logging(args.verbose)
@@ -88,7 +72,10 @@ def cmd_calibrate_timebase(args: argparse.Namespace) -> int:
 
     print(f"Running scope-timebase self-calibration for: {file_path}")
     try:
-        result = calibrate_timebase_impl(file_path, **kwargs)
+        with operation_controls(args) as (events, cancel):
+            result = calibrate_timebase_impl(
+                file_path, events=events, cancel=cancel, **kwargs
+            )
     except PipelineFileError:
         raise
     except FileNotFoundError as e:
@@ -108,7 +95,7 @@ def cmd_calibrate_timebase(args: argparse.Namespace) -> int:
     tc = result["timebase_calibration"]
     if json_mode(args):
         record_run_result(
-            args, stage="timebase", result=result, summary=_timebase_summary(tc)
+            args, stage="timebase", result=result, summary=timebase_summary(tc)
         )
     print("\nTimebase calibration completed successfully!")
     print("\nResults summary:")
@@ -157,7 +144,7 @@ def cmd_show_timebase(args: argparse.Namespace) -> int:
             args,
             {
                 "created": loaded.get("creation_time"),
-                **_timebase_summary(tc),
+                **timebase_summary(tc),
                 "kappa_sys": tc.kappa_sys,
                 "snr_min": tc.snr_min,
                 "start_us": tc.start_us,
@@ -343,6 +330,7 @@ def register_timebase_commands(subparsers: argparse._SubParsersAction) -> None:
         action="store_true",
         help="Enable verbose logging",
     )
+    add_events_argument(parser_run)
     parser_run.set_defaults(func=cmd_calibrate_timebase)
 
     # --- timebase show -----------------------------------------------------

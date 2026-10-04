@@ -34,11 +34,12 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, cast
+from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Tuple, cast
 
 import h5py
 import numpy as np
 
+from ..contract import CancelToken, EventCallback, Stage
 from ..core.data_structures import ComplexFT, Peak, PeakList
 from ..core.peak_detection_settings import (
     PeakDetectionSettings,
@@ -80,6 +81,9 @@ from .stage0_impl import load_fid_from_pipeline_impl
 from .stage1_impl import compute_ft_impl
 from .stage2_impl import _update_stage_completion
 from .stage2b_impl import load_tau_calibration_impl, tau_calibration_present
+
+if TYPE_CHECKING:
+    from .events import StageScope
 
 logger = logging.getLogger(__name__)
 
@@ -499,13 +503,45 @@ def _required(value: Any, name: str) -> Any:
 
 
 @requires_pipeline_file()
+def peaks_run_summary(result: Mapping[str, Any]) -> Dict[str, Any]:
+    """The scalar ``ftmw/run_result@1`` summary of ``peaks run`` -- also its
+    ``StageFinished.summary`` -- from a :func:`detect_peaks_impl` result."""
+    promoted = [p for p in result["peaks"] if p.properties.get("promoted")]
+
+    def _count(cls: str) -> int:
+        return sum(
+            1
+            for p in promoted
+            if p.classification and p.classification.value == cls
+        )
+
+    return {
+        "acquisition_us": result["acquisition_us"],
+        "n_peaks": result["n_peaks"],
+        "promotion_min_snr": result["promotion_min_snr"],
+        "n_promoted": result["n_promoted"],
+        "n_primary": result["n_primary"],
+        "n_gap": result["n_gap"],
+        "n_strong": _count("strong"),
+        "n_medium": _count("medium"),
+        "n_weak": _count("weak"),
+    }
+
+
 def detect_peaks_impl(
     file_path: str,
     *,
     settings: Optional[PeakDetectionSettings] = None,
     preset: Optional[str] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> Dict[str, Any]:
     """Run Stage 3 two-pass peak detection and persist the result.
+
+    A long operation (``peaks run``), reported as the ``peaks`` stage:
+    ``StageStarted``, ``Invalidated`` (the window plan and later stages built
+    on the old peaks), then ``StageFinished`` with :func:`peaks_run_summary`
+    once the peaks are written. ``cancel`` is checked before the stage starts.
 
     Requires Stage 1 (persisted FT settings) and Stage 2 (noise) completed.
     Detection scores on the active FT (built from the persisted Stage 1
@@ -531,6 +567,23 @@ def detect_peaks_impl(
     grid) plus diagnostics; also writes ``/stage3_peaks`` and marks the stage
     done.
     """
+    from .events import operation_events
+
+    ops = operation_events("peaks run", events, cancel)
+    with ops.stage(Stage.PEAKS, verb="peaks run", file_path=file_path) as scope:
+        result = _detect_peaks(file_path, settings=settings, preset=preset, events=scope)
+        scope.finish(peaks_run_summary(result))
+    return result
+
+
+def _detect_peaks(
+    file_path: str,
+    *,
+    settings: Optional[PeakDetectionSettings],
+    preset: Optional[str],
+    events: "StageScope",
+) -> Dict[str, Any]:
+    """The body of :func:`detect_peaks_impl` (inside its stage scope)."""
     preset_layer: Optional[PeakDetectionSettings] = None
     preset_name: Optional[str] = None
     if preset is not None:
@@ -868,15 +921,11 @@ def detect_peaks_impl(
     _update_stage_completion(file_path, "stage3_peaks")
     # Re-detection supersedes any Stage 4 window plan built on the old peaks.
     invalidated = canonical_invalidated(
-        invalidate_downstream_stages(file_path, "stage3_peaks")
+        invalidate_downstream_stages(file_path, "stage3_peaks", events=events)
     )
     n_promoted = sum(1 for p in peaks if p.properties.get("promoted"))
-    logger.info(
-        "Stage 3: detected %d peaks (active grid); %d promoted at SNR>=%.3g",
-        len(peaks),
-        n_promoted,
-        promotion_v,
-    )
+    # The "Stage 3: detected N peaks ..." line is rendered from the stage's
+    # StageFinished event (detect_peaks_impl).
 
     n_primary = sum(1 for p in peaks if p.properties.get("detection_pass") == "primary")
     return {

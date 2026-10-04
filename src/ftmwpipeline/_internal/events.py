@@ -40,6 +40,7 @@ walk-fallback warning). Add a verb's start/end line to
 from __future__ import annotations
 
 import logging
+import os
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -52,6 +53,7 @@ from typing import (
     Mapping,
     Optional,
     Sequence,
+    Set,
     Tuple,
     Union,
 )
@@ -90,6 +92,9 @@ StageLike = Union[Stage, str]
 _PLAN_EXECUTION_LOGGER = "ftmwpipeline.fitting.plan_execution"
 _STAGE5_LOGGER = "ftmwpipeline._internal.stage5_impl"
 _FILE_MANAGER_LOGGER = "ftmwpipeline.file_manager"
+_STAGE2_LOGGER = "ftmwpipeline._internal.stage2_impl"
+_STAGE3_LOGGER = "ftmwpipeline._internal.stage3_impl"
+_STAGE4_LOGGER = "ftmwpipeline._internal.stage4_impl"
 
 #: The sub-step progress line (``_internal.progress.WINDOW_LOG_PREFIX``): the
 #: run display reads ``n`` / ``total`` from ``record.args``.
@@ -156,6 +161,35 @@ STAGE_START_LINES: Dict[str, LogLine] = {}
 #: The line a stage logs once its results are written, by the stage's own verb.
 #: Rendered from ``StageFinished.summary``.
 STAGE_END_LINES: Dict[str, LogLine] = {
+    "noise run": LogLine(
+        _STAGE2_LOGGER,
+        logging.INFO,
+        "Stage 2: Noise estimation results saved and marked complete",
+        lambda e, d: (),
+    ),
+    "peaks run": LogLine(
+        _STAGE3_LOGGER,
+        logging.INFO,
+        "Stage 3: detected %d peaks (active grid); %d promoted at SNR>=%.3g",
+        lambda e, d: (
+            e.summary["n_peaks"],
+            e.summary["n_promoted"],
+            e.summary["promotion_min_snr"],
+        ),
+    ),
+    "windows run": LogLine(
+        _STAGE4_LOGGER,
+        logging.INFO,
+        "Stage 4: %d windows, %d batches, %d free peaks, "
+        "%d fixed contributors, %d dependencies",
+        lambda e, d: (
+            e.summary["n_windows"],
+            e.summary["n_batches"],
+            e.summary["n_free_peaks"],
+            e.summary["n_fixed_contributors"],
+            e.summary["n_dependencies"],
+        ),
+    ),
     "fit run": LogLine(
         _STAGE5_LOGGER,
         logging.INFO,
@@ -320,6 +354,7 @@ class OperationEvents:
         self.completed_stages: List[str] = []
         self.completed_windows: List[int] = []
         self.current_stage: Optional[Stage] = None
+        self._environment_checked = False
 
     def __call__(self, event: Event) -> None:
         self.emit(event)
@@ -383,26 +418,42 @@ class OperationEvents:
 
     @contextmanager
     def stage(
-        self, stage: StageLike, *, verb: Optional[str] = None
+        self,
+        stage: Optional[StageLike],
+        *,
+        verb: Optional[str] = None,
+        detail: Optional[Mapping[str, Any]] = None,
+        file_path: Optional[Union[str, "os.PathLike[str]"]] = None,
     ) -> Iterator["StageScope"]:
         """Run one stage: cancel check, ``StageStarted``, then the body.
 
         The body calls :meth:`StageScope.finish` once its results are written.
         The check before the stage reports ``stage=None`` (between stages);
-        checks inside report this stage.
+        checks inside report this stage. ``stage=None`` scopes a step that is
+        not a canonical stage (``start run``, ``report run``): its events carry
+        ``stage: null`` and finishing it records no completed stage.
+        ``detail`` carries render-only values for the verb's start line.
+        ``file_path`` names the file the stage works on: the operation's one
+        ``environment_drift`` check (:meth:`check_environment`) runs against it
+        right after ``StageStarted``.
         """
         self.check_cancel()
-        scope = StageScope(self, Stage(stage), verb)
+        st = None if stage is None else Stage(stage)
+        scope = StageScope(self, st, verb)
         previous = self.current_stage
         self.current_stage = scope.stage
         try:
-            self.emit(StageStarted(self.operation, scope.stage), verb=verb)
+            self.emit(
+                StageStarted(self.operation, scope.stage), verb=verb, detail=detail
+            )
+            if file_path is not None:
+                self.check_environment(file_path, stage=st)
             yield scope
         finally:
             self.current_stage = previous
 
     def detached_scope(
-        self, stage: StageLike, *, verb: Optional[str] = None
+        self, stage: Optional[StageLike], *, verb: Optional[str] = None
     ) -> "StageScope":
         """A :class:`StageScope` for *stage* that emits no ``StageStarted``.
 
@@ -410,7 +461,53 @@ class OperationEvents:
         direct call into a stage's internals, such as a test driving the fit
         walk): window, warning and invalidation events still flow.
         """
-        return StageScope(self, Stage(stage), verb)
+        return StageScope(self, None if stage is None else Stage(stage), verb)
+
+    # -- environment -------------------------------------------------------
+
+    def check_environment(
+        self,
+        file_path: Union[str, "os.PathLike[str]"],
+        *,
+        stage: Optional[StageLike] = None,
+    ) -> None:
+        """Emit ``environment_drift`` once per operation when the file's recorded
+        analysis environment differs from the running one.
+
+        The comparison is the one ``info`` reports as
+        ``runtime_environment_drift``
+        (:func:`~ftmwpipeline.core.environment.describe_runtime_drift`);
+        ``fields`` are the differing ``EnvironmentRecord`` field names. The
+        warning has no log line (``info`` and ``validate`` already report the
+        drift), so with no callback nothing is read. Only the first call of an
+        operation checks; later ones, and a file that cannot be read, do
+        nothing.
+        """
+        if self._environment_checked:
+            return
+        self._environment_checked = True
+        if self.callback is None:
+            return
+        try:
+            import h5py
+
+            from ..core.environment import capture_environment, describe_runtime_drift
+            from ..io.environment_serialization import load_stage_environments
+
+            with h5py.File(os.fspath(file_path), "r") as h5f:
+                envs = load_stage_environments(h5f)
+            lines = describe_runtime_drift(envs, capture_environment())
+        except (OSError, KeyError, ValueError):
+            return
+        if not lines:
+            return
+        self.warn(
+            "environment_drift",
+            "The file's recorded analysis environment differs from the running "
+            "one: " + "; ".join(lines),
+            stage=stage,
+            fields=[line.split(":", 1)[0] for line in lines],
+        )
 
     def warn(
         self,
@@ -438,12 +535,16 @@ class OperationEvents:
 class StageScope:
     """The reporting handle of one running stage (from :meth:`OperationEvents.stage`)."""
 
-    def __init__(self, ops: OperationEvents, stage: Stage, verb: Optional[str]) -> None:
+    def __init__(
+        self, ops: OperationEvents, stage: Optional[Stage], verb: Optional[str]
+    ) -> None:
         self.ops = ops
         self.stage = stage
         self.verb = verb
         self._t0 = time.monotonic()
         self.finished = False
+        # (stages, reasons) while collect_invalidations() is active.
+        self._collected: Optional[Tuple[Set[Stage], List[str]]] = None
 
     @property
     def operation(self) -> str:
@@ -514,6 +615,11 @@ class StageScope:
         """
         if not stages:
             return
+        if self._collected is not None:
+            self._collected[0].update(Stage(s) for s in stages)
+            if reason not in self._collected[1]:
+                self._collected[1].append(reason)
+            return
         names = {Stage(s) for s in stages}
         ordered = tuple(s for s in rerun_order() if s in names)
         self.emit(
@@ -521,22 +627,62 @@ class StageScope:
             detail={"reason": reason},
         )
 
-    def finish(self, summary: Mapping[str, Any]) -> None:
+    @contextmanager
+    def collect_invalidations(self) -> Iterator[None]:
+        """Combine every invalidation inside into ONE :class:`Invalidated`.
+
+        For a call that invalidates in several steps (an import that both
+        overwrites an analysed file and moves its start hint): the event is
+        emitted once, when the block ends, naming the union of the stages (the
+        result's ``invalidated``); its log line joins the steps' reasons. If the
+        block raises, what was already dropped is still logged but nothing is
+        delivered. Nested use joins the outer collection.
+        """
+        if self._collected is not None:
+            yield
+            return
+        self._collected = (set(), [])
+        try:
+            yield
+        except BaseException:
+            stages, reasons = self._collected
+            self._collected = None
+            if stages:
+                ordered = tuple(s for s in rerun_order() if s in stages)
+                render(
+                    Invalidated(self.operation, self.stage, ordered),
+                    detail={"reason": "; ".join(reasons)},
+                )
+            raise
+        stages, reasons = self._collected
+        self._collected = None
+        self.invalidated(list(stages), reason="; ".join(reasons))
+
+    def finish(
+        self,
+        summary: Mapping[str, Any],
+        *,
+        detail: Optional[Mapping[str, Any]] = None,
+    ) -> None:
         """The stage's results are written: record it and emit ``StageFinished``.
 
         Call once, after the final write (and after any ``Invalidated``).
+        ``detail`` carries render-only values for the verb's end line.
         """
         if self.finished:
-            raise RuntimeError(f"stage {self.stage.value!r} already finished")
+            name = None if self.stage is None else self.stage.value
+            raise RuntimeError(f"stage {name!r} already finished")
         self.finished = True
-        self.ops.mark_completed(self.stage)
+        if self.stage is not None:
+            self.ops.mark_completed(self.stage)
         self.emit(
             StageFinished(
                 self.operation,
                 self.stage,
                 time.monotonic() - self._t0,
                 dict(summary),
-            )
+            ),
+            detail=detail,
         )
 
 
@@ -572,7 +718,9 @@ def operation_events(
     return OperationEvents(operation, events, cancel)
 
 
-def detached_scope(stage: StageLike, *, verb: Optional[str] = None) -> StageScope:
+def detached_scope(
+    stage: Optional[StageLike], *, verb: Optional[str] = None
+) -> StageScope:
     """A scope with no callback and no token: renders log lines only.
 
     The default for an internal function reachable without an operation (a

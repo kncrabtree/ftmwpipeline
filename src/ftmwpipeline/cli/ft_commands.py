@@ -7,13 +7,12 @@ for basic FTMW data processing and visualization.
 
 import argparse
 from pathlib import Path
-from typing import Any, Dict
-
-from .._internal.stage1_impl import compute_ft_impl, visualize_ft_impl
+from .._internal.stage1_impl import ft_run_impl, ft_run_summary, visualize_ft_impl
 
 # Import shared implementations
 from ..file_manager import PipelineFileError
 from ._argspec import add_settings_args, settings_from_namespace
+from ._events import add_events_argument, operation_controls
 from ._json_output import json_mode, record_run_result
 from .utils import (
     add_stage_object,
@@ -61,25 +60,21 @@ def cmd_ft_process(args: argparse.Namespace) -> int:
         print()
 
         try:
-            result = compute_ft_impl(
-                file_path=file_path,
-                settings=settings,
-                validate_only=False,
-                persist=True,
-            )
+            with operation_controls(args) as (events, cancel):
+                result = ft_run_impl(
+                    file_path,
+                    settings,
+                    validate_only=False,
+                    persist=True,
+                    events=events,
+                    cancel=cancel,
+                )
 
             if json_mode(args):
-                ft_summary: Dict[str, Any] = {
-                    k: result[k]
-                    for k in (
-                        "fid_points",
-                        "preprocessed_points",
-                        "frequency_points",
-                        "trimmed_points",
-                    )
-                    if k in result
-                }
-                record_run_result(args, stage="ft", result=result, summary=ft_summary)
+                # One builder for this summary and the stage's StageFinished.
+                record_run_result(
+                    args, stage="ft", result=result, summary=ft_run_summary(result)
+                )
 
             print(
                 "FT processing validation and parameter storage completed successfully!"
@@ -296,6 +291,7 @@ Workflow:
     )
     ft_process_parser.add_argument("file_path", help="Path to .ftmw pipeline file")
     add_settings_args(ft_process_parser)
+    add_events_argument(ft_process_parser)
     ft_process_parser.add_argument(
         "-v", "--verbose", action="store_true", help="Enable verbose output"
     )

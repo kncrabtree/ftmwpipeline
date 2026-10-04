@@ -10,10 +10,15 @@ import argparse
 from pathlib import Path
 from typing import Any
 
-from .._internal.stage3_impl import detect_peaks_impl, visualize_peaks_impl
+from .._internal.stage3_impl import (
+    detect_peaks_impl,
+    peaks_run_summary,
+    visualize_peaks_impl,
+)
 from ..core.peak_detection_settings import PeakDetectionSettings
 from ..file_manager import PipelineFileError
 from ._argspec import add_settings_args, settings_from_namespace
+from ._events import add_events_argument, operation_controls
 from ._json_output import json_mode, record_run_result
 from .utils import add_stage_object, print_error, print_invalidated, setup_logging
 
@@ -45,43 +50,21 @@ def cmd_detect_peaks(args: argparse.Namespace) -> int:
         settings = settings_from_namespace(args, PeakDetectionSettings)
         preset = args.preset
         print(f"Detecting peaks for: {file_path}")
-        result = detect_peaks_impl(
-            file_path=file_path,
-            settings=None if settings.is_empty() else settings,
-            preset=preset,
-        )
-        peaks = result["peaks"]
-        promoted = [p for p in peaks if p.properties.get("promoted")]
-        n_strong = sum(
-            1
-            for p in promoted
-            if p.classification and p.classification.value == "strong"
-        )
-        n_medium = sum(
-            1
-            for p in promoted
-            if p.classification and p.classification.value == "medium"
-        )
-        n_weak = sum(
-            1 for p in promoted if p.classification and p.classification.value == "weak"
-        )
-        if json_mode(args):
-            record_run_result(
-                args,
-                stage="peaks",
-                result=result,
-                summary={
-                    "acquisition_us": result["acquisition_us"],
-                    "n_peaks": result["n_peaks"],
-                    "promotion_min_snr": result["promotion_min_snr"],
-                    "n_promoted": result["n_promoted"],
-                    "n_primary": result["n_primary"],
-                    "n_gap": result["n_gap"],
-                    "n_strong": n_strong,
-                    "n_medium": n_medium,
-                    "n_weak": n_weak,
-                },
+        with operation_controls(args) as (events, cancel):
+            result = detect_peaks_impl(
+                file_path=file_path,
+                settings=None if settings.is_empty() else settings,
+                preset=preset,
+                events=events,
+                cancel=cancel,
             )
+        # One builder for this summary and the stage's StageFinished.
+        summary = peaks_run_summary(result)
+        n_strong = summary["n_strong"]
+        n_medium = summary["n_medium"]
+        n_weak = summary["n_weak"]
+        if json_mode(args):
+            record_run_result(args, stage="peaks", result=result, summary=summary)
         print("\nPeak detection completed successfully!")
         print(f"  Active acquisition T: {result['acquisition_us']:.2f} us")
         print(f"  Total detected: {result['n_peaks']:,}")
@@ -225,6 +208,7 @@ def register_peak_commands(subparsers: Any) -> None:
     p_detect.add_argument(
         "-v", "--verbose", action="store_true", help="Verbose diagnostics"
     )
+    add_events_argument(p_detect)
     p_detect.set_defaults(func=cmd_detect_peaks)
 
     p_vis = verbs.add_parser(
