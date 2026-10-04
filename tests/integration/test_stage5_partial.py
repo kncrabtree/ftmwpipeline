@@ -330,6 +330,45 @@ def test_a_token_set_before_the_call_writes_nothing(
     assert fp.read_bytes() == raw
 
 
+@pytest.mark.parametrize("interrupt", ["cancel", "callback"])
+def test_a_partial_write_that_fails_leaves_the_file_and_raises_the_interruption(
+    interrupt, baseline_2638_stage4_small, tmp_path, monkeypatch, caplog
+):
+    """The partial write itself fails (after it began changing the working
+    copy): nothing is kept, the file is as it was, and the caller sees the
+    cancel / callback failure -- not the write's error, which is logged."""
+    from ftmwpipeline._internal import stage5_partial_impl
+
+    fp = _copy(baseline_2638_stage4_small, tmp_path)
+    ftmw.fit_peaks(fp, jobs=1)
+    raw = fp.read_bytes()
+
+    def broken(*_a: Any, **_k: Any) -> Any:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(stage5_partial_impl, "write_stage5_partial", broken)
+    tok = Token()
+    delivered: List[Any] = []
+
+    def on_event(event: Any) -> None:
+        delivered.append(event)
+        if isinstance(event, WindowProgress):
+            if interrupt == "cancel":
+                tok.set()
+            else:
+                raise ValueError("boom")
+
+    expected = OperationCancelledError if interrupt == "cancel" else CallbackFailedError
+    with caplog.at_level("ERROR"):
+        with pytest.raises(expected) as info:
+            ftmw.fit_peaks(fp, jobs=1, events=on_event, cancel=tok)
+    assert info.value.completed_windows == []
+    assert fp.read_bytes() == raw
+    assert _state(fp) == "complete"
+    assert not [e for e in delivered if isinstance(e, Invalidated)]
+    assert "could not be written as a partial fit" in caplog.text
+
+
 @pytest.mark.parametrize("jobs", JOBS, ids=lambda j: f"jobs{j}")
 def test_nothing_is_written_during_the_walk(jobs, baseline_2638_stage4_small, tmp_path):
     """The file is the one the call started with at every event of the walk,
