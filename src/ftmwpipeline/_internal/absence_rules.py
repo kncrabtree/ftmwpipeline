@@ -15,6 +15,8 @@ from typing import Any, Optional, Union
 from ..contract import Absent
 
 __all__ = [
+    "clock_declaration_recorded",
+    "clock_lattice_absence",
     "float_or_absent",
     "int_or_absent",
     "knockout_absence",
@@ -61,4 +63,34 @@ def knockout_absence(supported: Any, delta_chi2: Any) -> Optional[Absent]:
         return Absent.NOT_RUN
     if delta_chi2 is not None and math.isnan(float(delta_chi2)):
         return Absent.NOT_RUN
+    return None
+
+
+def clock_declaration_recorded(file_path: Any) -> bool:
+    """Whether the Stage 5 fit's persisted settings carry a clock declaration.
+
+    The lattice a peak's ``clock_lattice`` is matched against is built from the
+    fit's own ``spur.clocks``; without one, no match was attempted. An
+    unreadable settings record counts as no declaration.
+    """
+    from ..io.stage_fit_settings_serialization import load_stage_fit_settings_from_h5
+
+    try:
+        persisted = load_stage_fit_settings_from_h5(str(file_path))
+    except Exception:
+        return False
+    return persisted is not None and bool(persisted.spur.clocks)
+
+
+def clock_lattice_absence(value: Any, declared: bool) -> Optional[Absent]:
+    """The status of a stored ``clock_lattice`` identity, or ``None`` if present.
+
+    No clock declaration in the fit (*declared* False) means no match was
+    attempted: ``NOT_RUN``. With a declaration, an empty identity is a computed
+    "off the lattice": ``UNDEFINED``. A non-empty identity is present.
+    """
+    if not declared:
+        return Absent.NOT_RUN
+    if value is None or str(value) == "":
+        return Absent.UNDEFINED
     return None

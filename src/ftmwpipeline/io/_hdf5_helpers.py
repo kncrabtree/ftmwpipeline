@@ -246,6 +246,7 @@ def record_row(
     *,
     where: str,
     extra: Optional[Dict[str, Any]] = None,
+    synthesized: Optional[Dict[str, List[bool]]] = None,
 ) -> None:
     """Append one JSON-decoded record's fields to the accumulating *rows*.
 
@@ -260,18 +261,28 @@ def record_row(
     *extra* supplies values not in the record itself (the owning ``window_id``,
     say). A field absent from the record takes its declared fill; a
     :data:`REQUIRED` field raises.
+
+    *synthesized*, when given, maps a column name to a list that receives one
+    flag per row: ``True`` when that row's value is the declared fill because
+    the record lacks the field (the log predates it), ``False`` otherwise.
     """
     for name in keep:
         dtype, fill = specs[name]
         if extra is not None and name in extra:
             rows[name].append(extra[name])
+            if synthesized is not None:
+                synthesized[name].append(False)
             continue
         if name in record:
             rows[name].append(record[name])
+            if synthesized is not None:
+                synthesized[name].append(False)
             continue
         if fill is REQUIRED:
             raise ValueError(f"{where} missing required field {name!r}")
         rows[name].append(fill)
+        if synthesized is not None:
+            synthesized[name].append(True)
 
 
 def build_columns(
