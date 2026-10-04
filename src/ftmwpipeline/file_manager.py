@@ -208,13 +208,16 @@ class StageDependencyError(PipelineFileError, ValueError):
 
     def _contract_values(self) -> Dict[str, Any]:
         # Canonical names on the wire; an unmapped key raises (never passes
-        # through as an internal spelling).
-        from .contract import stage_for_key
+        # through as an internal spelling). A refusal that names no producing
+        # verb is NOT_RUN on the wire; the attribute keeps None.
+        from .contract import Absent, stage_for_key
 
         values = super()._contract_values()
         values["missing_dependencies"] = [
             stage_for_key(key) for key in self.missing_dependencies
         ]
+        if values["command"] is None:
+            values["command"] = Absent.NOT_RUN
         return values
 
 

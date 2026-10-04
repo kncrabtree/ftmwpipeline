@@ -59,7 +59,6 @@ from ..contract import (
     TABLES_SCHEMA,
     WINDOW_MODEL_SCHEMA,
     WINDOW_STATUS_SCHEMA,
-    Absent,
 )
 from ..file_manager import PipelineFileError
 from .contract_commands import exit_code_for, register_accessor, report_contract_error
@@ -286,13 +285,6 @@ def register_contract_accessors(read_sub: Any) -> None:
         """A file-bound accessor: the named method of the opened Pipeline."""
         return lambda path, **kw: getattr(Pipeline.open(path), method)(**kw)
 
-    def final_products(path: str, **kw: Any) -> Any:
-        # None before Stage 6 in Python (Wave 3 migrates it); absent on the wire.
-        result = Pipeline.open(path).final_products(**kw)
-        if result is None:
-            return {"schema": FINAL_PRODUCTS_SCHEMA, "items": Absent.NOT_RUN}
-        return result
-
     def register(
         name: str,
         accessor: Callable[..., Any],
@@ -361,7 +353,8 @@ def register_contract_accessors(read_sub: Any) -> None:
     )
     register(
         "get_final_products",
-        final_products,
+        # None before Stage 6; contract_envelope writes it as value not_run.
+        opened("final_products"),
         FINAL_PRODUCTS_SCHEMA,
         "The persisted Stage 6 calibrated final-products table",
     )

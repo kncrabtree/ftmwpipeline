@@ -40,7 +40,7 @@ from typing import Any, Callable, Dict, Optional
 
 import numpy as np
 
-from ..contract import MANIFEST, PipelineFileError
+from ..contract import MANIFEST, Absent, PipelineFileError
 from ..serialize import ArrayCollector, to_jsonable
 from .utils import setup_logging
 
@@ -79,10 +79,15 @@ def contract_envelope(result: Any, schema: str) -> Any:
     """The object to serialize for *result* under *schema*.
 
     A list or tuple becomes ``{"schema", "items": [...]}``; a scalar becomes
-    ``{"schema", "value": x}``. Anything else (a dict, a dataclass, a
-    ``ComplexFT``) is stamped directly by :func:`to_jsonable`, which also
-    checks that a payload already stamped in Python carries the same name.
+    ``{"schema", "value": x}``. ``None`` -- a pre-contract accessor's "not
+    produced yet", such as ``get_final_products`` before Stage 6 -- becomes
+    ``{"schema", "value": null, "value_absent": "not_run"}``. Anything else (a
+    dict, a dataclass, a ``ComplexFT``) is stamped directly by
+    :func:`to_jsonable`, which also checks that a payload already stamped in
+    Python carries the same name.
     """
+    if result is None:
+        return {"schema": schema, "value": Absent.NOT_RUN}
     if isinstance(result, (list, tuple)):
         return {"schema": schema, "items": result}
     if isinstance(result, (bool, int, float, str, np.generic)):

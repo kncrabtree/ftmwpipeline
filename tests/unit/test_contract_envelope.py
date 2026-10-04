@@ -118,9 +118,19 @@ def test_matching_python_stamp_is_accepted(capsys):
 
 
 def test_absent_in_a_named_field_of_a_wrapped_dict(capsys):
-    """``get_final_products`` before Stage 6: items null plus items_absent."""
     env = _emit({"schema": SCHEMA, "items": Absent.NOT_RUN}, capsys)
     assert env == {"schema": SCHEMA, "items": None, "items_absent": "not_run"}
+
+
+def test_none_result_is_value_not_run(capsys):
+    """``get_final_products`` before Stage 6 returns ``None`` in Python; its
+    envelope is ``value`` null plus ``value_absent`` ``not_run``."""
+    assert contract_envelope(None, SCHEMA) == {
+        "schema": SCHEMA,
+        "value": Absent.NOT_RUN,
+    }
+    env = _emit(None, capsys)
+    assert env == {"schema": SCHEMA, "value": None, "value_absent": "not_run"}
 
 
 def test_arrays_require_output_and_go_to_npy(capsys, tmp_path):
