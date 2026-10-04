@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import List, Tuple
 
 import h5py
-import numpy as np
 import pytest
 
 import ftmwpipeline.api as ftmw
