@@ -750,9 +750,10 @@ default, format), ``-o/--output DIR`` and ``-v``.
    * - ``file_corrupt``
      - ``2``
      - a file that exists but cannot be opened, as detected by the typed opener
-       (every ``read`` accessor, ``info``, ``ft run``, ``data`` verbs). Some
-       stage verbs still open the file directly and report an unopenable file
-       with their own message and exit ``1``; typing those opens is pending
+       (every verb that takes a ``.ftmw``: ``read`` accessors, ``info``,
+       ``data``, ``ft``, ``noise``, ``tau``, ``timebase``, ``peaks``,
+       ``windows``, ``fit``, ``review``, ``report``, ``settings``, ``scan``,
+       ``clocks``)
    * - ``algorithm_failed``
      - ``2``
      - not yet raised; reserved for a later wave
