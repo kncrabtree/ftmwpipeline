@@ -520,7 +520,11 @@ def _invalidate_inclusive(path: str, own_stages: Tuple[str, ...]) -> Tuple[str, 
     them, returning the invalidated stage names sorted."""
     import h5py
 
-    from ...file_manager import PipelineStageTracker, invalidate_downstream_stages
+    from ...file_manager import (
+        PipelineStageTracker,
+        drop_records_of_removed_stages,
+        invalidate_downstream_stages,
+    )
 
     dependents: List[str] = []
     for stage in own_stages:
@@ -540,6 +544,7 @@ def _invalidate_inclusive(path: str, own_stages: Tuple[str, ...]) -> Tuple[str, 
             if stage in completed:
                 completed.remove(stage)
                 dropped.append(stage)
+        drop_records_of_removed_stages(h5f, own_stages)
         if dropped:
             stages_group.attrs["completed_stages"] = json.dumps(completed)
             stages_group.attrs["last_updated"] = datetime.now().isoformat()

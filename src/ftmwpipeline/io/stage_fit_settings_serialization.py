@@ -134,6 +134,12 @@ class Stage5Consumed:
         The effective peak-survival SNR floor: ``peak_survival.snr_survival_floor``
         when set, otherwise the Stage 3 promotion cutoff times
         ``peak_survival.snr_survival_factor``.
+    stft_spur_nominees : tuple of (float, bool) or None
+        The Stage 2b spur clusters the spur gate took as nominees, as
+        ``(center_freq_mhz, saturated)`` -- the only cluster fields the gate
+        reads. Empty when the catalog was consulted but held none (or there
+        was no calibration); ``None`` when the gate did not consult it (spur
+        gating off or ``spur.use_stft_catalog`` false).
     """
 
     tau_calibration_source: str
@@ -143,6 +149,7 @@ class Stage5Consumed:
     timebase_epsilon: Optional[float]
     timebase_sigma_epsilon: Optional[float]
     peak_survival_snr_floor: float
+    stft_spur_nominees: Optional[Tuple[Tuple[float, bool], ...]] = None
 
     def to_attrs(self) -> Dict[str, Any]:
         """The record's ``consumed`` attrs (``None`` as ``__None__``)."""
@@ -173,6 +180,13 @@ class Stage5Consumed:
             "timebase_epsilon": _opt(self.timebase_epsilon),
             "timebase_sigma_epsilon": _opt(self.timebase_sigma_epsilon),
             "peak_survival_snr_floor": float(self.peak_survival_snr_floor),
+            "stft_spur_nominees": (
+                _NONE_SENTINEL
+                if self.stft_spur_nominees is None
+                else json.dumps(
+                    [[float(f), bool(sat)] for f, sat in self.stft_spur_nominees]
+                )
+            ),
         }
 
     @classmethod
@@ -184,6 +198,7 @@ class Stage5Consumed:
             return None if value == _NONE_SENTINEL else float(value)
 
         raw_bands = decode_attr(attrs["band_majorities"])
+        raw_nominees = decode_attr(attrs["stft_spur_nominees"])
         bands: Optional[Tuple[BandMajority, ...]] = None
         if raw_bands != _NONE_SENTINEL:
             bands = tuple(
@@ -205,6 +220,11 @@ class Stage5Consumed:
             timebase_epsilon=_opt("timebase_epsilon"),
             timebase_sigma_epsilon=_opt("timebase_sigma_epsilon"),
             peak_survival_snr_floor=float(attrs["peak_survival_snr_floor"]),
+            stft_spur_nominees=(
+                None
+                if raw_nominees == _NONE_SENTINEL
+                else tuple((float(f), bool(sat)) for f, sat in json.loads(raw_nominees))
+            ),
         )
 
 

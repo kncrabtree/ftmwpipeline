@@ -104,6 +104,7 @@ class TestStage5Consumed:
             timebase_epsilon=2.2e-6,
             timebase_sigma_epsilon=7e-8,
             peak_survival_snr_floor=3.3,
+            stft_spur_nominees=((27000.0, True), (27100.5, False)),
         )
         save_stage_fit_settings_to_h5(empty_ftmw, StageFitSettings(), consumed=consumed)
         assert load_stage_fit_consumed_from_h5(empty_ftmw) == consumed
@@ -126,6 +127,14 @@ class TestStage5Consumed:
         save_stage_fit_settings_to_h5(empty_ftmw, StageFitSettings(), consumed=consumed)
         loaded = load_stage_fit_consumed_from_h5(empty_ftmw)
         assert loaded is not None and loaded.band_majorities == ()
+
+    def test_an_empty_nominee_list_is_not_none(self, empty_ftmw: str) -> None:
+        consumed = Stage5Consumed(
+            "persisted", 9.5, 0.09, None, None, None, 3.3, stft_spur_nominees=()
+        )
+        save_stage_fit_settings_to_h5(empty_ftmw, StageFitSettings(), consumed=consumed)
+        loaded = load_stage_fit_consumed_from_h5(empty_ftmw)
+        assert loaded is not None and loaded.stft_spur_nominees == ()
 
     def test_the_resolver_never_sees_it(self, empty_ftmw: str) -> None:
         resolved = resolve_stage_fit()

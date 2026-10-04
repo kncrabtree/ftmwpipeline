@@ -8,6 +8,7 @@ stamp that cannot be written fails the stage instead of being swallowed.
 
 from __future__ import annotations
 
+import json
 from typing import Any, Callable, Optional
 
 import h5py
@@ -193,3 +194,31 @@ class TestStampStageEpoch:
         with h5py.File(empty_ftmw, "a") as h5f:
             with pytest.raises(OSError):
                 provenance.stamp_stage_epoch(h5f, "stage3_peaks")
+
+
+class TestAFailedStampLeavesTheStageIncomplete:
+    """The stamp is part of completing a stage: when it cannot be written the
+    stage is not marked complete."""
+
+    @staticmethod
+    def _completed(path: str) -> list:
+        with h5py.File(path, "r") as h5f:
+            if "pipeline_stages" not in h5f:
+                return []
+            return json.loads(h5f["pipeline_stages"].attrs["completed_stages"])
+
+    def test_update_stage_completion(
+        self, empty_ftmw: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from ftmwpipeline._internal.stage2_impl import _update_stage_completion
+
+        def _fail(*args: Any, **kwargs: Any) -> None:
+            raise OSError("disk full")
+
+        monkeypatch.setattr(
+            "ftmwpipeline.io.environment_serialization.save_stage_environment",
+            _fail,
+        )
+        with pytest.raises(RuntimeError, match="disk full"):
+            _update_stage_completion(empty_ftmw, "stage3_peaks")
+        assert "stage3_peaks" not in self._completed(empty_ftmw)

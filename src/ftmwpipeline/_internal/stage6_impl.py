@@ -1720,7 +1720,9 @@ def refit_window_core(
     # the original fit made. Only False holds every window's tau fixed. (Unset,
     # on a record written before the hard default, reads the same as True.)
     tau_was_fit = bool(wf.shared_parameters.get("tau_us", {}).get("fitted", True))
-    fit_tau_for_window: bool = tau_was_fit and resolved.tau.fit_tau is not False
+    fit_tau_for_window: bool = tau_was_fit and (
+        resolved.tau.fit_tau is None or bool(resolved.tau.fit_tau)
+    )
 
     # Build the constraint kwargs forwarded to fit_window.  Only the knobs
     # fit_window actually accepts (not the conservative-loop add-gate ones).
@@ -9525,16 +9527,13 @@ def get_final_products_impl(file_path: Union[Path, str]) -> Optional[FinalProduc
 def _resolve_calibration_clocks(path: str) -> Tuple[ClockSource, ...]:
     """The clock declaration the calibration state is derived from.
 
-    The same empty-versus-unset rule as the Stage 5 settings resolver: a
-    persisted Stage 5 ``spur.clocks`` that is set -- *including an empty
-    declaration* -- is authoritative; only when it is unset (no Stage 5 record,
-    or a record that never set it) does the recommended declaration
-    (``clocks set`` / a loader-injected one) apply. Consulting the recommended
-    layer matters before Stage 5 has persisted anything: ``timebase run``
-    accepts that layer, so a file can carry a real calibration measured
-    against an unlocked digitizer before any fit has run. Once a fit has
-    persisted its declaration, a later ``clocks set`` does not change the
-    state; re-running Stage 5 does.
+    The same rule the timebase calibration resolves its declaration with
+    (:func:`~ftmwpipeline._internal.timebase_impl._resolve_clock_sources`): a
+    non-empty persisted Stage 5 ``spur.clocks`` first, then the recommended
+    declaration (``clocks set`` / a loader-injected one). An *empty* persisted
+    declaration falls through, so a ``clocks set`` after the fit followed by
+    ``timebase run`` applies the measured epsilon -- the state agrees with the
+    declaration the timebase result records it ran with.
 
     Degrades to "no declaration" on an unreadable record, as the state's
     derivation always has.
@@ -9548,7 +9547,7 @@ def _resolve_calibration_clocks(path: str) -> Tuple[ClockSource, ...]:
         persisted = load_stage_fit_settings_from_h5(path)
     except Exception:
         persisted = None
-    if persisted is not None and persisted.spur.clocks is not None:
+    if persisted is not None and persisted.spur.clocks:
         return tuple(persisted.spur.clocks)
     try:
         return tuple(read_recommended_clock_sources(path) or ())

@@ -1302,6 +1302,11 @@ class Stage5FitContext:
     # (``Stage5Consumed``) because a timebase re-run does not invalidate it.
     timebase_epsilon: Optional[float] = None
     timebase_sigma_epsilon: Optional[float] = None
+    # The Stage 2b spur clusters the gate took as nominees, as
+    # (center_freq_mhz, saturated), or None when it did not consult the
+    # catalog. Recorded for the same reason: a Stage 2b re-run does not
+    # invalidate the fit.
+    stft_spur_nominees: Optional[Tuple[Tuple[float, bool], ...]] = None
 
 
 def replay_spur_set(catalog: Mapping[str, Any], sorted_freq: np.ndarray) -> Any:
@@ -1478,6 +1483,7 @@ def build_stage5_fit_context(
     clock_lattice: Optional[Any] = None
     tb_epsilon: Optional[float] = None
     tb_sigma_epsilon: float = 0.0
+    stft_spur_nominees: Optional[Tuple[Tuple[float, bool], ...]] = None
     if spur_enabled and replay_spur_catalog is not None:
         # Replay the persisted Stage 5 gated catalog verbatim (no detection):
         # the catalog is a Stage 5 product, so a later-stage refit reproduces
@@ -1499,6 +1505,11 @@ def build_stage5_fit_context(
             if (persisted_cal is not None and use_catalog)
             else ()
         )
+        if use_catalog:
+            stft_spur_nominees = tuple(
+                (float(c.center_freq_mhz), bool(c.saturated))
+                for c in saturated_clusters
+            )
         sorted_sig_c = active_rms[sort_idx] / np.sqrt(2.0)
         spur_band = (
             float(np.min(user_ft.freq_array)),
@@ -1675,6 +1686,7 @@ def build_stage5_fit_context(
         user_ft=user_ft,
         timebase_epsilon=tb_epsilon,
         timebase_sigma_epsilon=None if tb_epsilon is None else tb_sigma_epsilon,
+        stft_spur_nominees=stft_spur_nominees,
     )
 
 
@@ -2566,6 +2578,7 @@ def _fit_peaks_impl(
         timebase_epsilon=fit_ctx.timebase_epsilon,
         timebase_sigma_epsilon=fit_ctx.timebase_sigma_epsilon,
         peak_survival_snr_floor=float(peak_survival_floor_v),
+        stft_spur_nominees=fit_ctx.stft_spur_nominees,
     )
     save_stage_fit_settings_to_h5(
         file_path, resolved, preset_name=preset_name, consumed=consumed

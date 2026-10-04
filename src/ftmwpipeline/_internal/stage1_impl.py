@@ -335,13 +335,13 @@ def compute_ft_impl(
         result["trim_range"] = trim_range
 
     if persist:
-        try:
-            _persist_ft_settings(
-                file_path, resolved, fid_duration_us=float(fid.duration_us)
-            )
-            logger.info("FT settings + Stage 1 completion persisted")
-        except Exception as e:
-            logger.warning(f"Failed to persist FT settings: {e}")
+        # Persisting is completing Stage 1 (record + epoch stamp); a failure
+        # must surface, never leave the file on the old window behind a
+        # successful return.
+        _persist_ft_settings(
+            file_path, resolved, fid_duration_us=float(fid.duration_us)
+        )
+        logger.info("FT settings + Stage 1 completion persisted")
 
     return result
 
@@ -539,7 +539,7 @@ def _persist_ft_settings(
     writing anything else; a stamp that cannot be written raises before the
     record or the completion is touched (see :mod:`ftmwpipeline.io.provenance`).
     """
-    from ..file_manager import PipelineStageTracker
+    from ..file_manager import PipelineStageTracker, drop_records_of_removed_stages
 
     if fid_duration_us is None:
         fid_duration_us = _stored_fid_duration_us(file_path)
@@ -584,6 +584,9 @@ def _persist_ft_settings(
                 if st in completed:
                     completed.remove(st)
                     invalidated.append(st)
+            drop_records_of_removed_stages(
+                h5f, _dependents_of("stage1_complex_ft", deps)
+            )
             if invalidated:
                 logger.warning(
                     "FT settings changed (%s -> %s); invalidated "

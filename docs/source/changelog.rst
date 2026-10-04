@@ -84,19 +84,20 @@ engine so they cannot answer differently.
 * **Machine contract: stages record the upstream values they used.** Stage 3
   records the gap-pass decay time and shape it took from Stage 2b, and Stage 5
   the decay-time anchor source (with the per-band majorities table when it
-  routed per band), the timebase ε it used for the spur window, and its
+  routed per band), the timebase ε it used for the spur window, the Stage 2b
+  spur clusters its spur gate took as nominees, and its
   effective peak-survival floor, each under ``consumed`` in its own settings
   record. The timebase record now persists its resolved clock declaration as a
   typed list, and the Stage 6 final-products table records the declaration its
   calibration state was derived from (see :ref:`consumed-values`). Nothing is
-  invalidated by this; a fresh run is bit-identical to before. Three behaviours
-  change on particular files only. (1) Stage 6 reads the clock declaration
-  under the Stage 5 rule, so a file whose fit persisted an *empty* declaration
-  and which later got a ``clocks set`` is now read as ``rb_locked`` with
-  ε = 0 (as the fit itself read it) instead of picking up the new declaration.
-  (2) ``tau.fit_tau`` now persists as ``True``; Stage 6 refits keep a window's
-  decay time fixed where the fit held it fixed, as before. (3) ``review run``
-  adds ``/frequency_calibration`` to a file that lacks it. Files written earlier
+  invalidated by this; a fresh run is bit-identical to before. Two behaviours
+  change on particular files only. (1) ``tau.fit_tau`` now persists as
+  ``True``, and a Stage 6 refit keeps a window's decay time fixed where the fit
+  held it fixed. Stage 5 always read an explicit ``True`` the same as unset (free
+  where the SNR gate frees it), but a refit used to free every window's decay
+  time when the record held an explicit ``True``; it now follows the fit.
+  (2) ``review run`` adds ``/frequency_calibration`` to a file that lacks it.
+  Files written earlier
   open and run unchanged; their new records read as absent.
 
 * **Machine contract, Wave 2: the fitted model, evaluated.**

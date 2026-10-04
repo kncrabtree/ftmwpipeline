@@ -256,12 +256,19 @@ class TestStage6ClockRule:
         ftmw.set_clock_sources(imported, RECOMMENDED)
         assert len(_resolve_calibration_clocks(imported)) == 2
 
-    def test_persisted_empty_is_authoritative(self, imported: str) -> None:
-        # Mutation: ``if not clocks`` fall-through (the devel behaviour), which
-        # lets a later ``clocks set`` change a fit's calibration state.
+    def test_persisted_empty_falls_through_like_the_timebase(
+        self, imported: str
+    ) -> None:
+        # Mutation: treating a persisted empty declaration as authoritative,
+        # which disagrees with the timebase resolver and drops a measured
+        # epsilon after a post-fit ``clocks set``.
+        from ftmwpipeline._internal.timebase_impl import _resolve_clock_sources
+
         _persist_clocks(imported, ())
         ftmw.set_clock_sources(imported, RECOMMENDED)
-        assert _resolve_calibration_clocks(imported) == ()
+        got = _resolve_calibration_clocks(imported)
+        assert [c.freq_mhz for c in got] == [5120.0, 6250.0]
+        assert got == tuple(_resolve_clock_sources(imported, None))
 
     def test_persisted_nonempty_beats_recommended(self, imported: str) -> None:
         # Mutation: recommended layer outranking the persisted one.
@@ -269,18 +276,20 @@ class TestStage6ClockRule:
         ftmw.set_clock_sources(imported, RECOMMENDED)
         assert _resolve_calibration_clocks(imported) == PERSISTED
 
-    def test_clocks_set_after_the_fit_does_not_move_the_recorded_clocks(
+    def test_the_table_records_the_declaration_it_was_derived_under(
         self, imported: str
     ) -> None:
-        # Mutation: Stage 6 recording the recommended layer instead of the
-        # resolved declaration the table was derived under.
+        # Mutation: Stage 6 recording the persisted Stage 5 layer instead of
+        # the resolved declaration the calibration state was derived under.
         _persist_clocks(imported, ())
         ftmw.set_clock_sources(imported, RECOMMENDED)
         _write_stage6_review_only(
             Stage6Review(final_products=FinalProducts()), imported
         )
         with h5py.File(imported, "r") as h5f:
-            assert read_final_products_calibration_clocks(h5f["stage6_review"]) == ()
+            got = read_final_products_calibration_clocks(h5f["stage6_review"])
+        assert got == _resolve_calibration_clocks(imported)
+        assert got is not None and len(got) == 2
 
     def test_every_review_write_records_the_declaration(self, imported: str) -> None:
         # Mutation: a writer that bypasses _write_stage6_review_only (or drops

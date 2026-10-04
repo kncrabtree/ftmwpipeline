@@ -152,16 +152,18 @@ never by walking the layout):
   (``tau_calibration_source``: ``override``, ``persisted`` or ``none``), the
   band-wide anchor (``tau_maj_us``, ``sigma_tau_us``), the per-band majorities
   table when per-band routing was used, the timebase ε and σ\ :sub:`ε` the
-  ε-aware spur window used (both absent when it used none), and the effective
-  peak-survival SNR floor.
+  ε-aware spur window used (both absent when it used none), the Stage 2b spur
+  clusters the spur gate took as nominees (``stft_spur_nominees``: centre and
+  saturated flag; absent when the gate did not consult the catalog), and the
+  effective peak-survival SNR floor.
 
 Two more records carry the clock declaration they were derived under: the
 ``timebase_calibration`` record stores the resolved declaration (with labels and
 lock flags) as ``clock_sources``, and the Stage 6 final-products table stores
 ``calibration_clocks``, the declaration its calibration state was derived from.
-Stage 6 reads the declaration as the Stage 5 resolver does: a persisted
-``spur.clocks`` that is set, even empty, is authoritative, so a ``clocks set``
-made after the fit does not change the state; re-running Stage 5 does.
+Stage 6 reads the declaration as the timebase calibration does: a non-empty
+persisted Stage 5 ``spur.clocks`` first, otherwise the recommended declaration
+(``clocks set``), so the two records agree.
 ``review run`` also writes ``/frequency_calibration`` (the accuracy floor it
 applied) when that record is absent or pre-dates its version.
 

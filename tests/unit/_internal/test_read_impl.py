@@ -487,14 +487,12 @@ class TestReadMetadata:
 
     def test_ft_section_matches_the_stage1_resolver(self, ftmw_file):
         """This view and Stage 1 read the same record the same way."""
-        from ftmwpipeline._internal.stage1_impl import _read_settings_layer
+        from ftmwpipeline._internal.stage1_impl import resolve_ft_settings_h5
 
         self._write_ft_record(ftmw_file, FTSettings(start_us=None, end_us=None))
         meta = read_metadata_impl(ftmw_file)
-        settings = _read_settings_layer(
-            str(ftmw_file), "processing_parameters/ft_processing"
-        )
-        assert settings is not None
+        with h5py.File(ftmw_file, "r") as h5f:
+            settings = resolve_ft_settings_h5(h5f)
         assert meta["ft.start_us"] == settings.start_us
         assert meta["ft.end_us"] == settings.end_us
         assert meta["ft.units_power"] == settings.units_power

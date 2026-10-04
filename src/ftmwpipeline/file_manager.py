@@ -26,6 +26,7 @@ from typing import (
     Any,
     ClassVar,
     Dict,
+    Iterable,
     List,
     Optional,
     Sequence,
@@ -1146,6 +1147,32 @@ def _load_stage_tracker(
             h5f.close()
 
 
+#: Untracked records that describe tracked stage results: the record is
+#: withdrawn once every result it describes has been removed, so its presence
+#: keeps meaning "this is in effect". The shape recommendation's verdict lives
+#: on the Stage 2b groups.
+_RECORDS_DESCRIBING_STAGES: Dict[str, Tuple[str, ...]] = {
+    "processing_parameters/stage2b_shape_recommendation": (
+        "stage2b_tau_calibration",
+        "stage2b_tau_G_calibration",
+    ),
+}
+
+
+def drop_records_of_removed_stages(h5f: h5py.File, removed: Iterable[str]) -> None:
+    """Delete the untracked records whose described stage results are all gone.
+
+    Call after deleting the data of the stages in ``removed``.
+    """
+    removed_set = set(removed)
+    paths = PipelineStageTracker.STAGE_DATA_PATHS
+    for record_path, stages in _RECORDS_DESCRIBING_STAGES.items():
+        if record_path not in h5f or not removed_set.intersection(stages):
+            continue
+        if not any(paths.get(st, st) in h5f for st in stages):
+            del h5f[record_path]
+
+
 def invalidate_downstream_stages(filepath: Union[str, Path], stage_name: str) -> list:
     """Drop persisted data and completion for every stage that depends on ``stage_name``.
 
@@ -1195,6 +1222,7 @@ def invalidate_downstream_stages(filepath: Union[str, Path], stage_name: str) ->
             if stage in completed:
                 completed.remove(stage)
                 invalidated.append(stage)
+        drop_records_of_removed_stages(h5f, dependents)
         if invalidated:
             stages_group.attrs["completed_stages"] = json.dumps(completed)
             stages_group.attrs["last_updated"] = datetime.now().isoformat()

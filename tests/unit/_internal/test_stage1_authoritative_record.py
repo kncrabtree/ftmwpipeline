@@ -333,3 +333,48 @@ def test_persisted_reader_requires_a_stage1_record(tmp_path: Path) -> None:
     p = _create_ftmw(tmp_path)
     with pytest.raises(StageDependencyError):
         persisted_ft_settings(p, "timebase_calibration", 20.0)
+
+
+# Mutation caught: compute_ft swallows a failed persist (the epoch stamp is
+# part of completing Stage 1) and returns success on the old window.
+def test_a_failed_stage1_stamp_fails_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = _create_ftmw(tmp_path)
+    ftmw.compute_ft(p)
+    before = _record(p)
+
+    def _fail(*args: object, **kwargs: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(
+        "ftmwpipeline.io.environment_serialization.save_stage_environment", _fail
+    )
+    with pytest.raises(RuntimeError, match="disk full"):
+        ftmw.compute_ft(p, start_us=2.0)
+    assert _record(p)["start_us"] == before["start_us"]
+
+
+# Mutation caught: a Stage 1 re-run removes the Stage 2b results but leaves the
+# shape recommendation's record, which then names a verdict no stage uses.
+def test_stage1_rerun_withdraws_the_shape_recommendation_record(
+    tmp_path: Path,
+) -> None:
+    from ftmwpipeline.io.tau_calibration_settings_serialization import (
+        SHAPE_RECOMMENDATION_SETTINGS_PATH,
+    )
+
+    p = _create_ftmw(tmp_path)
+    ftmw.compute_ft(p)
+    with h5py.File(p, "a") as h5f:
+        h5f.create_group("stage2b_tau_calibration")
+        h5f.create_group(SHAPE_RECOMMENDATION_SETTINGS_PATH)
+        stages = h5f["pipeline_stages"]
+        completed = json.loads(stages.attrs["completed_stages"])
+        stages.attrs["completed_stages"] = json.dumps(
+            completed + ["stage2b_tau_calibration"]
+        )
+    ftmw.compute_ft(p, start_us=2.0)
+    with h5py.File(p, "r") as h5f:
+        assert "stage2b_tau_calibration" not in h5f
+        assert SHAPE_RECOMMENDATION_SETTINGS_PATH not in h5f

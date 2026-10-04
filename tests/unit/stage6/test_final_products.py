@@ -596,6 +596,24 @@ def test_fit_and_detection_record_what_they_consumed(stage5_small_source):
     assert s5.peak_survival_snr_floor == fit_diag["peak_survival"]["snr_floor"]
     # The fixture runs no timebase before the fit, so the spur gate used none.
     assert s5.timebase_epsilon is None and s5.timebase_sigma_epsilon is None
+    # The STFT catalog is on by default, so the gate consulted it: its nominees
+    # are exactly the persisted Stage 2b clusters of the calibration it read.
+    import ftmwpipeline.file_manager as ftmw_errors
+
+    candidates = []
+    for shape in ("lorentzian", "gaussian"):
+        try:
+            cal = ftmw.load_tau_calibration(path, shape=shape)
+        except ftmw_errors.StageDependencyError:
+            continue
+        candidates.append(
+            tuple(
+                (float(c.center_freq_mhz), bool(c.saturated))
+                for c in cal.spur_clusters
+            )
+        )
+    # With no calibration the gate still consulted the (empty) catalog.
+    assert s5.stft_spur_nominees in (candidates or [()])
     settings = load_stage_fit_settings_from_h5(path)
     assert settings is not None
     # Concrete (not None); the codec reads bool knobs back as numpy bools.

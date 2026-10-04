@@ -205,20 +205,24 @@ class TestTauMaxFactor:
             new.contributor_taus_us, legacy.contributor_taus_us
         )
 
-    @pytest.mark.parametrize("shape", ["lorentzian", "gaussian"])
-    def test_effective_clip_is_persisted_with_each_result(self, f2b, shape) -> None:
+    def test_effective_clip_is_persisted_with_the_lorentzian_result(self, f2b) -> None:
         """The factor reaches the kernel and the effective clip rides on the
-        result codec; the record says what was set.
+        result codec; the record says what was set. (The Gaussian result's
+        ``tau_max_us`` reports the tau_G fit bound instead, so its clip is
+        checked at the kernel below.)
 
         Mutation: the factor is dropped before the kernel (clip stays 5x)."""
+        shape = "lorentzian"
+        # The default run goes first: a run persists its resolved factor, which
+        # a later run with the factor unset would inherit.
+        stage2b_impl.calibrate_tau_impl(f2b, shape=shape, settings=_settings(12))
+        default = stage2b_impl.load_tau_calibration_impl(f2b, shape=shape)[
+            "tau_calibration"
+        ]
         stage2b_impl.calibrate_tau_impl(
             f2b, shape=shape, settings=_settings(12, tau_max_factor=3.0)
         )
         res = stage2b_impl.load_tau_calibration_impl(f2b, shape=shape)[
-            "tau_calibration"
-        ]
-        stage2b_impl.calibrate_tau_impl(f2b, shape=shape, settings=_settings(12))
-        default = stage2b_impl.load_tau_calibration_impl(f2b, shape=shape)[
             "tau_calibration"
         ]
         assert default.tau_max_us > 0
@@ -226,6 +230,29 @@ class TestTauMaxFactor:
             3.0 / DEFAULT_TAU_MAX_FACTOR * default.tau_max_us, rel=1e-9
         )
         rec = load_tau_producer_settings_from_h5(f2b, shape)
+        assert rec is not None
+        assert rec["stft"]["tau_max_factor"] == 3.0
+        assert rec["stft"]["tau_max_us"] is None
+
+    def test_the_gaussian_classifier_receives_the_factor(
+        self, f2b, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Mutation: the Gaussian twin drops the factor before the STFT kernel.
+        from ftmwpipeline.fitting import tau_calibration
+
+        seen: List[Any] = []
+        real = tau_calibration.stft_calibration
+
+        def spy(*args: Any, **kwargs: Any) -> Any:
+            seen.append(kwargs.get("tau_max_factor"))
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(tau_calibration, "stft_calibration", spy)
+        stage2b_impl.calibrate_tau_impl(
+            f2b, shape="gaussian", settings=_settings(12, tau_max_factor=3.0)
+        )
+        assert seen and all(f == 3.0 for f in seen)
+        rec = load_tau_producer_settings_from_h5(f2b, "gaussian")
         assert rec is not None
         assert rec["stft"]["tau_max_factor"] == 3.0
         assert rec["stft"]["tau_max_us"] is None
@@ -242,6 +269,10 @@ class TestTauMaxFactor:
 
     def test_recommendation_verdict_carries_its_effective_clip(self, f2b) -> None:
         # Mutation: the recommender ignores the factor / does not store the clip.
+        # Default first, for the same inheritance reason as above.
+        default = shape_recommendation_impl.recommend_shape_impl(
+            f2b, settings=_settings(12)
+        )["shape_recommendation"]
         out = shape_recommendation_impl.recommend_shape_impl(
             f2b, settings=_settings(12, tau_max_factor=3.0)
         )
@@ -249,9 +280,6 @@ class TestTauMaxFactor:
         assert rec is not None
         assert rec.tau_max_us == out["shape_recommendation"].tau_max_us
         assert rec.settings["stft"]["tau_max_factor"] == 3.0
-        default = shape_recommendation_impl.recommend_shape_impl(
-            f2b, settings=_settings(12)
-        )["shape_recommendation"]
         assert rec.tau_max_us == pytest.approx(
             3.0 / DEFAULT_TAU_MAX_FACTOR * default.tau_max_us, rel=1e-9
         )
