@@ -144,7 +144,11 @@ def test_run_stops_at_first_failure(patch_pipeline):
     res = run_pipeline_impl("src", output="x.ftmw", trim=(1, 2), progress=False)
     assert res["status"] == "error"
     assert res["failed_stage"] == "peaks"
-    assert "boom in peaks" in res["error"]
+    # The error is the failure's ftmw/error@1 dict; an untyped exception is
+    # carried under the base code.
+    assert res["error"]["schema"] == "ftmw/error@1"
+    assert res["error"]["code"] == "pipeline_error"
+    assert "boom in peaks" in res["error"]["message"]
     # windows / fit never ran.
     assert "windows" not in pipe.calls and "fit" not in pipe.calls
     assert "peaks" not in res["completed_stages"]

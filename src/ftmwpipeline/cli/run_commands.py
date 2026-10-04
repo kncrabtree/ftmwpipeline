@@ -9,9 +9,12 @@ real logic lives in :func:`run_pipeline_impl`.
 from __future__ import annotations
 
 import argparse
+import json
+import sys
 from typing import Any, Dict, List, Optional, Tuple
 
-from .._internal.run_impl import run_pipeline_impl
+from .._internal.run_impl import canonical_run_step, run_pipeline_impl
+from ..contract import CancelToken, EventCallback
 from ..core.noise_settings import NoiseSettings
 from ..core.peak_detection_settings import PeakDetectionSettings
 from ..core.settings import FTSettings, _parse_trim
@@ -25,28 +28,9 @@ from ._argspec import (
     settings_from_namespace,
     start_settings_from_namespace,
 )
+from ._events import add_events_argument, operation_controls
 from ._json_output import json_mode, record_run_result
 
-
-
-#: The run's progress labels as canonical stage names (contract.Stage values).
-#: "start detection" (a stamp) and "report" (artifacts) are steps, not stages;
-#: they keep their labels.
-_RUN_STAGE_NAMES = {
-    "import": "data",
-    "FT": "ft",
-    "timebase": "timebase",
-    "noise": "noise",
-    "calibrate tau": "tau",
-    "peaks": "peaks",
-    "windows": "windows",
-    "fit": "fit",
-    "review": "review",
-}
-
-
-def _canonical_run_stage(label: str) -> str:
-    return _RUN_STAGE_NAMES.get(label, label)
 
 def _parse_clocks(spec: Optional[str]) -> Optional[List[dict]]:
     """Parse a ``--clocks`` spec into clock-source dicts.
@@ -110,7 +94,70 @@ def cmd_run(args: argparse.Namespace) -> int:
     ft_overrides = settings_from_namespace(args, FTSettings, prefix="ft").overrides()
     ft_params = ft_overrides or None
 
-    result = run_pipeline_impl(
+    with operation_controls(args) as (events, cancel):
+        result = _run(args, trim, ft_params, events, cancel)
+
+    error = result.get("error") or {}
+    if json_mode(args):
+        rep = result.get("report") or {}
+        record_run_result(
+            args,
+            stage=None,
+            invalidated=[],
+            summary={
+                "status": result["status"],
+                "pipeline_file": str(result["pipeline_file"]),
+                "n_completed_stages": len(result["completed_stages"]),
+                # Canonical stage names (contract.Stage values), not the
+                # progress labels the human output prints.
+                "completed_stages": ", ".join(
+                    canonical_run_step(s) for s in result["completed_stages"]
+                ),
+                # Already canonical in the result.
+                "failed_stage": result.get("failed_stage"),
+                # The failure's code and message; its full ftmw/error@1 dict
+                # goes to stderr below.
+                "error_code": error.get("code"),
+                "error": error.get("message"),
+                "timebase": result.get("timebase"),
+                "elapsed_s": result.get("elapsed_s"),
+                "report_table": rep.get("table"),
+                "report_html": rep.get("html"),
+            },
+        )
+
+    if result["status"] == "error":
+        if json_mode(args):
+            print(json.dumps(error, allow_nan=False), file=sys.stderr)
+        print(
+            f"run: failed at stage '{result['failed_stage']}': "
+            f"{error.get('message')} [{error.get('code')}]\n"
+            f"     completed: {', '.join(result['completed_stages']) or '(none)'}"
+        )
+        return 1
+
+    summary = (
+        f"run: {result['pipeline_file']} — "
+        f"{len(result['completed_stages'])} stages in {result['elapsed_s']:.1f}s "
+        f"(timebase {result['timebase']})"
+    )
+    if result.get("report"):
+        rep = result["report"]
+        parts = [p for p in (rep.get("table"), rep.get("html")) if p]
+        summary += "; report: " + ", ".join(parts)
+    print(summary)
+    return 0
+
+
+def _run(
+    args: argparse.Namespace,
+    trim: Optional[Tuple[float, float]],
+    ft_params: Optional[Dict[str, Any]],
+    events: Optional[EventCallback],
+    cancel: Optional[CancelToken],
+) -> Dict[str, Any]:
+    """Call :func:`run_pipeline_impl` with the parsed ``run`` arguments."""
+    return run_pipeline_impl(
         args.source,
         output=args.output,
         trim=trim,
@@ -132,54 +179,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         peak_params=_stage_settings_params(args, PeakDetectionSettings, "peaks"),
         window_params=_stage_settings_params(args, WindowPlanningSettings, "windows"),
         fit_params=_stage_settings_params(args, StageFitSettings, "fit"),
+        events=events,
+        cancel=cancel,
     )
-
-    if json_mode(args):
-        rep = result.get("report") or {}
-        record_run_result(
-            args,
-            stage=None,
-            invalidated=[],
-            summary={
-                "status": result["status"],
-                "pipeline_file": str(result["pipeline_file"]),
-                "n_completed_stages": len(result["completed_stages"]),
-                # Canonical stage names (contract.Stage values), not the
-                # progress labels the human output prints.
-                "completed_stages": ", ".join(
-                    _canonical_run_stage(s) for s in result["completed_stages"]
-                ),
-                "failed_stage": (
-                    None
-                    if result.get("failed_stage") is None
-                    else _canonical_run_stage(result["failed_stage"])
-                ),
-                "error": result.get("error"),
-                "timebase": result.get("timebase"),
-                "elapsed_s": result.get("elapsed_s"),
-                "report_table": rep.get("table"),
-                "report_html": rep.get("html"),
-            },
-        )
-
-    if result["status"] == "error":
-        print(
-            f"run: failed at stage '{result['failed_stage']}': {result['error']}\n"
-            f"     completed: {', '.join(result['completed_stages']) or '(none)'}"
-        )
-        return 1
-
-    summary = (
-        f"run: {result['pipeline_file']} — "
-        f"{len(result['completed_stages'])} stages in {result['elapsed_s']:.1f}s "
-        f"(timebase {result['timebase']})"
-    )
-    if result.get("report"):
-        rep = result["report"]
-        parts = [p for p in (rep.get("table"), rep.get("html")) if p]
-        summary += "; report: " + ", ".join(parts)
-    print(summary)
-    return 0
 
 
 # Each stage whose settings dataclass generates a `--<prefix>.*` knob surface on
@@ -339,6 +341,7 @@ def register_run_command(subparsers: Any) -> None:
         metavar="KHZ",
         help="Accuracy floor (kHz) folded into the σ_f budget at review.",
     )
+    add_events_argument(common)
     common.add_argument(
         "--quiet",
         dest="quiet",
