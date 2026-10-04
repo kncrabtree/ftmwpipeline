@@ -141,6 +141,28 @@ Each declared accessor, with its absence cases:
   produces it: ``tau run``, ``tau run --gaussian``, ``peaks run``,
   ``windows run`` or ``fit run``, for every table. ``read read_table FILE TABLE [--columns a,b]`` writes each column to
   ``<column>.npy`` under ``--output``.
+
+  ``read_metadata`` has two kinds of absence. A key of a stage that has not
+  run is *omitted* (read with ``.get()``). A key that is present without a
+  value is ``Absent`` (``null`` plus ``"<key>_absent"`` on the wire), never
+  ``None``:
+
+  - *not run* (the file predates the record): ``file.format_version``,
+    ``file.created_with``, ``source.source_path`` / ``format_name`` /
+    ``import_timestamp`` / ``source_hash`` (an unset import field),
+    ``stage5.acquisition_us`` (the fit recorded none), and
+    ``stage3.promotion_min_snr`` / ``stage3.internal_min_snr``.
+  - *undefined* (computed, no value): ``start.chirp_end_us`` when no chirp
+    was detected; ``timebase.epsilon`` and ``timebase.sigma_epsilon`` when no
+    lattice tone was used; ``timebase.lattice_g_mhz`` when no locked lattice
+    exists; ``stage5.acquisition_us`` when the recorded value is not a positive
+    finite number; ``tau.`` / ``tau_g.`` scalars that are not finite (a decay
+    time with zero contributors, a bimodality or correlation statistic on too
+    few points); and ``tau.recommended_shape`` when the vote had no winner.
+
+  The ``ft.`` / ``stage1.`` settings echoes (an unset bound or trim) stay
+  ``None``, as do ``start.resolved_band_min_mhz`` / ``resolved_band_max_mhz``
+  (no band restriction).
 * ``get_final_products`` -- the persisted final-products table, or ``None``
   before Stage 6 (``None`` becomes ``Absent`` in a later wave; ``read
   get_final_products`` already prints ``"items": null, "items_absent":
@@ -170,7 +192,24 @@ Each declared accessor, with its absence cases:
   ``merge``, ``split``, ``accept``, ``create_window``; ``provenance`` is
   ``user``.
 * ``get_pipeline_info`` -- the status dict. ``warnings`` is always present (an
-  empty list when there are none).
+  empty list when there are none). The environment fields hold ``Absent``
+  rather than ``None`` / ``{}`` / ``[]``:
+
+  - *not run*: ``format_version``, ``created_with`` and ``last_written_with``
+    when the file carries no stamp; ``stage_environments`` when no stage was
+    stamped (a file that predates the record); ``environment_drift`` and
+    ``runtime_environment_drift`` when there are no stamps to compare (with
+    stamps, ``[]`` means no drift); ``analysis_epoch`` and any other field of an
+    environment record that was not captured, including inside
+    ``current_environment``.
+  - *undefined*: when validation could not read the stamps, every file-derived
+    environment key (``format_version``, ``created_with``, ``stage_environments``,
+    ``last_written_with``, both drift lists, ``environment_acknowledged``).
+    ``current_environment`` does not depend on the file and is always reported.
+
+  ``ftmwpipeline info`` prints ``Absent`` values as its usual "(unknown)" /
+  "(not recorded)" placeholders, and ``info --format json`` writes them as
+  ``null`` plus a ``"<key>_absent"`` sibling.
 * ``frequency_calibration``, ``refit_snap_tol_mhz``, ``settings_show``,
   ``settings_defaults`` -- unchanged; ``settings_defaults`` needs no file.
 * ``compute_display_ft`` -- ``freq_array`` and ``complex_spectrum`` plus
