@@ -615,7 +615,9 @@ named that does not exist, e.g. all unknown window ids of a curation batch),
     record;
   - `STAGE_KNOB_PREFIX`: the tuning-registry knob prefix, or `None`.
 
-  Each has a `*_for_*` inverse where the mapping is one-to-one. They are
+  Each has a `*_for_*` inverse where the mapping is one-to-one. Only the
+  storage key is one-to-one: `tau` and `tau_g` share both the `stage2b`
+  settings prefix and the `stage2b` knob prefix. They are
   exposed in `capabilities()` under `"stages"`, as
   `[{"stage", "storage_key", "settings_prefix", "knob_prefix", "depends_on"}]`.
 - **`status(path)`** returns `{"schema": "ftmw/status@1", "stages": [{"stage",
@@ -646,7 +648,8 @@ named that does not exist, e.g. all unknown window ids of a curation batch),
 - **Every stage-running call reports the stages it invalidated.** Its result
   carries `invalidated`, a list of canonical stage names in `rerun_order`
   order, which is empty when nothing was invalidated. On the CLI, the human
-  output names them and `--format json` includes them.
+  output names them. A verb with a JSON output mode includes them there.
+  Stage verbs gain JSON output with the serializer rollout (Wave 8).
 - Settings registry rows (`SettingRow`, from `settings_show` /
   `settings_defaults`) add these fields:
   - `type`: one of `"float"`, `"int"`, `"bool"`, `"str"`, `"choice"`,

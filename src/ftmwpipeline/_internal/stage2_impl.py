@@ -178,8 +178,9 @@ def _compute_noise_scatter(
     settings differ from it, every stage built on the old sigma (Stage 2b
     onward) is invalidated, as an explicit override must; an identical re-run
     reproduces the same sigma and leaves them standing, as Stage 1 does. With no
-    previous record there is nothing to compare against, so any standing
-    downstream result is invalidated too.
+    previous record (a first run, or a file predating the record) downstream
+    results are left standing: a run that deletes curated work on a guess is
+    worse than one that trusts an unrecorded recipe.
     """
     window_mhz_v = float(_required(settings.window_mhz, "window_mhz"))
     pedestal_mhz_v = float(_required(settings.pedestal_mhz, "pedestal_mhz"))
@@ -265,12 +266,9 @@ def _compute_noise_scatter(
         # ``processing_parameters/stage2_noise`` so a no-kwargs re-run inherits
         # it via the resolver's persisted layer.
         save_noise_settings_to_h5(file_path, settings, preset_name=preset_name)
-        # No previous record means nothing says what any standing downstream
-        # result was built on (a first run has none; an old file may), so only
-        # a recorded, identical recipe leaves them standing.
         invalidated = (
             invalidate_downstream_stages(file_path, "stage2_noise_result")
-            if previous is None or previous != settings
+            if previous is not None and previous != settings
             else []
         )
         _update_stage_completion(file_path, "stage2_noise_result")

@@ -50,7 +50,6 @@ from ..file_manager import (
     StageDependencyError,
     canonical_invalidated,
     invalidate_downstream_stages,
-    invalidate_stages_in_file,
     requires_pipeline_file,
 )
 from ..io.peak_detection_settings_serialization import (
@@ -1137,24 +1136,11 @@ def _write_peak_parameters_record(file_path: str, parameters: Dict[str, Any]) ->
 def save_peak_parameters_impl(file_path: str, parameters: Dict[str, Any]) -> List[str]:
     """Save Stage 3 detection parameters for reuse (JSON under the group).
 
-    The record is what the report shows as the parameters Stage 3 ran with, so
-    replacing it with different values while Stage 3 stands would make the
-    file misdescribe its own peaks: such a write invalidates Stage 3 and every
-    stage built on it. Returns the storage keys of the invalidated stages.
+    The record is report-only: no resolver reads it, so replacing it changes
+    no stored result and invalidates nothing (returns ``[]``). Deleting the
+    peaks -- and every curated result after them -- for a call documented as
+    "save for reuse" would destroy work on a bookkeeping write.
     """
-    blob = json.dumps(parameters, default=str)
-    with h5py.File(file_path, "r") as h5f:
-        old = h5f.get("processing_parameters/peak_detection")
-        changed = old is None or old.attrs.get("parameters") != blob
-        stands = "stage3_peaks" in h5f
     _write_peak_parameters_record(file_path, parameters)
     logger.info("Saved Stage 3 parameters to %s", file_path)
-    if not (changed and stands):
-        return []
-    with h5py.File(file_path, "a") as h5f:
-        return invalidate_stages_in_file(
-            h5f,
-            ["stage3_peaks"],
-            include_roots=True,
-            reason="Stage 3 parameter record replaced",
-        )
+    return []

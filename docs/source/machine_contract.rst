@@ -805,11 +805,12 @@ Each spelling of a stage has one read-only mapping in
   ``stage5``). ``tau`` and ``tau_g`` share ``stage2b``. ``None`` for ``data``,
   ``timebase`` and ``review``, which have no settings record.
 * ``STAGE_KNOB_PREFIX``: the tuning-registry knob prefix. ``data`` is
-  ``stage0`` (the start-detection knobs) and ``tau_g`` is ``stage2b.gaussian``.
-  ``None`` for ``timebase`` and ``review``.
+  ``stage0`` (the start-detection knobs). ``tau`` and ``tau_g`` share
+  ``stage2b``: the twins run one STFT classifier recipe, so its knobs feed
+  both. ``None`` for ``timebase`` and ``review``.
 
-``stage_for_key`` / ``key_for_stage`` and ``stage_for_knob_prefix`` are the
-one-to-one inverses; the settings mapping is not one-to-one and has none.
+``stage_for_key`` / ``key_for_stage`` are the one-to-one inverse; the settings
+and knob mappings are not one-to-one and have none.
 ``capabilities()["stages"]`` lists them all as
 ``[{"stage", "storage_key", "settings_prefix", "knob_prefix",
 "depends_on"}]`` in enum order, with ``depends_on`` in canonical names.

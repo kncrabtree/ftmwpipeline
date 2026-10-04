@@ -107,19 +107,16 @@ def test_peak_rerun_reports_and_deletes_windows(
     assert ftmw.detect_peaks(fp).invalidated == ()
 
 
-# Mutation caught: save_peak_parameters rewrites the record the report shows
-# as Stage 3's parameters without deleting the peaks it would misdescribe.
-def test_save_peak_parameters_with_new_values_deletes_peaks(
+# Mutation caught: a report-only bookkeeping write deleting the peaks and
+# every curated result after them.
+def test_save_peak_parameters_invalidates_nothing(
     baseline_2638_stage4: Path, tmp_path: Path
 ) -> None:
     fp = tmp_path / "w.ftmw"
     shutil.copy(baseline_2638_stage4, fp)
+    before = _completed(fp)
     ftmw.save_peak_parameters(fp, {"min_snr": 7.0})
-    assert "stage3_peaks" not in _completed(fp)
-    assert "stage4_windows" not in _completed(fp)
-    ftmw.detect_peaks(fp)
-    ftmw.save_peak_parameters(fp, {"min_snr": 8.0})
-    assert "stage3_peaks" not in _completed(fp)
+    assert _completed(fp) == before
 
 
 # Mutation caught: a noise-settings change reports storage keys, or the CLI

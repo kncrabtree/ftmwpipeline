@@ -1467,24 +1467,12 @@ def invalidate_downstream_stages(filepath: Union[str, Path], stage_name: str) ->
 
 
 def rerun_order() -> Tuple[str, ...]:
-    """Every canonical stage name in the order a full refresh re-runs them.
+    """Every canonical stage name in the order a full refresh re-runs them:
+    :func:`ftmwpipeline.contract.rerun_order` (the one implementation), as
+    strings."""
+    from .contract import rerun_order as _contract_rerun_order
 
-    A topological order of the stage dependencies with ties broken by the
-    order of :class:`~ftmwpipeline.contract.Stage`.
-    """
-    from .contract import Stage, stage_for_key
-
-    deps = {
-        stage_for_key(key): {stage_for_key(r) for r in required}
-        for key, required in PipelineStageTracker.STAGE_DEPENDENCIES.items()
-    }
-    order: List[str] = []
-    done: set = set()
-    while len(done) < len(deps):
-        nxt = next(s for s in Stage if s in deps and s not in done and deps[s] <= done)
-        done.add(nxt)
-        order.append(nxt.value)
-    return tuple(order)
+    return tuple(stage.value for stage in _contract_rerun_order())
 
 
 def canonical_invalidated(keys: Iterable[str]) -> Tuple[str, ...]:

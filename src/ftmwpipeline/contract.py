@@ -242,16 +242,19 @@ STAGE_SETTINGS_PREFIX: Mapping[Stage, Optional[str]] = MappingProxyType(
 )
 
 #: Tuning-registry knob prefix of each canonical stage (read-only): the leading
-#: dotted segment(s) of the ``KnobSpec.path`` values that stage owns. Stage 0's
-#: knobs are the start-detection sweep (``stage0.*``); the Gaussian tau knobs
-#: live under ``stage2b.gaussian``. ``None``: the stage has no registered knob.
+#: dotted segment of the ``KnobSpec.path`` values that feed that stage. Stage 0's
+#: knobs are the start-detection sweep (``stage0.*``). ``tau`` and ``tau_g``
+#: share ``stage2b``: the twins (and the shape recommendation) run one STFT
+#: classifier recipe, so its knobs feed both, and the registry labels every
+#: ``stage2b`` knob alike. Not one-to-one, so there is no inverse. ``None``:
+#: the stage has no registered knob.
 STAGE_KNOB_PREFIX: Mapping[Stage, Optional[str]] = MappingProxyType(
     {
         Stage.DATA: "stage0",
         Stage.FT: "stage1",
         Stage.NOISE: "stage2",
         Stage.TAU: "stage2b",
-        Stage.TAU_G: "stage2b.gaussian",
+        Stage.TAU_G: "stage2b",
         Stage.TIMEBASE: None,
         Stage.PEAKS: "stage3",
         Stage.WINDOWS: "stage4",
@@ -259,29 +262,6 @@ STAGE_KNOB_PREFIX: Mapping[Stage, Optional[str]] = MappingProxyType(
         Stage.REVIEW: None,
     }
 )
-
-_STAGE_BY_KNOB_PREFIX: Mapping[str, Stage] = MappingProxyType(
-    {p: stage for stage, p in STAGE_KNOB_PREFIX.items() if p is not None}
-)
-
-
-def stage_for_knob_prefix(prefix: str) -> Stage:
-    """The canonical :class:`Stage` for a tuning-registry knob prefix.
-
-    The knob mapping is one-to-one (``stage2b`` is :attr:`Stage.TAU`,
-    ``stage2b.gaussian`` is :attr:`Stage.TAU_G`). The settings mapping is not
-    (``tau`` and ``tau_g`` share ``stage2b``), so it has no inverse.
-
-    Raises
-    ------
-    ValueError
-        If ``prefix`` is not a stage's knob prefix.
-    """
-    try:
-        return _STAGE_BY_KNOB_PREFIX[prefix]
-    except KeyError:
-        raise ValueError(f"no canonical stage for knob prefix {prefix!r}") from None
-
 
 def stage_depends_on(stage: Union[Stage, str]) -> Tuple[Stage, ...]:
     """The stages ``stage`` requires, canonical and in enum order.
@@ -754,7 +734,6 @@ __all__ = [
     "key_for_stage",
     "STAGE_SETTINGS_PREFIX",
     "STAGE_KNOB_PREFIX",
-    "stage_for_knob_prefix",
     "stage_depends_on",
     "rerun_order",
     "STAGE_STATES",

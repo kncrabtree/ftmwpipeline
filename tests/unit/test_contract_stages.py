@@ -23,7 +23,6 @@ from ftmwpipeline.contract import (
     capabilities,
     rerun_order,
     stage_depends_on,
-    stage_for_knob_prefix,
 )
 from ftmwpipeline.file_manager import PipelineStageTracker
 
@@ -61,15 +60,10 @@ def test_knob_prefixes_own_every_registered_knob_and_none_is_empty():
     assert STAGE_KNOB_PREFIX[Stage.REVIEW] is None
 
 
-def test_knob_mapping_is_one_to_one_with_an_inverse():
-    # Mutation: two stages sharing a knob prefix, or a wrong inverse.
-    prefixes = [p for p in STAGE_KNOB_PREFIX.values() if p is not None]
-    assert len(prefixes) == len(set(prefixes))
-    for stage, prefix in STAGE_KNOB_PREFIX.items():
-        if prefix is not None:
-            assert stage_for_knob_prefix(prefix) is stage
-    with pytest.raises(ValueError):
-        stage_for_knob_prefix("stage9")
+def test_tau_twins_share_the_stage2b_knobs():
+    # Mutation: a gaussian sub-prefix that misattributes the shared STFT
+    # knobs (they feed both twins).
+    assert STAGE_KNOB_PREFIX[Stage.TAU] == STAGE_KNOB_PREFIX[Stage.TAU_G] == "stage2b"
 
 
 def test_depends_on_is_the_trackers_graph_in_canonical_names():
