@@ -200,6 +200,29 @@ def test_the_plan_identity_follows_the_plan():
     assert plan_identity(_plan(revision=1))["digest"] != base["digest"]
 
 
+@pytest.mark.parametrize(
+    "exc", [IndexError("x"), RuntimeError("x"), AttributeError("x"), KeyError("x")]
+)
+@pytest.mark.parametrize(
+    "reader", ["read_stage5_partial_windows", "read_stage5_partial_provenance"]
+)
+def test_any_error_reading_the_partial_fit_is_incomplete(
+    tmp_path, monkeypatch, exc, reader
+):
+    """Backstop: whatever reading or decoding a partial fit raises (not only the
+    codec's error), the fit starts over -- it never resumes, and never fails."""
+    import ftmwpipeline._internal.stage5_partial_impl as impl
+
+    def boom(*_a, **_k):
+        raise exc
+
+    path = _write(tmp_path / "p.h5")
+    monkeypatch.setattr(impl, reader, boom)
+    decision = _decide(path)
+    assert decision.carried is None
+    assert decision.restart_reason == "incomplete_provenance"
+
+
 # ---- the clocks stale-declaration note sees a partial fit ---------------------------
 
 

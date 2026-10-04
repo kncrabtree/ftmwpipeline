@@ -2390,6 +2390,11 @@ def execute_plan(
         thaw_history=thaw_history,
         walk_mode=walk_mode,
         n_windows=len(full_order),
+        preds=_build_preds(
+            full_order,
+            {w.window_id: w for w in plan.windows},
+            plan.dependency_edges,
+        ),
     )
     ledger = tracker.ledger
 
@@ -2949,7 +2954,10 @@ class PartialWalk:
     (every initial-walk window, as the initial walk left it; a resume redoes the
     structural replan). ``accepted_thaw`` is true when any thaw was accepted
     before the interruption: the windows may then hold a primary that thaw
-    mutated, so a resume refits from scratch.
+    mutated, so a resume refits from scratch. ``preds`` maps each window to
+    the windows whose outcome it read (its fit-ordering predecessors in the
+    initial plan, :func:`_build_preds`): a finished window that cannot be kept
+    takes every finished window that read it with it.
     """
 
     phase: str
@@ -2959,6 +2967,7 @@ class PartialWalk:
     accepted_thaw: bool
     walk_mode: str
     n_windows: int
+    preds: dict[int, set[int]] = field(default_factory=dict)
 
 
 class WalkTracker:
@@ -2986,6 +2995,7 @@ class WalkTracker:
         self._frozen: Optional[
             tuple[list[int], dict[int, Optional[WindowOutcome]], dict[int, WalkRecord]]
         ] = None
+        self._preds: dict[int, set[int]] = {}
 
     def begin(
         self,
@@ -2994,11 +3004,13 @@ class WalkTracker:
         thaw_history: list[ThawEvent],
         walk_mode: str,
         n_windows: int,
+        preds: Optional[dict[int, set[int]]] = None,
     ) -> None:
         self._outcomes = outcomes
         self._thaw_history = thaw_history
         self.walk_mode = walk_mode
         self.n_windows = int(n_windows)
+        self._preds = dict(preds or {})
 
     def freeze_initial(self) -> None:
         """Freeze the initial walk's finished windows (all of them)."""
@@ -3036,6 +3048,7 @@ class WalkTracker:
             accepted_thaw=bool(accepted),
             walk_mode=self.walk_mode,
             n_windows=self.n_windows,
+            preds={wid: set(self._preds.get(wid, ())) for wid in order},
         )
 
 

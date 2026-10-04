@@ -50,7 +50,8 @@ import dataclasses
 import enum
 import json
 import math
-from typing import Any, Dict, List, Optional, Tuple
+import typing
+from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 import h5py
 import numpy as np
@@ -118,6 +119,39 @@ _ENUM_NAMES: Dict[type, str] = {cls: name for name, cls in _ENUMS.items()}
 
 #: Numeric dtype kinds an array or numpy scalar may have.
 _NUMERIC_KINDS = frozenset("biufc")
+
+#: The private attributes the walk stashes on a dataclass beyond its declared
+#: fields (``plan_execution``: the window centre, the spur mask, the per-window
+#: fit conditions, the edge-free verdict), with their types. No other
+#: undeclared attribute is written or read.
+_STASHED: Dict[type, Dict[str, Any]] = {
+    WindowOutcome: {
+        "_center_mhz": float,
+        "_spur_mask": Optional[SpurMaskSpec],
+        "_ck_for_window": Dict[str, Any],
+        "_acquisition_us": float,
+        "_residual_edge_m": int,
+        "_n_eff_kind": str,
+        "_edge_free_accepted": bool,
+    },
+}
+
+
+def _attribute_types(cls: type) -> Dict[str, Any]:
+    """Every attribute ``cls`` may carry (declared fields and stashes), typed."""
+    hints = typing.get_type_hints(cls)
+    types = {f.name: hints.get(f.name, Any) for f in dataclasses.fields(cls)}
+    types.update(_STASHED.get(cls, {}))
+    return types
+
+
+#: The attributes, and their types, of each allow-listed dataclass.
+_ATTRIBUTES: Dict[type, Dict[str, Any]] = {
+    cls: _attribute_types(cls) for cls in _DATACLASSES.values()
+}
+_ATTRIBUTE_NAMES: Dict[type, FrozenSet[str]] = {
+    cls: frozenset(types) for cls, types in _ATTRIBUTES.items()
+}
 
 
 class PartialCodecError(ValueError):
@@ -199,8 +233,13 @@ class _Encoder:
             return {"$r": idx}
         name = _DATACLASS_NAMES.get(type(x))
         if name is not None and dataclasses.is_dataclass(x):
-            idx = self._reserve(x)
             attrs = vars(x)
+            stray = sorted(set(attrs) - _ATTRIBUTE_NAMES[type(x)])
+            if stray:
+                raise PartialCodecError(
+                    f"cannot persist {name} attribute(s) {stray}: not declared"
+                )
+            idx = self._reserve(x)
             self.nodes[idx] = {
                 "$o": name,
                 "f": {str(k): self.enc(v) for k, v in attrs.items()},
@@ -224,12 +263,19 @@ class _Encoder:
 
 
 class _Decoder:
-    """Rebuild a graph written by :class:`_Encoder` (allow-listed types only)."""
+    """Rebuild a graph written by :class:`_Encoder` (allow-listed types only).
+
+    Every malformed value -- a number that is not one, a key that cannot be a
+    key, an attribute the type does not declare -- is a
+    :class:`PartialCodecError`; nothing else escapes.
+    """
 
     def __init__(self, nodes: List[Any], buffers: Dict[str, np.ndarray]) -> None:
         self._nodes = nodes
         self._buffers = buffers
         self._built: Dict[int, Any] = {}
+        #: Every dataclass instance built, for the post-decode type check.
+        self.objects: List[Any] = []
 
     def dec(self, v: Any) -> Any:  # noqa: C901 - one dispatch over the value kinds
         if v is None or isinstance(v, (bool, str)):
@@ -247,31 +293,41 @@ class _Decoder:
         if "$t" in v:
             return tuple(self.dec(x) for x in _as_list(v["$t"]))
         if "$c" in v:
-            re_im = _as_list(v["$c"])
-            if len(re_im) != 2:
-                raise PartialCodecError("malformed complex value")
-            return complex(float(re_im[0]), float(re_im[1]))
+            real, imag = _pair(v["$c"])
+            return complex(real, imag)
         if "$e" in v:
             cls = _ENUMS.get(str(v["$e"]))
             if cls is None:
                 raise PartialCodecError(f"unknown enum {v['$e']!r}")
+            member = v.get("v")
+            if not isinstance(member, str):
+                raise PartialCodecError(f"malformed {v['$e']} member")
             try:
-                return cls[str(v["v"])]  # type: ignore[index]
+                return cls[member]  # type: ignore[index]
             except KeyError:
-                raise PartialCodecError(f"unknown {v['$e']} member {v['v']!r}")
+                raise PartialCodecError(f"unknown {v['$e']} member {member!r}")
         if "$g" in v:
             dtype = _numeric_dtype(v["$g"])
-            raw = v["v"]
-            if dtype.kind == "c":
-                re_im = _as_list(raw)
-                return np.array(complex(float(re_im[0]), float(re_im[1])), dtype=dtype)[
-                    ()
-                ]
-            return np.array(raw, dtype=dtype)[()]
+            raw = v.get("v")
+            try:
+                if dtype.kind == "c":
+                    real, imag = _pair(raw)
+                    return np.array(complex(real, imag), dtype=dtype)[()]
+                if not isinstance(raw, (int, float)) or (
+                    dtype.kind in "biu" and not isinstance(raw, int)
+                ):
+                    raise PartialCodecError(f"malformed numpy {dtype} scalar")
+                return np.array(raw, dtype=dtype)[()]
+            except (OverflowError, ValueError, TypeError) as exc:
+                raise PartialCodecError(f"malformed numpy {dtype} scalar") from exc
         raise PartialCodecError("malformed partial-fit graph value")
 
-    def _node(self, idx: Any) -> Any:
-        if not isinstance(idx, int) or not 0 <= idx < len(self._nodes):
+    def _node(self, idx: Any) -> Any:  # noqa: C901 - one dispatch over node kinds
+        if (
+            not isinstance(idx, int)
+            or isinstance(idx, bool)
+            or not 0 <= idx < len(self._nodes)
+        ):
             raise PartialCodecError("dangling partial-fit graph reference")
         if idx in self._built:
             return self._built[idx]
@@ -290,22 +346,33 @@ class _Decoder:
                 kv = _as_list(pair)
                 if len(kv) != 2:
                     raise PartialCodecError("malformed dict entry")
-                out_dict[self.dec(kv[0])] = self.dec(kv[1])
+                key, value = self.dec(kv[0]), self.dec(kv[1])
+                try:
+                    out_dict[key] = value
+                except TypeError as exc:  # an unhashable key
+                    raise PartialCodecError("malformed dict key") from exc
             return out_dict
         if "$o" in node:
             cls = _DATACLASSES.get(str(node["$o"]))
             if cls is None:
                 raise PartialCodecError(f"unknown type {node['$o']!r}")
-            obj: Any = object.__new__(cls)
-            self._built[idx] = obj
             fields = node.get("f")
             if not isinstance(fields, dict):
                 raise PartialCodecError("malformed object node")
-            for name, raw in fields.items():
-                object.__setattr__(obj, str(name), self.dec(raw))
+            allowed = _ATTRIBUTE_NAMES[cls]
+            stray = sorted(str(n) for n in fields if n not in allowed)
+            if stray:
+                raise PartialCodecError(
+                    f"{cls.__qualname__} has no attribute(s) {stray}"
+                )
             missing = [f.name for f in dataclasses.fields(cls) if f.name not in fields]
             if missing:
                 raise PartialCodecError(f"{cls.__qualname__} lacks {missing}")
+            obj: Any = object.__new__(cls)
+            self._built[idx] = obj
+            self.objects.append(obj)
+            for name, raw in fields.items():
+                object.__setattr__(obj, name, self.dec(raw))
             return obj
         if "$a" in node:
             spec = _as_list(node["$a"])
@@ -313,9 +380,11 @@ class _Decoder:
                 raise PartialCodecError("malformed array node")
             key, offset, shape = str(spec[0]), spec[1], _as_list(spec[2])
             buf = self._buffers.get(key)
-            if buf is None or not isinstance(offset, int):
+            if buf is None or not isinstance(offset, int) or isinstance(offset, bool):
                 raise PartialCodecError("array buffer missing")
-            if not all(isinstance(n, int) and n >= 0 for n in shape):
+            if not all(
+                isinstance(n, int) and not isinstance(n, bool) and n >= 0 for n in shape
+            ):
                 raise PartialCodecError("malformed array shape")
             count = math.prod(shape)
             if offset < 0 or offset + count > buf.size:
@@ -324,6 +393,93 @@ class _Decoder:
             self._built[idx] = arr
             return arr
         raise PartialCodecError("malformed partial-fit graph node")
+
+
+def _pair(v: Any) -> Tuple[float, float]:
+    """A ``[real, imag]`` pair of JSON numbers."""
+    pair = _as_list(v)
+    if len(pair) != 2 or not all(
+        isinstance(x, (int, float)) and not isinstance(x, bool) for x in pair
+    ):
+        raise PartialCodecError("malformed complex value")
+    try:
+        return float(pair[0]), float(pair[1])
+    except OverflowError as exc:
+        raise PartialCodecError("malformed complex value") from exc
+
+
+# ---------------------------------------------------------------------------
+# Post-decode type check
+# ---------------------------------------------------------------------------
+
+
+def _is_real(x: Any) -> bool:
+    return isinstance(x, (int, float, np.integer, np.floating, np.bool_))
+
+
+def _conforms(value: Any, tp: Any, seen: set) -> bool:  # noqa: C901 - one dispatch
+    """Whether ``value`` has the shape of type annotation ``tp``.
+
+    Numbers are taken loosely (a numpy scalar for a float, an int for a float),
+    since the walk stores both; containers are checked element by element; a
+    dataclass or enum by class. An annotation it does not know (``Any``) passes.
+    """
+    if tp is Any or tp is object:
+        return True
+    origin = typing.get_origin(tp)
+    args = typing.get_args(tp)
+    if origin is typing.Union:
+        return any(_conforms(value, a, seen) for a in args)
+    if tp is type(None):
+        return value is None
+    if tp is float:
+        return _is_real(value)
+    if tp is int:
+        return isinstance(value, (int, np.integer, np.bool_))
+    if tp is bool:
+        return isinstance(value, (bool, np.bool_, int, np.integer))
+    if tp is str:
+        return isinstance(value, str)
+    if tp is np.ndarray:
+        return isinstance(value, np.ndarray)
+    if origin in (list, tuple, dict) or tp in (list, tuple, dict):
+        container = origin or tp
+        if not isinstance(value, container):
+            return False
+        if id(value) in seen or not args:
+            return True
+        seen.add(id(value))
+        if container is dict:
+            kt, vt = args
+            return all(
+                _conforms(k, kt, seen) and _conforms(v, vt, seen)
+                for k, v in value.items()
+            )
+        if container is tuple and not (len(args) == 2 and args[1] is Ellipsis):
+            return len(value) == len(args) and all(
+                _conforms(v, a, seen) for v, a in zip(value, args)
+            )
+        return all(_conforms(v, args[0], seen) for v in value)
+    if isinstance(tp, type):
+        return isinstance(value, tp)
+    return True
+
+
+def _check_types(objects: List[Any]) -> None:
+    """Every attribute of every decoded instance has its declared type.
+
+    Raises
+    ------
+    PartialCodecError
+        On the first attribute that does not.
+    """
+    for obj in objects:
+        cls = type(obj)
+        for name, tp in _ATTRIBUTES[cls].items():
+            if name not in vars(obj):
+                continue  # an undeclared stash the walk did not set
+            if not _conforms(vars(obj)[name], tp, set()):
+                raise PartialCodecError(f"{cls.__qualname__}.{name} is not a {tp!r}")
 
 
 def _as_list(v: Any) -> List[Any]:
@@ -335,7 +491,7 @@ def _as_list(v: Any) -> List[Any]:
 def _numeric_dtype(text: Any) -> np.dtype:
     try:
         dtype = np.dtype(str(text))
-    except TypeError as exc:
+    except (TypeError, ValueError) as exc:
         raise PartialCodecError(f"bad dtype {text!r}") from exc
     if dtype.kind not in _NUMERIC_KINDS or dtype.hasobject:
         raise PartialCodecError(f"non-numeric dtype {text!r}")
@@ -380,10 +536,13 @@ def decode_graph(text: str, names: List[str], buffers: List[np.ndarray]) -> Any:
         if arr.dtype != dtype or arr.ndim != 1:
             raise PartialCodecError(f"partial-fit buffer is not 1-D {name}")
         typed[str(name)] = arr
+    decoder = _Decoder(_as_list(doc.get("nodes")), typed)
     try:
-        return _Decoder(_as_list(doc.get("nodes")), typed).dec(doc["root"])
+        root = decoder.dec(doc["root"])
+        _check_types(decoder.objects)
     except RecursionError as exc:
         raise PartialCodecError("partial-fit graph nested too deeply") from exc
+    return root
 
 
 # ---------------------------------------------------------------------------
@@ -399,7 +558,10 @@ def _read_text(group: h5py.Group, name: str) -> str:
     node = group.get(name)
     if not isinstance(node, h5py.Dataset) or node.dtype != np.uint8:
         raise PartialCodecError(f"missing {name}")
-    return bytes(np.asarray(node[()], dtype=np.uint8)).decode("utf-8")
+    try:
+        return bytes(np.asarray(node[()], dtype=np.uint8)).decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise PartialCodecError(f"{name} is not UTF-8") from exc
 
 
 def stage5_partial_present(h5f: h5py.File) -> bool:
@@ -417,13 +579,18 @@ def delete_stage5_partial(h5f: h5py.File) -> bool:
 
 @dataclasses.dataclass(frozen=True)
 class EncodedWindow:
-    """One finished window, encoded and ready to write."""
+    """One finished window, encoded and ready to write.
+
+    ``preds`` are the finished windows whose outcome this one read: when any of
+    them is not kept, neither is this one.
+    """
 
     window_id: int
     graph: str
     dtypes: List[str]
     buffers: List[np.ndarray]
     n_fitted_peaks: int
+    preds: Tuple[int, ...] = ()
 
 
 def encode_stage5_partial(
@@ -432,24 +599,31 @@ def encode_stage5_partial(
     """Encode every window of ``partial`` (no file access).
 
     Returns ``(encoded, refused)``: the encoded windows, in the order they
-    finished, and the ids of windows whose graph holds a value the codec cannot
-    write (they are not kept; a resume refits them).
+    finished, and the ids of the windows that are not kept (a resume refits
+    them): those whose graph holds a value the codec cannot write -- or that
+    fail to encode for any other reason -- and every finished window that read
+    the outcome of a window not kept (``partial.preds``), so the kept set holds
+    every window a kept window read.
     """
     encoded: List[EncodedWindow] = []
     refused: List[int] = []
+    dropped: set = set()
     for wid in partial.order:
         outcome = partial.outcomes.get(wid)
         record = partial.records.get(wid)
-        if record is None:
+        preds = tuple(sorted(int(p) for p in partial.preds.get(wid, ())))
+        if record is None or any(p in dropped for p in preds):
             refused.append(int(wid))
+            dropped.add(int(wid))
             continue
         try:
             text, names, buffers = encode_graph({"outcome": outcome, "record": record})
-        except PartialCodecError:
+            n_fitted = 0 if outcome is None else int(len(outcome.fit.fit.peaks))
+        except Exception:  # noqa: BLE001 - any failure refuses only this window
             refused.append(int(wid))
+            dropped.add(int(wid))
             continue
-        n_fitted = 0 if outcome is None else int(len(outcome.fit.fit.peaks))
-        encoded.append(EncodedWindow(int(wid), text, names, buffers, n_fitted))
+        encoded.append(EncodedWindow(int(wid), text, names, buffers, n_fitted, preds))
     return encoded, refused
 
 
@@ -459,31 +633,46 @@ def write_stage5_partial(
     """Write the encoded windows as the file's partial fit, replacing any.
 
     ``provenance`` is stored as JSON (with :data:`PARTIAL_FORMAT_VERSION`).
-    Returns the window ids written, in the order they finished.
+    A window whose write fails is not kept (its group is removed), and nor is
+    any window that read it (:attr:`EncodedWindow.preds`). Returns the window
+    ids written, in the order they finished.
     """
     delete_stage5_partial(h5f)
     group = h5f.create_group(STAGE5_PARTIAL_PATH)
     prov = dict(provenance)
     prov["format_version"] = PARTIAL_FORMAT_VERSION
     _text_dataset(group, _PROVENANCE, json.dumps(prov, sort_keys=True))
+    windows = group.create_group(_WINDOWS)
+    kept: List[EncodedWindow] = []
+    dropped: set = set()
+    for e in encoded:
+        if any(p in dropped for p in e.preds):
+            dropped.add(e.window_id)
+            continue
+        name = f"w{e.window_id}"
+        try:
+            wg = windows.create_group(name)
+            _text_dataset(wg, "graph", e.graph)
+            wg.attrs["dtypes"] = json.dumps(e.dtypes)
+            for k, buf in enumerate(e.buffers):
+                kwargs: Dict[str, Any] = {}
+                if buf.size >= 1024:
+                    kwargs = {"compression": "gzip", "compression_opts": 1}
+                wg.create_dataset(f"buf{k}", data=buf, **kwargs)
+        except Exception:  # noqa: BLE001 - any failure drops only this window
+            dropped.add(e.window_id)
+            if name in windows:
+                del windows[name]
+            continue
+        kept.append(e)
     group.create_dataset(
-        _WINDOW_IDS, data=np.asarray([e.window_id for e in encoded], dtype=np.int64)
+        _WINDOW_IDS, data=np.asarray([e.window_id for e in kept], dtype=np.int64)
     )
     group.create_dataset(
         _N_FITTED,
-        data=np.asarray([e.n_fitted_peaks for e in encoded], dtype=np.int64),
+        data=np.asarray([e.n_fitted_peaks for e in kept], dtype=np.int64),
     )
-    windows = group.create_group(_WINDOWS)
-    for e in encoded:
-        wg = windows.create_group(f"w{e.window_id}")
-        _text_dataset(wg, "graph", e.graph)
-        wg.attrs["dtypes"] = json.dumps(e.dtypes)
-        for k, buf in enumerate(e.buffers):
-            kwargs: Dict[str, Any] = {}
-            if buf.size >= 1024:
-                kwargs = {"compression": "gzip", "compression_opts": 1}
-            wg.create_dataset(f"buf{k}", data=buf, **kwargs)
-    return [e.window_id for e in encoded]
+    return [e.window_id for e in kept]
 
 
 def read_stage5_partial_provenance(h5f: h5py.File) -> Optional[Dict[str, Any]]:
@@ -514,9 +703,16 @@ def read_stage5_partial_counts(h5f: h5py.File) -> Optional[Dict[int, int]]:
     counts = group.get(_N_FITTED)
     if not isinstance(ids, h5py.Dataset) or not isinstance(counts, h5py.Dataset):
         return None
-    wids = np.asarray(ids[()]).reshape(-1)
-    ns = np.asarray(counts[()]).reshape(-1)
-    if wids.shape != ns.shape:
+    try:
+        wids = np.asarray(ids[()]).reshape(-1)
+        ns = np.asarray(counts[()]).reshape(-1)
+    except (OSError, TypeError, ValueError):
+        return None
+    if (
+        wids.shape != ns.shape
+        or wids.dtype.kind not in "iu"
+        or ns.dtype.kind not in "iu"
+    ):
         return None
     return {int(w): int(n) for w, n in zip(wids, ns)}
 
@@ -536,7 +732,10 @@ def read_stage5_partial_windows(h5f: h5py.File) -> CarriedWindows:
     windows = group.get(_WINDOWS)
     if not isinstance(ids, h5py.Dataset) or not isinstance(windows, h5py.Group):
         raise PartialCodecError("partial fit lacks its windows")
-    order = [int(w) for w in np.asarray(ids[()]).reshape(-1)]
+    raw_ids = np.asarray(ids[()]).reshape(-1)
+    if raw_ids.dtype.kind not in "iu":
+        raise PartialCodecError("partial fit window ids are not integers")
+    order = [int(w) for w in raw_ids]
     if len(set(order)) != len(order):
         raise PartialCodecError("partial fit repeats a window")
     outcomes: Dict[int, Optional[WindowOutcome]] = {}

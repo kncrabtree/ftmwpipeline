@@ -227,6 +227,100 @@ def test_a_window_that_cannot_be_encoded_is_not_kept():
     assert encoded == [] and refused == [3]
 
 
+def _chain_partial() -> PartialWalk:
+    """Windows 3 -> 5 -> 8 (each read its predecessor) and an independent 9."""
+    outs = {}
+    recs = {}
+    for wid in (3, 5, 8, 9):
+        outs[wid], recs[wid] = _outcome(wid)
+    return PartialWalk(
+        "initial",
+        [3, 9, 5, 8],
+        outs,
+        recs,
+        False,
+        "dag",
+        12,
+        preds={3: set(), 9: set(), 5: {3}, 8: {5}},
+    )
+
+
+def test_a_refused_window_takes_every_window_that_read_it():
+    """The kept set stays closed over the windows a kept window read: a resume
+    must never carry a dependent whose primary it refits."""
+    partial = _chain_partial()
+    partial.outcomes[3]._unexpected = {1}  # type: ignore[union-attr]
+    encoded, refused = encode_stage5_partial(partial)
+    assert [e.window_id for e in encoded] == [9]
+    assert sorted(refused) == [3, 5, 8]
+
+
+def test_a_refused_dependent_keeps_its_primary():
+    partial = _chain_partial()
+    partial.outcomes[8]._unexpected = {1}  # type: ignore[union-attr]
+    encoded, refused = encode_stage5_partial(partial)
+    assert [e.window_id for e in encoded] == [3, 9, 5]
+    assert refused == [8]
+
+
+def test_any_encoding_failure_refuses_only_that_window(monkeypatch):
+    """Not only the codec's own error: whatever encoding a window raises (short
+    of a BaseException) refuses that window and its dependents, so the cancel
+    or callback error is what the caller sees."""
+    import ftmwpipeline.io.stage5_partial_serialization as ser
+
+    real = ser.encode_graph
+
+    def flaky(root):
+        if root["outcome"].window_id == 5:
+            raise TypeError("boom")
+        return real(root)
+
+    monkeypatch.setattr(ser, "encode_graph", flaky)
+    encoded, refused = encode_stage5_partial(_chain_partial())
+    assert [e.window_id for e in encoded] == [3, 9]
+    assert sorted(refused) == [5, 8]
+
+
+def test_a_window_whose_write_fails_is_dropped_with_its_dependents(tmp_path):
+    import dataclasses as dc
+
+    encoded, _ = encode_stage5_partial(_chain_partial())
+    # An object buffer h5py cannot store: the write of window 5 fails.
+    encoded = [
+        (
+            dc.replace(e, buffers=[np.array([object()], dtype=object)])
+            if e.window_id == 5
+            else e
+        )
+        for e in encoded
+    ]
+    path = tmp_path / "p.h5"
+    with h5py.File(path, "w") as h5f:
+        assert write_stage5_partial(h5f, encoded, {"settings": "{}"}) == [3, 9]
+    with h5py.File(path, "r") as h5f:
+        assert sorted(h5f["stage5_partial/windows"]) == ["w3", "w9"]
+        assert read_stage5_partial_counts(h5f) == {3: 2, 9: 2}
+        assert read_stage5_partial_windows(h5f).order == [3, 9]
+
+
+def test_counts_of_non_integer_window_ids_are_not_read(tmp_path):
+    """``window_status`` reads the counts: a malformed dataset there is no
+    partial fit to report (the rows stay ``not_run``), never an error."""
+    out, record = _outcome(3)
+    partial = PartialWalk("initial", [3], {3: out}, {3: record}, False, "dag", 4)
+    encoded, _ = encode_stage5_partial(partial)
+    path = tmp_path / "p.h5"
+    with h5py.File(path, "w") as h5f:
+        write_stage5_partial(h5f, encoded, {})
+        del h5f["stage5_partial/window_ids"]
+        h5f["stage5_partial/window_ids"] = np.array([3.5])
+    with h5py.File(path, "r") as h5f:
+        assert read_stage5_partial_counts(h5f) is None
+        with pytest.raises(PartialCodecError):
+            read_stage5_partial_windows(h5f)
+
+
 # ---- hostile and malformed graphs ---------------------------------------------------------
 
 _BUF = (["<f8"], [np.zeros(3)])
@@ -284,27 +378,117 @@ def test_buffers_must_match_their_dtypes():
         decode_graph(text, names, [np.zeros((2, 2))])  # not one-dimensional
 
 
-# The decoder's scalar and key handling raises the underlying ValueError /
-# IndexError / TypeError for some malformed values instead of the codec's error.
-# Suspected bug (reported with Wave 5.2): an IndexError is not among the errors
-# the resume catches, so such a value in a file escapes as a failed fit.
-@pytest.mark.xfail(strict=True, reason="raw ValueError/IndexError/TypeError")
+# Every malformed scalar or key is the codec's error, never a raw ValueError /
+# IndexError / TypeError / OverflowError.
 @pytest.mark.parametrize(
     "graph",
     [
         {"root": {"$g": "<f8", "v": "abc"}, "nodes": []},
+        {"root": {"$g": "<f8", "v": [1.0, 2.0]}, "nodes": []},
+        {"root": {"$g": "<f8"}, "nodes": []},
+        {"root": {"$g": "|u1", "v": -1}, "nodes": []},
+        {"root": {"$g": "<i8", "v": 1e300}, "nodes": []},
         {"root": {"$g": "<c16", "v": [1]}, "nodes": []},
+        {"root": {"$g": "<c16", "v": ["a", 1]}, "nodes": []},
+        {"root": {"$g": "not a dtype", "v": 1}, "nodes": []},
         {"root": {"$c": ["a", "b"]}, "nodes": []},
+        {"root": {"$c": [1]}, "nodes": []},
+        {"root": {"$e": "PeakShape"}, "nodes": []},
+        {"root": {"$e": "PeakShape", "v": 3}, "nodes": []},
         {
             "root": {"$r": 0},
             "nodes": [{"$d": [[{"$r": 1}, 1]]}, {"$l": []}],  # a list as a key
         },
+        {"root": {"$r": 0}, "nodes": [{"$a": ["<f8", True, [1]]}]},
     ],
-    ids=["scalar_text", "complex_scalar_short", "complex_text", "unhashable_key"],
+    ids=[
+        "scalar_text",
+        "scalar_list",
+        "scalar_missing",
+        "scalar_out_of_range",
+        "scalar_overflow",
+        "complex_scalar_short",
+        "complex_scalar_text",
+        "bad_dtype",
+        "complex_text",
+        "complex_short",
+        "enum_member_missing",
+        "enum_member_not_text",
+        "unhashable_key",
+        "bool_offset",
+    ],
 )
 def test_malformed_scalars_and_keys_are_refused_with_the_codec_error(graph):
     with pytest.raises(PartialCodecError):
         decode_graph(json.dumps(graph), *_BUF)
+
+
+def _peak_node(**fields):
+    base = {"amplitude": 1.0, "offset_mhz": 0.5, "phase": 0.0, "peak_uid": None}
+    base.update(fields)
+    return {"root": {"$r": 0}, "nodes": [{"$o": "ModelPeak", "f": base}]}
+
+
+def test_a_well_formed_object_node_decodes():
+    assert decode_graph(json.dumps(_peak_node()), *_BUF) == ModelPeak(1.0, 0.5, 0.0)
+
+
+@pytest.mark.parametrize(
+    "graph",
+    [
+        _peak_node(_evil=1),  # not a declared field, not a known stash
+        _peak_node(__class__=1),
+        _peak_node(amplitude="loud"),
+        _peak_node(phase=None),
+        _peak_node(peak_uid=1.5),
+        _peak_node(offset_mhz={"$c": [1.0, 2.0]}),
+    ],
+    ids=[
+        "undeclared",
+        "dunder",
+        "text_for_float",
+        "none_for_float",
+        "float_for_int",
+        "complex_for_float",
+    ],
+)
+def test_undeclared_or_wrongly_typed_attributes_are_refused(graph):
+    with pytest.raises(PartialCodecError):
+        decode_graph(json.dumps(graph), *_BUF)
+
+
+def test_wrongly_typed_outcome_fields_are_refused():
+    out, record = _outcome()
+    text, names, buffers = encode_graph({"outcome": out, "record": record})
+    doc = json.loads(text)
+    node = next(
+        n
+        for n in doc["nodes"]
+        if isinstance(n, dict) and n.get("$o") == "WindowOutcome"
+    )
+    for name, value in [
+        ("fit", 7),
+        ("offset_grid_mhz", "abc"),
+        ("fixed_peaks", {"$t": [1]}),
+        ("_center_mhz", "here"),
+    ]:
+        bad = json.loads(json.dumps(doc))
+        target = next(
+            n
+            for n in bad["nodes"]
+            if isinstance(n, dict) and n.get("$o") == "WindowOutcome"
+        )
+        target["f"][name] = value
+        with pytest.raises(PartialCodecError):
+            decode_graph(json.dumps(bad), names, buffers)
+    assert node["f"]["_center_mhz"] == 100.0
+
+
+def test_an_undeclared_attribute_is_not_written():
+    out, record = _outcome()
+    out.extra = 1.0  # type: ignore[attr-defined]
+    with pytest.raises(PartialCodecError):
+        encode_graph({"outcome": out, "record": record})
 
 
 def test_nothing_in_the_graph_is_imported_or_called(tmp_path):

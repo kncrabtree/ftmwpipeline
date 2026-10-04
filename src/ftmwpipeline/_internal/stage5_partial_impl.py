@@ -30,6 +30,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional
 
+import h5py
 import numpy as np
 
 from ..contract import FIT_RESTART_REASONS
@@ -184,31 +185,42 @@ def decide_resume(
             return ResumeDecision(None, None)
         if restart:
             return _restart(RESTART_REQUESTED)
-        recorded = read_stage5_partial_provenance(h5f)
-        if recorded is None or any(
-            not isinstance(recorded.get(key), str) for key in _COMPARED
-        ):
-            return _restart(INCOMPLETE_PROVENANCE)
-        walk = recorded.get("walk")
-        if not isinstance(walk, dict) or not isinstance(
-            walk.get("accepted_thaw"), bool
-        ):
-            return _restart(INCOMPLETE_PROVENANCE)
-        changed = [key for key in _COMPARED if recorded[key] != provenance[key]]
-        if changed:
-            logger.info(
-                "Stage 5 partial fit not resumed: %s differ(s) from the "
-                "partial fit's",
-                ", ".join(changed),
-            )
-            return _restart(SETTINGS_CHANGED)
-        if walk["accepted_thaw"]:
-            return _restart(THAW_REFIT)
         try:
-            carried = read_stage5_partial_windows(h5f)
-        except (PartialCodecError, KeyError, OSError, TypeError, ValueError) as exc:
+            return _decide_from_partial(h5f, provenance, window_ids)
+        except Exception as exc:  # noqa: BLE001 - never resume on a guess
+            # Backstop: whatever a malformed partial fit raises while it is
+            # read, it is not resumed from.
             logger.warning("Stage 5 partial fit unreadable (%s); starting over", exc)
             return _restart(INCOMPLETE_PROVENANCE)
+
+
+def _decide_from_partial(
+    h5f: h5py.File, provenance: Mapping[str, str], window_ids: List[int]
+) -> ResumeDecision:
+    """:func:`decide_resume` once a partial fit is present and no restart was
+    requested."""
+    recorded = read_stage5_partial_provenance(h5f)
+    if recorded is None or any(
+        not isinstance(recorded.get(key), str) for key in _COMPARED
+    ):
+        return _restart(INCOMPLETE_PROVENANCE)
+    walk = recorded.get("walk")
+    if not isinstance(walk, dict) or not isinstance(walk.get("accepted_thaw"), bool):
+        return _restart(INCOMPLETE_PROVENANCE)
+    changed = [key for key in _COMPARED if recorded[key] != provenance[key]]
+    if changed:
+        logger.info(
+            "Stage 5 partial fit not resumed: %s differ(s) from the " "partial fit's",
+            ", ".join(changed),
+        )
+        return _restart(SETTINGS_CHANGED)
+    if walk["accepted_thaw"]:
+        return _restart(THAW_REFIT)
+    try:
+        carried = read_stage5_partial_windows(h5f)
+    except PartialCodecError as exc:
+        logger.warning("Stage 5 partial fit unreadable (%s); starting over", exc)
+        return _restart(INCOMPLETE_PROVENANCE)
     known = set(window_ids)
     if not carried.order or any(wid not in known for wid in carried.order):
         return _restart(INCOMPLETE_PROVENANCE)

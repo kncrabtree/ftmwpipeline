@@ -508,12 +508,9 @@ def _field(name: str, value: Any) -> Callable[[Dict[str, Any]], None]:
     return edit
 
 
-# A well-formed graph that holds values of the wrong kind is not caught when the
-# partial fit is read: it fails later, inside the walk, with a raw error.
-# Suspected bug (reported with Wave 5.2): the decoder checks the graph's shape,
-# not the types of the fields it sets, and a stray IndexError is not among the
-# errors the resume catches.
-@pytest.mark.xfail(strict=True, reason="decoded field types are not validated")
+# A well-formed graph that holds values of the wrong kind is caught when the
+# partial fit is read (the decoded fields are type-checked), not later inside
+# the walk.
 @pytest.mark.parametrize(
     "edit",
     [
