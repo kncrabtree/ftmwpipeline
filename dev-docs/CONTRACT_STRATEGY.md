@@ -793,6 +793,8 @@ What is left in the file is the same as after a cancel at that point.
     finished are written as a partial fit in one atomic write. "Finished"
     means the window's whole per-window pass ran.
   - The same write discards the previous fit and everything downstream of it.
+  - If no window had finished, nothing is written and the file stays as it was,
+    with any previous fit kept.
   - No partial fit is written during the walk. A process killed during
     Stage 5 therefore leaves the file as it was before the call
     (§Crash safety).
