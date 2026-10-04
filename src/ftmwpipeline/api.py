@@ -306,6 +306,18 @@ def validate_pipeline(file_path: Union[str, Path]) -> Dict[str, Any]:
     dict
         Validation report with status and any issues found
 
+    Raises
+    ------
+    NotFoundError
+        If ``file_path`` does not exist (also a ``FileNotFoundError``).
+    PipelineCorruptionError
+        If the path exists but cannot be opened as a pipeline file.
+    PipelineCompatibilityError
+        If the file was written by an incompatible format version.
+
+    Validation reports problems in a file that opens; it does not stand in for
+    opening one, exactly as :meth:`Pipeline.validate`.
+
     Examples
     --------
     >>> import ftmwpipeline.api as ftmw
@@ -315,16 +327,7 @@ def validate_pipeline(file_path: Union[str, Path]) -> Dict[str, Any]:
     >>> else:
     ...     print(f"Issues found: {report['errors']}")
     """
-    try:
-        pipeline = Pipeline.open(file_path)
-        return pipeline.validate()
-    except Exception as e:
-        logger.error(f"Failed to validate {file_path}: {e}")
-        return {
-            "valid": False,
-            "errors": [f"Failed to validate pipeline file: {e}"],
-            "warnings": [],
-        }
+    return Pipeline.open(file_path).validate()
 
 
 # =============================================================================
