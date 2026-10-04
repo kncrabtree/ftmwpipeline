@@ -12,6 +12,7 @@ persisted record; they never recompute the fit.
 from __future__ import annotations
 
 import argparse
+import json
 from typing import Any, Optional
 
 from .._internal.report_diff_impl import report_diff_impl
@@ -24,6 +25,7 @@ from .._internal.report_impl import (
     report_table_impl,
 )
 from ..file_manager import PipelineFileError
+from ._json_output import json_mode, record_payload, record_run_result
 from .utils import add_stage_object, setup_logging
 
 
@@ -75,6 +77,12 @@ def cmd_report_table(args: argparse.Namespace) -> int:
         print(f"Error: {exc}")
         return 1
 
+    if json_mode(args):
+        if output is None:
+            record_payload(args, json.loads(text))
+        else:
+            record_payload(args, {"format": fmt, "path": output})
+        return 0
     if output is not None:
         print(f"report table: wrote {fmt} to {output}")
     else:
@@ -122,6 +130,17 @@ def cmd_report_run(args: argparse.Namespace) -> int:
         print(f"Error: {exc}")
         return 1
 
+    if json_mode(args):
+        record_run_result(
+            args,
+            stage=None,
+            invalidated=[],
+            summary={
+                "scope": scope,
+                "table": out.get("table"),
+                "html": out.get("html"),
+            },
+        )
     if out.get("table") is not None:
         print(f"report run: wrote table to {out['table']}")
     if out.get("html") is not None:
@@ -143,6 +162,9 @@ def cmd_report_diff(args: argparse.Namespace) -> int:
     except (ValueError, KeyError) as exc:
         print(f"Error: {exc}")
         return 1
+    if json_mode(args):
+        record_payload(args, {"path": out})
+        return 0
     print(f"report diff: wrote curation diff report to {out}")
     return 0
 

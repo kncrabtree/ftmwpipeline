@@ -23,6 +23,7 @@ from typing import Any, Optional
 
 from ..core.stage_fit_settings import ShapeSpec
 from ..file_manager import PipelineFileError
+from ._json_output import json_mode, record_payload, record_run_result
 from .utils import elide_path, print_error
 
 
@@ -93,6 +94,10 @@ def _print_settings_table(file_path: Optional[str], args: argparse.Namespace) ->
         # A bad --preset name reports the available presets.
         print_error(str(e))
         return 1
+
+    if json_mode(args):
+        record_payload(args, {"settings": list(rows)})
+        return 0
 
     if not rows:
         suffix = f" matching {selector!r}." if selector else "."
@@ -182,6 +187,13 @@ def cmd_settings_set(args: argparse.Namespace) -> int:
         print_error(str(e))
         return 1
 
+    if json_mode(args):
+        record_run_result(
+            args,
+            stage=None,
+            result=result,
+            summary={"path": result.path, "value": _fmt_value(result.value)},
+        )
     print(f"Set {result.path} = {_fmt_value(result.value)} (persisted to .ftmw).")
     if result.invalidated:
         print(
@@ -210,6 +222,10 @@ def cmd_settings_unset(args: argparse.Namespace) -> int:
         print_error(str(e))
         return 1
 
+    if json_mode(args):
+        record_run_result(
+            args, stage=None, result=result, summary={"path": result.path}
+        )
     print(
         f"Unset {result.path}; it now resolves from the preset / recommended / "
         f"default chain."
@@ -240,6 +256,9 @@ def cmd_settings_export(args: argparse.Namespace) -> int:
         name=getattr(args, "name", None),
         description=getattr(args, "description", None),
     )
+    if json_mode(args):
+        record_payload(args, {"out_path": result.out_path, "paths": list(result.paths)})
+        return 0
     if not result.paths:
         sel = getattr(args, "selector", None)
         suffix = f" matching {sel!r}" if sel else ""

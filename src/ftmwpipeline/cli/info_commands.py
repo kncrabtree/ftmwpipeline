@@ -7,13 +7,12 @@ else on stdout) for scripting and integration.
 """
 
 import argparse
-import json
 from typing import Any
 
 from ..api import get_pipeline_info
 from ..contract import Absent
 from ..file_manager import PipelineFileError
-from ..serialize import to_jsonable
+from ._json_output import json_mode, record_payload
 from .utils import print_error, setup_logging
 
 
@@ -38,9 +37,9 @@ def cmd_info(args: argparse.Namespace) -> int:
             "error": f"Failed to get pipeline info: {e}",
         }
 
-    if args.format == "json":
+    if json_mode(args):
         # Absent values are written as null plus a "<key>_absent" sibling.
-        print(json.dumps(to_jsonable(info), indent=2, default=str))
+        record_payload(args, info)
         return 0 if info.get("valid") else 1
 
     if not info.get("valid", False):

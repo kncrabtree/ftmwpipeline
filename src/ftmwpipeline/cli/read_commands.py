@@ -25,6 +25,7 @@ human-facing views and are not contract.
 from __future__ import annotations
 
 import argparse
+import json
 from typing import Any, Callable, Dict, List, Optional
 
 from .._internal.read_impl import (
@@ -63,6 +64,7 @@ from ..contract import (
     Absent,
 )
 from ..file_manager import PipelineFileError
+from ._json_output import json_mode, record_payload
 from .contract_commands import exit_code_for, register_accessor, report_contract_error
 from .utils import setup_logging
 
@@ -112,6 +114,21 @@ def _emit(text: str, output: Optional[str], what: str) -> int:
     return 0
 
 
+def _emit_json(
+    args: argparse.Namespace, text: str, output: Optional[str], what: str
+) -> int:
+    """``--json`` twin of :func:`_emit` for text that is already JSON.
+
+    Without ``--output`` the parsed document is the payload; with it the text is
+    written there and the payload names the file.
+    """
+    if output is None:
+        record_payload(args, json.loads(text))
+    else:
+        record_payload(args, {"what": what, "path": write_text_impl(text, output)})
+    return 0
+
+
 def cmd_read_table(args: argparse.Namespace) -> int:
     """Dump one persisted table as delimited text."""
     setup_logging(getattr(args, "verbose", False))
@@ -122,6 +139,8 @@ def cmd_read_table(args: argparse.Namespace) -> int:
         text = format_table_impl(table, getattr(args, "format", "csv"))
     except _USER_ERRORS as exc:
         return _report(exc, getattr(args, "format", "csv"))
+    if json_mode(args):
+        return _emit_json(args, text, getattr(args, "output", None), args.table)
     return _emit(text, getattr(args, "output", None), args.table)
 
 
@@ -134,6 +153,8 @@ def cmd_read_meta(args: argparse.Namespace) -> int:
         text = format_metadata_impl(metadata, getattr(args, "format", "csv"))
     except _USER_ERRORS as exc:
         return _report(exc, getattr(args, "format", "csv"))
+    if json_mode(args):
+        return _emit_json(args, text, getattr(args, "output", None), "meta")
     return _emit(text, getattr(args, "output", None), "meta")
 
 
@@ -145,6 +166,10 @@ def cmd_read_list(args: argparse.Namespace) -> int:
         tables = read_tables_impl(file_path)
     except _USER_ERRORS as exc:
         return _report(exc, getattr(args, "format", "csv"))
+
+    if json_mode(args):
+        record_payload(args, {"tables": tables})
+        return 0
 
     print(f"Readable tables in {file_path}:")
     width = max((len(name) for name in tables), default=0)

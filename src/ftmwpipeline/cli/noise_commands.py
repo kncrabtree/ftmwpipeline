@@ -17,6 +17,7 @@ from ..core.noise_settings import NoiseSettings
 # Import shared implementations
 from ..file_manager import PipelineFileError
 from ._argspec import add_settings_args, settings_from_namespace
+from ._json_output import json_mode, record_run_result
 from .utils import (
     add_stage_object,
     print_error,
@@ -84,6 +85,32 @@ def cmd_estimate_noise(args: argparse.Namespace) -> int:
         # Storage and stage tracking are handled by the shared implementation
         # (compute_noise_estimation_impl persists the NoiseResult on the active
         # grid); the CLI only displays the summary.
+
+        if json_mode(args):
+            rms = noise_result.rms_noise
+            bin_info = noise_result.bin_info
+            record_run_result(
+                args,
+                stage="noise",
+                result=result,
+                summary={
+                    "total_points": result["total_points"],
+                    "noise_points": result["noise_points"],
+                    "noise_fraction": result["noise_points"] / result["total_points"],
+                    "freq_min_mhz": result["frequency_range"][0],
+                    "freq_max_mhz": result["frequency_range"][1],
+                    "rms_mean": rms.mean(),
+                    "rms_std": rms.std(),
+                    "rms_min": rms.min(),
+                    "rms_max": rms.max(),
+                    "algorithm": bin_info.get("algorithm"),
+                    "n_region_windows": bin_info.get("n_region_windows"),
+                    "n_line_bins": bin_info.get("n_line_bins"),
+                    "region_aware": bin_info.get("region_aware"),
+                    "smoothing_mhz": bin_info.get("smoothing_mhz"),
+                    "pipeline_file": file_path,
+                },
+            )
 
         # Display summary results
         print("\nNoise estimation completed successfully!")

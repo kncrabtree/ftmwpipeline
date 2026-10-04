@@ -22,6 +22,7 @@ from .._internal.clocks_impl import (
 )
 from ..core.stage_fit_settings import ClockSource
 from ..file_manager import PipelineFileError
+from ._json_output import json_mode, record_payload, record_run_result
 from .utils import setup_logging
 
 
@@ -64,6 +65,17 @@ def _print_clocks(clocks: Optional[tuple]) -> None:
         print(f"   {c.freq_mhz:.6g} MHz  {state}{label}")
 
 
+def _record_clocks(args: argparse.Namespace, clocks: Optional[tuple]) -> None:
+    """``--json`` result of a clock-declaration change (no stage invalidated)."""
+    if json_mode(args):
+        record_run_result(
+            args,
+            stage=None,
+            invalidated=[],
+            summary={"n_clock_sources": len(clocks or ())},
+        )
+
+
 def _warn_if_stale(file_path: str) -> None:
     if stage5_fit_present(file_path):
         print(
@@ -77,6 +89,17 @@ def cmd_clocks_show(args: argparse.Namespace) -> int:
     setup_logging(args.verbose)
     try:
         clocks = get_clock_sources_impl(args.file_path)
+        if json_mode(args):
+            record_payload(
+                args,
+                {
+                    "clocks": [
+                        {"freq_mhz": c.freq_mhz, "locked": c.locked, "label": c.label}
+                        for c in clocks or ()
+                    ]
+                },
+            )
+            return 0
         print(f"Declared clock sources for {args.file_path}:")
         _print_clocks(clocks)
         return 0
@@ -92,6 +115,7 @@ def cmd_clocks_set(args: argparse.Namespace) -> int:
     try:
         sources: List[ClockSource] = [_parse_clock_token(t) for t in args.clocks]
         result = set_clock_sources_impl(args.file_path, sources, replace=True)
+        _record_clocks(args, result)
         print(f"Declared {len(result)} clock source(s):")
         _print_clocks(result)
         _warn_if_stale(args.file_path)
@@ -108,6 +132,7 @@ def cmd_clocks_add(args: argparse.Namespace) -> int:
     try:
         sources: List[ClockSource] = [_parse_clock_token(t) for t in args.clocks]
         result = set_clock_sources_impl(args.file_path, sources, replace=False)
+        _record_clocks(args, result)
         print(f"Clock sources now ({len(result)}):")
         _print_clocks(result)
         _warn_if_stale(args.file_path)
@@ -124,6 +149,7 @@ def cmd_clocks_remove(args: argparse.Namespace) -> int:
     try:
         freqs = [float(f) for f in args.freqs]
         result = remove_clock_sources_impl(args.file_path, freqs)
+        _record_clocks(args, result)
         print(f"Clock sources now ({len(result)}):")
         _print_clocks(result)
         _warn_if_stale(args.file_path)
@@ -139,6 +165,7 @@ def cmd_clocks_clear(args: argparse.Namespace) -> int:
     setup_logging(args.verbose)
     try:
         clear_clock_sources_impl(args.file_path)
+        _record_clocks(args, ())
         print("Cleared clock-source declaration.")
         _warn_if_stale(args.file_path)
         return 0

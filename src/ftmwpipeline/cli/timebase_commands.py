@@ -18,7 +18,6 @@ dual-interface rule. No plotting in this surface.
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import math
 from typing import Any, Dict
@@ -30,7 +29,7 @@ from .._internal.timebase_impl import (
 )
 from ..contract import Absent
 from ..file_manager import PipelineFileError
-from ..serialize import to_jsonable
+from ._json_output import json_mode, record_payload, record_run_result
 from .utils import add_stage_object, print_error, print_invalidated, setup_logging
 
 logger = logging.getLogger(__name__)
@@ -54,6 +53,24 @@ def _print_epsilon_and_lattice(tc: Any) -> None:
         print(f"  lattice g          : {tc.lattice_g_mhz:.1f} MHz")
     else:
         print("  lattice g          : (undefined; no locked lattice)")
+
+
+def _timebase_summary(tc: Any) -> Dict[str, Any]:
+    """The scalars ``timebase run`` / ``show`` report (undefined cases marked)."""
+    undefined = tc.n_used == 0 or not math.isfinite(tc.sigma_epsilon)
+    return {
+        "epsilon": Absent.UNDEFINED if undefined else tc.epsilon,
+        "sigma_epsilon": Absent.UNDEFINED if undefined else tc.sigma_epsilon,
+        "lattice_g_mhz": (
+            tc.lattice_g_mhz if tc.lattice_g_mhz > 0.0 else Absent.UNDEFINED
+        ),
+        "n_used": tc.n_used,
+        "n_detected": tc.n_detected,
+        "preconditions_passed": bool(tc.preconditions_passed),
+        "preconditions_notes": "; ".join(
+            n for n in tc.preconditions_notes if n != "ok"
+        ),
+    }
 
 
 def cmd_calibrate_timebase(args: argparse.Namespace) -> int:
@@ -89,6 +106,10 @@ def cmd_calibrate_timebase(args: argparse.Namespace) -> int:
         return 1
 
     tc = result["timebase_calibration"]
+    if json_mode(args):
+        record_run_result(
+            args, stage="timebase", result=result, summary=_timebase_summary(tc)
+        )
     print("\nTimebase calibration completed successfully!")
     print("\nResults summary:")
     _print_epsilon_and_lattice(tc)
@@ -130,6 +151,32 @@ def cmd_show_timebase(args: argparse.Namespace) -> int:
         return 1
 
     tc = loaded["timebase_calibration"]
+    if json_mode(args):
+        by_snr_json = sorted(tc.tone_reads, key=lambda t: -t.snr)
+        record_payload(
+            args,
+            {
+                "created": loaded.get("creation_time"),
+                **_timebase_summary(tc),
+                "kappa_sys": tc.kappa_sys,
+                "snr_min": tc.snr_min,
+                "start_us": tc.start_us,
+                "end_us": tc.end_us,
+                "tones": [
+                    {
+                        "f_bb_mhz": t.f_bb_mhz,
+                        "k": t.k,
+                        "df_mhz": t.df_mhz,
+                        "sigma_mhz": t.sigma_mhz,
+                        "snr": t.snr,
+                        "used": bool(t.used),
+                        "drift_control": bool(t.drift_control),
+                    }
+                    for t in by_snr_json
+                ],
+            },
+        )
+        return 0
     print(f"Timebase calibration for: {file_path}")
     print(f"  created            : {loaded.get('creation_time', 'unknown')}")
     _print_epsilon_and_lattice(tc)
@@ -210,22 +257,18 @@ def cmd_timebase_state(args: argparse.Namespace) -> int:
             traceback.print_exc()
         return 1
 
-    if args.format == "json":
+    if json_mode(args):
         # Absent fields are written as null plus a "<field>_absent" sibling.
-        print(
-            json.dumps(
-                to_jsonable(
-                    {
-                        "state": stamp.state,
-                        "epsilon": stamp.epsilon,
-                        "sigma_epsilon": stamp.sigma_epsilon,
-                        "sigma_floor_khz": stamp.sigma_floor_khz,
-                        "probe_freq_mhz": stamp.probe_freq_mhz,
-                        "sideband": stamp.sideband,
-                    }
-                ),
-                indent=2,
-            )
+        record_payload(
+            args,
+            {
+                "state": stamp.state,
+                "epsilon": stamp.epsilon,
+                "sigma_epsilon": stamp.sigma_epsilon,
+                "sigma_floor_khz": stamp.sigma_floor_khz,
+                "probe_freq_mhz": stamp.probe_freq_mhz,
+                "sideband": stamp.sideband,
+            },
         )
         return 0
 

@@ -18,6 +18,7 @@ from .._internal.stage0_impl import (
 from ..file_manager import PipelineFileError
 from ..io.data_loaders import get_format_info, list_formats
 from ..io.fid_serialization import load_acquisition_segments_from_hdf5
+from ._json_output import json_mode, record_payload, record_run_result
 from .utils import add_stage_object, print_invalidated, setup_logging
 
 
@@ -99,6 +100,25 @@ def cmd_data_load(args: argparse.Namespace) -> int:
             force=getattr(args, "force", False),
             **format_params,
         )
+
+        if json_mode(args):
+            fid_meta = result["fid_metadata"]
+            record_run_result(
+                args,
+                stage="data",
+                result=result,
+                summary={
+                    "pipeline_file": str(result["pipeline_file"]),
+                    "source_format": result["format_name"],
+                    "n_points": fid_meta["n_points"],
+                    "duration_us": fid_meta["duration_us"],
+                    "probe_freq_mhz": fid_meta["probe_freq_mhz"],
+                    "sideband": fid_meta["sideband"],
+                    "shots": fid_meta["shots"],
+                    "file_size_mb": Path(result["pipeline_file"]).stat().st_size
+                    / (1024 * 1024),
+                },
+            )
 
         # Display results
         print("Data import completed successfully!")
@@ -257,6 +277,14 @@ def cmd_data_info(args: argparse.Namespace) -> int:
     setup_logging(args.verbose)
 
     try:
+        if json_mode(args):
+            if args.format:
+                record_payload(args, get_format_info(args.format))
+            else:
+                record_payload(
+                    args, {"formats": [get_format_info(f) for f in list_formats()]}
+                )
+            return 0
         if args.format:
             # Show info about specific format
             try:

@@ -20,6 +20,7 @@ from .._internal.start_detection_impl import detect_start_time_impl
 from ..core.start_detection_settings import StartDetectionSettings
 from ..file_manager import PipelineFileError
 from ._argspec import add_start_detection_args, start_settings_from_namespace
+from ._json_output import json_mode, record_run_result
 from .utils import add_stage_object, print_error, print_invalidated, setup_logging
 
 logger = logging.getLogger(__name__)
@@ -74,6 +75,23 @@ def cmd_detect_start(args: argparse.Namespace) -> int:
     )
     drop = r.plateau / r.floor if r.floor else float("inf")
     declared_end = out["chirp_end_declared_us"]
+    if json_mode(args):
+        record_run_result(
+            args,
+            stage=None,
+            result=out,
+            summary={
+                "integration_band": band,
+                "chirp_detected": bool(r.chirp_detected),
+                "plateau_floor_ratio": None if not r.floor else drop,
+                "chirp_end_declared_us": declared_end,
+                "chirp_end_detected_us": out["chirp_end_detected_us"],
+                "chirp_end_us": r.chirp_end_us,
+                "declaration_used": bool(out["declaration_used"]),
+                "start_us": out["start_us"],
+                "stamped": bool(out["stamped"]),
+            },
+        )
     print("\nStart detection completed!")
     print("\nResults summary:")
     print(f"  integration band   : {band}")

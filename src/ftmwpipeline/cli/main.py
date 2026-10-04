@@ -12,6 +12,7 @@ from typing import List, Optional, cast
 from .. import __version__
 from ..file_manager import PipelineFileError
 from ..workflows import validate_installation
+from ._json_output import install_json, json_mode, record_payload
 from .clocks_commands import register_clocks_commands
 from .contract_commands import report_contract_error
 from .data_commands import add_data_subcommands
@@ -36,6 +37,16 @@ def cmd_validate(args: argparse.Namespace) -> int:
     """Validate installation."""
     results = validate_installation()
 
+    if json_mode(args):
+        record_payload(
+            args,
+            {
+                "components": {k: bool(v) for k, v in results.items()},
+                "ok": all(results.values()),
+            },
+        )
+        return 0 if all(results.values()) else 1
+
     print("ftmwpipeline installation validation:")
     print("-" * 40)
 
@@ -58,6 +69,17 @@ def cmd_validate(args: argparse.Namespace) -> int:
 def cmd_version(args: argparse.Namespace) -> int:
     """Show version information."""
     from .. import PACKAGE_INFO
+
+    if json_mode(args):
+        record_payload(
+            args,
+            {
+                "version": __version__,
+                "description": PACKAGE_INFO["description"],
+                "has_matplotlib": bool(PACKAGE_INFO["has_matplotlib"]),
+            },
+        )
+        return 0
 
     print(f"ftmwpipeline {__version__}")
     print(f"Description: {PACKAGE_INFO['description']}")
@@ -182,6 +204,9 @@ Examples:
     )
     version_parser.set_defaults(func=cmd_version)
 
+    # Uniform --json on every leaf verb (wraps each verb's handler).
+    install_json(parser)
+
     return parser
 
 
@@ -202,7 +227,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         return cast(int, args.func(args))
     except PipelineFileError as exc:
-        return report_contract_error(exc, getattr(args, "format", None) or "text")
+        fmt = "json" if json_mode(args) else getattr(args, "format", None) or "text"
+        return report_contract_error(exc, fmt)
 
 
 if __name__ == "__main__":

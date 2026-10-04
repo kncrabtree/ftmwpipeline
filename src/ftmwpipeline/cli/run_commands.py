@@ -25,6 +25,7 @@ from ._argspec import (
     settings_from_namespace,
     start_settings_from_namespace,
 )
+from ._json_output import json_mode, record_run_result
 
 
 def _parse_clocks(spec: Optional[str]) -> Optional[List[dict]]:
@@ -112,6 +113,26 @@ def cmd_run(args: argparse.Namespace) -> int:
         window_params=_stage_settings_params(args, WindowPlanningSettings, "windows"),
         fit_params=_stage_settings_params(args, StageFitSettings, "fit"),
     )
+
+    if json_mode(args):
+        rep = result.get("report") or {}
+        record_run_result(
+            args,
+            stage=None,
+            invalidated=[],
+            summary={
+                "status": result["status"],
+                "pipeline_file": str(result["pipeline_file"]),
+                "n_completed_stages": len(result["completed_stages"]),
+                "completed_stages": ", ".join(result["completed_stages"]),
+                "failed_stage": result.get("failed_stage"),
+                "error": result.get("error"),
+                "timebase": result.get("timebase"),
+                "elapsed_s": result.get("elapsed_s"),
+                "report_table": rep.get("table"),
+                "report_html": rep.get("html"),
+            },
+        )
 
     if result["status"] == "error":
         print(

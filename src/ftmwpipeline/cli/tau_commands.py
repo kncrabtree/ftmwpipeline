@@ -19,13 +19,14 @@ from __future__ import annotations
 
 import argparse
 import logging
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 from .._internal.shape_recommendation_impl import recommend_shape_impl
 from .._internal.stage2b_impl import calibrate_tau_impl
 from ..core.tau_calibration_settings import TauCalibrationSettings
 from ..file_manager import PipelineFileError
 from ._argspec import add_settings_args, settings_from_namespace
+from ._json_output import json_mode, record_run_result
 from .utils import add_stage_object, print_error, print_invalidated, setup_logging
 
 logger = logging.getLogger(__name__)
@@ -81,6 +82,29 @@ def cmd_calibrate_tau(args: argparse.Namespace) -> int:
     tau_name = "tau_G_maj" if gaussian else "tau_maj"
     sigma_name = "sigma_tau_G" if gaussian else "sigma_tau"
     count_name = "eligible bins" if gaussian else "contributors"
+    if json_mode(args):
+        tau_summary: Dict[str, Any] = {
+            "shape": shape,
+            "tau_maj_us": tc.tau_maj_us,
+            "sigma_tau_us": tc.sigma_tau_us,
+            "spread": spread,
+            "n_contributors": tc.n_contributors,
+            "bimodal": bool(tc.bimodality.two_component_preferred),
+            "delta_aic": tc.bimodality.delta_aic,
+            "preconditions_passed": bool(tc.preconditions_passed),
+            "preconditions_notes": "; ".join(
+                n for n in tc.preconditions_notes if n != "ok"
+            ),
+        }
+        if not gaussian:
+            tau_summary["n_spur_bins"] = tc.n_spur_bins
+            tau_summary["n_spur_clusters"] = len(tc.spur_clusters)
+        record_run_result(
+            args,
+            stage="tau_g" if gaussian else "tau",
+            result=result,
+            summary=tau_summary,
+        )
     print(f"\n{label} calibration completed successfully!")
     print("\nResults summary:")
     print(f"  {tau_name:<18}: {tc.tau_maj_us:.3f} us")
@@ -140,6 +164,20 @@ def cmd_recommend_shape(args: argparse.Namespace) -> int:
 
     rec = result["shape_recommendation"]
     rates = rec.vote_rates
+    if json_mode(args):
+        record_run_result(
+            args,
+            stage="tau",
+            result=result,
+            summary={
+                "recommended_shape": rec.recommended_shape,
+                "vote_rate_exp": rates["exp"],
+                "vote_rate_gauss": rates["gauss"],
+                "vote_rate_voigt": rates["voigt"],
+                "n_contributors": rec.n_contributors,
+                "stamped_onto": ", ".join(result.get("groups_written") or ()),
+            },
+        )
     print("\nShape recommendation completed.")
     print("\nResults summary:")
     print(f"  recommended shape  : {rec.recommended_shape}")

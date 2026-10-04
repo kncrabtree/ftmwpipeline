@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
 from ..file_manager import PipelineFileError
+from ._json_output import json_mode, record_payload
 from .utils import elide_path as _elide_path
 from .utils import print_error, setup_logging
 
@@ -42,6 +43,28 @@ def cmd_scan_list(args: argparse.Namespace) -> int:
     selector = getattr(args, "selector", None)
     show_all = bool(getattr(args, "all", False))
     specs = list_knobs(selector, include_advanced=show_all)
+    if json_mode(args):
+        record_payload(
+            args,
+            {
+                "knobs": [
+                    {
+                        "path": s.path,
+                        "stage": s.stage,
+                        "requires": s.requires,
+                        "tier": s.tier,
+                        "help": s.help,
+                        "inst_sensitivity": s.inst_sensitivity,
+                        "default_grid": list(s.default_grid),
+                        "metric_columns": list(s.metric_columns),
+                        "primary_metric": s.primary_metric,
+                        "direction": s.direction,
+                    }
+                    for s in specs
+                ]
+            },
+        )
+        return 0
     if not specs:
         suffix = f" matching {selector!r}." if selector else "."
         print(
@@ -106,6 +129,22 @@ def _parse_zoom(text: str) -> List[Tuple[float, float]]:
             raise ValueError(part)
         regions.append((lo, hi))
     return regions
+
+
+def _sweep_json(result: Any) -> dict:
+    """A sweep as its table: knob, metric columns, and one row per grid value.
+
+    The per-row stage results (arrays) are never serialized.
+    """
+    return {
+        "knob": result.knob,
+        "metric_columns": list(result.metric_columns),
+        "rows": [{"value": r.value, "metrics": r.metrics} for r in result.rows],
+        "recommendation": result.recommendation,
+        "apply_instructions": result.apply_instructions,
+        "csv_path": result.csv_path,
+        "plot_path": result.plot_path,
+    }
 
 
 def cmd_scan_run(args: argparse.Namespace) -> int:
@@ -187,6 +226,8 @@ def cmd_scan_run(args: argparse.Namespace) -> int:
     finally:
         pkg_logger.setLevel(prev_level)
 
+    if json_mode(args):
+        record_payload(args, {"result": _sweep_json(result)})
     print()
     print(result.as_table())
     print()
@@ -254,6 +295,23 @@ def cmd_scan_all(args: argparse.Namespace) -> int:
     finally:
         pkg_logger.setLevel(prev_level)
 
+    if json_mode(args):
+        record_payload(
+            args,
+            {
+                "output_dir": output_dir,
+                "n_ok": sum(1 for i in items if i.result is not None),
+                "n_failed": sum(1 for i in items if i.result is None),
+                "items": [
+                    {
+                        "knob": i.knob,
+                        "result": None if i.result is None else _sweep_json(i.result),
+                        "error": i.error,
+                    }
+                    for i in items
+                ],
+            },
+        )
     n_ok = 0
     for item in items:
         print()

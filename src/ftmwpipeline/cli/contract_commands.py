@@ -191,12 +191,14 @@ def register_accessor(
         "-v", "--verbose", action="store_true", help="Enable verbose output"
     )
     parser.set_defaults(
+        # Already machine-readable: --json is accepted and changes nothing.
+        json_passthrough=True,
         func=lambda a: run_accessor_command(
             a,
             accessor,
             schema=schema,
             takes_file=takes_file,
             call_kwargs=call_kwargs,
-        )
+        ),
     )
     return parser

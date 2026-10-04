@@ -14,6 +14,7 @@ from .._internal.stage4_impl import assign_windows_impl, visualize_windows_impl
 from ..core.window_planning_settings import WindowPlanningSettings
 from ..file_manager import PipelineFileError
 from ._argspec import add_settings_args, settings_from_namespace
+from ._json_output import json_mode, record_run_result
 from .utils import add_stage_object, print_error, print_invalidated, setup_logging
 
 
@@ -46,6 +47,22 @@ def cmd_assign_windows(args: argparse.Namespace) -> int:
             preset=args.preset,
         )
         plan = result["plan"]
+        unexplained = plan.diagnostics.get("unexplained_coherent_regions_mhz")
+        if json_mode(args):
+            record_run_result(
+                args,
+                stage="windows",
+                result=result,
+                summary={
+                    "n_promoted": result["n_promoted"],
+                    "n_windows": result["n_windows"],
+                    "n_free_peaks": result["n_free_peaks"],
+                    "n_fixed_contributors": result["n_fixed_contributors"],
+                    "n_dependencies": result["n_dependencies"],
+                    "n_batches": result["n_batches"],
+                    "n_unexplained_coherent_regions": len(unexplained or ()),
+                },
+            )
         print("\nWindow assignment completed successfully!")
         print(f"  Promoted peaks consumed: {result['n_promoted']:,}")
         print(f"  Windows: {result['n_windows']:,}")
@@ -55,7 +72,6 @@ def cmd_assign_windows(args: argparse.Namespace) -> int:
             f"  Fit dependencies: {result['n_dependencies']:,}   "
             f"parallel batches: {result['n_batches']:,}"
         )
-        unexplained = plan.diagnostics.get("unexplained_coherent_regions_mhz")
         if unexplained:
             print(
                 f"  WARNING: {len(unexplained)} coherent region(s) with no "

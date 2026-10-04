@@ -14,6 +14,7 @@ from .._internal.stage3_impl import detect_peaks_impl, visualize_peaks_impl
 from ..core.peak_detection_settings import PeakDetectionSettings
 from ..file_manager import PipelineFileError
 from ._argspec import add_settings_args, settings_from_namespace
+from ._json_output import json_mode, record_run_result
 from .utils import add_stage_object, print_error, print_invalidated, setup_logging
 
 
@@ -64,6 +65,23 @@ def cmd_detect_peaks(args: argparse.Namespace) -> int:
         n_weak = sum(
             1 for p in promoted if p.classification and p.classification.value == "weak"
         )
+        if json_mode(args):
+            record_run_result(
+                args,
+                stage="peaks",
+                result=result,
+                summary={
+                    "acquisition_us": result["acquisition_us"],
+                    "n_peaks": result["n_peaks"],
+                    "promotion_min_snr": result["promotion_min_snr"],
+                    "n_promoted": result["n_promoted"],
+                    "n_primary": result["n_primary"],
+                    "n_gap": result["n_gap"],
+                    "n_strong": n_strong,
+                    "n_medium": n_medium,
+                    "n_weak": n_weak,
+                },
+            )
         print("\nPeak detection completed successfully!")
         print(f"  Active acquisition T: {result['acquisition_us']:.2f} us")
         print(f"  Total detected: {result['n_peaks']:,}")

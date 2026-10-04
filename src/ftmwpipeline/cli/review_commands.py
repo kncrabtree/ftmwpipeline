@@ -53,6 +53,7 @@ from ..core.data_structures import (
 from ..file_manager import BadSettingError, PipelineFileError, require_pipeline_file
 from ..fitting.active_ft import active_ft_bin_spacing_mhz
 from ..io.fitting_serialization import load_spectrum_fit_from_hdf5
+from ._json_output import json_mode, record_payload, record_run_result
 from .utils import add_stage_object, setup_logging
 
 
@@ -158,6 +159,58 @@ def _fmt_mhz(v: float) -> str:
     return f"{v:.4f}"
 
 
+def _candidate_json(c: LedgerCandidate) -> dict:
+    """One ledger candidate, as the scalars the candidate table reports."""
+    return {
+        "window_id": c.window_id,
+        "frequency_mhz": c.frequency_mhz,
+        "best_evidence": c.best_evidence,
+        "evidence_kind": c.evidence_kind,
+        "decision_sites": list(c.decision_sites),
+        "reasons": list(c.reasons),
+    }
+
+
+def _window_outcome_json(w: Any) -> dict:
+    """One window's before/after outcome of an apply or preview."""
+    out = {
+        "window_id": w.window_id,
+        "origin": w.origin,
+        "action_indices": [i + 1 for i in w.action_indices],
+        "n_peaks_before": w.n_peaks_before,
+        "n_peaks_after": w.n_peaks_after,
+        "chi2r_before": w.chi2r_before,
+        "chi2r_after": w.chi2r_after,
+        "converged": w.converged,
+    }
+    mode = getattr(w, "created_window_mode", Absent.NOT_RUN)
+    if not isinstance(mode, Absent):
+        out["created_window_mode"] = mode
+        out["created_window_freq_range"] = w.created_window_freq_range
+    return out
+
+
+def _created_window_json(pw: Any) -> dict:
+    return {
+        "window_id": pw.window_id,
+        "mode": pw.mode,
+        "freq_range": pw.freq_range,
+        "n_points": pw.n_points,
+        "n_contributors": pw.n_contributors,
+        "depends_on": list(pw.depends_on),
+    }
+
+
+def _log_entry_json(e: Any) -> dict:
+    return {
+        "order_index": e.order_index,
+        "kind": e.kind,
+        "window_id": e.window_id,
+        "frequency_mhz": e.frequency_mhz,
+        "provenance": e.provenance,
+    }
+
+
 def _print_not_converged(indent: str = "  ") -> None:
     """Print the "this window's joint fit did not converge" warning, in one
     place so ``review edit``, ``review accept`` and ``review preview`` say it
@@ -251,17 +304,15 @@ def cmd_review_snap_tolerance(args: argparse.Namespace) -> int:
 
     bin_spacing_mhz = active_ft_bin_spacing_mhz(acquisition_us)
 
-    if args.format == "json":
-        print(
-            json.dumps(
-                {
-                    "snap_tol_mhz": snap_tol_mhz,
-                    "snap_tol_bins": REFIT_SNAP_TOL_BINS,
-                    "bin_spacing_mhz": bin_spacing_mhz,
-                    "acquisition_us": acquisition_us,
-                },
-                indent=2,
-            )
+    if json_mode(args):
+        record_payload(
+            args,
+            {
+                "snap_tol_mhz": snap_tol_mhz,
+                "snap_tol_bins": REFIT_SNAP_TOL_BINS,
+                "bin_spacing_mhz": bin_spacing_mhz,
+                "acquisition_us": acquisition_us,
+            },
         )
         return 0
 
@@ -353,6 +404,19 @@ def cmd_review_show(args: argparse.Namespace) -> int:
             print(f"Error rendering window {window_filter}: {exc}")
             return 1
         return 0
+
+    # ---- machine-readable tables (--json) ------------------------------------
+    if json_mode(args):
+        return _review_show_json(
+            file_path,
+            args,
+            window_fits,
+            review,
+            bar=bar,
+            window_filter=window_filter,
+            show_candidates=show_candidates,
+            show_attention=show_attention,
+        )
 
     # ---- attention-only table (--attention) ----------------------------------
     if show_attention:
@@ -506,6 +570,117 @@ def cmd_review_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def _review_show_json(
+    file_path: str,
+    args: argparse.Namespace,
+    window_fits: List[FittingResult],
+    review: Stage6Review,
+    *,
+    bar: float,
+    window_filter: Optional[int],
+    show_candidates: bool,
+    show_attention: bool,
+) -> int:
+    """The ``review show`` table of the selected mode, as one JSON payload."""
+
+    def _bounds(wf: FittingResult) -> Tuple[float, float]:
+        if wf.window is not None and wf.window.freq_range is not None:
+            return wf.window.freq_range
+        return float("nan"), float("nan")
+
+    def _wid(wf: FittingResult) -> int:
+        return wf.window_id if wf.window_id is not None else -1
+
+    if show_candidates:
+        cands = get_candidate_ledger_impl(file_path, window_id=window_filter, bar=bar)
+        record_payload(
+            args,
+            {
+                "bar": bar,
+                "window_id": window_filter,
+                "candidates": [_candidate_json(c) for c in cands],
+            },
+        )
+        return 0
+
+    if show_attention:
+        rows: List[dict] = []
+        for wf in window_fits:
+            status = review.window_statuses.get(_wid(wf))
+            if status is None or not status.needs_attention:
+                continue
+            top = max(status.attention_reasons, key=lambda r: r.severity)
+            rows.append(
+                {
+                    "window_id": _wid(wf),
+                    "label": _combined_label(status),
+                    "kind": top.kind,
+                    "severity": top.severity,
+                    "detail": top.detail,
+                }
+            )
+        rows.sort(key=lambda r: (-r["severity"], r["window_id"]))
+        record_payload(args, {"attention": rows})
+        return 0
+
+    if window_filter is None:
+        windows = []
+        for wf in sorted(window_fits, key=lambda w: w.window_id or 0):
+            wid = _wid(wf)
+            lo, hi = _bounds(wf)
+            windows.append(
+                {
+                    "window_id": wid,
+                    "freq_lo_mhz": lo,
+                    "freq_hi_mhz": hi,
+                    "n_peaks": wf.n_peaks_fitted,
+                    "n_candidates": len(
+                        get_candidate_ledger_impl(file_path, window_id=wid, bar=bar)
+                    ),
+                    "label": _combined_label(review.window_statuses.get(wid)),
+                }
+            )
+        record_payload(args, {"windows": windows})
+        return 0
+
+    wf = window_fits[0]
+    wid = _wid(wf)
+    lo, hi = _bounds(wf)
+    status = review.window_statuses.get(wid)
+    record_payload(
+        args,
+        {
+            "window_id": wid,
+            "freq_lo_mhz": lo,
+            "freq_hi_mhz": hi,
+            "reduced_chi2": wf.reduced_chi2,
+            "label": _combined_label(status),
+            "attention_reasons": [
+                {"kind": r.kind, "severity": r.severity, "detail": r.detail}
+                for r in (status.attention_reasons if status is not None else [])
+            ],
+            "decision_log": [
+                _log_entry_json(e) for e in review.decision_log if e.window_id == wid
+            ],
+            "fitted_peaks": [
+                {
+                    "frequency_mhz": p.frequency_mhz,
+                    "amplitude": p.amplitude,
+                    "snr": p.snr,
+                    "origin": p.origin,
+                    "detection_index": p.detection_index,
+                }
+                for p in sorted(wf.fitted_peaks, key=lambda pk: pk.frequency_mhz)
+            ],
+            "candidates": [
+                _candidate_json(c)
+                for c in get_candidate_ledger_impl(file_path, window_id=wid, bar=bar)
+            ],
+        },
+    )
+    return 0
+
+
 def _render_windows_to_dir(
     file_path: str,
     window_fits: List[FittingResult],
@@ -655,6 +830,23 @@ def cmd_review_edit(args: argparse.Namespace) -> int:
         print(f"Error: {exc}")
         return 1
 
+    if json_mode(args):
+        record_run_result(
+            args,
+            stage="review",
+            result=result,
+            summary={
+                "window_id": result.window_id,
+                "n_peaks_before": result.n_peaks_before,
+                "n_peaks_after": result.n_peaks_after,
+                "chi2r_before": result.chi2r_before,
+                "chi2r_after": result.chi2r_after,
+                "converged": result.converged,
+                "n_added": len(add_freqs),
+                "n_removed": len(remove_freqs),
+                "created_window_mode": result.created_window_mode,
+            },
+        )
     print(
         f"review edit  window={result.window_id}  "
         f"peaks {result.n_peaks_before} → {result.n_peaks_after}  "
@@ -714,6 +906,17 @@ def cmd_review_acknowledge_environment(args: argparse.Namespace) -> int:
 
     current = info.acknowledged_environment
     fit_env = info.fit_environment
+    if json_mode(args):
+        record_payload(
+            args,
+            {
+                "acknowledged": current.summary(),
+                "fit_environment": fit_env.summary() if fit_env is not None else None,
+                "mismatch": bool(info.mismatch),
+                "reason": reason,
+            },
+        )
+        return 0
     print("review acknowledge-environment")
     print(f"  Acknowledged: {current.summary()}")
     if fit_env is not None:
@@ -758,6 +961,22 @@ def cmd_review_create(args: argparse.Namespace) -> int:
         return 1
 
     lo, hi = result.freq_range
+    if json_mode(args):
+        record_run_result(
+            args,
+            stage="review",
+            result=result,
+            summary={
+                "window_id": result.window_id,
+                "mode": result.mode,
+                "anchor_mhz": result.anchor_mhz,
+                "freq_lo_mhz": lo,
+                "freq_hi_mhz": hi,
+                "n_points": result.n_points,
+                "n_contributors": result.n_contributors,
+                "n_peaks": result.n_peaks,
+            },
+        )
     print(
         f"review create  window={result.window_id}  {result.mode}  "
         f"anchor {result.anchor_mhz:.4f} MHz"
@@ -810,6 +1029,33 @@ def cmd_review_accept(args: argparse.Namespace) -> int:
         print(f"Error: {exc}")
         return 1
 
+    if json_mode(args):
+        if result is None:
+            record_run_result(
+                args,
+                stage="review",
+                invalidated=[],
+                summary={
+                    "window_id": window_id,
+                    "provenance": "reviewed",
+                    "candidate_accepted": False,
+                },
+            )
+        else:
+            record_run_result(
+                args,
+                stage="review",
+                result=result,
+                summary={
+                    "window_id": result.window_id,
+                    "candidate_accepted": True,
+                    "n_peaks_before": result.n_peaks_before,
+                    "n_peaks_after": result.n_peaks_after,
+                    "chi2r_before": result.chi2r_before,
+                    "chi2r_after": result.chi2r_after,
+                    "converged": result.converged,
+                },
+            )
     if result is None:
         print(f"review accept  window={window_id}  provenance→reviewed")
     else:
@@ -856,6 +1102,20 @@ def cmd_review_run(args: argparse.Namespace) -> int:
             print(f"  {kind}: {count}")
 
     fp = get_final_products_impl(file_path)
+    if json_mode(args):
+        run_summary: dict = {
+            "n_windows": result.n_windows,
+            "n_attention": result.n_attention,
+            "reason_counts": dict(result.reason_counts),
+        }
+        if fp is not None:
+            run_summary.update(
+                n_final_peaks=len(fp.peaks),
+                calibration_state=fp.calibration_state,
+                epsilon=fp.epsilon,
+                sigma_floor_khz=fp.sigma_floor_khz,
+            )
+        record_run_result(args, stage="review", result=result, summary=run_summary)
     if fp is not None:
         print(
             f"final products: {len(fp.peaks)} peak(s), "
@@ -890,6 +1150,21 @@ def cmd_review_apply(args: argparse.Namespace) -> int:
         print(f"Error: {exc}")
         return 1
 
+    if json_mode(args):
+        record_run_result(
+            args,
+            stage="review",
+            result=result,
+            summary={
+                "dry_run": bool(dry_run),
+                "n_actions": len(result.plan),
+                "applied": result.applied,
+                "n_warnings": len(result.warnings),
+                "n_created_windows": len(result.created_windows),
+                "n_windows_refit": len(result.windows),
+                "base_changed": bool(result.base_changed),
+            },
+        )
     header = (
         "review apply (dry run): resolved plan" if dry_run else "review apply: plan"
     )
@@ -961,6 +1236,21 @@ def cmd_review_preview(args: argparse.Namespace) -> int:
         print(f"Error: {exc}")
         return 1
 
+    if json_mode(args):
+        record_payload(
+            args,
+            {
+                "warnings": list(result.warnings),
+                "created_windows": [
+                    _created_window_json(pw) for pw in result.created_windows
+                ],
+                "windows": [
+                    _window_outcome_json(result.windows[wid])
+                    for wid in sorted(result.windows)
+                ],
+            },
+        )
+        return 0
     print("review preview (nothing written):")
     if result.warnings:
         print("warnings:")
@@ -1013,6 +1303,9 @@ def cmd_review_log(args: argparse.Namespace) -> int:
         print(f"Error: {exc}")
         return 1
 
+    if json_mode(args):
+        record_payload(args, {"entries": [_log_entry_json(e) for e in entries]})
+        return 0
     print("review log (user decisions, execution order):")
     if not entries:
         print("  (no recorded decisions)")
@@ -1048,6 +1341,18 @@ def cmd_review_undo(args: argparse.Namespace) -> int:
         print(f"Error: {exc}")
         return 1
 
+    if json_mode(args):
+        record_run_result(
+            args,
+            stage="review",
+            result=result,
+            summary={
+                "dry_run": bool(dry_run),
+                "n_removed": len(result.removed),
+                "n_replayed": len(result.plan),
+                "applied": result.applied,
+            },
+        )
     print("review undo (dry run)" if dry_run else "review undo")
     print("removing:")
     for e in result.removed:
@@ -1087,6 +1392,29 @@ def cmd_review_rank(args: argparse.Namespace) -> int:
 
     desc = RANK_METRICS[_normalize_metric(by)][0]
     review = get_review_status_impl(file_path)
+    if json_mode(args):
+        record_payload(
+            args,
+            {
+                "by": _normalize_metric(by),
+                "description": desc,
+                "windows": [
+                    {
+                        "window_id": rw.window_id,
+                        "value": rw.value,
+                        "freq_lo_mhz": rw.freq_lo,
+                        "freq_hi_mhz": rw.freq_hi,
+                        "n_peaks": rw.n_peaks,
+                        "reduced_chi2": rw.reduced_chi2,
+                        "label": _combined_label(
+                            review.window_statuses.get(rw.window_id)
+                        ),
+                    }
+                    for rw in ranked
+                ],
+            },
+        )
+        return 0
     print(f"review rank by {_normalize_metric(by)} ({desc}), worst first:")
     if not ranked:
         print("  (no windows with this metric defined)")

@@ -15,6 +15,7 @@ from .._internal.stage5_validation_impl import validate_stage5_shape_error_impl
 from ..core.stage_fit_settings import StageFitSettings
 from ..file_manager import PipelineFileError
 from ._argspec import add_settings_args, settings_from_namespace
+from ._json_output import json_mode, record_payload, record_run_result
 from .utils import add_stage_object, print_error, print_invalidated, setup_logging
 
 
@@ -66,6 +67,28 @@ def cmd_fit_peaks(args: argparse.Namespace) -> int:
             preset=args.preset,
             jobs=args.jobs,
         )
+        if json_mode(args):
+            record_run_result(
+                args,
+                stage="fit",
+                result=result,
+                summary={
+                    k: result[k]
+                    for k in (
+                        "n_windows",
+                        "n_fitted_peaks",
+                        "n_thaw_accepted",
+                        "n_thaw_events",
+                        "n_rescue_accepted",
+                        "n_rescue_events",
+                        "n_rescue_added",
+                        "n_rescue_origin_pruned",
+                        "n_replan_accepted",
+                        "n_replan_events",
+                        "final_plan_revision",
+                    )
+                },
+            )
         print("\nFitting completed successfully!")
         print(f"  Windows fitted: {result['n_windows']:,}")
         print(f"  Fitted peaks:   {result['n_fitted_peaks']:,}")
@@ -225,6 +248,9 @@ def cmd_validate_stage5_shape_error(args: argparse.Namespace) -> int:
             ground_truth=args.ground_truth,
             match_tol_fwhm=args.match_tol_fwhm,
         )
+        if json_mode(args):
+            record_payload(args, report)
+            return 0
         _print_validation_report(report)
         return 0
     except PipelineFileError:
