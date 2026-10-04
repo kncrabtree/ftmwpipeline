@@ -275,7 +275,7 @@ def ft_run_impl(
             persist=persist,
             _events=scope,
         )
-        scope.finish(ft_run_summary(result))
+        scope.finish(ft_run_summary(result), wrote=persist and not validate_only)
     return result
 
 
