@@ -53,11 +53,22 @@ def test_partially_run_file_reports_states_and_runnable(baseline_2638_stage1):
     assert s["rerun_order"] == [x.value for x in rerun_order()]
 
 
-def test_complete_file_has_nothing_runnable(stage5_reviewed_2638):
-    # Mutation: completed stages still listed runnable.
+def test_runnable_is_exactly_the_incomplete_stages_with_complete_deps(
+    stage5_reviewed_2638,
+):
+    # Mutation: completed stages listed runnable, or a stage listed before its
+    # dependencies are complete. (The reviewed fixture never ran every stage,
+    # e.g. the timebase, so runnable need not be empty.)
     s = ftmw.status(str(stage5_reviewed_2638))
-    assert all(e["state"] == "complete" for e in s["stages"])
-    assert s["runnable"] == []
+    state = {e["stage"]: e["state"] for e in s["stages"]}
+    deps = {e["stage"]: e["depends_on"] for e in s["stages"]}
+    expected = [
+        st
+        for st in s["rerun_order"]
+        if state[st] != "complete" and all(state[d] == "complete" for d in deps[st])
+    ]
+    assert sorted(s["runnable"]) == sorted(expected)
+    assert state["fit"] == state["review"] == "complete"
 
 
 def test_status_never_writes(baseline_2638_stage1, tmp_path):

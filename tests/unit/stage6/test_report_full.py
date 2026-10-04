@@ -1666,12 +1666,15 @@ def test_run_no_table_skips_table(stage5_small_file, tmp_path):
     assert list(out.glob("*_lines.csv")) == []
 
 
-def test_run_rejects_empty_output():
+def test_run_rejects_empty_output(tmp_path):
     from ftmwpipeline._internal.report_html_impl import report_run_impl
 
+    stub = tmp_path / "stub.ftmw"
+    with h5py.File(stub, "w"):
+        pass
     with pytest.raises(ValueError, match="nothing to do"):
         report_run_impl(
-            "ignored.ftmw", output_dir="x", emit_table=False, emit_html=False
+            str(stub), output_dir=str(tmp_path / "x"), emit_table=False, emit_html=False
         )
 
 

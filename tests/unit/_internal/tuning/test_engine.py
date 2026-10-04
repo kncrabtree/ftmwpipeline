@@ -12,8 +12,13 @@ from ftmwpipeline._internal.tuning.registry import KnobSpec
 
 def _dummy_ftmw(tmp_path: Path) -> Path:
     """A stand-in input file the engine copies; synthetic runs ignore it."""
+    # A readable (empty) HDF5 file: every public call refuses a path that is
+    # not one before running anything (file_corrupt).
+    import h5py
+
     fp = tmp_path / "in.ftmw"
-    fp.write_bytes(b"not-a-real-hdf5")
+    with h5py.File(fp, "w"):
+        pass
     return fp
 
 

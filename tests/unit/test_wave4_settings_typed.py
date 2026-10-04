@@ -21,6 +21,15 @@ from ftmwpipeline.file_manager import (
 )
 
 
+def _h5(tmp_path):
+    """A readable (empty) HDF5 file, so the refusal under test is the
+    setting's, not the file guard's."""
+    p = tmp_path / "x.ftmw"
+    with h5py.File(p, "w"):
+        pass
+    return p
+
+
 @pytest.mark.parametrize(
     "knob, value",
     [
@@ -34,7 +43,7 @@ def test_set_setting_unknown_path_is_bad_setting(tmp_path, knob, value):
     from ftmwpipeline._internal.tuning import set_setting
 
     with pytest.raises(BadSettingError) as ei:
-        set_setting(tmp_path / "x.ftmw", knob, value)
+        set_setting(_h5(tmp_path), knob, value)
     assert ei.value.path == knob
     assert isinstance(ei.value, ValueError)
     assert ei.value.to_dict()["code"] == "bad_setting"
@@ -44,7 +53,7 @@ def test_set_setting_wrong_type_is_bad_setting(tmp_path):
     from ftmwpipeline._internal.tuning import set_setting
 
     with pytest.raises(BadSettingError) as ei:
-        set_setting(tmp_path / "x.ftmw", "stage2.window_mhz", "not-a-number")
+        set_setting(_h5(tmp_path), "stage2.window_mhz", "not-a-number")
     assert ei.value.path == "stage2.window_mhz"
     assert ei.value.value == "not-a-number"
     assert "number" in ei.value.expected
@@ -54,7 +63,7 @@ def test_set_setting_bad_shape_choice(tmp_path):
     from ftmwpipeline._internal.tuning import set_setting
 
     with pytest.raises(BadSettingError) as ei:
-        set_setting(tmp_path / "x.ftmw", "stage5.shape", "triangle")
+        set_setting(_h5(tmp_path), "stage5.shape", "triangle")
     assert ei.value.path == "stage5.shape"
     assert "lorentzian" in ei.value.expected
 

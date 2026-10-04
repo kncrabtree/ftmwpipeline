@@ -69,7 +69,12 @@ def test_rows_are_typed_json_and_round_trip(tmp_path: Path, rows):
         "stage5.spur.clocks",
         [{"freq_mhz": 5760.0, "locked": True, "label": "a"}],
     )
-    got = {r.path: r for r in resolve_settings_view(str(f), "stage5.spur.clocks")}
+    got = {
+        r.path: r
+        for r in resolve_settings_view(
+            str(f), "stage5.spur.clocks", include_advanced=True
+        )
+    }
     assert to_jsonable(got["stage5.spur.clocks"].value)[0]["freq_mhz"] == 5760.0
 
 

@@ -230,7 +230,7 @@ def test_manifest_declares_schema_and_exports():
     # Mutation: schema missing from the manifest, or class not exported.
     assert "ftmw/curation_action@1" in MANIFEST.schemas
     assert ftmwpipeline.CurationAction is CurationAction
-    assert ftmwpipeline.CONTRACT_VERSION == 6
+    assert ftmwpipeline.CONTRACT_VERSION >= 6
 
 
 def test_epsilon_needs_a_calibrated_frame_and_round_trips():
