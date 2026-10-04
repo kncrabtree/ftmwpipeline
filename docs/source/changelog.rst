@@ -29,7 +29,9 @@ time is held are bit-identical, and so are windows with nothing frozen. On the
 2638 fixture 6 of 262 windows moved, all through the merge's parked lines, by
 at most about 1e-3 us in decay time. A file fitted under epoch 3 must be
 re-fit, or have the mismatch accepted, before Stage 6 will splice an edit into
-it.
+it. The same epoch also corrects a local thaw's joint co-fit, which drew the
+dependent window's *other* frozen contributors shifted by the distance between
+the two window centres; their skirt now sits at the lines' true frequencies.
 
 **``ANALYSIS_EPOCH`` moves 2 → 3.** Every tolerance that expresses a spectral
 distance is now defined in active-FT bins rather than in MHz (see the first
