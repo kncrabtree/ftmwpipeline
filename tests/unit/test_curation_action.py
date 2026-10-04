@@ -26,6 +26,7 @@ _KEYS = {
     "peak_uid",
     "candidate_mhz",
     "frame",
+    "epsilon",
 }
 
 
@@ -230,3 +231,28 @@ def test_manifest_declares_schema_and_exports():
     assert "ftmw/curation_action@1" in MANIFEST.schemas
     assert ftmwpipeline.CurationAction is CurationAction
     assert ftmwpipeline.CONTRACT_VERSION == 6
+
+
+def test_epsilon_needs_a_calibrated_frame_and_round_trips():
+    # Mutation: epsilon accepted on a raw action, or lost by to_dict/from_dict.
+    with pytest.raises(BadSettingError) as ei:
+        CurationAction("add", freq_mhz=1.5, frame="raw", epsilon=2e-6)
+    assert ei.value.path == "epsilon"
+    a = CurationAction("add", freq_mhz=1.5, frame="calibrated", epsilon=2e-6)
+    assert CurationAction.from_dict(a.to_dict()) == a
+
+
+def test_an_unrepresentable_number_is_bad_setting_not_overflow():
+    # Mutation: float() of a huge int escaping as OverflowError.
+    with pytest.raises(BadSettingError) as ei:
+        CurationAction("add", freq_mhz=10**400)
+    assert ei.value.path == "freq_mhz"
+
+
+def test_actions_passed_positionally_are_refused_with_a_hint(tmp_path):
+    # Mutation: a list given as curation_path reaching Path(list) (TypeError).
+    from ftmwpipeline._internal.stage6_impl import curation_source
+
+    with pytest.raises(BadSettingError) as ei:
+        curation_source([CurationAction("accept", window_id=1)], None)  # type: ignore[arg-type]
+    assert ei.value.path == "curation_path"

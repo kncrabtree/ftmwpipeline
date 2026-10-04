@@ -832,23 +832,49 @@ class TestCurationActionFrames:
         got = self._removed(sc_file)
         assert got == [pytest.approx(f0, abs=1e-9), pytest.approx(f1, abs=1e-9)]
 
-    def test_action_frame_overrides_the_calls_frame(self, sc_file: Path) -> None:
-        # Mutation: call frame= beats the per-action frame.
+    def test_action_frame_disagreeing_with_the_calls_frame_is_refused(
+        self, sc_file: Path
+    ) -> None:
+        # Mutation: one of the two silently wins (a file header that
+        # disagrees with frame= is refused; an action is held to the same).
         f0, _, eps, probe, wid = self._two_peaks(sc_file)
-        ftmw.review_apply(
-            str(sc_file),
-            actions=[
-                CurationAction(
-                    "remove",
-                    window_id=wid,
-                    freq_mhz=_ref_calibrated(f0, probe=probe, eps=eps),
-                    frame="calibrated",
-                )
-            ],
-            frame="raw",
+        with pytest.raises(BadSettingError) as ei:
+            ftmw.review_apply(
+                str(sc_file),
+                actions=[
+                    CurationAction(
+                        "remove",
+                        window_id=wid,
+                        freq_mhz=_ref_calibrated(f0, probe=probe, eps=eps),
+                        frame="calibrated",
+                    )
+                ],
+                frame="raw",
+            )
+        assert ei.value.path == "frame"
+        assert self._removed(sc_file) == []
+
+    def test_stamped_epsilon_refuses_drift_like_the_file(
+        self, sc_file: Path, tmp_path: Path
+    ) -> None:
+        # Mutation: an action's epsilon stamp ignored (the file refuses the
+        # same stale stamp), or actions_from_curation_file dropping it.
+        from ftmwpipeline._internal.stage6_impl import actions_from_curation_file
+
+        f0, _, eps, probe, wid = self._two_peaks(sc_file)
+        f_cal = _ref_calibrated(f0, probe=probe, eps=eps)
+        stale = eps * 1.5
+        csv = tmp_path / "stale.csv"
+        csv.write_text(
+            f"# frame: calibrated\n# epsilon: {stale!r}\nremove,{wid},{f_cal!r},\n"
         )
-        (got,) = self._removed(sc_file)
-        assert got == pytest.approx(f0, abs=1e-9)
+        with pytest.raises(ValueError, match="drift"):
+            ftmw.review_apply(str(sc_file), str(csv))
+        actions = actions_from_curation_file(csv)
+        assert actions[0].epsilon == stale
+        with pytest.raises(ValueError, match="drift"):
+            ftmw.review_apply(str(sc_file), actions=actions)
+        assert self._removed(sc_file) == []
 
     def test_omitted_frame_refused_on_self_calibrated(self, sc_file: Path) -> None:
         # Mutation: a frame-less frequency action silently taken as raw.

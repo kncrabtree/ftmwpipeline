@@ -519,9 +519,12 @@ whose ``path`` names the field.
 raw on a file whose ``epsilon`` is 0, refused on a ``self_calibrated`` file when
 the action carries a frequency (see :ref:`the frame rules <curation-frames>`).
 So one batch may mix raw and calibrated frequencies. Each is converted to raw
-before anything resolves, exactly as a file's frequencies are. An action has no
-epsilon stamp, so unlike a ``# frame: calibrated`` file it is not checked for
-calibration drift. It is resolved against the file's current calibration.
+before anything resolves, exactly as a file's frequencies are. An explicit
+action frame that disagrees with an explicit call ``frame=`` is refused, as a
+file header that disagrees with it is. A calibrated action may carry
+``epsilon``, the stamp a ``# epsilon:`` header gives a file: when given, a
+calibration that has moved since (a timebase re-run) refuses the action as
+drift, exactly as it refuses the file.
 
 **Same plan, same result.** The same actions given as a file and as data give
 equal results, decision logs and files. ``to_row()`` writes an action as its CSV

@@ -240,16 +240,20 @@ def _check_id(path: str, value: Any) -> Optional[int]:
 def _check_freq(path: str, value: Any) -> Optional[float]:
     if value is None:
         return None
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, (int, float))
-        or not math.isfinite(float(value))
-    ):
+    try:
+        finite = (
+            not isinstance(value, bool)
+            and isinstance(value, (int, float))
+            and math.isfinite(float(value))
+        )
+    except OverflowError:  # an int too large for a float
+        finite = False
+    if not finite:
         raise _bad(
             path,
-            "a finite frequency in MHz or null",
+            "a finite number or null",
             value,
-            f"{path} must be a finite frequency in MHz or None, got {value!r}",
+            f"{path} must be a finite number or None, got {value!r}",
         )
     return float(value)
 
@@ -294,7 +298,15 @@ class CurationAction:
         ``"frame"``) on a ``self_calibrated`` file. Each action resolves its
         own frame, so one batch may mix frames; the pipeline converts every
         frequency to raw before resolving anything. Inert on an action
-        without a frequency.
+        without a frequency. An explicit ``frame`` that disagrees with an
+        explicit call ``frame=`` is refused, as a file header that disagrees
+        with it is.
+    epsilon : float or None
+        Only with ``frame="calibrated"``: the epsilon the calibrated
+        frequency was computed under (a file's ``# epsilon:`` header). When
+        given, it must match the file's current epsilon at apply time, else
+        the action is refused as calibration drift, exactly as a stamped file
+        is. ``None`` skips the check.
 
     Construction validates what the curation-file parser enforces of a row:
     one frequency (``freq_mhz``), or on ``remove`` one ``peak_uid`` in its
@@ -312,6 +324,7 @@ class CurationAction:
     peak_uid: Optional[int] = None
     candidate_mhz: Optional[float] = None
     frame: Optional[Frame] = None
+    epsilon: Optional[float] = None
 
     def __post_init__(self) -> None:
         action: str = self.action
@@ -341,6 +354,18 @@ class CurationAction:
                 self.frame,
                 f'frame must be "raw", "calibrated" or None, got {self.frame!r}',
             )
+
+        if self.epsilon is not None:
+            eps = _check_freq("epsilon", self.epsilon)
+            object.__setattr__(self, "epsilon", eps)
+            if self.frame != "calibrated":
+                raise _bad(
+                    "epsilon",
+                    'null unless frame is "calibrated"',
+                    self.epsilon,
+                    "epsilon stamps a calibrated frequency; it needs "
+                    'frame="calibrated"',
+                )
 
         if self.peak_uid is not None and action != "remove":
             raise _bad(
@@ -404,7 +429,8 @@ class CurationAction:
 
     def to_dict(self) -> Dict[str, Any]:
         """The wire form: ``{"schema": "ftmw/curation_action@1", "action",
-        "window_id", "freq_mhz", "peak_uid", "candidate_mhz", "frame"}``.
+        "window_id", "freq_mhz", "peak_uid", "candidate_mhz", "frame",
+        "epsilon"}``.
 
         Every key is always present; an unused field is ``None`` (JSON
         ``null``). These are request fields, so ``None`` is the plain "not

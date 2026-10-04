@@ -886,7 +886,13 @@ A ``CurationAction`` is a frozen dataclass, one curation-file row:
      - ``accept`` only: a ledger candidate to revive.
    * - ``frame``
      - ``"raw"`` | ``"calibrated"`` or ``None``
-     - The frame of ``freq_mhz`` / ``candidate_mhz``.
+     - The frame of ``freq_mhz`` / ``candidate_mhz``. An explicit frame that
+       disagrees with an explicit call ``frame=`` is refused.
+   * - ``epsilon``
+     - ``float`` or ``None``
+     - Only with ``frame="calibrated"``: the epsilon the frequency was computed
+       under (a file's ``# epsilon:``). It must match the file's current
+       epsilon at apply time, else the action is refused as calibration drift.
 
 **Validation.** Construction enforces the parser's rules for a row: one
 frequency, or one ``peak_uid`` on ``remove``; no frequency on ``accept``; no
@@ -895,7 +901,8 @@ violation raises ``BadSettingError`` (``bad_setting``) whose ``path`` is the
 field.
 
 **Wire form.** ``to_dict()`` returns ``{"schema": "ftmw/curation_action@1",
-"action", "window_id", "freq_mhz", "peak_uid", "candidate_mhz", "frame"}``. Every
+"action", "window_id", "freq_mhz", "peak_uid", "candidate_mhz", "frame",
+"epsilon"}``. Every
 key is always present and an unused field is ``null``. These are request fields,
 so ``null`` here is "not given", not an ``Absent`` result.
 ``CurationAction.from_dict()`` is the inverse. It also accepts a dict without

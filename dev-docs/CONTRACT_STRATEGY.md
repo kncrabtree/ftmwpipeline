@@ -644,6 +644,7 @@ curation-file row:
 | `peak_uid` | `int` or `None` | `remove` only, in place of `freq_mhz` (the file's `uid:N`) |
 | `candidate_mhz` | `float` or `None` | `accept` only: a candidate to revive (`candidate=F`) |
 | `frame` | `"raw"` \| `"calibrated"` or `None` | the frame of `freq_mhz` / `candidate_mhz`; see below |
+| `epsilon` | `float` or `None` | only with `frame="calibrated"`: the epsilon the frequency was computed under (a file's `# epsilon:` stamp), checked for drift at apply time exactly as a file's |
 
 - **Construction validates** the same arity rules the parser enforces:
   - one frequency, or one `peak_uid` on `remove`;
@@ -653,7 +654,7 @@ curation-file row:
   A violation raises `bad_setting` naming the field.
 - **Wire form.** `to_dict()` gives
   `{"schema": "ftmw/curation_action@1", "action", "window_id", "freq_mhz",
-  "peak_uid", "candidate_mhz", "frame"}`. Every key is always present, and an
+  "peak_uid", "candidate_mhz", "frame", "epsilon"}`. Every key is always present, and an
   unused field is `null`; these are request fields, not absent results.
   `CurationAction.from_dict()` is the inverse.
 - **Row correspondence.** `to_row()` gives the CSV row. Parsing a file yields
@@ -661,8 +662,10 @@ curation-file row:
 - **Frames.** Each action's `frame` is resolved on its own: `None` takes the
   call's `frame=`, and then the call's rule applies (raw on an `epsilon == 0`
   file; required on a `self_calibrated` file when the action carries a
-  frequency). A batch may mix frames. The pipeline converts each action to raw
-  before resolution, exactly as it does a file's frequencies.
+  frequency). A batch may mix frames. An explicit action frame that disagrees
+  with an explicit call `frame=` is refused, as a file header that disagrees
+  with it is. The pipeline converts each action to raw before resolution,
+  exactly as it does a file's frequencies.
 - **Calls.**
   - `review_apply(path, curation_path=None, *, actions=None, ...)` and
     `review_preview(...)` take exactly one of `curation_path` or `actions`,

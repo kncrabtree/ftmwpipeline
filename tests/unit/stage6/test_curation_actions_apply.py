@@ -198,16 +198,17 @@ def test_exactly_one_of_file_or_actions(stage5_small_source, tmp_path, capsys):
         assert ei.value.path == "actions"
     plan_json = tmp_path / "plan.json"
     plan_json.write_text("[]")
-    for ns in (
-        argparse.Namespace(
-            file_path=str(fp), curation_file=None, actions=None, dry_run=False
-        ),
-        argparse.Namespace(
-            file_path=str(fp), curation_file=csv, actions=str(plan_json), dry_run=False
-        ),
+    # Through the CLI entry point: the verb lets the typed refusal reach
+    # main, which exits 1 and writes it to stderr.
+    from ftmwpipeline.cli.main import main as cli_main
+
+    capsys.readouterr()
+    for argv in (
+        ["review", "apply", str(fp)],
+        ["review", "apply", str(fp), str(csv), "--actions", str(plan_json)],
     ):
-        assert cmd_review_apply(ns) == 1
-    assert "actions" in capsys.readouterr().out
+        assert cli_main(argv) == 1
+        assert "actions" in capsys.readouterr().err
     assert _log(fp) == []  # nothing applied
 
 

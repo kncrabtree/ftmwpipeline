@@ -49,6 +49,19 @@ had to reach into ``_internal`` or parse out of prose to obtain are now
 published, and the Stage 6 edit paths that carry them were collapsed onto one
 engine so they cannot answer differently.
 
+* **Machine contract, Wave 6: curation as data.** ``CONTRACT_VERSION`` is now
+  ``6``. ``CurationAction`` (exported from ``ftmwpipeline``) is one curation-file
+  row as a typed, JSON-able value (``ftmw/curation_action@1``): ``action``,
+  ``window_id``, ``freq_mhz``, ``peak_uid``, ``candidate_mhz``, ``frame`` and,
+  for a calibrated frequency, an optional ``epsilon`` stamp. ``review_apply`` /
+  ``review_preview`` (API, ``Pipeline``, review session) take ``actions=`` in
+  place of ``curation_path`` (exactly one), and the CLI takes ``--actions
+  FILE`` (a JSON array; ``-`` for stdin). The same plan as a file and as data
+  gives equal results, decision logs and files, with the same validation,
+  frame handling and drift check. Each action resolves its own frame
+  (``None`` takes the call's ``frame=``), so a batch may mix raw and
+  calibrated frequencies; an explicit action frame that disagrees with an
+  explicit ``frame=`` is refused.
 * **Machine contract, Wave 4: typed refusals (breaking).** Refusals a program
   can act on now raise the typed family with a stable ``code``, still as a
   subclass of the built-in they replaced, so existing ``except`` clauses keep

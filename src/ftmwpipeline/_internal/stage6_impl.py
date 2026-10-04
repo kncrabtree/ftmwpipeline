@@ -4448,6 +4448,17 @@ def curation_source(
         )
     if actions is None:
         assert curation_path is not None
+        if not isinstance(curation_path, (str, Path)):
+            # A natural slip now that curation_path is optional: a list of
+            # actions passed positionally.
+            raise BadSettingError(
+                "curation_path",
+                "a path to a curation file (pass in-memory actions as actions=)",
+                curation_path,
+                message=f"curation_path must be a file path, got "
+                f"{type(curation_path).__name__}; pass a sequence of "
+                f"CurationAction as actions=...",
+            )
         return curation_path
     if isinstance(actions, (str, bytes, Mapping)):
         raise BadSettingError(
@@ -4548,6 +4559,17 @@ def _actions_to_ops(
             if not stamp_read:
                 stamp = _current_calibration_stamp(path)
                 stamp_read = True
+            if action.frame is not None and frame is not None and action.frame != frame:
+                # The same refusal a file whose header disagrees with frame=
+                # gets (_resolve_curation_frame).
+                raise BadSettingError(
+                    "frame",
+                    f'"{action.frame}" (the frame actions[{index}] declares)',
+                    frame,
+                    message=f"actions[{index}] ({action.action}) declares "
+                    f'frame="{action.frame}", but frame="{frame}" was passed '
+                    f"explicitly. Pass a matching frame, or omit one of them.",
+                )
             requested = action.frame if action.frame is not None else frame
             try:
                 resolved = _resolve_frame_against(stamp, requested)
@@ -4560,11 +4582,29 @@ def _actions_to_ops(
                 ) from None
             if resolved != "raw":
                 advisory = resolved
+            # A stamped epsilon is the file header's drift check, per action.
+            if action.epsilon is not None and stamp is not None:
+                current_eps = stamp[1]
+                if not math.isclose(
+                    action.epsilon, current_eps, rel_tol=1e-6, abs_tol=1e-12
+                ):
+                    raise ValueError(
+                        f"actions[{index}] ({action.action}) frame drift: it "
+                        f"was staged frame=calibrated at epsilon="
+                        f"{action.epsilon:.6e}, but the target file's current "
+                        f"epsilon is {current_eps:.6e}. The calibration has "
+                        f"changed since it was staged (e.g. a timebase re-run) "
+                        f"-- re-stage it against the current calibration."
+                    )
         ops.append(_action_to_op(action, index, frame=resolved, stamp=stamp))
     return ParsedCurationFile(ops, CurationFileHeader()), stamp, advisory
 
 
-def action_from_op(op: CurationOp, frame: Optional[Frame] = None) -> CurationAction:
+def action_from_op(
+    op: CurationOp,
+    frame: Optional[Frame] = None,
+    epsilon: Optional[float] = None,
+) -> CurationAction:
     """The :class:`CurationAction` a parsed curation-file row spells.
 
     The inverse of :func:`_action_to_op` at ``frame="raw"``: the derive / new
@@ -4596,6 +4636,7 @@ def action_from_op(op: CurationOp, frame: Optional[Frame] = None) -> CurationAct
         peak_uid=peak_uid,
         candidate_mhz=candidate_mhz,
         frame=frame if has_freq else None,
+        epsilon=epsilon if has_freq and frame == "calibrated" else None,
     )
 
 
@@ -4606,13 +4647,13 @@ def actions_from_curation_file(
     actions ``CurationAction.from_dict`` gives of their dicts.
 
     Each frequency-bearing action carries the file's ``# frame:`` header (or
-    ``None`` without one). The header's ``# epsilon:`` stamp has no field on
-    an action and is not carried: the actions are applied against the
-    file's current calibration, so a calibrated file applied this way is not
-    checked for drift the way the file itself is.
+    ``None`` without one) and, when calibrated, its ``# epsilon:`` stamp, so
+    the actions are checked for drift exactly as the file is.
     """
     ops = parse_curation_file(curation_path)
-    return [action_from_op(op, ops.header.frame) for op in ops]
+    return [
+        action_from_op(op, ops.header.frame, ops.header.epsilon) for op in ops
+    ]
 
 
 def _resolve_curation_window_ids(
