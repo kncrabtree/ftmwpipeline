@@ -8,9 +8,15 @@ from pathlib import Path
 import h5py
 import pytest
 
+import ftmwpipeline.api as ftmw
+from ftmwpipeline import Pipeline
 from ftmwpipeline._internal.tuning import resolve_settings_view
-from ftmwpipeline._internal.tuning.settings_inspection import SETTING_TYPES
+from ftmwpipeline._internal.tuning.settings_inspection import (
+    SETTING_TYPES,
+    _setting_type,
+)
 from ftmwpipeline._internal.tuning.settings_mutation import set_setting
+from ftmwpipeline.cli.main import main
 from ftmwpipeline.serialize import to_jsonable
 
 
@@ -65,3 +71,46 @@ def test_rows_are_typed_json_and_round_trip(tmp_path: Path, rows):
     )
     got = {r.path: r for r in resolve_settings_view(str(f), "stage5.spur.clocks")}
     assert to_jsonable(got["stage5.spur.clocks"].value)[0]["freq_mhz"] == 5760.0
+
+
+_TYPING_KEYS = {"type", "nullable", "units", "choices", "bounds"}
+_N_EFF = "stage5.conservative.n_eff_kind"
+
+
+def test_unknown_annotation_fails_loudly():
+    # Mutation: fall back to "str" for an unmapped annotation -> no TypeError.
+    with pytest.raises(TypeError):
+        _setting_type(dict, False, "x.y")
+
+
+def test_typing_fields_agree_across_api_pipeline_and_cli(capsys):
+    # Mutation: drop the typing fields from one interface's rows (or build
+    # the CLI items by hand) -> the three interfaces differ.
+    via_api = to_jsonable(list(ftmw.settings_defaults("stage2")))
+    via_pipe = to_jsonable(list(Pipeline.settings_defaults("stage2")))
+    assert via_api == via_pipe
+    assert all(_TYPING_KEYS <= set(r) for r in via_api)
+
+    assert main(["read", "settings_defaults", "stage2", "--format", "json"]) == 0
+    items = json.loads(capsys.readouterr().out)["items"]
+    assert items == via_api
+    win = next(r for r in items if r["path"] == "stage2.window_mhz")
+    assert (win["type"], win["units"]) == ("float", "MHz")
+
+
+def test_choice_row_through_api_and_pipeline():
+    # Mutation: drop the n_eff_kind choices declaration.
+    for fn in (ftmw.settings_defaults, Pipeline.settings_defaults):
+        (row,) = fn(_N_EFF, include_advanced=True)
+        d = to_jsonable(row)
+        assert d["type"] == "choice" and "kish_mag" in d["choices"]
+
+
+def test_cli_row_reports_null_for_unstated_metadata(capsys):
+    # Mutation: report a guessed unit/bounds/choices for an unannotated field.
+    argv = ["read", "settings_defaults", "stage2b.stft.n_seg", "--format", "json"]
+    assert main(argv) == 0
+    (item,) = json.loads(capsys.readouterr().out)["items"]
+    assert item["type"] == "int"
+    assert item["units"] is None and item["bounds"] is None
+    assert item["choices"] is None and item["nullable"] is False
