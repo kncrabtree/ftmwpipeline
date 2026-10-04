@@ -395,6 +395,13 @@ RECOMMEND_SHAPE_FIELDS: list[tuple[str, Callable[..., None], str, Any]] = [
         4.5,
     ),
     (
+        "stft.relative_gate_fraction",
+        _sub_set("stft", "relative_gate_fraction", 0.07),
+        "relative_gate_fraction",
+        0.07,
+    ),
+    ("stft.sigma_x_full", _sub_set("stft", "sigma_x_full", 2.5), "sigma_x_full", 2.5),
+    (
         "recommendation.snr_min",
         _sub_set("recommendation", "snr_min", 18.0),
         "snr_min",

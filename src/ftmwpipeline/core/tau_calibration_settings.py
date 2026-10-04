@@ -422,9 +422,7 @@ _BAND_FIELDS = (
 #: The settings fields each producer passes to its kernel, by sub-block. A
 #: field outside a producer's map cannot change that producer's output
 #: (``recommendation.auto_recommend`` only decides whether the recommender
-#: runs, and is in no map). The recommender's kernel call does not forward
-#: ``stft.relative_gate_fraction`` or ``stft.sigma_x_full``, so it runs at the
-#: kernel defaults for both and neither is in its map.
+#: runs, and is in no map).
 PRODUCER_FIELDS: Dict[str, Dict[str, Tuple[str, ...]]] = {
     PRODUCER_LORENTZIAN: {
         "stft": _STFT_CALIBRATION_FIELDS,
@@ -463,14 +461,7 @@ PRODUCER_FIELDS: Dict[str, Dict[str, Tuple[str, ...]]] = {
         ),
     },
     PRODUCER_RECOMMENDATION: {
-        "stft": (
-            "n_seg",
-            "t_sigma",
-            "tau_max_us",
-            "tau_max_factor",
-            "rss_gate_factor",
-            "sigma_time",
-        ),
+        "stft": _STFT_CALIBRATION_FIELDS,
         "recommendation": (
             "snr_min",
             "tau_bound_lo",

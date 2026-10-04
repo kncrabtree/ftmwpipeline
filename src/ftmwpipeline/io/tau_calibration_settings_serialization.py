@@ -101,7 +101,9 @@ STAGE2B_GAUSSIAN_FIELD_SET_VERSION = 1
 SHAPE_RECOMMENDATION_SETTINGS_PATH = (
     "processing_parameters/stage2b_shape_recommendation"
 )
-SHAPE_RECOMMENDATION_FIELD_SET_VERSION = 1
+#: 2: the record gains stft.relative_gate_fraction and stft.sigma_x_full, which
+#: the recommender now passes to its kernel (it ran at the kernel defaults).
+SHAPE_RECOMMENDATION_FIELD_SET_VERSION = 2
 
 # producer -> (record path, current field-set version)
 _PRODUCER_RECORDS: Dict[str, Tuple[str, int]] = {

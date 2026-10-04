@@ -77,9 +77,11 @@ engine so they cannot answer differently.
   verdict, and is written even when no calibration exists yet; a fresh
   calibration withdraws it along with the verdict. ``stage2b.stft.tau_max_factor``
   now reaches the classifier through all three producers (it was previously
-  ignored); the default of ``5`` equals the old constant, so a fresh run is
-  bit-identical. Only a file whose persisted recipe or preset carries a factor
-  other than ``5`` changes when re-run. Files written earlier have no producer
+  ignored), and the shape recommendation now also honours
+  ``stft.relative_gate_fraction`` and ``stft.sigma_x_full`` (it ran at the
+  kernel defaults). Every default equals the value used before, so a fresh run
+  is bit-identical; only a file whose persisted recipe or preset sets one of
+  these knobs away from its default changes when re-run. Files written earlier have no producer
   records and read as such; nothing is invented for them. See :doc:`stage2b_tau`.
 * **Machine contract: stages record the upstream values they used.** Stage 3
   records the gap-pass decay time and shape it took from Stage 2b, and Stage 5

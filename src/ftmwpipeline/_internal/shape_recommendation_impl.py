@@ -138,6 +138,9 @@ def recommend_shape_impl(
     t_sigma_v = _required_float(stft.t_sigma, "stft.t_sigma")
     tau_max_factor_v = _required_float(stft.tau_max_factor, "stft.tau_max_factor")
     rss_gate_v = _required_float(stft.rss_gate_factor, "stft.rss_gate_factor")
+    relative_gate_v = _required_float(
+        stft.relative_gate_fraction, "stft.relative_gate_fraction"
+    )
     snr_min_v = _required_float(rec.snr_min, "recommendation.snr_min")
     bound_lo_v = _required_float(rec.tau_bound_lo, "recommendation.tau_bound_lo")
     bound_hi_v = _required_float(rec.tau_bound_hi, "recommendation.tau_bound_hi")
@@ -166,6 +169,8 @@ def recommend_shape_impl(
         tau_max_us=stft.tau_max_us,
         tau_max_factor=tau_max_factor_v,
         rss_gate_factor=rss_gate_v,
+        relative_gate_fraction=relative_gate_v,
+        sigma_x_full=stft.sigma_x_full,
         snr_min=snr_min_v,
         tau_bound_lo=bound_lo_v,
         tau_bound_hi=bound_hi_v,

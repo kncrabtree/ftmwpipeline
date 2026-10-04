@@ -303,3 +303,16 @@ class TestRecommendationWithoutGroup:
         assert rec.recommended_shape == out["shape_recommendation"].recommended_shape
         prov = tau_producer_settings_provenance(f, "recommendation")
         assert prov is not None and prov.is_current
+
+
+def test_recommendation_record_holds_every_stft_knob(f2b) -> None:
+    """The vote runs the calibrations' full STFT recipe, so its record holds
+    every ``stft`` knob, including the two it once left at kernel defaults.
+
+    Mutation: relative_gate_fraction / sigma_x_full dropped from its record."""
+    s = _settings(12, relative_gate_fraction=0.07)
+    shape_recommendation_impl.recommend_shape_impl(f2b, settings=s)
+    rec = load_shape_recommendation_record(f2b)
+    assert rec is not None
+    assert rec.settings["stft"]["relative_gate_fraction"] == 0.07
+    assert "sigma_x_full" in rec.settings["stft"]

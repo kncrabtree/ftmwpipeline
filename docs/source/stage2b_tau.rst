@@ -353,8 +353,12 @@ record holds only the knobs its producer consumes. The recommendation's record
 also holds the Stage 1 active region and trim it ran on, the decay-time clip it
 used, and its verdict, and it is written even when no calibration exists yet. A
 fresh Lorentzian or Gaussian calibration withdraws the verdict, and removes the
-recommendation's record with it, until the vote is run again. The decay-time clip
-each calibration used is stored with its result.
+recommendation's record with it, until the vote is run again; so does any
+invalidation that removes both calibrations. The shape vote runs the same STFT
+classifier recipe as the calibrations, every ``stft`` knob included. The
+Lorentzian result stores the decay-time clip it used; the Gaussian result's
+``tau_max_us`` is its τ\ :sub:`G` fit bound, and its clip follows from the
+recorded ``stft.tau_max_us`` / ``stft.tau_max_factor`` and the active region.
 
 Inspecting the diagnostics
 --------------------------
