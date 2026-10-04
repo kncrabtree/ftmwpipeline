@@ -30,6 +30,7 @@ from typing import Dict, List, Optional, Tuple, Union
 import h5py
 
 from ..core.data_structures import FittingResult, SpectrumFit
+from ..file_manager import requires_pipeline_file
 from ..fitting.validation import DEFAULT_CHI2R_NOISE_FLOOR, shape_error_fraction
 from .stage5_impl import _resolve_detail_bundle, render_fit_panels_impl
 from .stage6_impl import STAGE5_BASELINE_GROUP
@@ -332,6 +333,7 @@ def _window_section(
     return f'<section class="win"><h2>{title}</h2>{stats}{panels}</section>'
 
 
+@requires_pipeline_file()
 def report_diff_impl(
     file_path: Union[Path, str],
     *,

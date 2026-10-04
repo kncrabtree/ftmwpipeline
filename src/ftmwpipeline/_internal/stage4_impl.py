@@ -29,7 +29,11 @@ from ..core.window_planning_settings import (
 )
 from ..core.window_planning_settings import load_preset as load_window_planning_preset
 from ..core.window_planning_settings import resolve as resolve_window_planning_settings
-from ..file_manager import StageDependencyError, invalidate_downstream_stages
+from ..file_manager import (
+    StageDependencyError,
+    invalidate_downstream_stages,
+    requires_pipeline_file,
+)
 from ..io.window_planning_settings_serialization import (
     load_window_planning_settings_from_h5,
     save_window_planning_settings_to_h5,
@@ -58,6 +62,7 @@ def _required(value: Any, name: str) -> Any:
     return require_resolved(value, name, owner="WindowPlanningSettings")
 
 
+@requires_pipeline_file()
 def assign_windows_impl(
     file_path: str,
     *,
@@ -288,6 +293,7 @@ def load_windows_impl(file_path: str) -> Dict[str, Any]:
     }
 
 
+@requires_pipeline_file()
 def visualize_windows_impl(
     file_path: str,
     figsize: Optional[Tuple[float, float]] = None,

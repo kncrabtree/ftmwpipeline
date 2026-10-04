@@ -35,7 +35,7 @@ from typing import Any, Dict, Optional
 import numpy as np
 
 from ..core.tau_calibration_settings import TauCalibrationSettings
-from ..file_manager import BadSettingError
+from ..file_manager import BadSettingError, requires_pipeline_file
 from ..fitting.tau_calibration import (
     ShapeRecommendation,
     compute_shape_recommendation,
@@ -66,6 +66,7 @@ STAGE_NAME = "shape_recommendation"
 SHAPE_RECOMMENDATION_EPOCH_KEY = "stage2b_shape_recommendation"
 
 
+@requires_pipeline_file()
 def recommend_shape_impl(
     file_path: str,
     *,

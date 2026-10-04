@@ -34,7 +34,7 @@ from ..core.data_structures import (
     LedgerCandidate,
     WindowReviewStatus,
 )
-from ..file_manager import BadSettingError, StageDependencyError
+from ..file_manager import BadSettingError, StageDependencyError, requires_pipeline_file
 from ..fitting.peak_model import sideband_sign as _sideband_sign
 from ..fitting.validation import DEFAULT_CHI2R_NOISE_FLOOR, shape_error_fraction
 from ..io.stage6_review_serialization import load_stage6_review_from_file
@@ -4402,6 +4402,7 @@ def _assemble_report_site(
     return site
 
 
+@requires_pipeline_file()
 def report_full_impl(
     file_path: Union[Path, str],
     *,
@@ -4502,6 +4503,7 @@ def report_full_impl(
     return str(single_path)
 
 
+@requires_pipeline_file()
 def report_run_impl(
     file_path: Union[Path, str],
     *,

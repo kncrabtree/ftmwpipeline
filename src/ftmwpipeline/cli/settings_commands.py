@@ -19,7 +19,6 @@ block) attach to the same ``settings`` object group; see ``CLI_STRATEGY.md`` and
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 from typing import Any, Optional
 
 from ..core.stage_fit_settings import ShapeSpec
@@ -59,9 +58,6 @@ def cmd_settings_show(args: argparse.Namespace) -> int:
     file_path = args.file_path
     if not file_path.endswith(".ftmw"):
         file_path = file_path + ".ftmw"
-    if not Path(file_path).exists():
-        print_error(f"Pipeline file not found: {file_path}")
-        return 1
     return _print_settings_table(file_path, args)
 
 
@@ -177,9 +173,6 @@ def cmd_settings_set(args: argparse.Namespace) -> int:
     file_path = args.file_path
     if not file_path.endswith(".ftmw"):
         file_path = file_path + ".ftmw"
-    if not Path(file_path).exists():
-        print_error(f"Pipeline file not found: {file_path}")
-        return 1
 
     try:
         result = set_setting(file_path, args.knob, args.value)
@@ -208,9 +201,6 @@ def cmd_settings_unset(args: argparse.Namespace) -> int:
     file_path = args.file_path
     if not file_path.endswith(".ftmw"):
         file_path = file_path + ".ftmw"
-    if not Path(file_path).exists():
-        print_error(f"Pipeline file not found: {file_path}")
-        return 1
 
     try:
         result = unset_setting(file_path, args.knob)
@@ -242,9 +232,6 @@ def cmd_settings_export(args: argparse.Namespace) -> int:
     file_path = args.file_path
     if not file_path.endswith(".ftmw"):
         file_path = file_path + ".ftmw"
-    if not Path(file_path).exists():
-        print_error(f"Pipeline file not found: {file_path}")
-        return 1
 
     result = export_settings(
         file_path,

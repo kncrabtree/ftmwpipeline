@@ -93,7 +93,7 @@ from ...core import tau_calibration_settings as tau_mod
 from ...core import window_planning_settings as window_mod
 from ...core.peak_shape import PeakShape
 from ...core.stage_fit_settings import ClockSource, ShapeSpec, coerce_clock_sources
-from ...file_manager import BadSettingError
+from ...file_manager import BadSettingError, requires_pipeline_file
 from ...io.noise_settings_serialization import (
     load_noise_settings_from_h5,
     save_noise_settings_to_h5,
@@ -418,6 +418,7 @@ def _coerce_scalar(raw: Any) -> Any:
 # ---------------------------------------------------------------------------
 # set
 # ---------------------------------------------------------------------------
+@requires_pipeline_file()
 def set_setting(file_path: Union[str, Path], knob: str, value: Any) -> SetResult:
     """Persist ``value`` for ``knob`` into the ``.ftmw`` and invalidate the
     affected stage and everything downstream.
@@ -467,6 +468,7 @@ def set_setting(file_path: Union[str, Path], knob: str, value: Any) -> SetResult
     return SetResult(path=knob, value=coerced, invalidated=invalidated)
 
 
+@requires_pipeline_file()
 def unset_setting(file_path: Union[str, Path], knob: str) -> SetResult:
     """Clear ``knob``'s persisted value, restoring the resolver's own layers.
 
@@ -601,6 +603,7 @@ def _invalidate_inclusive(path: str, own_stages: Tuple[str, ...]) -> Tuple[str, 
 # ---------------------------------------------------------------------------
 # export
 # ---------------------------------------------------------------------------
+@requires_pipeline_file()
 def export_settings(
     file_path: Union[str, Path],
     out_path: Union[str, Path],

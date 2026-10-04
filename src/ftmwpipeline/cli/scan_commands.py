@@ -207,9 +207,6 @@ def cmd_scan_all(args: argparse.Namespace) -> int:
     file_path = args.file_path
     if not file_path.endswith(".ftmw"):
         file_path = file_path + ".ftmw"
-    if not Path(file_path).exists():
-        print_error(f"Pipeline file not found: {file_path}")
-        return 1
 
     selector = getattr(args, "selector", None)
     specs = list_knobs(selector, include_advanced=bool(args.all))

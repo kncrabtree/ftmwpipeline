@@ -83,6 +83,7 @@ from ..file_manager import (
     NotFoundValueError,
     PipelineFileError,
     StageDependencyError,
+    requires_pipeline_file,
 )
 from ..fitting.active_ft import active_ft_bin_spacing_mhz, peak_uid_from_offset
 from ..fitting.peak_model import ModelPeak
@@ -557,6 +558,7 @@ def derive_candidate_ledger(
     return candidates
 
 
+@requires_pipeline_file()
 def get_candidate_ledger_impl(
     file_path: Union[Path, str],
     window_id: Optional[int] = None,
@@ -793,6 +795,7 @@ def _rank_metric_value(
     raise ValueError(f"unknown rank metric: {metric!r}")
 
 
+@requires_pipeline_file()
 def rank_windows_impl(
     file_path: Union[Path, str],
     *,
@@ -1245,6 +1248,7 @@ def _active_acquisition_us_for_snap(path: str) -> float:
     return float(declared) if declared is not None and declared > 0.0 else 0.0
 
 
+@requires_pipeline_file()
 def refit_snap_tol_mhz_impl(file_path: Union[Path, str]) -> float:
     """The Stage 6 curation snap tolerance (MHz) resolved for ``file_path``.
 
@@ -1491,6 +1495,7 @@ class EnvironmentAckResult:
     reason: str = ""
 
 
+@requires_pipeline_file()
 def acknowledge_environment_impl(
     file_path: Union[Path, str], *, reason: str = ""
 ) -> EnvironmentAckResult:
@@ -2830,6 +2835,7 @@ def _derive_review_edit_window_id(
     return next(iter(wids)), None
 
 
+@requires_pipeline_file()
 def refit_window_impl(
     file_path: Union[Path, str],
     window_id: Optional[int] = None,
@@ -3345,6 +3351,7 @@ def _record_decision(
     compact_file(path)
 
 
+@requires_pipeline_file()
 def review_accept_impl(
     file_path: Union[Path, str],
     window_id: int,
@@ -3627,6 +3634,7 @@ def _frozen_parameters_from_sources(
     return {f"frozen_peak_{i}": e for i, e in enumerate(frozen)}
 
 
+@requires_pipeline_file()
 def create_window_impl(
     file_path: Union[Path, str],
     anchor_mhz: float,
@@ -8430,6 +8438,7 @@ def _resolve_created_window_structure(
     return structures
 
 
+@requires_pipeline_file()
 def apply_curation_impl(
     file_path: Union[Path, str],
     curation_path: Optional[Union[Path, str]] = None,
@@ -9166,6 +9175,7 @@ def _run_review_preview(
     )
 
 
+@requires_pipeline_file()
 def review_preview_impl(
     file_path: Union[Path, str],
     curation_path: Optional[Union[Path, str]] = None,
@@ -9190,6 +9200,7 @@ def review_preview_impl(
     ).result
 
 
+@requires_pipeline_file()
 def review_log_impl(file_path: Union[Path, str]) -> List[DecisionLogEntry]:
     """Return the persisted Stage 6 decision log (read-only, execution order)."""
     review = load_stage6_review_from_file(str(file_path))
@@ -9323,6 +9334,7 @@ def _decision_to_op(entry: DecisionLogEntry) -> List[CurationOp]:
     raise ValueError(f"cannot replay decision of unknown kind {kind!r}")
 
 
+@requires_pipeline_file()
 def review_undo_impl(
     file_path: Union[Path, str],
     ids: Sequence[int],
@@ -9481,6 +9493,7 @@ def review_undo_impl(
     )
 
 
+@requires_pipeline_file()
 def get_review_status_impl(file_path: Union[Path, str]) -> Stage6Review:
     """Load the :class:`Stage6Review` from *file_path*, or return an empty one.
 
@@ -9828,6 +9841,7 @@ def _fid_header_for_stamp(path: str) -> Optional[Tuple[float, str]]:
     return probe_freq_mhz, str(sideband_raw)
 
 
+@requires_pipeline_file()
 def frequency_calibration_impl(file_path: Union[Path, str]) -> CalibrationStamp:
     """The frequency calibration ``file_path`` is under right now.
 
@@ -10024,6 +10038,7 @@ def refresh_persisted_final_products_impl(file_path: Union[Path, str]) -> bool:
     return True
 
 
+@requires_pipeline_file()
 def get_final_products_impl(file_path: Union[Path, str]) -> Optional[FinalProducts]:
     """Return the current Stage 6 final-products table, or ``None``.
 
@@ -10372,6 +10387,7 @@ def _build_final_products(
     )
 
 
+@requires_pipeline_file()
 def review_run_impl(
     file_path: Union[Path, str],
     *,

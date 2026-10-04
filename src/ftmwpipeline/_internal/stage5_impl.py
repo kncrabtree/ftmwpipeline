@@ -65,6 +65,7 @@ from ..file_manager import (
     NotFoundValueError,
     StageDependencyError,
     invalidate_downstream_stages,
+    requires_pipeline_file,
 )
 from ..fitting.clock_lattice import ClockLattice
 from ..fitting.peak_model import PeakShape
@@ -1744,6 +1745,7 @@ def build_stage5_fit_context(
     )
 
 
+@requires_pipeline_file()
 def fit_peaks_impl(
     file_path: str,
     *,
@@ -3711,6 +3713,7 @@ def _has_selection(
     return bool(window_ids or freqs or random_n or top_snr or all_windows)
 
 
+@requires_pipeline_file()
 def fit_show_impl(
     file_path: str,
     *,

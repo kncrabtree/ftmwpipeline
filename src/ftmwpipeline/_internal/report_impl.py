@@ -36,7 +36,7 @@ import numpy as np
 
 from ..core.absent import Absent
 from ..core.data_structures import FinalPeak, FinalProducts, SpectrumFit
-from ..file_manager import BadSettingError, StageDependencyError
+from ..file_manager import BadSettingError, StageDependencyError, requires_pipeline_file
 from ..fitting.validation import (
     DEFAULT_CHI2R_NOISE_FLOOR,
     DEFAULT_SHAPE_ERROR_KAPPA,
@@ -633,6 +633,7 @@ def _render_latex(
 _RENDERERS = {"csv": _render_csv, "json": _render_json, "latex": _render_latex}
 
 
+@requires_pipeline_file()
 def report_table_impl(
     file_path: Union[Path, str],
     *,

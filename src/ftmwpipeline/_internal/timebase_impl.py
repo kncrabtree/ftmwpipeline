@@ -29,7 +29,7 @@ import h5py
 import numpy as np
 
 from ..core.stage_fit_settings import ClockSource, coerce_clock_sources
-from ..file_manager import BadSettingError, StageDependencyError
+from ..file_manager import BadSettingError, StageDependencyError, requires_pipeline_file
 from ..fitting.timebase_calibration import (
     DEFAULT_KAPPA_SYS,
     DEFAULT_SNR_MIN,
@@ -140,6 +140,7 @@ def _check_calibration_knobs(
             )
 
 
+@requires_pipeline_file()
 def calibrate_timebase_impl(
     file_path: str,
     *,
@@ -253,6 +254,7 @@ def save_timebase_calibration_impl(
             grp.attrs["parameters_used"] = json.dumps(parameters_used, default=str)
 
 
+@requires_pipeline_file()
 def load_timebase_calibration_impl(file_path: str) -> Dict[str, Any]:
     """Load the persisted :class:`TimebaseCalibrationResult` from ``file_path``.
 

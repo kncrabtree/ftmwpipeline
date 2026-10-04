@@ -623,6 +623,17 @@ opens; for one that does not it raises the open error (``not_found``,
 ``file_corrupt`` or ``file_incompatible``) instead of returning
 ``{"valid": False}``.
 
+Every verb that takes a ``.ftmw`` file refuses an unopenable one the same
+way, from its first read: a path that does not exist is ``not_found`` (exit
+1), a path that is not an HDF5 file is ``file_corrupt`` (exit 2), and a file
+from a newer MAJOR format is ``file_incompatible``. This holds for the stage
+verbs (``noise``, ``tau``, ``timebase``, ``peaks``, ``windows``, ``fit``),
+``review``, ``report``, ``settings`` and ``scan`` as well as ``Pipeline.open``;
+none of them lets a raw ``OSError`` escape or re-wraps the refusal as a
+``RuntimeError("... failed: Unable to open ...")``. The check is the open and
+format-version gate only: it does not demand the provenance record, so a file
+that worked before still works.
+
 Previewing a source: ``preview_source``
 ---------------------------------------
 
