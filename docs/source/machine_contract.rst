@@ -225,10 +225,11 @@ Each declared accessor, with its absence cases:
     ``stage3.promotion_min_snr`` / ``stage3.internal_min_snr``, and any count,
     creation time, plan revision or shape attribute that a stage group does not
     carry: ``stage3.n_peaks`` / ``creation_time``, ``stage4.n_windows`` /
-    ``creation_time``, and ``stage5.n_windows`` / ``n_fitted_peaks`` /
-    ``final_plan_revision`` / ``shape`` / ``creation_time``. A reader never
+    ``creation_time``, ``stage4.n_dependency_edges`` (the group carries no
+    ``dependency_edges`` record), and ``stage5.n_windows`` / ``n_fitted_peaks``
+    / ``final_plan_revision`` / ``shape`` / ``creation_time``. A reader never
     fills a missing attribute with ``0``, ``"unknown"`` or ``"lorentzian"``; a
-    recorded ``0`` is a value, not an absence.
+    recorded ``0`` (an empty edge list included) is a value, not an absence.
   - *undefined* (computed, no value): ``start.chirp_end_us`` when no chirp
     was detected; ``timebase.epsilon`` and ``timebase.sigma_epsilon`` when no
     lattice tone was used; ``timebase.lattice_g_mhz`` when no locked lattice
@@ -733,6 +734,16 @@ public calls that raise it:
   ``settings_show`` / ``settings_defaults``): a preset whose root or block is
   not a mapping, or that names an unknown field or key (``path`` is
   ``preset``, the block name, or ``block.field``).
+* Every stage call, when it resolves its settings: a resolved value outside
+  the ``choices`` or ``bounds`` its field declares, whichever layer supplied
+  it -- a ``settings=`` object, a preset or a persisted record (one written
+  before the check existed, or edited by hand). ``path`` is the registry path
+  (``stage5.conservative.n_eff_kind``), ``expected`` and the bracket notation
+  are as for ``settings_set``, and ``value`` is the resolved value. Only the
+  value that wins is checked: a bad value in a layer a higher one overrides is
+  never used and never refused, and an unset field falls through to its
+  default. ``settings_show`` still displays a bad persisted value, and
+  ``settings_set`` repairs it.
 * ``trim=`` / ``--trim`` with a value that is not ``min:max`` with
   ``max > min`` (``path`` ``stage1.trim``). On the CLI the option is parsed by
   argparse, which reports a bad ``--trim`` as a usage error (exit 2).
@@ -812,10 +823,15 @@ corruption: it propagates as the original ``OSError`` so a client can retry. ``P
 ``list``) agree on this. ``validate_pipeline`` reports problems in a file that
 opens; for one that does not it raises the open error (``not_found``,
 ``file_corrupt`` or ``file_incompatible``) instead of returning
-``{"valid": False}``, and so does a file that opens but becomes unreadable
-while the report is built: the report never swallows a typed error. (Only an
-untyped failure while the report is built is still reported, as ``valid:
-False`` with a ``Validation failed`` error.) ``Pipeline.validate`` is
+``{"valid": False}``, and so does a file that opens but cannot be read while
+the report is built: an ``OSError`` from any read -- the FID, the environment
+record, the stage-data check -- raises exactly as opening the file would (a
+permission failure or HDF5 lock refusal as the original ``OSError``, any other
+as ``file_corrupt`` chained from it), and the report never swallows a typed
+error. Only integrity problems in a readable file go in the report: an empty or
+undecodable FID, a completed stage without its data, and any other non-``OSError``
+failure while the report is built (``valid: False`` with a ``Validation
+failed`` error). ``Pipeline.validate`` is
 ``validate_pipeline``, and ``Pipeline.info`` / ``get_pipeline_info`` /
 ``list_available_stages`` raise for a file they cannot open, so the status
 calls and the report cannot disagree. Validation reports problems in a pipeline
@@ -920,8 +936,9 @@ Each ``SettingRow`` (and each item of ``settings show`` / ``settings defaults``
 declaration states them; ``None`` means "not stated", never "unrestricted". At
 present ``stage5.conservative.n_eff_kind`` is the one ``choice``, and no setting
 states bounds. ``settings_set`` / ``settings set`` enforces whatever a row
-states (see *Bad settings* above), so a ``choice`` row's ``choices`` are exactly
-the strings it accepts.
+states, and so does every stage when it resolves its settings from a
+``settings=`` object, a preset or the file (see *Bad settings* above), so a
+``choice`` row's ``choices`` are exactly the strings a run accepts.
 
 ``value`` and ``hard_default`` are typed JSON: a pair or list is an array, a
 ``ShapeSpec`` is ``{"kind": "gaussian"}``, and clock sources are an array of
@@ -949,8 +966,8 @@ The status calls use the same vocabulary, in re-run order: the
 "Missing data for completed stage" errors are canonical too; an environment key
 that is not a known stage's storage key is kept as the file recorded it, and a
 completed-stage key no stage of this version owns is left out of the canonical
-lists. ``read_metadata``'s ``file.completed_stages`` is a storage-level record
-and still lists storage keys.
+lists. ``read_metadata``'s ``file.completed_stages`` follows the same rule:
+canonical names in re-run order.
 
 No stale results, and what a run invalidated
 --------------------------------------------

@@ -71,9 +71,17 @@ engine so they cannot answer differently.
     list_available_stages(path)`` must test ``"ft"``.
   * **Behaviour change:** ``validate_pipeline`` / ``Pipeline.validate`` raise
     the typed open error (``not_found``, ``file_corrupt``, ``file_incompatible``)
-    for a file that cannot be opened, and for one that becomes unreadable while
-    the report is built, where they returned ``{"valid": False, ...}``. An
-    openable file still gets a report.
+    for a file that cannot be opened, and for one that cannot be read while the
+    report is built, where they returned ``{"valid": False, ...}``. An
+    ``OSError`` from any read while the report is built (the FID included,
+    which used to be reported as "Cannot load FID data") raises as opening the
+    file would: a permission failure or HDF5 lock refusal as the original
+    ``OSError``, any other as ``file_corrupt``. A readable file still gets a
+    report of its integrity problems.
+  * **Behaviour change:** ``read_metadata``'s ``file.completed_stages`` lists
+    canonical stage names (``data``, ``ft``, ...) in re-run order, where it
+    listed sorted storage keys such as ``stage1_complex_ft``; a recorded key
+    no stage of this version owns is left out, as in the status calls.
   * **Behaviour change:** ``settings set`` / ``settings_set`` refuse a value
     outside the ``choices`` or ``bounds`` a settings row declares
     (``bad_setting`` with the knob as ``path``, the declaration as ``expected``,
@@ -82,9 +90,18 @@ engine so they cannot answer differently.
     (``perplexity_log1p_snr``, ``kish_mag_sq``, ``kish_mag``, ``hard_radius``);
     no setting declares bounds yet. Previously any string was stored and the
     fit failed later.
+  * **Behaviour change:** every stage holds its resolved settings to the same
+    declared ``choices`` and ``bounds``, whichever layer supplied the value --
+    a ``settings=`` object, a preset or a persisted record -- and refuses a
+    violation as ``bad_setting`` naming the registry path (for example
+    ``stage5.conservative.n_eff_kind``); the file is left as it was. Only the
+    winning value is checked; ``settings show`` still displays a bad persisted
+    value and ``settings set`` repairs it.
   * **Behaviour change:** ``read_metadata`` reports ``Absent.NOT_RUN`` for a
     count, creation time, plan revision or shape attribute a stage group does
-    not carry, where it returned ``0``, ``"unknown"`` or ``"lorentzian"``.
+    not carry, where it returned ``0``, ``"unknown"`` or ``"lorentzian"``, and
+    for ``stage4.n_dependency_edges`` when the plan carries no
+    ``dependency_edges`` record, where it counted zero edges.
 
 * **Machine contract, Wave 5.2: Stage 5 partial fits.** ``CONTRACT_VERSION``
   is now ``11``. A cancelled (or callback-failed) fit no longer throws its work
