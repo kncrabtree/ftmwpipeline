@@ -57,17 +57,12 @@ def compute_persisted_active_ft(
     """
     fid = load_fid_from_pipeline_impl(file_path)
     stage1 = compute_ft_impl(file_path=file_path)
-    user_ft = stage1["complex_ft"]
-    base_pp = user_ft.metadata["processing_params"]
+    # The concrete window Stage 1 is read as having used (one resolver; see
+    # ``stage1_impl.resolve_ft_settings_h5``).
+    start_us, end_us = stage1["resolved_settings"].active_window_us()
 
     sample_dt_us = float(fid.spacing * 1e6)
-    start_us = float(base_pp.start_us) if base_pp.start_us is not None else 0.0
-    end_us = (
-        float(base_pp.end_us) if base_pp.end_us is not None else float(fid.duration_us)
-    )
-    acquisition_us = active_acquisition_us(
-        fid.duration_us, base_pp.start_us, base_pp.end_us
-    )
+    acquisition_us = active_acquisition_us(fid.duration_us, start_us, end_us)
     if acquisition_us <= 0:
         raise ValueError(
             f"Stage 1 persisted settings produce a non-positive active "

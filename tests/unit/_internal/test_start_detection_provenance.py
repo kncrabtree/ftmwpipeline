@@ -70,7 +70,8 @@ class TestNone:
         ftmw.compute_ft(p)
         prov = resolve_start_provenance(p)
         assert prov.source == "none"
-        assert prov.start_us is None
+        # Stage 1 records the start it ran with: no windowing is t = 0.
+        assert prov.start_us == 0.0
         assert prov.chirp_end_us is None
 
 

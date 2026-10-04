@@ -1,14 +1,23 @@
 """
 Shared implementation for Stage 1: FT Processing and Spectrum Operations.
 
-Stage 1 owns the *persisted* FT processing settings. The settings actually
-used are resolved through ``explicit override > persisted user settings >
-import-time recommended`` (see :mod:`ftmwpipeline.core.settings`) and, when
-this is a user-driven Stage 1 invocation (``persist=True``), the resolved
-:class:`FTSettings` -- including the frequency ``trim`` -- are written to
+Stage 1 owns the *persisted* FT processing settings. Before Stage 1 has run,
+the settings resolve through ``explicit override > import-time recommended``
+(see :mod:`ftmwpipeline.core.settings`). A user-driven Stage 1 invocation
+(``persist=True``) writes the resolved :class:`FTSettings` -- the concrete
+active region and the frequency ``trim`` -- to
 ``processing_parameters/ft_processing`` as the experiment's binding settings.
-Internal recomputes by later stages (``persist=False``, no overrides) rebuild
-exactly that spectrum.
+
+From then on that record is authoritative: :func:`resolve_ft_settings_h5`, the
+one resolver every reader goes through (Stages 2-5 via :func:`compute_ft_impl`,
+Stage 2b, the shape recommendation, the timebase, the metadata view), reads
+``explicit > persisted`` and never consults the recommended layer, so a later
+``start run`` or chirp-window stamp to that layer changes nothing Stage 1 is
+read as having used. The recommendation is still stored for display; adopting
+it is an explicit Stage 1 re-run with the new value, which invalidates every
+stage built on the old spectrum. A record from before this rule (no field-set
+version, or an older one) keeps the ``explicit > persisted > recommended``
+fall-through it was written under.
 
 This module is a thin orchestration layer; it is wrapped identically by the
 CLI, the ``Pipeline`` class, and the functional API.
@@ -33,6 +42,7 @@ from ..core.settings import (
 )
 from ..io.provenance import (
     RecordProvenance,
+    group_provenance,
     record_provenance,
     stamp_stage_epoch,
     write_field_set_version,
@@ -52,10 +62,7 @@ def _read_settings_layer(file_path: str, group_path: str) -> Optional[FTSettings
     sensibly.
     """
     with h5py.File(file_path, "r") as h5f:
-        if group_path not in h5f:
-            return None
-        attrs: Dict[str, Any] = dict(h5f[group_path].attrs)
-    return FTSettings.from_attrs(fold_settings_blob(attrs))
+        return _layer_from_h5(h5f, group_path)
 
 
 def ft_settings_provenance(file_path: str) -> Optional[RecordProvenance]:
@@ -67,11 +74,89 @@ def ft_settings_provenance(file_path: str) -> Optional[RecordProvenance]:
     )
 
 
-def _resolve_settings(file_path: str, explicit: Optional[FTSettings]) -> FTSettings:
-    """Resolve effective FT settings for ``file_path`` (the D7 chain)."""
-    persisted = _read_settings_layer(file_path, FT_PROCESSING_PATH)
-    recommended = _read_settings_layer(file_path, RECOMMENDED_PATH)
+def _layer_from_h5(h5f: h5py.File, group_path: str) -> Optional[FTSettings]:
+    """One resolution layer of an open file, read as :func:`_read_settings_layer`
+    reads it."""
+    group = h5f.get(group_path)
+    if group is None:
+        return None
+    return FTSettings.from_attrs(fold_settings_blob(dict(group.attrs)))
+
+
+def ft_record_is_authoritative(h5f: h5py.File) -> bool:
+    """True when ``h5f`` carries a Stage 1 record written under the
+    authoritative rule (field-set version 2 or later).
+
+    Such a record holds the concrete values Stage 1 ran with, so nothing falls
+    through it to the recommended layer. A record with no version, or an older
+    one, is pre-provenance and keeps the fall-through it was written under. A
+    record from a newer version is treated as authoritative too: the rule only
+    tightens, so the newer writer certainly meant it.
+    """
+    group = h5f.get(FT_PROCESSING_PATH)
+    if group is None:
+        return False
+    provenance = group_provenance(group, FT_PROCESSING_FIELD_SET_VERSION)
+    return not provenance.is_pre_provenance
+
+
+def resolve_ft_settings_h5(
+    h5f: h5py.File, explicit: Optional[FTSettings] = None
+) -> FTSettings:
+    """The Stage 1 settings resolver for an open file -- the only one.
+
+    With an authoritative Stage 1 record (see
+    :func:`ft_record_is_authoritative`) the chain is ``explicit > persisted``:
+    the recommended layer takes no part, and a field the record holds as unset
+    (only ``trim`` can be: "no trim") stays unset. Otherwise -- before Stage 1
+    has run, or on a pre-provenance record -- it is the original
+    ``explicit > persisted > recommended`` chain. ``units_power`` always ends in
+    its hard default.
+
+    The active region may still be unset here (an old record, or no record);
+    callers that need the window call
+    :meth:`~ftmwpipeline.core.settings.FTSettings.with_effective_window` with
+    the FID duration, which every reader in the pipeline does through
+    :func:`compute_ft_impl` or :func:`persisted_ft_settings`.
+    """
+    persisted = _layer_from_h5(h5f, FT_PROCESSING_PATH)
+    recommended = (
+        None
+        if ft_record_is_authoritative(h5f)
+        else _layer_from_h5(h5f, RECOMMENDED_PATH)
+    )
     return resolve(explicit, persisted, recommended)
+
+
+def _resolve_settings(file_path: str, explicit: Optional[FTSettings]) -> FTSettings:
+    """Resolve the FT settings for ``file_path`` (:func:`resolve_ft_settings_h5`)."""
+    with h5py.File(file_path, "r") as h5f:
+        return resolve_ft_settings_h5(h5f, explicit)
+
+
+def persisted_ft_settings(
+    file_path: str, stage_name: str, fid_duration_us: float
+) -> FTSettings:
+    """The settings Stage 1 is read as having used, with a concrete window.
+
+    For a consumer that requires Stage 1 to have persisted its record (Stage 2b,
+    the shape recommendation, the timebase): raises
+    :class:`~ftmwpipeline.file_manager.StageDependencyError` naming
+    ``stage_name`` when there is none. The values come from
+    :func:`resolve_ft_settings_h5`, the same resolver :func:`compute_ft_impl`
+    uses for Stages 2-5, so every consumer agrees on the window and the trim.
+    """
+    from ..file_manager import StageDependencyError
+
+    with h5py.File(file_path, "r") as h5f:
+        if FT_PROCESSING_PATH not in h5f:
+            raise StageDependencyError(
+                stage_name,
+                ["stage1_complex_ft"],
+                Path(file_path),
+            )
+        resolved = resolve_ft_settings_h5(h5f)
+    return resolved.with_effective_window(fid_duration_us)
 
 
 def _reject_window_past_record(
@@ -142,15 +227,21 @@ def compute_ft_impl(
     except Exception as e:
         raise RuntimeError(f"Failed to load FID from pipeline file {file_path}: {e}")
 
-    resolved = _resolve_settings(file_path, settings)
+    # The window is made concrete here, once: an unset start is 0.0 and an
+    # unset end is the FID duration, which select exactly the samples the unset
+    # bounds did. Every caller (and the persisted record) then sees the values
+    # the FT was actually computed with.
+    resolved = _resolve_settings(file_path, settings).with_effective_window(
+        float(fid.duration_us)
+    )
     trim_range = resolved.trim
+    _start_us, end_us = resolved.active_window_us()
 
-    if resolved.end_us is not None:
-        _reject_window_past_record(
-            float(resolved.end_us),
-            float(fid.duration_us),
-            float(fid.spacing) * 1e6,
-        )
+    _reject_window_past_record(
+        end_us,
+        float(fid.duration_us),
+        float(fid.spacing) * 1e6,
+    )
 
     logger.info("Resolved FT processing settings:")
     for name, value in resolved.to_preprocess_kwargs().items():
@@ -195,7 +286,9 @@ def compute_ft_impl(
             result["trimmed_points"] = int(np.sum(mask))
             result["trim_range"] = trim_range
         if persist:
-            _persist_ft_settings(file_path, resolved)
+            _persist_ft_settings(
+                file_path, resolved, fid_duration_us=float(fid.duration_us)
+            )
         return result
 
     try:
@@ -243,7 +336,9 @@ def compute_ft_impl(
 
     if persist:
         try:
-            _persist_ft_settings(file_path, resolved)
+            _persist_ft_settings(
+                file_path, resolved, fid_duration_us=float(fid.duration_us)
+            )
             logger.info("FT settings + Stage 1 completion persisted")
         except Exception as e:
             logger.warning(f"Failed to persist FT settings: {e}")
@@ -326,16 +421,7 @@ def _build_display_and_active_fid(
 
     fid_samples = np.asarray(original_fid.data, dtype=float)
     sample_dt_us = original_fid.spacing * 1e6
-    start_us = (
-        float(resolved_settings.start_us)
-        if resolved_settings.start_us is not None
-        else 0.0
-    )
-    end_us = (
-        float(resolved_settings.end_us)
-        if resolved_settings.end_us is not None
-        else float(original_fid.duration_us)
-    )
+    start_us, end_us = resolved_settings.active_window_us()
     _reject_window_past_record(end_us, float(original_fid.duration_us), sample_dt_us)
 
     freq, spectrum = _padded_active_display_ft(
@@ -405,15 +491,48 @@ def _dependents_of(stage: str, deps: Dict[str, Any]) -> set:
     return result
 
 
-def _persist_ft_settings(file_path: str, resolved: FTSettings) -> None:
+def _stored_fid_duration_us(file_path: str) -> Optional[float]:
+    """The stored FID's duration, or ``None`` for a file that holds no FID."""
+    with h5py.File(file_path, "r") as h5f:
+        if "stage0_fid_data" not in h5f:
+            return None
+    return float(load_fid_from_pipeline_impl(file_path).duration_us)
+
+
+def _effective_attrs(
+    settings: FTSettings, fid_duration_us: Optional[float]
+) -> Dict[str, Any]:
+    """``settings`` as record attrs, with the window made concrete when the FID
+    duration is known. A file with no FID (only ever hand-built) keeps an unset
+    bound, which the resolver reads as the whole record all the same."""
+    if fid_duration_us is not None:
+        settings = settings.with_effective_window(fid_duration_us)
+    return settings.to_attrs()
+
+
+def _persist_ft_settings(
+    file_path: str,
+    resolved: FTSettings,
+    *,
+    fid_duration_us: Optional[float] = None,
+) -> None:
     """Write resolved settings to ``ft_processing`` and mark Stage 1 complete.
+
+    The record is written at
+    :data:`~ftmwpipeline.core.settings.FT_PROCESSING_FIELD_SET_VERSION` with a
+    concrete active region (``start_us`` 0.0 and ``end_us`` the FID duration
+    when ``resolved`` leaves them unset; ``fid_duration_us`` is read from the
+    file when the caller does not pass it) and its ``trim`` as resolved, unset
+    meaning "no trim". That makes it authoritative (see
+    :func:`resolve_ft_settings_h5`).
 
     No ``ComplexFT`` is stored -- the lightweight ``.ftmw`` model recomputes it
     on demand from the FID + these settings. If the resolved settings *differ*
     from a previously persisted record, every stage built on the FT
     (Stage 2 noise, Stage 3 peaks, ...) is invalidated: its stored result is
     removed, it is dropped from the completed set, and a loud warning is
-    logged. An identical re-persist (idempotent Jupyter re-run) invalidates
+    logged. An identical re-persist (idempotent Jupyter re-run, or an older
+    record's unset window rewritten as the concrete same window) invalidates
     nothing.
 
     Completing Stage 1 stamps its analysis epoch (``stage1_complex_ft``) before
@@ -422,7 +541,9 @@ def _persist_ft_settings(file_path: str, resolved: FTSettings) -> None:
     """
     from ..file_manager import PipelineStageTracker
 
-    new_attrs = resolved.to_attrs()
+    if fid_duration_us is None:
+        fid_duration_us = _stored_fid_duration_us(file_path)
+    new_attrs = _effective_attrs(resolved, fid_duration_us)
     with h5py.File(file_path, "a") as h5f:
         # Stamp first, so a stamp that cannot be written leaves the record and
         # the completion untouched. Stage 1 stores no computed artifact (the
@@ -432,9 +553,14 @@ def _persist_ft_settings(file_path: str, resolved: FTSettings) -> None:
         proc = h5f.require_group("processing_parameters")
         old_attrs = None
         if "ft_processing" in proc:
-            old_attrs = FTSettings.from_attrs(
-                dict(proc["ft_processing"].attrs)
-            ).to_attrs()
+            # Compared on the effective window, so upgrading an older record
+            # whose window was unset (and selected the whole record) to the
+            # concrete spelling of that same window is not a change and
+            # invalidates nothing.
+            old_attrs = _effective_attrs(
+                FTSettings.from_attrs(dict(proc["ft_processing"].attrs)),
+                fid_duration_us,
+            )
             del proc["ft_processing"]
         ft_group = proc.create_group("ft_processing")
         for name, value in new_attrs.items():

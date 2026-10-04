@@ -461,8 +461,19 @@ def _coerce_or_unset(knob: str, field_type: Any, optional: bool, value: Any) -> 
 
 def _set_stage1(path: str, knob: str, field: str, value: Any) -> SetResult:
     """Persist a Stage 1 windowing knob into ``ft_processing`` and invalidate
-    every downstream stage (the FT is recomputed on demand from these settings)."""
-    from ..stage1_impl import _persist_ft_settings, _resolve_settings
+    every downstream stage (the FT is recomputed on demand from these settings).
+
+    Stage 1's record is authoritative (it holds every field as resolved), so an
+    unset cannot leave the field blank for a later run to fill: it re-resolves
+    the field from the layers below the record -- the import-time
+    recommendation, else the hard default, else the whole record / no trim --
+    and records that value.
+    """
+    from ..stage1_impl import (
+        _persist_ft_settings,
+        _read_settings_layer,
+        _resolve_settings,
+    )
 
     try:
         field_type, optional = _field_hint(ft_mod.FTSettings, None, field)
@@ -473,7 +484,11 @@ def _set_stage1(path: str, knob: str, field: str, value: Any) -> SetResult:
     coerced = _coerce_or_unset(knob, field_type, optional, value)
 
     resolved = _resolve_settings(path, None)
-    setattr(resolved, field, coerced)
+    effective = coerced
+    if coerced is None:
+        recommended = _read_settings_layer(path, ft_mod.RECOMMENDED_PATH)
+        effective = getattr(ft_mod.resolve(None, None, recommended), field)
+    setattr(resolved, field, effective)
     # _persist_ft_settings rewrites ft_processing and invalidates every
     # FT-dependent stage when the record changes.
     completed_before = _completed_stages(path)

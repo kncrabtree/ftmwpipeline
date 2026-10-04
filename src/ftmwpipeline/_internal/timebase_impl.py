@@ -26,7 +26,6 @@ from typing import Any, Dict, List, Optional, Tuple
 import h5py
 import numpy as np
 
-from ..core.settings import FT_PROCESSING_PATH, FTSettings
 from ..core.stage_fit_settings import ClockSource, coerce_clock_sources
 from ..file_manager import StageDependencyError
 from ..fitting.timebase_calibration import (
@@ -45,24 +44,12 @@ from ..io.timebase_serialization import (
     save_timebase_calibration_to_hdf5,
 )
 from .stage0_impl import load_fid_from_pipeline_impl
-from .stage1_impl import _read_settings_layer
+from .stage1_impl import persisted_ft_settings
 from .stage2_impl import _update_stage_completion
 
 logger = logging.getLogger(__name__)
 
 STAGE_NAME = "timebase_calibration"
-
-
-def _read_persisted_ft_settings(file_path: str) -> FTSettings:
-    """Resolve the persisted Stage 1 FT settings the calibration consumes."""
-    settings = _read_settings_layer(file_path, FT_PROCESSING_PATH)
-    if settings is None:
-        raise StageDependencyError(
-            STAGE_NAME,
-            ["stage1_complex_ft"],
-            Path(file_path),
-        )
-    return settings
 
 
 def _resolve_clock_sources(
@@ -149,16 +136,12 @@ def calibrate_timebase_impl(
             "(ClockSource(..., locked=True)) to build the spur lattice."
         )
 
-    ft_settings = _read_persisted_ft_settings(file_path)
     fid = load_fid_from_pipeline_impl(file_path)
+    # What Stage 1 is read as having used, through the one Stage 1 resolver
+    # (the same values Stages 2-5 rebuild the FT from).
+    ft_settings = persisted_ft_settings(file_path, STAGE_NAME, float(fid.duration_us))
     sample_dt_us = float(fid.spacing * 1e6)
-
-    start_us = float(ft_settings.start_us) if ft_settings.start_us is not None else 0.0
-    end_us = (
-        float(ft_settings.end_us)
-        if ft_settings.end_us is not None
-        else float(fid.duration_us)
-    )
+    start_us, end_us = ft_settings.active_window_us()
 
     kappa_v = float(kappa_sys) if kappa_sys is not None else DEFAULT_KAPPA_SYS
     snr_min_v = float(snr_min) if snr_min is not None else DEFAULT_SNR_MIN

@@ -974,13 +974,12 @@ def _assemble_summary(file_path: Union[Path, str]) -> _SummaryModel:
     """
     from collections import Counter
 
-    from ..core.settings import FT_PROCESSING_PATH
     from ..io.fid_serialization import load_fid_from_hdf5
     from ..io.fitting_serialization import load_spectrum_fit_from_hdf5
     from ..io.tau_calibration_serialization import load_tau_calibration_from_hdf5
     from ..io.timebase_serialization import load_timebase_calibration_from_hdf5
     from ..io.window_serialization import load_window_plan_from_hdf5
-    from .stage1_impl import _read_settings_layer
+    from .stage1_impl import _resolve_settings
     from .stage6_impl import get_final_products_impl
     from .start_detection_impl import resolve_start_provenance
 
@@ -1000,7 +999,7 @@ def _assemble_summary(file_path: Union[Path, str]) -> _SummaryModel:
 
     timebase_n_used: Optional[int] = None
     timebase_lattice_g: Optional[float] = None
-    ft_settings = _read_settings_layer(path, FT_PROCESSING_PATH)
+    ft_settings = _resolve_settings(path, None)
 
     with h5py.File(path, "r") as h5f:
         # --- provenance -----------------------------------------------------
@@ -1020,10 +1019,11 @@ def _assemble_summary(file_path: Union[Path, str]) -> _SummaryModel:
         # --- Stage 1: FT band (display knobs persisted under ft_processing) -
         # Through the Stage 1 resolver, not the raw attrs: an unset trim is
         # persisted as the ``__None__`` sentinel, and an older record carries
-        # the bundle only as a JSON blob. Only the record's own codec reads both.
+        # the bundle only as a JSON blob. Only the record's own codec reads both,
+        # and only the resolver says which trim the analysis actually used.
         band_lo: Optional[float] = None
         band_hi: Optional[float] = None
-        if ft_settings is not None and ft_settings.trim is not None:
+        if ft_settings.trim is not None:
             band_lo, band_hi = (float(v) for v in ft_settings.trim)
         ft_bin_khz = 1.0e3 / fid.duration_us if fid.duration_us else None
         ft_n_bins = (
@@ -1160,7 +1160,7 @@ def _assemble_summary(file_path: Union[Path, str]) -> _SummaryModel:
     # not the raw Stage 0 recommendation -- a manual Stage 1 override must win).
     start_prov = resolve_start_provenance(path)
     end_us = None
-    if ft_settings is not None and ft_settings.end_us is not None:
+    if ft_settings.end_us is not None:
         end_us = float(ft_settings.end_us)
     start_detection_params: Dict[str, Any] = {}
     if start_prov.source == "declared":

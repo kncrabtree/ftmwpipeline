@@ -15,7 +15,17 @@ Every field is ``Optional`` with ``None`` meaning *unset* (fall through the
 resolution chain). A *resolved* instance (produced by :func:`resolve`) has the
 run-critical ``units_power`` field filled with a hard default if no layer
 supplied it; ``start_us`` / ``end_us`` / ``trim`` may legitimately stay ``None``
-(meaning no windowing / no trim).
+(meaning no windowing / no trim) until :meth:`FTSettings.with_effective_window`
+makes the active region concrete.
+
+Once Stage 1 has persisted a record at the current
+:data:`FT_PROCESSING_FIELD_SET_VERSION`, that record is authoritative: it holds
+the concrete active region Stage 1 ran with (``start_us`` 0.0 when there was no
+windowing, ``end_us`` the FID duration when unset) and its ``trim``, where an
+unset trim means "no trim" and never falls through to the recommended layer.
+The recommended layer then no longer takes part in resolution (see
+``stage1_impl.resolve_ft_settings_h5``). An older record keeps the
+``explicit > persisted > recommended`` fall-through it was written under.
 
 The FT is unconditionally unapodized, un-windowed, and native-length:
 there are no ``expf_us`` / ``window_function`` / ``zpf`` knobs. Apodization
@@ -50,7 +60,12 @@ FT_PROCESSING_PATH = "processing_parameters/ft_processing"
 #: Field-set version of the ``ft_processing`` record Stage 1 writes (see
 #: :mod:`ftmwpipeline.io.provenance`). Stamped beside the :meth:`FTSettings.to_attrs`
 #: fields, never inside them, so it takes no part in the settings comparison.
-FT_PROCESSING_FIELD_SET_VERSION = 1
+#:
+#: Version 2: the record is authoritative. ``start_us`` / ``end_us`` are always
+#: the concrete active region Stage 1 ran with, and an unset ``trim`` means "no
+#: trim" rather than "fall through to the recommended layer". A record below 2
+#: (or with no version) is pre-provenance and resolves as it always did.
+FT_PROCESSING_FIELD_SET_VERSION = 2
 # Import-time recommendations written by Stage 0.
 RECOMMENDED_PATH = "stage0_fid_data/recommended_processing"
 
@@ -167,6 +182,40 @@ class FTSettings:
             "units_power": self.units_power,
         }
 
+    def with_effective_window(self, fid_duration_us: float) -> "FTSettings":
+        """A copy with the active region made concrete for an FID of this length.
+
+        An unset ``start_us`` is the start of the record (0.0) and an unset
+        ``end_us`` is its end (``fid_duration_us``): exactly the samples an unset
+        bound selects in ``FID.preprocess`` and
+        :func:`~ftmwpipeline.fitting.active_ft.active_region_bounds`, so the
+        concrete window selects the same samples and every result is unchanged.
+        ``trim`` and ``units_power`` are copied as they are.
+        """
+        return FTSettings(
+            start_us=0.0 if self.start_us is None else float(self.start_us),
+            end_us=(
+                float(fid_duration_us) if self.end_us is None else float(self.end_us)
+            ),
+            units_power=self.units_power,
+            trim=self.trim,
+        )
+
+    def active_window_us(self) -> Tuple[float, float]:
+        """The concrete ``(start_us, end_us)`` active region.
+
+        Defined only on an instance whose window has been made concrete by
+        :meth:`with_effective_window` (every settings object Stage 1 hands
+        downstream is); anything else is a programming error, not an unset
+        window to guess at.
+        """
+        if self.start_us is None or self.end_us is None:
+            raise ValueError(
+                "FT settings have no concrete active region; resolve them "
+                "through FTSettings.with_effective_window first"
+            )
+        return float(self.start_us), float(self.end_us)
+
     # -- HDF5 (de)serialization for the persisted ft_processing record ------
 
     def to_attrs(self) -> Dict[str, Any]:
@@ -248,8 +297,10 @@ def resolve(
 
     Precedence per field: ``explicit > persisted > recommended``, then the
     run-critical ``units_power`` field falls back to :data:`_HARD_DEFAULTS` if
-    still unset. The result is what Stage 1 computes/persists and what every
-    downstream stage operates on.
+    still unset. A caller holding an authoritative (current-version) persisted
+    record passes ``recommended=None``, so nothing falls through it. The
+    result is what Stage 1 computes/persists and what every downstream stage
+    operates on.
     """
     empty = FTSettings()
     e = explicit or empty

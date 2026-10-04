@@ -5,9 +5,14 @@ Stage 1 ``start_us``). Resolves the integration band from the persisted Stage 1
 frequency trim when available, runs
 :func:`ftmwpipeline.preprocessing.start_detection.detect_start_time`, and
 (optionally) stamps the recommended ``start_us`` into the Stage 0
-``recommended_processing`` layer so a subsequent ``compute_ft`` with no explicit
-``start_us`` inherits it through the existing resolution chain
-(``explicit > persisted > recommended``).
+``recommended_processing`` layer so a first ``compute_ft`` with no explicit
+``start_us`` inherits it through the resolution chain.
+
+Once Stage 1 has persisted its record, the stamp no longer changes what Stage 1
+is read as having used (the persisted record is authoritative; see
+``stage1_impl.resolve_ft_settings_h5``). The recommendation is still stored and
+shown; adopting it is an explicit ``ft run --start-us`` re-run, which
+invalidates every stage built on the old spectrum.
 """
 
 from __future__ import annotations
@@ -16,6 +21,8 @@ import logging
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
+
+import h5py
 
 from ..core.data_structures import ChirpWindow
 from ..core.settings import FT_PROCESSING_PATH, RECOMMENDED_PATH
@@ -28,7 +35,11 @@ from ..io.stage_fit_settings_serialization import (
 )
 from ..preprocessing.start_detection import StartDetectionResult, detect_start_time
 from .stage0_impl import load_fid_from_pipeline_impl
-from .stage1_impl import _read_settings_layer
+from .stage1_impl import (
+    _read_settings_layer,
+    _resolve_settings,
+    ft_record_is_authoritative,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,19 +52,17 @@ def _resolve_band(
     file_path: str,
     settings: StartDetectionSettings,
 ) -> Optional[Tuple[float, float]]:
-    """Integration band: explicit override > persisted trim > recommended trim.
+    """Integration band: explicit override > the Stage 1 trim.
 
-    Returns ``None`` (integrate the full positive spectrum) when no band can be
-    resolved -- the chirp collapse dominates Σ|FT| either way, but a trim band
-    sharpens the floor.
+    The Stage 1 trim comes from the one Stage 1 resolver: the persisted trim,
+    falling through to the recommended one only before Stage 1 has written an
+    authoritative record. Returns ``None`` (integrate the full positive
+    spectrum) when no band can be resolved -- the chirp collapse dominates
+    Σ|FT| either way, but a trim band sharpens the floor.
     """
     if settings.band_min_mhz is not None and settings.band_max_mhz is not None:
         return (settings.band_min_mhz, settings.band_max_mhz)
-    for group_path in (FT_PROCESSING_PATH, RECOMMENDED_PATH):
-        ft_settings = _read_settings_layer(file_path, group_path)
-        if ft_settings is not None and ft_settings.trim is not None:
-            return ft_settings.trim
-    return None
+    return _resolve_settings(file_path, None).trim
 
 
 def detect_start_time_impl(
@@ -169,6 +178,7 @@ def detect_start_time_impl(
     if stamp and can_stamp:
         update_processing_parameters(file_path, {"start_us": float(final_start_us)})
         stamped = True
+        _note_stage1_unaffected(file_path, float(final_start_us))
         if declaration_used and declared is not None:
             _margin: float = margin if margin is not None else settings.guard_margin_us
             logger.info(
@@ -207,6 +217,35 @@ def detect_start_time_impl(
 _INHERITED_TOLERANCE_US = 1e-6
 
 
+def _note_stage1_unaffected(file_path: str, recommended_start_us: float) -> None:
+    """Say so when a new recommendation will not reach an existing Stage 1 run.
+
+    After Stage 1 has persisted an authoritative record, the recommended layer
+    no longer feeds it: every stage keeps reading the start Stage 1 ran with.
+    That is deliberate (no stage can silently move under results computed from
+    the old spectrum), but a user who just ran ``start run`` should hear that
+    adopting the new value is an explicit Stage 1 re-run.
+    """
+    with h5py.File(file_path, "r") as h5f:
+        if not ft_record_is_authoritative(h5f):
+            return
+    persisted = _read_settings_layer(file_path, FT_PROCESSING_PATH)
+    current = persisted.start_us if persisted is not None else None
+    if current is not None and abs(current - recommended_start_us) < (
+        _INHERITED_TOLERANCE_US
+    ):
+        return
+    logger.warning(
+        "Stage 1 has already run with start_us = %s us; the new recommended "
+        "start_us = %.3f us is stored but does not change it. To adopt it, "
+        "re-run 'ft run --start-us %.3f' (this invalidates every stage built "
+        "on the current spectrum).",
+        current,
+        recommended_start_us,
+        recommended_start_us,
+    )
+
+
 @dataclass(frozen=True)
 class StartProvenance:
     """How the effective Stage 1 ``start_us`` was arrived at, resolved purely
@@ -225,7 +264,8 @@ class StartProvenance:
       (``start run``), which found a chirp collapse.
     * ``"no_chirp_found"`` -- the sweep detector ran but found no chirp
       collapse; the recommendation could not be inferred and start_us stayed
-      unset (full record used from t = 0).
+      unset (full record used from t = 0; an authoritative Stage 1 record
+      spells that as ``start_us = 0.0``).
     * ``"none"`` -- nothing was ever recommended, detected, or set.
 
     ``detection_settings`` / ``detection_band_mhz`` are present whenever a
@@ -260,6 +300,8 @@ def resolve_start_provenance(file_path: str) -> StartProvenance:
     """
     ft = _read_settings_layer(file_path, FT_PROCESSING_PATH)
     rec = _read_settings_layer(file_path, RECOMMENDED_PATH)
+    with h5py.File(file_path, "r") as h5f:
+        authoritative = ft_record_is_authoritative(h5f)
     effective_start = ft.start_us if ft is not None else None
     recommended_start = rec.start_us if rec is not None else None
 
@@ -306,11 +348,17 @@ def resolve_start_provenance(file_path: str) -> StartProvenance:
         chirp_start_us = None
         guard_margin_us = None
 
-    inherited = (recommended_start is None and effective_start is None) or (
-        recommended_start is not None
-        and effective_start is not None
-        and abs(effective_start - recommended_start) < _INHERITED_TOLERANCE_US
-    )
+    if authoritative and effective_start is not None:
+        # An authoritative record spells "no windowing" as a concrete 0.0, so
+        # no recommendation inherits as a start of 0.0.
+        inherited_start = 0.0 if recommended_start is None else recommended_start
+        inherited = abs(effective_start - inherited_start) < _INHERITED_TOLERANCE_US
+    else:
+        inherited = (recommended_start is None and effective_start is None) or (
+            recommended_start is not None
+            and effective_start is not None
+            and abs(effective_start - recommended_start) < _INHERITED_TOLERANCE_US
+        )
     source = stage0_source if inherited else "manual"
 
     return StartProvenance(

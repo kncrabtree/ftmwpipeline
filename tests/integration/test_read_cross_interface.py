@@ -66,8 +66,8 @@ def ft_unset_end_1231(tmp_path_factory):
     """A Stage 1 file with no declared end time, as a real import produces it.
 
     1231 ships no ``fid/processing.csv``, so the import declares no
-    ``FidEndUs`` and Stage 1 persists ``end_us`` as unset -- the state every
-    such Blackchirp import is in.
+    ``FidEndUs`` -- the state every such Blackchirp import is in. Stage 1
+    records the end it ran with: the end of the record.
     """
     path = tmp_path_factory.mktemp("read_unset") / "unset_end_1231.ftmw"
     ftmw.import_data(path, "examples/blackchirp_data/1231")
@@ -368,15 +368,20 @@ class TestReadAcrossInterfaces:
             assert via_cli[key] == pytest.approx(via_api[key])
 
     def test_identical_metadata_with_an_unset_end_time(self, ft_unset_end_1231):
-        """Unset settings read as ``None`` on every surface, not as a sentinel."""
+        """An undeclared end reads as the concrete end of the record on every
+        surface -- the value Stage 1 ran with and recorded -- never a sentinel."""
         path = str(ft_unset_end_1231)
         via_api = ftmw.read_metadata(path)
         via_cli = json.loads(_run_read(["meta", path, "--format", "json"]))
 
         assert via_api == Pipeline.open(path).read_metadata()
         for prefix in ("ft", "stage1"):
-            assert via_api[f"{prefix}.end_us"] is None
-            assert via_cli[f"{prefix}.end_us"] is None
+            assert via_api[f"{prefix}.end_us"] == pytest.approx(
+                via_api["fid.duration_us"]
+            )
+            assert via_cli[f"{prefix}.end_us"] == pytest.approx(
+                via_api["fid.duration_us"]
+            )
         # The active length runs to the end of the record.
         assert via_api["ft.acquisition_us"] == pytest.approx(
             via_api["fid.duration_us"] - via_api["ft.start_us"]

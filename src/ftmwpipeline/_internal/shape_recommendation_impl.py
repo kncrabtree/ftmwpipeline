@@ -31,9 +31,7 @@ from typing import Any, Dict, Optional
 
 import numpy as np
 
-from ..core.settings import FT_PROCESSING_PATH, FTSettings
 from ..core.tau_calibration_settings import TauCalibrationSettings
-from ..file_manager import StageDependencyError
 from ..fitting.tau_calibration import (
     ShapeRecommendation,
     compute_shape_recommendation,
@@ -46,7 +44,7 @@ from ..io.tau_calibration_settings_serialization import (
     save_tau_calibration_settings_to_h5,
 )
 from .stage0_impl import load_fid_from_pipeline_impl
-from .stage1_impl import _read_settings_layer
+from .stage1_impl import persisted_ft_settings
 from .tau_settings_resolution import (
     _required_float,
     _required_int,
@@ -61,18 +59,6 @@ STAGE_NAME = "shape_recommendation"
 #: stage, but its verdict feeds Stage 3's gap pass and Stage 5's shape, so it
 #: records the epoch it was produced under like any stage does.
 SHAPE_RECOMMENDATION_EPOCH_KEY = "stage2b_shape_recommendation"
-
-
-def _read_persisted_ft_settings(file_path: str) -> FTSettings:
-    """Resolve the persisted Stage 1 FT settings the calibration consumes."""
-    settings = _read_settings_layer(file_path, FT_PROCESSING_PATH)
-    if settings is None:
-        raise StageDependencyError(
-            STAGE_NAME,
-            ["stage1_complex_ft"],
-            Path(file_path),
-        )
-    return settings
 
 
 def recommend_shape_impl(
@@ -122,16 +108,12 @@ def recommend_shape_impl(
         preset=preset,
     )
 
-    ft_settings = _read_persisted_ft_settings(file_path)
     fid = load_fid_from_pipeline_impl(file_path)
+    # What Stage 1 is read as having used, through the one Stage 1 resolver
+    # (the same values Stages 2-5 rebuild the FT from).
+    ft_settings = persisted_ft_settings(file_path, STAGE_NAME, float(fid.duration_us))
     sample_dt_us = float(fid.spacing * 1e6)
-
-    start_us = float(ft_settings.start_us) if ft_settings.start_us is not None else 0.0
-    end_us = (
-        float(ft_settings.end_us)
-        if ft_settings.end_us is not None
-        else float(fid.duration_us)
-    )
+    start_us, end_us = ft_settings.active_window_us()
     if ft_settings.trim is None:
         raise ValueError(
             "Stage 1 persisted FT settings have no frequency trim; the "

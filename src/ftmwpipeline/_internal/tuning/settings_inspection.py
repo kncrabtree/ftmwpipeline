@@ -19,6 +19,10 @@ Precedence (mirrors the corrected D11 order in the stage resolvers, minus the
 
     persisted (.ftmw)  >  preset (.yml)  >  recommended  >  hard default
 
+Stage 1's record, once written at its current field-set version, is
+authoritative: every ``stage1.*`` row then reads from it, an unset ``trim``
+included ("no trim"), exactly as the Stage 1 resolver reads it.
+
 The headline ``start_us`` is not special-cased: it is an ordinary Stage 1 FT
 setting whose resolved value lives in ``processing_parameters/ft_processing``,
 so the generic FT walk attributes it to persisted (a user-stamped/detected value
@@ -54,7 +58,7 @@ from ...io.tau_calibration_settings_serialization import (
 from ...io.window_planning_settings_serialization import (
     load_window_planning_settings_from_h5,
 )
-from ..stage1_impl import _read_settings_layer
+from ..stage1_impl import _read_settings_layer, ft_record_is_authoritative
 from .registry import get_knob
 
 # Provenance layer labels (the ``source`` column). The preset label is rendered
@@ -96,6 +100,10 @@ class _StageSpec:
     make_default: Callable[[], Any]
     load_preset: Optional[Callable[[Union[str, Path]], Any]]
     load_recommended: Optional[Callable[[str], Optional[Any]]]
+    #: True when the file's persisted record is authoritative: it holds every
+    #: field as resolved, so an unset field is "resolved to unset" and no lower
+    #: layer is consulted (only Stage 1's record is written that way).
+    persisted_is_authoritative: Optional[Callable[[str], bool]] = None
 
 
 def _ft_recommended(file_path: str) -> Optional[Any]:
@@ -106,6 +114,14 @@ def _ft_recommended(file_path: str) -> Optional[Any]:
 def _ft_persisted(file_path: str) -> Optional[Any]:
     """Stage 1 persisted layer: the ``ft_processing`` record."""
     return _read_settings_layer(file_path, ft_mod.FT_PROCESSING_PATH)
+
+
+def _ft_persisted_is_authoritative(file_path: str) -> bool:
+    """Whether Stage 1's record is authoritative, as its resolver decides."""
+    import h5py
+
+    with h5py.File(file_path, "r") as h5f:
+        return ft_record_is_authoritative(h5f)
 
 
 def _fit_recommended(file_path: str) -> Optional[Any]:
@@ -140,6 +156,7 @@ _STAGE_SPECS: Tuple[_StageSpec, ...] = (
         make_default=lambda: ft_mod.resolve(None, None, None),
         load_preset=None,
         load_recommended=_ft_recommended,
+        persisted_is_authoritative=_ft_persisted_is_authoritative,
     ),
     _StageSpec(
         prefix="stage2",
@@ -289,6 +306,12 @@ def resolve_settings_view(
             else None
         )
         default_inst = spec.make_default()
+        authoritative = (
+            persisted is not None
+            and path_str is not None
+            and spec.persisted_is_authoritative is not None
+            and spec.persisted_is_authoritative(path_str)
+        )
 
         for sub, name in _enumerate_fields(spec.cls):
             tail = name if sub is None else f"{sub}.{name}"
@@ -303,7 +326,7 @@ def resolve_settings_view(
             persisted_v = _layer_value(persisted, sub, name)
             preset_v = _layer_value(preset_layer, sub, name)
             recommended_v = _layer_value(recommended, sub, name)
-            if persisted_v is not None:
+            if persisted_v is not None or authoritative:
                 source, value = SOURCE_FTMW, persisted_v
             elif preset_v is not None:
                 # preset_label is non-None whenever preset_layer is non-None.

@@ -97,7 +97,6 @@ from ..contract import (
     Absent,
     WindowStatusRow,
 )
-from ..core.settings import FTSettings
 from ..core.settings_framework import NONE as NONE_SENTINEL
 from ..file_manager import (
     PipelineCorruptionError,
@@ -158,7 +157,7 @@ from ..io.window_serialization import (
     read_window_plan_scalars,
 )
 from ..serialize import with_status_columns
-from .shared_utils import active_acquisition_us, fold_settings_blob
+from .shared_utils import active_acquisition_us
 
 __all__ = [
     "READ_TABLES",
@@ -702,6 +701,8 @@ _START_RECORD_FIELDS = (
 
 def _read_ft_window(h5f: h5py.File, out: Dict[str, Any]) -> None:
     """Report the canonical FT window, including its derived active length."""
+    from .stage1_impl import resolve_ft_settings_h5
+
     group = "processing_parameters/ft_processing"
     if group not in h5f:
         return
@@ -717,7 +718,11 @@ def _read_ft_window(h5f: h5py.File, out: Dict[str, Any]) -> None:
     # Stage 1 data-selection settings every later stage analyzes, so
     # ``ft.acquisition_us`` -- and with it the Fourier resolution element -- is
     # fixed here, not at Stage 5.
-    settings = FTSettings.from_attrs(fold_settings_blob(dict(h5f[group].attrs)))
+    #
+    # The values are the Stage 1 resolver's, the one every stage reads: an
+    # authoritative record as written (a concrete window), and an older record
+    # with the recommended fall-through it was written under.
+    settings = resolve_ft_settings_h5(h5f)
     trim_lo, trim_hi = settings.trim if settings.trim is not None else (None, None)
     out["ft.start_us"] = settings.start_us
     out["ft.end_us"] = settings.end_us

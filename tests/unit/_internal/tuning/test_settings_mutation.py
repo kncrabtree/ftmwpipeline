@@ -252,10 +252,15 @@ def test_unset_is_set_with_none(bare_ftmw: Path) -> None:
 
 
 def test_unset_stage1_field(bare_ftmw: Path) -> None:
+    """Stage 1's record is authoritative, so an unset re-resolves the field from
+    the layers below it (here: none, and no FID to make the window concrete)
+    and records that, rather than leaving a gap for a later layer to fill."""
     set_setting(bare_ftmw, "stage1.start_us", "3.25")
     assert _row(bare_ftmw, "stage1.start_us").value == 3.25
     unset_setting(bare_ftmw, "stage1.start_us")
-    assert _row(bare_ftmw, "stage1.start_us").source == SOURCE_DEFAULT
+    row = _row(bare_ftmw, "stage1.start_us")
+    assert row.source == SOURCE_FTMW
+    assert row.value is None
 
 
 def test_unset_invalidates_like_a_set(bare_ftmw: Path) -> None:

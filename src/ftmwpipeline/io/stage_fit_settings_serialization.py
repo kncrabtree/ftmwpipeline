@@ -39,7 +39,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import h5py
 
-from .._internal.shared_utils import active_acquisition_us, fold_settings_blob
+from .._internal.shared_utils import active_acquisition_us
 from ..core.data_structures import ChirpWindow
 from ..core.stage_fit_settings import (
     _SUB_NAMES,
@@ -145,19 +145,20 @@ def declared_active_acquisition_us(h5f: h5py.File) -> Optional[float]:
     fitted yet. Two readers of the declared active region would be two answers
     (``dev-docs/SCIENCE_STRATEGY.md`` Requirement 8).
     """
+    from .._internal.stage1_impl import resolve_ft_settings_h5
+
     fid = h5f.get("stage0_fid_data/acquisition")
     if fid is None or "duration_us" not in fid.attrs:
         return None
-    ft = h5f.get("processing_parameters/ft_processing")
-    # No ``ft_processing`` at all is not "cannot say": it is a file that has
-    # declared no window, which :func:`active_acquisition_us` already spells as
-    # both bounds unset -- the whole record. Answering here is what lets a
-    # bare import resolve a bin-relative tolerance.
-    attrs = fold_settings_blob(dict(ft.attrs)) if ft is not None else {}
+    # The window comes from the one Stage 1 resolver, so this length is the
+    # one the FT is built on. No ``ft_processing`` at all is not "cannot say":
+    # it is a file that has persisted no window, which resolves to the
+    # recommended window or, with none, both bounds unset -- the whole record.
+    # Answering here is what lets a bare import resolve a bin-relative
+    # tolerance.
+    ft = resolve_ft_settings_h5(h5f)
     acquisition_us = active_acquisition_us(
-        float(fid.attrs["duration_us"]),
-        _optional_float(attrs.get("start_us")),
-        _optional_float(attrs.get("end_us")),
+        float(fid.attrs["duration_us"]), ft.start_us, ft.end_us
     )
     return acquisition_us if acquisition_us > 0.0 else None
 
