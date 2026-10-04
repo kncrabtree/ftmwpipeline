@@ -49,6 +49,25 @@ had to reach into ``_internal`` or parse out of prose to obtain are now
 published, and the Stage 6 edit paths that carry them were collapsed onto one
 engine so they cannot answer differently.
 
+* **Machine contract, Wave 7: status, stage mappings, no stale results, typed
+  settings rows.** ``CONTRACT_VERSION`` is now ``7``. ``status(path)`` (API,
+  ``Pipeline``, ``read status``) returns ``ftmw/status@1``: each stage's
+  ``complete`` / ``partial`` / ``not_run`` state and dependencies, the stages
+  runnable now, and the full re-run order. ``capabilities()["stages"]`` maps
+  every canonical stage to its storage key, settings prefix and knob prefix
+  (``tau`` and ``tau_g`` share ``stage2b``). Every stage-running call reports
+  the stages it invalidated (``invalidated``, canonical names in re-run order;
+  the CLI prints them), and the no-stale rule now holds for every write:
+  ``clocks set`` / ``clear`` rebuild the final-products table when they move
+  the calibration state, a start stamp that moves a pre-provenance Stage 1
+  record's spectrum invalidates what was built on it, and
+  ``compute_ft(..., from_saved_params=True)`` no longer writes the file.
+  ``settings_set`` / ``unset``'s ``invalidated`` now holds canonical names, not
+  storage keys. ``settings_show`` / ``settings_defaults`` rows gain ``type``,
+  ``nullable``, ``units``, ``choices`` and ``bounds`` (``null`` where the knob
+  metadata states none), and their values round-trip as typed JSON. Every verb
+  that takes a ``.ftmw`` now refuses a path that is not a readable pipeline file
+  with ``file_corrupt`` (exit 2), and a missing one with ``not_found``.
 * **Machine contract, Wave 6: curation as data.** ``CONTRACT_VERSION`` is now
   ``6``. ``CurationAction`` (exported from ``ftmwpipeline``) is one curation-file
   row as a typed, JSON-able value (``ftmw/curation_action@1``): ``action``,
