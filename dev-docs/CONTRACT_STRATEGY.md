@@ -742,6 +742,19 @@ What is left in the file is the same as after a cancel at that point.
   holds open.
 - Within `run_pipeline`, each stage is its own atomic write, so a kill keeps
   every stage that finished before it.
+- **Temporary copies.** The copy is created in the same directory as the target,
+  so that `os.replace` stays on one filesystem. It is named
+  `.<target basename>.ftmw-tmp.<hostname>.<pid>`, where `<pid>` is the decimal
+  process id of the writer and the basename includes its extension. Compaction
+  uses the same pattern.
+  - A kill between creating the copy and the replace leaves it behind.
+  - Before making its own copy, every write removes leftover copies of the same
+    target that were made on the same host by a process that is no longer
+    running.
+  - Copies from other hosts are never touched. Neither are copies whose pid is
+    alive, even if that pid has been reused.
+  - A client that knows no write to the file is in progress may delete every
+    copy matching the pattern.
 
 ### Stage 5 partial fits
 
