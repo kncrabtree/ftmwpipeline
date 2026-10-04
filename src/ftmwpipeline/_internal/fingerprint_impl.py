@@ -46,10 +46,13 @@ from ..core.tau_calibration_settings import (
 )
 from ..file_manager import IncompleteProvenanceError, _load_stage_tracker
 from ..io.environment_serialization import load_stage_environments
-from ..io.fid_serialization import load_fid_from_hdf5
+from ..io.fid_serialization import (
+    load_acquisition_segments_from_hdf5,
+    load_fid_from_hdf5,
+)
 from ..io.frequency_calibration_serialization import (
     frequency_calibration_provenance,
-    load_frequency_calibration_from_hdf5,
+    load_frequency_calibration_record,
 )
 from ..io.noise_settings_serialization import (
     load_noise_settings_from_h5,
@@ -254,7 +257,39 @@ def _subblock_fields(settings: Any, required: Any, groups: Tuple[str, ...]) -> _
 
 
 # -- data (Stage 0) ---------------------------------------------------------
-_DATA_KEYS = ("probe_freq_mhz", "sideband", "spacing_s")
+_DATA_KEYS = ("probe_freq_mhz", "sideband", "spacing_s", "acquisition_segments")
+
+
+def _array_digest(array: np.ndarray) -> str:
+    """SHA-256 of an array as little-endian float64, C order (spec: data)."""
+    data = np.ascontiguousarray(np.asarray(array, dtype="<f8"))
+    return hashlib.sha256(data.tobytes()).hexdigest()
+
+
+def _segments_values(segments: Any) -> Optional[Dict[str, Any]]:
+    """The stored acquisition segments, which the Stage 5 spur gate reads (its
+    chirp-response probe and interleave comb): their layout scalars and a
+    content digest per array."""
+    if segments is None:
+        return None
+    patterns = segments.interleave_patterns
+    return {
+        "pre_record_us": float(segments.pre_record_us),
+        "frame_period_us": float(segments.frame_period_us),
+        "n_frames": int(segments.n_frames),
+        "frame_selection": (
+            None if segments.frame_selection is None else int(segments.frame_selection)
+        ),
+        "sample_dt": float(segments.sample_dt),
+        "pre_record": _array_digest(segments.pre_record),
+        "tail": _array_digest(segments.tail),
+        "frames": None if segments.frames is None else _array_digest(segments.frames),
+        "interleave_patterns": (
+            None
+            if patterns is None
+            else {str(int(m)): _array_digest(v) for m, v in patterns.items()}
+        ),
+    }
 
 
 def _read_data(file_path: str) -> Optional[_Read]:
@@ -270,11 +305,13 @@ def _read_data(file_path: str) -> Optional[_Read]:
         if not isinstance(group, h5py.Group):
             return None
         fid = load_fid_from_hdf5(group)
+        segments = load_acquisition_segments_from_hdf5(group)
     return _Read(
         {
             "probe_freq_mhz": float(fid.probe_freq_mhz),
             "sideband": str(fid.sideband.value),
             "spacing_s": float(fid.spacing),
+            "acquisition_segments": _segments_values(segments),
         }
     )
 
@@ -366,7 +403,11 @@ def _read_timebase(file_path: str) -> Optional[_Read]:
         group = h5f.get(TIMEBASE_GROUP_PATH)
         if not isinstance(group, h5py.Group):
             return None
-        result = load_timebase_calibration_from_hdf5(group)
+        try:
+            result = load_timebase_calibration_from_hdf5(group)
+        except KeyError:
+            # A record that lacks a field its version writes.
+            return None
     clocks = result.clock_sources
     values = {
         "kappa_sys": float(result.kappa_sys),
@@ -400,7 +441,11 @@ def _read_peaks(file_path: str) -> Optional[_Read]:
 
 
 def _read_peaks_consumed(file_path: str) -> Optional[_Read]:
-    consumed = load_peak_detection_consumed_from_h5(file_path)
+    try:
+        consumed = load_peak_detection_consumed_from_h5(file_path)
+    except KeyError:
+        # A block that lacks a field its version writes.
+        return _Read({}, ("",))
     if consumed is None:
         return _Read({}, ("",))
     return _Read(
@@ -488,8 +533,22 @@ def _read_fit_consumed(file_path: str) -> Optional[_Read]:
 # -- review (Stage 6) ---------------------------------------------------------
 def _read_review(file_path: str) -> Optional[_Read]:
     with h5py.File(file_path, "r") as h5f:
-        calibration = load_frequency_calibration_from_hdf5(h5f)
+        try:
+            calibration = load_frequency_calibration_record(h5f)
+        except KeyError:
+            return _Read({}, ("sigma_floor_khz",))
+    if calibration is None:
+        return None
     return _Read({"sigma_floor_khz": float(calibration.sigma_floor_khz)})
+
+
+def _read_calibration_clocks(file_path: str) -> Optional[_Read]:
+    """The clock declaration the final products' calibration state is derived
+    from, through Stage 6's own resolver. The products are derived on read, so
+    this is the declaration in effect, not one recorded at ``review run``."""
+    from .stage6_impl import _resolve_calibration_clocks
+
+    return _Read({"calibration_clocks": list(_resolve_calibration_clocks(file_path))})
 
 
 def _review_provenance(file_path: str) -> Optional[RecordProvenance]:
@@ -586,6 +645,7 @@ _STAGE_RECORDS: Mapping[Stage, Tuple[_Record, ...]] = {
             ("sigma_floor_khz",),
             absent_values={"sigma_floor_khz": 0.0},
         ),
+        _Record("", _read_calibration_clocks, None, ("calibration_clocks",)),
     ),
 }
 

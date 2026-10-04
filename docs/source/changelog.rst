@@ -107,8 +107,9 @@ engine so they cannot answer differently.
   analysis_fingerprint``) returns ``ftmw/analysis_fingerprint@1``, a SHA-256
   digest of every input that shaped the file's results as the stages recorded
   them: their settings at the values they ran with, the values they took from
-  other stages, the acquisition parameters, the accuracy floor and each stage's
-  analysis epoch. The same digest means the same results. A file whose stages
+  other stages, the acquisition parameters and stored acquisition segments, the
+  accuracy floor, the clock declaration the calibration state is derived from,
+  and each stage's analysis epoch. The same digest means the same results. A file whose stages
   predate recording everything they used raises ``incomplete_provenance``
   listing every missing input; re-running those stages records them (see
   :doc:`machine_contract`).

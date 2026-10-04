@@ -240,6 +240,7 @@ def test_a_complete_build_records_the_documented_keys(stage5_reviewed_2638):
         "probe_freq_mhz",
         "sideband",
         "spacing_s",
+        "acquisition_segments",
     }
     assert inputs["data"]["sideband"] in ("upper", "lower")
     assert inputs["data"]["spacing_s"] > 0.0
@@ -277,7 +278,11 @@ def test_a_complete_build_records_the_documented_keys(stage5_reviewed_2638):
         "stft_spur_nominees",
     }
     assert isinstance(inputs["fit"]["shape"], ShapeSpec)
-    assert set(inputs["review"]) == {"analysis_epoch", "sigma_floor_khz"}
+    assert set(inputs["review"]) == {
+        "analysis_epoch",
+        "sigma_floor_khz",
+        "calibration_clocks",
+    }
     # Results are not inputs: no fitted frequency, line list or review log.
     flat = _flat(inputs)
     assert not any("fitted" in k or "review_log" in k for k in flat)
@@ -605,3 +610,81 @@ def test_an_incomplete_stage_is_not_run_even_with_a_sparse_record_left(fit_file)
     assert inputs["fit"] is None and inputs["fit_absent"] == "not_run"
     assert isinstance(inputs["data"], dict) and isinstance(inputs["ft"], dict)
     assert _HEX64.match(_digest(fit_file))
+
+
+# ---------------------------------------------------------------------------
+# Coverage found by review: inputs read outside the settings records
+# ---------------------------------------------------------------------------
+def test_the_effective_calibration_clocks_are_an_input(
+    reviewed_file, monkeypatch: pytest.MonkeyPatch
+):
+    # Spec: review.calibration_clocks is the declaration Stage 6 derives the
+    # calibration state from, read through its own resolver at read time.
+    # Mutation: dropping the key, or hashing a declaration other than the one
+    # the products use (a 'clocks clear' after review moved the products but
+    # not the digest).
+    from ftmwpipeline._internal import stage6_impl
+
+    review = _inputs(reviewed_file)["review"]
+    assert review["calibration_clocks"] == list(
+        stage6_impl._resolve_calibration_clocks(reviewed_file)
+    )
+    before = _digest(reviewed_file)
+    monkeypatch.setattr(
+        stage6_impl,
+        "_resolve_calibration_clocks",
+        lambda path: (ClockSource(freq_mhz=6250.0, locked=False),),
+    )
+    assert _digest(reviewed_file) != before
+
+
+def _write_segments(path: str, pre_record_scale: float) -> None:
+    import numpy as np
+
+    with h5py.File(path, "a") as f:
+        data = f[key_for_stage(Stage.DATA)]
+        if "acquisition_segments" in data:
+            del data["acquisition_segments"]
+        seg = data.create_group("acquisition_segments")
+        seg.attrs["pre_record_us"] = 1.0
+        seg.attrs["frame_period_us"] = 20.0
+        seg.attrs["n_frames"] = 1
+        seg.attrs["frame_selection"] = -1
+        seg.attrs["sample_dt"] = 1e-11
+        seg.create_dataset("pre_record", data=pre_record_scale * np.ones(16))
+        seg.create_dataset("tail", data=np.zeros(8))
+
+
+def test_acquisition_segments_are_an_input(reviewed_file):
+    # Spec: data.acquisition_segments (the Stage 5 spur gate reads the
+    # pre-record). Mutation: hashing only probe/sideband/spacing, so two files
+    # whose spur gates saw different pre-records share a digest.
+    assert _inputs(reviewed_file)["data"]["acquisition_segments"] is None
+    plain = _digest(reviewed_file)
+    _write_segments(reviewed_file, 1.0)
+    segments = _inputs(reviewed_file)["data"]["acquisition_segments"]
+    assert _HEX64.match(segments["pre_record"])
+    with_segments = _digest(reviewed_file)
+    _write_segments(reviewed_file, 2.0)
+    assert len({plain, with_segments, _digest(reviewed_file)}) == 3
+
+
+def test_a_consumed_block_missing_a_field_is_refused(fit_file):
+    # Mutation: a codec KeyError escaping raw (losing every other gap) instead
+    # of incomplete_provenance naming peaks.consumed.
+    with h5py.File(fit_file, "a") as f:
+        del f["processing_parameters/stage3_peaks/consumed"].attrs["gap_shape"]
+    with pytest.raises(IncompleteProvenanceError) as exc:
+        ftmw.analysis_fingerprint(fit_file)
+    assert "peaks.consumed" in exc.value.missing
+
+
+def test_a_current_floor_record_without_its_field_is_refused(reviewed_file):
+    # Spec: only an absent record defaults to 0.0. Mutation: the codec's
+    # .get(..., 0.0) silently filling a current record's missing field.
+    ftmw.set_sigma_floor(reviewed_file, 1.5)
+    with h5py.File(reviewed_file, "a") as f:
+        del f["frequency_calibration"].attrs["sigma_floor_khz"]
+    with pytest.raises(IncompleteProvenanceError) as exc:
+        ftmw.analysis_fingerprint(reviewed_file)
+    assert "review.sigma_floor_khz" in exc.value.missing

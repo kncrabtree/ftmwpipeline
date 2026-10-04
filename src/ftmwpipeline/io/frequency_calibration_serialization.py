@@ -46,6 +46,19 @@ def load_frequency_calibration_from_hdf5(h5f: h5py.File) -> FrequencyCalibration
     )
 
 
+def load_frequency_calibration_record(h5f: h5py.File) -> Optional[FrequencyCalibration]:
+    """The ``/frequency_calibration`` record as stored, or ``None`` when absent.
+
+    Unlike :func:`load_frequency_calibration_from_hdf5` it fills nothing in: a
+    present record without ``sigma_floor_khz`` raises ``KeyError``.
+    """
+    if GROUP_NAME not in h5f:
+        return None
+    return FrequencyCalibration(
+        sigma_floor_khz=float(h5f[GROUP_NAME].attrs["sigma_floor_khz"])
+    )
+
+
 def frequency_calibration_provenance(h5f: h5py.File) -> Optional[RecordProvenance]:
     """The record's field-set version against
     :data:`FREQUENCY_CALIBRATION_FIELD_SET_VERSION`, or ``None`` when the file

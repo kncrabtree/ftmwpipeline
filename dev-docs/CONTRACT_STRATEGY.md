@@ -228,13 +228,24 @@ under the same analysis epoch. Concretely, `@1` covers:
   such as a Stage 2b shape recommendation or a detected start time);
 - the timebase calibration's inputs (its knobs and the clock declaration it
   used);
-- the frequency-calibration inputs (the declared `sigma_floor_khz`). This is
-  the only Stage 6 input that shapes the final products: `review run`'s
-  `bar`, `kappa`, `noise_floor` and `attention_candidate_evidence` only route
-  attention, and the snap tolerance and refit options are arguments of
-  individual curation actions, which are excluded below;
+- the frequency-calibration inputs: the declared `sigma_floor_khz`, and the
+  clock declaration the calibration state is derived from
+  (`review.calibration_clocks`). The final products derive that state on read,
+  through the same rule the timebase uses: a non-empty Stage 5 `spur.clocks`,
+  otherwise the recommended declaration. So the hashed value is the
+  declaration in effect when the fingerprint is read. These are the only
+  Stage 6 inputs that shape the final products:
+  - `review run`'s `bar`, `kappa`, `noise_floor` and
+    `attention_candidate_evidence` only route attention;
+  - the snap tolerance and refit options are arguments of individual curation
+    actions, which are excluded below;
 - the acquisition parameters the analysis used (probe frequency, sideband,
   sample spacing), including any import-time overrides;
+- the stored acquisition segments (`data.acquisition_segments`), which the
+  Stage 5 spur gate reads:
+  - their layout scalars;
+  - the SHA-256 of each array as little-endian float64 in C order;
+  - `null` when the import stored none;
 - the analysis epoch each persisted stage was produced under.
 
 Every stage key is always present. A stage that has not run contributes
@@ -314,7 +325,9 @@ Python's `repr` produces, e.g. `0.1`, `1e-05`, `25.0`); `-0.0` spelled `-0.0`;
 non-finite values as the strings `"nan"`, `"inf"`, `"-inf"`; integers without a
 decimal point; booleans as `true`/`false`; tuples as arrays; a setting that was
 resolved to *unset* as `null`; structured values (`ShapeSpec`, clock sources)
-in their documented typed-JSON form. UTF-8, no insignificant whitespace. The
+in their documented typed-JSON form. Strings escape only `"` (as `\"`), `\`
+(as `\\`) and U+0000–U+001F (as `\u00xx`, lowercase hex). Every other
+character is written literally. UTF-8, no insignificant whitespace. The
 digest is SHA-256 over that byte string, lowercase hex.
 
 **Recording rules** (what every stage must persist so the fingerprint can be

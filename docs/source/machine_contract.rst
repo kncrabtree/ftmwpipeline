@@ -623,8 +623,13 @@ results. The call only reads.
   survival floor);
 * the timebase's knobs, active region and clock declaration;
 * the acquisition parameters the analysis read (probe frequency, sideband,
-  sample spacing), after any import-time override;
+  sample spacing), after any import-time override, and the stored acquisition
+  segments (a scope record's pre-record and interleave patterns, which the
+  Stage 5 spur gate reads), as content digests;
 * the accuracy floor ``sigma_floor_khz`` (``0.0`` when none was declared);
+* the clock declaration the final products' calibration state is derived from.
+  The products derive it on read, so a ``clocks set`` or ``clocks clear``
+  after ``review run`` changes the digest, as it changes the products;
 * the analysis epoch each stage was produced under.
 
 A stage that has not run is part of the digest as *not run*, so the digest
