@@ -193,3 +193,41 @@ def test_the_reads_leave_the_file_unchanged(injected):
         _via_api(path, table)
         _via_pipeline(path, table)
     assert open(path, "rb").read() == before
+
+
+def test_a_never_fit_window_stays_not_run_through_a_stage6_edit(
+    baseline_2638_stage5_small, tmp_path
+):
+    """A window the fit never evaluated (no edge keys in its quality record,
+    ``nan`` columns) reads ``NOT_RUN``; a Stage 6 edit to *another* window
+    rewrites the whole fit through load and save and must not turn it into
+    ``UNDEFINED``."""
+    path = tmp_path / "never_fit.ftmw"
+    shutil.copy(baseline_2638_stage5_small, path)
+    with h5py.File(path, "r+") as h5f:
+        w = h5f["stage5_fitting/windows"]
+        ids = w["window_id"][:]
+        assert ids.size >= 2
+        row = int(np.argmax(ids))
+        never_fit = int(ids[row])
+        other = int(ids[np.argmin(ids)])
+        for col in ("edge_coherence_low", "edge_coherence_high"):
+            values = w[col][:]
+            values[row] = np.nan
+            w[col][:] = values
+        quality = json.loads(w["quality_metrics"][row])
+        quality.pop("edge_coherence_low", None)
+        quality.pop("edge_coherence_high", None)
+        w["quality_metrics"][row] = json.dumps(quality)
+
+    def statuses():
+        t = ftmw.read_table(str(path), "fit_windows", COLUMNS["fit_windows"])
+        i = int(np.flatnonzero(t["window_id"] == never_fit)[0])
+        return (
+            int(t["edge_coherence_low__status"][i]),
+            int(t["edge_coherence_high__status"][i]),
+        )
+
+    assert statuses() == (NR, NR)
+    ftmw.review_edit(str(path), other)
+    assert statuses() == (NR, NR)

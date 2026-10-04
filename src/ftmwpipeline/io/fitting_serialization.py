@@ -118,6 +118,7 @@ mismatched peak-column lengths, unknown audit-step decision) raises
 from __future__ import annotations
 
 import json
+import math
 from typing import (
     Any,
     Dict,
@@ -1104,13 +1105,14 @@ def _window_fit_from_row(
     result.fixed_parameters = _row_json(window_columns, "fixed_parameters", row, {})
     result.quality_metrics = _row_json(window_columns, "quality_metrics", row, {})
     # The scalar edge-coherence columns are canonical: they make it back into
-    # quality_metrics even if a hand-edit nuked the JSON cell.
-    result.quality_metrics["edge_coherence_low"] = float(
-        window_columns["edge_coherence_low"][row]
-    )
-    result.quality_metrics["edge_coherence_high"] = float(
-        window_columns["edge_coherence_high"][row]
-    )
+    # quality_metrics even if a hand-edit nuked the JSON cell. A NaN column
+    # with no key in the cell is a window the fit never evaluated; injecting
+    # the key would make the next save record it as computed, turning NOT_RUN
+    # into UNDEFINED (read_fit_window_quality_recorded).
+    for edge_key in ("edge_coherence_low", "edge_coherence_high"):
+        edge_value = float(window_columns[edge_key][row])
+        if edge_key in result.quality_metrics or not math.isnan(edge_value):
+            result.quality_metrics[edge_key] = edge_value
 
     result.audit_trail = [
         _json_to_audit_step(blob, f"{where}/audit_trail[{i}]")

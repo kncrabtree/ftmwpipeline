@@ -41,6 +41,7 @@ from ftmwpipeline.core.data_structures import (
 from ftmwpipeline.fitting.plan_execution import residual_edge_coherence
 from ftmwpipeline.fitting.validation import calculate_chi_squared_improvement
 from ftmwpipeline.io.fitting_serialization import (
+    load_spectrum_fit_from_hdf5,
     read_fit_window_quality_recorded,
     save_spectrum_fit_to_hdf5,
 )
@@ -331,6 +332,41 @@ def test_fit_window_quality_recorded_distinguishes_computed_from_never_fit(tmp_p
         )
     assert rec["edge_coherence_low"].tolist() == [True, True, False, True]
     assert rec["edge_coherence_high"].tolist() == [True, True, False, True]
+
+
+def _edge_statuses(path):
+    t = read_table_impl(path, "fit_windows")
+    return (
+        list(t["edge_coherence_low__status"]),
+        list(t["edge_coherence_high__status"]),
+    )
+
+
+def test_a_load_save_round_trip_keeps_never_fit_apart_from_undefined(tmp_path):
+    """Stage 6 rewrites the whole fit through load and save. A window the fit
+    never evaluated must not come back recorded as computed (``NOT_RUN`` turned
+    ``UNDEFINED``); every other status survives too."""
+    f = _build(tmp_path / "rt.ftmw", _edge_windows("current"))
+    before = _edge_statuses(f)
+    assert before == ([UD, UD, NR, 0], [0, UD, NR, UD])
+    with h5py.File(f, "r+") as h5f:
+        fit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+        assert "edge_coherence_low" not in fit.window_fits[2].quality_metrics
+        del h5f["stage5_fitting"]
+        save_spectrum_fit_to_hdf5(fit, h5f.create_group("stage5_fitting"))
+    assert _edge_statuses(f) == before
+
+
+def test_the_load_restores_a_finite_edge_column_a_hand_edit_dropped(tmp_path):
+    f = _build(tmp_path / "he.ftmw", _edge_windows("current"))
+    with h5py.File(f, "r+") as h5f:
+        cells = h5f["stage5_fitting/windows/quality_metrics"]
+        ids = list(h5f["stage5_fitting/windows/window_id"][:])
+        cells[ids.index(3)] = "{}"
+        fit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+    quality = next(w for w in fit.window_fits if w.window_id == 3).quality_metrics
+    # The finite column is canonical; the undefined one left no trace to restore.
+    assert quality == {"edge_coherence_low": 1.2}
 
 
 def test_fit_window_quality_recorded_without_a_quality_column(tmp_path):
