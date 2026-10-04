@@ -63,6 +63,32 @@ def test_capabilities_payload_content(capsys):
     json.dumps(cap, allow_nan=False)
 
 
+def test_capabilities_carries_every_manifest_group():
+    cap = ftmw.capabilities()
+    assert cap["metadata_keys"] == list(MANIFEST.metadata_keys)
+    assert cap["tables"] == {k: list(v) for k, v in MANIFEST.tables.items()}
+    assert cap["fields"] == {k: list(v) for k, v in MANIFEST.fields.items()}
+    assert cap["vocabularies"] == {k: list(v) for k, v in MANIFEST.vocabularies.items()}
+    assert cap["file_bound"] == dict(MANIFEST.file_bound)
+    assert list(cap["pipeline_names"]) == list(MANIFEST.accessors)
+    for accessor, name in cap["pipeline_names"].items():
+        assert name == MANIFEST.pipeline_names.get(accessor, accessor)
+        assert hasattr(Pipeline, name)
+    assert {"CurationAction", "SettingRow"} <= set(cap["fields"])
+    assert ftmw.capabilities() == cap
+
+
+def test_declared_curation_action_and_setting_row_fields_exist():
+    import dataclasses
+
+    from ftmwpipeline._internal.tuning.settings_inspection import SettingRow
+    from ftmwpipeline.core.curation import CurationAction
+
+    for typ in (CurationAction, SettingRow):
+        names = [f.name for f in dataclasses.fields(typ)]
+        assert list(MANIFEST.fields[typ.__name__]) == names
+
+
 def test_capabilities_cli_default_format_and_no_file(capsys):
     rc, out, err = _cli(["read", "capabilities"], capsys)
     assert rc == 0 and err == ""

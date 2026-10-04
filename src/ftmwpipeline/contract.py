@@ -63,7 +63,7 @@ from .file_manager import (
 #: The machine-contract version. The first published contract is ``1``; each
 #: release that adds (or, before 1.0.0, changes) contract elements raises it by
 #: one, so a client can gate on it as well as on :func:`capabilities`.
-CONTRACT_VERSION: int = 7
+CONTRACT_VERSION: int = 8
 
 #: Schema name of the :func:`capabilities` payload.
 CAPABILITIES_SCHEMA = "ftmw/capabilities@1"
@@ -262,6 +262,7 @@ STAGE_KNOB_PREFIX: Mapping[Stage, Optional[str]] = MappingProxyType(
         Stage.REVIEW: None,
     }
 )
+
 
 def stage_depends_on(stage: Union[Stage, str]) -> Tuple[Stage, ...]:
     """The stages ``stage`` requires, canonical and in enum order.
@@ -637,6 +638,29 @@ _FIELDS: Dict[str, Tuple[str, ...]] = {
         "environment_acknowledged",
         "warnings",
     ),
+    # Wave 8: types earlier waves added without declaring them.
+    "CurationAction": (
+        "action",
+        "window_id",
+        "freq_mhz",
+        "peak_uid",
+        "candidate_mhz",
+        "frame",
+        "epsilon",
+    ),
+    "SettingRow": (
+        "path",
+        "value",
+        "source",
+        "hard_default",
+        "tier",
+        "help",
+        "type",
+        "nullable",
+        "units",
+        "choices",
+        "bounds",
+    ),
     "ComplexFT": ("freq_array", "complex_spectrum", "metadata"),
     "ComplexFT.metadata": ("amplitude_scale", "units_label", "pad_factor"),
 }
@@ -676,8 +700,13 @@ def capabilities() -> Dict[str, Any]:
     dict
         ``{"schema": "ftmw/capabilities@1", "contract_version": int,
         "schemas": [...], "accessors": [...], "codes": [...], "stages": [{"stage",
-        "storage_key", "settings_prefix", "knob_prefix", "depends_on"}]}``, read from
-        :data:`MANIFEST`. Already JSON-able; file-independent.
+        "storage_key", "settings_prefix", "knob_prefix", "depends_on"}],
+        "metadata_keys": [...], "tables": {name: [columns]},
+        "fields": {type: [fields]}, "vocabularies": {name: [values]},
+        "file_bound": {accessor: bool}, "pipeline_names": {accessor: name}}``,
+        read from :data:`MANIFEST`. Already JSON-able and deterministic
+        (manifest order); file-independent. ``pipeline_names`` names every
+        accessor's ``Pipeline`` method (its own name unless declared otherwise).
     """
     return {
         "schema": CAPABILITIES_SCHEMA,
@@ -695,6 +724,14 @@ def capabilities() -> Dict[str, Any]:
             }
             for stage in Stage
         ],
+        "metadata_keys": list(MANIFEST.metadata_keys),
+        "tables": {k: list(v) for k, v in MANIFEST.tables.items()},
+        "fields": {k: list(v) for k, v in MANIFEST.fields.items()},
+        "vocabularies": {k: list(v) for k, v in MANIFEST.vocabularies.items()},
+        "file_bound": dict(MANIFEST.file_bound),
+        "pipeline_names": {
+            a: MANIFEST.pipeline_names.get(a, a) for a in MANIFEST.accessors
+        },
     }
 
 
