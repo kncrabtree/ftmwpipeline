@@ -664,10 +664,10 @@ curation-file row:
   frequency). A batch may mix frames. The pipeline converts each action to raw
   before resolution, exactly as it does a file's frequencies.
 - **Calls.**
-  - `review_apply(path, curation=None, *, actions=None, ...)` and
-    `review_preview(...)` take exactly one of `curation` (a file path) or
-    `actions`, else `bad_setting` (`path` `"actions"`). The first positional
-    parameter keeps its name for existing callers.
+  - `review_apply(path, curation_path=None, *, actions=None, ...)` and
+    `review_preview(...)` take exactly one of `curation_path` or `actions`,
+    else `bad_setting` (`path` `"actions"`). `curation_path` keeps its name and
+    position for existing callers.
   - `Pipeline` and the review session take the same.
   - The CLI's `review apply` / `review preview` accept `--actions FILE`, a
     JSON array of action dicts (`-` for stdin), as an alternative to the
