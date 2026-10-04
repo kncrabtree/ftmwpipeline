@@ -24,7 +24,7 @@ import numpy as np  # noqa: E402
 import pytest  # noqa: E402
 
 import ftmwpipeline.api as ftmw  # noqa: E402
-from ftmwpipeline._internal.atomic import atomic_write
+from ftmwpipeline._internal.atomic import atomic_write  # noqa: E402
 from ftmwpipeline._internal.report_html_impl import (  # noqa: E402
     _LIGHTBOX_JS,
     _STYLESHEET,

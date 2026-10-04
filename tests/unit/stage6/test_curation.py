@@ -1356,7 +1356,8 @@ def test_apply_merge_via_batch_matches_direct_call(stage5_multi_file, tmp_path):
 
     plan = [PlannedAction(kind="merge", window_id=wid, peaks=list(freqs))]
     snap_tol = s6.resolve_snap_tol_mhz(str(batched), None)
-    s6._execute_curation_batch(str(batched), plan, snap_tol_mhz=snap_tol)
+    with atomic_write(str(batched)):
+        s6._execute_curation_batch(str(batched), plan, snap_tol_mhz=snap_tol)
 
     assert _fitted_by_window(direct) == _fitted_by_window(batched)
     assert [e.kind for e in review_log_impl(batched)] == ["merge"]
@@ -1385,7 +1386,8 @@ def test_apply_split_via_batch_matches_direct_call(stage5_multi_file, tmp_path):
 
     plan = [PlannedAction(kind="split", window_id=wid, peak=freq, into=2)]
     snap_tol = s6.resolve_snap_tol_mhz(str(batched), None)
-    s6._execute_curation_batch(str(batched), plan, snap_tol_mhz=snap_tol)
+    with atomic_write(str(batched)):
+        s6._execute_curation_batch(str(batched), plan, snap_tol_mhz=snap_tol)
 
     assert _fitted_by_window(direct) == _fitted_by_window(batched)
     assert [e.kind for e in review_log_impl(batched)] == ["split"]
