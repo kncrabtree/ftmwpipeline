@@ -508,6 +508,34 @@ _STAGE0_GROUP = "stage0_fid_data"
 _RECOMMENDED_CLOCKS_ATTR = "recommended_clock_sources"
 
 
+def _write_stage0_attr(file_path: str, attr: str, encoded: str, what: str) -> None:
+    """Store *encoded* as the Stage 0 group's *attr* (a no-op when the group is
+    absent), opening the file for write only when the stored value differs.
+
+    An identical re-persist (a re-import of the same source) therefore writes
+    nothing, so its transaction leaves the file untouched (§Crash safety).
+    """
+    try:
+        with h5open(file_path, "r") as h5f:
+            group = h5f.get(_STAGE0_GROUP)
+            if group is None:
+                return
+            stored = group.attrs.get(attr)
+            if isinstance(stored, bytes):
+                stored = stored.decode("utf-8")
+            if stored == encoded:
+                return
+    except (OSError, KeyError):
+        pass  # Unreadable: the write below reports it.
+    try:
+        with h5open(file_path, "a") as h5f:
+            if _STAGE0_GROUP not in h5f:
+                return
+            h5f[_STAGE0_GROUP].attrs[attr] = encoded
+    except (OSError, KeyError):
+        logger.warning("Could not write %s to %s", what, file_path)
+
+
 def write_recommended_clock_sources(
     file_path: str,
     clock_sources: Optional[Tuple[ClockSource, ...]],
@@ -526,13 +554,9 @@ def write_recommended_clock_sources(
         encoded = _NONE_SENTINEL
     else:
         encoded = json.dumps([c.to_dict() for c in clock_sources])
-    try:
-        with h5open(file_path, "a") as h5f:
-            if _STAGE0_GROUP not in h5f:
-                return
-            h5f[_STAGE0_GROUP].attrs[_RECOMMENDED_CLOCKS_ATTR] = encoded
-    except (OSError, KeyError):
-        logger.warning("Could not write recommended clock sources to %s", file_path)
+    _write_stage0_attr(
+        file_path, _RECOMMENDED_CLOCKS_ATTR, encoded, "recommended clock sources"
+    )
 
 
 def read_recommended_clock_sources(
@@ -595,13 +619,9 @@ def write_recommended_chirp_window(
                 ),
             }
         )
-    try:
-        with h5open(file_path, "a") as h5f:
-            if _STAGE0_GROUP not in h5f:
-                return
-            h5f[_STAGE0_GROUP].attrs[_RECOMMENDED_CHIRP_WINDOW_ATTR] = encoded
-    except (OSError, KeyError):
-        logger.warning("Could not write recommended chirp window to %s", file_path)
+    _write_stage0_attr(
+        file_path, _RECOMMENDED_CHIRP_WINDOW_ATTR, encoded, "recommended chirp window"
+    )
 
 
 def read_recommended_chirp_window(
