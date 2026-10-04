@@ -54,6 +54,7 @@ SNAPSHOT_ACCESSORS = frozenset(
         "window_model",
         "spectrum_model",
         "analysis_fingerprint",
+        "status",
     }
 )
 SNAPSHOT_SCHEMAS = frozenset(
@@ -80,6 +81,7 @@ SNAPSHOT_SCHEMAS = frozenset(
         "ftmw/pipeline_info@1",
         "ftmw/display_ft@1",
         "ftmw/curation_action@1",
+        "ftmw/status@1",
     }
 )
 SNAPSHOT_CODES = frozenset(
@@ -116,6 +118,7 @@ SNAPSHOT_FILE_BOUND = {
     "window_model": True,
     "spectrum_model": True,
     "analysis_fingerprint": True,
+    "status": True,
 }
 SNAPSHOT_PIPELINE_NAMES = {
     "get_final_products": "final_products",
@@ -247,6 +250,7 @@ SNAPSHOT_FIELDS: dict = {
 SNAPSHOT_VOCABULARIES = {
     "decision_kind": {"add", "remove", "merge", "split", "accept", "create_window"},
     "decision_provenance": {"user"},
+    "stage_state": {"complete", "partial", "not_run"},
 }
 
 
@@ -470,7 +474,7 @@ def test_manifest_sequences_are_tuples():
 
 
 def test_manifest_version_matches_package():
-    assert MANIFEST.contract_version == ftmwpipeline.CONTRACT_VERSION == 6
+    assert MANIFEST.contract_version == ftmwpipeline.CONTRACT_VERSION == 7
     assert isinstance(ftmwpipeline.CONTRACT_VERSION, int)
 
 

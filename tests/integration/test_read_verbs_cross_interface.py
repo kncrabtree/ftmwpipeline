@@ -58,6 +58,7 @@ KINDS = {
     "window_model": ("direct", "dict"),
     "spectrum_model": ("direct", "dict"),
     "analysis_fingerprint": ("direct", "dict"),
+    "status": ("direct", "dict"),
 }
 
 
@@ -88,6 +89,7 @@ EXPECTED_SCHEMA = {
     "window_model": "ftmw/window_model@1",
     "spectrum_model": "ftmw/spectrum_model@1",
     "analysis_fingerprint": "ftmw/analysis_fingerprint@1",
+    "status": "ftmw/status@1",
 }
 
 

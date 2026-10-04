@@ -56,13 +56,14 @@ from .file_manager import (
     PipelineExistsError,
     PipelineFileError,
     PipelineFileNotFoundError,
+    PipelineStageTracker,
     StageDependencyError,
 )
 
 #: The machine-contract version. The first published contract is ``1``; each
 #: release that adds (or, before 1.0.0, changes) contract elements raises it by
 #: one, so a client can gate on it as well as on :func:`capabilities`.
-CONTRACT_VERSION: int = 6
+CONTRACT_VERSION: int = 7
 
 #: Schema name of the :func:`capabilities` payload.
 CAPABILITIES_SCHEMA = "ftmw/capabilities@1"
@@ -79,6 +80,7 @@ WINDOW_MODEL_SCHEMA = "ftmw/window_model@1"
 SPECTRUM_MODEL_SCHEMA = "ftmw/spectrum_model@1"
 #: Frozen once published: a different definition is published as ``@2``.
 ANALYSIS_FINGERPRINT_SCHEMA = "ftmw/analysis_fingerprint@1"
+STATUS_SCHEMA = "ftmw/status@1"
 
 #: Schema names of the declared existing accessors. Their Python results are
 #: unchanged (a dataclass, list, scalar or plain dict); the CLI envelope stamps
@@ -219,6 +221,93 @@ def key_for_stage(stage: Union[Stage, str]) -> str:
     return STAGE_KEYS[Stage(stage)]
 
 
+#: Settings / preset prefix of each canonical stage (read-only): the
+#: ``_StageSpec.prefix`` of ``settings_inspection`` and the key of
+#: ``settings_mutation._MUT_SPECS``. ``tau`` and ``tau_g`` share ``stage2b``.
+#: ``None``: the stage has no settings record (Stage 0 has none, the timebase
+#: has no preset-driven settings, Stage 6 takes curation actions).
+STAGE_SETTINGS_PREFIX: Mapping[Stage, Optional[str]] = MappingProxyType(
+    {
+        Stage.DATA: None,
+        Stage.FT: "stage1",
+        Stage.NOISE: "stage2",
+        Stage.TAU: "stage2b",
+        Stage.TAU_G: "stage2b",
+        Stage.TIMEBASE: None,
+        Stage.PEAKS: "stage3",
+        Stage.WINDOWS: "stage4",
+        Stage.FIT: "stage5",
+        Stage.REVIEW: None,
+    }
+)
+
+#: Tuning-registry knob prefix of each canonical stage (read-only): the leading
+#: dotted segment(s) of the ``KnobSpec.path`` values that stage owns. Stage 0's
+#: knobs are the start-detection sweep (``stage0.*``); the Gaussian tau knobs
+#: live under ``stage2b.gaussian``. ``None``: the stage has no registered knob.
+STAGE_KNOB_PREFIX: Mapping[Stage, Optional[str]] = MappingProxyType(
+    {
+        Stage.DATA: "stage0",
+        Stage.FT: "stage1",
+        Stage.NOISE: "stage2",
+        Stage.TAU: "stage2b",
+        Stage.TAU_G: "stage2b.gaussian",
+        Stage.TIMEBASE: None,
+        Stage.PEAKS: "stage3",
+        Stage.WINDOWS: "stage4",
+        Stage.FIT: "stage5",
+        Stage.REVIEW: None,
+    }
+)
+
+_STAGE_BY_KNOB_PREFIX: Mapping[str, Stage] = MappingProxyType(
+    {p: stage for stage, p in STAGE_KNOB_PREFIX.items() if p is not None}
+)
+
+
+def stage_for_knob_prefix(prefix: str) -> Stage:
+    """The canonical :class:`Stage` for a tuning-registry knob prefix.
+
+    The knob mapping is one-to-one (``stage2b`` is :attr:`Stage.TAU`,
+    ``stage2b.gaussian`` is :attr:`Stage.TAU_G`). The settings mapping is not
+    (``tau`` and ``tau_g`` share ``stage2b``), so it has no inverse.
+
+    Raises
+    ------
+    ValueError
+        If ``prefix`` is not a stage's knob prefix.
+    """
+    try:
+        return _STAGE_BY_KNOB_PREFIX[prefix]
+    except KeyError:
+        raise ValueError(f"no canonical stage for knob prefix {prefix!r}") from None
+
+
+def stage_depends_on(stage: Union[Stage, str]) -> Tuple[Stage, ...]:
+    """The stages ``stage`` requires, canonical and in enum order.
+
+    Read from ``PipelineStageTracker.STAGE_DEPENDENCIES``.
+    """
+    key = key_for_stage(stage)
+    deps = {_STAGE_BY_KEY[k] for k in PipelineStageTracker.STAGE_DEPENDENCIES[key]}
+    return tuple(s for s in Stage if s in deps)
+
+
+def rerun_order() -> Tuple[Stage, ...]:
+    """Every stage in the dependency-respecting order a full refresh follows.
+
+    A fixed topological order: of the stages whose dependencies are all placed,
+    the one earliest in the :class:`Stage` enum comes next.
+    """
+    order: list = []
+    remaining = list(Stage)
+    while remaining:
+        nxt = next(s for s in remaining if all(d in order for d in stage_depends_on(s)))
+        order.append(nxt)
+        remaining.remove(nxt)
+    return tuple(order)
+
+
 @dataclass(frozen=True)
 class ContractManifest:
     """Immutable enumeration of every declared contract element.
@@ -354,6 +443,8 @@ _ACCESSORS: Tuple[AccessorSpec, ...] = (
     AccessorSpec("spectrum_model", file_bound=True),
     # The analysis fingerprint (Wave 2c).
     AccessorSpec("analysis_fingerprint", file_bound=True),
+    # Per-stage state, runnable set and refresh order (Wave 7).
+    AccessorSpec("status", file_bound=True),
 )
 
 _SCHEMAS: Tuple[str, ...] = (
@@ -367,6 +458,7 @@ _SCHEMAS: Tuple[str, ...] = (
     WINDOW_MODEL_SCHEMA,
     SPECTRUM_MODEL_SCHEMA,
     ANALYSIS_FINGERPRINT_SCHEMA,
+    STATUS_SCHEMA,
     CALIBRATION_SCHEMA,
     SNAP_TOLERANCE_SCHEMA,
     METADATA_SCHEMA,
@@ -569,12 +661,17 @@ _FIELDS: Dict[str, Tuple[str, ...]] = {
     "ComplexFT.metadata": ("amplitude_scale", "units_label", "pad_factor"),
 }
 
+#: The ``state`` values of a :func:`~ftmwpipeline.api.status` stage entry.
+#: ``partial`` (Stage 5 after a cancelled run) has no producer yet.
+STAGE_STATES: Tuple[str, ...] = ("complete", "partial", "not_run")
+
 #: Frozen closed vocabularies. ``decision_kind`` / ``decision_provenance`` are
 #: checked against ``core.data_structures.DECISION_KINDS`` /
 #: ``DECISION_PROVENANCES``, which the Stage 6 code records from.
 _VOCABULARIES: Dict[str, Tuple[str, ...]] = {
     "decision_kind": ("add", "remove", "merge", "split", "accept", "create_window"),
     "decision_provenance": ("user",),
+    "stage_state": STAGE_STATES,
 }
 
 MANIFEST = ContractManifest(
@@ -598,7 +695,8 @@ def capabilities() -> Dict[str, Any]:
     -------
     dict
         ``{"schema": "ftmw/capabilities@1", "contract_version": int,
-        "schemas": [...], "accessors": [...], "codes": [...]}``, read from
+        "schemas": [...], "accessors": [...], "codes": [...], "stages": [{"stage",
+        "storage_key", "settings_prefix", "knob_prefix", "depends_on"}]}``, read from
         :data:`MANIFEST`. Already JSON-able; file-independent.
     """
     return {
@@ -607,6 +705,16 @@ def capabilities() -> Dict[str, Any]:
         "schemas": list(MANIFEST.schemas),
         "accessors": list(MANIFEST.accessors),
         "codes": list(MANIFEST.codes),
+        "stages": [
+            {
+                "stage": stage.value,
+                "storage_key": STAGE_KEYS[stage],
+                "settings_prefix": STAGE_SETTINGS_PREFIX[stage],
+                "knob_prefix": STAGE_KNOB_PREFIX[stage],
+                "depends_on": [d.value for d in stage_depends_on(stage)],
+            }
+            for stage in Stage
+        ],
     }
 
 
@@ -621,6 +729,7 @@ __all__ = [
     "WINDOW_MODEL_SCHEMA",
     "SPECTRUM_MODEL_SCHEMA",
     "ANALYSIS_FINGERPRINT_SCHEMA",
+    "STATUS_SCHEMA",
     "CALIBRATION_SCHEMA",
     "SNAP_TOLERANCE_SCHEMA",
     "METADATA_SCHEMA",
@@ -643,6 +752,12 @@ __all__ = [
     "STAGE_KEYS",
     "stage_for_key",
     "key_for_stage",
+    "STAGE_SETTINGS_PREFIX",
+    "STAGE_KNOB_PREFIX",
+    "stage_for_knob_prefix",
+    "stage_depends_on",
+    "rerun_order",
+    "STAGE_STATES",
     "AccessorSpec",
     "STATUS_PRESENT",
     "STATUS_NOT_RUN",

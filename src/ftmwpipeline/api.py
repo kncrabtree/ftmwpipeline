@@ -2729,6 +2729,20 @@ def analysis_fingerprint(file_path: Union[str, Path]) -> Dict[str, Any]:
     return Pipeline.open(file_path).analysis_fingerprint()
 
 
+def status(file_path: Union[str, Path]) -> Dict[str, Any]:
+    """Per-stage state, equivalent to :meth:`Pipeline.status`.
+
+    Returns ``{"schema": "ftmw/status@1", "stages": [{"stage", "state",
+    "depends_on"}], "runnable": [...], "rerun_order": [...]}`` with canonical
+    stage names. ``state`` is ``complete``, ``partial`` (reserved for a Stage 5
+    fit interrupted by a cancel; nothing returns it yet) or ``not_run``.
+    ``runnable`` lists the stages that are not complete but whose dependencies
+    all are; ``rerun_order`` is the dependency-respecting order a full refresh
+    follows. Never writes.
+    """
+    return Pipeline.open(file_path).status()
+
+
 def preview_source(
     source: Union[str, Path], format_name: Optional[str] = None
 ) -> Dict[str, Any]:
