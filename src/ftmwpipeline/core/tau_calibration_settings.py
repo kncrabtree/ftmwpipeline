@@ -10,7 +10,9 @@ parameters across every surface:
 * the CLI ``--preset`` flag plus the existing per-knob flags,
 * the resolution chain ``explicit > persisted > preset > recommended >
   hard default``,
-* the persisted record in ``processing_parameters/stage2b_tau``,
+* the persisted record in ``processing_parameters/stage2b_tau`` (the recipe
+  the next Stage 2b run resolves against), and the per-producer records of
+  what each Stage 2b result used (:data:`PRODUCER_FIELDS`),
 * the YAML preset interchange format.
 
 The dataclass mirrors the Stage 5 :class:`~ftmwpipeline.core.stage_fit_settings.StageFitSettings`
@@ -389,6 +391,116 @@ _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# What each Stage 2b producer consumes
+# ---------------------------------------------------------------------------
+#: The three Stage 2b producers. Each reads its knobs from the one resolved
+#: bundle but consumes a different subset of it, and each persists its own
+#: record of what it used (see
+#: :mod:`ftmwpipeline.io.tau_calibration_settings_serialization`).
+PRODUCER_LORENTZIAN = "lorentzian"
+PRODUCER_GAUSSIAN = "gaussian"
+PRODUCER_RECOMMENDATION = "recommendation"
+
+_STFT_CALIBRATION_FIELDS = (
+    "n_seg",
+    "t_sigma",
+    "tau_max_us",
+    "tau_max_factor",
+    "rss_gate_factor",
+    "relative_gate_fraction",
+    "sigma_x_full",
+    "sigma_time",
+)
+_BAND_FIELDS = (
+    "compute_band_majorities",
+    "band_edges_mhz",
+    "band_labels",
+    "min_contributors_per_band",
+)
+
+#: The settings fields each producer passes to its kernel, by sub-block. A
+#: field outside a producer's map cannot change that producer's output
+#: (``recommendation.auto_recommend`` only decides whether the recommender
+#: runs, and is in no map). The recommender's kernel call does not forward
+#: ``stft.relative_gate_fraction`` or ``stft.sigma_x_full``, so it runs at the
+#: kernel defaults for both and neither is in its map.
+PRODUCER_FIELDS: Dict[str, Dict[str, Tuple[str, ...]]] = {
+    PRODUCER_LORENTZIAN: {
+        "stft": _STFT_CALIBRATION_FIELDS,
+        "polish": (
+            "polish",
+            "polish_n_iter",
+            "polish_snr_cap",
+            "polish_noise_debias",
+        ),
+        "aggregation": (
+            "min_contributors",
+            "sigma_tau_fraction_max",
+            "bimodality_dominant_fraction",
+            "sigma_tau_floor_us",
+            "spur_cluster_multiplier",
+        ),
+        "band": _BAND_FIELDS,
+    },
+    PRODUCER_GAUSSIAN: {
+        "stft": _STFT_CALIBRATION_FIELDS,
+        "aggregation": (
+            "sigma_tau_fraction_max",
+            "bimodality_dominant_fraction",
+            "sigma_tau_floor_us",
+            "spur_cluster_multiplier",
+        ),
+        "band": _BAND_FIELDS,
+        "gaussian": (
+            "snr_min",
+            "tau_G_bound_lo",
+            "tau_G_bound_hi",
+            "tau_G_seeds",
+            "delta_chi2r_min",
+            "tau_G_upper_fraction",
+            "min_contributors",
+        ),
+    },
+    PRODUCER_RECOMMENDATION: {
+        "stft": (
+            "n_seg",
+            "t_sigma",
+            "tau_max_us",
+            "tau_max_factor",
+            "rss_gate_factor",
+            "sigma_time",
+        ),
+        "recommendation": (
+            "snr_min",
+            "tau_bound_lo",
+            "tau_bound_hi",
+            "tau_G_seeds",
+            "pure_margin_threshold",
+        ),
+    },
+}
+
+
+def producer_values(
+    settings: TauCalibrationSettings, producer: str
+) -> Dict[str, Dict[str, Any]]:
+    """The values *producer* consumes from *settings*, by sub-block.
+
+    Every field in the producer's :data:`PRODUCER_FIELDS` map is present; on a
+    resolved bundle a ``None`` is a field that legitimately resolved to unset.
+    """
+    if producer not in PRODUCER_FIELDS:
+        raise ValueError(
+            f"unknown Stage 2b producer {producer!r}; expected one of "
+            f"{sorted(PRODUCER_FIELDS)}"
+        )
+    return {
+        block: {name: getattr(getattr(settings, block), name) for name in names}
+        for block, names in PRODUCER_FIELDS[producer].items()
+    }
+
+
 # Fields that must round-trip as tuples (not lists / arrays). Mirror the
 # typed declarations on the sub-dataclasses above.
 _TUPLE_FIELDS = {"tau_G_seeds", "band_edges_mhz", "band_labels"}
@@ -582,4 +694,9 @@ __all__ = [
     "to_yaml_dict",
     "from_yaml_dict",
     "load_preset",
+    "PRODUCER_LORENTZIAN",
+    "PRODUCER_GAUSSIAN",
+    "PRODUCER_RECOMMENDATION",
+    "PRODUCER_FIELDS",
+    "producer_values",
 ]

@@ -69,6 +69,12 @@ CALIBRATE_TAU_FIELDS: list[tuple[str, Callable[..., None], str, Any]] = [
     ("stft.t_sigma", _sub_set("stft", "t_sigma", 7.5), "t_sigma", 7.5),
     ("stft.tau_max_us", _sub_set("stft", "tau_max_us", 60.0), "tau_max_us", 60.0),
     (
+        "stft.tau_max_factor",
+        _sub_set("stft", "tau_max_factor", 9.0),
+        "tau_max_factor",
+        9.0,
+    ),
+    (
         "stft.rss_gate_factor",
         _sub_set("stft", "rss_gate_factor", 3.0),
         "rss_gate_factor",
@@ -202,6 +208,12 @@ CALIBRATE_TAU_G_FIELDS: list[tuple[str, Callable[..., None], str, Any]] = [
     ("stft.n_seg", _sub_set("stft", "n_seg", 6), "n_seg", 6),
     ("stft.t_sigma", _sub_set("stft", "t_sigma", 4.0), "t_sigma", 4.0),
     ("stft.tau_max_us", _sub_set("stft", "tau_max_us", 80.0), "tau_max_us", 80.0),
+    (
+        "stft.tau_max_factor",
+        _sub_set("stft", "tau_max_factor", 7.0),
+        "tau_max_factor",
+        7.0,
+    ),
     (
         "stft.rss_gate_factor",
         _sub_set("stft", "rss_gate_factor", 3.5),
@@ -370,6 +382,12 @@ RECOMMEND_SHAPE_FIELDS: list[tuple[str, Callable[..., None], str, Any]] = [
     ("stft.n_seg", _sub_set("stft", "n_seg", 14), "n_seg", 14),
     ("stft.t_sigma", _sub_set("stft", "t_sigma", 6.0), "t_sigma", 6.0),
     ("stft.tau_max_us", _sub_set("stft", "tau_max_us", 50.0), "tau_max_us", 50.0),
+    (
+        "stft.tau_max_factor",
+        _sub_set("stft", "tau_max_factor", 3.0),
+        "tau_max_factor",
+        3.0,
+    ),
     (
         "stft.rss_gate_factor",
         _sub_set("stft", "rss_gate_factor", 4.5),
@@ -786,3 +804,128 @@ class TestAutoRecommend:
 
         assert stage2b_impl.tau_calibration_present(str(variant))
         assert not stage2b_impl.tau_calibration_present(str(variant), shape="gaussian")
+
+
+# ---------------------------------------------------------------------------
+# One record per producer: each Stage 2b result says what it used
+# ---------------------------------------------------------------------------
+def _n_seg_settings(n_seg: int) -> TauCalibrationSettings:
+    s = TauCalibrationSettings()
+    s.stft.n_seg = n_seg
+    s.recommendation.auto_recommend = False
+    return s
+
+
+class TestPerProducerRecords:
+    """The two tau twins and the shape recommendation each persist their own
+    resolved settings record; running one never changes what another is read
+    as having used. The shared ``stage2b_tau`` recipe still follows the most
+    recent run."""
+
+    def test_running_one_producer_leaves_the_others_records(
+        self,
+        baseline_2638_stage2: Path,
+        tmp_path: Path,
+    ) -> None:
+        from ftmwpipeline.io.tau_calibration_settings_serialization import (
+            load_tau_calibration_settings_from_h5,
+            load_tau_producer_settings_from_h5,
+            tau_producer_settings_provenance,
+        )
+
+        variant = tmp_path / "records.ftmw"
+        shutil.copyfile(baseline_2638_stage2, variant)
+        f = str(variant)
+
+        stage2b_impl.calibrate_tau_impl(f, settings=_n_seg_settings(12))
+        stage2b_impl.calibrate_tau_impl(
+            f, shape="gaussian", settings=_n_seg_settings(8)
+        )
+        shape_recommendation_impl.recommend_shape_impl(f, settings=_n_seg_settings(6))
+
+        used = {
+            p: load_tau_producer_settings_from_h5(f, p)
+            for p in ("lorentzian", "gaussian", "recommendation")
+        }
+        assert {p: rec["stft"]["n_seg"] for p, rec in used.items()} == {
+            "lorentzian": 12,
+            "gaussian": 8,
+            "recommendation": 6,
+        }
+        for p in used:
+            prov = tau_producer_settings_provenance(f, p)
+            assert prov is not None and prov.is_current
+        # The recipe (persisted layer for the next run) follows the last run.
+        recipe = load_tau_calibration_settings_from_h5(f)
+        assert recipe is not None and recipe.stft.n_seg == 6
+
+    def test_twin_record_matches_its_result(
+        self,
+        baseline_2638_stage2: Path,
+        tmp_path: Path,
+    ) -> None:
+        from ftmwpipeline.io.tau_calibration_settings_serialization import (
+            load_tau_producer_settings_from_h5,
+        )
+
+        variant = tmp_path / "twin_record.ftmw"
+        shutil.copyfile(baseline_2638_stage2, variant)
+        f = str(variant)
+        s = _n_seg_settings(12)
+        s.stft.tau_max_factor = 4.0
+        out = stage2b_impl.calibrate_tau_impl(f, settings=s)
+        result = out["tau_calibration"]
+
+        used = load_tau_producer_settings_from_h5(f, "lorentzian")
+        assert used is not None
+        assert used["stft"]["n_seg"] == result.n_seg == 12
+        assert used["stft"]["tau_max_factor"] == 4.0
+        assert used["stft"]["tau_max_us"] is None
+        # The effective clip rides on the result codec.
+        loaded = stage2b_impl.load_tau_calibration_impl(f)["tau_calibration"]
+        span_us = result.end_us - result.start_us
+        assert loaded.tau_max_us == pytest.approx(4.0 * span_us, rel=1e-3)
+
+    def test_recommendation_persists_without_a_tau_group(
+        self,
+        baseline_2638_stage1: Path,
+        tmp_path: Path,
+    ) -> None:
+        from ftmwpipeline.io.tau_calibration_settings_serialization import (
+            load_shape_recommendation_record,
+        )
+
+        variant = tmp_path / "rec_only.ftmw"
+        shutil.copyfile(baseline_2638_stage1, variant)
+        f = str(variant)
+        out = shape_recommendation_impl.recommend_shape_impl(f)
+        assert out["groups_written"] == []
+
+        rec = load_shape_recommendation_record(f)
+        assert rec is not None
+        verdict = out["shape_recommendation"]
+        assert rec.recommended_shape == verdict.recommended_shape
+        assert rec.vote_rates == pytest.approx(verdict.vote_rates)
+        assert rec.tau_max_us == verdict.tau_max_us
+        assert rec.consumed["trim_lo_mhz"] == 26500.0
+        assert rec.consumed["trim_hi_mhz"] == 40000.0
+
+    def test_primary_calibration_withdraws_the_recommendation_record(
+        self,
+        baseline_2638_stage2: Path,
+        tmp_path: Path,
+    ) -> None:
+        from ftmwpipeline.io.tau_calibration_settings_serialization import (
+            load_shape_recommendation_record,
+        )
+
+        variant = tmp_path / "withdraw.ftmw"
+        shutil.copyfile(baseline_2638_stage2, variant)
+        f = str(variant)
+        shape_recommendation_impl.recommend_shape_impl(f)
+        assert load_shape_recommendation_record(f) is not None
+
+        # A primary calibration resets the verdict; with auto_recommend off no
+        # new one is produced, so no recommendation record remains.
+        stage2b_impl.calibrate_tau_impl(f, settings=_n_seg_settings(10))
+        assert load_shape_recommendation_record(f) is None

@@ -337,6 +337,25 @@ the :math:`\tau_G` fit bounds, and the reduced-:math:`\chi^2` eligibility margin
 ``delta_chi2r_min``); the per-band split is configurable through
 ``band_edges_mhz`` and ``band_labels``.
 
+``tau_max_factor`` (default ``5``) sets the upper clip on a bin's decay time as a
+multiple of the active-region length when ``tau_max_us`` is unset; a bin that
+saturates against the clip is treated as a clock spur.
+
+The three Stage 2b producers resolve their knobs against one shared settings
+recipe (``processing_parameters/stage2b_tau``), which every run rewrites so the
+next no-argument run inherits it; it is what ``settings show stage2b`` reports
+and ``settings set stage2b.…`` edits. What each result actually used is recorded
+separately and is never overwritten by another producer:
+``processing_parameters/stage2b_tau_calibration`` for the Lorentzian calibration,
+``processing_parameters/stage2b_tau_G_calibration`` for the Gaussian one, and
+``processing_parameters/stage2b_shape_recommendation`` for the shape vote. Each
+record holds only the knobs its producer consumes. The recommendation's record
+also holds the Stage 1 active region and trim it ran on, the decay-time clip it
+used, and its verdict, and it is written even when no calibration exists yet. A
+fresh Lorentzian or Gaussian calibration withdraws the verdict, and removes the
+recommendation's record with it, until the vote is run again. The decay-time clip
+each calibration used is stored with its result.
+
 Inspecting the diagnostics
 --------------------------
 

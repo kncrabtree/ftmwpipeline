@@ -65,6 +65,22 @@ engine so they cannot answer differently.
   the shape recommendation and the timebase now agree with Stages 2-5 when an
   old record has an unset window or trim and a recommendation was stamped
   afterwards (they previously read ``0.0`` / the duration).
+* **Machine contract, Wave 2b: one Stage 2b settings record per producer.**
+  The Lorentzian calibration, the Gaussian calibration and the shape
+  recommendation each persist their own resolved settings record
+  (``stage2b_tau_calibration``, ``stage2b_tau_G_calibration``,
+  ``stage2b_shape_recommendation``), stamped with a field-set version, so each
+  says what its own result used and none overwrites another. The shared
+  ``stage2b_tau`` recipe is unchanged: it is still what ``settings show stage2b``
+  reports and what the next run resolves against. The recommendation's record
+  also holds the Stage 1 values it ran on, its effective decay-time clip and its
+  verdict, and is written even when no calibration exists yet; a fresh
+  calibration withdraws it along with the verdict. ``stage2b.stft.tau_max_factor``
+  now reaches the classifier through all three producers (it was previously
+  ignored); the default of ``5`` equals the old constant, so a fresh run is
+  bit-identical. Only a file whose persisted recipe or preset carries a factor
+  other than ``5`` changes when re-run. Files written earlier have no producer
+  records and read as such; nothing is invented for them. See :doc:`stage2b_tau`.
 
 * **Machine contract, Wave 2: the fitted model, evaluated.**
   ``CONTRACT_VERSION`` is now ``4``. ``window_model`` returns one window's

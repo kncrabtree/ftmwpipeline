@@ -12,15 +12,18 @@ Requires Stage 1 (the active region + frequency trim live there) but
 does *not* require either Stage 2b twin to have run -- the
 recommendation is computed directly from the raw FID via the same STFT
 classifier. It writes to whichever Stage 2b groups exist; if neither is
-present the verdict is returned but no attr is stamped (callers can
-re-run after ``calibrate_tau`` (either shape) if they
-want the persisted contract for Stage 5 to fire).
+present no attr is stamped (callers can re-run after ``calibrate_tau``
+(either shape) if they want the persisted contract for Stage 5 to fire).
+Either way the verdict is persisted in the recommendation's own record,
+``processing_parameters/stage2b_shape_recommendation``, together with the
+knobs and Stage 1 values it used.
 
 Knob configuration follows the four-layer resolver pattern shared with
 the τ twins; the optional ``settings=`` / ``preset=`` layer composes against
-the same persisted ``processing_parameters/stage2b_tau`` settings record that
-drives the recommender (Stage 2b is one stage, one settings block, three
-consumers).
+the same persisted ``processing_parameters/stage2b_tau`` recipe the twins
+resolve against (Stage 2b is one stage, one settings recipe, three
+consumers). What the recommender used is recorded in its own record, which no
+twin writes.
 """
 
 from __future__ import annotations
@@ -41,6 +44,7 @@ from ..io.stage_fit_settings_serialization import (
     write_stage2b_recommended_shape,
 )
 from ..io.tau_calibration_settings_serialization import (
+    save_shape_recommendation_record,
     save_tau_calibration_settings_to_h5,
 )
 from .stage0_impl import load_fid_from_pipeline_impl
@@ -81,7 +85,10 @@ def recommend_shape_impl(
     Settings resolve through the chain (``settings`` / ``preset`` > persisted >
     hard default); the resolved settings are stamped to
     ``processing_parameters/stage2b_tau`` so a follow-up no-arg call inherits
-    the same recipe. Pass ``settings=`` to drive the recommender from a
+    the same recipe. The knobs the recommender consumed, the Stage 1 values it
+    ran on, the effective tau clip and the verdict are recorded in
+    ``processing_parameters/stage2b_shape_recommendation`` -- also when no
+    Stage 2b group exists yet. Pass ``settings=`` to drive the recommender from a
     :class:`TauCalibrationSettings` dataclass, or ``preset=NAME_OR_PATH`` to
     load from packaged YAML; they may be combined. A ``settings`` bundle is the
     explicit override that outranks the persisted record, while a ``preset``
@@ -129,6 +136,7 @@ def recommend_shape_impl(
     rec = resolved.recommendation
     n_seg_v = _required_int(stft.n_seg, "stft.n_seg")
     t_sigma_v = _required_float(stft.t_sigma, "stft.t_sigma")
+    tau_max_factor_v = _required_float(stft.tau_max_factor, "stft.tau_max_factor")
     rss_gate_v = _required_float(stft.rss_gate_factor, "stft.rss_gate_factor")
     snr_min_v = _required_float(rec.snr_min, "recommendation.snr_min")
     bound_lo_v = _required_float(rec.tau_bound_lo, "recommendation.tau_bound_lo")
@@ -156,6 +164,7 @@ def recommend_shape_impl(
         n_seg=n_seg_v,
         t_sigma=t_sigma_v,
         tau_max_us=stft.tau_max_us,
+        tau_max_factor=tau_max_factor_v,
         rss_gate_factor=rss_gate_v,
         snr_min=snr_min_v,
         tau_bound_lo=bound_lo_v,
@@ -185,18 +194,32 @@ def recommend_shape_impl(
                 groups_written.append(path)
     if not groups_written:
         logger.warning(
-            "Shape recommendation computed on %s but neither Stage 2b "
-            "group is present; the verdict is returned but Stage 5's "
-            "resolver will not see it until a τ calibration is run.",
+            "Shape recommendation computed and recorded on %s, but neither "
+            "Stage 2b group is present; Stage 5's resolver will not see the "
+            "verdict until a τ calibration is run.",
             file_path_obj,
         )
 
-    # Persist the resolved Stage 2b settings as the persisted record
-    # for this run -- recommend_shape is one of three consumers that
-    # share the same settings block.
+    # Persist the resolved Stage 2b settings as the recipe for the next run --
+    # recommend_shape is one of three consumers that resolve against it.
     save_tau_calibration_settings_to_h5(
         file_path,
         resolved,
+        preset_name=preset_name,
+    )
+    # Record what this recommendation used and decided, in its own record.
+    save_shape_recommendation_record(
+        file_path,
+        resolved,
+        consumed={
+            "start_us": start_us,
+            "end_us": end_us,
+            "trim_lo_mhz": float(trim_lo_mhz),
+            "trim_hi_mhz": float(trim_hi_mhz),
+        },
+        tau_max_us=verdict.tau_max_us,
+        recommended_shape=verdict.recommended_shape,
+        vote_rates=verdict.vote_rates,
         preset_name=preset_name,
     )
     # Recording the epoch is part of producing the recommendation; a stamp

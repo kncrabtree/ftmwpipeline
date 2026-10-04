@@ -16,8 +16,12 @@ The calibration has two shape variants, selected by the ``shape`` argument:
   ``shape='gaussian'`` fit.
 
 Both variants are the same algorithm under a different bin classifier and
-contributor-eligibility gate; they share one persisted settings record and can
-coexist on the same ``.ftmw`` file. The serialized payload reuses
+contributor-eligibility gate; they resolve against one shared settings recipe
+(``processing_parameters/stage2b_tau``) and can coexist on the same ``.ftmw``
+file. Each records what its own result used in its own record
+(``processing_parameters/stage2b_tau_calibration`` /
+``processing_parameters/stage2b_tau_G_calibration``), which only that twin
+writes. The serialized payload reuses
 :class:`TauCalibrationResult` (same struct, different group path); every ``tau``
 field carries ``tau_G`` when loaded from the Gaussian group, disambiguated by
 the path.
@@ -32,7 +36,8 @@ Knob configuration follows the four-layer resolver pattern shared with Stage 5:
 the optional ``settings=`` / ``preset=`` layer composes against the persisted
 ``stage2b_tau`` settings group and the hard-default table. The resolved settings
 drive the kernel call and are stamped back onto the file so a follow-up no-arg
-call inherits the same recipe.
+call inherits the same recipe, and the fields this twin consumed are recorded in
+its own record.
 """
 
 from __future__ import annotations
@@ -63,7 +68,9 @@ from ..io.tau_calibration_serialization import (
     save_tau_calibration_to_hdf5,
 )
 from ..io.tau_calibration_settings_serialization import (
+    delete_shape_recommendation_record,
     save_tau_calibration_settings_to_h5,
+    save_tau_producer_settings_to_h5,
 )
 from .shape_recommendation_impl import recommend_shape_impl
 from .stage0_impl import load_fid_from_pipeline_impl
@@ -142,8 +149,10 @@ def calibrate_tau_impl(
 
     Settings resolve through the chain (``settings`` / ``preset`` > persisted >
     hard default); the resolved settings are stamped to
-    ``processing_parameters/stage2b_tau`` -- the single record both shape
-    variants share -- so a follow-up no-arg call inherits them. Pass
+    ``processing_parameters/stage2b_tau`` -- the recipe both shape variants and
+    the recommender resolve against -- so a follow-up no-arg call inherits
+    them, and the fields this twin consumed are recorded in its own record
+    (which no other producer writes). Pass
     ``settings=`` to drive the calibration from a :class:`TauCalibrationSettings`
     dataclass, or ``preset=NAME_OR_PATH`` to load from packaged YAML; they may be
     combined. A ``settings`` bundle is the explicit override that outranks the
@@ -205,6 +214,7 @@ def calibrate_tau_impl(
     band = resolved.band
     n_seg_v = _required_int(stft.n_seg, "stft.n_seg")
     t_sigma_v = _required_float(stft.t_sigma, "stft.t_sigma")
+    tau_max_factor_v = _required_float(stft.tau_max_factor, "stft.tau_max_factor")
     rss_gate_v = _required_float(stft.rss_gate_factor, "stft.rss_gate_factor")
     relative_gate_v = _required_float(
         stft.relative_gate_fraction, "stft.relative_gate_fraction"
@@ -233,6 +243,7 @@ def calibrate_tau_impl(
         n_seg=n_seg_v,
         t_sigma=t_sigma_v,
         tau_max_us=stft.tau_max_us,
+        tau_max_factor=tau_max_factor_v,
         rss_gate_factor=rss_gate_v,
         relative_gate_fraction=relative_gate_v,
         spur_cluster_multiplier=spur_mult_v,
@@ -365,6 +376,12 @@ def calibrate_tau_impl(
         resolved,
         preset_name=preset_name,
     )
+    save_tau_producer_settings_to_h5(
+        file_path,
+        shape,
+        resolved,
+        preset_name=preset_name,
+    )
     _update_stage_completion(file_path, stage_name)
     invalidated = invalidate_downstream_stages(file_path, stage_name)
     if invalidated:
@@ -434,7 +451,8 @@ def save_tau_calibration_impl(
     """Write a :class:`TauCalibrationResult` into the per-shape Stage 2b group.
 
     ``reset_recommendation`` clears the file's ``recommended_shape`` attr to the
-    ``__None__`` sentinel after the write. A primary calibration call resets so
+    ``__None__`` sentinel after the write, and removes the recommendation's own
+    record, so a withdrawn verdict is never read as the one in effect. A primary calibration call resets so
     a fresh run never carries a stale vote; the cross-build that follows a
     just-computed recommendation passes ``reset_recommendation=False`` so it does
     not wipe the verdict it is acting on. The Stage 5 resolver reads the attr as
@@ -457,6 +475,7 @@ def save_tau_calibration_impl(
             grp.attrs["parameters_used"] = json.dumps(parameters_used, default=str)
     if reset_recommendation:
         write_stage2b_recommended_shape(file_path, shape=None)
+        delete_shape_recommendation_record(file_path)
 
 
 def load_tau_calibration_impl(

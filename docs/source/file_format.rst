@@ -172,6 +172,15 @@ which is not a tracked stage but feeds later ones, records its own entry
 (``stage2b_shape_recommendation``), and rebuilding the Stage 6 final-products
 table under a new calibration or accuracy floor re-stamps ``stage6_review``.
 
+Every persisted settings record carries a field-set version, and a record at
+the current version holds every field (a ``None`` is a setting resolved to
+unset). Stage 2b keeps one record per producer under ``processing_parameters/``:
+``stage2b_tau_calibration`` (Lorentzian), ``stage2b_tau_G_calibration``
+(Gaussian) and ``stage2b_shape_recommendation`` (verdict, consumed Stage 1
+values and effective decay-time clip). The shared ``stage2b_tau`` is the recipe
+for the next run, not a record of any result. A record without a version, from a
+file written before they were kept, reads as pre-provenance.
+
 Recording the stamp is part of completing a stage, not a courtesy: a stamp that
 cannot be written fails the stage, which is then not marked complete. Only the
 drift *warning* that follows a stamp is advisory.
