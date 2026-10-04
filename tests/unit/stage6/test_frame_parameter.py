@@ -50,6 +50,7 @@ import h5py
 import pytest
 
 import ftmwpipeline.api as ftmw
+from ftmwpipeline import BadSettingError, CurationAction
 from ftmwpipeline._internal.stage4_impl import load_windows_impl
 from ftmwpipeline._internal.stage6_impl import (
     FittingResult,
@@ -772,3 +773,128 @@ class TestCrossInterfaceFrameConsistency:
         cli_range = (min(lo, hi), max(lo, hi))
         assert cli_range[0] == pytest.approx(r_impl.freq_range[0], abs=1e-6)
         assert cli_range[1] == pytest.approx(r_impl.freq_range[1], abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Curation as data: each action resolves its own frame
+# (dev-docs/CONTRACT_STRATEGY.md, "Curation as data").
+# ---------------------------------------------------------------------------
+
+
+class TestCurationActionFrames:
+    @staticmethod
+    def _two_peaks(sc_file: Path) -> Tuple[float, float, float, float, int]:
+        wf = next(
+            w
+            for w in _load_spectrum_fit(sc_file).window_fits
+            if len(w.fitted_peaks) >= 2
+        )
+        freqs = sorted(float(p.frequency_mhz) for p in wf.fitted_peaks)
+        stamp = _current_calibration_stamp(str(sc_file))
+        assert stamp is not None and stamp[0] == "self_calibrated"
+        eps, probe = stamp[1], stamp[4]
+        return freqs[0], freqs[1], eps, probe, int(wf.window_id)
+
+    @staticmethod
+    def _removed(path: Path) -> List[float]:
+        log = load_stage6_review_from_file(str(path)).decision_log
+        return sorted(e.frequency_mhz for e in log if e.kind == "remove")
+
+    def test_none_frame_takes_the_calls_frame(self, sc_file: Path) -> None:
+        # Mutation: a None action frame ignores call frame= (treated as raw):
+        # the log would hold the calibrated value, ~31 kHz off.
+        f0, _, eps, probe, wid = self._two_peaks(sc_file)
+        f_cal = _ref_calibrated(f0, probe=probe, eps=eps)
+        ftmw.review_apply(
+            str(sc_file),
+            actions=[CurationAction("remove", window_id=wid, freq_mhz=f_cal)],
+            frame="calibrated",
+        )
+        (got,) = self._removed(sc_file)
+        assert got == pytest.approx(f0, abs=1e-9)
+
+    def test_mixed_frames_in_one_batch(self, sc_file: Path) -> None:
+        # Mutation: one frame applied to the whole batch (call's or first
+        # action's) -> one of the two logged frequencies is off by ~31 kHz.
+        f0, f1, eps, probe, wid = self._two_peaks(sc_file)
+        ftmw.review_apply(
+            str(sc_file),
+            actions=[
+                CurationAction(
+                    "remove",
+                    window_id=wid,
+                    freq_mhz=_ref_calibrated(f0, probe=probe, eps=eps),
+                    frame="calibrated",
+                ),
+                CurationAction("remove", window_id=wid, freq_mhz=f1, frame="raw"),
+            ],
+        )
+        got = self._removed(sc_file)
+        assert got == [pytest.approx(f0, abs=1e-9), pytest.approx(f1, abs=1e-9)]
+
+    def test_action_frame_overrides_the_calls_frame(self, sc_file: Path) -> None:
+        # Mutation: call frame= beats the per-action frame.
+        f0, _, eps, probe, wid = self._two_peaks(sc_file)
+        ftmw.review_apply(
+            str(sc_file),
+            actions=[
+                CurationAction(
+                    "remove",
+                    window_id=wid,
+                    freq_mhz=_ref_calibrated(f0, probe=probe, eps=eps),
+                    frame="calibrated",
+                )
+            ],
+            frame="raw",
+        )
+        (got,) = self._removed(sc_file)
+        assert got == pytest.approx(f0, abs=1e-9)
+
+    def test_omitted_frame_refused_on_self_calibrated(self, sc_file: Path) -> None:
+        # Mutation: a frame-less frequency action silently taken as raw.
+        f0, _, _, _, wid = self._two_peaks(sc_file)
+        for call in (ftmw.review_apply, ftmw.review_preview):
+            with pytest.raises(BadSettingError) as ei:
+                call(
+                    str(sc_file),
+                    actions=[CurationAction("remove", window_id=wid, freq_mhz=f0)],
+                )
+            assert ei.value.path == "frame"
+
+    def test_uid_remove_and_bare_accept_need_no_frame(self, sc_file: Path) -> None:
+        # Mutation: frame required for actions that carry no frequency.
+        wf = _first_fitted_window(sc_file)
+        uid = wf.fitted_peaks[0].peak_uid
+        r = ftmw.review_apply(
+            str(sc_file),
+            actions=[
+                CurationAction("remove", peak_uid=int(uid)),
+                CurationAction("accept", window_id=int(wf.window_id)),
+            ],
+        )
+        assert r.applied >= 1
+
+    def test_calibrated_file_header_equals_calibrated_actions(
+        self, sc_file: Path, tmp_path: Path
+    ) -> None:
+        # Mutation: the file's '# frame:' header and the equivalent per-action
+        # frame resolve differently.
+        f0, _, eps, probe, wid = self._two_peaks(sc_file)
+        f_cal = _ref_calibrated(f0, probe=probe, eps=eps)
+        other = tmp_path / "other.ftmw"
+        shutil.copy(sc_file, other)
+        csv = tmp_path / "c.csv"
+        csv.write_text(
+            f"# frame: calibrated\n# epsilon: {eps!r}\nremove,{wid},{f_cal!r},\n"
+        )
+        ftmw.review_apply(str(sc_file), str(csv))
+        ftmw.review_apply(
+            str(other),
+            actions=[
+                CurationAction(
+                    "remove", window_id=wid, freq_mhz=f_cal, frame="calibrated"
+                )
+            ],
+        )
+        assert self._removed(sc_file) == self._removed(other)
+        assert self._removed(other)[0] == pytest.approx(f0, abs=1e-9)

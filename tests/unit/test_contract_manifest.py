@@ -79,6 +79,7 @@ SNAPSHOT_SCHEMAS = frozenset(
         "ftmw/review_log@1",
         "ftmw/pipeline_info@1",
         "ftmw/display_ft@1",
+        "ftmw/curation_action@1",
     }
 )
 SNAPSHOT_CODES = frozenset(
@@ -469,7 +470,7 @@ def test_manifest_sequences_are_tuples():
 
 
 def test_manifest_version_matches_package():
-    assert MANIFEST.contract_version == ftmwpipeline.CONTRACT_VERSION == 5
+    assert MANIFEST.contract_version == ftmwpipeline.CONTRACT_VERSION == 6
     assert isinstance(ftmwpipeline.CONTRACT_VERSION, int)
 
 
