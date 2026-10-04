@@ -503,8 +503,33 @@ needed to compare them (``"incomplete_provenance"``); or when a local thaw was
 accepted (``"thaw_refit"``: every window is refit sequentially, as an
 uninterrupted fit with an accepted thaw does). The summary also carries
 ``resumed`` and ``windows_carried``. Anything that discards a fit discards a
-partial fit too: re-running an earlier stage, changing a ``stage5`` setting, or
-a forced re-import.
+partial fit too: re-running an earlier stage, changing a ``stage5`` setting
+(``settings set`` or ``settings unset``), or a forced re-import. Clocks and the
+timebase leave a partial fit in place, as they leave a complete one; but the
+timebase epsilon is one of the values the fit takes from other stages, so a
+fit run after the timebase changed starts over (``"settings_changed"``).
+
+Nothing is written while the walk runs. The partial fit is written once, in the
+cancelled call's single atomic write, so a process killed at any point
+(``SIGKILL`` included) leaves the file as it was before the call: no partial
+fit from that call, and any earlier partial fit or fit intact. The same holds
+for a kill of the run that resumes a partial fit. To discard a partial fit
+without refitting, re-run an earlier stage or change a ``stage5`` setting; to
+refit everything, pass ``restart=True`` (``fit run --restart``):
+
+.. code-block:: console
+
+   $ ftmwpipeline fit run exp_2638.ftmw          # Ctrl-C partway: exit 130
+   $ ftmwpipeline fit run exp_2638.ftmw          # resumes the kept windows
+   $ ftmwpipeline fit run exp_2638.ftmw --restart --json   # starts over
+   {"schema": "ftmw/run_result@1", "verb": "fit run", ...,
+    "summary": {..., "resumed": false, "windows_carried": 0,
+                "restart_reason": "restart_requested"}}
+
+A partial fit is a private checkpoint, not part of the file's layout contract:
+it is stored as plain numeric arrays and JSON (nothing is pickled), reading it
+never runs code from the file, and a partial fit that cannot be read back
+safely is not resumed (``"incomplete_provenance"``) rather than trusted.
 
 .. figure:: figures/stage5_fitting.png
    :width: 95%

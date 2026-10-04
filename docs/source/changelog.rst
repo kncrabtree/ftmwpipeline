@@ -64,8 +64,10 @@ engine so they cannot answer differently.
   ``restart_reason`` (``restart_requested``, ``settings_changed``,
   ``incomplete_provenance``, ``thaw_refit``, or ``null``; the new
   ``restart_reason`` vocabulary). Anything that discards a fit discards a
-  partial one. The partial fit is stored without pickling: reading a file
-  never runs code from it.
+  partial one (``settings set`` / ``unset``, an upstream re-run, a forced
+  re-import; clocks and the timebase leave it). The partial fit is stored
+  without pickling: reading a file never runs code from it, and a partial fit
+  that cannot be read back is not resumed (``incomplete_provenance``).
 * **Machine contract, Wave 5.1b: crash safety.** ``CONTRACT_VERSION`` is now
   ``10``. Every call that writes a ``.ftmw`` file -- a stage run, curation,
   ``settings set`` / ``unset``, ``clocks``, ``start run``, a stamp -- now writes

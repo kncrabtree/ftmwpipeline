@@ -224,3 +224,143 @@ def test_a_window_that_cannot_be_encoded_is_not_kept():
     partial = PartialWalk("initial", [3], {3: out}, {3: record}, False, "dag", 4)
     encoded, refused = encode_stage5_partial(partial)
     assert encoded == [] and refused == [3]
+
+
+# ---- hostile and malformed graphs ---------------------------------------------------------
+
+_BUF = (["<f8"], [np.zeros(3)])
+
+
+@pytest.mark.parametrize(
+    "graph",
+    [
+        {"root": {"$r": 0}, "nodes": [{"$a": ["<f8", 0, [-1]]}]},  # negative shape
+        {"root": {"$r": 0}, "nodes": [{"$a": ["<f8", -1, [2]]}]},  # negative offset
+        {"root": {"$r": 0}, "nodes": [{"$a": ["<f8", 0, [10**9, 10**9]]}]},  # huge
+        {"root": {"$r": 0}, "nodes": [{"$a": ["<f4", 0, [1]]}]},  # no such buffer
+        {"root": {"$r": 0}, "nodes": [{"$a": ["<f8", 0]}]},  # short spec
+        {"root": {"$r": 0}, "nodes": [{"$o": "ModelPeak", "f": [1]}]},
+        {"root": {"$r": 0}, "nodes": [{"$o": "ModelPeak", "f": {}}]},  # lacks fields
+        {"root": {"$r": 0}, "nodes": {"a": 1}},
+        {"root": {"$r": -1}, "nodes": [{"$l": []}]},
+        {"root": {"$r": True}, "nodes": [{"$l": []}]},
+        {"root": {"$t": 5}, "nodes": []},
+        {"root": {"$e": "PeakShape", "v": "NOPE"}, "nodes": []},
+        {"root": {"$e": "Popen", "v": "x"}, "nodes": []},
+        {"root": {"$g": "|S4", "v": "abcd"}, "nodes": []},
+        {"root": {"$g": "<M8[s]", "v": 1}, "nodes": []},
+        {"root": [1, 2], "nodes": []},  # a bare list is not a node
+        {"root": {}, "nodes": []},
+        {"nodes": []},
+        [],
+        "just a string",
+    ],
+)
+def test_a_malformed_graph_is_refused_with_the_codec_error(graph):
+    with pytest.raises(PartialCodecError):
+        decode_graph(json.dumps(graph), *_BUF)
+
+
+def test_a_graph_nested_without_bound_is_refused():
+    text = '{"root": ' + "[" * 100000 + "1" + "]" * 100000 + ', "nodes": []}'
+    with pytest.raises(PartialCodecError):
+        decode_graph(text, [], [])
+
+
+@pytest.mark.parametrize("text", ["", "{", "not json", '{"root": NaN junk'])
+def test_an_unreadable_graph_is_refused(text):
+    with pytest.raises(PartialCodecError):
+        decode_graph(text, [], [])
+
+
+def test_buffers_must_match_their_dtypes():
+    text, names, buffers = encode_graph(np.arange(4.0))
+    with pytest.raises(PartialCodecError):
+        decode_graph(text, names, [])  # fewer buffers than dtypes
+    with pytest.raises(PartialCodecError):
+        decode_graph(text, names, [np.arange(4, dtype=np.int64)])  # wrong dtype
+    with pytest.raises(PartialCodecError):
+        decode_graph(text, names, [np.zeros((2, 2))])  # not one-dimensional
+
+
+# The decoder's scalar and key handling raises the underlying ValueError /
+# IndexError / TypeError for some malformed values instead of the codec's error.
+# Suspected bug (reported with Wave 5.2): an IndexError is not among the errors
+# the resume catches, so such a value in a file escapes as a failed fit.
+@pytest.mark.xfail(strict=True, reason="raw ValueError/IndexError/TypeError")
+@pytest.mark.parametrize(
+    "graph",
+    [
+        {"root": {"$g": "<f8", "v": "abc"}, "nodes": []},
+        {"root": {"$g": "<c16", "v": [1]}, "nodes": []},
+        {"root": {"$c": ["a", "b"]}, "nodes": []},
+        {
+            "root": {"$r": 0},
+            "nodes": [{"$d": [[{"$r": 1}, 1]]}, {"$l": []}],  # a list as a key
+        },
+    ],
+    ids=["scalar_text", "complex_scalar_short", "complex_text", "unhashable_key"],
+)
+def test_malformed_scalars_and_keys_are_refused_with_the_codec_error(graph):
+    with pytest.raises(PartialCodecError):
+        decode_graph(json.dumps(graph), *_BUF)
+
+
+def test_nothing_in_the_graph_is_imported_or_called(tmp_path):
+    """A graph naming a callable builds nothing and runs nothing."""
+    sentinel = tmp_path / "ran"
+    graph = {
+        "root": {"$r": 0},
+        "nodes": [
+            {"$o": "builtins.exec", "f": {"code": f"open({str(sentinel)!r}, 'w')"}}
+        ],
+    }
+    with pytest.raises(PartialCodecError):
+        decode_graph(json.dumps(graph), [], [])
+    assert not sentinel.exists()
+
+
+def test_reading_a_partial_fit_with_a_missing_window_group_is_refused(tmp_path):
+    out, record = _outcome(3)
+    partial = PartialWalk("initial", [3], {3: out}, {3: record}, False, "dag", 4)
+    encoded, _ = encode_stage5_partial(partial)
+    path = tmp_path / "p.h5"
+    with h5py.File(path, "w") as h5f:
+        write_stage5_partial(h5f, encoded, {})
+        del h5f["stage5_partial/windows/w3"]
+    with h5py.File(path, "r") as h5f:
+        with pytest.raises(PartialCodecError):
+            read_stage5_partial_windows(h5f)
+
+
+def test_the_provenance_of_another_layout_version_is_not_read(tmp_path):
+    path = tmp_path / "p.h5"
+    with h5py.File(path, "w") as h5f:
+        write_stage5_partial(h5f, [], {"settings": "{}"})
+        assert read_stage5_partial_provenance(h5f) is not None
+        raw = json.loads(bytes(h5f["stage5_partial/provenance"][()]).decode())
+        raw["format_version"] = 0
+        del h5f["stage5_partial/provenance"]
+        h5f.create_dataset(
+            "stage5_partial/provenance",
+            data=np.frombuffer(json.dumps(raw).encode(), dtype=np.uint8),
+        )
+        assert read_stage5_partial_provenance(h5f) is None
+
+
+def test_the_stored_datasets_are_plain_numeric_arrays(tmp_path):
+    out, record = _outcome(3)
+    partial = PartialWalk("initial", [3], {3: out}, {3: record}, False, "dag", 4)
+    encoded, _ = encode_stage5_partial(partial)
+    path = tmp_path / "p.h5"
+    with h5py.File(path, "w") as h5f:
+        write_stage5_partial(h5f, encoded, {"settings": "{}"})
+    with h5py.File(path, "r") as h5f:
+        found = []
+        h5f["stage5_partial"].visititems(
+            lambda n, o: found.append(o) if isinstance(o, h5py.Dataset) else None
+        )
+        assert found
+        for ds in found:
+            assert ds.dtype.kind in "buifc" and not ds.dtype.hasobject, ds.name
+            assert ds.dtype.names is None and h5py.check_dtype(vlen=ds.dtype) is None

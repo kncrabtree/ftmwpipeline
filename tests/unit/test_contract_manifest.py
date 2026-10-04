@@ -529,7 +529,7 @@ def test_manifest_sequences_are_tuples():
 
 
 def test_manifest_version_matches_package():
-    assert MANIFEST.contract_version == ftmwpipeline.CONTRACT_VERSION == 10
+    assert MANIFEST.contract_version == ftmwpipeline.CONTRACT_VERSION == 11
     assert isinstance(ftmwpipeline.CONTRACT_VERSION, int)
 
 

@@ -1197,7 +1197,10 @@ resume) or one of the ``restart_reason`` vocabulary -- ``restart_requested``,
 other stages or ``ANALYSIS_EPOCH`` differ from the partial fit's),
 ``incomplete_provenance`` (the partial fit lacks what that comparison needs) or
 ``thaw_refit`` (an accepted thaw: every window is refit sequentially). It never
-resumes on a guess.
+resumes on a guess. A change in a value the fit consumes from another stage, the
+timebase epsilon among them, is a ``settings_changed``. Nothing is written during the walk: a process killed
+during the fit leaves the file as it was before the call, and a partial fit
+survives a kill of the run that resumes it.
 
 Per-stage state: ``status``
 ---------------------------
