@@ -146,8 +146,9 @@ acquisition record.
 
 ``start run`` sweeps the FID window start time, finds the chirp-end collapse,
 and stamps a recommended ``start_us`` (chirp end plus a guard margin) into the
-Stage 0 recommended layer, so a later ``ft run`` with no explicit ``--start-us``
-inherits it. ``--no-stamp`` reports without writing. ``start show`` draws the
+Stage 0 recommended layer, so a first ``ft run`` with no explicit ``--start-us``
+inherits it. After Stage 1 has run, the stamp is stored but changes nothing; adopt
+it with ``ft run --start-us``. ``--no-stamp`` reports without writing. ``start show`` draws the
 Σ\|FT\|-vs-``start_us`` sweep diagnostic. Knobs: ``--sweep-max-us``,
 ``--step-us``, ``--guard-margin-us``, ``--floor-factor``, ``--band``, plus the
 less commonly tuned ``--floor-tail-us`` and ``--min-chirp-drop-ratio``.

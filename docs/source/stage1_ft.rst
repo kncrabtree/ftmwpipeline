@@ -143,6 +143,16 @@ warning is logged, so they are recomputed against the new settings rather than
 silently mixed with stale results. Repeating the transform with identical settings
 changes nothing, which keeps re-running an import-and-FT cell in a notebook safe.
 
+The stored settings are the concrete values the transform ran with: an unset
+``start_us`` is stored as ``0.0`` and an unset ``end_us`` as the record's duration
+(the same samples either way), and no ``trim`` is stored as "no trim". Once they
+are stored they are authoritative. A recommendation written afterwards -- a later
+``start run``, for example -- is kept and shown, but does not change what Stage 1
+used or any result built on it; to adopt it, re-run ``ft run --start-us`` with the
+new value, which invalidates the downstream work as above. A file written before
+this rule keeps its earlier behaviour, where an unset value followed the
+recommendation.
+
 Inspecting the transform
 ------------------------
 

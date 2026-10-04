@@ -121,7 +121,13 @@ and the frequency trim range) plus display scaling; there are no apodization or
 zero-padding settings (apodization trades resolution and biases the line shape,
 and zero-padding corrupts the noise and χ² statistics that later stages depend
 on). Every later stage rebuilds its own working spectrum (the active FT) from
-these same parameters, rather than consuming a stored one.
+these same parameters, rather than consuming a stored one. They are stored as
+the concrete values the transform used (an unset start as ``0.0``, an unset end
+as the record's duration) together with the version of their field set, and
+once stored they are authoritative: a recommendation written to the import's
+recommended layer afterwards does not change them. A record without that
+version, written by an earlier release, still lets an unset value follow the
+recommended layer.
 How those parameters are resolved across explicit overrides, presets, and the
 persisted values is described in :doc:`settings_and_presets`.
 
