@@ -502,7 +502,6 @@ def _required(value: Any, name: str) -> Any:
     return require_resolved(value, name, owner="PeakDetectionSettings")
 
 
-@requires_pipeline_file()
 def peaks_run_summary(result: Mapping[str, Any]) -> Dict[str, Any]:
     """The scalar ``ftmw/run_result@1`` summary of ``peaks run`` -- also its
     ``StageFinished.summary`` -- from a :func:`detect_peaks_impl` result."""
@@ -526,6 +525,7 @@ def peaks_run_summary(result: Mapping[str, Any]) -> Dict[str, Any]:
     }
 
 
+@requires_pipeline_file()
 def detect_peaks_impl(
     file_path: str,
     *,
