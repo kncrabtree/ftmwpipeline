@@ -178,6 +178,26 @@ class TestDerivedState:
         assert stamp.state == "self_calibrated"
         assert stamp.epsilon == pytest.approx(EPS)
 
+    def test_a_persisted_empty_declaration_is_authoritative(self, imported):
+        """The Stage 5 resolver's rule: a fit that persisted *no* declaration
+        (``spur.clocks == ()``) used none, and a later ``clocks set`` does not
+        change the state its products were derived under. Re-running Stage 5
+        is what picks the new declaration up."""
+        save_stage_fit_settings_to_h5(
+            str(imported), resolve_stage_fit_settings(persisted=None)
+        )
+        ftmw.set_clock_sources(
+            str(imported),
+            [
+                {"freq_mhz": 5120.0, "locked": True},
+                {"freq_mhz": 6250.0, "locked": False},
+            ],
+        )
+        _stamp_timebase(imported)
+        stamp = frequency_calibration_impl(imported)
+        assert stamp.state == "rb_locked"
+        assert stamp.epsilon == 0.0
+
 
 # ---------------------------------------------------------------------------
 # The floor, and the properties the surface promises
