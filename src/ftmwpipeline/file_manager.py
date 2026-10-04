@@ -835,6 +835,36 @@ def create_pipeline_file(
         raise RuntimeError(f"Failed to create pipeline file {filepath}: {e}") from e
 
 
+def stages_an_import_replaces(filepath: Union[str, Path], force: bool) -> List[str]:
+    """The completed stages (storage keys, Stage 0 excluded) an import into
+    ``filepath`` would discard by overwriting the file.
+
+    Mirrors :func:`create_pipeline_file`'s overwrite rule: an existing file is
+    overwritten under ``force``, or when it carries no source metadata to
+    compare against. A file with matching source metadata is reused as-is and
+    one with a different source is refused, so neither discards anything.
+    Read before the import writes; empty when there is no readable file.
+    """
+    path = Path(filepath)
+    if path.suffix != ".ftmw":
+        path = path.with_suffix(".ftmw")
+    if not path.exists():
+        return []
+    try:
+        if not force and _load_source_metadata(path) is not None:
+            return []
+        with h5py.File(path, "r") as h5f:
+            group = h5f.get("pipeline_stages")
+            completed = (
+                json.loads(group.attrs.get("completed_stages", "[]"))
+                if group is not None
+                else []
+            )
+    except (OSError, KeyError, ValueError):
+        return []
+    return sorted(stage for stage in completed if stage != "stage0_fid_data")
+
+
 _LEGACY_FT_APODIZATION_KEYS = ("zpf", "expf_us", "window_function", "winf")
 
 
@@ -1250,12 +1280,86 @@ def drop_records_of_removed_stages(h5f: h5py.File, removed: Iterable[str]) -> No
             del h5f[record_path]
 
 
+def _dependents_of(roots: Iterable[str]) -> List[str]:
+    """Every stage that depends, directly or transitively, on one of ``roots``.
+
+    Excludes the roots themselves (unless one depends on another). Sorted.
+    """
+    deps = PipelineStageTracker.STAGE_DEPENDENCIES
+    root_set = set(roots)
+    dependents: set = set()
+    changed = True
+    while changed:
+        changed = False
+        for stage, required in deps.items():
+            if stage in dependents:
+                continue
+            if any(req in root_set or req in dependents for req in required):
+                dependents.add(stage)
+                changed = True
+    return sorted(dependents)
+
+
+def invalidate_stages_in_file(
+    h5f: h5py.File,
+    roots: Iterable[str],
+    *,
+    include_roots: bool = False,
+    reason: Optional[str] = None,
+) -> List[str]:
+    """Drop the stored results and completion of every stage built on ``roots``.
+
+    The one implementation of downstream invalidation, on a file the caller
+    already has open for writing (so it can be part of the caller's own
+    write). Every transitive dependent of ``roots`` -- and the roots too with
+    ``include_roots`` -- has its data group deleted and is removed from the
+    completed set; the untracked records that described only those results
+    are withdrawn (:func:`drop_records_of_removed_stages`).
+
+    Returns the storage keys that were complete and are no longer (sorted),
+    empty if none. A loud warning names them; ``reason`` says why (default:
+    the roots were re-run).
+    """
+    root_list = list(roots)
+    targets = set(_dependents_of(root_list))
+    if include_roots:
+        targets.update(root_list)
+    if not targets:
+        return []
+    paths = PipelineStageTracker.STAGE_DATA_PATHS
+    stages_group = h5f.get("pipeline_stages")
+    completed: List[str] = (
+        json.loads(stages_group.attrs.get("completed_stages", "[]"))
+        if stages_group is not None
+        else []
+    )
+    invalidated = []
+    for stage in sorted(targets):
+        data_path = paths.get(stage, stage)
+        if data_path in h5f:
+            del h5f[data_path]
+        if stage in completed:
+            completed.remove(stage)
+            invalidated.append(stage)
+    drop_records_of_removed_stages(h5f, targets)
+    if invalidated and stages_group is not None:
+        stages_group.attrs["completed_stages"] = json.dumps(completed)
+        stages_group.attrs["last_updated"] = datetime.now().isoformat()
+        logger.warning(
+            "%s; invalidated stage(s) %s -- re-run them to refresh.",
+            reason or f"Stage(s) {', '.join(root_list)} re-run",
+            invalidated,
+        )
+    return invalidated
+
+
 def invalidate_downstream_stages(filepath: Union[str, Path], stage_name: str) -> list:
     """Drop persisted data and completion for every stage that depends on ``stage_name``.
 
     Called when a stage is re-run (e.g. Stage 3 re-detection) so that stale
     downstream results -- computed against the now-superseded output -- do not
     linger. The stage itself is *not* touched, only its transitive dependents.
+    See :func:`invalidate_stages_in_file`, which this opens the file for.
 
     Parameters
     ----------
@@ -1269,47 +1373,46 @@ def invalidate_downstream_stages(filepath: Union[str, Path], stage_name: str) ->
     list of str
         The stage names that were invalidated (sorted), empty if none.
     """
-    deps = PipelineStageTracker.STAGE_DEPENDENCIES
-    paths = PipelineStageTracker.STAGE_DATA_PATHS
-
-    dependents: set = set()
-    changed = True
-    while changed:
-        changed = False
-        for stage, required in deps.items():
-            if stage in dependents:
-                continue
-            if any(req == stage_name or req in dependents for req in required):
-                dependents.add(stage)
-                changed = True
-
-    if not dependents:
+    if not _dependents_of([stage_name]):
         return []
-
     with h5py.File(filepath, "a") as h5f:
         if "pipeline_stages" not in h5f:
             return []
-        stages_group = h5f["pipeline_stages"]
-        completed = json.loads(stages_group.attrs.get("completed_stages", "[]"))
-        invalidated = []
-        for stage in dependents:
-            data_path = paths.get(stage, stage)
-            if data_path in h5f:
-                del h5f[data_path]
-            if stage in completed:
-                completed.remove(stage)
-                invalidated.append(stage)
-        drop_records_of_removed_stages(h5f, dependents)
-        if invalidated:
-            stages_group.attrs["completed_stages"] = json.dumps(completed)
-            stages_group.attrs["last_updated"] = datetime.now().isoformat()
-            logger.warning(
-                "Stage %s re-run; invalidated downstream stage(s) %s -- "
-                "re-run them to refresh.",
-                stage_name,
-                sorted(invalidated),
-            )
-        return sorted(invalidated)
+        return invalidate_stages_in_file(
+            h5f, [stage_name], reason=f"Stage {stage_name} re-run"
+        )
+
+
+def rerun_order() -> Tuple[str, ...]:
+    """Every canonical stage name in the order a full refresh re-runs them.
+
+    A topological order of the stage dependencies with ties broken by the
+    order of :class:`~ftmwpipeline.contract.Stage`.
+    """
+    from .contract import Stage, stage_for_key
+
+    deps = {
+        stage_for_key(key): {stage_for_key(r) for r in required}
+        for key, required in PipelineStageTracker.STAGE_DEPENDENCIES.items()
+    }
+    order: List[str] = []
+    done: set = set()
+    while len(done) < len(deps):
+        nxt = next(s for s in Stage if s in deps and s not in done and deps[s] <= done)
+        done.add(nxt)
+        order.append(nxt.value)
+    return tuple(order)
+
+
+def canonical_invalidated(keys: Iterable[str]) -> Tuple[str, ...]:
+    """Invalidated storage keys as canonical stage names, in :func:`rerun_order`.
+
+    The ``invalidated`` every stage-running call reports. Duplicates collapse.
+    """
+    from .contract import stage_for_key
+
+    names = {stage_for_key(key).value for key in keys}
+    return tuple(name for name in rerun_order() if name in names)
 
 
 def update_processing_parameters(

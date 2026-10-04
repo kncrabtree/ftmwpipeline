@@ -68,7 +68,6 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, is_dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import (
     Any,
@@ -93,7 +92,11 @@ from ...core import tau_calibration_settings as tau_mod
 from ...core import window_planning_settings as window_mod
 from ...core.peak_shape import PeakShape
 from ...core.stage_fit_settings import ClockSource, ShapeSpec, coerce_clock_sources
-from ...file_manager import BadSettingError
+from ...file_manager import (
+    BadSettingError,
+    canonical_invalidated,
+    invalidate_stages_in_file,
+)
 from ...io.noise_settings_serialization import (
     load_noise_settings_from_h5,
     save_noise_settings_to_h5,
@@ -181,7 +184,11 @@ _MUT_SPECS: Dict[str, _MutSpec] = {
 
 @dataclass(frozen=True)
 class SetResult:
-    """Outcome of :func:`set_setting`."""
+    """Outcome of :func:`set_setting`.
+
+    ``invalidated`` names the stages the write invalidated: canonical stage
+    names (``ftmwpipeline.Stage`` values) in ``rerun_order``, empty when none.
+    """
 
     path: str
     value: Any
@@ -538,9 +545,7 @@ def _set_stage1(path: str, knob: str, field: str, value: Any) -> SetResult:
     setattr(resolved, field, effective)
     # _persist_ft_settings rewrites ft_processing and invalidates every
     # FT-dependent stage when the record changes.
-    completed_before = _completed_stages(path)
-    _persist_ft_settings(path, resolved)
-    invalidated = tuple(sorted(completed_before - _completed_stages(path)))
+    invalidated = canonical_invalidated(_persist_ft_settings(path, resolved))
     return SetResult(path=knob, value=coerced, invalidated=invalidated)
 
 
@@ -552,50 +557,21 @@ def _assign(settings: Any, sub: Optional[str], field: str, value: Any) -> None:
 # ---------------------------------------------------------------------------
 # Stage invalidation
 # ---------------------------------------------------------------------------
-def _completed_stages(path: str) -> set:
-    import h5py
-
-    with h5py.File(path, "r") as h5f:
-        if "pipeline_stages" not in h5f:
-            return set()
-        raw = h5f["pipeline_stages"].attrs.get("completed_stages", "[]")
-    return set(json.loads(raw))
-
-
 def _invalidate_inclusive(path: str, own_stages: Tuple[str, ...]) -> Tuple[str, ...]:
     """Drop ``own_stages`` (results + completion) and every stage that depends on
-    them, returning the invalidated stage names sorted."""
+    them, returning the invalidated stages as canonical names in rerun order."""
     import h5py
 
-    from ...file_manager import (
-        PipelineStageTracker,
-        drop_records_of_removed_stages,
-        invalidate_downstream_stages,
-    )
-
-    dependents: List[str] = []
-    for stage in own_stages:
-        dependents.extend(invalidate_downstream_stages(path, stage))
-
-    paths = PipelineStageTracker.STAGE_DATA_PATHS
-    dropped: List[str] = []
     with h5py.File(path, "a") as h5f:
         if "pipeline_stages" not in h5f:
-            return tuple(sorted(set(dependents)))
-        stages_group = h5f["pipeline_stages"]
-        completed = json.loads(stages_group.attrs.get("completed_stages", "[]"))
-        for stage in own_stages:
-            data_path = paths.get(stage, stage)
-            if data_path in h5f:
-                del h5f[data_path]
-            if stage in completed:
-                completed.remove(stage)
-                dropped.append(stage)
-        drop_records_of_removed_stages(h5f, own_stages)
-        if dropped:
-            stages_group.attrs["completed_stages"] = json.dumps(completed)
-            stages_group.attrs["last_updated"] = datetime.now().isoformat()
-    return tuple(sorted(set(dependents) | set(dropped)))
+            return ()
+        invalidated = invalidate_stages_in_file(
+            h5f,
+            own_stages,
+            include_roots=True,
+            reason=f"Settings of {', '.join(own_stages)} changed",
+        )
+    return canonical_invalidated(invalidated)
 
 
 # ---------------------------------------------------------------------------

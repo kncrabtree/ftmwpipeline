@@ -128,9 +128,9 @@ def test_set_invalidates_stage_and_downstream(bare_ftmw: Path) -> None:
         ],
     )
     result = set_setting(bare_ftmw, "stage2.window_mhz", "90")
-    # Stage 2 itself and its dependent Stage 3 are invalidated.
-    assert "stage2_noise_result" in result.invalidated
-    assert "stage3_peaks" in result.invalidated
+    # Stage 2 itself and its dependent Stage 3 are invalidated, reported as
+    # canonical stage names in rerun order.
+    assert result.invalidated == ("noise", "peaks")
     with h5py.File(bare_ftmw, "r") as h5f:
         completed = json.loads(h5f["pipeline_stages"].attrs["completed_stages"])
         assert "stage2_noise_result" not in completed
@@ -270,8 +270,7 @@ def test_unset_invalidates_like_a_set(bare_ftmw: Path) -> None:
         ["stage0_fid_data", "stage1_complex_ft", "stage2_noise_result", "stage3_peaks"],
     )
     result = unset_setting(bare_ftmw, "stage2.window_mhz")
-    assert "stage2_noise_result" in result.invalidated
-    assert "stage3_peaks" in result.invalidated
+    assert result.invalidated == ("noise", "peaks")
 
 
 def test_unset_unknown_knob_raises(bare_ftmw: Path) -> None:

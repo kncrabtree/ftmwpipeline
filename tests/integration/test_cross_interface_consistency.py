@@ -1138,7 +1138,7 @@ class TestSettingsMutationConsistency:
         rb = Pipeline.open(b).settings_set("stage2.window_mhz", "111")
         assert ra.value == rb.value == 111.0
         assert ra.invalidated == rb.invalidated
-        assert "stage2_noise_result" in ra.invalidated
+        assert "noise" in ra.invalidated
 
         rows_a = {r.path: r for r in ftmw.settings_show(a, include_advanced=True)}
         rows_b = {r.path: r for r in ftmw.settings_show(b, include_advanced=True)}
