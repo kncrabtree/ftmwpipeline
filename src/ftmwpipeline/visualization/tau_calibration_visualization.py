@@ -30,6 +30,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from ..core.data_structures import Sideband
+from ..file_manager import requires_pipeline_file
 from ..fitting.tau_calibration import TauCalibrationResult, sliding_stft
 from .report_style import (
     AGGIE_BLUE,
@@ -158,6 +159,7 @@ def plot_tau_heatmap(
     return fig
 
 
+@requires_pipeline_file()
 def plot_tau_heatmap_from_file(
     file_path: str,
     *,
@@ -542,6 +544,7 @@ def plot_tau_distribution(
     return fig
 
 
+@requires_pipeline_file()
 def plot_tau_distribution_from_file(
     file_path: str,
     *,

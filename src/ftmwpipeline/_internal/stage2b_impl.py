@@ -61,6 +61,7 @@ from ..file_manager import (
     StageDependencyError,
     canonical_invalidated,
     invalidate_downstream_stages,
+    requires_pipeline_file,
 )
 from ..fitting.tau_calibration import (
     TauCalibrationResult,
@@ -229,6 +230,7 @@ def _route_min_contributors_for_gaussian(
     return routed
 
 
+@requires_pipeline_file()
 def calibrate_tau_impl(
     file_path: str,
     *,

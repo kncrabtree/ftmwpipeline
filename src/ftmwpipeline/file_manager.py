@@ -16,7 +16,9 @@ These utility functions serve as the foundation for both the Pipeline class and
 functional API, enabling consistent file operations across interfaces.
 """
 
+import functools
 import hashlib
+import inspect
 import json
 import logging
 from datetime import datetime
@@ -24,6 +26,7 @@ from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     Any,
+    Callable,
     ClassVar,
     Dict,
     Iterable,
@@ -31,7 +34,9 @@ from typing import (
     Optional,
     Sequence,
     Tuple,
+    TypeVar,
     Union,
+    cast,
 )
 
 import h5py
@@ -896,7 +901,9 @@ def _warn_legacy_ft_apodization_keys(filepath: Path, h5f: "h5py.File") -> None:
             )
 
 
-def check_format_compatibility(filepath: Path, h5f: "h5py.File") -> None:
+def check_format_compatibility(
+    filepath: Path, h5f: "h5py.File", *, warn: bool = True
+) -> None:
     """Check the file's format-version stamp against this package.
 
     The stamp is the root ``ftmw_format_version`` attribute (MAJOR.MINOR). A
@@ -908,11 +915,12 @@ def check_format_compatibility(filepath: Path, h5f: "h5py.File") -> None:
     """
     file_version = h5f.attrs.get("ftmw_format_version")
     if file_version is None:
-        logger.warning(
-            "%s carries no format-version stamp; treating it as a legacy "
-            "pre-1.0 file and proceeding.",
-            filepath.name,
-        )
+        if warn:
+            logger.warning(
+                "%s carries no format-version stamp; treating it as a legacy "
+                "pre-1.0 file and proceeding.",
+                filepath.name,
+            )
         return
 
     file_version = str(file_version)
@@ -920,16 +928,17 @@ def check_format_compatibility(filepath: Path, h5f: "h5py.File") -> None:
         file_major, file_minor = (int(p) for p in file_version.split(".")[:2])
         cur_major, cur_minor = (int(p) for p in FTMW_FORMAT_VERSION.split(".")[:2])
     except ValueError:
-        logger.warning(
-            "%s has an unparseable format-version stamp %r; proceeding.",
-            filepath.name,
-            file_version,
-        )
+        if warn:
+            logger.warning(
+                "%s has an unparseable format-version stamp %r; proceeding.",
+                filepath.name,
+                file_version,
+            )
         return
 
     if file_major > cur_major:
         raise PipelineCompatibilityError(filepath, file_version, FTMW_FORMAT_VERSION)
-    if file_major == cur_major and file_minor > cur_minor:
+    if warn and file_major == cur_major and file_minor > cur_minor:
         logger.warning(
             "%s was written with a newer .ftmw format (%s > %s); reading it "
             "with this version may ignore newer fields.",
@@ -950,6 +959,80 @@ def is_transient_open_error(exc: OSError) -> bool:
         return True
     text = str(exc).lower()
     return "unable to lock file" in text or "resource temporarily unavailable" in text
+
+
+def require_pipeline_file(filepath: Union[str, Path]) -> Path:
+    """Refuse, typed, a path that cannot be opened as a pipeline file.
+
+    The one guard every public stage call runs before its first read or write,
+    so an unopenable file is refused the way :func:`open_pipeline_file` refuses
+    it rather than escaping as a raw ``OSError`` or a stage-specific
+    ``RuntimeError``:
+
+    - a path that does not exist raises :class:`PipelineFileNotFoundError`
+      (``not_found``);
+    - a path that exists but is not an HDF5 file raises
+      :class:`PipelineCorruptionError` (``file_corrupt``);
+    - a file written by a newer MAJOR format raises
+      :class:`PipelineCompatibilityError` (``file_incompatible``).
+
+    A permission failure or HDF5 file-lock refusal says nothing about the
+    content and propagates unchanged. Like the read accessors' gate, this is
+    deliberately lighter than :func:`open_pipeline_file`: it does not demand
+    the provenance record, so it changes nothing for a file that works today.
+    """
+    path = Path(filepath)
+    if not path.exists():
+        raise PipelineFileNotFoundError(
+            path,
+            message=(
+                f"Pipeline file not found: {path}\n\n"
+                f"To create a new pipeline:\n"
+                f"  Pipeline.create('{path}', source='path/to/data/')\n"
+                f"  # or\n"
+                f"  ftmwpipeline data import {path} path/to/data/"
+            ),
+        )
+    try:
+        h5f = h5py.File(path, "r")
+    except OSError as exc:
+        if is_transient_open_error(exc):
+            raise
+        raise PipelineCorruptionError(
+            path,
+            f"HDF5 error: {exc}",
+            message=f"Failed to open pipeline file {path}: {exc}",
+        ) from exc
+    try:
+        check_format_compatibility(path, h5f, warn=False)
+    finally:
+        h5f.close()
+    return path
+
+
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+
+def requires_pipeline_file(param: str = "file_path") -> Callable[[_F], _F]:
+    """Decorate a public stage impl so :func:`require_pipeline_file` runs first.
+
+    *param* names the argument that carries the ``.ftmw`` path (bound by name
+    or position); the impl body is untouched.
+    """
+
+    def decorate(func: _F) -> _F:
+        sig = inspect.signature(func)
+
+        @functools.wraps(func)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            bound = sig.bind_partial(*args, **kwargs)
+            if bound.arguments.get(param) is not None:
+                require_pipeline_file(bound.arguments[param])
+            return func(*args, **kwargs)
+
+        return cast(_F, wrapper)
+
+    return decorate
 
 
 def open_pipeline_file(

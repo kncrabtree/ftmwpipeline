@@ -33,6 +33,7 @@ from ..file_manager import (
     StageDependencyError,
     canonical_invalidated,
     invalidate_downstream_stages,
+    requires_pipeline_file,
 )
 from ..io.window_planning_settings_serialization import (
     load_window_planning_settings_from_h5,
@@ -62,6 +63,7 @@ def _required(value: Any, name: str) -> Any:
     return require_resolved(value, name, owner="WindowPlanningSettings")
 
 
+@requires_pipeline_file()
 def assign_windows_impl(
     file_path: str,
     *,
@@ -295,6 +297,7 @@ def load_windows_impl(file_path: str) -> Dict[str, Any]:
     }
 
 
+@requires_pipeline_file()
 def visualize_windows_impl(
     file_path: str,
     figsize: Optional[Tuple[float, float]] = None,

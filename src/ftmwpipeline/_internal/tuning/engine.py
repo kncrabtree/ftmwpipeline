@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, TextIO, Tuple, cast
 
+from ...file_manager import requires_pipeline_file
 from ...io.noise_settings_serialization import STAGE2_NOISE_SETTINGS_PATH
 from ...io.peak_detection_settings_serialization import STAGE3_PEAKS_SETTINGS_PATH
 from ...io.stage_fit_settings_serialization import STAGE_FIT_PATH
@@ -252,6 +253,7 @@ def _apply_instructions(spec: KnobSpec, rec: Optional[Recommendation]) -> str:
     )
 
 
+@requires_pipeline_file("ftmw_path")
 def run_scan(
     spec: KnobSpec,
     ftmw_path: Path,
@@ -386,6 +388,7 @@ def run_scan(
     )
 
 
+@requires_pipeline_file("ftmw_path")
 def run_scan_batch(
     specs: Sequence[KnobSpec],
     ftmw_path: Path,

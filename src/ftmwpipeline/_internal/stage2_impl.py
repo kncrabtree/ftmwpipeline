@@ -26,6 +26,7 @@ from ..file_manager import (
     StageDependencyError,
     canonical_invalidated,
     invalidate_downstream_stages,
+    requires_pipeline_file,
 )
 from ..io.noise_result_serialization import (
     load_noise_result_from_hdf5,
@@ -52,6 +53,7 @@ def _required(value: Any, name: str) -> Any:
     return require_resolved(value, name, owner="NoiseSettings")
 
 
+@requires_pipeline_file()
 def compute_noise_estimation_impl(
     file_path: str,
     *,
@@ -296,6 +298,7 @@ def _compute_noise_scatter(
     }
 
 
+@requires_pipeline_file()
 def visualize_noise_impl(
     file_path: str,
     y_max_factor: Optional[float] = None,

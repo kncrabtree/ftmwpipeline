@@ -55,6 +55,7 @@ from ...core import tau_calibration_settings as tau_mod
 from ...core import window_planning_settings as window_mod
 from ...core.knob_metadata import field_typing_meta
 from ...core.stage_fit_settings import ClockSource, ShapeSpec, SpurSubSettings
+from ...file_manager import requires_pipeline_file
 from ...io.noise_settings_serialization import load_noise_settings_from_h5
 from ...io.peak_detection_settings_serialization import (
     load_peak_detection_settings_from_h5,
@@ -341,6 +342,7 @@ def _enrich(path: str) -> Tuple[str, str]:
     return spec.tier, spec.help
 
 
+@requires_pipeline_file()
 def resolve_settings_view(
     file_path: Optional[Union[str, Path]] = None,
     selector: Optional[str] = None,

@@ -37,6 +37,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from ..core.data_structures import DoubletAlternativeInfo, FittingResult, SpectrumFit
+from ..file_manager import requires_pipeline_file
 from ..fitting.validation import (
     DEFAULT_CHI2R_NOISE_FLOOR,
     DEFAULT_SHAPE_ERROR_KAPPA,
@@ -408,6 +409,7 @@ def _doublet_alternatives_summary(fit: SpectrumFit) -> Dict[str, Any]:
     }
 
 
+@requires_pipeline_file()
 def validate_stage5_shape_error_impl(
     file_path: str,
     *,

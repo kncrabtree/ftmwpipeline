@@ -51,6 +51,7 @@ from ..file_manager import (
     canonical_invalidated,
     invalidate_downstream_stages,
     invalidate_stages_in_file,
+    requires_pipeline_file,
 )
 from ..io.peak_detection_settings_serialization import (
     Stage3Consumed,
@@ -498,6 +499,7 @@ def _required(value: Any, name: str) -> Any:
     return require_resolved(value, name, owner="PeakDetectionSettings")
 
 
+@requires_pipeline_file()
 def detect_peaks_impl(
     file_path: str,
     *,
@@ -1004,6 +1006,7 @@ def load_peaks_impl(file_path: str) -> Dict[str, Any]:
     }
 
 
+@requires_pipeline_file()
 def visualize_peaks_impl(
     file_path: str,
     figsize: Optional[Tuple[float, float]] = None,
