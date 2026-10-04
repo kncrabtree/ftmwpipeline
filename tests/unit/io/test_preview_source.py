@@ -22,7 +22,7 @@ import pytest
 import ftmwpipeline.api as ftmw
 from ftmwpipeline import Pipeline
 from ftmwpipeline.contract import Absent, FidPreviewRow
-from ftmwpipeline.file_manager import NotFoundError, PipelineFileNotFoundError
+from ftmwpipeline.file_manager import BadSettingError, PipelineFileNotFoundError
 from ftmwpipeline.io.data_loaders import validate_source
 from ftmwpipeline.io.data_loaders.blackchirp import BlackChirpLoader
 from ftmwpipeline.serialize import to_jsonable
@@ -634,30 +634,32 @@ class TestRefusals:
         assert info.value.ids == [str(missing)]
         assert isinstance(info.value, FileNotFoundError)
 
-    def test_unknown_format_name_is_not_found_format(self, tmp_path):
+    def test_unknown_format_name_is_bad_setting_format(self, tmp_path):
+        # The same refusal import gives (one code per mistake, Wave 4).
         src = make_csv(tmp_path)
-        with pytest.raises(NotFoundError) as info:
+        with pytest.raises(BadSettingError) as info:
             ftmw.preview_source(src, "no-such-format")
-        assert info.value.code == "not_found"
-        assert info.value.kind == "format"
-        assert info.value.ids == ["no-such-format"]
+        assert info.value.code == "bad_setting"
+        assert info.value.path == "format"
+        assert info.value.value == "no-such-format"
+        assert isinstance(info.value, ValueError)
         assert info.value.to_dict()["schema"] == "ftmw/error@1"
 
-    def test_undetectable_source_is_not_found_format_with_no_ids(self, tmp_path):
+    def test_undetectable_source_is_bad_setting_format_with_no_value(self, tmp_path):
         odd = tmp_path / "notes.txt"
         odd.write_text("hello")
-        with pytest.raises(NotFoundError) as info:
+        with pytest.raises(BadSettingError) as info:
             ftmw.preview_source(odd)
-        assert info.value.code == "not_found"
-        assert info.value.kind == "format"
-        assert info.value.ids == []
+        assert info.value.code == "bad_setting"
+        assert info.value.path == "format"
+        assert info.value.value is None
 
-    def test_empty_directory_is_not_found_format(self, tmp_path):
+    def test_empty_directory_is_bad_setting_format(self, tmp_path):
         empty = tmp_path / "empty"
         empty.mkdir()
-        with pytest.raises(NotFoundError) as info:
+        with pytest.raises(BadSettingError) as info:
             ftmw.preview_source(empty)
-        assert info.value.kind == "format"
+        assert info.value.path == "format"
 
     def test_source_that_does_not_fit_the_named_format_is_value_error(self, tmp_path):
         src = make_csv(tmp_path)
@@ -669,7 +671,7 @@ class TestRefusals:
     def test_refusals_agree_on_pipeline(self, tmp_path):
         with pytest.raises(PipelineFileNotFoundError):
             Pipeline.preview_source(tmp_path / "nowhere")
-        with pytest.raises(NotFoundError):
+        with pytest.raises(BadSettingError):
             Pipeline.preview_source(make_csv(tmp_path), "no-such-format")
 
 

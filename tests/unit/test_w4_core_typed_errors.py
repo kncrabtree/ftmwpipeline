@@ -36,10 +36,10 @@ def pipeline(tmp_path) -> Pipeline:
 @pytest.mark.parametrize(
     "kwargs, path",
     [
-        ({"start_us": -1.0}, "ft.start_us"),
-        ({"start_us": 5.0, "end_us": 2.0}, "ft.end_us"),
-        ({"end_us": 100.0}, "ft.end_us"),
-        ({"trim": (1.0e7, 2.0e7)}, "ft.trim"),
+        ({"start_us": -1.0}, "stage1.start_us"),
+        ({"start_us": 5.0, "end_us": 2.0}, "stage1.end_us"),
+        ({"end_us": 100.0}, "stage1.end_us"),
+        ({"trim": (1.0e7, 2.0e7)}, "stage1.trim"),
     ],
 )
 def test_compute_ft_refusals_name_the_setting(pipeline, kwargs, path):
@@ -71,7 +71,7 @@ def test_timebase_malformed_clocks_argument(pipeline):
     pipeline.compute_ft(trim=(40900.0, 41020.0))
     with pytest.raises(BadSettingError) as exc:
         pipeline.calibrate_timebase(clocks=[{"nope": 1}])
-    assert exc.value.path == "clocks"
+    assert exc.value.path == "stage5.spur.clocks"
 
 
 def test_unknown_format_is_a_bad_setting():
@@ -268,11 +268,11 @@ def test_api_calibrate_tau_and_recommend_shape_need_trim(pipeline):
     ftmw.estimate_noise(path)
     with pytest.raises(BadSettingError) as exc:
         ftmw.calibrate_tau(path)
-    _assert_bad_setting(exc, "ft.trim")
+    _assert_bad_setting(exc, "stage1.trim")
     assert exc.value.value is None
     with pytest.raises(BadSettingError) as exc:
         ftmw.recommend_shape(path)
-    _assert_bad_setting(exc, "ft.trim")
+    _assert_bad_setting(exc, "stage1.trim")
 
 
 def test_api_recommend_shape_bad_n_seg(noise_file):

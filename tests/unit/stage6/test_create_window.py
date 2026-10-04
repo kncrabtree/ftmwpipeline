@@ -798,17 +798,15 @@ class TestCrossInterface:
     def test_cli_reports_a_bad_anchor_as_a_user_error(
         self, stage5_small_source, tmp_path, capsys
     ):
-        import argparse
-
-        from ftmwpipeline.cli.review_commands import cmd_review_create
+        from ftmwpipeline.cli.main import main as cli_main
 
         p = tmp_path / "bad.ftmw"
         shutil.copy(stage5_small_source, p)
-        rc = cmd_review_create(
-            argparse.Namespace(file_path=str(p), anchor=1000.0, verbose=False)
-        )
+        # bad_setting propagates from the verb; main maps it to exit 1 and
+        # writes the error to stderr.
+        rc = cli_main(["review", "create", str(p), "--at", "1000.0"])
         assert rc == 1
-        assert "Error:" in capsys.readouterr().out
+        assert "Error:" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------

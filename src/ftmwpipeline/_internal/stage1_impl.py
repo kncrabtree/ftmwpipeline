@@ -184,7 +184,7 @@ def _reject_window_past_record(
     """
     if end_us > duration_us + 0.5 * sample_dt_us:
         raise BadSettingError(
-            "ft.end_us",
+            "stage1.end_us",
             f"a time within the recording (<= {duration_us:g} us), or unset",
             end_us,
             message=(
@@ -205,21 +205,21 @@ def _reject_bad_window_bounds(start_us: float, end_us: float) -> None:
     """
     if start_us < 0:
         raise BadSettingError(
-            "ft.start_us",
+            "stage1.start_us",
             "a time >= 0 us",
             start_us,
             message="FID preprocessing failed: Start time must be non-negative",
         )
     if end_us < 0:
         raise BadSettingError(
-            "ft.end_us",
+            "stage1.end_us",
             "a time >= 0 us, greater than ft.start_us",
             end_us,
             message="FID preprocessing failed: End time must be non-negative",
         )
     if start_us >= end_us:
         raise BadSettingError(
-            "ft.end_us",
+            "stage1.end_us",
             f"a time greater than ft.start_us ({start_us:g} us)",
             end_us,
             message="FID preprocessing failed: Start time must be less than end time",
@@ -320,7 +320,7 @@ def compute_ft_impl(
             mask = (freq_array >= trim_range[0]) & (freq_array <= trim_range[1])
             if not np.any(mask):
                 raise BadSettingError(
-                    "ft.trim",
+                    "stage1.trim",
                     "a (min, max) MHz range that overlaps the spectrum "
                     f"({freq_array[0]:.1f} - {freq_array[-1]:.1f} MHz)",
                     list(trim_range),
@@ -364,7 +364,7 @@ def compute_ft_impl(
             )
         except ValueError as e:
             raise BadSettingError(
-                "ft.trim",
+                "stage1.trim",
                 "a (min, max) MHz range, min < max, that overlaps the spectrum",
                 list(trim_range),
                 message=f"Frequency trimming failed: {e}",

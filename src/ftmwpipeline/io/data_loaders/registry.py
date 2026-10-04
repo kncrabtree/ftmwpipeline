@@ -9,7 +9,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Type, Union
 
-from ...file_manager import BadSettingError, NotFoundError, PipelineFileNotFoundError
+from ...file_manager import BadSettingError, PipelineFileNotFoundError
 from .base import BaseLoader, LoaderError, SourcePreview
 
 if TYPE_CHECKING:
@@ -220,9 +220,10 @@ class FormatRegistry:
         ------
         PipelineFileNotFoundError
             If ``source_path`` does not exist.
-        NotFoundError
-            ``kind == "format"``: ``format_name`` is not a registered format, or
-            auto-detection finds none (``ids`` is then ``[]``).
+        BadSettingError
+            ``path == "format"``: ``format_name`` is not a registered format, or
+            auto-detection finds none (``value`` is then ``None``). Also a
+            ``ValueError``; the same refusal import gives.
         LoaderError
             If the source is not valid for the chosen format.
         """
@@ -233,16 +234,19 @@ class FormatRegistry:
         if format_name is None:
             detected = self.detect_format(source_path)
             if detected is None:
-                raise NotFoundError(
+                raise BadSettingError(
                     "format",
-                    [],
+                    f"one of: {', '.join(self.list_formats())} (auto-detection "
+                    "found none)",
+                    None,
                     message=f"Could not detect the data format of: {source_path}",
                 )
             format_name = detected
         elif format_name not in self._loader_instances:
-            raise NotFoundError(
+            raise BadSettingError(
                 "format",
-                [format_name],
+                f"one of: {', '.join(self.list_formats())}",
+                format_name,
                 message=(
                     f"Unknown format '{format_name}'. "
                     f"Available formats: {self.list_formats()}"

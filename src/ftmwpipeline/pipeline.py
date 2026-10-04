@@ -130,6 +130,7 @@ from .core.start_detection_settings import StartDetectionSettings
 from .core.tau_calibration_settings import TauCalibrationSettings
 from .core.window_planning_settings import WindowPlanningSettings
 from .file_manager import (
+    BadSettingError,
     PipelineFileError,
     PipelineStageTracker,
     SourceMetadata,
@@ -139,7 +140,7 @@ from .file_manager import (
 )
 from .fitting.tau_calibration import ShapeRecommendation, TauCalibrationResult
 from .fitting.timebase_calibration import TimebaseCalibrationResult
-from .io.data_loaders import detect_format, load_fid, validate_source
+from .io.data_loaders import detect_format, list_formats, load_fid, validate_source
 from .io.stage_fit_settings_serialization import write_recommended_clock_sources
 from .preprocessing.noise_estimation import NoiseResult
 from .preprocessing.start_detection import StartDetectionResult
@@ -270,7 +271,23 @@ class Pipeline:
         if format_name is None:
             format_name = detect_format(source_path)
             if format_name is None:
-                raise ValueError(f"Could not detect format for: {source_path}")
+                raise BadSettingError(
+                    "format",
+                    f"one of: {', '.join(list_formats())} (auto-detection "
+                    "found none)",
+                    None,
+                    message=f"Could not detect format for: {source_path}",
+                )
+        elif format_name not in list_formats():
+            raise BadSettingError(
+                "format",
+                f"one of: {', '.join(list_formats())}",
+                format_name,
+                message=(
+                    f"Unknown format '{format_name}'. "
+                    f"Available formats: {list_formats()}"
+                ),
+            )
 
         # Validate source with format
         validation = validate_source(source_path, format_name)

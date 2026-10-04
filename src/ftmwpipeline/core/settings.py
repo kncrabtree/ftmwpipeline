@@ -83,7 +83,7 @@ def _parse_trim(text: str) -> Tuple[float, float]:
     parts = text.split(":")
     if len(parts) != 2:
         raise BadSettingError(
-            "trim",
+            "stage1.trim",
             expected,
             text,
             message=f"Trim must be 'min:max' in MHz, got {text!r}",
@@ -92,14 +92,14 @@ def _parse_trim(text: str) -> Tuple[float, float]:
         lo, hi = float(parts[0]), float(parts[1])
     except ValueError:
         raise BadSettingError(
-            "trim",
+            "stage1.trim",
             expected,
             text,
             message=f"Trim must be 'min:max' in MHz, got {text!r}",
         ) from None
     if hi <= lo:
         raise BadSettingError(
-            "trim",
+            "stage1.trim",
             expected,
             text,
             message=f"Trim max must exceed min, got {text!r}",

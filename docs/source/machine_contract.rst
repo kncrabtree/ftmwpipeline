@@ -540,8 +540,9 @@ public calls that raise it:
   ``settings_show`` / ``settings_defaults``): a preset whose root or block is
   not a mapping, or that names an unknown field or key (``path`` is
   ``preset``, the block name, or ``block.field``).
-* ``--trim`` with a value that is not ``min:max`` with ``max > min``
-  (``path`` ``trim``).
+* ``trim=`` / ``--trim`` with a value that is not ``min:max`` with
+  ``max > min`` (``path`` ``stage1.trim``). On the CLI the option is parsed by
+  argparse, which reports a bad ``--trim`` as a usage error (exit 2).
 * ``scan_run`` / ``scan_batch`` / ``scan run`` with an unregistered knob
   (``path`` is the knob). This one is also a ``KeyError``, and its ``str()`` is
   the plain message.
@@ -564,13 +565,13 @@ unchanged from the ``ValueError`` it replaced.
        ``format_name``), ``load_fid`` / source validation
      - ``format``
    * - ``compute_ft``
-     - ``ft.start_us`` (negative), ``ft.end_us`` (not after ``start_us``, or past
-       the end of the recording), ``ft.trim`` (no data points in the range)
+     - ``stage1.start_us`` (negative), ``stage1.end_us`` (not after ``start_us``, or
+       past the end of the recording), ``stage1.trim`` (no data points in the range)
    * - ``estimate_noise``
      - ``stage2.n_iter`` (< 1), ``stage2.smoothing_percentile`` (outside
        [0, 100])
    * - ``calibrate_tau``, ``recommend_shape``
-     - ``shape`` (not ``lorentzian`` / ``gaussian``), ``ft.trim`` (value
+     - ``shape`` (not ``lorentzian`` / ``gaussian``), ``stage1.trim`` (value
        ``null``: no trim persisted by ``compute_ft``), ``stage2b.stft.n_seg``,
        ``stage2b.stft.sigma_time``, ``stage2b.band.band_edges_mhz``,
        ``stage2b.band.band_labels``, ``stage2b.gaussian.tau_G_bound_hi``,
@@ -578,8 +579,8 @@ unchanged from the ``ValueError`` it replaced.
        ``stage2b.recommendation.tau_bound_hi``
    * - ``calibrate_timebase``
      - ``kappa_sys`` (negative or non-finite), ``snr_min`` (<= 0 or
-       non-finite), ``clocks`` (malformed argument), ``stage5.spur.clocks``
-       (no declaration, or no locked source)
+       non-finite), ``stage5.spur.clocks`` (a malformed ``clocks=`` argument,
+       no declaration, or no locked source)
    * - ``detect_peaks``
      - ``stage3.promotion.min_snr``, ``stage3.promotion.internal_min_snr``,
        ``stage3.promotion.weak_medium_snr``, ``stage3.savgol.sg_order``,
@@ -588,16 +589,17 @@ unchanged from the ``ValueError`` it replaced.
    * - ``detect_start_time``
      - ``stage0.step_us`` (FID too short for the sweep step)
    * - ``fit_peaks``
-     - ``shape``, ``tau_maj_override_us`` / ``sigma_tau_override_us`` (only one
+     - ``stage5.shape``, ``tau_maj_override_us`` / ``sigma_tau_override_us`` (only one
        of the pair, or non-positive), ``stage5.tau.tau0_us``,
        ``stage5.tau.max_decay_factor`` (must exceed 1)
    * - ``show_fit``
-     - ``window_ids`` / ``freqs`` (``value`` lists every unknown id or
-       frequency at once), ``apodize`` / ``apodize_us``
+     - ``freqs`` (``value`` lists every frequency in no window at once),
+       ``apodize`` / ``apodize_us``; an unknown window id is ``not_found``
+       (kind ``window``, every unknown id at once)
    * - ``review_create``
-     - ``anchor_mhz`` (the anchor already falls inside a window)
+     - ``anchor_mhz`` (outside the analysis band, or already inside a window)
    * - ``run_pipeline``
-     - ``trim`` (not given)
+     - ``stage1.trim`` (not given)
 
 Reading the noise result before ``noise run`` (or ``ft run``) raises
 ``StageDependencyError`` (``stage_not_run``, ``command`` ``noise run`` /
@@ -654,7 +656,9 @@ but the code cannot read (a non-numeric or non-finite value, a block that is not
 a mapping, an unparsable Blackchirp ``chirps.csv``) is *undefined*, never *not
 run*; the parse error is logged at debug level. A path that does not exist raises
 ``not_found`` with kind ``"file"``; an unknown ``format_name``, or a source no
-format recognises, raises ``not_found`` with kind ``"format"``.
+format recognises, raises ``bad_setting`` with ``path`` ``"format"`` (``value``
+the name given, or ``null`` when detection found none) -- the same refusal
+``import_data`` gives.
 
 What each source reports:
 
@@ -732,7 +736,10 @@ default, format), ``-o/--output DIR`` and ``-v``.
      -
    * - ``file_corrupt``
      - ``2``
-     - a file that exists but cannot be opened
+     - a file that exists but cannot be opened, as detected by the typed opener
+       (every ``read`` accessor, ``info``, ``ft run``, ``data`` verbs). Some
+       stage verbs still open the file directly and report an unopenable file
+       with their own message and exit ``1``; typing those opens is pending
    * - ``algorithm_failed``
      - ``2``
      - not yet raised; reserved for a later wave

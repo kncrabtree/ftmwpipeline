@@ -10,7 +10,7 @@ import pytest
 import ftmwpipeline.api as ftmw
 from ftmwpipeline._internal.stage5_impl import load_fit_impl
 from ftmwpipeline.core.stage_fit_settings import StageFitSettings, TauSubSettings
-from ftmwpipeline.file_manager import BadSettingError
+from ftmwpipeline.file_manager import BadSettingError, NotFoundValueError
 from ftmwpipeline.pipeline import Pipeline
 
 pytestmark = [pytest.mark.integration]
@@ -36,7 +36,7 @@ def _assert_bad_setting(exc, path):
     "kwargs, path",
     [
         # Mutation: ShapeSpec.coerce's plain ValueError escapes unwrapped.
-        ({"shape": "bogus"}, "shape"),
+        ({"shape": "bogus"}, "stage5.shape"),
         # Mutation: the pair check raises a plain ValueError.
         ({"tau_maj_override_us": 3.0}, "tau_maj_override_us"),
         (
@@ -71,10 +71,12 @@ def test_fit_show_unknown_ids_and_freqs_all_at_once(fit_file, via):
             return ftmw.show_fit(fit_file, **kw)
         return Pipeline.open(fit_file).show_fit(**kw)
 
-    with pytest.raises(BadSettingError) as exc:
+    # Unknown window ids are not_found (still a ValueError), every id at once.
+    with pytest.raises(NotFoundValueError) as nf:
         call(window_ids=[10**6, 10**6 + 1])
-    _assert_bad_setting(exc, "window_ids")
-    assert exc.value.value == [10**6, 10**6 + 1]
+    assert nf.value.code == "not_found" and nf.value.kind == "window"
+    assert nf.value.ids == [10**6, 10**6 + 1]
+    assert isinstance(nf.value, ValueError)
 
     with pytest.raises(BadSettingError) as exc:
         call(freqs=[1.0, 2.0])

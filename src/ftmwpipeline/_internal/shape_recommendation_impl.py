@@ -124,7 +124,7 @@ def recommend_shape_impl(
     start_us, end_us = ft_settings.active_window_us()
     if ft_settings.trim is None:
         raise BadSettingError(
-            "ft.trim",
+            "stage1.trim",
             "a persisted (min, max) MHz trim range (set trim on compute_ft)",
             None,
             message=(

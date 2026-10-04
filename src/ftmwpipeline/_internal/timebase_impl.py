@@ -75,7 +75,7 @@ def _resolve_clock_sources(
             raise
         except ValueError as e:
             raise BadSettingError(
-                "clocks",
+                "stage5.spur.clocks",
                 "a sequence of ClockSource or {freq_mhz, locked, label} mappings",
                 clocks if isinstance(clocks, (str, list, tuple)) else repr(clocks),
                 message=str(e),

@@ -62,6 +62,7 @@ from ..core.stage_fit_settings import (
 from ..core.stage_fit_settings import resolve as resolve_stage_fit_settings
 from ..file_manager import (
     BadSettingError,
+    NotFoundValueError,
     StageDependencyError,
     invalidate_downstream_stages,
 )
@@ -1873,7 +1874,7 @@ def _fit_peaks_impl(
                 raise
             except ValueError as e:
                 raise BadSettingError(
-                    "shape",
+                    "stage5.shape",
                     "a peak shape such as 'lorentzian' or 'gaussian'",
                     shape if isinstance(shape, str) else repr(shape),
                     message=str(e),
@@ -3254,8 +3255,9 @@ def select_window_ids(
     The selectors compose as a union: explicit ids, frequency lookups, the
     top-SNR windows, and a random sample are all added to one set. ``all_windows``
     short-circuits to every window with attached context. ``random_seed`` only
-    matters when ``random_n`` is set. Raises ``BadSettingError`` (a ``ValueError``)
-    listing every unknown id, or every frequency in no window.
+    matters when ``random_n`` is set. Raises ``not_found`` (a ``ValueError``)
+    listing every unknown window id, or ``BadSettingError`` listing every
+    frequency in no window.
     """
     available = [
         int(cast(int, wf.window_id)) for wf in fit.window_fits if wf.window is not None
@@ -3268,9 +3270,8 @@ def select_window_ids(
     selected: set[int] = set()
     unknown_ids = [int(w) for w in window_ids or [] if int(w) not in available_set]
     if unknown_ids:
-        raise BadSettingError(
-            "window_ids",
-            f"ids of windows in the fit ({min(available)}..{max(available)})",
+        raise NotFoundValueError(
+            "window",
             unknown_ids,
             message=(
                 f"window id {unknown_ids[0]} not in fit "

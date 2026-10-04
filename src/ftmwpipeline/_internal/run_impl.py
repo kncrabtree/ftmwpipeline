@@ -104,7 +104,7 @@ def run_pipeline_impl(
 
     if trim is None:
         raise BadSettingError(
-            "trim",
+            "stage1.trim",
             "an active-band (min, max) FT range in MHz",
             None,
             message=(

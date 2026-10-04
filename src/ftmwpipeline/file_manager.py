@@ -412,6 +412,14 @@ class PipelineFileNotFoundError(NotFoundError, FileNotFoundError):
         super().__init__("file", [str(self.filepath)], message=message)
 
 
+class NotFoundValueError(NotFoundError, ValueError):
+    """``not_found`` raised where the call refused with a :class:`ValueError`
+    before it was typed (a curation batch, a peak named by uid, a window id
+    argument). Also a :class:`ValueError`, so existing ``except ValueError``
+    clauses keep working; routes on the same ``code`` as :class:`NotFoundError`.
+    """
+
+
 class IncompleteProvenanceError(PipelineFileError, ValueError):
     """Raised when a file lacks the persisted inputs a provenance read needs.
 
@@ -482,10 +490,14 @@ class BadSettingError(PipelineFileError, ValueError):
         super().__init__(message)
 
     def _contract_values(self) -> Dict[str, Any]:
+        # The value is echoed as given; anything the serializer cannot carry
+        # (a date, an object, at any depth) is echoed as its ``repr``.
+        from .serialize import to_jsonable
+
         value = self.value
-        if not isinstance(value, (str, int, float, bool, list, tuple, dict)) and (
-            value is not None
-        ):
+        try:
+            to_jsonable(value)
+        except (TypeError, ValueError):
             value = repr(value)
         return {"path": self.path, "expected": self.expected, "value": value}
 

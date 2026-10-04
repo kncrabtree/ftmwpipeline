@@ -671,14 +671,20 @@ class TestCrossInterfaceFrameConsistency:
         with pytest.raises(ValueError, match="frame is required"):
             ftmw.review_edit(str(paths["api"]), wf.window_id, add=[add_freq])
 
-        rc = cmd_review_edit(
-            argparse.Namespace(
-                file_path=str(paths["cli"]),
-                window=wf.window_id,
-                add=[add_freq],
-                remove=[],
-                verbose=False,
-            )
+        # Through the CLI entry point: verbs let typed errors propagate and
+        # main maps them to exit codes in one place (bad_setting exits 1).
+        from ftmwpipeline.cli.main import main as cli_main
+
+        rc = cli_main(
+            [
+                "review",
+                "edit",
+                str(paths["cli"]),
+                "--window",
+                str(wf.window_id),
+                "--add",
+                str(add_freq),
+            ]
         )
         assert rc == 1
         # The refused call must leave the file untouched, on every interface.

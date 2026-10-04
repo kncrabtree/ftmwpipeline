@@ -73,6 +73,7 @@ from ..core.data_structures import (
 from ..file_manager import (
     BadSettingError,
     NotFoundError,
+    NotFoundValueError,
     PipelineFileError,
     StageDependencyError,
 )
@@ -4492,11 +4493,11 @@ def _resolve_curation_window_ids(
     return resolved
 
 
-def _unknown_peak_uids_error(uids: Sequence[int]) -> NotFoundError:
+def _unknown_peak_uids_error(uids: Sequence[int]) -> NotFoundValueError:
     """The ``not_found`` refusal for peak identifiers no fitted peak carries,
     naming every one of them (a batch reports all its unknown ids at once)."""
     listed = ", ".join(f"peak_uid={u}" for u in uids)
-    return NotFoundError(
+    return NotFoundValueError(
         "peak",
         list(uids),
         message=f"no fitted peak with {listed} in any window (already removed, "
@@ -4534,7 +4535,7 @@ def _require_known_plan_windows(
     unknown = _unknown_plan_window_ids(known, plan)
     if unknown:
         listed = ", ".join(str(w) for w in unknown)
-        raise NotFoundError(
+        raise NotFoundValueError(
             "window",
             unknown,
             message=f"window_id={listed} not found in the {where}",
@@ -4553,7 +4554,10 @@ def _raise_curation_failure(
     """
     tag = f"curation action {index + 1} ({describe_planned_action(action)}) failed"
     if isinstance(exc, NotFoundError):
-        raise NotFoundError(exc.kind, exc.ids, message=f"{tag}: {exc}") from exc
+        # The batch refused with ValueError before it was typed.
+        raise NotFoundValueError(
+            exc.kind, exc.ids, message=f"{tag}: {exc}"
+        ) from exc
     if isinstance(exc, PipelineFileError):
         raise exc
     raise ValueError(f"{tag}: {exc}") from exc
@@ -6707,7 +6711,7 @@ def _plan_batch_create(
         )
         if not (t_lo <= anchor <= t_hi):
             raise BadSettingError(
-                "anchor",
+                "anchor_mhz",
                 f"a frequency inside the analysis band [{t_lo:.4f}, {t_hi:.4f}] MHz",
                 anchor,
                 message=f"anchor {anchor:.4f} MHz is outside the analysis band "

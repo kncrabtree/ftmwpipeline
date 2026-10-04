@@ -551,8 +551,10 @@ named that does not exist, e.g. all unknown window ids of a curation batch),
 - The CLI maps codes to exit codes in one place: `file_corrupt` and
   `algorithm_failed` exit 2, `cancelled` exits 130, every other code exits 1.
   Under `--format json`, and always for `read` accessors, the error dict is
-  written to stderr. The code set is introduced wave by wave; codes not yet
-  implemented are not listed by `capabilities()`.
+  written to stderr. The code set is introduced wave by wave. A code whose
+  class exists but that no refusal raises yet (`algorithm_failed` until a
+  stage needs it; `cancelled` and `callback_failed` before Wave 5) is
+  documented as reserved. `capabilities()` lists only codes with a class.
 - Status calls (`get_pipeline_info`, `list_available_stages`) raise for a file
   they cannot open. `validate_pipeline` and `Pipeline.validate` agree:
   - a file that cannot be opened raises the typed error `Pipeline.open`

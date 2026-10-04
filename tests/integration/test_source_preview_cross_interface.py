@@ -181,9 +181,9 @@ def test_missing_source_refuses_identically(tmp_path, capsys):
 
 def test_unknown_format_refuses_identically(tmp_path, capsys):
     src = str(_csv_source(tmp_path))
-    with pytest.raises(KeyError) as api_exc:
+    with pytest.raises(ValueError) as api_exc:
         ftmw.preview_source(src, "no-such-format")
-    with pytest.raises(KeyError) as pipe_exc:
+    with pytest.raises(ValueError) as pipe_exc:
         Pipeline.preview_source(src, "no-such-format")
     rc, out, err = _cli(
         [
@@ -199,23 +199,23 @@ def test_unknown_format_refuses_identically(tmp_path, capsys):
     )
     payload = json.loads(err)
     assert rc == 1 and out == ""
-    assert payload["code"] == "not_found" and payload["kind"] == "format"
-    assert payload["ids"] == ["no-such-format"]
+    assert payload["code"] == "bad_setting" and payload["path"] == "format"
+    assert payload["value"] == "no-such-format"
     assert payload == api_exc.value.to_dict() == pipe_exc.value.to_dict()
 
 
 def test_undetectable_source_refuses_identically(tmp_path, capsys):
     odd = tmp_path / "notes.txt"
     odd.write_text("hello")
-    with pytest.raises(KeyError) as api_exc:
+    with pytest.raises(ValueError) as api_exc:
         ftmw.preview_source(odd)
     rc, out, err = _cli(
         ["read", "preview_source", str(odd), "--format", "json"], capsys
     )
     payload = json.loads(err)
     assert rc == 1 and out == ""
-    assert payload["code"] == "not_found" and payload["kind"] == "format"
-    assert payload["ids"] == []
+    assert payload["code"] == "bad_setting" and payload["path"] == "format"
+    assert payload["value"] is None
     assert payload == api_exc.value.to_dict()
 
 
