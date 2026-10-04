@@ -2795,6 +2795,18 @@ class Pipeline:
 
         return analysis_fingerprint_impl(str(self.filepath))
 
+    def status(self) -> Dict[str, Any]:
+        """Per-stage state of the file (``ftmw/status@1``).
+
+        Equivalent to :func:`ftmwpipeline.api.status`: ``{"schema", "stages":
+        [{"stage", "state", "depends_on"}], "runnable", "rerun_order"}`` with
+        canonical stage names. ``state`` is ``complete``, ``partial`` (reserved;
+        nothing returns it yet) or ``not_run``. Never writes.
+        """
+        from ._internal.status_impl import status_impl
+
+        return status_impl(str(self.filepath))
+
     @staticmethod
     def preview_source(
         source: Union[str, Path], format_name: Optional[str] = None

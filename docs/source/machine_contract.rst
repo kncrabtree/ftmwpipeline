@@ -34,7 +34,7 @@ The contract version
     if ftmwpipeline.CONTRACT_VERSION < 1:
         raise RuntimeError("needs a newer ftmwpipeline")
 
-The first published contract is version ``1``; this release is version ``6``. Additions (a new accessor,
+The first published contract is version ``1``; this release is version ``7``. Additions (a new accessor,
 field or code) raise the version by one and never break an existing field. Every machine-readable payload also carries a **schema name**
 of the form ``ftmw/<payload>@<n>``; a schema name never changes meaning.
 
@@ -57,7 +57,8 @@ declares. It needs no file and is the same on every interface:
    $ ftmwpipeline read capabilities --format json
 
 The payload is ``{"schema": "ftmw/capabilities@1", "contract_version": int,
-"schemas": [...], "accessors": [...], "codes": [...]}``. Every accessor listed
+"schemas": [...], "accessors": [...], "codes": [...], "stages": [...]}``
+(``stages`` is described under `Stage names`_). Every accessor listed
 exists on the API, on ``Pipeline`` and as exactly one CLI verb,
 ``ftmwpipeline read <name>``, spelled as the API name. An accessor that
 reads a file takes the path as its first argument on the API and as the
@@ -699,6 +700,43 @@ Every contract payload that names a stage uses the canonical vocabulary
 ``stage1_complex_ft`` is ``ft``). The Python attribute
 ``StageDependencyError.missing_dependencies`` keeps the internal keys; its
 ``to_dict()`` publishes the canonical names.
+
+Each spelling of a stage has one read-only mapping in
+``ftmwpipeline.contract``:
+
+* ``STAGE_KEYS``: the storage key.
+* ``STAGE_SETTINGS_PREFIX``: the settings and preset prefix (``stage1`` ...
+  ``stage5``). ``tau`` and ``tau_g`` share ``stage2b``. ``None`` for ``data``,
+  ``timebase`` and ``review``, which have no settings record.
+* ``STAGE_KNOB_PREFIX``: the tuning-registry knob prefix. ``data`` is
+  ``stage0`` (the start-detection knobs) and ``tau_g`` is ``stage2b.gaussian``.
+  ``None`` for ``timebase`` and ``review``.
+
+``stage_for_key`` / ``key_for_stage`` and ``stage_for_knob_prefix`` are the
+one-to-one inverses; the settings mapping is not one-to-one and has none.
+``capabilities()["stages"]`` lists them all as
+``[{"stage", "storage_key", "settings_prefix", "knob_prefix",
+"depends_on"}]`` in enum order, with ``depends_on`` in canonical names.
+
+Per-stage state: ``status``
+---------------------------
+
+``status(path)`` is file-bound on every interface (``ftmw.status(path)``,
+``Pipeline.open(path).status()``, ``ftmwpipeline read status FILE``) and never
+writes::
+
+   {"schema": "ftmw/status@1",
+    "stages": [{"stage": "data", "state": "complete", "depends_on": []}, ...],
+    "runnable": ["tau", ...],
+    "rerun_order": ["data", "ft", ...]}
+
+``state`` is one of ``complete``, ``partial`` or ``not_run``. ``partial`` is
+reserved for a Stage 5 fit interrupted by a cancel; no run produces it yet, so
+a client must accept it but will not see it. ``runnable`` lists, in enum order,
+the stages that are not complete but whose dependencies all are. ``rerun_order``
+lists every stage in the order a full refresh follows: a fixed topological
+order, ties broken by the ``Stage`` enum's order (it does not depend on the
+file). A file that cannot be opened raises the usual typed error.
 
 JSON from the command line
 --------------------------

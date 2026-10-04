@@ -38,7 +38,6 @@ from .._internal.read_impl import (
     write_text_impl,
 )
 from ..contract import (
-    Absent,
     ANALYSIS_FINGERPRINT_SCHEMA,
     CALIBRATION_SCHEMA,
     CAPABILITIES_SCHEMA,
@@ -56,10 +55,12 @@ from ..contract import (
     SNAP_TOLERANCE_SCHEMA,
     SOURCE_PREVIEW_SCHEMA,
     SPECTRUM_MODEL_SCHEMA,
+    STATUS_SCHEMA,
     TABLE_SCHEMA,
     TABLES_SCHEMA,
     WINDOW_MODEL_SCHEMA,
     WINDOW_STATUS_SCHEMA,
+    Absent,
 )
 from ..file_manager import PipelineFileError
 from .contract_commands import exit_code_for, register_accessor, report_contract_error
@@ -438,6 +439,12 @@ def register_contract_accessors(read_sub: Any) -> None:
         opened("analysis_fingerprint"),
         ANALYSIS_FINGERPRINT_SCHEMA,
         "Digest of every input that shaped the file's results",
+    )
+    register(
+        "status",
+        opened("status"),
+        STATUS_SCHEMA,
+        "Per-stage state, runnable stages and refresh order",
     )
 
 
