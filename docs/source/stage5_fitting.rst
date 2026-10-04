@@ -194,7 +194,10 @@ sits at its noise-and-fidelity floor, and the window-size-independent bar keeps
 the gate honest — the loop adds a line only on genuine local evidence, not to
 chase a lineshape floor or to exploit a window's quiet bins. A classical F-test
 on the :math:`\chi^2` drop is recorded at each step as a familiar diagnostic, but
-it does not gate acceptance. The derivation of the gate, the window-size bias it
+it does not gate acceptance. When the test has no value (a window with no residual
+degrees of freedom, or a non-positive :math:`\chi^2`) the step records an undefined
+F-statistic and p-value (``nan``; ``read_table`` reports them ``UNDEFINED``), not the
+:math:`F = 0`, :math:`p = 1` of a measured non-improvement. The derivation of the gate, the window-size bias it
 avoids, and its cross-instrument validation are in the
 :doc:`fitting-statistics methods note <methods/stage5_fitting>`.
 
@@ -283,6 +286,11 @@ residual leakage, and if so it renegotiates rather than shipping an under-fit wi
   a real line straddles the boundary, Stage 5 asks Stage 4 to **merge** the two
   windows through its :doc:`re-plan entry point <stage4_windows>`, bumping the plan
   revision, and refits the affected batches.
+
+A window edge whose coherence statistic is undefined (an empty residual, or a band
+with no positive noise) is stored as ``nan`` and never triggers either: the gates
+read it as no coherence to flag, exactly as when it was stored as ``0.0``, and a
+thaw's acceptance reads an undefined edge after the co-fit the same way.
 
 Both are bounded by round caps for guaranteed termination, and every attempt,
 accepted or not, is recorded in the fit's audit trail. A window *split* is

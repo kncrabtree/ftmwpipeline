@@ -223,7 +223,9 @@ Each declared accessor, with its absence cases:
     ``2`` (the merged refit was attempted). ``orth_evidence_delta_chi2`` is
     also ``2`` when the weak partner had no usable support
     (``support_bins`` 0), where an earlier release stored ``0.0``, which
-    reads as ``nan``.
+    reads as ``nan``. (An earlier release's ``0.0`` from a disabled
+    line-evidence escape sits on a usable support, so the file cannot tell it
+    from a measured zero; it reads as present.)
   * ``peaks``. ``internal_snr``, ``internal_frequency``, ``leakage_pedestal``:
     ``nan`` (the internal pass did not contribute the peak) is ``1``, except
     that ``internal_snr`` is ``2`` when the internal pass did contribute it

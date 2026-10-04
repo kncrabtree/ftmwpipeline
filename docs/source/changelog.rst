@@ -68,8 +68,8 @@ engine so they cannot answer differently.
   internal pass contributed the peak. Every gate decision and fitted number
   is unchanged; on the 2638 fixture the whole fit is bit-identical.
 * **Stage 6 refits mask spurs at full precision.** A Stage 6 refit (every
-  review verb that refits a window) replays the Stage 5 fit's gated spur catalog instead of re-detecting it.
-  It used to replay the spur centers as ``parameters["spur_centers_mhz"]``
+  review verb that refits a window) replays the Stage 5 fit's gated spur
+  catalog instead of re-detecting it. It used to replay the spur centers as ``parameters["spur_centers_mhz"]``
   stores them, rounded to 4 decimals for display, while the fit itself and
   the window and spectrum models masked at full precision; it now reads the
   full-precision catalog from the fit's ``diagnostics["gated_spurs"]``, the

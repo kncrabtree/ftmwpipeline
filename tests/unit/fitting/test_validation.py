@@ -21,6 +21,7 @@ from ftmwpipeline.fitting.validation import (
     effective_sample_size,
     feature_fwhm,
     fwhm_dimensionless,
+    line_evidence_escape,
     shape_error_fraction,
     snr_aware_chi2_pass,
     validate_peak_separation,
@@ -282,6 +283,38 @@ class TestFTest:
             p, f, _ = calculate_chi_squared_improvement(*args)
             assert np.isnan(p) and np.isnan(f), args
 
+    @pytest.mark.parametrize(
+        "args",
+        [
+            (1000.0, 800.0, 0, 800, 10),  # no added parameter
+            (1000.0, 800.0, -1, 800, 10),  # fewer parameters than before
+            (1000.0, 800.0, 3, 10, 10),  # no residual degrees of freedom
+            (1000.0, 800.0, 3, 5, 10),  # negative residual degrees of freedom
+            (1000.0, 0.0, 3, 800, 10),  # zero chi-squared after
+            (1000.0, -1.0, 3, 800, 10),  # negative chi-squared after
+        ],
+    )
+    def test_each_degenerate_case_is_undefined_and_reports_the_difference(self, args):
+        """Spec §Missing values: an F-test with no residual dof or a non-positive
+        chi2 has no value (nan, nan), not the (1, 0) of a measured non-improvement.
+        The chi2 difference is still reported."""
+        p, f, diff = calculate_chi_squared_improvement(*args)
+        assert np.isnan(p) and np.isnan(f)
+        assert diff == args[0] - args[1]
+
+    @pytest.mark.parametrize("new_chi2", [1000.0, 1200.0])
+    def test_genuine_non_improvement_keeps_unity_p(self, new_chi2):
+        """The test ran and found no evidence: p = 1, F = 0, not undefined."""
+        p, f, diff = calculate_chi_squared_improvement(1000.0, new_chi2, 3, 800, 10)
+        assert (p, f) == (1.0, 0.0)
+        assert diff == 1000.0 - new_chi2
+
+    def test_degenerate_check_precedes_the_improvement_check(self):
+        """Undefined whatever the sign of the chi2 difference."""
+        for old in (500.0, 1000.0, 2000.0):
+            p, f, _ = calculate_chi_squared_improvement(old, 800.0, 3, 10, 10)
+            assert np.isnan(p) and np.isnan(f), old
+
     def test_real_improvement_is_significant(self):
         """A large chi-squared drop yields a tiny p-value and a positive F."""
         p, f, diff = calculate_chi_squared_improvement(1000.0, 800.0, 3, 800, 10)
@@ -303,6 +336,66 @@ class TestFTest:
         res = fit_window(u, z, 1.0, [true], TAU_US, T_US, fit_tau=False)
         recomputed = calculate_noise_weighted_chi2(z, 1.0, res.fitted_spectrum)
         assert recomputed == pytest.approx(res.chi_squared, rel=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# Line-evidence escape: no test, no value
+# ---------------------------------------------------------------------------
+class TestLineEvidenceEscapeUndefined:
+    """When no test runs the escape never fires and its delta-chi2 is ``nan``."""
+
+    @staticmethod
+    def _inputs(n=40):
+        rng = np.random.default_rng(3)
+        evidence = rng.normal(size=n) + 1j * rng.normal(size=n)
+        template = np.zeros(n, dtype=complex)
+        template[10:20] = 1.0
+        return evidence, np.ones(n), template
+
+    def test_disabled_escape(self, monkeypatch):
+        from ftmwpipeline.fitting import validation
+
+        monkeypatch.setattr(validation, "DEFAULT_GATE_LINE_ESCAPE_LAMBDA", None)
+        evidence, sigma, template = self._inputs()
+        fires, delta = line_evidence_escape(
+            evidence, sigma, template, [], n_params_peak=3
+        )
+        assert fires is False and np.isnan(delta)
+
+    def test_zero_template(self):
+        evidence, sigma, _ = self._inputs()
+        fires, delta = line_evidence_escape(
+            evidence, sigma, np.zeros(evidence.size, dtype=complex), [], n_params_peak=3
+        )
+        assert fires is False and np.isnan(delta)
+
+    def test_fewer_than_three_bins(self):
+        evidence, sigma, template = self._inputs(n=2)
+        fires, delta = line_evidence_escape(
+            evidence, sigma, np.ones(2, dtype=complex), [], n_params_peak=3
+        )
+        assert fires is False and np.isnan(delta)
+
+    def test_support_narrower_than_three_bins(self):
+        evidence, sigma, _ = self._inputs()
+        template = np.zeros(evidence.size, dtype=complex)
+        template[10] = 1.0
+        fires, delta = line_evidence_escape(
+            evidence,
+            sigma,
+            template,
+            [],
+            n_params_peak=3,
+            support_dilate=0,
+        )
+        assert fires is False and np.isnan(delta)
+
+    def test_a_test_that_runs_has_a_finite_delta(self):
+        evidence, sigma, template = self._inputs()
+        fires, delta = line_evidence_escape(
+            evidence, sigma, template, [], n_params_peak=3
+        )
+        assert isinstance(fires, bool) and np.isfinite(delta)
 
 
 # ---------------------------------------------------------------------------

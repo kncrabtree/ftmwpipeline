@@ -128,3 +128,55 @@ def test_internal_floor_drops_subfloor_active_peaks():
     assert kept[101].properties["promoted"] is False
     assert 102 in kept  # excess 20 -> kept and promoted
     assert kept[102].properties["promoted"] is True
+
+
+def test_peak_without_positive_noise_is_dropped_not_scored_zero():
+    # A bin whose local noise is zero (or not positive) has an undefined SNR:
+    # the peak is dropped. Before, it was scored 0.0, which could never clear a
+    # positive floor either, so the surviving peaks are unchanged.
+    freq = np.array([100.0, 101.0, 102.0])
+    snap_ft = _ft(freq, np.array([25.0, 25.0, 25.0]))
+    internal = [
+        Peak(frequency=100.0, intensity=25.0, detection_pass="primary"),
+        Peak(frequency=101.0, intensity=25.0, detection_pass="primary"),
+        Peak(frequency=102.0, intensity=25.0, detection_pass="primary"),
+    ]
+    out = _snap_to_active_grid(
+        internal,
+        snap_ft,
+        np.array([0.0, 1.0, -1.0]),
+        np.zeros(3),
+        internal_min_snr=1.0,
+        weak_medium_snr=10.0,
+        medium_strong_snr=50.0,
+        promotion_min_snr=3.0,
+    )
+    assert [round(p.frequency) for p in out] == [101]
+    assert np.isfinite(out[0].snr)
+
+
+def test_snapped_peak_records_an_undefined_internal_snr():
+    # The internal-pass SNR (nan when the internal noise was not positive) is
+    # carried through unchanged under ``internal_snr``; the active-grid SNR is
+    # scored on its own noise.
+    freq = np.array([100.0])
+    out = _snap_to_active_grid(
+        [
+            Peak(
+                frequency=100.0,
+                intensity=25.0,
+                snr=float("nan"),
+                detection_pass="primary",
+            )
+        ],
+        _ft(freq, np.array([25.0])),
+        np.array([1.0]),
+        np.zeros(1),
+        internal_min_snr=1.0,
+        weak_medium_snr=10.0,
+        medium_strong_snr=50.0,
+        promotion_min_snr=3.0,
+    )
+    assert len(out) == 1
+    assert np.isnan(out[0].properties["internal_snr"])
+    assert out[0].snr == 25.0

@@ -504,6 +504,56 @@ class TestDeriveCandidateLedger:
 
 
 # ---------------------------------------------------------------------------
+# Tests: a degenerate F-test (p undefined) ranks as p = 1
+# ---------------------------------------------------------------------------
+
+
+class TestDegenerateFTestRanking:
+    """An add-loop F-test with no residual dof or a non-positive chi-squared now
+    stores ``p_value = nan`` (was 1.0). The ledger ranks it as it always did:
+    ``f_p`` evidence 1.0, i.e. no evidence for the line."""
+
+    @staticmethod
+    def _ledger(step, bar=0.0):
+        return derive_candidate_ledger(
+            _make_fitting_result(audit_trail=[step]),
+            center_mhz=_CENTER,
+            sideband=_LOWER,
+            bar=bar,
+        )
+
+    @pytest.mark.parametrize("decision", ["reject", "tentative"])
+    def test_nan_p_ranks_as_unity_f_p(self, decision):
+        (cand,) = self._ledger(_make_audit_step(1.0, decision=decision))
+        assert cand.evidence_kind == "f_p"
+        assert cand.best_evidence == pytest.approx(1.0)
+
+    def test_ledger_equals_the_one_an_earlier_file_gives(self):
+        old = _make_audit_step(1.0, decision="reject", p_value=1.0)
+        new = _make_audit_step(1.0, decision="reject", p_value=float("nan"))
+        assert self._ledger(old) == self._ledger(new)
+        assert self._ledger(old, bar=DEFAULT_DISPLAY_BAR) == self._ledger(
+            new, bar=DEFAULT_DISPLAY_BAR
+        )
+
+    def test_unity_p_is_below_the_default_bar(self):
+        """p = 1 clears the display bar only when ``1 <= 1/bar``: not at the default."""
+        step = _make_audit_step(1.0, decision="reject")
+        assert self._ledger(step, bar=DEFAULT_DISPLAY_BAR) == []
+
+    def test_a_finite_p_is_unchanged(self):
+        (cand,) = self._ledger(_make_audit_step(1.0, decision="reject", p_value=0.01))
+        assert cand.evidence_kind == "f_p"
+        assert cand.best_evidence == pytest.approx(0.01)
+
+    def test_aicc_delta_still_takes_precedence_over_an_undefined_p(self):
+        step = _make_audit_step(1.0, decision="reject", aicc_delta=2.5)
+        (cand,) = self._ledger(step)
+        assert cand.evidence_kind == "aicc_delta"
+        assert cand.best_evidence == pytest.approx(2.5)
+
+
+# ---------------------------------------------------------------------------
 # Tests: LedgerCandidate dataclass
 # ---------------------------------------------------------------------------
 
