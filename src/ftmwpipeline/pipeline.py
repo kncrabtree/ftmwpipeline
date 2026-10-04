@@ -570,7 +570,12 @@ class Pipeline:
         units_power : int, optional
             Spectrum scaling as power of 10.
         save_params : bool, default False
-            If ``True``, persist the explicitly provided settings.
+            If ``True``, persist the explicitly provided settings. Saving a
+            changed record invalidates every result built on the old spectrum;
+            this method returns the figure, so that is reported through the
+            warning log line and the "Saved ..." info line (which names the
+            canonical stages), not in the return value. Call
+            :func:`ftmwpipeline.api.save_ft_parameters` to receive the list.
         interactive : bool, default True
             Whether to show an interactive plot.
         output_file : str or Path, optional
@@ -628,8 +633,15 @@ class Pipeline:
                     params["trim_min_mhz"] = trim[0]
                     params["trim_max_mhz"] = trim[1]
                 if params:
-                    save_ft_parameters_impl(str(self.filepath), params)
-                    self.logger.info(f"Saved {len(params)} processing parameters")
+                    invalidated = save_ft_parameters_impl(str(self.filepath), params)
+                    self.logger.info(
+                        f"Saved {len(params)} processing parameters"
+                        + (
+                            f"; invalidated {', '.join(invalidated)}"
+                            if invalidated
+                            else ""
+                        )
+                    )
                 else:
                     self.logger.info("No custom parameters to save")
 

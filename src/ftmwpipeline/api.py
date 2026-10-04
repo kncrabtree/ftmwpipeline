@@ -615,7 +615,10 @@ def visualize_ft(
     units_power : int, optional
         Scaling factor as power of 10. If None, uses cached default or 6.
     save_params : bool, default False
-        Whether to save parameters as defaults for this experiment
+        Whether to save parameters as defaults for this experiment. The
+        figure is returned either way; the stages a changed record invalidates
+        are reported in the warning log line (use :func:`save_ft_parameters`
+        to receive them).
     interactive : bool, default True
         Whether to show interactive plot
     output_file : str or Path, optional
@@ -664,7 +667,9 @@ def visualize_ft(
         raise
 
 
-def save_ft_parameters(file_path: Union[str, Path], parameters: Dict[str, Any]) -> None:
+def save_ft_parameters(
+    file_path: Union[str, Path], parameters: Dict[str, Any]
+) -> List[str]:
     """
     Save FT processing parameters as defaults for pipeline file.
 
@@ -681,6 +686,15 @@ def save_ft_parameters(file_path: Union[str, Path], parameters: Dict[str, Any]) 
         - 'units_power': Scaling factor
         - 'trim_min_mhz', 'trim_max_mhz': Frequency trimming range
 
+    Returns
+    -------
+    list of str
+        The stages the save invalidated, as canonical stage names (``Stage``
+        values) in rerun order; empty when the saved record did not change.
+        Saving a changed record drops every result built on the old spectrum.
+        This call takes no ``events`` callback, so the stages are reported
+        here and in the warning log line, not as an ``Invalidated`` event.
+
     Raises
     ------
     FileNotFoundError
@@ -695,14 +709,15 @@ def save_ft_parameters(file_path: Union[str, Path], parameters: Dict[str, Any]) 
     ...     'trim_min_mhz': 26500,
     ...     'trim_max_mhz': 40000
     ... }
-    >>> ftmw.save_ft_parameters("experiment.ftmw", params)
+    >>> invalidated = ftmw.save_ft_parameters("experiment.ftmw", params)
     """
     try:
         # Use internal implementation for parameter saving
         from ._internal.stage1_impl import save_ft_parameters_impl
 
-        save_ft_parameters_impl(str(file_path), parameters)
+        invalidated = save_ft_parameters_impl(str(file_path), parameters)
         logger.info(f"Saved {len(parameters)} FT parameters to {file_path}")
+        return invalidated
     except Exception as e:
         logger.error(f"Failed to save FT parameters to {file_path}: {e}")
         raise
