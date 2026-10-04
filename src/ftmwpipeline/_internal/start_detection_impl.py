@@ -143,7 +143,9 @@ def detect_start_time_impl(
 
     ops = operation_events("start run", events, cancel)
     with ops.stage(None, verb="start run", file_path=file_path) as scope:
-        out = _detect_start_time(file_path, settings=settings, stamp=stamp, events=scope)
+        out = _detect_start_time(
+            file_path, settings=settings, stamp=stamp, events=scope
+        )
         scope.finish(start_run_summary(out))
     return out
 

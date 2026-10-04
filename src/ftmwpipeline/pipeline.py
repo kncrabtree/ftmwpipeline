@@ -475,8 +475,8 @@ class Pipeline:
                     trim=trim,
                 )
             result = ft_run_impl(
-                str(self.filepath),
-                settings,
+                file_path=str(self.filepath),
+                settings=settings,
                 validate_only=False,
                 persist=not from_saved_params,
                 events=events,

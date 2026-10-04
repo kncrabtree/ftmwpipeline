@@ -465,7 +465,9 @@ def _scan(
         )
         if reporter is not None:
             reporter(i + 1, total, value)
-        events.emit(ScanProgress(events.operation, None, spec.path, value, i + 1, total))
+        events.emit(
+            ScanProgress(events.operation, None, spec.path, value, i + 1, total)
+        )
 
     csv_path = out / f"scan_{_safe(spec.path)}_{ftmw_path.stem}.csv"
     _write_csv(csv_path, spec, rows)

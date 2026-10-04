@@ -510,9 +510,7 @@ def peaks_run_summary(result: Mapping[str, Any]) -> Dict[str, Any]:
 
     def _count(cls: str) -> int:
         return sum(
-            1
-            for p in promoted
-            if p.classification and p.classification.value == cls
+            1 for p in promoted if p.classification and p.classification.value == cls
         )
 
     return {
@@ -571,7 +569,9 @@ def detect_peaks_impl(
 
     ops = operation_events("peaks run", events, cancel)
     with ops.stage(Stage.PEAKS, verb="peaks run", file_path=file_path) as scope:
-        result = _detect_peaks(file_path, settings=settings, preset=preset, events=scope)
+        result = _detect_peaks(
+            file_path, settings=settings, preset=preset, events=scope
+        )
         scope.finish(peaks_run_summary(result))
     return result
 

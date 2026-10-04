@@ -8132,9 +8132,7 @@ def _run_single_action(
         result = apply(ctx)
         wid = getattr(result, "window_id", None)
         if isinstance(wid, int):
-            _report_window(
-                ctx, wid, index=1, total=1, elapsed_s=time.monotonic() - t0
-            )
+            _report_window(ctx, wid, index=1, total=1, elapsed_s=time.monotonic() - t0)
         _finish_batch(ctx, path, snap_tol_mhz=snap_tol_mhz)
     except (OperationCancelledError, CallbackFailedError):
         # Nothing of the action persists: the file is as it was.
@@ -8534,7 +8532,9 @@ def _report_action_window(
     branch added to ``action_indices``), if it fit one. Returns the updated
     fit-action count."""
     grown = [
-        wid for wid, idx in action_indices.items() if len(idx) != counts_before.get(wid, 0)
+        wid
+        for wid, idx in action_indices.items()
+        if len(idx) != counts_before.get(wid, 0)
     ]
     if not grown:
         return fit_index  # a bare accept fits nothing
