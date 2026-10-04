@@ -1818,12 +1818,16 @@ def _read_window_log(
     *,
     table: str,
     index_column: Optional[str] = None,
+    synthesized: Optional[Dict[str, List[bool]]] = None,
 ) -> Dict[str, np.ndarray]:
     """Read a per-window JSON event log as one table, tagged by ``window_id``.
 
     *index_column*, when given, records each record's position within its
     window's log. Windows are visited in ascending id, so the table is grouped
     by window and ordered within it.
+
+    *synthesized*, when given, is filled with one per-row flag list for every
+    requested column (see :func:`record_row`), in the table's row order.
     """
     requested = resolve_column_selection(columns, list(specs), table=table)
     windows_group = _windows_group(h5_group)
@@ -1849,6 +1853,7 @@ def _read_window_log(
                 rows,
                 where=f"window {int(window_id)} {attr}[{i}]",
                 extra=extra,
+                synthesized=synthesized,
             )
 
     built = build_columns(rows, specs, requested)
@@ -1858,6 +1863,7 @@ def _read_window_log(
 def read_fit_audit_columns(
     h5_group: h5py.Group,
     columns: Optional[Sequence[str]] = None,
+    synthesized: Optional[Dict[str, List[bool]]] = None,
 ) -> Dict[str, np.ndarray]:
     """Read the conservative add-loop audit trail across every window.
 
@@ -1871,12 +1877,14 @@ def read_fit_audit_columns(
         columns,
         table="fit_audit",
         index_column="step_index",
+        synthesized=synthesized,
     )
 
 
 def read_fit_doublet_columns(
     h5_group: h5py.Group,
     columns: Optional[Sequence[str]] = None,
+    synthesized: Optional[Dict[str, List[bool]]] = None,
 ) -> Dict[str, np.ndarray]:
     """Read the doublet alternatives weighed, across every window.
 
@@ -1890,6 +1898,7 @@ def read_fit_doublet_columns(
         FIT_DOUBLET_COLUMN_SPECS,
         columns,
         table="fit_doublets",
+        synthesized=synthesized,
     )
 
 

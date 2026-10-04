@@ -97,6 +97,7 @@ from ..contract import (
     Absent,
     WindowStatusRow,
 )
+from ..core.absent import STATUS_NOT_RUN, STATUS_PRESENT
 from ..core.settings_framework import NONE as NONE_SENTINEL
 from ..file_manager import (
     PipelineCorruptionError,
@@ -130,10 +131,14 @@ from ..io.fitting_serialization import (
 )
 from ..io.peak_serialization import (
     PEAK_COLUMN_SPECS,
+    _promotion_cutoff,
     read_peak_columns,
     read_peak_scalars,
 )
-from ..io.stage6_review_serialization import read_created_window_bounds
+from ..io.stage6_review_serialization import (
+    fit_declares_clocks,
+    read_created_window_bounds,
+)
 from ..io.tau_calibration_serialization import (
     GAUSSIAN_GROUP_PATH,
     GROUP_PATH,
@@ -156,7 +161,13 @@ from ..io.window_serialization import (
     read_window_plan_columns,
     read_window_plan_scalars,
 )
-from ..serialize import with_status_columns
+from ..serialize import STATUS_SUFFIX, with_status_columns
+from .absence_rules import (
+    clock_lattice_or_absent,
+    float_or_absent,
+    int_or_absent,
+    knockout_absence,
+)
 from .shared_utils import active_acquisition_us
 
 __all__ = [
@@ -254,6 +265,419 @@ _COMMAND_BY_GROUP: Dict[str, str] = {
     "stage5_fitting": "fit run",
 }
 
+# ---------------------------------------------------------------------------
+# Status columns. The io readers return the stored encodings (NaN / -1 / ''
+# fills) untouched; this layer adds a ``<column>__status`` companion to each
+# absent-capable column, derived at read time with the shared rules in
+# ``absence_rules`` so a quantity reports the same status here as on
+# ``FinalPeak``. The value column keeps its stored fill.
+# ---------------------------------------------------------------------------
+
+_StatusDeriver = Callable[[h5py.Group, Dict[str, np.ndarray]], Dict[str, np.ndarray]]
+
+
+def _status_specs(
+    specs: Dict[str, ColumnSpec], absent_capable: Sequence[str]
+) -> Dict[str, ColumnSpec]:
+    """*specs* with a ``("u1", 0)`` ``<column>__status`` entry after each column."""
+    out: Dict[str, ColumnSpec] = {}
+    for name, spec in specs.items():
+        out[name] = spec
+        if name in absent_capable:
+            out[name + STATUS_SUFFIX] = ("u1", 0)
+    return out
+
+
+def _status_of(items: Sequence[Any]) -> np.ndarray:
+    """The ``uint8`` status codes of a list of values-or-:class:`Absent`."""
+    return np.fromiter(
+        (i.status if isinstance(i, Absent) else STATUS_PRESENT for i in items),
+        dtype=np.uint8,
+        count=len(items),
+    )
+
+
+def _floats(values: np.ndarray, not_run: Optional[np.ndarray] = None) -> np.ndarray:
+    """Status of a float column: non-finite is ``UNDEFINED``, *not_run* rows ``NOT_RUN``."""
+    return _status_of(
+        [
+            Absent.NOT_RUN if not_run is not None and not_run[i] else float_or_absent(v)
+            for i, v in enumerate(values)
+        ]
+    )
+
+
+def _nan_not_run(values: np.ndarray) -> np.ndarray:
+    """Status of a float column whose NaN means the quantity was never computed."""
+    return _status_of(
+        [Absent.NOT_RUN if math.isnan(float(v)) else float_or_absent(v) for v in values]
+    )
+
+
+def _ints(
+    values: np.ndarray, absent: Absent = Absent.NOT_RUN, sentinel: int = -1
+) -> np.ndarray:
+    return _status_of(
+        [int_or_absent(v, sentinel=sentinel, absent=absent) for v in values]
+    )
+
+
+# -- fit_peaks ---------------------------------------------------------------
+
+_FIT_PEAK_ABSENT_CAPABLE = (
+    "detection_index",
+    "frequency_error",
+    "amplitude_error",
+    "phase",
+    "phase_error",
+    "decay_rate",
+    "decay_rate_error",
+    "snr",
+    "chi_squared",
+    "clock_lattice",
+    "derivation",
+    "peak_uid",
+    "knockout_delta_chi2",
+    "knockout_expected_delta_chi2",
+    "knockout_supported",
+    "knockout_p_value",
+    "knockout_n_eff",
+    "knockout_aicc_delta",
+    "unresolved_spread_mhz",
+)
+
+_FIT_PEAK_NEEDS = ("knockout_supported", "knockout_delta_chi2")
+
+#: The knockout block whose columns are all ``NOT_RUN`` when the test did not run.
+_KNOCKOUT_COLUMNS = (
+    "knockout_delta_chi2",
+    "knockout_expected_delta_chi2",
+    "chi_squared",
+    "knockout_p_value",
+    "knockout_n_eff",
+    "knockout_aicc_delta",
+)
+
+
+def _fit_peak_status(
+    h5_group: h5py.Group, raw: Dict[str, np.ndarray]
+) -> Dict[str, np.ndarray]:
+    ko = [
+        knockout_absence(s, d)
+        for s, d in zip(raw["knockout_supported"], raw["knockout_delta_chi2"])
+    ]
+    no_knockout = np.array([k is not None for k in ko], dtype=bool)
+    out: Dict[str, np.ndarray] = {}
+    for col in _FIT_PEAK_ABSENT_CAPABLE:
+        if col not in raw:
+            continue
+        values = raw[col]
+        if col == "knockout_supported":
+            out[col] = _status_of(ko)
+        elif col in _KNOCKOUT_COLUMNS:
+            out[col] = _floats(values, no_knockout)
+        elif col == "detection_index":
+            out[col] = _ints(values, Absent.UNDEFINED)
+        elif col in ("derivation", "peak_uid"):
+            out[col] = _ints(values)
+        elif col == "unresolved_spread_mhz":
+            out[col] = _nan_not_run(values)
+        elif col == "clock_lattice":
+            declared = fit_declares_clocks(h5_group.file)
+            out[col] = _status_of(
+                [clock_lattice_or_absent(v, declared=declared) for v in values]
+            )
+        else:
+            out[col] = _floats(values)
+    return out
+
+
+# -- fit_windows -------------------------------------------------------------
+
+_FIT_WINDOW_ABSENT_CAPABLE = (
+    "freq_min",
+    "freq_max",
+    "tau_us",
+    "tau_error",
+    "tau_fitted",
+    "aic",
+    "reduced_chi2",
+    "edge_coherence_low",
+    "edge_coherence_high",
+)
+
+
+def _fit_window_status(
+    h5_group: h5py.Group, raw: Dict[str, np.ndarray]
+) -> Dict[str, np.ndarray]:
+    out: Dict[str, np.ndarray] = {}
+    for col in _FIT_WINDOW_ABSENT_CAPABLE:
+        if col not in raw:
+            continue
+        values = raw[col]
+        if col in ("freq_min", "freq_max", "edge_coherence_low", "edge_coherence_high"):
+            out[col] = _nan_not_run(values)
+        elif col == "tau_fitted":
+            out[col] = _ints(values)
+        elif col == "tau_us":
+            # A non-positive decay time is as undefined as a missing one
+            # (FinalPeak.decay_time_us).
+            out[col] = _floats(np.where(values > 0, values, np.nan))
+        else:
+            out[col] = _floats(values)
+    return out
+
+
+# -- fit_audit ---------------------------------------------------------------
+
+_FIT_AUDIT_ABSENT_CAPABLE = (
+    "chi2_after",
+    "f_statistic",
+    "p_value",
+    "aic_after",
+    "n_eff",
+    "aicc_delta",
+)
+
+_FIT_AUDIT_NEEDS = ("decision", "separation_ok", "n_eff")
+
+
+def _audit_masks(raw: Dict[str, np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
+    """``(decision, separation_gate_never_ran)`` for the audit rows."""
+    decision = np.asarray([str(d) for d in raw["decision"]], dtype=object)
+    sep_reject = (~np.asarray(raw["separation_ok"], dtype=bool)) & np.isnan(
+        np.asarray(raw["n_eff"], dtype=float)
+    )
+    return decision, sep_reject
+
+
+def _fit_audit_status(
+    h5_group: h5py.Group, raw: Dict[str, np.ndarray]
+) -> Dict[str, np.ndarray]:
+    decision, sep_reject = _audit_masks(raw)
+    is_seed = decision == "seed"
+    is_spur = decision == "spur-drop"
+    is_ko = decision == "knockout-null"
+    out: Dict[str, np.ndarray] = {}
+    for col in _FIT_AUDIT_ABSENT_CAPABLE:
+        if col not in raw:
+            continue
+        values = raw[col]
+        if col in ("n_eff", "aicc_delta"):
+            not_run = is_seed | is_spur | sep_reject
+        elif col == "f_statistic":
+            not_run = is_spur | sep_reject | is_ko
+        elif col == "p_value":
+            not_run = is_spur | sep_reject
+        else:  # chi2_after, aic_after
+            not_run = is_spur
+        out[col] = _floats(values, not_run)
+    return out
+
+
+def _mask_unrun_gates(raw: Dict[str, np.ndarray]) -> None:
+    """Replace the 0.0 / 1.0 a separation reject stores for F and p with NaN."""
+    _, sep_reject = _audit_masks(raw)
+    for col in ("f_statistic", "p_value"):
+        if col in raw:
+            raw[col] = np.where(sep_reject, np.nan, raw[col])
+
+
+# -- fit_doublets ------------------------------------------------------------
+
+_FIT_DOUBLET_ABSENT_CAPABLE = (
+    "chi2r_merged",
+    "delta_chi2_raw",
+    "delta_aicc",
+    "merged_frequency_mhz",
+    "merged_amplitude",
+    "merged_phase",
+    "merged_tau_us",
+    "orth_evidence_delta_chi2",
+)
+
+
+def _fit_doublet_status(
+    h5_group: h5py.Group, raw: Dict[str, np.ndarray]
+) -> Dict[str, np.ndarray]:
+    return {col: _floats(raw[col]) for col in _FIT_DOUBLET_ABSENT_CAPABLE if col in raw}
+
+
+# -- peaks -------------------------------------------------------------------
+
+_PEAK_ABSENT_CAPABLE = (
+    "index",
+    "snr",
+    "noise_std_local",
+    "classification",
+    "promoted",
+    "internal_snr",
+    "internal_frequency",
+    "leakage_pedestal",
+)
+
+
+def _peak_status(
+    h5_group: h5py.Group, raw: Dict[str, np.ndarray]
+) -> Dict[str, np.ndarray]:
+    out: Dict[str, np.ndarray] = {}
+    for col in _PEAK_ABSENT_CAPABLE:
+        if col not in raw:
+            continue
+        values = raw[col]
+        if col == "index":
+            out[col] = _ints(values)
+        elif col == "classification":
+            out[col] = _status_of(
+                [Absent.NOT_RUN if str(v) == "" else v for v in values]
+            )
+        elif col == "promoted":
+            # Promotion is derived against the recorded cutoff; a file without
+            # one predates the record, so promotion was never decided.
+            code = (
+                STATUS_NOT_RUN
+                if _promotion_cutoff(h5_group) is None
+                else STATUS_PRESENT
+            )
+            out[col] = np.full(len(values), code, dtype=np.uint8)
+        elif col in ("snr", "noise_std_local"):
+            out[col] = _floats(values)
+        else:
+            out[col] = _nan_not_run(values)
+    return out
+
+
+@dataclass(frozen=True)
+class _StatusLayout:
+    """How one table gains its status columns."""
+
+    name: str
+    specs: Dict[str, ColumnSpec]
+    io_reader: Callable[..., Dict[str, np.ndarray]]
+    absent_capable: Tuple[str, ...]
+    derive: _StatusDeriver
+    #: Raw columns the derivation needs whatever is requested.
+    needs: Tuple[str, ...] = ()
+    #: Subgroup holding the stored datasets, to tell a synthesized fill from a
+    #: stored one (``None``: the stage group itself).
+    dataset_group: Optional[str] = None
+    #: Columns computed rather than stored (never a synthesized fill).
+    derived: Tuple[str, ...] = ()
+    #: JSON event logs report synthesized rows through ``record_row`` instead.
+    json_log: bool = False
+    #: Post-process the raw columns (value masking) before they are returned.
+    adjust: Optional[Callable[[Dict[str, np.ndarray]], None]] = None
+
+
+def _status_reader(layout: _StatusLayout) -> _Reader:
+    extended = _status_specs(layout.specs, layout.absent_capable)
+
+    def reader(
+        h5_group: h5py.Group, columns: Optional[Sequence[str]]
+    ) -> Dict[str, np.ndarray]:
+        requested = resolve_column_selection(columns, list(extended), table=layout.name)
+        wanted_status = [
+            c[: -len(STATUS_SUFFIX)] for c in requested if c.endswith(STATUS_SUFFIX)
+        ]
+        base = [c for c in requested if not c.endswith(STATUS_SUFFIX)]
+        to_read = list(dict.fromkeys([*base, *wanted_status]))
+        if wanted_status or layout.adjust is not None:
+            to_read = list(dict.fromkeys([*to_read, *layout.needs]))
+        flags: Dict[str, List[bool]] = {c: [] for c in to_read}
+        if layout.json_log:
+            raw = layout.io_reader(h5_group, to_read, synthesized=flags)
+        else:
+            raw = layout.io_reader(h5_group, to_read)
+        raw = dict(raw)
+        n = len(next(iter(raw.values()))) if raw else 0
+        if layout.adjust is not None:
+            layout.adjust(raw)
+        status: Dict[str, np.ndarray] = {}
+        if wanted_status:
+            status = layout.derive(h5_group, raw)
+            for col in wanted_status:
+                synth = _synthesized(h5_group, layout, col, flags, n)
+                status[col] = np.where(synth, STATUS_NOT_RUN, status[col]).astype(
+                    np.uint8
+                )
+        out: Dict[str, np.ndarray] = {}
+        for c in requested:
+            if c.endswith(STATUS_SUFFIX):
+                out[c] = status[c[: -len(STATUS_SUFFIX)]]
+            else:
+                out[c] = raw[c]
+        return out
+
+    return reader
+
+
+def _synthesized(
+    h5_group: h5py.Group,
+    layout: _StatusLayout,
+    col: str,
+    flags: Dict[str, List[bool]],
+    n: int,
+) -> np.ndarray:
+    """Per-row flags: was this column's value a fill the reader synthesized?"""
+    if layout.json_log:
+        return np.asarray(flags.get(col, []), dtype=bool).reshape(n)
+    if col in layout.derived:
+        return np.zeros(n, dtype=bool)
+    holder = h5_group[layout.dataset_group] if layout.dataset_group else h5_group
+    return np.full(n, col not in holder, dtype=bool)
+
+
+_STATUS_LAYOUTS: Dict[str, _StatusLayout] = {
+    layout.name: layout
+    for layout in (
+        _StatusLayout(
+            "fit_peaks",
+            FIT_PEAK_COLUMN_SPECS,
+            read_fit_peak_columns,
+            _FIT_PEAK_ABSENT_CAPABLE,
+            _fit_peak_status,
+            needs=_FIT_PEAK_NEEDS,
+            dataset_group="peaks",
+            derived=("shape",),
+        ),
+        _StatusLayout(
+            "fit_windows",
+            FIT_WINDOW_COLUMN_SPECS,
+            read_fit_window_columns,
+            _FIT_WINDOW_ABSENT_CAPABLE,
+            _fit_window_status,
+            dataset_group="windows",
+            derived=("n_peaks",),
+        ),
+        _StatusLayout(
+            "fit_audit",
+            FIT_AUDIT_COLUMN_SPECS,
+            read_fit_audit_columns,
+            _FIT_AUDIT_ABSENT_CAPABLE,
+            _fit_audit_status,
+            needs=_FIT_AUDIT_NEEDS,
+            json_log=True,
+            adjust=_mask_unrun_gates,
+        ),
+        _StatusLayout(
+            "fit_doublets",
+            FIT_DOUBLET_COLUMN_SPECS,
+            read_fit_doublet_columns,
+            _FIT_DOUBLET_ABSENT_CAPABLE,
+            _fit_doublet_status,
+            json_log=True,
+        ),
+        _StatusLayout(
+            "peaks",
+            PEAK_COLUMN_SPECS,
+            read_peak_columns,
+            _PEAK_ABSENT_CAPABLE,
+            _peak_status,
+            derived=("promoted",),
+        ),
+    )
+}
+
 _TABLE_SPECS: Dict[str, _TableSpec] = {}
 for _prefix, _group, _hint in (
     ("tau", TAU_GROUP_PATH, _TAU_HINT),
@@ -272,8 +696,10 @@ _TABLE_SPECS.update(
     {
         "peaks": _TableSpec(
             group="stage3_peaks",
-            specs=PEAK_COLUMN_SPECS,
-            reader=read_peak_columns,
+            specs=_status_specs(
+                PEAK_COLUMN_SPECS, _STATUS_LAYOUTS["peaks"].absent_capable
+            ),
+            reader=_status_reader(_STATUS_LAYOUTS["peaks"]),
             count_path="n_peaks",
             hint="detect_peaks() / 'peaks run'",
         ),
@@ -300,29 +726,37 @@ _TABLE_SPECS.update(
         ),
         "fit_peaks": _TableSpec(
             group="stage5_fitting",
-            specs=FIT_PEAK_COLUMN_SPECS,
-            reader=read_fit_peak_columns,
+            specs=_status_specs(
+                FIT_PEAK_COLUMN_SPECS, _STATUS_LAYOUTS["fit_peaks"].absent_capable
+            ),
+            reader=_status_reader(_STATUS_LAYOUTS["fit_peaks"]),
             count_path="n_fitted_peaks",
             hint=_FIT_HINT,
         ),
         "fit_windows": _TableSpec(
             group="stage5_fitting",
-            specs=FIT_WINDOW_COLUMN_SPECS,
-            reader=read_fit_window_columns,
+            specs=_status_specs(
+                FIT_WINDOW_COLUMN_SPECS, _STATUS_LAYOUTS["fit_windows"].absent_capable
+            ),
+            reader=_status_reader(_STATUS_LAYOUTS["fit_windows"]),
             count_path="n_windows",
             hint=_FIT_HINT,
         ),
         "fit_audit": _TableSpec(
             group="stage5_fitting",
-            specs=FIT_AUDIT_COLUMN_SPECS,
-            reader=read_fit_audit_columns,
+            specs=_status_specs(
+                FIT_AUDIT_COLUMN_SPECS, _STATUS_LAYOUTS["fit_audit"].absent_capable
+            ),
+            reader=_status_reader(_STATUS_LAYOUTS["fit_audit"]),
             count_path="",
             hint=_FIT_HINT,
         ),
         "fit_doublets": _TableSpec(
             group="stage5_fitting",
-            specs=FIT_DOUBLET_COLUMN_SPECS,
-            reader=read_fit_doublet_columns,
+            specs=_status_specs(
+                FIT_DOUBLET_COLUMN_SPECS, _STATUS_LAYOUTS["fit_doublets"].absent_capable
+            ),
+            reader=_status_reader(_STATUS_LAYOUTS["fit_doublets"]),
             count_path="",
             hint=_FIT_HINT,
         ),
@@ -437,6 +871,10 @@ def read_table_impl(
         order. Sentinel conventions (NaN for an absent float, ``-1`` for an
         absent id, tri-state flags) are documented on each table's column-spec
         mapping in the ``io`` serializers.
+        The ``fit_peaks``, ``fit_windows``, ``fit_audit``, ``fit_doublets``
+        and ``peaks`` tables also carry a ``uint8`` ``<column>__status`` column
+        for each absent-capable column (``0`` present, ``1`` not run, ``2``
+        undefined); the value column keeps its stored fill.
 
     Raises
     ------
@@ -583,9 +1021,8 @@ def _row_count(stage_group: h5py.Group, count_path: str) -> Optional[int]:
 
     ``count_path`` is an attribute name, or ``"subgroup/attr"`` for the stages
     that keep their counts one level in, or empty when the stage records no
-    count for this table. Missing at any step reads as unknown rather than as
-    an error: the listing is informational, and a table with an unknown count is
-    still readable.
+    count for this table. Missing at any step reads as unknown (``None``); the
+    caller then computes the count from the table itself.
     """
     if not count_path:
         return None
@@ -599,28 +1036,51 @@ def _row_count(stage_group: h5py.Group, count_path: str) -> Optional[int]:
     return None if raw is None else int(raw)
 
 
+def _table_row_count(name: str, spec: _TableSpec, stage_group: h5py.Group) -> Any:
+    """The row count of an available table: recorded, else computed.
+
+    A table whose stage records no count attribute is read through its own
+    reader (one column), so the count is always a real ``int``. A table that
+    cannot be read at all (a malformed or pre-1.0 layout) has a count that is
+    ``Absent.UNDEFINED``.
+    """
+    recorded = _row_count(stage_group, spec.count_path)
+    if recorded is not None:
+        return recorded
+    try:
+        column = next(iter(spec.specs))
+        return int(len(next(iter(spec.reader(stage_group, [column]).values()))))
+    except ValueError:
+        return Absent.UNDEFINED
+
+
 def read_tables_impl(file_path: Union[str, Path]) -> Dict[str, Dict[str, Any]]:
     """List the readable tables and what each one holds in this file.
 
-    Reads only group attributes, so it is cheap on any file.
+    Reads group attributes where the stage records a row count, and counts the
+    rows of the few tables that do not (the event logs and the ragged window
+    sets) from the table itself.
 
     Returns
     -------
     dict
-        ``{table_name: {"available": bool, "n_rows": int or None,
+        ``{table_name: {"available": bool, "n_rows": int or Absent,
         "columns": [...], "group": str}}`` for every table in
-        :data:`READ_TABLES`. ``available`` is False (and ``n_rows`` ``None``)
-        when the producing stage has not been run; ``columns`` is the canonical
-        column list either way, since a column absent from an older file still
-        reads back as its documented fill value.
+        :data:`READ_TABLES`. ``available`` is False (and ``n_rows``
+        ``Absent.NOT_RUN``) when the producing stage has not been run. For an
+        available table ``n_rows`` is always an ``int`` (``Absent.UNDEFINED``
+        only if the stored table cannot be read). ``columns`` is the canonical
+        column list either way, including every ``<column>__status`` companion;
+        a column absent from an older file still reads back as its documented
+        fill value, with status ``NOT_RUN``.
     """
     out: Dict[str, Dict[str, Any]] = {}
     with _open(file_path) as h5f:
         for name, spec in _TABLE_SPECS.items():
             available = spec.group in h5f
-            n_rows: Optional[int] = None
+            n_rows: Any = Absent.NOT_RUN
             if available:
-                n_rows = _row_count(h5f[spec.group], spec.count_path)
+                n_rows = _table_row_count(name, spec, h5f[spec.group])
             out[name] = {
                 "available": available,
                 "n_rows": n_rows,
