@@ -55,9 +55,14 @@ engine so they cannot answer differently.
   one atomic write, and ``cancelled.completed_windows`` lists them (as does
   ``callback_failed.completed_windows``, a new field that is ``[]`` everywhere
   else; no window finished: nothing is written, as before). The write's
-  invalidations arrive as one ``Invalidated`` before the error is raised. **Behaviour change:** that write
-  discards the previous fit and everything built on it, where a cancelled fit
-  used to leave the file exactly as it was. ``status`` reports ``fit`` as
+  invalidations arrive as one ``Invalidated`` before the error is raised.
+  **Behaviour change:** that write discards the previous fit and everything
+  built on it, where a cancelled fit used to leave the file exactly as it was.
+  **Behaviour change:** a bare ``review_accept`` (and a curation file of bare
+  ``accept`` rows, applied or previewed) and ``review_undo`` now refuse with
+  ``stage_not_run`` when the file holds no complete fit, like every other
+  curation call; a bare accept used to record a decision against the Stage 4
+  plan. ``status`` reports ``fit`` as
   ``partial``; ``window_status`` reports the kept windows; every fit and
   final-products accessor behaves as before Stage 5. The next ``fit_peaks`` /
   ``fit run`` resumes it, fitting only the remaining windows, and produces the
