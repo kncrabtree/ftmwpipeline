@@ -580,11 +580,12 @@ def read_window_plan_scalars(h5_group: h5py.Group) -> Dict[str, Any]:
     Group attributes only -- no window traversal. The batch count is not
     reported here because it is a property of the per-window ``batch`` column;
     read the ``windows`` table for it. An attribute the group does not carry
-    reads ``None`` (never a fabricated ``0`` or ``"unknown"``).
+    reads ``None`` (never a fabricated ``0`` or ``"unknown"``); that includes
+    the edge count when the ``dependency_edges`` record itself is absent.
     """
-    edges = load_json_attr(h5_group, "dependency_edges", [], label="stage4_windows")
+    edges = load_json_attr(h5_group, "dependency_edges", None, label="stage4_windows")
     return {
         "n_windows": optional_int_attr(h5_group, "n_windows"),
-        "n_dependency_edges": len(edges),
+        "n_dependency_edges": None if edges is None else len(edges),
         "creation_time": optional_str_attr(h5_group, "creation_time"),
     }

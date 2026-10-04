@@ -1067,16 +1067,36 @@ class TestReadWindowPlanColumns:
         assert scalars["n_windows"] == 2
         assert scalars["n_dependency_edges"] == 1
 
-    @pytest.mark.parametrize("attr", ["n_windows", "creation_time"])
-    def test_scalars_read_none_for_a_missing_attribute(self, plan_file, attr):
-        """Mutation: restore the ``0`` / ``"unknown"`` defaults."""
+    @pytest.mark.parametrize(
+        "attr, key",
+        [
+            ("n_windows", "n_windows"),
+            ("creation_time", "creation_time"),
+            ("dependency_edges", "n_dependency_edges"),
+        ],
+    )
+    def test_scalars_read_none_for_a_missing_attribute(self, plan_file, attr, key):
+        """Mutation: restore the ``0`` / ``"unknown"`` defaults, or count a
+        missing ``dependency_edges`` record as zero edges."""
+        with h5py.File(plan_file, "r") as h5f:
+            before = read_window_plan_scalars(h5f["stage4_windows"])
         with h5py.File(plan_file, "a") as h5f:
             del h5f["stage4_windows"].attrs[attr]
         with h5py.File(plan_file, "r") as h5f:
             scalars = read_window_plan_scalars(h5f["stage4_windows"])
-        assert scalars[attr] is None
-        # An edge count is derived from the dependency record, not an attribute.
-        assert scalars["n_dependency_edges"] == 1
+        assert scalars[key] is None
+        # The other scalars are unaffected by the missing attribute.
+        assert {k: v for k, v in scalars.items() if k != key} == {
+            k: v for k, v in before.items() if k != key
+        }
+
+    def test_an_empty_dependency_record_counts_zero_edges(self, plan_file):
+        """A recorded empty edge list is a real ``0``, not an absence."""
+        with h5py.File(plan_file, "a") as h5f:
+            h5f["stage4_windows"].attrs["dependency_edges"] = "[]"
+        with h5py.File(plan_file, "r") as h5f:
+            scalars = read_window_plan_scalars(h5f["stage4_windows"])
+        assert scalars["n_dependency_edges"] == 0
 
 
 class TestReadWindowLongTables:
