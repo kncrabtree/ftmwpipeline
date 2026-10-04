@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 from . import settings_framework as sf
-from .knob_metadata import knob_field
+from .knob_metadata import field_typing, knob_field
 from .peak_shape import PeakShape
 
 # Mirrors the marker used by io.fid_serialization for optional HDF5 attrs.
@@ -215,6 +215,7 @@ class TauSubSettings:
     """Stage 5 τ handling (initial guess, bounds, free-vs-fixed, anchoring)."""
 
     tau0_us: Optional[float] = knob_field(
+        units="us",
         help="Starting shared decay τ₀ (µs); None = runtime fallback "
         "(Stage 2b / T/3).",
         tier="advanced",
@@ -259,8 +260,8 @@ class TauSubSettings:
         inst_sensitivity="N",
         grid=(3.0, 5.0, 8.0),
     )
-    tau_maj_override_us: Optional[float] = None
-    sigma_tau_override_us: Optional[float] = None
+    tau_maj_override_us: Optional[float] = field_typing(units="us")
+    sigma_tau_override_us: Optional[float] = field_typing(units="us")
     per_band_tau: Optional[bool] = knob_field(
         help="Route τ to per-band majorities (True) or a single band-wide τ "
         "(False).",
@@ -338,7 +339,11 @@ class ConservativeSubSettings:
         inst_sensitivity="N",
         grid=(0.5, 1.0, 1.5),
     )
-    n_eff_kind: Optional[str] = None
+    # The kinds ``fitting.validation.gate_information_weights`` accepts (any
+    # other raises ``ValueError("unknown kind")``).
+    n_eff_kind: Optional[str] = field_typing(
+        choices=("perplexity_log1p_snr", "kish_mag_sq", "kish_mag", "hard_radius")
+    )
     weak_window_snr_threshold: Optional[float] = knob_field(
         help="In-window SNR floor for free-τ eligibility (hold τ fixed below).",
         tier="primary",
@@ -601,7 +606,7 @@ class SpurSubSettings:
     )
     clocks: Optional[Tuple[ClockSource, ...]] = None
     lattice_decay_ratio: Optional[float] = None
-    drift_window_mhz: Optional[float] = None
+    drift_window_mhz: Optional[float] = field_typing(units="MHz")
     drift_band_ratio: Optional[float] = None
     drift_min_snr: Optional[float] = None
     mask_target_residual_snr: Optional[float] = None

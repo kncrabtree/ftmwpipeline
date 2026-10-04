@@ -130,6 +130,7 @@ class ClusteringSubSettings:
     """
 
     max_window_width_mhz: Optional[float] = knob_field(
+        units="MHz",
         help="Width cap (MHz); a window's peak content wider than this is split "
         "at its sparsest gaps.",
         tier="primary",
@@ -139,6 +140,7 @@ class ClusteringSubSettings:
         argtype=float,
     )
     min_window_half_width_mhz: Optional[float] = knob_field(
+        units="MHz",
         help="MHz form of the window margin; used only when "
         "min_window_half_width_points is 0 (the points form is the active "
         "default).",
@@ -251,6 +253,7 @@ class LeakageSubSettings:
     """
 
     tau_us: Optional[float] = knob_field(
+        units="us",
         help="Decay constant (µs) for the analytic leakage-skirt envelope; None "
         "= boxcar (undamped) limit. A single band-wide scalar — Stage 2b τ is not "
         "auto-fed here; set it explicitly via the grid / settings= / preset=.",

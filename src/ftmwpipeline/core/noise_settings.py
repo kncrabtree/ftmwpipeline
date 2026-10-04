@@ -60,6 +60,7 @@ class NoiseSettings:
     """
 
     window_mhz: Optional[float] = knob_field(
+        units="MHz",
         help="Width of the per-region scatter-MAD window (scale over which "
         "sigma(f) is constant).",
         tier="primary",
@@ -69,6 +70,7 @@ class NoiseSettings:
         argtype=float,
     )
     pedestal_mhz: Optional[float] = knob_field(
+        units="MHz",
         help="High-pass running-median width isolating the smooth leakage " "pedestal.",
         tier="primary",
         inst_sensitivity="Y",
@@ -98,6 +100,7 @@ class NoiseSettings:
         is_flag=True,
     )
     smoothing_mhz: Optional[float] = knob_field(
+        units="MHz",
         help="Broad lower-envelope median sigma smoothing width (0 disables).",
         tier="primary",
         inst_sensitivity="Y",
@@ -114,6 +117,7 @@ class NoiseSettings:
         argtype=float,
     )
     convolve_mhz: Optional[float] = knob_field(
+        units="MHz",
         help="Gaussian sigma (MHz) of the second, step-removing smoothing pass "
         "(0=off).",
         inst_sensitivity="maybe",

@@ -114,6 +114,7 @@ def cli_field(
     argtype: Optional[Callable[[str], Any]] = None,
     metavar: Optional[str] = None,
     is_flag: bool = False,
+    units: Optional[str] = None,
 ) -> Any:
     """Declare an ``FTSettings`` field that is also exposed as a CLI option.
 
@@ -140,6 +141,8 @@ def cli_field(
     is_flag:
         Tri-state boolean rendered with ``BooleanOptionalAction``
         (``--x`` / ``--no-x``).
+    units:
+        Physical units of the value, where the declaration states them.
     """
     return knob_field(
         help=help,
@@ -148,6 +151,7 @@ def cli_field(
         argtype=argtype,
         metavar=metavar,
         is_flag=is_flag,
+        units=units,
     )
 
 
@@ -162,10 +166,12 @@ class FTSettings:
 
     start_us: Optional[float] = cli_field(
         argtype=float,
+        units="us",
         help="FID window start time in microseconds (earlier points zeroed)",
     )
     end_us: Optional[float] = cli_field(
         argtype=float,
+        units="us",
         help="FID window end time in microseconds (later points zeroed)",
     )
     units_power: Optional[int] = cli_field(
@@ -176,6 +182,7 @@ class FTSettings:
     trim: Optional[Tuple[float, float]] = cli_field(
         argtype=_parse_trim,
         metavar="MIN:MAX",
+        units="MHz",
         help="Frequency analysis range to keep as 'min:max' in MHz "
         "(e.g. 26500:40000); persisted and binding downstream",
     )

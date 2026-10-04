@@ -688,6 +688,35 @@ the named format exits ``1`` with a plain-text error, not an error object.
 The accessor reads only the source: it creates no ``.ftmw`` file, and
 ``validate_source`` is unchanged (it still describes FID 0 alone).
 
+Typed settings rows: ``settings_show`` and ``settings_defaults``
+-----------------------------------------------------------------
+
+Each ``SettingRow`` (and each item of ``settings show`` / ``settings defaults``
+``--format json``) carries, besides ``path``, ``value``, ``source``,
+``hard_default``, ``tier`` and ``help``, five fields that say how to edit it:
+
+* ``type`` -- ``"float"``, ``"int"``, ``"bool"``, ``"str"``, ``"choice"``,
+  ``"float_pair"``, ``"float_list"``, ``"str_list"``, ``"shape_spec"`` or
+  ``"clock_sources"``, taken from the field's declared type (``"choice"`` is a
+  string field that declares ``choices``).
+* ``nullable`` -- true when the setting can legitimately resolve to no value
+  (its hard default is ``None``, for example ``stage1.trim``), so ``value`` may
+  be ``null``. Every setting can still be unset with ``settings_unset``.
+* ``units`` -- ``"MHz"`` or ``"us"``, or ``None``.
+* ``choices`` -- the allowed values as a list, or ``None``.
+* ``bounds`` -- ``{"min", "max", "min_inclusive", "max_inclusive"}``, or
+  ``None``.
+
+``units``, ``choices`` and ``bounds`` are reported only where the setting's
+declaration states them; ``None`` means "not stated", never "unrestricted". At
+present ``stage5.conservative.n_eff_kind`` is the one ``choice``, and no setting
+states bounds.
+
+``value`` and ``hard_default`` are typed JSON: a pair or list is an array, a
+``ShapeSpec`` is ``{"kind": "gaussian"}``, and clock sources are an array of
+``{"freq_mhz", "locked", "label"}`` objects. The same JSON is accepted back by
+``settings_set`` / ``settings set``, so a row's ``value`` round-trips.
+
 Stage names
 -----------
 
