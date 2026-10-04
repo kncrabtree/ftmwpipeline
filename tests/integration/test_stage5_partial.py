@@ -30,6 +30,7 @@ import pytest
 import ftmwpipeline.api as ftmw
 from ftmwpipeline import (
     CallbackFailedError,
+    Invalidated,
     OperationCancelledError,
     StageDependencyError,
     StageFinished,
@@ -38,7 +39,7 @@ from ftmwpipeline import (
 )
 from ftmwpipeline.cli import _events as cli_events
 from ftmwpipeline.cli.main import main as cli_main
-from ftmwpipeline.contract import FIT_RESTART_REASONS, MANIFEST, Absent
+from ftmwpipeline.contract import FIT_RESTART_REASONS, MANIFEST, Absent, rerun_order
 from ftmwpipeline.core.curation import CurationAction
 from ftmwpipeline.core.stage_fit_settings import ClockSource
 from ftmwpipeline.pipeline import Pipeline
@@ -362,8 +363,10 @@ def test_a_raising_callback_keeps_the_finished_windows_too(
     ftmw.fit_peaks(fp, jobs=1)  # superseded by the partial fit
     boom = ValueError("boom")
     seen: List[WindowProgress] = []
+    delivered: List[Any] = []
 
     def bad(event: Any) -> None:
+        delivered.append(event)
         if isinstance(event, WindowProgress):
             seen.append(event)
             if len(seen) == 2:
@@ -380,8 +383,76 @@ def test_a_raising_callback_keeps_the_finished_windows_too(
     reported = sorted({e.window_id for e in seen})
     assert len(reported) == 2
     assert _kept_ids(fp) == reported
+    # callback_failed lists the windows kept, as cancelled does.
+    assert info.value.completed_windows == reported
+    assert info.value.to_dict()["completed_windows"] == reported
+    # Nothing more reaches the callback that has just failed: not the partial
+    # write's Invalidated, not StageFinished.
+    assert delivered[-1] is seen[-1]
+    assert not [e for e in delivered if isinstance(e, (Invalidated, StageFinished))]
     assert _state(fp) == "partial" and _state(fp, "review") == "not_run"
     assert not wait_no_new_children(children)
+
+
+@pytest.mark.parametrize("jobs", JOBS, ids=lambda j: f"jobs{j}")
+def test_a_partial_write_delivers_one_invalidated_before_the_error(
+    jobs, baseline_2638_stage4_small, tmp_path
+):
+    """The partial write's invalidations (the fit and everything downstream)
+    arrive as ONE Invalidated, once the write is durable and before the cancel
+    is raised; no StageFinished follows."""
+    fp = _copy(baseline_2638_stage4_small, tmp_path)
+    ftmw.fit_peaks(fp, jobs=1)
+    ftmw.review_run(fp)
+    tok = Token()
+    states_seen: List[str] = []
+
+    def on_event(event: Any) -> None:
+        if isinstance(event, Invalidated):
+            # Durable when delivered: another reader already sees the partial fit.
+            states_seen.append(_state(fp))
+
+    rec = Recorder(on_event)
+    rec_cancel = cancel_on_nth(WindowProgress, 1, tok)
+    with pytest.raises(OperationCancelledError) as info:
+        ftmw.fit_peaks(
+            fp,
+            jobs=jobs,
+            events=lambda e: (rec(e), rec_cancel(e)),
+            cancel=tok,
+        )
+    (inv,) = rec.of(Invalidated)
+    assert inv.stage == "fit" and inv.operation == "fit run"
+    assert inv.stages[0] == "fit" and "review" in inv.stages
+    order = [s for s in rerun_order() if s in inv.stages]
+    assert list(inv.stages) == order  # canonical names, in rerun_order
+    assert rec.events[-1] is inv  # the last event before the error
+    assert not rec.of(StageFinished)
+    assert states_seen == ["partial"]
+    assert info.value.completed_windows == _kept_ids(fp)
+
+
+def test_a_callback_raising_on_that_invalidated_does_not_mask_the_cancel(
+    baseline_2638_stage4_small, tmp_path
+):
+    fp = _copy(baseline_2638_stage4_small, tmp_path)
+    ftmw.fit_peaks(fp, jobs=1)
+    tok = Token()
+    cancel = cancel_on_nth(WindowProgress, 1, tok)
+
+    def bad(event: Any) -> None:
+        cancel(event)
+        if isinstance(event, Invalidated):
+            raise RuntimeError("no")
+
+    with pytest.raises(OperationCancelledError) as info:
+        ftmw.fit_peaks(fp, jobs=1, events=bad, cancel=tok)
+    assert info.value.code == "cancelled"
+    assert isinstance(info.value.__context__, CallbackFailedError)
+    assert info.value.__context__.event_schema == "ftmw/invalidated@1"
+    # The partial fit stays: it was durable before the Invalidated.
+    assert info.value.completed_windows == _kept_ids(fp)
+    assert _state(fp) == "partial"
 
 
 def test_a_callback_raising_before_any_window_writes_nothing(

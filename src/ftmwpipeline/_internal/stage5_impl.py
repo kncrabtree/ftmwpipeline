@@ -2592,7 +2592,8 @@ def _fit_peaks_impl(
             setattr(exc, _PARTIAL_WRITTEN, True)
             assert events is not None
             events.ops.completed_windows = list(written)
-            exc.completed_windows = list(written)
+            if isinstance(exc, (OperationCancelledError, CallbackFailedError)):
+                exc.completed_windows = list(written)
         return exc
 
     try:
