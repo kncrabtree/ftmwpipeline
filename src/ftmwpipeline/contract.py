@@ -922,8 +922,10 @@ _FIELDS: Dict[str, Tuple[str, ...]] = {
     ),
     "ComplexFT": ("freq_array", "complex_spectrum", "metadata"),
     "ComplexFT.metadata": ("amplitude_scale", "units_label", "pad_factor"),
-    # Events (Wave 5.1). PipelineWarning's code-specific fields live in
-    # ``details`` and are flattened on the wire (see WARNING_FIELDS).
+    # Events (Wave 5.1). Declared as their wire form. PipelineWarning's
+    # code-specific fields live in ``details`` in Python and are flattened on
+    # the wire: its entry is the common fields, and each code's own fields are
+    # declared under ``PipelineWarning.<code>`` (from WARNING_FIELDS, below).
     "StageStarted": ("schema", "operation", "stage"),
     "StageFinished": ("schema", "operation", "stage", "elapsed_s", "summary"),
     "WindowProgress": (
@@ -942,8 +944,12 @@ _FIELDS: Dict[str, Tuple[str, ...]] = {
     ),
     "ScanProgress": ("schema", "operation", "stage", "knob", "value", "index", "total"),
     "Invalidated": ("schema", "operation", "stage", "stages"),
-    "PipelineWarning": ("schema", "operation", "stage", "code", "message", "details"),
+    "PipelineWarning": ("schema", "operation", "stage", "code", "message"),
 }
+# A warning's further wire fields, per code: ``PipelineWarning.<code>``.
+_FIELDS.update(
+    {f"PipelineWarning.{code}": names for code, names in WARNING_FIELDS.items()}
+)
 
 #: The ``state`` values of a :func:`~ftmwpipeline.api.status` stage entry.
 #: ``partial`` (Stage 5 after a cancelled run) has no producer yet.

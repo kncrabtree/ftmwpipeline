@@ -64,8 +64,10 @@ The payload is ``{"schema": "ftmw/capabilities@1", "contract_version": int,
 (``stages`` is described under `Stage names`_). Every group of the manifest the
 contract tests check is present, in manifest order, so a client can discover
 the whole surface without importing the package: ``tables`` and ``fields``
-list the declared columns and result-type fields, ``vocabularies`` the closed
-value sets, ``file_bound`` whether each accessor takes a file, and
+list the declared columns and result-type fields (an event's fields are its
+wire keys; a ``PipelineWarning``'s own fields are listed per code under
+``PipelineWarning.<code>``, such as ``PipelineWarning.slow_window``),
+``vocabularies`` the closed value sets, ``file_bound`` whether each accessor takes a file, and
 ``pipeline_names`` the ``Pipeline`` method serving each accessor (every
 accessor is listed, defaulting to its own name). Every accessor listed
 exists on the API, on ``Pipeline`` and as exactly one CLI verb,
@@ -1030,7 +1032,8 @@ detection, the report, a scan):
 * ``Invalidated`` (``ftmw/invalidated@1``: ``stages``) is emitted once per
   call that drops downstream stages, and equals the result's ``invalidated``.
 * ``PipelineWarning`` (``ftmw/warning@1``: ``code``, ``message`` and the
-  code's own fields) with ``code`` one of ``slow_window``, ``walk_fallback``,
+  code's own fields, flattened beside them; ``capabilities()["fields"]`` lists
+  them as ``PipelineWarning.<code>``) with ``code`` one of ``slow_window``, ``walk_fallback``,
   ``epoch_acknowledged``, ``frame_mismatch`` (the curation advisory, which
   stays in the result's ``warnings`` too), ``environment_drift`` (once per
   operation, when the file's recorded environment differs from the running

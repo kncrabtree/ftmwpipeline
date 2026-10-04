@@ -20,6 +20,7 @@ from ftmwpipeline.cli.main import create_parser
 from ftmwpipeline.contract import (
     MANIFEST,
     SCHEMA_NAME_RE,
+    WARNING_FIELDS,
     AccessorSpec,
     ContractManifest,
     PipelineFileError,
@@ -276,7 +277,13 @@ SNAPSHOT_FIELDS: dict = {
     },
     "ScanProgress": {"schema", "operation", "stage", "knob", "value", "index", "total"},
     "Invalidated": {"schema", "operation", "stage", "stages"},
-    "PipelineWarning": {"schema", "operation", "stage", "code", "message", "details"},
+    "PipelineWarning": {"schema", "operation", "stage", "code", "message"},
+    "PipelineWarning.slow_window": {"window_id", "elapsed_s", "threshold_s"},
+    "PipelineWarning.epoch_acknowledged": {"file_epoch", "current_epoch"},
+    "PipelineWarning.environment_drift": {"fields"},
+    "PipelineWarning.frame_mismatch": {"actions"},
+    "PipelineWarning.walk_fallback": {"reason", "n_windows"},
+    "PipelineWarning.timebase_skipped": set(),
 }
 SNAPSHOT_VOCABULARIES = {
     "decision_kind": {"add", "remove", "merge", "split", "accept", "create_window"},
@@ -628,9 +635,13 @@ def _type_registry() -> dict:
 #: ``tests/integration/test_contract_declared_elements.py``.
 _PRODUCED_TYPES = {"PipelineInfo", "ComplexFT", "ComplexFT.metadata"}
 
+#: ``PipelineWarning.<code>``: a warning code's wire fields, which the
+#: dataclass holds in ``details`` (checked against ``WARNING_FIELDS``).
+_WARNING_CODE_TYPES = {f"PipelineWarning.{code}" for code in WARNING_FIELDS}
+
 
 def test_every_declared_type_is_resolvable():
-    known = set(_type_registry()) | _PRODUCED_TYPES
+    known = set(_type_registry()) | _PRODUCED_TYPES | _WARNING_CODE_TYPES
     assert set(MANIFEST.fields) <= known, set(MANIFEST.fields) - known
 
 
@@ -638,6 +649,10 @@ def test_every_declared_field_exists_on_its_dataclass():
     registry = _type_registry()
     for type_name, names in MANIFEST.fields.items():
         if type_name in _PRODUCED_TYPES:
+            continue
+        if type_name in _WARNING_CODE_TYPES:
+            code = type_name.split(".", 1)[1]
+            assert tuple(names) == WARNING_FIELDS[code], type_name
             continue
         cls = registry[type_name]
         assert dataclasses.is_dataclass(cls), type_name

@@ -475,6 +475,18 @@ def test_event_fields_are_declared_in_the_manifest(cls, schema, extra):
     assert capabilities()["fields"][cls.__name__] == list(MANIFEST.fields[cls.__name__])
 
 
+def test_declared_warning_fields_are_its_wire_keys():
+    # PipelineWarning is declared as its wire form: the common fields, plus
+    # each code's own under ``PipelineWarning.<code>`` (``details`` is flattened).
+    fields = capabilities()["fields"]
+    w = _example(PipelineWarning)
+    assert list(to_jsonable(w)) == (
+        fields["PipelineWarning"] + fields[f"PipelineWarning.{w.code}"]
+    )
+    for code, names in WARNING_FIELDS.items():
+        assert fields[f"PipelineWarning.{code}"] == list(names)
+
+
 # ---- the CLI's exit codes ----------------------------------------------------------
 
 
