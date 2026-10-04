@@ -21,6 +21,11 @@ program may rely on (normative spec: ``dev-docs/CONTRACT_STRATEGY.md``):
 - The schema-name constants (``*_SCHEMA``) and the entity-table records
   (:class:`WindowStatusRow`, :class:`FidPreviewRow`).
 - The typed error family (re-exported from :mod:`ftmwpipeline.file_manager`).
+- The event types a long operation delivers to its ``events`` callback
+  (:class:`StageStarted`, :class:`StageFinished`, :class:`WindowProgress`,
+  :class:`ScanProgress`, :class:`Invalidated`, :class:`PipelineWarning`; their
+  union :data:`Event`) and the :class:`CancelToken` protocol its ``cancel``
+  argument satisfies.
 
 Adding to the contract
 ----------------------
@@ -34,10 +39,23 @@ only ever appended; removing or renaming one is a breaking change.
 from __future__ import annotations
 
 import enum
+import math
 import re
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, Dict, Mapping, NamedTuple, Optional, Tuple, Union
+from typing import (
+    Any,
+    Callable,
+    ClassVar,
+    Dict,
+    Mapping,
+    NamedTuple,
+    Optional,
+    Protocol,
+    Tuple,
+    Union,
+    runtime_checkable,
+)
 
 from .core.absent import STATUS_NOT_RUN, STATUS_PRESENT, STATUS_UNDEFINED, Absent
 from .core.calibration import CalibrationStamp
@@ -48,9 +66,11 @@ from .file_manager import (
     AlgorithmFailedError,
     AnalysisEpochMismatchError,
     BadSettingError,
+    CallbackFailedError,
     IncompleteProvenanceError,
     NotFoundError,
     NotFoundValueError,
+    OperationCancelledError,
     PipelineCompatibilityError,
     PipelineCorruptionError,
     PipelineExistsError,
@@ -63,7 +83,7 @@ from .file_manager import (
 #: The machine-contract version. The first published contract is ``1``; each
 #: release that adds (or, before 1.0.0, changes) contract elements raises it by
 #: one, so a client can gate on it as well as on :func:`capabilities`.
-CONTRACT_VERSION: int = 8
+CONTRACT_VERSION: int = 9
 
 #: Schema name of the :func:`capabilities` payload.
 CAPABILITIES_SCHEMA = "ftmw/capabilities@1"
@@ -100,6 +120,13 @@ REVIEW_LOG_SCHEMA = "ftmw/review_log@1"
 PIPELINE_INFO_SCHEMA = "ftmw/pipeline_info@1"
 DISPLAY_FT_SCHEMA = "ftmw/display_ft@1"
 RUN_RESULT_SCHEMA = "ftmw/run_result@1"
+#: Schema names of the events a long operation delivers (Wave 5.1).
+STAGE_STARTED_SCHEMA = "ftmw/stage_started@1"
+STAGE_FINISHED_SCHEMA = "ftmw/stage_finished@1"
+WINDOW_PROGRESS_SCHEMA = "ftmw/window_progress@1"
+SCAN_PROGRESS_SCHEMA = "ftmw/scan_progress@1"
+INVALIDATED_SCHEMA = "ftmw/invalidated@1"
+WARNING_SCHEMA = "ftmw/warning@1"
 # CURATION_ACTION_SCHEMA (imported above) names a CurationAction's wire form:
 # a request type, not a result -- review_apply / review_preview take a
 # sequence of these in place of a curation file.
@@ -290,6 +317,225 @@ def rerun_order() -> Tuple[Stage, ...]:
     return tuple(order)
 
 
+# --------------------------------------------------------------------------
+# Events and cancellation (CONTRACT_STRATEGY §Events and cancellation).
+# --------------------------------------------------------------------------
+
+
+@runtime_checkable
+class CancelToken(Protocol):
+    """What a long operation's ``cancel`` argument must offer.
+
+    One method, :meth:`is_set`; a :class:`threading.Event` qualifies. The
+    operation polls it at its check points (before and between stages, between
+    windows, between scan values) and raises
+    :class:`~ftmwpipeline.file_manager.OperationCancelledError` once it is set.
+    """
+
+    def is_set(self) -> bool:
+        """True once the caller wants the operation to stop."""
+        ...
+
+
+#: Codes of :class:`PipelineWarning`, each with the code-specific fields its
+#: wire form carries (beside ``code`` and ``message``). The ``warning_code``
+#: vocabulary is the keys; additions are additive.
+WARNING_FIELDS: Mapping[str, Tuple[str, ...]] = MappingProxyType(
+    {
+        "slow_window": ("window_id", "elapsed_s", "threshold_s"),
+        "epoch_acknowledged": ("file_epoch", "current_epoch"),
+        "environment_drift": ("fields",),
+        "frame_mismatch": ("actions",),
+        "walk_fallback": ("reason", "n_windows"),
+        "timebase_skipped": (),
+    }
+)
+
+#: The ``phase`` of a :class:`WindowProgress` pass: the fit's first walk (or a
+#: Stage 6 call's own windows), a structural replan round, a sequential re-walk
+#: after a parallel walk fell back, and Stage 6's re-fit of dependent windows.
+WINDOW_PHASES: Tuple[str, ...] = ("initial", "replan", "fallback", "cascade")
+
+
+def _stage_or_none(stage: Union[Stage, str, None]) -> Optional[Stage]:
+    return None if stage is None else Stage(stage)
+
+
+@dataclass(frozen=True)
+class _EventBase:
+    """Fields every event carries.
+
+    ``schema`` is set from the class (never passed); ``operation`` is the CLI
+    verb of the call that emits it (``"fit run"``, ``"run"``); ``stage`` the
+    canonical stage it concerns, or ``None`` (``null`` on the wire) where none
+    applies. Construction normalizes a stage string to :class:`Stage`.
+    """
+
+    __ftmw_schema__: ClassVar[str] = ""
+
+    schema: str = field(init=False)
+    operation: str
+    stage: Optional[Stage]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "schema", type(self).__ftmw_schema__)
+        object.__setattr__(self, "stage", _stage_or_none(self.stage))
+
+
+@dataclass(frozen=True)
+class StageStarted(_EventBase):
+    """A stage began. Emitted first for every stage, after the cancel check."""
+
+    __ftmw_schema__: ClassVar[str] = STAGE_STARTED_SCHEMA
+
+
+@dataclass(frozen=True)
+class StageFinished(_EventBase):
+    """A stage finished and its results are written.
+
+    ``summary`` has exactly the keys of the same verb's ``ftmw/run_result@1``
+    summary (one builder makes both). Never emitted for a cancelled or failed
+    stage.
+    """
+
+    __ftmw_schema__: ClassVar[str] = STAGE_FINISHED_SCHEMA
+
+    elapsed_s: float
+    summary: Mapping[str, Any] = field(hash=False)
+
+
+@dataclass(frozen=True)
+class WindowProgress(_EventBase):
+    """One window finished fitting.
+
+    Events come in passes, each identified by its ``(phase, round)`` pair.
+    ``phase`` is one of :data:`WINDOW_PHASES`: ``"initial"`` (the fit's first
+    walk, or a Stage 6 call's own windows), ``"replan"`` (a structural replan
+    round), ``"fallback"`` (a sequential re-walk after the parallel walk of the
+    same round fell back; it reports windows that round's earlier pass already
+    reported) or ``"cascade"`` (Stage 6's re-fit of dependent windows).
+    ``round`` is ``0`` for the initial walk, its fallback and every Stage 6
+    pass, and the replan round's number (from 1) for a replan round and its
+    fallback. ``index`` counts finished windows within the pass from 1 (windows
+    can finish out of id order); ``total`` is the number of windows in the
+    pass, fixed when it begins; ``elapsed_s`` the window's own fitting time. A
+    dropped window has ``dropped=True`` and its ``n_peaks`` / ``chi2r`` are
+    :class:`Absent`; a ``chi2r`` without a finite value is
+    :attr:`Absent.UNDEFINED`.
+    """
+
+    __ftmw_schema__: ClassVar[str] = WINDOW_PROGRESS_SCHEMA
+
+    phase: str
+    round: int
+    index: int
+    total: int
+    window_id: int
+    n_peaks: Union[int, Absent]
+    chi2r: Union[float, Absent]
+    elapsed_s: float
+    dropped: bool
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.phase not in WINDOW_PHASES:
+            raise ValueError(
+                f"phase must be one of {WINDOW_PHASES}, not {self.phase!r}"
+            )
+        if isinstance(self.chi2r, float) and not math.isfinite(self.chi2r):
+            object.__setattr__(self, "chi2r", Absent.UNDEFINED)
+
+
+@dataclass(frozen=True)
+class ScanProgress(_EventBase):
+    """One scanned value finished; ``knob`` is a registry path."""
+
+    __ftmw_schema__: ClassVar[str] = SCAN_PROGRESS_SCHEMA
+
+    knob: str
+    value: Any = field(hash=False)
+    index: int
+    total: int
+
+
+@dataclass(frozen=True)
+class Invalidated(_EventBase):
+    """The call invalidated ``stages`` (canonical, in ``rerun_order``).
+
+    Emitted once per call that invalidates something, at the moment it does;
+    equal to the result's ``invalidated``.
+    """
+
+    __ftmw_schema__: ClassVar[str] = INVALIDATED_SCHEMA
+
+    stages: Tuple[Stage, ...]
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        object.__setattr__(self, "stages", tuple(Stage(s) for s in self.stages))
+
+
+@dataclass(frozen=True)
+class PipelineWarning(_EventBase):
+    """A typed warning: ``code`` from the ``warning_code`` vocabulary.
+
+    The code-specific fields (:data:`WARNING_FIELDS`) are held in ``details``
+    in Python and are flattened beside ``code`` and ``message`` on the wire;
+    ``details`` must carry exactly the fields its code declares.
+    """
+
+    __ftmw_schema__: ClassVar[str] = WARNING_SCHEMA
+
+    code: str
+    message: str
+    details: Mapping[str, Any] = field(default_factory=dict, hash=False)
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        try:
+            declared = WARNING_FIELDS[self.code]
+        except KeyError:
+            raise ValueError(f"unknown warning code {self.code!r}") from None
+        if set(self.details) != set(declared):
+            raise ValueError(
+                f"warning {self.code!r} carries fields {sorted(declared)}, "
+                f"not {sorted(self.details)}"
+            )
+        object.__setattr__(self, "details", dict(self.details))
+
+    def __ftmw_items__(self) -> Tuple[Tuple[str, Any], ...]:
+        """The wire form's fields: the common ones, then ``details`` flattened."""
+        head = tuple(
+            (name, getattr(self, name))
+            for name in ("schema", "operation", "stage", "code", "message")
+        )
+        return head + tuple((k, self.details[k]) for k in WARNING_FIELDS[self.code])
+
+
+#: Any event a long operation delivers to its ``events`` callback.
+Event = Union[
+    StageStarted,
+    StageFinished,
+    WindowProgress,
+    ScanProgress,
+    Invalidated,
+    PipelineWarning,
+]
+
+#: The ``events`` argument of a long operation.
+EventCallback = Callable[[Event], None]
+
+#: Every event type, in declaration order.
+EVENT_TYPES: Tuple[type, ...] = (
+    StageStarted,
+    StageFinished,
+    WindowProgress,
+    ScanProgress,
+    Invalidated,
+    PipelineWarning,
+)
+
+
 @dataclass(frozen=True)
 class ContractManifest:
     """Immutable enumeration of every declared contract element.
@@ -454,6 +700,12 @@ _SCHEMAS: Tuple[str, ...] = (
     DISPLAY_FT_SCHEMA,
     CURATION_ACTION_SCHEMA,
     RUN_RESULT_SCHEMA,
+    STAGE_STARTED_SCHEMA,
+    STAGE_FINISHED_SCHEMA,
+    WINDOW_PROGRESS_SCHEMA,
+    SCAN_PROGRESS_SCHEMA,
+    INVALIDATED_SCHEMA,
+    WARNING_SCHEMA,
 )
 
 _CODES: Tuple[str, ...] = (
@@ -466,6 +718,11 @@ _CODES: Tuple[str, ...] = (
     PipelineExistsError.code,  # "file_exists"
     BadSettingError.code,  # "bad_setting"
     AlgorithmFailedError.code,  # "algorithm_failed"
+    OperationCancelledError.code,  # "cancelled"
+    CallbackFailedError.code,  # "callback_failed"
+    # The base class's declared fallback: run_pipeline reports a failure that
+    # is not a typed error under it (§Events and cancellation).
+    PipelineFileError.code,  # "pipeline_error"
 )
 
 _FT_WINDOW_KEYS: Tuple[str, ...] = (
@@ -665,7 +922,34 @@ _FIELDS: Dict[str, Tuple[str, ...]] = {
     ),
     "ComplexFT": ("freq_array", "complex_spectrum", "metadata"),
     "ComplexFT.metadata": ("amplitude_scale", "units_label", "pad_factor"),
+    # Events (Wave 5.1). Declared as their wire form. PipelineWarning's
+    # code-specific fields live in ``details`` in Python and are flattened on
+    # the wire: its entry is the common fields, and each code's own fields are
+    # declared under ``PipelineWarning.<code>`` (from WARNING_FIELDS, below).
+    "StageStarted": ("schema", "operation", "stage"),
+    "StageFinished": ("schema", "operation", "stage", "elapsed_s", "summary"),
+    "WindowProgress": (
+        "schema",
+        "operation",
+        "stage",
+        "phase",
+        "round",
+        "index",
+        "total",
+        "window_id",
+        "n_peaks",
+        "chi2r",
+        "elapsed_s",
+        "dropped",
+    ),
+    "ScanProgress": ("schema", "operation", "stage", "knob", "value", "index", "total"),
+    "Invalidated": ("schema", "operation", "stage", "stages"),
+    "PipelineWarning": ("schema", "operation", "stage", "code", "message"),
 }
+# A warning's further wire fields, per code: ``PipelineWarning.<code>``.
+_FIELDS.update(
+    {f"PipelineWarning.{code}": names for code, names in WARNING_FIELDS.items()}
+)
 
 #: The ``state`` values of a :func:`~ftmwpipeline.api.status` stage entry.
 #: ``partial`` (Stage 5 after a cancelled run) has no producer yet.
@@ -678,6 +962,7 @@ _VOCABULARIES: Dict[str, Tuple[str, ...]] = {
     "decision_kind": ("add", "remove", "merge", "split", "accept", "create_window"),
     "decision_provenance": ("user",),
     "stage_state": STAGE_STATES,
+    "warning_code": tuple(WARNING_FIELDS),
 }
 
 MANIFEST = ContractManifest(
@@ -761,6 +1046,13 @@ __all__ = [
     "PIPELINE_INFO_SCHEMA",
     "DISPLAY_FT_SCHEMA",
     "CURATION_ACTION_SCHEMA",
+    "RUN_RESULT_SCHEMA",
+    "STAGE_STARTED_SCHEMA",
+    "STAGE_FINISHED_SCHEMA",
+    "WINDOW_PROGRESS_SCHEMA",
+    "SCAN_PROGRESS_SCHEMA",
+    "INVALIDATED_SCHEMA",
+    "WARNING_SCHEMA",
     "CurationAction",
     "WindowStatusRow",
     "FidPreviewRow",
@@ -783,6 +1075,19 @@ __all__ = [
     "ContractManifest",
     "MANIFEST",
     "capabilities",
+    # Events and cancellation
+    "CancelToken",
+    "Event",
+    "EventCallback",
+    "EVENT_TYPES",
+    "StageStarted",
+    "StageFinished",
+    "WindowProgress",
+    "ScanProgress",
+    "Invalidated",
+    "PipelineWarning",
+    "WARNING_FIELDS",
+    "WINDOW_PHASES",
     # Typed error family
     "PipelineFileError",
     "PipelineExistsError",
@@ -796,4 +1101,6 @@ __all__ = [
     "IncompleteProvenanceError",
     "BadSettingError",
     "AlgorithmFailedError",
+    "OperationCancelledError",
+    "CallbackFailedError",
 ]

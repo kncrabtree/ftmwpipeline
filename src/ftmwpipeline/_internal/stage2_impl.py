@@ -8,13 +8,15 @@ API interfaces.
 
 import json
 import logging
+from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Mapping, Optional, Tuple
 
 import h5py
 import numpy as np
 
+from ..contract import CancelToken, EventCallback, Stage
 from ..core.noise_settings import (
     NoiseSettings,
 )
@@ -45,6 +47,9 @@ from .active_ft_support import build_trimmed_active_ft
 from .compaction import compact_file
 from .shared_utils import require_resolved
 
+if TYPE_CHECKING:
+    from .events import StageScope
+
 logger = logging.getLogger(__name__)
 
 
@@ -53,15 +58,69 @@ def _required(value: Any, name: str) -> Any:
     return require_resolved(value, name, owner="NoiseSettings")
 
 
+#: The ``ftmw/run_result@1`` summary keys of ``noise run`` -- also the keys of
+#: the noise stage's ``StageFinished.summary``. The one builder is
+#: :func:`noise_run_summary`.
+NOISE_RUN_SUMMARY_KEYS: Tuple[str, ...] = (
+    "total_points",
+    "noise_points",
+    "noise_fraction",
+    "freq_min_mhz",
+    "freq_max_mhz",
+    "rms_mean",
+    "rms_std",
+    "rms_min",
+    "rms_max",
+    "algorithm",
+    "n_region_windows",
+    "n_line_bins",
+    "region_aware",
+    "smoothing_mhz",
+    "pipeline_file",
+)
+
+
+def noise_run_summary(result: Mapping[str, Any], file_path: str) -> Dict[str, Any]:
+    """The scalar summary of a :func:`compute_noise_estimation_impl` result."""
+    noise_result = result["noise_result"]
+    rms = noise_result.rms_noise
+    bin_info = noise_result.bin_info
+    return {
+        "total_points": result["total_points"],
+        "noise_points": result["noise_points"],
+        "noise_fraction": result["noise_points"] / result["total_points"],
+        "freq_min_mhz": result["frequency_range"][0],
+        "freq_max_mhz": result["frequency_range"][1],
+        "rms_mean": rms.mean(),
+        "rms_std": rms.std(),
+        "rms_min": rms.min(),
+        "rms_max": rms.max(),
+        "algorithm": bin_info.get("algorithm"),
+        "n_region_windows": bin_info.get("n_region_windows"),
+        "n_line_bins": bin_info.get("n_line_bins"),
+        "region_aware": bin_info.get("region_aware"),
+        "smoothing_mhz": bin_info.get("smoothing_mhz"),
+        "pipeline_file": file_path,
+    }
+
+
 @requires_pipeline_file()
 def compute_noise_estimation_impl(
     file_path: str,
     *,
     settings: Optional[NoiseSettings] = None,
     preset: Optional[str] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> Dict[str, Any]:
     """
     Shared implementation for Stage 2 noise estimation from .ftmw files.
+
+    A long operation (``noise run``), reported as the ``noise`` stage:
+    ``StageStarted``, ``Invalidated`` (when changed settings dropped the
+    stages built on the old sigma), then ``StageFinished`` with
+    :func:`noise_run_summary` once the result is written. ``cancel`` is
+    checked before the stage starts.
 
     Runs the scatter (high-pass, region-aware) estimator on the ComplexFT
     computed on-demand from the persisted Stage 1 parameters. The settings
@@ -95,6 +154,25 @@ def compute_noise_estimation_impl(
     ValueError
         If Stage 1 dependencies are not met or parameters are invalid.
     """
+    from .events import operation_events
+
+    ops = operation_events("noise run", events, cancel)
+    with ops.stage(Stage.NOISE, verb="noise run", file_path=file_path) as scope:
+        result = _compute_noise_estimation(
+            file_path, settings=settings, preset=preset, events=scope
+        )
+        scope.finish(noise_run_summary(result, file_path))
+    return result
+
+
+def _compute_noise_estimation(
+    file_path: str,
+    *,
+    settings: Optional[NoiseSettings],
+    preset: Optional[str],
+    events: "StageScope",
+) -> Dict[str, Any]:
+    """The body of :func:`compute_noise_estimation_impl` (inside its scope)."""
     # Compute ComplexFT on-demand using Stage 1 implementation (correct architecture)
     try:
         # Check that Stage 1 parameters are available (Stage 1 dependency)
@@ -151,6 +229,7 @@ def compute_noise_estimation_impl(
         settings=scatter_resolved,
         preset_name=scatter_preset_name,
         previous=persisted,
+        events=events,
     )
 
 
@@ -162,6 +241,7 @@ def _compute_noise_scatter(
     settings: NoiseSettings,
     preset_name: Optional[str] = None,
     previous: Optional[NoiseSettings] = None,
+    events: Optional["StageScope"] = None,
 ) -> Dict[str, Any]:
     """Run the scatter (high-pass) Stage 2 estimator and persist its result.
 
@@ -255,24 +335,31 @@ def _compute_noise_scatter(
         raise ValueError(f"Noise estimation failed: {e}")
 
     try:
-        save_noise_result_impl(
-            file_path=file_path,
-            noise_result=noise_result,
-            frequencies=active_ft.freq_array,
-            magnitudes=active_ft.magnitude_spectrum,
-            parameters_used=processing_params,
-        )
-        # Persist the resolved NoiseSettings to
-        # ``processing_parameters/stage2_noise`` so a no-kwargs re-run inherits
-        # it via the resolver's persisted layer.
-        save_noise_settings_to_h5(file_path, settings, preset_name=preset_name)
-        invalidated = (
-            invalidate_downstream_stages(file_path, "stage2_noise_result")
-            if previous is not None and previous != settings
-            else []
-        )
-        _update_stage_completion(file_path, "stage2_noise_result")
-        logger.info("Stage 2: Noise estimation results saved and marked complete")
+        # The final write completes once begun: a raising events callback (the
+        # Invalidated event is delivered between the invalidation and the
+        # completion stamp) is held and raised only once the stage is whole.
+        with events.committing() if events is not None else nullcontext():
+            save_noise_result_impl(
+                file_path=file_path,
+                noise_result=noise_result,
+                frequencies=active_ft.freq_array,
+                magnitudes=active_ft.magnitude_spectrum,
+                parameters_used=processing_params,
+            )
+            # Persist the resolved NoiseSettings to
+            # ``processing_parameters/stage2_noise`` so a no-kwargs re-run
+            # inherits it via the resolver's persisted layer.
+            save_noise_settings_to_h5(file_path, settings, preset_name=preset_name)
+            invalidated = (
+                invalidate_downstream_stages(
+                    file_path, "stage2_noise_result", events=events
+                )
+                if previous is not None and previous != settings
+                else []
+            )
+            _update_stage_completion(file_path, "stage2_noise_result")
+        # The "Stage 2: ... saved and marked complete" line is rendered from
+        # the stage's StageFinished event (compute_noise_estimation_impl).
     except PipelineFileError:
         raise
     except Exception as e:

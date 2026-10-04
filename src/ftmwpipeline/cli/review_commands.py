@@ -37,10 +37,16 @@ from .._internal.stage6_impl import (
     refit_snap_tol_mhz_impl,
     refit_window_impl,
     review_accept_impl,
+    review_accept_summary,
+    review_apply_summary,
+    review_create_summary,
+    review_edit_summary,
     review_log_impl,
     review_preview_impl,
     review_run_impl,
+    review_run_summary,
     review_undo_impl,
+    review_undo_summary,
 )
 from ..core.absent import Absent
 from ..core.curation import REFIT_SNAP_TOL_BINS, Frame
@@ -53,6 +59,7 @@ from ..core.data_structures import (
 from ..file_manager import BadSettingError, PipelineFileError, require_pipeline_file
 from ..fitting.active_ft import active_ft_bin_spacing_mhz
 from ..io.fitting_serialization import load_spectrum_fit_from_hdf5
+from ._events import add_events_argument, operation_controls
 from ._json_output import json_mode, record_payload, record_run_result
 from .utils import add_stage_object, setup_logging
 
@@ -816,14 +823,17 @@ def cmd_review_edit(args: argparse.Namespace) -> int:
     frame: Optional[Frame] = getattr(args, "frame", None)
 
     try:
-        result: RefitWindowResult = refit_window_impl(
-            file_path,
-            window_id,
-            add=add_freqs,
-            remove=remove_freqs,
-            snap_tol_mhz=getattr(args, "snap_tol_mhz", None),
-            frame=frame,
-        )
+        with operation_controls(args) as (events, cancel):
+            result: RefitWindowResult = refit_window_impl(
+                file_path,
+                window_id,
+                add=add_freqs,
+                remove=remove_freqs,
+                snap_tol_mhz=getattr(args, "snap_tol_mhz", None),
+                frame=frame,
+                events=events,
+                cancel=cancel,
+            )
     except PipelineFileError:
         raise
     except (ValueError, KeyError) as exc:
@@ -831,21 +841,12 @@ def cmd_review_edit(args: argparse.Namespace) -> int:
         return 1
 
     if json_mode(args):
+        # One builder for this summary and the operation's StageFinished.
         record_run_result(
             args,
             stage="review",
             result=result,
-            summary={
-                "window_id": result.window_id,
-                "n_peaks_before": result.n_peaks_before,
-                "n_peaks_after": result.n_peaks_after,
-                "chi2r_before": result.chi2r_before,
-                "chi2r_after": result.chi2r_after,
-                "converged": result.converged,
-                "n_added": len(add_freqs),
-                "n_removed": len(remove_freqs),
-                "created_window_mode": result.created_window_mode,
-            },
+            summary=review_edit_summary(result, add_freqs, remove_freqs),
         )
     print(
         f"review edit  window={result.window_id}  "
@@ -951,12 +952,15 @@ def cmd_review_create(args: argparse.Namespace) -> int:
     frame: Optional[Frame] = getattr(args, "frame", None)
 
     try:
-        result = create_window_impl(
-            file_path,
-            anchor,
-            snap_tol_mhz=getattr(args, "snap_tol_mhz", None),
-            frame=frame,
-        )
+        with operation_controls(args) as (events, cancel):
+            result = create_window_impl(
+                file_path,
+                anchor,
+                snap_tol_mhz=getattr(args, "snap_tol_mhz", None),
+                frame=frame,
+                events=events,
+                cancel=cancel,
+            )
     except PipelineFileError:
         raise
     except (ValueError, KeyError) as exc:
@@ -965,20 +969,9 @@ def cmd_review_create(args: argparse.Namespace) -> int:
 
     lo, hi = result.freq_range
     if json_mode(args):
+        # One builder for this summary and the operation's StageFinished.
         record_run_result(
-            args,
-            stage="review",
-            result=result,
-            summary={
-                "window_id": result.window_id,
-                "mode": result.mode,
-                "anchor_mhz": result.anchor_mhz,
-                "freq_lo_mhz": lo,
-                "freq_hi_mhz": hi,
-                "n_points": result.n_points,
-                "n_contributors": result.n_contributors,
-                "n_peaks": result.n_peaks,
-            },
+            args, stage="review", result=result, summary=review_create_summary(result)
         )
     print(
         f"review create  window={result.window_id}  {result.mode}  "
@@ -1019,13 +1012,16 @@ def cmd_review_accept(args: argparse.Namespace) -> int:
     frame: Optional[Frame] = getattr(args, "frame", None)
 
     try:
-        result = review_accept_impl(
-            file_path,
-            window_id,
-            candidate_freq=candidate_freq,
-            snap_tol_mhz=getattr(args, "snap_tol_mhz", None),
-            frame=frame,
-        )
+        with operation_controls(args) as (events, cancel):
+            result = review_accept_impl(
+                file_path,
+                window_id,
+                candidate_freq=candidate_freq,
+                snap_tol_mhz=getattr(args, "snap_tol_mhz", None),
+                frame=frame,
+                events=events,
+                cancel=cancel,
+            )
     except PipelineFileError:
         raise
     except (ValueError, KeyError) as exc:
@@ -1033,32 +1029,14 @@ def cmd_review_accept(args: argparse.Namespace) -> int:
         return 1
 
     if json_mode(args):
-        if result is None:
-            record_run_result(
-                args,
-                stage="review",
-                invalidated=[],
-                summary={
-                    "window_id": window_id,
-                    "provenance": "reviewed",
-                    "candidate_accepted": False,
-                },
-            )
-        else:
-            record_run_result(
-                args,
-                stage="review",
-                result=result,
-                summary={
-                    "window_id": result.window_id,
-                    "candidate_accepted": True,
-                    "n_peaks_before": result.n_peaks_before,
-                    "n_peaks_after": result.n_peaks_after,
-                    "chi2r_before": result.chi2r_before,
-                    "chi2r_after": result.chi2r_after,
-                    "converged": result.converged,
-                },
-            )
+        # One builder for this summary and the operation's StageFinished.
+        record_run_result(
+            args,
+            stage="review",
+            result=result,
+            invalidated=[] if result is None else None,
+            summary=review_accept_summary(result, window_id),
+        )
     if result is None:
         print(f"review accept  window={window_id}  provenance→reviewed")
     else:
@@ -1084,12 +1062,15 @@ def cmd_review_run(args: argparse.Namespace) -> int:
     sigma_floor_khz: Optional[float] = getattr(args, "sigma_floor_khz", None)
 
     try:
-        result = review_run_impl(
-            file_path,
-            bar=bar,
-            attention_candidate_evidence=attention_bar,
-            sigma_floor_khz=sigma_floor_khz,
-        )
+        with operation_controls(args) as (events, cancel):
+            result = review_run_impl(
+                file_path,
+                bar=bar,
+                attention_candidate_evidence=attention_bar,
+                sigma_floor_khz=sigma_floor_khz,
+                events=events,
+                cancel=cancel,
+            )
     except PipelineFileError:
         raise
     except (ValueError, KeyError) as exc:
@@ -1106,19 +1087,10 @@ def cmd_review_run(args: argparse.Namespace) -> int:
 
     fp = get_final_products_impl(file_path)
     if json_mode(args):
-        run_summary: dict = {
-            "n_windows": result.n_windows,
-            "n_attention": result.n_attention,
-            "reason_counts": dict(result.reason_counts),
-        }
-        if fp is not None:
-            run_summary.update(
-                n_final_peaks=len(fp.peaks),
-                calibration_state=fp.calibration_state,
-                epsilon=fp.epsilon,
-                sigma_floor_khz=fp.sigma_floor_khz,
-            )
-        record_run_result(args, stage="review", result=result, summary=run_summary)
+        # One builder for this summary and the stage's StageFinished.
+        record_run_result(
+            args, stage="review", result=result, summary=review_run_summary(result, fp)
+        )
     if fp is not None:
         print(
             f"final products: {len(fp.peaks)} peak(s), "
@@ -1139,14 +1111,17 @@ def cmd_review_apply(args: argparse.Namespace) -> int:
     action_dicts = _read_actions_json(getattr(args, "actions", None))
 
     try:
-        result = apply_curation_impl(
-            file_path,
-            args.curation_file,
-            actions=action_dicts,
-            dry_run=dry_run,
-            frame=frame,
-            log_prefix=log_prefix,
-        )
+        with operation_controls(args) as (events, cancel):
+            result = apply_curation_impl(
+                file_path,
+                args.curation_file,
+                actions=action_dicts,
+                dry_run=dry_run,
+                frame=frame,
+                log_prefix=log_prefix,
+                events=events,
+                cancel=cancel,
+            )
     except PipelineFileError:
         raise
     except (ValueError, KeyError, OSError) as exc:
@@ -1154,19 +1129,12 @@ def cmd_review_apply(args: argparse.Namespace) -> int:
         return 1
 
     if json_mode(args):
+        # One builder for this summary and the operation's StageFinished.
         record_run_result(
             args,
             stage="review",
             result=result,
-            summary={
-                "dry_run": bool(dry_run),
-                "n_actions": len(result.plan),
-                "applied": result.applied,
-                "n_warnings": len(result.warnings),
-                "n_created_windows": len(result.created_windows),
-                "n_windows_refit": len(result.windows),
-                "base_changed": bool(result.base_changed),
-            },
+            summary=review_apply_summary(result, dry_run),
         )
     header = (
         "review apply (dry run): resolved plan" if dry_run else "review apply: plan"
@@ -1230,9 +1198,15 @@ def cmd_review_preview(args: argparse.Namespace) -> int:
     action_dicts = _read_actions_json(getattr(args, "actions", None))
 
     try:
-        result = review_preview_impl(
-            file_path, args.curation_file, actions=action_dicts, frame=frame
-        )
+        with operation_controls(args) as (events, cancel):
+            result = review_preview_impl(
+                file_path,
+                args.curation_file,
+                actions=action_dicts,
+                frame=frame,
+                events=events,
+                cancel=cancel,
+            )
     except PipelineFileError:
         raise
     except (ValueError, KeyError, OSError) as exc:
@@ -1337,7 +1311,10 @@ def cmd_review_undo(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        result = review_undo_impl(file_path, ids, dry_run=dry_run)
+        with operation_controls(args) as (events, cancel):
+            result = review_undo_impl(
+                file_path, ids, dry_run=dry_run, events=events, cancel=cancel
+            )
     except PipelineFileError:
         raise
     except (ValueError, KeyError, OSError) as exc:
@@ -1345,16 +1322,12 @@ def cmd_review_undo(args: argparse.Namespace) -> int:
         return 1
 
     if json_mode(args):
+        # One builder for this summary and the operation's StageFinished.
         record_run_result(
             args,
             stage="review",
             result=result,
-            summary={
-                "dry_run": bool(dry_run),
-                "n_removed": len(result.removed),
-                "n_replayed": len(result.plan),
-                "applied": result.applied,
-            },
+            summary=review_undo_summary(result, dry_run),
         )
     print("review undo (dry run)" if dry_run else "review undo")
     print("removing:")
@@ -1515,6 +1488,7 @@ def register_review_commands(subparsers: Any) -> None:
         default=False,
         help="Enable verbose logging.",
     )
+    add_events_argument(p_run)
     p_run.set_defaults(func=cmd_review_run)
 
     metric_lines = "\n".join(
@@ -1623,6 +1597,7 @@ def register_review_commands(subparsers: Any) -> None:
         default=False,
         help="Enable verbose logging.",
     )
+    add_events_argument(p_apply)
     p_apply.set_defaults(func=cmd_review_apply)
 
     # ---- review preview --------------------------------------------------------
@@ -1656,6 +1631,7 @@ def register_review_commands(subparsers: Any) -> None:
         default=False,
         help="Enable verbose logging.",
     )
+    add_events_argument(p_preview)
     p_preview.set_defaults(func=cmd_review_preview)
 
     # ---- review log ----------------------------------------------------------
@@ -1720,6 +1696,7 @@ def register_review_commands(subparsers: Any) -> None:
         default=False,
         help="Enable verbose logging.",
     )
+    add_events_argument(p_undo)
     p_undo.set_defaults(func=cmd_review_undo)
 
     # ---- review snap-tolerance ----------------------------------------------
@@ -1896,6 +1873,7 @@ def register_review_commands(subparsers: Any) -> None:
         default=False,
         help="Enable verbose logging.",
     )
+    add_events_argument(p_accept)
     p_accept.set_defaults(func=cmd_review_accept)
 
     # ---- review edit ---------------------------------------------------------
@@ -1981,6 +1959,7 @@ def register_review_commands(subparsers: Any) -> None:
         default=False,
         help="Enable verbose logging.",
     )
+    add_events_argument(p_edit)
     p_edit.set_defaults(func=cmd_review_edit)
 
     # ---- review create -------------------------------------------------------
@@ -2034,6 +2013,7 @@ def register_review_commands(subparsers: Any) -> None:
         default=False,
         help="Enable verbose logging.",
     )
+    add_events_argument(p_create)
     p_create.set_defaults(func=cmd_review_create)
 
     # ---- review acknowledge-environment --------------------------------------

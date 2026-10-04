@@ -43,7 +43,14 @@ import h5py
 import numpy as np
 from threadpoolctl import threadpool_limits
 
-from ..contract import DISPLAY_UNITS_SCHEMA, FIT_THRESHOLDS_SCHEMA, Absent
+from ..contract import (
+    DISPLAY_UNITS_SCHEMA,
+    FIT_THRESHOLDS_SCHEMA,
+    Absent,
+    CancelToken,
+    EventCallback,
+    Stage,
+)
 from ..core.data_structures import (
     ComplexFT,
     FittedPeak,
@@ -105,6 +112,7 @@ from .active_ft_support import (
     build_active_grid_with_noise,
     default_tau0_us,
 )
+from .events import StageScope, detached_scope, operation_events
 from .read_impl import _open
 from .shared_utils import active_acquisition_us, require_resolved
 from .stage0_impl import load_fid_from_pipeline_impl
@@ -1756,8 +1764,18 @@ def fit_peaks_impl(
     settings: Optional[StageFitSettings] = None,
     preset: Optional[str] = None,
     jobs: Optional[int] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> Dict[str, Any]:
     """Run Stage 5 with BLAS pinned to one thread per process, then persist.
+
+    Reports as the ``fit`` stage of the ``fit run`` operation (or of the
+    enclosing operation whose events are passed): ``StageStarted``, a
+    ``WindowProgress`` per finished window, warnings, ``Invalidated``, then
+    ``StageFinished`` -- whose summary is :func:`fit_run_summary` of the result
+    -- once the fit is written. A cancel (``cancel`` set) is honoured between
+    windows and before the final write; a cancelled or failed fit writes
+    nothing, so the file is exactly as it was.
 
     Every per-window solve in Stage 5 is single-threaded -- the cross-window
     fork pool gets its parallelism from separate worker *processes*, not from
@@ -1777,16 +1795,43 @@ def fit_peaks_impl(
     call runs in the main process before any fork, so it is itself fork-safe. See
     :func:`_fit_peaks_impl` for the parameters and return value.
     """
-    with threadpool_limits(limits=1):
-        return _fit_peaks_impl(
-            file_path,
-            shape=shape,
-            tau_maj_override_us=tau_maj_override_us,
-            sigma_tau_override_us=sigma_tau_override_us,
-            settings=settings,
-            preset=preset,
-            jobs=jobs,
-        )
+    ops = operation_events("fit run", events, cancel)
+    with ops.stage(Stage.FIT, verb="fit run", file_path=file_path) as scope:
+        with threadpool_limits(limits=1):
+            result = _fit_peaks_impl(
+                file_path,
+                shape=shape,
+                tau_maj_override_us=tau_maj_override_us,
+                sigma_tau_override_us=sigma_tau_override_us,
+                settings=settings,
+                preset=preset,
+                jobs=jobs,
+                events=scope,
+            )
+        scope.finish(fit_run_summary(result))
+    return result
+
+
+#: The ``ftmw/run_result@1`` summary keys of ``fit run`` -- also the keys of the
+#: fit's ``StageFinished.summary``. The one builder is :func:`fit_run_summary`.
+FIT_RUN_SUMMARY_KEYS: Tuple[str, ...] = (
+    "n_windows",
+    "n_fitted_peaks",
+    "n_thaw_accepted",
+    "n_thaw_events",
+    "n_rescue_accepted",
+    "n_rescue_events",
+    "n_rescue_added",
+    "n_rescue_origin_pruned",
+    "n_replan_accepted",
+    "n_replan_events",
+    "final_plan_revision",
+)
+
+
+def fit_run_summary(result: Mapping[str, Any]) -> Dict[str, Any]:
+    """The scalar summary of a :func:`fit_peaks_impl` result (flat counts)."""
+    return {key: result[key] for key in FIT_RUN_SUMMARY_KEYS}
 
 
 def _fit_peaks_impl(
@@ -1798,6 +1843,7 @@ def _fit_peaks_impl(
     settings: Optional[StageFitSettings] = None,
     preset: Optional[str] = None,
     jobs: Optional[int] = None,
+    events: Optional[StageScope] = None,
 ) -> Dict[str, Any]:
     """Run Stage 5 per-window fitting and persist the result.
 
@@ -1844,6 +1890,9 @@ def _fit_peaks_impl(
         Bare preset name or path to a YAML file carrying a ``stage5:`` block.
         Seeds the preset layer beneath the persisted record; may be combined
         with ``settings``.
+    events : StageScope, optional
+        The ``fit`` stage's event scope (from :func:`fit_peaks_impl`); ``None``
+        renders the log lines only.
 
     Raises
     ------
@@ -1851,6 +1900,8 @@ def _fit_peaks_impl(
         If Stage 4 has not been completed, or if exactly one of the
         ``tau_maj_override_us`` / ``sigma_tau_override_us`` pair is set.
     """
+    if events is None:
+        events = detached_scope(Stage.FIT, verb="fit run")
     # --- Resolve parameters via the StageFitSettings chain ------------------
     # A caller-supplied ``settings`` bundle is the explicit override layer;
     # the three kept convenience args (``shape`` + the τ-override pair) overlay
@@ -2391,7 +2442,9 @@ def _fit_peaks_impl(
         final_add_snr_threshold=final_add_snr_v,
         probe_freq_mhz=fit_ctx.probe_freq_mhz,
         sample_dt_us=fit_ctx.sample_dt_us,
+        events=events,
     )
+    events.check_cancel()
     # A structural replan (merge) rebuilds the plan inside ``execute_plan`` --
     # the survivor's ``freq_range`` becomes the union of the merged windows.
     # Convert and refit against that revised plan, not the pre-replan one, so a
@@ -2632,6 +2685,8 @@ def _fit_peaks_impl(
     for wf in spectrum_fit.window_fits:
         sort_fitting_result_by_frequency(wf)
 
+    # The last cancel check point: from here the fit's final write completes.
+    events.check_cancel()
     save_spectrum_fit_impl(file_path, spectrum_fit)
     # The automatic fit is the curation baseline for 'review undo'; a fresh fit
     # supersedes any snapshot a prior edit session took, so drop it -- the next
@@ -2665,7 +2720,7 @@ def _fit_peaks_impl(
     _update_stage_completion(file_path, "stage5_fitting")
     # A Stage 5 re-fit supersedes any Stage 6 review built on the old fit.
     spectrum_fit.invalidated = canonical_invalidated(
-        invalidate_downstream_stages(file_path, "stage5_fitting")
+        invalidate_downstream_stages(file_path, "stage5_fitting", events=events)
     )
 
     n_thaw_accepted = sum(1 for e in spectrum_fit.thaw_history if e.accepted)
@@ -2677,21 +2732,8 @@ def _fit_peaks_impl(
     n_rescue_origin_pruned_total = sum(
         e.n_pruned_rescue_origin for e in rescue_events_live
     )
-    logger.info(
-        "Stage 5: %d windows, %d fitted peaks; thaw %d/%d accepted, "
-        "rescue %d/%d rounds accepted (added %d peaks, %d rescue-origin pruned), "
-        "%d structural replans accepted (revision %d)",
-        spectrum_fit.n_windows,
-        spectrum_fit.n_fitted_peaks,
-        n_thaw_accepted,
-        len(spectrum_fit.thaw_history),
-        n_rescue_accepted,
-        n_rescue_events,
-        n_rescue_added_total,
-        n_rescue_origin_pruned_total,
-        n_replan_accepted,
-        spectrum_fit.final_plan_revision,
-    )
+    # The "Stage 5: N windows, ..." completion line is rendered from the
+    # stage's StageFinished event (fit_peaks_impl), after this returns.
     return {
         "status": "success",
         "fit": spectrum_fit,

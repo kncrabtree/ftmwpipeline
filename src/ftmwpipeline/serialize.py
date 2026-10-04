@@ -26,7 +26,9 @@ Conversions: ``None``/``bool``/``int``/``str`` pass through; enums become their
 written as ``"Cls.MEMBER"``; also for mapping keys); finite floats (Python and
 numpy) become Python floats; numpy scalars become Python scalars; complex
 numbers become ``{"real": x, "imag": y}`` (each part a named field);
-dataclasses become dicts of their fields; :class:`~pathlib.Path` a string;
+dataclasses become dicts of their fields (or of the items their
+``__ftmw_items__()`` returns, where the wire form differs from the fields, as
+for :class:`~ftmwpipeline.contract.PipelineWarning`); :class:`~pathlib.Path` a string;
 tuples, lists and sets lists; ``date``/``datetime`` ISO-8601 strings; a
 :class:`~ftmwpipeline.file_manager.PipelineFileError` its ``to_dict()``.
 Anything else raises :class:`TypeError` -- there is no ``str()`` fallback.
@@ -391,11 +393,15 @@ def _convert(obj: Any, path: JsonPath, arrays: Optional[ArraySink]) -> Any:
     if isinstance(obj, PipelineFileError):
         return obj.to_dict()
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
-        result = _object(
-            ((f.name, getattr(obj, f.name)) for f in dataclasses.fields(obj)),
-            path,
-            arrays,
+        # A dataclass whose wire form differs from its fields (PipelineWarning
+        # flattens ``details``) supplies its items through ``__ftmw_items__``.
+        wire_items = getattr(obj, "__ftmw_items__", None)
+        items: Iterable[Tuple[str, Any]] = (
+            wire_items()
+            if callable(wire_items)
+            else ((f.name, getattr(obj, f.name)) for f in dataclasses.fields(obj))
         )
+        result = _object(items, path, arrays)
         schema = getattr(type(obj), "__ftmw_schema__", None)
         return _stamp(result, schema) if isinstance(schema, str) else result
     if isinstance(obj, Mapping):

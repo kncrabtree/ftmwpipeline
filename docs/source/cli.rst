@@ -57,6 +57,20 @@ Conventions
   plot verb the image paths it wrote. Where ``--format json`` exists today
   (``info``, ``timebase state``, ``review snap-tolerance``) it is a synonym.
   The per-verb contents are in :ref:`machine-contract-cli-json`.
+* **Progress events and Ctrl-C.** Every long verb (each stage ``run``, the
+  ``review`` curation verbs, ``report run``, ``scan run`` / ``scan all`` and
+  ``run``) accepts ``--events``, which writes each progress event to stderr as
+  one JSON line (``ftmw/stage_started@1``, ``ftmw/window_progress@1``, …)::
+
+      ftmwpipeline fit run exp_2638.ftmw --events 2> events.jsonl
+
+  stdout is unaffected. The first Ctrl-C cancels the verb at its next check
+  point, between windows or between stages, and exits ``130``, printing the
+  ``cancelled`` error (as the ``ftmw/error@1`` object on stderr under
+  ``--json``, the last stderr line after any events). A cancelled stage leaves
+  the file as it was; stages the verb had already completed stay. A second
+  Ctrl-C interrupts at once. The events and the error are in
+  :ref:`machine-contract-events`.
 
 Command summary
 ---------------

@@ -19,13 +19,27 @@ from __future__ import annotations
 
 import html
 import logging
+import math
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar, Union
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    Tuple,
+    TypeVar,
+    Union,
+)
 
 import numpy as np
 
+from ..contract import CancelToken, EventCallback
 from ..core.absent import Absent
 from ..core.data_structures import (
     DecisionLogEntry,
@@ -57,6 +71,9 @@ from .report_impl import (
 # Per-window render progress is emitted as a ``"window %d/%d"`` INFO log; a
 # ``StageProgress`` capture (the ``run --report`` orchestrator, or the standalone
 # ``report run`` command) renders it as a percentage. See ``_internal/progress``.
+if TYPE_CHECKING:
+    from .events import StageScope
+
 logger = logging.getLogger(__name__)
 
 # File extension per Level-1 table format (the ``report run`` table artifact).
@@ -1147,6 +1164,7 @@ def fork_map(
     jobs: Optional[int] = None,
     override: Optional[int] = None,
     progress: Optional[Callable[[int, int], None]] = None,
+    check: Optional[Callable[[], None]] = None,
 ) -> List[_FORK_RESULT]:
     """Map *worker* over *items*, in a forking process pool when worthwhile.
 
@@ -1162,6 +1180,13 @@ def fork_map(
     caller sets **before** calling this and clears in a ``finally``; only the
     *items* entries cross the process boundary. ``fork_map`` does not manage that
     global.
+
+    *check* (a cancel check point, e.g. ``StageScope.check_cancel``) is called
+    before each item and, in the pool, every
+    :data:`~ftmwpipeline._internal.events.CANCEL_POLL_S` while the next result
+    is awaited; when it (or *progress*) raises, the pool's workers are
+    terminated without waiting (the parallel fit walk's ``_abort_pool``) and the
+    exception propagates.
     """
     import multiprocessing
 
@@ -1175,6 +1200,8 @@ def fork_map(
     out: List[_FORK_RESULT] = []
     if serial:
         for i, item in enumerate(items, start=1):
+            if check is not None:
+                check()
             out.append(worker(item))
             if progress is not None:
                 progress(i, n)
@@ -1183,12 +1210,45 @@ def fork_map(
     from concurrent.futures import ProcessPoolExecutor
 
     ctx_mp = multiprocessing.get_context("fork")
-    with ProcessPoolExecutor(max_workers=min(max_workers, n), mp_context=ctx_mp) as ex:
-        # ex.map preserves input order and re-raises worker exceptions.
-        for i, res in enumerate(ex.map(worker, items), start=1):
+    if check is None:
+        with ProcessPoolExecutor(
+            max_workers=min(max_workers, n), mp_context=ctx_mp
+        ) as ex:
+            # ex.map preserves input order and re-raises worker exceptions.
+            for i, res in enumerate(ex.map(worker, items), start=1):
+                out.append(res)
+                if progress is not None:
+                    progress(i, n)
+        return out
+
+    from concurrent.futures import TimeoutError as FuturesTimeoutError
+
+    from ..fitting.plan_execution import _abort_pool, _ignore_sigint
+    from .events import CANCEL_POLL_S
+
+    pool = ProcessPoolExecutor(
+        max_workers=min(max_workers, n),
+        mp_context=ctx_mp,
+        initializer=_ignore_sigint,
+    )
+    try:
+        # Submitted up front and read back in input order, as ex.map does.
+        futures = [pool.submit(worker, item) for item in items]
+        for i, fut in enumerate(futures, start=1):
+            while True:
+                check()
+                try:
+                    res = fut.result(timeout=CANCEL_POLL_S)
+                    break
+                except FuturesTimeoutError:
+                    continue
             out.append(res)
             if progress is not None:
                 progress(i, n)
+    except BaseException:
+        _abort_pool(pool)
+        raise
+    pool.shutdown(wait=True)
     return out
 
 
@@ -3275,8 +3335,15 @@ def _render_all_window_figures(
     stem: str,
     page_ids: List[int],
     jobs: Optional[int] = None,
+    events: Optional["StageScope"] = None,
 ) -> Dict[int, _WindowFigures]:
     """Render every page window's figures, in parallel when worthwhile.
+
+    With ``events`` (the ``report run`` operation's scope) a cancel is checked
+    between windows (the pool's workers are terminated on one), and each
+    rendered window is reported as a ``WindowProgress`` (``stage: null``,
+    phase ``"initial"``, round 0, ``elapsed_s`` the time since the previous window
+    finished rendering).
 
     Returns ``{wid: (wid, panel_bytes, mag_geom, corr_bytes)}``. Uses a forking
     process pool (the read-only ``bundle`` -- ~200k-1.2M-point arrays -- is
@@ -3286,11 +3353,36 @@ def _render_all_window_figures(
     available, or when the platform lacks ``fork``. The figures are deterministic
     at fixed DPI, so the parallel and serial outputs are byte-identical.
     """
+    from .events import detached_scope
+
     n = len(page_ids)
+    last = [time.monotonic()]
+    check = None if events is None else events.check_cancel
+    # The "window n/total" line is rendered from the event (events.WINDOW_LINES),
+    # so a call with no operation reports through a render-only scope.
+    scope = events if events is not None else detached_scope(None)
 
     def _log_progress(i: int, _n: int) -> None:
         # The ordered per-window progress signal on long report runs.
-        logger.info("window %d/%d", i, n)
+        now = time.monotonic()
+        wid = int(page_ids[i - 1])
+        try:
+            wf = bundle.fit.window_fit(wid)
+        except KeyError:
+            wf = None
+        scope.window_progress(
+            phase="initial",
+            round=0,
+            index=i,
+            total=n,
+            window_id=wid,
+            n_peaks=Absent.NOT_RUN if wf is None else len(wf.fitted_peaks),
+            chi2r=Absent.NOT_RUN if wf is None else float(wf.reduced_chi2),
+            elapsed_s=now - last[0],
+            dropped=False,
+            freq_range=(math.nan, math.nan),
+        )
+        last[0] = now
 
     global _WORKER_RENDER_CTX
     _WORKER_RENDER_CTX = {"path": path, "bundle": bundle, "dpi": dpi, "stem": stem}
@@ -3301,6 +3393,7 @@ def _render_all_window_figures(
             jobs=jobs,
             override=_FIGURE_RENDER_WORKERS,
             progress=_log_progress,
+            check=check,
         )
     finally:
         _WORKER_RENDER_CTX = None
@@ -3994,8 +4087,12 @@ def _assemble_report_site(
     catalog: Optional[Union[Path, str]] = None,
     catalog_n_sigma: float = 3.0,
     jobs: Optional[int] = None,
+    events: Optional["StageScope"] = None,
 ) -> _ReportModel:
     """Assemble the report into an in-memory :class:`_ReportModel`.
+
+    ``events`` is the ``report run`` scope its per-window rendering reports
+    into (see :func:`_render_all_window_figures`).
 
     Builds the index page, the methods page, and one page per window, each as an
     HTML string in the returned model alongside the per-window figures (the O(N)
@@ -4215,7 +4312,13 @@ def _assemble_report_site(
     n_pages = len(page_ids)
     logger.info("rendering %d window figure sets", n_pages)
     rendered = _render_all_window_figures(
-        path=path, bundle=bundle, dpi=dpi, stem=stem, page_ids=page_ids, jobs=jobs
+        path=path,
+        bundle=bundle,
+        dpi=dpi,
+        stem=stem,
+        page_ids=page_ids,
+        jobs=jobs,
+        events=events,
     )
     panel_files_by_wid: Dict[int, Dict[str, str]] = {}
     mag_geom_by_wid: Dict[int, Optional[Dict[str, float]]] = {}
@@ -4413,8 +4516,12 @@ def report_full_impl(
     catalog_n_sigma: float = 3.0,
     scope: str = "full",
     jobs: Optional[int] = None,
+    _events: Optional["StageScope"] = None,
 ) -> str:
     """Render the Level-3 self-contained HTML report; return its path.
+
+    ``_events`` is internal: the ``report run`` scope (:func:`report_run_impl`)
+    its per-window rendering reports into and checks for a cancel.
 
     Parameters
     ----------
@@ -4482,6 +4589,7 @@ def report_full_impl(
             catalog=catalog,
             catalog_n_sigma=catalog_n_sigma,
             jobs=jobs,
+            events=_events,
         )
         suffix = "_summary" if scope == "summary" else ""
         single_path = final_dir / f"{site.stem}_report{suffix}.html"
@@ -4516,8 +4624,18 @@ def report_run_impl(
     catalog: Optional[Union[Path, str]] = None,
     catalog_n_sigma: float = 3.0,
     jobs: Optional[int] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> Dict[str, Optional[str]]:
     """The default Stage 6 report run: the L1 table plus the L3 HTML report.
+
+    A long operation (``report run``). The report is a step, not a stage, so
+    its events carry ``stage: null``: ``StageStarted``, a ``WindowProgress``
+    per rendered window, then ``StageFinished`` with
+    :func:`report_run_summary`. ``cancel`` is checked before it starts and
+    between windows; a cancel during the window rendering writes no HTML
+    report (the table, written first, stays). The ``.ftmw`` file is only
+    read.
 
     Writes both deliverables into *output_dir* in one call, defaulting to the
     current working directory when *output_dir* is omitted. By default the
@@ -4546,6 +4664,50 @@ def report_run_impl(
             message="nothing to do: both the table and the HTML report are disabled",
         )
 
+    from .events import operation_events
+
+    ops = operation_events("report run", events, cancel)
+    with ops.stage(None, verb="report run", file_path=str(file_path)) as rscope:
+        results = _report_run(
+            file_path,
+            output_dir=output_dir,
+            windows=windows,
+            emit_table=emit_table,
+            emit_html=emit_html,
+            table_format=table_format,
+            scope=scope,
+            catalog=catalog,
+            catalog_n_sigma=catalog_n_sigma,
+            jobs=jobs,
+            events=rscope,
+        )
+        rscope.finish(report_run_summary(results, scope))
+    return results
+
+
+def report_run_summary(
+    results: Mapping[str, Optional[str]], scope: str
+) -> Dict[str, Any]:
+    """The ``ftmw/run_result@1`` summary of ``report run`` -- also its
+    ``StageFinished.summary``."""
+    return {"scope": scope, "table": results.get("table"), "html": results.get("html")}
+
+
+def _report_run(
+    file_path: Union[Path, str],
+    *,
+    output_dir: Optional[Union[Path, str]],
+    windows: str,
+    emit_table: bool,
+    emit_html: bool,
+    table_format: str,
+    scope: str,
+    catalog: Optional[Union[Path, str]],
+    catalog_n_sigma: float,
+    jobs: Optional[int],
+    events: "StageScope",
+) -> Dict[str, Optional[str]]:
+    """The body of :func:`report_run_impl` (inside its scope)."""
     stem = Path(str(file_path)).stem
     out_dir = Path.cwd() if output_dir is None else Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -4573,6 +4735,7 @@ def report_run_impl(
             catalog_n_sigma=catalog_n_sigma,
             scope=scope,
             jobs=jobs,
+            _events=events,
         )
 
     return results

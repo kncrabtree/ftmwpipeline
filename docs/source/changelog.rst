@@ -49,6 +49,23 @@ had to reach into ``_internal`` or parse out of prose to obtain are now
 published, and the Stage 6 edit paths that carry them were collapsed onto one
 engine so they cannot answer differently.
 
+* **Machine contract, Wave 5.1: events and cancellation.**
+  ``CONTRACT_VERSION`` is now ``9``. Every long operation (each stage run, the
+  curation calls, ``report_run``, ``scan_run`` / ``scan_all`` and
+  ``run_pipeline``) takes ``events=`` (a callback receiving
+  ``StageStarted``, ``StageFinished``, ``WindowProgress``, ``ScanProgress``,
+  ``Invalidated`` and ``PipelineWarning`` events, all exported from
+  ``ftmwpipeline``) and ``cancel=`` (anything with ``is_set()``) on the API and
+  ``Pipeline``; every long CLI verb takes ``--events`` (one JSON line per event
+  on stderr), and the first Ctrl-C cancels it (exit ``130``). A cancel raises
+  ``cancelled`` and a failing callback ``callback_failed``; a cancelled stage
+  or curation batch leaves the file as it was. **Breaking:** ``run_pipeline``'s
+  ``error`` is now the failure's ``ftmw/error@1`` dict (it was a string) and
+  ``failed_stage`` a canonical stage name; a cancel raises instead of being
+  reported in the result. ``Pipeline.create`` now runs the same import as ``data import``,
+  and ``import_data``'s ``invalidated`` includes stages a moved start hint
+  dropped. The stage start and end lines, the per-window fit lines and the
+  invalidation warning are now logged from the events, with the same text.
 * **Machine contract, Wave 8: machine-readable CLI output and full
   capabilities.** ``CONTRACT_VERSION`` is now ``8``. Every CLI verb accepts
   ``--json``: stdout is then exactly one JSON document, serialized through

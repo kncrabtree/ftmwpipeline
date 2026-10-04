@@ -81,17 +81,17 @@ def test_analysis_epoch_mismatch_error_propagates_with_its_own_type(
             EnvironmentRecord(analysis_epoch=2),
         )
 
-    monkeypatch.setattr(pipeline_module, "compute_ft_impl", _raise)
+    monkeypatch.setattr(pipeline_module, "ft_run_impl", _raise)
 
     with pytest.raises(AnalysisEpochMismatchError):
         pipeline.compute_ft()
 
     # And it is still usable as the two ancestor types a caller may be
     # routing on instead.
-    monkeypatch.setattr(pipeline_module, "compute_ft_impl", _raise)
+    monkeypatch.setattr(pipeline_module, "ft_run_impl", _raise)
     with pytest.raises(PipelineFileError):
         pipeline.compute_ft()
-    monkeypatch.setattr(pipeline_module, "compute_ft_impl", _raise)
+    monkeypatch.setattr(pipeline_module, "ft_run_impl", _raise)
     with pytest.raises(ValueError):
         pipeline.compute_ft()
 
@@ -106,7 +106,7 @@ def test_unexpected_exception_is_still_wrapped_in_runtime_error(pipeline, monkey
     def _raise(**kwargs: object) -> None:
         raise _UnexpectedInternalFailure("boom")
 
-    monkeypatch.setattr(pipeline_module, "compute_ft_impl", _raise)
+    monkeypatch.setattr(pipeline_module, "ft_run_impl", _raise)
 
     with pytest.raises(RuntimeError) as excinfo:
         pipeline.compute_ft()

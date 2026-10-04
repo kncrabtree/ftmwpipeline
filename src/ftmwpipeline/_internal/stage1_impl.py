@@ -25,13 +25,15 @@ CLI, the ``Pipeline`` class, and the functional API.
 
 import json
 import logging
+from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Tuple
 
 import h5py
 import numpy as np
 
+from ..contract import CancelToken, EventCallback, Stage
 from ..core.data_structures import FID, ComplexFT
 from ..core.settings import (
     FT_PROCESSING_FIELD_SET_VERSION,
@@ -51,6 +53,9 @@ from ..io.provenance import (
 from .compaction import compact_file
 from .shared_utils import fold_settings_blob
 from .stage0_impl import load_fid_from_pipeline_impl
+
+if TYPE_CHECKING:
+    from .events import StageScope
 
 logger = logging.getLogger(__name__)
 
@@ -226,11 +231,61 @@ def _reject_bad_window_bounds(start_us: float, end_us: float) -> None:
         )
 
 
+#: The ``ftmw/run_result@1`` summary keys of ``ft run`` -- also the keys of the
+#: FT stage's ``StageFinished.summary`` (``trimmed_points`` only when a trim is
+#: set). The one builder is :func:`ft_run_summary`.
+FT_RUN_SUMMARY_KEYS: Tuple[str, ...] = (
+    "fid_points",
+    "preprocessed_points",
+    "frequency_points",
+    "trimmed_points",
+)
+
+
+def ft_run_summary(result: Mapping[str, Any]) -> Dict[str, Any]:
+    """The scalar summary of a :func:`compute_ft_impl` result."""
+    return {k: result[k] for k in FT_RUN_SUMMARY_KEYS if k in result}
+
+
+def ft_run_impl(
+    file_path: str,
+    settings: Optional[FTSettings] = None,
+    *,
+    validate_only: bool = False,
+    persist: bool = True,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
+) -> Dict[str, Any]:
+    """Run Stage 1 as a long operation (``ft run``): :func:`compute_ft_impl`
+    reported as the ``ft`` stage.
+
+    ``StageStarted``, ``Invalidated`` (when the persisted settings changed),
+    then ``StageFinished`` with :func:`ft_run_summary`. ``cancel`` is checked
+    before the stage starts; once started the FT completes. Internal
+    recomputes call :func:`compute_ft_impl` directly and report nothing.
+    """
+    from .events import operation_events
+
+    ops = operation_events("ft run", events, cancel)
+    with ops.stage(Stage.FT, verb="ft run", file_path=file_path) as scope:
+        result = compute_ft_impl(
+            file_path,
+            settings=settings,
+            validate_only=validate_only,
+            persist=persist,
+            _events=scope,
+        )
+        scope.finish(ft_run_summary(result), wrote=persist and not validate_only)
+    return result
+
+
 def compute_ft_impl(
     file_path: str,
     settings: Optional[FTSettings] = None,
     validate_only: bool = False,
     persist: bool = False,
+    *,
+    _events: Optional["StageScope"] = None,
 ) -> Dict[str, Any]:
     """Compute the FT for a ``.ftmw`` file using the resolved settings.
 
@@ -255,6 +310,9 @@ def compute_ft_impl(
         ``complex_ft`` plus metadata. Return keys are kept stable for the
         untouched Stage 2/3 callers (``complex_ft``, ``trim_range``,
         ``processing_params``, ...).
+
+    ``_events`` is the ``ft`` stage scope of :func:`ft_run_impl`; the
+    ``Invalidated`` event of a changed record goes through it.
     """
     try:
         fid = load_fid_from_pipeline_impl(file_path)
@@ -334,7 +392,10 @@ def compute_ft_impl(
         invalidated: List[str] = []
         if persist:
             invalidated = _persist_ft_settings(
-                file_path, resolved, fid_duration_us=float(fid.duration_us)
+                file_path,
+                resolved,
+                fid_duration_us=float(fid.duration_us),
+                events=_events,
             )
         result["invalidated"] = list(canonical_invalidated(invalidated))
         return result
@@ -395,7 +456,10 @@ def compute_ft_impl(
         # must surface, never leave the file on the old window behind a
         # successful return.
         invalidated = _persist_ft_settings(
-            file_path, resolved, fid_duration_us=float(fid.duration_us)
+            file_path,
+            resolved,
+            fid_duration_us=float(fid.duration_us),
+            events=_events,
         )
         logger.info("FT settings + Stage 1 completion persisted")
     result["invalidated"] = list(canonical_invalidated(invalidated))
@@ -554,6 +618,7 @@ def _persist_ft_settings(
     resolved: FTSettings,
     *,
     fid_duration_us: Optional[float] = None,
+    events: Optional["StageScope"] = None,
 ) -> List[str]:
     """Write resolved settings to ``ft_processing`` and mark Stage 1 complete.
 
@@ -585,55 +650,63 @@ def _persist_ft_settings(
     if fid_duration_us is None:
         fid_duration_us = _stored_fid_duration_us(file_path)
     new_attrs = _effective_attrs(resolved, fid_duration_us)
-    with h5py.File(file_path, "a") as h5f:
-        # Stamp first, so a stamp that cannot be written leaves the record and
-        # the completion untouched. Stage 1 stores no computed artifact (the
-        # FT is recomputed on demand), so persisting it again never overwrites
-        # old numbers: it is not a re-run in the legacy-warning sense.
-        stamp_stage_epoch(h5f, "stage1_complex_ft", rerun=False)
-        proc = h5f.require_group("processing_parameters")
-        old_attrs = None
-        if "ft_processing" in proc:
-            # Compared on the effective window, so upgrading an older record
-            # whose window was unset (and selected the whole record) to the
-            # concrete spelling of that same window is not a change and
-            # invalidates nothing.
-            old_attrs = _effective_attrs(
-                FTSettings.from_attrs(dict(proc["ft_processing"].attrs)),
-                fid_duration_us,
-            )
-            del proc["ft_processing"]
-        ft_group = proc.create_group("ft_processing")
-        for name, value in new_attrs.items():
-            ft_group.attrs[name] = value
-        write_field_set_version(ft_group.attrs, FT_PROCESSING_FIELD_SET_VERSION)
-        # Human/debug mirror of the persisted record.
-        ft_group.attrs["parameters"] = json.dumps(new_attrs, default=str)
-        ft_group.attrs["last_updated"] = datetime.now().isoformat()
+    # The write completes once begun: the Invalidated event is delivered from
+    # inside the open handle, before the completion is stamped, so a raising
+    # events callback is held and raised only once the stage is whole.
+    with events.committing() if events is not None else nullcontext():
+        with h5py.File(file_path, "a") as h5f:
+            # Stamp first, so a stamp that cannot be written leaves the record and
+            # the completion untouched. Stage 1 stores no computed artifact (the
+            # FT is recomputed on demand), so persisting it again never overwrites
+            # old numbers: it is not a re-run in the legacy-warning sense.
+            stamp_stage_epoch(h5f, "stage1_complex_ft", rerun=False)
+            proc = h5f.require_group("processing_parameters")
+            old_attrs = None
+            if "ft_processing" in proc:
+                # Compared on the effective window, so upgrading an older record
+                # whose window was unset (and selected the whole record) to the
+                # concrete spelling of that same window is not a change and
+                # invalidates nothing.
+                old_attrs = _effective_attrs(
+                    FTSettings.from_attrs(dict(proc["ft_processing"].attrs)),
+                    fid_duration_us,
+                )
+                del proc["ft_processing"]
+            ft_group = proc.create_group("ft_processing")
+            for name, value in new_attrs.items():
+                ft_group.attrs[name] = value
+            write_field_set_version(ft_group.attrs, FT_PROCESSING_FIELD_SET_VERSION)
+            # Human/debug mirror of the persisted record.
+            ft_group.attrs["parameters"] = json.dumps(new_attrs, default=str)
+            ft_group.attrs["last_updated"] = datetime.now().isoformat()
 
-        invalidated: List[str] = []
-        if old_attrs is not None and old_attrs != new_attrs:
-            invalidated = invalidate_stages_in_file(
-                h5f,
-                ["stage1_complex_ft"],
-                reason=f"FT settings changed ({old_attrs} -> {new_attrs})",
-            )
+            invalidated: List[str] = []
+            if old_attrs is not None and old_attrs != new_attrs:
+                invalidated = invalidate_stages_in_file(
+                    h5f,
+                    ["stage1_complex_ft"],
+                    reason=f"FT settings changed ({old_attrs} -> {new_attrs})",
+                    events=events,
+                )
 
-        stages = h5f.require_group("pipeline_stages")
-        completed = json.loads(stages.attrs.get("completed_stages", "[]"))
-        if "stage1_complex_ft" not in completed:
-            completed.append("stage1_complex_ft")
-        stages.attrs["completed_stages"] = json.dumps(completed)
-        stages.attrs["last_updated"] = datetime.now().isoformat()
-    logger.info("FT parameters and stage tracking saved to pipeline file")
-    # Stage 1 stamps its own completion rather than going through
-    # ``_update_stage_completion``, so it reclaims its own dead space too.
-    compact_file(file_path)
+            stages = h5f.require_group("pipeline_stages")
+            completed = json.loads(stages.attrs.get("completed_stages", "[]"))
+            if "stage1_complex_ft" not in completed:
+                completed.append("stage1_complex_ft")
+            stages.attrs["completed_stages"] = json.dumps(completed)
+            stages.attrs["last_updated"] = datetime.now().isoformat()
+        logger.info("FT parameters and stage tracking saved to pipeline file")
+        # Stage 1 stamps its own completion rather than going through
+        # ``_update_stage_completion``, so it reclaims its own dead space too.
+        compact_file(file_path)
     return invalidated
 
 
 def write_recommended_ft_params(
-    file_path: str, parameters: Dict[str, Any]
+    file_path: str,
+    parameters: Dict[str, Any],
+    *,
+    events: Optional["StageScope"] = None,
 ) -> List[str]:
     """Write ``parameters`` to the import-time recommended layer (``start run``,
     a loader-declared chirp window) without leaving a stale result behind.
@@ -642,7 +715,8 @@ def write_recommended_ft_params(
     write changes nothing it is read as having used. A pre-provenance record
     still falls through to it: when the write moves the settings such a record
     resolves to, every stage built on the old spectrum is invalidated in the
-    same call. Returns the storage keys of the stages it invalidated.
+    same call. Returns the storage keys of the stages it invalidated; the
+    ``Invalidated`` event goes through ``events`` (the calling stage's scope).
     """
     from ..file_manager import (
         invalidate_downstream_stages,
@@ -661,7 +735,9 @@ def write_recommended_ft_params(
     after = _resolve_settings(file_path, None)
     if _effective_attrs(before, duration) == _effective_attrs(after, duration):
         return []
-    return list(invalidate_downstream_stages(file_path, "stage1_complex_ft"))
+    return list(
+        invalidate_downstream_stages(file_path, "stage1_complex_ft", events=events)
+    )
 
 
 def save_ft_parameters_impl(file_path: str, parameters: Dict[str, Any]) -> None:

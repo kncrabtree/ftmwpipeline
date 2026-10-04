@@ -19,10 +19,11 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Mapping, Optional, Tuple
 
 import h5py
 
+from ..contract import CancelToken, EventCallback, Stage
 from ..core.data_structures import ComplexFT, WindowPlan
 from ..core.window_planning_settings import (
     WindowPlanningSettings,
@@ -55,6 +56,9 @@ from .stage3_impl import (
     load_peaks_impl,
 )
 
+if TYPE_CHECKING:
+    from .events import StageScope
+
 logger = logging.getLogger(__name__)
 
 
@@ -63,14 +67,36 @@ def _required(value: Any, name: str) -> Any:
     return require_resolved(value, name, owner="WindowPlanningSettings")
 
 
+def windows_run_summary(result: Mapping[str, Any]) -> Dict[str, Any]:
+    """The scalar ``ftmw/run_result@1`` summary of ``windows run`` -- also its
+    ``StageFinished.summary`` -- from an :func:`assign_windows_impl` result."""
+    unexplained = result["plan"].diagnostics.get("unexplained_coherent_regions_mhz")
+    return {
+        "n_promoted": result["n_promoted"],
+        "n_windows": result["n_windows"],
+        "n_free_peaks": result["n_free_peaks"],
+        "n_fixed_contributors": result["n_fixed_contributors"],
+        "n_dependencies": result["n_dependencies"],
+        "n_batches": result["n_batches"],
+        "n_unexplained_coherent_regions": len(unexplained or ()),
+    }
+
+
 @requires_pipeline_file()
 def assign_windows_impl(
     file_path: str,
     *,
     settings: Optional[WindowPlanningSettings] = None,
     preset: Optional[str] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> Dict[str, Any]:
     """Build the Stage 4 window plan from the promoted Stage 3 peaks and persist it.
+
+    A long operation (``windows run``), reported as the ``windows`` stage:
+    ``StageStarted``, ``Invalidated`` (the fit and review built on the old
+    plan), then ``StageFinished`` with :func:`windows_run_summary` once the
+    plan is written. ``cancel`` is checked before the stage starts.
 
     Requires Stage 3 (peak detection) completed. Operates on the active FT
     and its persisted Stage 2 noise; consumes only the
@@ -104,6 +130,25 @@ def assign_windows_impl(
     ValueError
         If Stage 3 has not been completed.
     """
+    from .events import operation_events
+
+    ops = operation_events("windows run", events, cancel)
+    with ops.stage(Stage.WINDOWS, verb="windows run", file_path=file_path) as scope:
+        result = _assign_windows(
+            file_path, settings=settings, preset=preset, events=scope
+        )
+        scope.finish(windows_run_summary(result))
+    return result
+
+
+def _assign_windows(
+    file_path: str,
+    *,
+    settings: Optional[WindowPlanningSettings],
+    preset: Optional[str],
+    events: "StageScope",
+) -> Dict[str, Any]:
+    """The body of :func:`assign_windows_impl` (inside its stage scope)."""
     with h5py.File(file_path, "r") as h5f:
         if "stage3_peaks" not in h5f:
             raise StageDependencyError(
@@ -231,20 +276,13 @@ def assign_windows_impl(
     _update_stage_completion(file_path, "stage4_windows")
     # Re-assignment supersedes any Stage 5 fit built on the old plan.
     plan.invalidated = canonical_invalidated(
-        invalidate_downstream_stages(file_path, "stage4_windows")
+        invalidate_downstream_stages(file_path, "stage4_windows", events=events)
     )
 
     n_free = sum(w.n_free_peaks for w in plan.windows)
     n_fixed = sum(len(w.fixed_contributors) for w in plan.windows)
-    logger.info(
-        "Stage 4: %d windows, %d batches, %d free peaks, "
-        "%d fixed contributors, %d dependencies",
-        plan.n_windows,
-        plan.n_batches,
-        n_free,
-        n_fixed,
-        len(plan.dependency_edges),
-    )
+    # The "Stage 4: N windows, ..." line is rendered from the stage's
+    # StageFinished event (assign_windows_impl).
     return {
         "status": "success",
         "plan": plan,

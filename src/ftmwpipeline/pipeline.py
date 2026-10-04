@@ -44,7 +44,7 @@ from ._internal.run_impl import run_pipeline_impl
 from ._internal.shape_recommendation_impl import recommend_shape_impl
 from ._internal.stage0_impl import load_fid_from_pipeline_impl
 from ._internal.stage1_impl import (
-    compute_ft_impl,
+    ft_run_impl,
     save_ft_parameters_impl,
     visualize_ft_impl,
 )
@@ -107,6 +107,7 @@ from ._internal.timebase_impl import (
     calibrate_timebase_impl,
     load_timebase_calibration_impl,
 )
+from .contract import CancelToken, EventCallback
 from .core.calibration import CalibrationStamp
 from .core.curation import CurationAction, Frame
 from .core.data_structures import (
@@ -127,17 +128,14 @@ from .core.start_detection_settings import StartDetectionSettings
 from .core.tau_calibration_settings import TauCalibrationSettings
 from .core.window_planning_settings import WindowPlanningSettings
 from .file_manager import (
-    BadSettingError,
     PipelineFileError,
     PipelineStageTracker,
     SourceMetadata,
-    create_pipeline_file,
     open_pipeline_file,
     validate_pipeline_file,
 )
 from .fitting.tau_calibration import ShapeRecommendation, TauCalibrationResult
 from .fitting.timebase_calibration import TimebaseCalibrationResult
-from .io.data_loaders import detect_format, list_formats, load_fid, validate_source
 from .preprocessing.noise_estimation import NoiseResult
 from .preprocessing.start_detection import StartDetectionResult
 
@@ -221,6 +219,9 @@ class Pipeline:
         format_name: Optional[str] = None,
         fid_index: Optional[int] = None,
         force: bool = False,
+        *,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
         **loader_params: Any,
     ) -> "Pipeline":
         """
@@ -238,6 +239,14 @@ class Pipeline:
             FID index for multi-FID formats (e.g., Blackchirp)
         force : bool, default False
             If True, overwrite existing file even with different source
+        events : callable, optional
+            Called on this thread with each event of the import (the ``data``
+            stage: ``StageStarted``, ``Invalidated`` when an overwrite drops
+            stages, ``StageFinished``). A callback that raises aborts with
+            :class:`CallbackFailedError`.
+        cancel : CancelToken, optional
+            Checked before the import starts (:class:`OperationCancelledError`,
+            nothing written); a started import completes.
         **loader_params
             Additional parameters for data loader
 
@@ -257,74 +266,49 @@ class Pipeline:
         RuntimeError
             If data loading or file creation fails
         """
-        source_path = Path(source)
-
-        # Validate source exists
-        if not source_path.exists():
-            raise FileNotFoundError(f"Source path does not exist: {source_path}")
-
-        # Format detection if not specified
-        if format_name is None:
-            format_name = detect_format(source_path)
-            if format_name is None:
-                raise BadSettingError(
-                    "format",
-                    f"one of: {', '.join(list_formats())} (auto-detection "
-                    "found none)",
-                    None,
-                    message=f"Could not detect format for: {source_path}",
-                )
-        elif format_name not in list_formats():
-            raise BadSettingError(
-                "format",
-                f"one of: {', '.join(list_formats())}",
-                format_name,
-                message=(
-                    f"Unknown format '{format_name}'. "
-                    f"Available formats: {list_formats()}"
-                ),
-            )
-
-        # Validate source with format
-        validation = validate_source(source_path, format_name)
-        if not validation["valid"]:
-            errors = "; ".join(validation["errors"])
-            raise ValueError(f"Source validation failed: {errors}")
-
-        # Prepare loader parameters
-        if format_name == "blackchirp" and fid_index is not None:
-            loader_params["fid_index"] = fid_index
-
-        # Load FID data
-        try:
-            fid = load_fid(source_path, format_name, **loader_params)
-        except (ValueError, PipelineFileError, FileNotFoundError):
-            raise
-        except Exception as e:
-            raise RuntimeError(f"Failed to load FID data: {e}") from e
-
-        # Create source metadata
-        source_metadata = SourceMetadata(
-            source_path=source_path,
+        return cls._create(
+            filepath,
+            source,
             format_name=format_name,
-            loader_parameters=loader_params,
+            fid_index=fid_index,
+            force=force,
+            events=events,
+            cancel=cancel,
+            **loader_params,
+        )[0]
+
+    @classmethod
+    def _create(
+        cls,
+        filepath: Union[str, Path],
+        source: Union[str, Path],
+        *,
+        format_name: Optional[str] = None,
+        fid_index: Optional[int] = None,
+        force: bool = False,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
+        **loader_params: Any,
+    ) -> Tuple["Pipeline", Dict[str, Any]]:
+        """:meth:`create`, also returning the import result
+        (:func:`~ftmwpipeline._internal.stage0_impl.import_data_impl`'s dict,
+        whose ``invalidated`` :func:`ftmwpipeline.api.import_data` reports)."""
+        from ._internal.stage0_impl import import_data_impl
+
+        result = import_data_impl(
+            str(filepath),
+            str(source),
+            format_name=format_name,
+            force=force,
+            fid_index=fid_index,
+            events=events,
+            cancel=cancel,
+            **loader_params,
         )
-
-        # Create pipeline file
-        created_filepath = create_pipeline_file(
-            filepath, fid, source_metadata, force=force
+        created, source_metadata, stage_tracker = open_pipeline_file(
+            result["pipeline_file"]
         )
-
-        # The loader's clock declaration, chirp window and import-time start
-        # recommendation are persisted once, in the stage 0 impl.
-        from ._internal.stage0_impl import persist_loader_metadata
-
-        persist_loader_metadata(str(created_filepath), fid)
-
-        # Load file info for Pipeline instance
-        filepath, source_metadata, stage_tracker = open_pipeline_file(created_filepath)
-
-        return cls(filepath, source_metadata, stage_tracker)
+        return cls(created, source_metadata, stage_tracker), result
 
     @classmethod
     def open(cls, filepath: Union[str, Path]) -> "Pipeline":
@@ -362,6 +346,8 @@ class Pipeline:
         *,
         trim: Optional[Tuple[float, float]] = None,
         output: Optional[Union[str, Path]] = None,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         """Drive *source* through every stage end-to-end and return the result.
@@ -377,11 +363,20 @@ class Pipeline:
         ``report_output_dir``, ``sigma_floor_khz``, ``force``, ``progress``, …).
 
         Returns the structured run result (``pipeline_file``, ``status``,
-        ``completed_stages``, ``failed_stage``, ``error``, ``timebase``,
+        ``completed_stages``, ``failed_stage`` -- a canonical stage name --,
+        ``error`` -- the failure's ``ftmw/error@1`` dict --, ``timebase``,
         ``report``, ``elapsed_s``). Open the finished file with
         :meth:`Pipeline.open` (``result["pipeline_file"]``).
+
+        ``events`` receives every event (``operation="run"``) on this thread;
+        ``cancel`` is checked before every stage and inside the stages that
+        check it. A cancel raises :class:`OperationCancelledError` and a failing
+        callback :class:`CallbackFailedError`; neither is folded into the
+        result.
         """
-        return run_pipeline_impl(source, output, trim=trim, **kwargs)
+        return run_pipeline_impl(
+            source, output, trim=trim, events=events, cancel=cancel, **kwargs
+        )
 
     def load_data(self) -> FID:
         """
@@ -422,6 +417,8 @@ class Pipeline:
         end_us: Optional[float] = None,
         units_power: Optional[int] = None,
         from_saved_params: bool = False,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
     ) -> ComplexFT:
         """Compute Fourier Transform (Stage 1, user-driven).
 
@@ -448,6 +445,13 @@ class Pipeline:
             persisted / recommended settings (no explicit overrides). Such a
             call only reads: it recomputes the spectrum and writes nothing to
             the file.
+        events : callable, optional
+            Called on this thread with each event of the ``ft`` stage
+            (``StageStarted``, ``Invalidated``, ``StageFinished``); a callback
+            that raises aborts with :class:`CallbackFailedError`.
+        cancel : CancelToken, optional
+            Checked before the stage starts (:class:`OperationCancelledError`,
+            nothing written).
 
         Returns
         -------
@@ -470,11 +474,13 @@ class Pipeline:
                     units_power=units_power,
                     trim=trim,
                 )
-            result = compute_ft_impl(
+            result = ft_run_impl(
                 file_path=str(self.filepath),
                 settings=settings,
                 validate_only=False,
                 persist=not from_saved_params,
+                events=events,
+                cancel=cancel,
             )
             complex_ft: ComplexFT = result["complex_ft"]
             self.logger.info(f"FT computed: {complex_ft.n_points:,} frequency points")
@@ -640,6 +646,8 @@ class Pipeline:
         *,
         settings: Optional[NoiseSettings] = None,
         preset: Optional[str] = None,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
     ) -> NoiseResult:
         """
         Estimate frequency-dependent noise with the scatter estimator.
@@ -660,6 +668,13 @@ class Pipeline:
             / ``convolve_mhz`` / …) are set on the ``NoiseSettings`` instance;
             the explicit layer outranks the persisted record, which outranks the
             preset (per D11), so a no-arg call reproduces the persisted recipe.
+        events : callable, optional
+            Called on this thread with each event of the operation; a callback
+            that raises aborts it with :class:`CallbackFailedError`.
+        cancel : CancelToken, optional
+            Checked before the operation starts (and at its other check
+            points); once set, it raises :class:`OperationCancelledError` and
+            leaves the file as it was.
 
         Returns
         -------
@@ -681,6 +696,8 @@ class Pipeline:
                 file_path=str(self.filepath),
                 settings=settings,
                 preset=preset,
+                events=events,
+                cancel=cancel,
             )
 
             # Storage and stage tracking handled by shared implementation
@@ -774,6 +791,8 @@ class Pipeline:
         shape: str = "lorentzian",
         settings: Optional[TauCalibrationSettings] = None,
         preset: Optional[str] = None,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
     ) -> TauCalibrationResult:
         """Run the Stage 2b data-driven tau calibration.
 
@@ -800,6 +819,11 @@ class Pipeline:
         record outranks the preset, per D11), so a no-arg follow-up call
         reproduces the previously resolved settings (stamped to the shared
         ``processing_parameters/stage2b_tau`` block both shape variants use).
+
+        ``events`` / ``cancel`` follow the long-operation contract: ``events``
+        is called on this thread with each event (a callback that raises
+        aborts with :class:`CallbackFailedError`); ``cancel`` is checked before
+        the stage starts (:class:`OperationCancelledError`, nothing written).
         """
         try:
             result = calibrate_tau_impl(
@@ -807,6 +831,8 @@ class Pipeline:
                 shape=shape,
                 settings=settings,
                 preset=preset,
+                events=events,
+                cancel=cancel,
             )
             tc = result["tau_calibration"]
             self.logger.info(
@@ -841,6 +867,8 @@ class Pipeline:
         clocks: Optional[Any] = None,
         kappa_sys: Optional[float] = None,
         snr_min: Optional[float] = None,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
     ) -> TimebaseCalibrationResult:
         """Measure the scope-timebase scale error ``eps`` from Rb-locked tones.
 
@@ -851,6 +879,11 @@ class Pipeline:
         non-empty declaration with at least one locked source. Persists the
         measured ``eps`` to ``/timebase_calibration``. Measures ``eps`` only;
         applying it to the frequency axis is out of scope.
+
+        ``events`` / ``cancel`` follow the long-operation contract: ``events``
+        is called on this thread with each event (a callback that raises
+        aborts with :class:`CallbackFailedError`); ``cancel`` is checked before
+        the stage starts (:class:`OperationCancelledError`, nothing written).
         """
         try:
             result = calibrate_timebase_impl(
@@ -858,6 +891,8 @@ class Pipeline:
                 clocks=clocks,
                 kappa_sys=kappa_sys,
                 snr_min=snr_min,
+                events=events,
+                cancel=cancel,
             )
             tc = result["timebase_calibration"]
             self.logger.info(
@@ -981,6 +1016,8 @@ class Pipeline:
         *,
         settings: Optional[TauCalibrationSettings] = None,
         preset: Optional[str] = None,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
     ) -> ShapeRecommendation:
         """Run the 3-way L/G/V per-bin AICc shape-recommendation hook.
 
@@ -1010,12 +1047,19 @@ class Pipeline:
         The resolved settings are stamped to
         ``processing_parameters/stage2b_tau`` so a follow-up no-arg call
         inherits the same recipe.
+
+        ``events`` / ``cancel`` follow the long-operation contract: ``events``
+        is called on this thread with each event (a callback that raises
+        aborts with :class:`CallbackFailedError`); ``cancel`` is checked before
+        the stage starts (:class:`OperationCancelledError`, nothing written).
         """
         try:
             result = recommend_shape_impl(
                 file_path=str(self.filepath),
                 settings=settings,
                 preset=preset,
+                events=events,
+                cancel=cancel,
             )
             rec = result["shape_recommendation"]
             groups = result["groups_written"]
@@ -1098,6 +1142,8 @@ class Pipeline:
         band: Optional[Tuple[float, float]] = None,
         stamp: bool = True,
         settings: Optional[StartDetectionSettings] = None,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
     ) -> StartDetectionResult:
         """Infer a good FID ``start_us`` from the data and stamp it.
 
@@ -1126,6 +1172,13 @@ class Pipeline:
             with the fields to override (``sweep_max_us`` / ``step_us`` /
             ``guard_margin_us`` / ``floor_factor`` / …). ``band`` wins over the
             bundle's band fields when supplied.
+        events : callable, optional
+            Called on this thread with each event of the operation; a callback
+            that raises aborts it with :class:`CallbackFailedError`.
+        cancel : CancelToken, optional
+            Checked before the operation starts (and at its other check
+            points); once set, it raises :class:`OperationCancelledError` and
+            leaves the file as it was.
 
         Returns
         -------
@@ -1134,7 +1187,11 @@ class Pipeline:
         """
         resolved = self._apply_band_override(settings, band)
         result = detect_start_time_impl(
-            str(self.filepath), settings=resolved, stamp=stamp
+            str(self.filepath),
+            settings=resolved,
+            stamp=stamp,
+            events=events,
+            cancel=cancel,
         )
         return cast(StartDetectionResult, result["start_detection"])
 
@@ -1181,6 +1238,8 @@ class Pipeline:
         *,
         settings: Optional[PeakDetectionSettings] = None,
         preset: Optional[str] = None,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
     ) -> List[Peak]:
         """Detect and classify peaks (Stage 3, two-pass).
 
@@ -1235,12 +1294,19 @@ class Pipeline:
             If Stage 1 or Stage 2 has not been completed.
         RuntimeError
             If detection fails.
+
+        ``events`` / ``cancel`` follow the long-operation contract: ``events``
+        is called on this thread with each event (a callback that raises
+        aborts with :class:`CallbackFailedError`); ``cancel`` is checked before
+        the stage starts (:class:`OperationCancelledError`, nothing written).
         """
         try:
             result = detect_peaks_impl(
                 file_path=str(self.filepath),
                 settings=settings,
                 preset=preset,
+                events=events,
+                cancel=cancel,
             )
             self.logger.info(
                 "Stage 3: %d detected (%d promoted, SNR >= %.1f); "
@@ -1330,6 +1396,8 @@ class Pipeline:
         *,
         settings: Optional[WindowPlanningSettings] = None,
         preset: Optional[str] = None,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
     ) -> WindowPlan:
         """Assign analysis windows (Stage 4), turning promoted peaks into a fit plan.
 
@@ -1377,12 +1445,19 @@ class Pipeline:
             If Stage 3 has not been completed.
         RuntimeError
             If window assignment fails.
+
+        ``events`` / ``cancel`` follow the long-operation contract: ``events``
+        is called on this thread with each event (a callback that raises
+        aborts with :class:`CallbackFailedError`); ``cancel`` is checked before
+        the stage starts (:class:`OperationCancelledError`, nothing written).
         """
         try:
             result = assign_windows_impl(
                 file_path=str(self.filepath),
                 settings=settings,
                 preset=preset,
+                events=events,
+                cancel=cancel,
             )
             self.logger.info(
                 "Stage 4: %d windows, %d batches, %d free peaks, "
@@ -1469,6 +1544,8 @@ class Pipeline:
         settings: Optional["StageFitSettings"] = None,
         preset: Optional[str] = None,
         jobs: Optional[int] = None,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
     ) -> SpectrumFit:
         """Fit each Stage 4 window's lines (Stage 5).
 
@@ -1529,6 +1606,16 @@ class Pipeline:
             variable, falling back to ``cpu_count() - 2``; ``1`` forces a
             sequential fit. The fit result is byte-identical regardless of the
             worker count.
+        events : callable, optional
+            Called on this thread with each event (``StageStarted``, a
+            ``WindowProgress`` per finished window, warnings, ``Invalidated``,
+            ``StageFinished``). A callback that raises aborts the fit with
+            :class:`CallbackFailedError`.
+        cancel : CancelToken, optional
+            Anything with ``is_set()`` (e.g. a :class:`threading.Event`). Once
+            set, the fit stops between windows (a parallel fit within about
+            0.2 s) and raises :class:`OperationCancelledError`; the file is
+            left exactly as it was.
 
         Returns
         -------
@@ -1539,6 +1626,10 @@ class Pipeline:
         ------
         StageDependencyError
             If Stage 4 has not been completed.
+        OperationCancelledError
+            If ``cancel`` was set.
+        CallbackFailedError
+            If ``events`` raised.
         RuntimeError
             If fitting fails.
         """
@@ -1551,6 +1642,8 @@ class Pipeline:
                 settings=settings,
                 preset=preset,
                 jobs=jobs,
+                events=events,
+                cancel=cancel,
             )
             self.logger.info(
                 "Stage 5: %d windows, %d fitted peaks; thaw %d/%d, "
@@ -1614,6 +1707,8 @@ class Pipeline:
         remove: Sequence[Union[float, str]] = (),
         snap_tol_mhz: Optional[float] = None,
         frame: Optional[Frame] = None,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
     ) -> RefitWindowResult:
         """User-directed single-window refit (Stage 6 ``review edit``).
 
@@ -1665,6 +1760,14 @@ class Pipeline:
             (both frames).
 
         Requires Stage 5 completed.
+
+        ``events`` / ``cancel`` follow the long-operation contract: ``events``
+        is called on this thread with each event (``StageStarted``, a
+        ``WindowProgress`` per re-fit window, warnings, ``StageFinished``); a
+        callback that raises aborts with :class:`CallbackFailedError`.
+        ``cancel`` is checked before the operation and between windows; a
+        cancelled edit raises :class:`OperationCancelledError` and persists
+        nothing of the batch.
         """
         return refit_window_impl(
             self.filepath,
@@ -1673,6 +1776,8 @@ class Pipeline:
             remove=remove,
             snap_tol_mhz=snap_tol_mhz,
             frame=frame,
+            events=events,
+            cancel=cancel,
         )
 
     def review_acknowledge_environment(
@@ -1710,6 +1815,8 @@ class Pipeline:
         *,
         snap_tol_mhz: Optional[float] = None,
         frame: Optional[Frame] = None,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
     ) -> CreateWindowResult:
         """Install a fit window covering ``anchor_mhz`` (Stage 6 ``review create``).
 
@@ -1746,12 +1853,22 @@ class Pipeline:
             (both frames).
 
         Requires Stage 5 completed.
+
+        ``events`` / ``cancel`` follow the long-operation contract: ``events``
+        is called on this thread with each event (``StageStarted``, a
+        ``WindowProgress`` per re-fit window, warnings, ``StageFinished``); a
+        callback that raises aborts with :class:`CallbackFailedError`.
+        ``cancel`` is checked before the operation and between windows; a
+        cancelled edit raises :class:`OperationCancelledError` and persists
+        nothing of the batch.
         """
         return create_window_impl(
             self.filepath,
             anchor_mhz,
             snap_tol_mhz=snap_tol_mhz,
             frame=frame,
+            events=events,
+            cancel=cancel,
         )
 
     def review_run(
@@ -1760,6 +1877,8 @@ class Pipeline:
         bar: float = DEFAULT_DISPLAY_BAR,
         attention_candidate_evidence: float = DEFAULT_ATTENTION_CANDIDATE_EVIDENCE,
         sigma_floor_khz: Optional[float] = None,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
     ) -> ReviewRunResult:
         """Build or refresh the Stage 6 curation layer and final-products table.
 
@@ -1790,12 +1909,18 @@ class Pipeline:
             Total window count, attention count, and per-kind breakdown.
 
         Requires Stage 5 completed.
+
+        ``events`` / ``cancel`` follow the long-operation contract: ``events``
+        is called on this thread with each event; ``cancel`` is checked before
+        the stage starts (:class:`OperationCancelledError`, nothing written).
         """
         return review_run_impl(
             self.filepath,
             bar=bar,
             attention_candidate_evidence=attention_candidate_evidence,
             sigma_floor_khz=sigma_floor_khz,
+            events=events,
+            cancel=cancel,
         )
 
     def set_sigma_floor(self, sigma_floor_khz: float) -> None:
@@ -1867,6 +1992,8 @@ class Pipeline:
         catalog: Optional[Union[str, Path]] = None,
         catalog_n_sigma: float = 3.0,
         jobs: Optional[int] = None,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
     ) -> Dict[str, Optional[str]]:
         """Write the default Stage 6 deliverables: the L1 table + the L3 report.
 
@@ -1912,6 +2039,12 @@ class Pipeline:
         dict
             ``{"table": <path|None>, "html": <path|None>}`` -- the path of each
             artifact written (``None`` when suppressed).
+
+        ``events`` / ``cancel`` follow the long-operation contract: ``events``
+        is called on this thread with each event (``StageStarted``, a
+        ``WindowProgress`` per rendered window, ``StageFinished``); ``cancel``
+        is checked before the report and between windows
+        (:class:`OperationCancelledError`; no HTML report is written).
         """
         return report_run_impl(
             self.filepath,
@@ -1924,6 +2057,8 @@ class Pipeline:
             catalog=catalog,
             catalog_n_sigma=catalog_n_sigma,
             jobs=jobs,
+            events=events,
+            cancel=cancel,
         )
 
     def report_diff(
@@ -1964,6 +2099,8 @@ class Pipeline:
         candidate_freq: Optional[float] = None,
         snap_tol_mhz: Optional[float] = None,
         frame: Optional[Frame] = None,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
     ) -> Optional[RefitWindowResult]:
         """Accept a window as-is or accept a specific revived candidate.
 
@@ -1998,6 +2135,14 @@ class Pipeline:
         Returns
         -------
         RefitWindowResult or None
+
+        ``events`` / ``cancel`` follow the long-operation contract: ``events``
+        is called on this thread with each event (``StageStarted``, a
+        ``WindowProgress`` per re-fit window, warnings, ``StageFinished``); a
+        callback that raises aborts with :class:`CallbackFailedError`.
+        ``cancel`` is checked before the operation and between windows; a
+        cancelled edit raises :class:`OperationCancelledError` and persists
+        nothing of the batch.
         """
         return review_accept_impl(
             self.filepath,
@@ -2005,6 +2150,8 @@ class Pipeline:
             candidate_freq=candidate_freq,
             snap_tol_mhz=snap_tol_mhz,
             frame=frame,
+            events=events,
+            cancel=cancel,
         )
 
     def review_apply(
@@ -2015,6 +2162,8 @@ class Pipeline:
         dry_run: bool = False,
         frame: Optional[Frame] = None,
         log_prefix: Optional[int] = None,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
     ) -> CurationApplyResult:
         """Apply a curation file of batched review edits.
 
@@ -2085,6 +2234,14 @@ class Pipeline:
             The resolved action plan, warnings (including a possible
             frame-mismatch advisory), the number applied, and the windows
             the plan installs or grows.
+
+        ``events`` / ``cancel`` follow the long-operation contract: ``events``
+        is called on this thread with each event (``StageStarted``, a
+        ``WindowProgress`` per re-fit window, warnings, ``StageFinished``); a
+        callback that raises aborts with :class:`CallbackFailedError`.
+        ``cancel`` is checked before the operation and between windows; a
+        cancelled edit raises :class:`OperationCancelledError` and persists
+        nothing of the batch.
         """
         return apply_curation_impl(
             self.filepath,
@@ -2093,6 +2250,8 @@ class Pipeline:
             dry_run=dry_run,
             frame=frame,
             log_prefix=log_prefix,
+            events=events,
+            cancel=cancel,
         )
 
     def review_preview(
@@ -2101,6 +2260,8 @@ class Pipeline:
         *,
         actions: Optional[Sequence[Union[CurationAction, Mapping[str, Any]]]] = None,
         frame: Optional[Frame] = None,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
     ) -> ReviewPreviewResult:
         """Run a curation file's resolved plan to completion in memory and
         report the fitted outcome, without writing anything.
@@ -2134,9 +2295,22 @@ class Pipeline:
         Returns
         -------
         ReviewPreviewResult
+
+        ``events`` / ``cancel`` follow the long-operation contract: ``events``
+        is called on this thread with each event (``StageStarted``, a
+        ``WindowProgress`` per re-fit window, warnings, ``StageFinished``); a
+        callback that raises aborts with :class:`CallbackFailedError`.
+        ``cancel`` is checked before the operation and between windows; a
+        cancelled edit raises :class:`OperationCancelledError` and persists
+        nothing of the batch.
         """
         return review_preview_impl(
-            self.filepath, curation_path, actions=actions, frame=frame
+            self.filepath,
+            curation_path,
+            actions=actions,
+            frame=frame,
+            events=events,
+            cancel=cancel,
         )
 
     def review_session(self) -> ReviewSession:
@@ -2199,6 +2373,8 @@ class Pipeline:
         ids: Sequence[int],
         *,
         dry_run: bool = False,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
     ) -> UndoResult:
         """Undo recorded decisions by id, replaying the rest from baseline.
 
@@ -2225,8 +2401,18 @@ class Pipeline:
         ValueError
             If an id is unknown, there are no decisions, or the automatic-fit
             baseline is unavailable while fit-mutating decisions exist.
+
+        ``events`` / ``cancel`` follow the long-operation contract: ``events``
+        is called on this thread with each event (``StageStarted``, a
+        ``WindowProgress`` per re-fit window, warnings, ``StageFinished``); a
+        callback that raises aborts with :class:`CallbackFailedError`.
+        ``cancel`` is checked before the restore (raising
+        :class:`OperationCancelledError` with nothing written); once the
+        restore-then-replay has begun it completes.
         """
-        return review_undo_impl(self.filepath, ids, dry_run=dry_run)
+        return review_undo_impl(
+            self.filepath, ids, dry_run=dry_run, events=events, cancel=cancel
+        )
 
     def review_status(self) -> Stage6Review:
         """Load the persisted Stage 6 review state, or return an empty one.
@@ -2583,6 +2769,8 @@ class Pipeline:
         fit_freqs: Optional[Sequence[float]] = None,
         fit_sample_seed: int = 0,
         fit_all: bool = False,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
     ) -> "SweepResult":
         """Sweep a single knob across a grid on a copy of this file.
 
@@ -2599,6 +2787,12 @@ class Pipeline:
         controls bound a Stage 5 fit sweep to a window subset (the ``fit_top_snr``
         brightest + a seeded ``fit_sample`` sample + the windows nearest
         ``fit_freqs``); ``fit_all`` re-fits every window.
+
+        ``events`` / ``cancel`` follow the long-operation contract: ``events``
+        is called on this thread with each event (``StageStarted``, a
+        ``ScanProgress`` per value, ``StageFinished``; ``stage`` is null);
+        ``cancel`` is checked before each knob and between values
+        (:class:`OperationCancelledError`).
         """
         from ._internal.tuning import get_knob, run_scan
 
@@ -2618,6 +2812,8 @@ class Pipeline:
             fit_freqs=fit_freqs,
             fit_sample_seed=fit_sample_seed,
             fit_all=fit_all,
+            events=events,
+            cancel=cancel,
         )
 
     def scan_all(
@@ -2637,6 +2833,8 @@ class Pipeline:
         fit_freqs: Optional[Sequence[float]] = None,
         fit_sample_seed: int = 0,
         fit_all: bool = False,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
     ) -> "List[BatchItem]":
         """Sweep every knob matched by ``selector`` on its default grid.
 
@@ -2649,6 +2847,12 @@ class Pipeline:
         (e.g. its required stage is absent) is recorded as a failed
         :class:`BatchItem` and the batch continues. The ``zoom_*`` controls apply
         the same explicit-regions / count-width steering to every knob's plot.
+
+        ``events`` / ``cancel`` follow the long-operation contract: ``events``
+        is called on this thread with each event (``StageStarted``, a
+        ``ScanProgress`` per value, ``StageFinished``; ``stage`` is null);
+        ``cancel`` is checked before each knob and between values
+        (:class:`OperationCancelledError`).
         """
         from ._internal.tuning import list_knobs, run_scan_batch
 
@@ -2668,6 +2872,8 @@ class Pipeline:
             fit_freqs=fit_freqs,
             fit_sample_seed=fit_sample_seed,
             fit_all=fit_all,
+            events=events,
+            cancel=cancel,
         )
 
     @staticmethod

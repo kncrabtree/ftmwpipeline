@@ -20,6 +20,7 @@ from ftmwpipeline.cli.main import create_parser
 from ftmwpipeline.contract import (
     MANIFEST,
     SCHEMA_NAME_RE,
+    WARNING_FIELDS,
     AccessorSpec,
     ContractManifest,
     PipelineFileError,
@@ -83,6 +84,12 @@ SNAPSHOT_SCHEMAS = frozenset(
         "ftmw/curation_action@1",
         "ftmw/status@1",
         "ftmw/run_result@1",
+        "ftmw/stage_started@1",
+        "ftmw/stage_finished@1",
+        "ftmw/window_progress@1",
+        "ftmw/scan_progress@1",
+        "ftmw/invalidated@1",
+        "ftmw/warning@1",
     }
 )
 SNAPSHOT_CODES = frozenset(
@@ -96,6 +103,9 @@ SNAPSHOT_CODES = frozenset(
         "file_exists",
         "bad_setting",
         "algorithm_failed",
+        "cancelled",
+        "callback_failed",
+        "pipeline_error",
     }
 )
 SNAPSHOT_FILE_BOUND = {
@@ -249,11 +259,44 @@ SNAPSHOT_FIELDS: dict = {
     },
     "ComplexFT": {"freq_array", "complex_spectrum", "metadata"},
     "ComplexFT.metadata": {"amplitude_scale", "units_label", "pad_factor"},
+    "StageStarted": {"schema", "operation", "stage"},
+    "StageFinished": {"schema", "operation", "stage", "elapsed_s", "summary"},
+    "WindowProgress": {
+        "schema",
+        "operation",
+        "stage",
+        "phase",
+        "round",
+        "index",
+        "total",
+        "window_id",
+        "n_peaks",
+        "chi2r",
+        "elapsed_s",
+        "dropped",
+    },
+    "ScanProgress": {"schema", "operation", "stage", "knob", "value", "index", "total"},
+    "Invalidated": {"schema", "operation", "stage", "stages"},
+    "PipelineWarning": {"schema", "operation", "stage", "code", "message"},
+    "PipelineWarning.slow_window": {"window_id", "elapsed_s", "threshold_s"},
+    "PipelineWarning.epoch_acknowledged": {"file_epoch", "current_epoch"},
+    "PipelineWarning.environment_drift": {"fields"},
+    "PipelineWarning.frame_mismatch": {"actions"},
+    "PipelineWarning.walk_fallback": {"reason", "n_windows"},
+    "PipelineWarning.timebase_skipped": set(),
 }
 SNAPSHOT_VOCABULARIES = {
     "decision_kind": {"add", "remove", "merge", "split", "accept", "create_window"},
     "decision_provenance": {"user"},
     "stage_state": {"complete", "partial", "not_run"},
+    "warning_code": {
+        "slow_window",
+        "epoch_acknowledged",
+        "environment_drift",
+        "frame_mismatch",
+        "walk_fallback",
+        "timebase_skipped",
+    },
 }
 
 
@@ -382,7 +425,8 @@ def test_capabilities_is_declared_file_less():
 
 
 def test_every_code_maps_to_exactly_one_class():
-    classes = [c for c in _all_subclasses(PipelineFileError)]
+    # The base class owns the declared fallback code ``pipeline_error``.
+    classes = [PipelineFileError, *_all_subclasses(PipelineFileError)]
     for code in MANIFEST.codes:
         # A subclass that refines a code (PipelineFileNotFoundError is a
         # NotFoundError with kind "file") inherits it rather than declaring it.
@@ -395,9 +439,10 @@ def test_every_class_code_is_declared():
         assert cls.code in MANIFEST.codes, cls
 
 
-def test_base_fallback_code_is_not_declared():
+def test_base_fallback_code_is_declared():
+    # run_pipeline reports a failure that is not a typed error under it.
     assert PipelineFileError.code == "pipeline_error"
-    assert PipelineFileError.code not in MANIFEST.codes
+    assert PipelineFileError.code in MANIFEST.codes
 
 
 def test_cli_exit_codes_are_the_documented_table():
@@ -477,7 +522,7 @@ def test_manifest_sequences_are_tuples():
 
 
 def test_manifest_version_matches_package():
-    assert MANIFEST.contract_version == ftmwpipeline.CONTRACT_VERSION == 8
+    assert MANIFEST.contract_version == ftmwpipeline.CONTRACT_VERSION == 9
     assert isinstance(ftmwpipeline.CONTRACT_VERSION, int)
 
 
@@ -569,9 +614,11 @@ def _type_registry() -> dict:
     from ftmwpipeline._internal.tuning.settings_inspection import SettingRow
     from ftmwpipeline.core.calibration import CalibrationStamp
     from ftmwpipeline.core.curation import CurationAction
+    from ftmwpipeline.contract import EVENT_TYPES
     from ftmwpipeline.core.data_structures import DecisionLogEntry, FinalPeak
 
     return {
+        **{cls.__name__: cls for cls in EVENT_TYPES},
         "CalibrationStamp": CalibrationStamp,
         "FinalPeak": FinalPeak,
         "DecisionLogEntry": DecisionLogEntry,
@@ -588,9 +635,13 @@ def _type_registry() -> dict:
 #: ``tests/integration/test_contract_declared_elements.py``.
 _PRODUCED_TYPES = {"PipelineInfo", "ComplexFT", "ComplexFT.metadata"}
 
+#: ``PipelineWarning.<code>``: a warning code's wire fields, which the
+#: dataclass holds in ``details`` (checked against ``WARNING_FIELDS``).
+_WARNING_CODE_TYPES = {f"PipelineWarning.{code}" for code in WARNING_FIELDS}
+
 
 def test_every_declared_type_is_resolvable():
-    known = set(_type_registry()) | _PRODUCED_TYPES
+    known = set(_type_registry()) | _PRODUCED_TYPES | _WARNING_CODE_TYPES
     assert set(MANIFEST.fields) <= known, set(MANIFEST.fields) - known
 
 
@@ -598,6 +649,10 @@ def test_every_declared_field_exists_on_its_dataclass():
     registry = _type_registry()
     for type_name, names in MANIFEST.fields.items():
         if type_name in _PRODUCED_TYPES:
+            continue
+        if type_name in _WARNING_CODE_TYPES:
+            code = type_name.split(".", 1)[1]
+            assert tuple(names) == WARNING_FIELDS[code], type_name
             continue
         cls = registry[type_name]
         assert dataclasses.is_dataclass(cls), type_name

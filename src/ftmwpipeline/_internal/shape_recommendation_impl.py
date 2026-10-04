@@ -30,10 +30,11 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional
 
 import numpy as np
 
+from ..contract import CancelToken, EventCallback, Stage
 from ..core.tau_calibration_settings import TauCalibrationSettings
 from ..file_manager import BadSettingError, requires_pipeline_file
 from ..fitting.tau_calibration import (
@@ -66,14 +67,36 @@ STAGE_NAME = "shape_recommendation"
 SHAPE_RECOMMENDATION_EPOCH_KEY = "stage2b_shape_recommendation"
 
 
+def tau_recommend_summary(result: Mapping[str, Any]) -> Dict[str, Any]:
+    """The scalar ``ftmw/run_result@1`` summary of ``tau recommend`` -- also its
+    ``StageFinished.summary`` -- from a :func:`recommend_shape_impl` result."""
+    rec = result["shape_recommendation"]
+    rates = rec.vote_rates
+    return {
+        "recommended_shape": rec.recommended_shape,
+        "vote_rate_exp": rates["exp"],
+        "vote_rate_gauss": rates["gauss"],
+        "vote_rate_voigt": rates["voigt"],
+        "n_contributors": rec.n_contributors,
+        "stamped_onto": ", ".join(result.get("groups_written") or ()),
+    }
+
+
 @requires_pipeline_file()
 def recommend_shape_impl(
     file_path: str,
     *,
     settings: Optional[TauCalibrationSettings] = None,
     preset: Optional[str] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> Dict[str, Any]:
     """Run the 3-way shape recommendation on ``file_path`` and persist it.
+
+    A long operation (``tau recommend``), reported under the ``tau`` stage
+    (its ``run_result`` stage): ``StageStarted``, then ``StageFinished`` with
+    :func:`tau_recommend_summary` once the verdict is written. It invalidates
+    nothing. ``cancel`` is checked before it starts.
 
     Requires Stage 1 (FT settings + trim) to have completed. Reads the
     raw FID, runs the same STFT classifier the τ calibrations use, fits
@@ -107,6 +130,24 @@ def recommend_shape_impl(
         returned, but Stage 5 won't pick it up until a calibration is
         present).
     """
+    from .events import operation_events
+
+    ops = operation_events("tau recommend", events, cancel)
+    with ops.stage(Stage.TAU, verb="tau recommend", file_path=file_path) as scope:
+        result = run_shape_recommendation(file_path, settings=settings, preset=preset)
+        scope.finish(tau_recommend_summary(result))
+    return result
+
+
+def run_shape_recommendation(
+    file_path: str,
+    *,
+    settings: Optional[TauCalibrationSettings] = None,
+    preset: Optional[str] = None,
+) -> Dict[str, Any]:
+    """The body of :func:`recommend_shape_impl`, without the operation's
+    events: what ``tau run``'s auto-recommendation calls inside its own
+    stage."""
     file_path_obj = Path(file_path)
 
     explicit = TauCalibrationSettings()

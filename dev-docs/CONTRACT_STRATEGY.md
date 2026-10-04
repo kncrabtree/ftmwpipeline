@@ -620,7 +620,7 @@ Every event has `schema`, `operation` (the CLI verb, such as `"fit run"`) and
 |---|---|---|
 | `StageStarted` | `ftmw/stage_started@1` | — |
 | `StageFinished` | `ftmw/stage_finished@1` | `elapsed_s`; `summary` |
-| `WindowProgress` | `ftmw/window_progress@1` | `phase`; `index`; `total`; `window_id`; `n_peaks`; `chi2r`; `elapsed_s`; `dropped` |
+| `WindowProgress` | `ftmw/window_progress@1` | `phase`; `round`; `index`; `total`; `window_id`; `n_peaks`; `chi2r`; `elapsed_s`; `dropped` |
 | `ScanProgress` | `ftmw/scan_progress@1` | `knob`; `value`; `index`; `total` |
 | `Invalidated` | `ftmw/invalidated@1` | `stages` |
 | `PipelineWarning` | `ftmw/warning@1` | `code`; `message`; code-specific fields |
@@ -628,10 +628,22 @@ Every event has `schema`, `operation` (the CLI verb, such as `"fit run"`) and
 - **`StageFinished.summary`** has exactly the keys of the same verb's
   `ftmw/run_result@1` summary. The two come from one builder.
 - **`WindowProgress`:**
-  - `phase` is `"initial"` or `"replan"`.
-  - `index` counts finished windows within the phase, starting at 1, so windows
-    can finish out of id order.
-  - `total` is the number of windows in that phase.
+  - Events come in **passes**. A pass is identified by its `(phase, round)`
+    pair.
+  - `phase` is one of four values:
+    - `"initial"`: the fit's first walk, or a Stage 6 call's own windows;
+    - `"replan"`: a structural replan round;
+    - `"fallback"`: a sequential re-walk after the parallel walk of the same
+      round fell back (`walk_fallback`). This pass reports windows that the
+      round's earlier pass already reported.
+    - `"cascade"`: Stage 6's re-fit of dependent windows.
+  - `round` is `0` for the initial walk, its fallback, and every Stage 6 pass.
+    It is the replan round's number, starting at 1, for a replan round and its
+    fallback.
+  - `index` counts finished windows within the pass, starting at 1. Windows can
+    finish out of id order.
+  - `total` is the number of windows in the pass. It is fixed when the pass
+    begins.
   - `elapsed_s` is the window's own fitting time.
   - A dropped window has `dropped: true`, and its `n_peaks` and `chi2r` are
     Absent.
@@ -698,10 +710,17 @@ What is left in the file is the same as after a cancel at that point.
   Cancel latency is the parent's poll interval (about 0.2 s). The sequential
   walk (`jobs=1`, or no `fork`) honours a cancel after the current window. No
   check is made inside a single window's least-squares fit.
-- **`run_pipeline`.** A cancel raises `cancelled`; it is not folded into the
-  result dict. For any other failure, the result's `error` becomes that
-  error's `ftmw/error@1` dict instead of a string, and `failed_stage` is a
-  canonical stage name.
+- **`run_pipeline`.** A cancel or a `callback_failed` raises; it is not folded
+  into the result dict. For any other failure:
+  - the result's `error` becomes that error's `ftmw/error@1` dict instead of a
+    string;
+  - a failure that is not a typed error is reported with the declared fallback
+    code `pipeline_error`;
+  - `failed_stage` is a canonical stage name.
+- **Twin calibration.** A `tau run` that also builds the twin calibration
+  reports the twin inside its own stage, with no events of its own. The
+  `tau_g` (or `tau`) twin still appears in `completed_stages` once it is
+  written.
 
 ### Log rendering
 

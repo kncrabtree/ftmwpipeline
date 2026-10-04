@@ -8,8 +8,9 @@ and functional API interfaces.
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Tuple
 
+from ..contract import CancelToken, EventCallback, Stage, stage_for_key
 from ..core.data_structures import FID, ChirpWindow
 from ..core.stage_fit_settings import coerce_clock_sources
 from ..core.start_detection_settings import StartDetectionSettings
@@ -31,6 +32,9 @@ from ..io.data_loaders import (
 )
 from ..io.fid_serialization import load_fid_from_hdf5
 from ..io.stage_fit_settings_serialization import write_recommended_chirp_window
+
+if TYPE_CHECKING:
+    from .events import StageScope
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +67,9 @@ def _coerce_chirp_window(value: Any) -> ChirpWindow:
     raise ValueError(f"Cannot coerce {type(value)} to ChirpWindow")
 
 
-def persist_chirp_window_metadata(file_path: str, fid: FID) -> List[str]:
+def persist_chirp_window_metadata(
+    file_path: str, fid: FID, *, events: Optional["StageScope"] = None
+) -> List[str]:
     """Persist a loader-declared chirp window and derive the start hint.
 
     When the loader attached ``fid.metadata["chirp_window"]``, write it to the
@@ -100,7 +106,7 @@ def persist_chirp_window_metadata(file_path: str, fid: FID) -> List[str]:
                 margin = StartDetectionSettings().guard_margin_us
             recommended_start = chirp_window.chirp_end_us + margin
             invalidated = write_recommended_ft_params(
-                file_path, {"start_us": recommended_start}
+                file_path, {"start_us": recommended_start}, events=events
             )
             logger.info(
                 "Derived recommended start_us = %.3f us "
@@ -114,7 +120,9 @@ def persist_chirp_window_metadata(file_path: str, fid: FID) -> List[str]:
     return invalidated
 
 
-def persist_loader_metadata(file_path: str, fid: FID) -> List[str]:
+def persist_loader_metadata(
+    file_path: str, fid: FID, *, events: Optional["StageScope"] = None
+) -> List[str]:
     """Persist what the loader declared beside the samples: the instrument
     clock declaration and the chirp window (with its derived start hint).
 
@@ -123,7 +131,8 @@ def persist_loader_metadata(file_path: str, fid: FID) -> List[str]:
     :func:`~.clocks_impl.write_declaration`, which keeps a stored
     final-products table consistent with it when the import reuses an
     existing file. Returns the storage keys of the stages the chirp window's
-    start hint invalidated (:func:`persist_chirp_window_metadata`).
+    start hint invalidated (:func:`persist_chirp_window_metadata`), reported
+    through ``events`` (the import's stage scope) when given.
     """
     raw_clocks = fid.metadata.get("clock_sources")
     if raw_clocks is not None:
@@ -139,7 +148,37 @@ def persist_loader_metadata(file_path: str, fid: FID) -> List[str]:
         except Exception as exc:
             logger.warning("Could not persist recommended clock sources: %s", exc)
 
-    return persist_chirp_window_metadata(str(file_path), fid)
+    return persist_chirp_window_metadata(str(file_path), fid, events=events)
+
+
+#: The ``ftmw/run_result@1`` summary keys of ``data import`` -- also the keys of
+#: the import's ``StageFinished.summary``. The one builder is
+#: :func:`data_import_summary`.
+DATA_IMPORT_SUMMARY_KEYS: Tuple[str, ...] = (
+    "pipeline_file",
+    "source_format",
+    "n_points",
+    "duration_us",
+    "probe_freq_mhz",
+    "sideband",
+    "shots",
+    "file_size_mb",
+)
+
+
+def data_import_summary(result: Mapping[str, Any]) -> Dict[str, Any]:
+    """The scalar summary of an :func:`import_data_impl` result."""
+    fid_meta = result["fid_metadata"]
+    return {
+        "pipeline_file": str(result["pipeline_file"]),
+        "source_format": result["format_name"],
+        "n_points": fid_meta["n_points"],
+        "duration_us": fid_meta["duration_us"],
+        "probe_freq_mhz": fid_meta["probe_freq_mhz"],
+        "sideband": fid_meta["sideband"],
+        "shots": fid_meta["shots"],
+        "file_size_mb": Path(result["pipeline_file"]).stat().st_size / (1024 * 1024),
+    }
 
 
 def import_data_impl(
@@ -147,10 +186,22 @@ def import_data_impl(
     source: str,
     format_name: Optional[str] = None,
     force: bool = False,
+    *,
+    fid_index: Optional[int] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
     **format_params: Any,
 ) -> Dict[str, Any]:
     """
     Shared implementation for data import into .ftmw pipeline files.
+
+    The one implementation behind ``data import``, :meth:`Pipeline.create` and
+    ``import_data``. Reports as the ``data`` stage of the ``data import``
+    operation (or of the enclosing operation whose events are passed):
+    ``StageStarted``, ``Invalidated`` (once, for everything an overwrite or the
+    loader's start hint dropped), then ``StageFinished`` with
+    :func:`data_import_summary` once the file is written. ``cancel`` is checked
+    before the import starts; once it starts it completes.
 
     This function handles the complete data import workflow:
     1. Format detection/validation
@@ -167,6 +218,11 @@ def import_data_impl(
         Data format name. If None, auto-detection is attempted
     force : bool, default False
         Overwrite an existing file even with a different source or layout.
+    fid_index : int, optional
+        FID index for a multi-FID Blackchirp source (added to the loader
+        parameters when the resolved format is ``blackchirp``).
+    events, cancel
+        The long-operation event callback and cancel token.
     **format_params
         Format-specific loading parameters
 
@@ -182,6 +238,34 @@ def import_data_impl(
     ValueError
         If format detection fails or validation errors occur
     """
+    from .events import operation_events
+
+    ops = operation_events("data import", events, cancel)
+    with ops.stage(Stage.DATA, verb="data import") as scope:
+        result = _import_data(
+            file_path,
+            source,
+            format_name,
+            force,
+            fid_index=fid_index,
+            events=scope,
+            format_params=format_params,
+        )
+        scope.finish(data_import_summary(result))
+    return result
+
+
+def _import_data(
+    file_path: str,
+    source: str,
+    format_name: Optional[str],
+    force: bool,
+    *,
+    fid_index: Optional[int],
+    events: "StageScope",
+    format_params: Dict[str, Any],
+) -> Dict[str, Any]:
+    """The body of :func:`import_data_impl` (inside the ``data`` stage scope)."""
     source_path = Path(source)
     if not source_path.exists():
         raise FileNotFoundError(f"Source path does not exist: {source_path}")
@@ -226,6 +310,9 @@ def import_data_impl(
 
     logger.info("Source validation passed")
 
+    if format_name == "blackchirp" and fid_index is not None:
+        format_params["fid_index"] = fid_index
+
     # Load FID data
     logger.info("Loading FID data...")
     try:
@@ -233,10 +320,10 @@ def import_data_impl(
         logger.info(
             f"FID data loaded successfully: {fid.n_points:,} points, {fid.duration_us:.1f} μs"
         )
-    except PipelineFileError:
+    except (ValueError, PipelineFileError, FileNotFoundError):
         raise
     except Exception as e:
-        raise RuntimeError(f"Failed to load FID data: {e}")
+        raise RuntimeError(f"Failed to load FID data: {e}") from e
 
     # Create pipeline file with source metadata
     logger.info("Creating pipeline file...")
@@ -249,19 +336,34 @@ def import_data_impl(
         )
 
         # Create the pipeline file. Overwriting a file discards every stage it
-        # held, which the result reports as invalidated.
-        invalidated = stages_an_import_replaces(file_path, force)
-        pipeline_file = create_pipeline_file(
-            filepath=file_path, fid=fid, source_metadata=source_metadata, force=force
-        )
-        logger.info(f"Pipeline file created: {pipeline_file}")
+        # held, which the result reports as invalidated. The overwrite and the
+        # loader's start hint are reported as ONE Invalidated event.
+        with events.collect_invalidations():
+            invalidated = stages_an_import_replaces(file_path, force)
+            pipeline_file = create_pipeline_file(
+                filepath=file_path,
+                fid=fid,
+                source_metadata=source_metadata,
+                force=force,
+            )
+            logger.info(f"Pipeline file created: {pipeline_file}")
+            # The overwrite logs no warning line of its own (it never did);
+            # its stages join the one delivered Invalidated event.
+            events.invalidated(
+                [stage_for_key(k) for k in invalidated],
+                reason=None,
+            )
 
-        # Written after create_pipeline_file so stage0_fid_data exists.
-        invalidated += persist_loader_metadata(str(pipeline_file), fid)
-    except PipelineFileError:
+            # Written after create_pipeline_file so stage0_fid_data exists.
+            invalidated += persist_loader_metadata(
+                str(pipeline_file), fid, events=events
+            )
+    except (PipelineFileError, ValueError, OSError):
+        # OSError (PermissionError, a full disk, ...) propagates unwrapped, as
+        # creating the file always did on the Python interfaces.
         raise
     except Exception as e:
-        raise RuntimeError(f"Failed to create pipeline file: {e}")
+        raise RuntimeError(f"Failed to create pipeline file: {e}") from e
 
     # Return comprehensive result information
     result = {

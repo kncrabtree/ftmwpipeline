@@ -46,6 +46,7 @@ from .core.data_structures import FID
 from .io.fid_serialization import load_fid_from_hdf5, save_fid_to_hdf5
 
 if TYPE_CHECKING:  # annotation-only; keeps this module's runtime imports as-is
+    from ._internal.events import StageScope
     from .core.environment import EnvironmentRecord
 
 # Module-level logger for file manager operations
@@ -523,6 +524,80 @@ class AlgorithmFailedError(PipelineFileError, RuntimeError):
 
     def __init__(self, stage: str, message: str) -> None:
         self.stage = str(stage)
+        super().__init__(message)
+
+
+class OperationCancelledError(PipelineFileError):
+    """Raised when a long operation stops because its cancel token was set.
+
+    Every completed stage stays as written; the interrupted stage left the file
+    exactly as it was before it began. The CLI exits 130 for it.
+
+    Attributes
+    ----------
+    stage : str or None
+        The canonical stage that was interrupted, or ``None`` (``null`` on the
+        wire) when the cancel fell between stages.
+    completed_stages : list of str
+        The canonical stages this operation finished and wrote, in order.
+    completed_windows : list of int
+        Window ids whose fit was kept. Always ``[]`` until Stage 5 partial
+        persistence exists.
+    """
+
+    code: ClassVar[str] = "cancelled"
+    contract_fields: ClassVar[Tuple[str, ...]] = (
+        "stage",
+        "completed_stages",
+        "completed_windows",
+    )
+
+    def __init__(
+        self,
+        stage: Optional[str],
+        completed_stages: Sequence[str] = (),
+        completed_windows: Sequence[int] = (),
+        *,
+        message: Optional[str] = None,
+    ) -> None:
+        self.stage = None if stage is None else str(getattr(stage, "value", stage))
+        self.completed_stages: List[str] = [
+            str(getattr(s, "value", s)) for s in completed_stages
+        ]
+        self.completed_windows: List[int] = [int(w) for w in completed_windows]
+        if message is None:
+            where = (
+                f"during stage '{self.stage}'"
+                if self.stage is not None
+                else "between stages"
+            )
+            done = ", ".join(self.completed_stages) or "none"
+            message = f"Operation cancelled {where} (completed stages: {done})."
+        super().__init__(message)
+
+
+class CallbackFailedError(PipelineFileError):
+    """Raised when an ``events`` callback raises; the operation is aborted.
+
+    The callback's exception is chained as ``__cause__``. What is left in the
+    file is the same as after a cancel at that point.
+
+    Attributes
+    ----------
+    event_schema : str
+        Schema name of the event being delivered when the callback raised.
+    """
+
+    code: ClassVar[str] = "callback_failed"
+    contract_fields: ClassVar[Tuple[str, ...]] = ("event_schema",)
+
+    def __init__(self, event_schema: str, *, message: Optional[str] = None) -> None:
+        self.event_schema = str(event_schema)
+        if message is None:
+            message = (
+                f"The events callback raised while handling {self.event_schema}; "
+                "the operation was aborted."
+            )
         super().__init__(message)
 
 
@@ -1389,6 +1464,7 @@ def invalidate_stages_in_file(
     *,
     include_roots: bool = False,
     reason: Optional[str] = None,
+    events: Optional["StageScope"] = None,
 ) -> List[str]:
     """Drop the stored results and completion of every stage built on ``roots``.
 
@@ -1400,8 +1476,9 @@ def invalidate_stages_in_file(
     are withdrawn (:func:`drop_records_of_removed_stages`).
 
     Returns the storage keys that were complete and are no longer (sorted),
-    empty if none. A loud warning names them; ``reason`` says why (default:
-    the roots were re-run).
+    empty if none. An ``Invalidated`` event (through ``events``, the running
+    stage's scope) names them and renders the loud warning line; ``reason``
+    says why (default: the roots were re-run).
     """
     root_list = list(roots)
     targets = set(_dependents_of(root_list))
@@ -1428,15 +1505,22 @@ def invalidate_stages_in_file(
     if invalidated and stages_group is not None:
         stages_group.attrs["completed_stages"] = json.dumps(completed)
         stages_group.attrs["last_updated"] = datetime.now().isoformat()
-        logger.warning(
-            "%s; invalidated stage(s) %s -- re-run them to refresh.",
-            reason or f"Stage(s) {', '.join(root_list)} re-run",
+        from ._internal.events import emit_invalidated
+
+        emit_invalidated(
+            events,
             invalidated,
+            reason=reason or f"Stage(s) {', '.join(root_list)} re-run",
         )
     return invalidated
 
 
-def invalidate_downstream_stages(filepath: Union[str, Path], stage_name: str) -> list:
+def invalidate_downstream_stages(
+    filepath: Union[str, Path],
+    stage_name: str,
+    *,
+    events: Optional["StageScope"] = None,
+) -> list:
     """Drop persisted data and completion for every stage that depends on ``stage_name``.
 
     Called when a stage is re-run (e.g. Stage 3 re-detection) so that stale
@@ -1450,6 +1534,9 @@ def invalidate_downstream_stages(filepath: Union[str, Path], stage_name: str) ->
         Path to the .ftmw pipeline file.
     stage_name : str
         The stage that was just (re-)run.
+    events : StageScope, optional
+        The running stage's event scope; the ``Invalidated`` event goes
+        through it. Without one the warning line is still logged.
 
     Returns
     -------
@@ -1462,7 +1549,7 @@ def invalidate_downstream_stages(filepath: Union[str, Path], stage_name: str) ->
         if "pipeline_stages" not in h5f:
             return []
         return invalidate_stages_in_file(
-            h5f, [stage_name], reason=f"Stage {stage_name} re-run"
+            h5f, [stage_name], reason=f"Stage {stage_name} re-run", events=events
         )
 
 

@@ -135,9 +135,14 @@ class StageProgress:
             self._line_open = False
         try:
             yield
-        except Exception:
+        except Exception as exc:
+            from ..file_manager import OperationCancelledError
+
+            outcome = (
+                "cancelled" if isinstance(exc, OperationCancelledError) else "failed"
+            )
             self._clear_line()
-            self._w(f"{self._prefix()}{label} ✗ failed\n")
+            self._w(f"{self._prefix()}{label} ✗ {outcome}\n")
             raise
         else:
             self._clear_line()

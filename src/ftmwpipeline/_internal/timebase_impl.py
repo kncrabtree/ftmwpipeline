@@ -28,6 +28,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import h5py
 import numpy as np
 
+from ..contract import Absent, CancelToken, EventCallback, Stage
 from ..core.stage_fit_settings import ClockSource, coerce_clock_sources
 from ..file_manager import BadSettingError, StageDependencyError, requires_pipeline_file
 from ..fitting.timebase_calibration import (
@@ -140,6 +141,27 @@ def _check_calibration_knobs(
             )
 
 
+def timebase_summary(tc: TimebaseCalibrationResult) -> Dict[str, Any]:
+    """The scalars ``timebase run`` / ``show`` report (undefined cases marked).
+
+    The one builder of the ``timebase run`` ``ftmw/run_result@1`` summary and
+    of its ``StageFinished.summary``."""
+    undefined = tc.n_used == 0 or not math.isfinite(tc.sigma_epsilon)
+    return {
+        "epsilon": Absent.UNDEFINED if undefined else tc.epsilon,
+        "sigma_epsilon": Absent.UNDEFINED if undefined else tc.sigma_epsilon,
+        "lattice_g_mhz": (
+            tc.lattice_g_mhz if tc.lattice_g_mhz > 0.0 else Absent.UNDEFINED
+        ),
+        "n_used": tc.n_used,
+        "n_detected": tc.n_detected,
+        "preconditions_passed": bool(tc.preconditions_passed),
+        "preconditions_notes": "; ".join(
+            n for n in tc.preconditions_notes if n != "ok"
+        ),
+    }
+
+
 @requires_pipeline_file()
 def calibrate_timebase_impl(
     file_path: str,
@@ -147,8 +169,15 @@ def calibrate_timebase_impl(
     clocks: Optional[Any] = None,
     kappa_sys: Optional[float] = None,
     snr_min: Optional[float] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> Dict[str, Any]:
     """Run scope-timebase self-calibration and persist the result.
+
+    A long operation (``timebase run``), reported as the ``timebase`` stage:
+    ``StageStarted``, then ``StageFinished`` with :func:`timebase_summary` once
+    the calibration is written (it invalidates nothing). ``cancel`` is checked
+    before the stage starts.
 
     Requires Stage 0 (the raw FID); the persisted Stage 1 settings supply the
     active-region bounds. Resolves the instrument clock declaration via
@@ -162,6 +191,25 @@ def calibrate_timebase_impl(
         ``{"timebase_calibration": TimebaseCalibrationResult,
         "parameters_used": dict, "status": "success"}``.
     """
+    from .events import operation_events
+
+    ops = operation_events("timebase run", events, cancel)
+    with ops.stage(Stage.TIMEBASE, verb="timebase run", file_path=file_path) as scope:
+        result = _calibrate_timebase(
+            file_path, clocks=clocks, kappa_sys=kappa_sys, snr_min=snr_min
+        )
+        scope.finish(timebase_summary(result["timebase_calibration"]))
+    return result
+
+
+def _calibrate_timebase(
+    file_path: str,
+    *,
+    clocks: Optional[Any],
+    kappa_sys: Optional[float],
+    snr_min: Optional[float],
+) -> Dict[str, Any]:
+    """The body of :func:`calibrate_timebase_impl` (inside its stage scope)."""
     file_path_obj = Path(file_path)
     with h5py.File(file_path, "r") as h5f:
         if "stage0_fid_data" not in h5f:

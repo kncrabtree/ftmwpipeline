@@ -50,11 +50,12 @@ import logging
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Tuple
 
 import h5py
 import numpy as np
 
+from ..contract import CancelToken, EventCallback, Stage
 from ..core.tau_calibration_settings import TauCalibrationSettings
 from ..file_manager import (
     BadSettingError,
@@ -78,7 +79,7 @@ from ..io.tau_calibration_settings_serialization import (
     save_tau_calibration_settings_to_h5,
     save_tau_producer_settings_to_h5,
 )
-from .shape_recommendation_impl import recommend_shape_impl
+from .shape_recommendation_impl import run_shape_recommendation
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage1_impl import persisted_ft_settings
 from .stage2_impl import _update_stage_completion
@@ -88,6 +89,9 @@ from .tau_settings_resolution import (
     _required_int,
     resolve_with_preset_and_persisted,
 )
+
+if TYPE_CHECKING:
+    from .events import StageScope
 
 logger = logging.getLogger(__name__)
 
@@ -230,6 +234,35 @@ def _route_min_contributors_for_gaussian(
     return routed
 
 
+def tau_run_summary(result: Mapping[str, Any], shape: str) -> Dict[str, Any]:
+    """The scalar ``ftmw/run_result@1`` summary of ``tau run`` -- also its
+    ``StageFinished.summary`` -- from a :func:`calibrate_tau_impl` result."""
+    tc = result["tau_calibration"]
+    spread = tc.sigma_tau_us / tc.tau_maj_us if tc.tau_maj_us > 0 else float("nan")
+    summary: Dict[str, Any] = {
+        "shape": shape,
+        "tau_maj_us": tc.tau_maj_us,
+        "sigma_tau_us": tc.sigma_tau_us,
+        "spread": spread,
+        "n_contributors": tc.n_contributors,
+        "bimodal": bool(tc.bimodality.two_component_preferred),
+        "delta_aic": tc.bimodality.delta_aic,
+        "preconditions_passed": bool(tc.preconditions_passed),
+        "preconditions_notes": "; ".join(
+            n for n in tc.preconditions_notes if n != "ok"
+        ),
+    }
+    if shape != "gaussian":
+        summary["n_spur_bins"] = tc.n_spur_bins
+        summary["n_spur_clusters"] = len(tc.spur_clusters)
+    return summary
+
+
+def _tau_stage(shape: str) -> Stage:
+    """The canonical stage of a Stage 2b twin."""
+    return Stage.TAU_G if shape == "gaussian" else Stage.TAU
+
+
 @requires_pipeline_file()
 def calibrate_tau_impl(
     file_path: str,
@@ -237,10 +270,20 @@ def calibrate_tau_impl(
     shape: str = "lorentzian",
     settings: Optional[TauCalibrationSettings] = None,
     preset: Optional[str] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
     _run_recommendation: bool = True,
     _ensure_recommended_twin: bool = True,
 ) -> Dict[str, Any]:
     """Run STFT tau calibration for ``shape`` and persist it to ``file_path``.
+
+    A long operation (``tau run``), reported as the ``tau`` (or, for
+    ``shape="gaussian"``, ``tau_g``) stage: ``StageStarted``, one
+    ``Invalidated`` for everything the call dropped (its own run and, when the
+    auto-recommendation builds the other twin, that twin's), then
+    ``StageFinished`` with :func:`tau_run_summary`. The recommendation and the
+    twin are part of the one call: the twin's stage is recorded as completed
+    after this one. ``cancel`` is checked before the stage starts.
 
     Requires Stages 0-2 to be completed (Stage 1 owns the active-region and
     trim parameters the calibration consumes; Stage 2 is the natural noise
@@ -271,6 +314,41 @@ def calibrate_tau_impl(
         ``invalidated`` field) names the invalidated stages canonically, in
         ``rerun_order``; ``invalidated_stages`` holds their storage keys.
     """
+    from .events import operation_events
+
+    _check_shape(shape)
+    ops = operation_events("tau run", events, cancel)
+    with ops.stage(_tau_stage(shape), verb="tau run", file_path=file_path) as scope:
+        with scope.collect_invalidations():
+            result, twin = _calibrate_tau(
+                file_path,
+                shape=shape,
+                settings=settings,
+                preset=preset,
+                events=scope,
+                run_recommendation=_run_recommendation,
+                ensure_recommended_twin=_ensure_recommended_twin,
+            )
+        scope.finish(tau_run_summary(result, shape))
+    if twin is not None:
+        ops.mark_completed(_tau_stage(twin))
+    return result
+
+
+def _calibrate_tau(
+    file_path: str,
+    *,
+    shape: str,
+    settings: Optional[TauCalibrationSettings],
+    preset: Optional[str],
+    events: "StageScope",
+    run_recommendation: bool,
+    ensure_recommended_twin: bool,
+) -> Tuple[Dict[str, Any], Optional[str]]:
+    """The body of :func:`calibrate_tau_impl` (inside its stage scope).
+
+    Returns the result and the shape of the twin the auto-recommendation built
+    (``None`` when it built none)."""
     _check_shape(shape)
     stage_name = _stage_name_for_shape(shape)
     file_path_obj = Path(file_path)
@@ -486,7 +564,7 @@ def calibrate_tau_impl(
         result,
         shape=shape,
         parameters_used=parameters_used,
-        reset_recommendation=_run_recommendation,
+        reset_recommendation=run_recommendation,
     )
     save_tau_calibration_settings_to_h5(
         file_path,
@@ -500,7 +578,7 @@ def calibrate_tau_impl(
         preset_name=preset_name,
     )
     _update_stage_completion(file_path, stage_name)
-    invalidated = invalidate_downstream_stages(file_path, stage_name)
+    invalidated = invalidate_downstream_stages(file_path, stage_name, events=events)
     if invalidated:
         logger.info(
             "Stage 2b (%s) re-run invalidated downstream stages: %s",
@@ -508,20 +586,22 @@ def calibrate_tau_impl(
             invalidated,
         )
 
-    if _run_recommendation and resolved.recommendation.auto_recommend:
+    twin: Optional[str] = None
+    if run_recommendation and resolved.recommendation.auto_recommend:
         # Run the 3-way L/G/V shape recommendation as part of the calibration so
         # Stage 5's resolver inherits the verdict on every fresh Stage 2b run.
         logger.info("auto_recommend on: running compute_shape_recommendation")
-        recommend_shape_impl(file_path)
+        run_shape_recommendation(file_path)
 
         # Self-consistency: Stage 5 fits the *recommended* shape and consumes the
         # matching tau twin. When the vote names the shape this call did not
         # build, build that twin too so Stage 5 never silently falls back to the
         # T_active/3 default.
-        if _ensure_recommended_twin:
-            invalidated = sorted(
-                set(invalidated) | set(_build_recommended_twin(file_path, built=shape))
+        if ensure_recommended_twin:
+            twin_keys, twin = _build_recommended_twin(
+                file_path, built=shape, events=events
             )
+            invalidated = sorted(set(invalidated) | set(twin_keys))
 
     canonical = canonical_invalidated(invalidated)
     return {
@@ -530,10 +610,12 @@ def calibrate_tau_impl(
         "parameters_used": parameters_used,
         "invalidated_stages": invalidated,
         "invalidated": list(canonical),
-    }
+    }, twin
 
 
-def _build_recommended_twin(file_path: str, *, built: str) -> List[str]:
+def _build_recommended_twin(
+    file_path: str, *, built: str, events: "StageScope"
+) -> Tuple[List[str], Optional[str]]:
     """Build the Stage 2b tau twin matching the recommended shape, if needed.
 
     *built* is the shape this call already produced (``"lorentzian"`` or
@@ -541,27 +623,32 @@ def _build_recommended_twin(file_path: str, *, built: str) -> List[str]:
     shape, build that twin too (skipping its own recommendation re-run and its
     own cross-build, so the pair is computed exactly once). A vote of ``None``
     (no clear winner -> Stage 5 defaults to Lorentzian) builds nothing extra.
-    Returns the storage keys the twin's run invalidated.
+    Returns the storage keys the twin's run invalidated and the twin's shape
+    (``None`` when none was built). The twin reports inside the calling
+    stage's scope (``events``).
     """
     from ..io.stage_fit_settings_serialization import read_stage2b_recommended_shape
 
     recommended = read_stage2b_recommended_shape(file_path)
     if recommended is None or recommended == built:
-        return []
+        return [], None
     if recommended in _VALID_SHAPES:
         logger.info(
             "Stage 2b vote = %s; building the matching tau twin so Stage 5 has "
             "its calibration",
             recommended,
         )
-        twin = calibrate_tau_impl(
+        twin, _ = _calibrate_tau(
             file_path,
             shape=recommended,
-            _run_recommendation=False,
-            _ensure_recommended_twin=False,
+            settings=None,
+            preset=None,
+            events=events,
+            run_recommendation=False,
+            ensure_recommended_twin=False,
         )
-        return list(twin["invalidated_stages"])
-    return []
+        return list(twin["invalidated_stages"]), recommended
+    return [], None
 
 
 def save_tau_calibration_impl(

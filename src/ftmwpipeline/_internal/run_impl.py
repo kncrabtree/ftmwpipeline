@@ -17,9 +17,41 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, TextIO, Tuple, Union
 
-from ..file_manager import BadSettingError
+from ..contract import CancelToken, EventCallback, Stage
+from ..file_manager import (
+    BadSettingError,
+    CallbackFailedError,
+    OperationCancelledError,
+    PipelineFileError,
+)
 from .compaction import deferred_compaction
+from .events import OperationEvents, operation_events
 from .progress import StageProgress
+
+#: The run's progress labels as canonical stage names. "start detection" (a
+#: stamp on the data stage) and "report" (artifacts) are steps, not stages:
+#: they map to ``None``.
+RUN_STAGES: Dict[str, Optional[Stage]] = {
+    "import": Stage.DATA,
+    "start detection": None,
+    "FT": Stage.FT,
+    "timebase": Stage.TIMEBASE,
+    "noise": Stage.NOISE,
+    "calibrate tau": Stage.TAU,
+    "peaks": Stage.PEAKS,
+    "windows": Stage.WINDOWS,
+    "fit": Stage.FIT,
+    "review": Stage.REVIEW,
+    "report": None,
+}
+
+
+def canonical_run_step(label: str) -> str:
+    """A run step's canonical stage name, or its label for a step that is not
+    a stage (``"start detection"``, ``"report"``)."""
+    stage = RUN_STAGES.get(label)
+    return label if stage is None else stage.value
+
 
 # ---------------------------------------------------------------------------
 # Orchestration
@@ -34,18 +66,39 @@ def _default_output(source: Union[str, Path]) -> Path:
 
 
 def _call(
-    method: Callable[..., Any], params: Optional[Dict[str, Any]], preset: Optional[str]
+    method: Callable[..., Any],
+    params: Optional[Dict[str, Any]],
+    preset: Optional[str],
+    ops: Optional[OperationEvents] = None,
 ) -> Any:
-    """Call a stage method with *params*, adding ``preset`` only if it accepts it.
+    """Call a stage method with *params*, adding ``preset`` and ``events`` only
+    if it accepts them.
 
     The per-stage override dict plus an optional preset name; the preset is
     forwarded solely to stages whose signature carries a ``preset`` parameter
-    (noise / tau / peaks / windows / fit), so passing one is always safe.
+    (noise / tau / peaks / windows / fit), so passing one is always safe. The
+    run's :class:`OperationEvents` goes in as ``events`` to every stage that
+    reports events, so the stage reports into the run (its cancel token rides
+    along).
     """
     kwargs = dict(params or {})
-    if preset is not None and "preset" in inspect.signature(method).parameters:
+    parameters = inspect.signature(method).parameters
+    if preset is not None and "preset" in parameters:
         kwargs.setdefault("preset", preset)
+    if ops is not None and "events" in parameters:
+        kwargs["events"] = ops
     return method(**kwargs)
+
+
+def _error_dict(exc: BaseException) -> Dict[str, Any]:
+    """The ``ftmw/error@1`` dict of a failure that stopped the run.
+
+    A typed error gives its own; anything else is carried under the base code
+    ``pipeline_error`` with its message.
+    """
+    if isinstance(exc, PipelineFileError):
+        return exc.to_dict()
+    return PipelineFileError(str(exc) or type(exc).__name__).to_dict()
 
 
 def run_pipeline_impl(
@@ -75,6 +128,8 @@ def run_pipeline_impl(
     preset: Optional[str] = None,
     progress: bool = True,
     progress_stream: Optional[TextIO] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> Dict[str, Any]:
     """Drive *source* through every pipeline stage and return a structured result.
 
@@ -95,10 +150,21 @@ def run_pipeline_impl(
     skips it deliberately.
 
     Returns a dict with ``pipeline_file``, ``status`` (``"success"`` /
-    ``"error"``), ``completed_stages``, ``failed_stage``, ``error``, ``timebase``
-    (``"calibrated"`` / ``"skipped"`` / ``"not_requested"``), ``report`` (the
-    ``report_run`` paths, or ``None``), and ``elapsed_s``. Stops at the first
-    failing stage.
+    ``"error"``), ``completed_stages`` (the run's step labels, in order),
+    ``failed_stage`` (the canonical stage name of the step that failed -- or
+    the step label for ``"start detection"`` / ``"report"`` -- else ``None``),
+    ``error`` (that failure's ``ftmw/error@1`` dict, else ``None``),
+    ``timebase`` (``"calibrated"`` / ``"skipped"`` / ``"not_requested"``),
+    ``report`` (the ``report_run`` paths, or ``None``), and ``elapsed_s``.
+    Stops at the first failing stage.
+
+    ``events`` / ``cancel`` follow the long-operation contract: events are
+    reported with ``operation="run"``; the token is checked before every step
+    and inside the stages that check it. A cancel raises
+    :class:`OperationCancelledError` (``completed_stages`` canonical) and a
+    failing callback :class:`CallbackFailedError` -- neither is folded into
+    the result. A skipped timebase calibration emits a ``timebase_skipped``
+    warning.
     """
     from ..pipeline import Pipeline
 
@@ -126,8 +192,16 @@ def run_pipeline_impl(
     if report:
         stages.append("report")
 
+    ops = operation_events("run", events, cancel)
     reporter = StageProgress(len(stages), stream=progress_stream, enabled=progress)
     completed: List[str] = []
+
+    def _done(label: str) -> None:
+        completed.append(label)
+        stage = RUN_STAGES.get(label)
+        if stage is not None:
+            ops.mark_completed(stage)
+
     result: Dict[str, Any] = {
         "source": str(source),
         "pipeline_file": str(out_path),
@@ -145,85 +219,115 @@ def run_pipeline_impl(
     # stage (see ``_internal.compaction``).
     with reporter.capture_logs(), deferred_compaction():
         try:
+            ops.check_cancel()
             with reporter.stage("import"):
-                pipe = Pipeline.create(
-                    out_path,
-                    source=source,
-                    format_name=format_name,
-                    fid_index=fid_index,
-                    force=force,
+                pipe = _call(
+                    Pipeline.create,
+                    dict(
+                        filepath=out_path,
+                        source=source,
+                        format_name=format_name,
+                        fid_index=fid_index,
+                        force=force,
+                    ),
+                    None,
+                    ops,
                 )
-            completed.append("import")
+            _done("import")
 
             if detect_start:
+                ops.check_cancel()
                 with reporter.stage("start detection"):
-                    pipe.detect_start_time(**(start_detection_params or {}))
-                completed.append("start detection")
+                    _call(pipe.detect_start_time, start_detection_params, None, ops)
+                _done("start detection")
 
+            ops.check_cancel()
             with reporter.stage("FT"):
                 ftp = dict(ft_params or {})
                 ftp.setdefault("trim", trim)
-                pipe.compute_ft(**ftp)
-            completed.append("FT")
+                _call(pipe.compute_ft, ftp, None, ops)
+            _done("FT")
 
             if calibrate:
+                ops.check_cancel()
                 with reporter.stage("timebase"):
                     try:
-                        pipe.calibrate_timebase(
-                            clocks=clocks, **(timebase_params or {})
+                        _call(
+                            pipe.calibrate_timebase,
+                            dict(clocks=clocks, **(timebase_params or {})),
+                            None,
+                            ops,
                         )
                         result["timebase"] = "calibrated"
-                        completed.append("timebase")
+                        _done("timebase")
+                    except (OperationCancelledError, CallbackFailedError):
+                        raise
                     except Exception as exc:  # non-fatal: warn + skip
                         result["timebase"] = "skipped"
-                        reporter.note(
-                            f"  warning: timebase calibration skipped — {exc} "
+                        note = (
+                            f"timebase calibration skipped — {exc} "
                             "Frequencies are reported as precision-only "
                             "(uncalibrated state)."
                         )
+                        reporter.note(f"  warning: {note}")
+                        ops.warn("timebase_skipped", note, stage=Stage.TIMEBASE)
 
+            ops.check_cancel()
             with reporter.stage("noise"):
-                _call(pipe.estimate_noise, noise_params, preset)
-            completed.append("noise")
+                _call(pipe.estimate_noise, noise_params, preset, ops)
+            _done("noise")
 
+            ops.check_cancel()
             with reporter.stage("calibrate tau"):
-                _call(pipe.calibrate_tau, tau_params, preset)
-            completed.append("calibrate tau")
+                _call(pipe.calibrate_tau, tau_params, preset, ops)
+            _done("calibrate tau")
 
+            ops.check_cancel()
             with reporter.stage("peaks"):
-                _call(pipe.detect_peaks, peak_params, preset)
-            completed.append("peaks")
+                _call(pipe.detect_peaks, peak_params, preset, ops)
+            _done("peaks")
 
+            ops.check_cancel()
             with reporter.stage("windows"):
-                _call(pipe.assign_windows, window_params, preset)
-            completed.append("windows")
+                _call(pipe.assign_windows, window_params, preset, ops)
+            _done("windows")
 
+            ops.check_cancel()
             with reporter.stage("fit"):
-                _call(pipe.fit_peaks, fit_params, preset)
-            completed.append("fit")
+                _call(pipe.fit_peaks, fit_params, preset, ops)
+            _done("fit")
 
+            ops.check_cancel()
             with reporter.stage("review"):
                 rp = dict(review_params or {})
                 if sigma_floor_khz is not None:
                     rp.setdefault("sigma_floor_khz", sigma_floor_khz)
-                pipe.review_run(**rp)
-            completed.append("review")
+                _call(pipe.review_run, rp, None, ops)
+            _done("review")
 
             if report:
+                ops.check_cancel()
                 with reporter.stage("report"):
                     rdir = (
                         report_output_dir
                         if report_output_dir is not None
                         else out_path.parent / f"{out_path.stem}_report"
                     )
-                    result["report"] = pipe.report_run(
-                        output_dir=rdir, **(report_params or {})
+                    result["report"] = _call(
+                        pipe.report_run,
+                        dict(output_dir=rdir, **(report_params or {})),
+                        None,
+                        ops,
                     )
-                completed.append("report")
+                _done("report")
+        except (OperationCancelledError, CallbackFailedError):
+            # Not folded into the result: a cancel (or a failing callback)
+            # aborts the run. Every completed stage stays as written.
+            raise
         except Exception as exc:
             result["status"] = "error"
-            result["failed_stage"] = reporter._label
-            result["error"] = str(exc)
+            result["failed_stage"] = canonical_run_step(reporter._label)
+            result["error"] = _error_dict(exc)
             result["elapsed_s"] = time.monotonic() - t0
             return result
 

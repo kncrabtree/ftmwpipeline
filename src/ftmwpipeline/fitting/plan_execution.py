@@ -85,6 +85,13 @@ from ftmwpipeline.preprocessing.window_planning import (
 )
 from ftmwpipeline.preprocessing.window_planning import replan as stage4_replan
 
+# The per-window log templates are defined with their single renderer in
+# ``_internal.events``; re-exported here, where the lines are logged (under this
+# module's logger name).
+from .._internal.events import SLOW_WINDOW_LOG_TEMPLATE  # noqa: F401
+from .._internal.events import WINDOW_DETAIL_LOG_TEMPLATE  # noqa: F401
+from .._internal.events import CANCEL_POLL_S, StageScope, detached_scope
+from ..contract import Absent, Stage
 from ..utils.parallelism import resolve_worker_count
 from . import validation
 from .active_ft import ActiveFTResult, PointMap
@@ -2139,6 +2146,7 @@ def execute_plan(
     final_add_snr_threshold: Optional[float] = None,
     probe_freq_mhz: Optional[float] = None,
     sample_dt_us: Optional[float] = None,
+    events: Optional[StageScope] = None,
 ) -> PlanFitOutcome:
     """Walk a Stage 4 :class:`WindowPlan` and fit every window on the active-FT.
 
@@ -2266,6 +2274,15 @@ def execute_plan(
         :attr:`~ftmwpipeline.fitting.peak_model.ModelPeak.peak_uid`.
         ``None`` (either, the default) leaves every peak in this run
         unstamped -- the caller has not supplied the frame.
+    events : StageScope, optional
+        The running Stage 5's event scope
+        (:mod:`ftmwpipeline._internal.events`). Every finished window is
+        reported through it from this (the parent) process -- a
+        ``WindowProgress`` per window in the ``"initial"`` walk and in each
+        ``"replan"`` re-walk, a ``slow_window`` / ``walk_fallback`` warning --
+        and its cancel token is checked between windows and between replan
+        rounds. ``None`` (the default) renders the same log lines with no
+        callback and no cancel.
 
     Returns
     -------
@@ -2279,7 +2296,13 @@ def execute_plan(
         If a window's ``freq_range`` does not overlap the active-FT spectrum,
         or a fixed contributor references a primary window that has not been
         fit (which should be impossible given the topological walk).
+    OperationCancelledError
+        When ``events``' cancel token is set (the walk stops; nothing returned).
+    CallbackFailedError
+        When ``events``' callback raises.
     """
+    if events is None:
+        events = detached_scope(Stage.FIT, verb="fit run")
     if conservative_kwargs is None:
         conservative_kwargs = {}
     conservative_kwargs = dict(conservative_kwargs)
@@ -2322,6 +2345,9 @@ def execute_plan(
     _walk_windows_parallel(
         plan,
         plan.topological_order or [w.window_id for w in plan.windows],
+        events=events,
+        phase="initial",
+        walk_round=0,
         active_ft=active_ft,
         noise=noise,
         peak_frequencies_mhz=peak_frequencies_mhz,
@@ -2359,7 +2385,10 @@ def execute_plan(
     # --- Structural renegotiation loop -------------------------------------
     _t_replan = time.monotonic()
     if replan_context is not None:
-        for _ in range(replan_context.max_replan_rounds):
+        # Replan rounds are numbered from 1 (the initial walk is round 0): the
+        # ``round`` of the WindowProgress pass that re-fits each round's set.
+        for replan_round in range(1, replan_context.max_replan_rounds + 1):
+            events.check_cancel()
             pending = _dispatch_structural_round(
                 outcomes, plan, residual_edge_threshold
             )
@@ -2414,6 +2443,9 @@ def execute_plan(
             _walk_windows_parallel(
                 new_plan,
                 affected_order,
+                events=events,
+                phase="replan",
+                walk_round=replan_round,
                 active_ft=active_ft,
                 noise=noise,
                 peak_frequencies_mhz=peak_frequencies_mhz,
@@ -2773,64 +2805,78 @@ def _add_from_convergence(
     return outcome
 
 
-def _log_window_progress(n_done: int, n_total: int) -> None:
-    """Emit the ``window n/total`` sub-step progress record for one completion.
-
-    The single emitter of the template
-    :data:`~ftmwpipeline._internal.progress.WINDOW_LOG_PREFIX` on the fit path.
-    Always called from the **parent** process with a count of windows actually
-    *finished*, never with a scheduling ordinal: under both parallel walks the
-    submission order and the completion order differ, so a worker-side count
-    would drive the progress bar backwards (and leave it stopped at whatever
-    ordinal happened to finish last).
-    """
-    logger.info("window %d/%d", n_done, n_total)
-
-
-# A window whose fit took longer than this (seconds) is reported as slow.
+# A window whose fit took longer than this (seconds) is reported as slow: a
+# ``slow_window`` PipelineWarning, rendered as a WARNING under
+# ``SLOW_WINDOW_LOG_TEMPLATE`` IN ADDITION to the window's INFO detail line.
 SLOW_WINDOW_WARNING_S = 60.0
 
-# The per-window detail record, one per fitted window, always at INFO.
-WINDOW_DETAIL_LOG_TEMPLATE = "w%d [%.1f-%.1f MHz]: %d peaks, chi2r=%.3g, %.1fs"
-# The slow-window record, emitted IN ADDITION to the detail line -- at WARNING,
-# under its own template -- when a window exceeds ``SLOW_WINDOW_WARNING_S``.
-# Level and template identify it together: a consumer filtering by level and
-# one matching on ``record.msg`` agree on which records mean "slow".
-SLOW_WINDOW_LOG_TEMPLATE = "slow window w%d [%.1f-%.1f MHz]: %.1fs (over %.0fs)"
 
+@dataclass(frozen=True)
+class _WindowReport:
+    """What the parent needs to report one finished window.
 
-def _log_window_outcome(
-    wid: int,
-    freq_range: Tuple[float, float],
-    *,
-    n_peaks: int,
-    reduced_chi2: float,
-    elapsed_s: float,
-) -> None:
-    """Log one finished window: the INFO detail line, plus a separate WARNING
-    under :data:`SLOW_WINDOW_LOG_TEMPLATE` when it took too long.
-
-    Two records rather than one promoted to WARNING, so the detail line keeps
-    one level and one template for every window and the slow flag is a
-    record of its own shape.
+    Built where the window was fit (a pool worker, or the parent on the
+    sequential walk) and returned with the outcome, so every per-window log line
+    and :class:`~ftmwpipeline.contract.WindowProgress` event is emitted by the
+    parent. ``n_peaks`` / ``reduced_chi2`` are ``None`` for a window the cleanup
+    cascaded to empty.
     """
-    logger.info(
-        WINDOW_DETAIL_LOG_TEMPLATE,
-        wid,
-        freq_range[0],
-        freq_range[1],
-        n_peaks,
-        reduced_chi2,
-        elapsed_s,
+
+    window_id: int
+    freq_range: Tuple[float, float]
+    n_peaks: Optional[int]
+    reduced_chi2: Optional[float]
+    elapsed_s: float
+
+    @property
+    def dropped(self) -> bool:
+        return self.n_peaks is None
+
+
+def _report_window(
+    events: StageScope,
+    report: _WindowReport,
+    *,
+    phase: str,
+    walk_round: int,
+    index: int,
+    total: int,
+) -> None:
+    """Emit one finished window from the **parent**: its ``WindowProgress``
+    (rendering the detail -- or dropped -- line and the ``window n/total``
+    progress line) and, when it ran long, a ``slow_window`` warning.
+
+    ``(phase, walk_round)`` names the pass (the event's ``round`` is
+    ``walk_round``). ``index`` is a count of windows actually *finished* in this
+    pass, never a
+    scheduling ordinal: under both parallel walks the submission order and the
+    completion order differ, so a worker-side count would drive the progress bar
+    backwards (and leave it stopped at whatever ordinal happened to finish last).
+    """
+    freq_range = (float(report.freq_range[0]), float(report.freq_range[1]))
+    events.window_progress(
+        phase=phase,
+        round=walk_round,
+        index=index,
+        total=total,
+        window_id=report.window_id,
+        n_peaks=Absent.UNDEFINED if report.n_peaks is None else int(report.n_peaks),
+        chi2r=(
+            Absent.UNDEFINED
+            if report.reduced_chi2 is None
+            else float(report.reduced_chi2)
+        ),
+        elapsed_s=report.elapsed_s,
+        dropped=report.dropped,
+        freq_range=freq_range,
     )
-    if elapsed_s > SLOW_WINDOW_WARNING_S:
-        logger.warning(
-            SLOW_WINDOW_LOG_TEMPLATE,
-            wid,
-            freq_range[0],
-            freq_range[1],
-            elapsed_s,
-            SLOW_WINDOW_WARNING_S,
+    if not report.dropped and report.elapsed_s > SLOW_WINDOW_WARNING_S:
+        events.warn(
+            "slow_window",
+            detail={"freq_range": freq_range},
+            window_id=report.window_id,
+            elapsed_s=float(report.elapsed_s),
+            threshold_s=float(SLOW_WINDOW_WARNING_S),
         )
 
 
@@ -2867,7 +2913,7 @@ def _process_one_window(
     final_add_snr_threshold: Optional[float] = None,
     probe_freq_mhz: Optional[float] = None,
     sample_dt_us: Optional[float] = None,
-) -> None:
+) -> _WindowReport:
     """Process one window end to end: conservative fit -> bounded thaw loop ->
     residual-rescue B-loop -> leakage-wing baseline -> doublet adjudication.
 
@@ -2876,11 +2922,11 @@ def _process_one_window(
     Extracted verbatim from :func:`_walk_windows_in_order` so the one per-window
     unit drives both the sequential walk and the per-level parallel pool.
 
-    Logs this window's own outcome line, identified by window id. The
-    ``window n/total`` progress record is deliberately NOT emitted here: under
-    either parallel walk this runs in a worker that cannot know how many
-    windows have finished, so the count is emitted by the parent as each result
-    lands (see :func:`_walk_windows_dag`).
+    Logs nothing about the window's outcome: it returns a
+    :class:`_WindowReport` and the walk reports it from the parent
+    (:func:`_report_window`) -- under either parallel walk this runs in a worker
+    that cannot know how many windows have finished, and events are only ever
+    delivered on the calling thread.
     """
     wid = win.window_id
     t_start = time.monotonic()
@@ -3090,22 +3136,17 @@ def _process_one_window(
         )
 
     elapsed = time.monotonic() - t_start
+    freq_range = (float(win.freq_range[0]), float(win.freq_range[1]))
     if wid not in outcomes:
-        # The window was dropped by the cleanup; nothing more to log / time here.
-        logger.info(
-            "w%d [%.1f-%.1f MHz]: dropped (cascaded to empty)",
-            wid,
-            win.freq_range[0],
-            win.freq_range[1],
-        )
-        return
+        # The window was dropped by the cleanup (cascaded to empty).
+        return _WindowReport(wid, freq_range, None, None, elapsed)
     final = outcomes[wid]
-    _log_window_outcome(
+    return _WindowReport(
         wid,
-        win.freq_range,
-        n_peaks=final.fit.n_peaks,
-        reduced_chi2=final.fit.fit.reduced_chi2,
-        elapsed_s=elapsed,
+        freq_range,
+        int(final.fit.n_peaks),
+        float(final.fit.fit.reduced_chi2),
+        elapsed,
     )
 
 
@@ -3113,6 +3154,9 @@ def _walk_windows_in_order(
     plan: WindowPlan,
     order: Sequence[int],
     *,
+    events: StageScope,
+    phase: str,
+    walk_round: int,
     active_ft: ActiveFTResult,
     noise: np.ndarray,
     peak_frequencies_mhz: Sequence[float],
@@ -3174,14 +3218,20 @@ def _walk_windows_in_order(
        the final (post-thaw, post-rescue) residual so removing the wing
        de-biases the rescue-confirmed lines and the trigger sees the
        cleanest residual; sequenced last and independent of rescue.
+
+    Each finished window is reported through ``events`` as one pass
+    (``phase``, ``walk_round``; ``index`` from 1, ``total`` the windows in
+    ``order``); a cancel is honoured before each window, i.e. after the
+    current one.
     """
     if window_tau_overrides is None:
         window_tau_overrides = {}
     by_id = {w.window_id: w for w in plan.windows}
     n_total = len(order)
     for n_done, wid in enumerate(order, start=1):
+        events.check_cancel()
         win = by_id[wid]
-        _process_one_window(
+        report = _process_one_window(
             win,
             active_ft=active_ft,
             noise=noise,
@@ -3214,7 +3264,14 @@ def _walk_windows_in_order(
             probe_freq_mhz=probe_freq_mhz,
             sample_dt_us=sample_dt_us,
         )
-        _log_window_progress(n_done, n_total)
+        _report_window(
+            events,
+            report,
+            phase=phase,
+            walk_round=walk_round,
+            index=n_done,
+            total=n_total,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -3303,15 +3360,20 @@ def _levelize(
     return levels
 
 
-def _fit_window_worker(
-    task: int,
-) -> tuple[
+#: What a pool worker returns for one window: its id, outcome (``None`` when the
+#: cleanup emptied it), local thaw / rescue / cleanup records, and the report the
+#: parent emits the window's events from.
+_WorkerResult = tuple[
     int,
     Optional[WindowOutcome],
     list[ThawEvent],
     list[RescueEvent],
     list[dict[str, Any]],
-]:
+    _WindowReport,
+]
+
+
+def _fit_window_worker(task: int) -> _WorkerResult:
     """Process-pool entry point: fit one window from the fork-inherited context.
 
     BLAS runs single-threaded per process (the per-window solve is
@@ -3341,7 +3403,7 @@ def _fit_window_worker(
     # threadpool_limits(1) before this pool forked, and the child inherited that.
     # Do NOT call threadpoolctl here: its dlopen library scan is not fork-safe in
     # a fork child of a multithreaded parent and aborts (SIGABRT).
-    _process_one_window(
+    report = _process_one_window(
         ctx["by_id"][wid],
         outcomes=local_outcomes,
         thaw_history=thaw_local,
@@ -3349,18 +3411,19 @@ def _fit_window_worker(
         cleanup_history=cleanup_local,
         **ctx["shared"],
     )
-    return wid, local_outcomes.get(wid), thaw_local, rescue_local, cleanup_local
+    return (
+        wid,
+        local_outcomes.get(wid),
+        thaw_local,
+        rescue_local,
+        cleanup_local,
+        report,
+    )
 
 
 def _fit_window_worker_dag(
     task: tuple[int, dict[int, WindowOutcome]],
-) -> tuple[
-    int,
-    Optional[WindowOutcome],
-    list[ThawEvent],
-    list[RescueEvent],
-    list[dict[str, Any]],
-]:
+) -> _WorkerResult:
     """Process-pool entry for the dependency-gated walk: fit one window.
 
     Unlike :func:`_fit_window_worker` (which inherits the full earlier-level
@@ -3383,7 +3446,7 @@ def _fit_window_worker_dag(
     # BLAS at one thread: inherited on fork from the parent's threadpool_limits(1)
     # (fit_peaks_impl). Do NOT call threadpoolctl here -- not fork-safe in a fork
     # child of a multithreaded parent (SIGABRT).
-    _process_one_window(
+    report = _process_one_window(
         ctx["by_id"][wid],
         outcomes=local_outcomes,
         thaw_history=thaw_local,
@@ -3391,7 +3454,14 @@ def _fit_window_worker_dag(
         cleanup_history=cleanup_local,
         **ctx["shared"],
     )
-    return wid, local_outcomes.get(wid), thaw_local, rescue_local, cleanup_local
+    return (
+        wid,
+        local_outcomes.get(wid),
+        thaw_local,
+        rescue_local,
+        cleanup_local,
+        report,
+    )
 
 
 # Set in the parent before a refit-map pool forks; read by the worker entry via
@@ -3462,10 +3532,90 @@ def parallel_window_refit_map(
         _WORKER_REFIT_CTX = None
 
 
+#: How long :func:`_abort_pool` waits for a terminated worker before killing it.
+_ABORT_JOIN_S = 1.0
+
+
+def _abort_pool(ex: Any) -> None:
+    """Stop a window pool now, without waiting for the windows still fitting.
+
+    The cancel / callback-failure / error path of the parallel walks. Never
+    blocks for long and never raises.
+
+    ``ProcessPoolExecutor`` has no public way to stop a *running* task:
+    ``shutdown(cancel_futures=True)`` only drops the pending ones, and with
+    ``wait=True`` it blocks until the running ones finish (a cancel would wait
+    for the slowest window). So this reads the executor's **private**
+    ``_processes`` mapping (pid -> ``Process``; CPython 3.9-3.13) to terminate
+    the workers, and closes the parent's write end of the private
+    ``_result_queue`` pipe (see below). Those are the only private-API uses,
+    kept in this one helper. The broken-pool state the termination causes
+    (``BrokenProcessPool`` on the abandoned futures, raised in the executor's
+    manager thread) is absorbed: the futures are never read again.
+    """
+    processes = list((getattr(ex, "_processes", None) or {}).values())
+    # Terminate first: it is the step that must happen even if this helper is
+    # itself interrupted (a second Ctrl-C).
+    for proc in processes:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+    # A worker terminated mid-``put`` leaves a partial message in the result
+    # pipe, and the executor's manager thread then blocks in ``recv`` on it --
+    # forever while the parent still holds its own copy of the pipe's write end
+    # (the forked workers' copies close as they die). Closing the parent's copy
+    # gives that ``recv`` EOF, so the manager thread marks the pool broken and
+    # exits instead of hanging. Done before ``shutdown``, which drops the
+    # executor's reference to the queue.
+    result_queue = getattr(ex, "_result_queue", None)
+    if result_queue is not None:
+        try:
+            result_queue._writer.close()
+        except Exception:
+            pass
+    try:
+        ex.shutdown(wait=False, cancel_futures=True)
+    except Exception:  # BrokenProcessPool or a pool already torn down
+        pass
+    for proc in processes:
+        try:
+            proc.join(timeout=_ABORT_JOIN_S)
+            if proc.is_alive():
+                proc.kill()
+                proc.join(timeout=_ABORT_JOIN_S)
+        except Exception:
+            pass
+
+
+def _ignore_sigint() -> None:
+    """Pool-worker initializer: a terminal Ctrl-C reaches the whole process
+    group, but cancelling is the parent's call (it terminates the workers), so
+    a worker never reacts to SIGINT itself."""
+    import signal
+
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+
+def _await_in_order(fut: Any, events: StageScope) -> Any:
+    """``fut.result()``, polling the cancel token every :data:`CANCEL_POLL_S`."""
+    from concurrent.futures import TimeoutError as FuturesTimeoutError
+
+    while True:
+        events.check_cancel()
+        try:
+            return fut.result(timeout=CANCEL_POLL_S)
+        except FuturesTimeoutError:
+            continue
+
+
 def _walk_windows_dag(
     plan: WindowPlan,
     order: Sequence[int],
     *,
+    events: StageScope,
+    phase: str,
+    walk_round: int,
     outcomes: dict[int, WindowOutcome],
     thaw_history: list[ThawEvent],
     rescue_history: list[RescueEvent],
@@ -3493,8 +3643,14 @@ def _walk_windows_dag(
     already dispatched read the pre-thaw primary) is handled conservatively: if
     *any* window reports an accepted thaw, the entire walk is redone via the
     sequential :func:`_walk_windows_in_order` (authoritative), discarding the
-    parallel outcomes. Thaw-accept is 0 on every validated fixture, so this path
-    does not fire in practice.
+    parallel outcomes, and a ``walk_fallback`` warning says so; the redo reports
+    as its own ``"fallback"`` pass of the same round. Thaw-accept is 0
+    on every validated fixture, so this path does not fire in practice.
+
+    The parent polls the cancel token every :data:`CANCEL_POLL_S` while workers
+    fit. A cancel -- or any exception here, such as a failing events callback --
+    aborts the pool at once (:func:`_abort_pool`) rather than waiting for the
+    windows in flight.
     """
     import multiprocessing
     from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
@@ -3523,10 +3679,14 @@ def _walk_windows_dag(
     ] = {}
     accepted_thaw = False
     try:
+        events.check_cancel()
         ctx_mp = multiprocessing.get_context("fork")
-        with ProcessPoolExecutor(
-            max_workers=min(max_workers, n_total), mp_context=ctx_mp
-        ) as ex:
+        ex = ProcessPoolExecutor(
+            max_workers=min(max_workers, n_total),
+            mp_context=ctx_mp,
+            initializer=_ignore_sigint,
+        )
+        try:
             futures: dict[Any, int] = {}
 
             def _submit(wid: int) -> None:
@@ -3550,10 +3710,15 @@ def _walk_windows_dag(
                 if indeg[wid] == 0:
                     _submit(wid)
             while futures:
-                done, _ = wait(list(futures), return_when=FIRST_COMPLETED)
+                # Poll rather than block: a cancel is honoured within one
+                # interval even while every worker is deep in a long window.
+                events.check_cancel()
+                done, _ = wait(
+                    list(futures), timeout=CANCEL_POLL_S, return_when=FIRST_COMPLETED
+                )
                 for fut in done:
                     wid = futures.pop(fut)
-                    _, outcome, thaws, rescues, cleanups = fut.result()
+                    _, outcome, thaws, rescues, cleanups, report = fut.result()
                     # A cleanup that cascaded the window to empty returns no
                     # outcome: leave it out of ``outcomes`` so a dependent sees it
                     # as absent (its contributor is skipped), but still count it
@@ -3566,13 +3731,25 @@ def _walk_windows_dag(
                     # dependency-gated walk, so a worker-side ordinal would make
                     # the bar jump around and settle wherever the last-finishing
                     # window happened to sit in the schedule.
-                    _log_window_progress(len(results), n_total)
+                    _report_window(
+                        events,
+                        report,
+                        phase=phase,
+                        walk_round=walk_round,
+                        index=len(results),
+                        total=n_total,
+                    )
                     if any(e.accepted for e in thaws):
                         accepted_thaw = True
                     for s in succs[wid]:
                         indeg[s] -= 1
                         if indeg[s] == 0:
                             _submit(s)
+        except BaseException:
+            _abort_pool(ex)
+            raise
+        else:
+            ex.shutdown(wait=True)
     finally:
         _WORKER_FIT_CTX = None
 
@@ -3584,12 +3761,7 @@ def _walk_windows_dag(
     unscheduled = n_total - len(results)
     if accepted_thaw or unscheduled:
         reason = "accepted thaw" if accepted_thaw else f"{unscheduled} cyclic windows"
-        logger.warning(
-            "dag walk falling back to the sequential walk (%s); re-fitting %d "
-            "windows for cross-window correctness",
-            reason,
-            n_total,
-        )
+        events.warn("walk_fallback", reason=reason, n_windows=n_total)
         # The DAG loop accumulates histories into ``results`` (not the caller's
         # lists) and overwrites only in-order ``outcomes`` keys, so the caller's
         # pre-walk history and any out-of-order outcomes are intact; the
@@ -3597,9 +3769,14 @@ def _walk_windows_dag(
         # in-order outcomes before any dependent reads them.
         if cleanup_history is not None:
             cleanup_history.clear()
+        # Reported as its own pass: phase "fallback", the same round, index
+        # from 1 over the windows re-walked (all of them).
         _walk_windows_in_order(
             plan,
             in_order,
+            events=events,
+            phase="fallback",
+            walk_round=walk_round,
             outcomes=outcomes,
             thaw_history=thaw_history,
             rescue_history=rescue_history,
@@ -3622,6 +3799,9 @@ def _walk_windows_parallel(
     plan: WindowPlan,
     order: Sequence[int],
     *,
+    events: StageScope,
+    phase: str,
+    walk_round: int,
     active_ft: ActiveFTResult,
     noise: np.ndarray,
     peak_frequencies_mhz: Sequence[float],
@@ -3676,6 +3856,14 @@ def _walk_windows_parallel(
     walk re-fits the affected level sequentially, the scheduler re-fits the whole
     walk sequentially (this never fires on the validated fixtures, where
     thaw-accept = 0).
+
+    Every walk reports each finished window through ``events`` from the parent,
+    as the pass ``(phase, walk_round)`` (``"initial"`` round 0, or ``"replan"``
+    round k); a sequential redo after a fallback is its own ``"fallback"`` pass
+    of the same round, its ``index`` from 1 and ``total`` the windows it
+    re-walks. Every walk honours a cancel between
+    windows; the pool walks poll for it every :data:`CANCEL_POLL_S` and abort
+    their pool on a cancel or error.
     """
     if window_tau_overrides is None:
         window_tau_overrides = {}
@@ -3721,6 +3909,9 @@ def _walk_windows_parallel(
         _walk_windows_in_order(
             plan,
             order,
+            events=events,
+            phase=phase,
+            walk_round=walk_round,
             outcomes=outcomes,
             thaw_history=thaw_history,
             rescue_history=rescue_history,
@@ -3738,6 +3929,9 @@ def _walk_windows_parallel(
         _walk_windows_dag(
             plan,
             order,
+            events=events,
+            phase=phase,
+            walk_round=walk_round,
             outcomes=outcomes,
             thaw_history=thaw_history,
             rescue_history=rescue_history,
@@ -3751,11 +3945,14 @@ def _walk_windows_parallel(
     levels = _levelize(order, by_id, plan.dependency_edges)
     n_total = len(order)
 
-    def _run_sequential(level: Sequence[int], n_done0: int) -> None:
+    def _run_sequential(
+        level: Sequence[int], n_done0: int, *, pass_phase: str, pass_total: int
+    ) -> None:
         nd = n_done0
         for wid in level:
+            events.check_cancel()
             nd += 1
-            _process_one_window(
+            report = _process_one_window(
                 by_id[wid],
                 outcomes=outcomes,
                 thaw_history=thaw_history,
@@ -3763,7 +3960,14 @@ def _walk_windows_parallel(
                 cleanup_history=cleanup_history,
                 **shared_kwargs,
             )
-            _log_window_progress(nd, n_total)
+            _report_window(
+                events,
+                report,
+                phase=pass_phase,
+                walk_round=walk_round,
+                index=nd,
+                total=pass_total,
+            )
 
     if len(levels) > 1 or any(len(lv) > 1 for lv in levels):
         logger.info(
@@ -3779,7 +3983,7 @@ def _walk_windows_parallel(
         t_level = time.monotonic()
         # A width-1 level forks nothing -- run it in-process (no pool overhead).
         if len(level) < 2:
-            _run_sequential(level, n_done)
+            _run_sequential(level, n_done, pass_phase=phase, pass_total=n_total)
             n_done += len(level)
             continue
 
@@ -3792,20 +3996,38 @@ def _walk_windows_parallel(
             "outcomes": outcomes,
             "shared": shared_kwargs,
         }
-        results: dict[int, tuple[int, Optional[WindowOutcome], list, list, list]] = {}
+        results: dict[int, _WorkerResult] = {}
         try:
             from concurrent.futures import ProcessPoolExecutor
 
+            events.check_cancel()
             ctx_mp = multiprocessing.get_context("fork")
-            with ProcessPoolExecutor(
-                max_workers=min(max_workers, len(level)), mp_context=ctx_mp
-            ) as ex:
-                # ``ex.map`` yields in input order, so counting consumed results
-                # in the parent gives a monotonic completion count (the worker's
-                # own position in the level is not one).
-                for res in ex.map(_fit_window_worker, list(level)):
+            ex = ProcessPoolExecutor(
+                max_workers=min(max_workers, len(level)),
+                mp_context=ctx_mp,
+                initializer=_ignore_sigint,
+            )
+            try:
+                # Consumed in input order (as ``ex.map`` did), so counting
+                # consumed results in the parent gives a monotonic completion
+                # count (the worker's own position in the level is not one).
+                level_futures = [ex.submit(_fit_window_worker, w) for w in level]
+                for fut in level_futures:
+                    res = _await_in_order(fut, events)
                     results[res[0]] = res
-                    _log_window_progress(n_done + len(results), n_total)
+                    _report_window(
+                        events,
+                        res[5],
+                        phase=phase,
+                        walk_round=walk_round,
+                        index=n_done + len(results),
+                        total=n_total,
+                    )
+            except BaseException:
+                _abort_pool(ex)
+                raise
+            else:
+                ex.shutdown(wait=True)
         finally:
             _WORKER_FIT_CTX = None
 
@@ -3823,10 +4045,12 @@ def _walk_windows_parallel(
                 "sequentially for cross-window correctness",
                 len(level),
             )
-            _run_sequential(level, n_done)
+            # Reported as its own pass: phase "fallback", the same round,
+            # index from 1 over this level's windows.
+            _run_sequential(level, 0, pass_phase="fallback", pass_total=len(level))
         else:
             for wid in level:
-                _, outcome, thaws, rescues, cleanups = results[wid]
+                _, outcome, thaws, rescues, cleanups, _report = results[wid]
                 # A cleanup that emptied the window returns no outcome; leave it
                 # out of ``outcomes`` (the next level reads it as absent).
                 if outcome is not None:

@@ -28,9 +28,11 @@ from ftmwpipeline.contract import (
     AlgorithmFailedError,
     AnalysisEpochMismatchError,
     BadSettingError,
+    CallbackFailedError,
     IncompleteProvenanceError,
     NotFoundError,
     NotFoundValueError,
+    OperationCancelledError,
     PipelineCompatibilityError,
     PipelineCorruptionError,
     PipelineExistsError,
@@ -84,12 +86,13 @@ def test_contract_version_is_int():
     assert isinstance(CONTRACT_VERSION, int)
 
 
-def test_contract_version_is_eight():
+def test_contract_version_is_nine():
     # Wave 0 published 1; Wave 1's accessors raised it to 2; the final-products
     # fit fields (Wave 2) to 3; the window_model / spectrum_model accessors to 4;
     # the analysis_fingerprint accessor to 5; CurationAction (curation as data)
-    # to 6; Wave 7 to 7; Wave 8 (full capabilities) to 8.
-    assert CONTRACT_VERSION == 8
+    # to 6; Wave 7 to 7; Wave 8 (full capabilities) to 8; Wave 5.1 (events and
+    # cancellation) to 9.
+    assert CONTRACT_VERSION == 9
 
 
 # ---- stage vocabulary -----------------------------------------------------
@@ -257,6 +260,18 @@ def _errors():
             "algorithm_failed",
             {"stage": "fit"},
             (RuntimeError,),
+        ),
+        (
+            OperationCancelledError("fit", ["data", "ft"], []),
+            "cancelled",
+            {"stage": "fit", "completed_stages": ["data", "ft"], "completed_windows": []},
+            (),
+        ),
+        (
+            CallbackFailedError("ftmw/window_progress@1"),
+            "callback_failed",
+            {"event_schema": "ftmw/window_progress@1"},
+            (),
         ),
     ]
 

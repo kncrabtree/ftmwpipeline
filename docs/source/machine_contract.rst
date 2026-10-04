@@ -64,8 +64,10 @@ The payload is ``{"schema": "ftmw/capabilities@1", "contract_version": int,
 (``stages`` is described under `Stage names`_). Every group of the manifest the
 contract tests check is present, in manifest order, so a client can discover
 the whole surface without importing the package: ``tables`` and ``fields``
-list the declared columns and result-type fields, ``vocabularies`` the closed
-value sets, ``file_bound`` whether each accessor takes a file, and
+list the declared columns and result-type fields (an event's fields are its
+wire keys; a ``PipelineWarning``'s own fields are listed per code under
+``PipelineWarning.<code>``, such as ``PipelineWarning.slow_window``),
+``vocabularies`` the closed value sets, ``file_bound`` whether each accessor takes a file, and
 ``pipeline_names`` the ``Pipeline`` method serving each accessor (every
 accessor is listed, defaulting to its own name). Every accessor listed
 exists on the API, on ``Pipeline`` and as exactly one CLI verb,
@@ -664,6 +666,20 @@ carries a stable ``code`` and typed attributes, and ``to_dict()`` returns::
      - ``BadSettingError`` (a ``ValueError``)
      - ``path`` (the registry path of the setting, or the argument name),
        ``expected`` (what would have been accepted), ``value`` (what was given)
+   * - ``cancelled``
+     - ``OperationCancelledError``
+     - ``stage`` (the stage interrupted, or ``null`` between stages and for a
+       step that is not a stage), ``completed_stages``, ``completed_windows``
+       (always ``[]`` for now); see *Events and cancellation* below
+   * - ``callback_failed``
+     - ``CallbackFailedError``
+     - ``event_schema`` (the event being delivered); the callback's exception
+       is the ``__cause__``
+   * - ``pipeline_error``
+     - ``PipelineFileError`` (the base class)
+     - none. The declared fallback: a direct raise of the base class carries
+       it, and ``run_pipeline`` reports a failure that is not a typed error
+       under it (see *Events and cancellation* below)
 
 The code set is introduced **wave by wave**. ``capabilities()`` lists the
 codes this installation currently implements, and a client should rely on that
@@ -969,6 +985,135 @@ and knob mappings are not one-to-one and have none.
 ``[{"stage", "storage_key", "settings_prefix", "knob_prefix",
 "depends_on"}]`` in enum order, with ``depends_on`` in canonical names.
 
+.. _machine-contract-events:
+
+Events and cancellation
+-----------------------
+
+Every long operation takes two optional keyword arguments on the API and on
+``Pipeline``: ``events``, a callable that receives each event, and ``cancel``,
+anything with an ``is_set()`` method (a ``threading.Event`` will do). The long
+operations are every stage run (``import_data`` / ``Pipeline.create``,
+``detect_start_time``, ``compute_ft``, ``estimate_noise``, ``calibrate_tau``,
+``recommend_shape``, ``calibrate_timebase``, ``detect_peaks``,
+``assign_windows``, ``fit_peaks``, ``review_run``), the curation calls
+(``review_apply``, ``review_preview``, ``review_accept``, ``review_edit``,
+``review_create``, ``review_undo``), ``report_run``, ``scan_run``,
+``scan_all`` and ``run_pipeline``.
+
+The callback runs on the calling thread, never in a worker process. Each event
+is a frozen dataclass exported from ``ftmwpipeline`` and serializes through
+``to_jsonable``; every one carries ``schema``, ``operation`` (the CLI verb,
+such as ``"fit run"``, or ``"run"`` for ``run_pipeline``) and ``stage`` (a
+canonical stage name, or ``null`` for a step that is not a stage: start
+detection, the report, a scan):
+
+* ``StageStarted`` (``ftmw/stage_started@1``) opens a stage, after the cancel
+  check.
+* ``StageFinished`` (``ftmw/stage_finished@1``: ``elapsed_s``, ``summary``)
+  closes it once its results are written. ``summary`` has the keys of the same
+  verb's ``ftmw/run_result@1`` summary.
+* ``WindowProgress`` (``ftmw/window_progress@1``: ``phase``, ``round``,
+  ``index``, ``total``, ``window_id``, ``n_peaks``, ``chi2r``, ``elapsed_s``,
+  ``dropped``) follows each window the Stage 5 walk fits, each window a Stage 6
+  call re-fits (``stage: "review"``) and each window the report renders.
+  Events come in **passes**, each named by its ``(phase, round)`` pair, and
+  within a pass ``index`` counts finished windows from 1 up to ``total``,
+  which is fixed when the pass begins. ``phase`` is ``"initial"`` (the fit's
+  first walk, a Stage 6 call's directly edited windows, the report's windows),
+  ``"replan"`` (a structural replan round), ``"fallback"`` (a sequential
+  re-walk after that round's parallel walk fell back, reporting windows the
+  round already reported; see ``walk_fallback``) or ``"cascade"`` (Stage 6's
+  re-fit of dependent windows). ``round`` is ``0`` for the initial walk, its
+  fallback and every Stage 6 pass, and the replan round's number (from 1) for
+  a replan round and its fallback.
+* ``ScanProgress`` (``ftmw/scan_progress@1``: ``knob``, ``value``, ``index``,
+  ``total``) follows each scanned value.
+* ``Invalidated`` (``ftmw/invalidated@1``: ``stages``) is emitted once per
+  call that drops downstream stages, and equals the result's ``invalidated``.
+* ``PipelineWarning`` (``ftmw/warning@1``: ``code``, ``message`` and the
+  code's own fields, flattened beside them; ``capabilities()["fields"]`` lists
+  them as ``PipelineWarning.<code>``) with ``code`` one of ``slow_window``, ``walk_fallback``,
+  ``epoch_acknowledged``, ``frame_mismatch`` (the curation advisory, which
+  stays in the result's ``warnings`` too), ``environment_drift`` (once per
+  operation, when the file's recorded environment differs from the running
+  one) and ``timebase_skipped``.
+
+A callback that raises aborts the operation with ``callback_failed``.
+
+``cancel`` is checked before every stage, between the windows of the Stage 5
+walk, of a Stage 6 refit and its cascade and of the report's rendering, and
+between scan values. A cancel raises ``cancelled``. Every stage the operation
+completed stays as written; the interrupted stage leaves the file as it was
+before it began. A curation batch (``review_apply``, and every edit with its
+cascade) is one unit: a cancel discards all of it. ``review_undo`` (and an
+apply with ``log_prefix``) honours a cancel only before it restores the
+automatic fit; once the restore has begun, the replay completes. A stage that
+has begun its final write completes, and the cancel is honoured at the next
+check point.
+
+On the command line every long verb takes ``--events``, which writes each event
+to stderr as one JSON line. The first Ctrl-C cancels: the verb stops at its
+next check point and exits ``130`` with the ``cancelled`` error (its
+``ftmw/error@1`` dict on stderr under ``--json``). A second Ctrl-C interrupts
+at once.
+
+A Python client that shows progress, stops on request and routes on the two new
+codes::
+
+   import json
+   import threading
+   import ftmwpipeline.api as ftmw
+   from ftmwpipeline import (
+       CallbackFailedError, OperationCancelledError, StageFinished,
+       WindowProgress, to_jsonable,
+   )
+
+   stop = threading.Event()          # set it from any thread to cancel
+
+   def on_event(event):              # runs on this thread, never in a worker
+       if isinstance(event, WindowProgress):
+           print(f"window {event.window_id}: {event.index}/{event.total}")
+       elif isinstance(event, StageFinished):
+           print(event.stage.value, "finished in", f"{event.elapsed_s:.1f} s")
+       print(json.dumps(to_jsonable(event)))           # the wire form
+
+   try:
+       ftmw.fit_peaks("exp.ftmw", events=on_event, cancel=stop)
+   except OperationCancelledError as err:
+       # err.stage == "fit" (None between stages); the file is as it was
+       print("cancelled", err.stage, err.completed_stages, err.completed_windows)
+   except CallbackFailedError as err:
+       print("on_event raised while handling", err.event_schema, err.__cause__)
+
+``run_pipeline`` reports every stage under ``operation="run"``. A cancel
+raises, so the stages it had finished are on the error, not in a result dict;
+any other failure is a result with ``status == "error"`` whose ``error`` is the
+failure's ``ftmw/error@1`` dict (a plain string before contract version 9) and
+whose ``failed_stage`` is a canonical stage name::
+
+   try:
+       result = ftmw.run_pipeline(src, "exp.ftmw", trim=(26500, 40000),
+                                  events=on_event, cancel=stop)
+   except OperationCancelledError as err:
+       print("kept:", err.completed_stages)          # e.g. ["data", "ft", "noise"]
+   else:
+       if result["status"] == "error":
+           print(result["failed_stage"], result["error"]["code"])
+
+On the command line, ``--events`` writes the same events to stderr, one JSON
+line each, and the first Ctrl-C cancels::
+
+   $ ftmwpipeline fit run exp.ftmw --events --json 2> stderr.jsonl > result.json
+   $ head -2 stderr.jsonl
+   {"schema": "ftmw/stage_started@1", "operation": "fit run", "stage": "fit"}
+   {"schema": "ftmw/window_progress@1", "operation": "fit run", "stage": "fit", "phase": "initial", "round": 0, "index": 1, "total": 382, "window_id": 3, "n_peaks": 2, "chi2r": 1.04, "elapsed_s": 0.9, "dropped": false}
+   $ # Ctrl-C:
+   $ echo $?
+   130
+   $ tail -1 stderr.jsonl
+   {"schema": "ftmw/error@1", "code": "cancelled", "message": "...", "stage": "fit", "completed_stages": [], "completed_windows": []}
+
 Per-stage state: ``status``
 ---------------------------
 
@@ -1037,8 +1182,9 @@ default, format), ``-o/--output DIR`` and ``-v``.
      - not yet raised; reserved for a later wave
    * - ``cancelled``, or Ctrl-C
      - ``130``
-     - ``cancelled`` is not yet raised; an interrupt exits ``130`` now
-   * - every other code (``not_found``, ``stage_not_run``,
+     - the first Ctrl-C on a long verb cancels it (the ``cancelled`` error);
+       a second one interrupts at once
+   * - every other code (``not_found``, ``stage_not_run``, ``callback_failed``,
        ``file_incompatible``, ...) and any other user error
      - ``1``
      -

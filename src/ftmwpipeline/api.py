@@ -57,6 +57,7 @@ from ._internal.stage6_impl import (
     ReviewRunResult,
     UndoResult,
 )
+from .contract import CancelToken, EventCallback
 from .core.calibration import CalibrationStamp
 from .core.curation import CurationAction, Frame
 from .core.data_structures import (
@@ -96,6 +97,9 @@ def import_data(
     format_name: Optional[str] = None,
     fid_index: Optional[int] = None,
     force: bool = False,
+    *,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
     **loader_params: Any,
 ) -> Dict[str, Any]:
     """
@@ -117,6 +121,10 @@ def import_data(
         FID index for multi-FID formats (e.g., Blackchirp)
     force : bool, default False
         If True, overwrite existing file even with different source
+    events : callable, optional
+        Called on this thread with each event (see :meth:`Pipeline.create`).
+    cancel : CancelToken, optional
+        Checked before the import starts (see :meth:`Pipeline.create`).
     **loader_params
         Additional parameters for data loader
 
@@ -124,8 +132,9 @@ def import_data(
     -------
     dict
         Import result with pipeline file path, source info, and FID metadata.
-        ``invalidated`` names the stages an overwrite discarded (``force``
-        over an analysed file), canonical names in ``rerun_order``.
+        ``invalidated`` names the stages the import discarded (an overwrite
+        with ``force`` over an analysed file, or a moved start hint), canonical
+        names in ``rerun_order``.
 
     Raises
     ------
@@ -146,18 +155,16 @@ def import_data(
     >>> print(f"Created: {result['pipeline_file']}")
     """
     try:
-        from .file_manager import canonical_invalidated, stages_an_import_replaces
-
-        # Read before the import writes: what an overwrite discards.
-        replaced = stages_an_import_replaces(file_path, force)
-
-        # Create pipeline using Pipeline class
-        pipeline = Pipeline.create(
-            filepath=file_path,
-            source=source,
+        # Create pipeline using Pipeline class (its import result carries what
+        # the import invalidated -- the same list its Invalidated event names).
+        pipeline, imported = Pipeline._create(
+            file_path,
+            source,
             format_name=format_name,
             fid_index=fid_index,
             force=force,
+            events=events,
+            cancel=cancel,
             **loader_params,
         )
 
@@ -170,7 +177,7 @@ def import_data(
             "source_path": info["source_path"],
             "format_name": info["format"],
             "status": "success",
-            "invalidated": list(canonical_invalidated(replaced)),
+            "invalidated": list(imported["invalidated"]),
         }
 
         # Add FID metadata if available
@@ -349,6 +356,8 @@ def detect_start_time(
     band: Optional[Tuple[float, float]] = None,
     stamp: bool = True,
     settings: Optional[StartDetectionSettings] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> StartDetectionResult:
     """Infer a good FID ``start_us`` from the data, equivalent to
     :meth:`Pipeline.detect_start_time`.
@@ -376,6 +385,9 @@ def detect_start_time(
         :class:`~ftmwpipeline.core.start_detection_settings.StartDetectionSettings`
         with the fields to override (``sweep_max_us`` / ``step_us`` /
         ``guard_margin_us`` / ``floor_factor`` / …).
+    events, cancel : optional
+        The event callback and cancel token (see
+        :meth:`Pipeline.detect_start_time`).
 
     Returns
     -------
@@ -388,6 +400,8 @@ def detect_start_time(
             band=band,
             stamp=stamp,
             settings=settings,
+            events=events,
+            cancel=cancel,
         )
     except Exception as e:
         logger.error(f"Failed to detect start time for {file_path}: {e}")
@@ -430,6 +444,8 @@ def compute_ft(
     end_us: Optional[float] = None,
     units_power: Optional[int] = None,
     from_saved_params: bool = False,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> ComplexFT:
     """
     Compute Fourier Transform with specified processing parameters.
@@ -455,6 +471,10 @@ def compute_ft(
         If ``True``, ignore the explicit kwargs and use only the persisted /
         recommended settings (no explicit overrides). Such a call only reads:
         it recomputes the spectrum and writes nothing to the file.
+    events : callable, optional
+        Called on this thread with each event (see :meth:`Pipeline.compute_ft`).
+    cancel : CancelToken, optional
+        Checked before the stage starts (see :meth:`Pipeline.compute_ft`).
 
     Returns
     -------
@@ -488,6 +508,8 @@ def compute_ft(
             end_us=end_us,
             units_power=units_power,
             from_saved_params=from_saved_params,
+            events=events,
+            cancel=cancel,
         )
     except Exception as e:
         logger.error(f"Failed to compute FT for {file_path}: {e}")
@@ -696,6 +718,8 @@ def estimate_noise(
     *,
     settings: Optional[NoiseSettings] = None,
     preset: Optional[str] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> NoiseResult:
     """
     Estimate frequency-dependent noise with the scatter (high-pass) estimator.
@@ -716,6 +740,8 @@ def estimate_noise(
         ``convolve_mhz`` / …) are set on the ``NoiseSettings`` instance; the
         explicit layer outranks the persisted record, which outranks the preset
         (per D11), so a no-arg call reproduces the persisted recipe.
+    events, cancel : optional
+        The event callback and cancel token (see :meth:`Pipeline.estimate_noise`).
 
     Returns
     -------
@@ -750,6 +776,8 @@ def estimate_noise(
         return pipeline.estimate_noise(
             settings=settings,
             preset=preset,
+            events=events,
+            cancel=cancel,
         )
 
     except Exception as e:
@@ -846,6 +874,8 @@ def calibrate_tau(
     shape: str = "lorentzian",
     settings: Optional[TauCalibrationSettings] = None,
     preset: Optional[str] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> TauCalibrationResult:
     """Run the Stage 2b data-driven tau calibration, equivalent to
     :meth:`Pipeline.calibrate_tau`.
@@ -864,6 +894,9 @@ def calibrate_tau(
     YAML preset's ``stage2b:`` block. The resolved settings are stamped to the
     shared ``processing_parameters/stage2b_tau`` block so a no-arg follow-up call
     reproduces the same recipe.
+
+    ``events`` / ``cancel``: the event callback and cancel token (see
+    :meth:`Pipeline.calibrate_tau`).
     """
     try:
         pipeline = Pipeline.open(file_path)
@@ -871,6 +904,8 @@ def calibrate_tau(
             shape=shape,
             settings=settings,
             preset=preset,
+            events=events,
+            cancel=cancel,
         )
     except Exception as e:
         logger.error(f"Failed to calibrate tau for {file_path}: {e}")
@@ -894,6 +929,8 @@ def calibrate_timebase(
     clocks: Optional[Any] = None,
     kappa_sys: Optional[float] = None,
     snr_min: Optional[float] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> TimebaseCalibrationResult:
     """Measure the scope-timebase scale error ``eps``, equivalent to
     :meth:`Pipeline.calibrate_timebase`.
@@ -915,12 +952,17 @@ def calibrate_timebase(
     Applying ``f_raw / (1 + eps)`` instead is wrong by exactly
     ``probe_freq * eps / (1 + eps)``, a constant sideband-independent offset.
     See :class:`~ftmwpipeline.fitting.timebase_calibration.TimebaseCalibrationResult`.
+
+    ``events`` / ``cancel``: the event callback and cancel token (see
+    :meth:`Pipeline.calibrate_timebase`).
     """
     try:
         return Pipeline.open(file_path).calibrate_timebase(
             clocks=clocks,
             kappa_sys=kappa_sys,
             snr_min=snr_min,
+            events=events,
+            cancel=cancel,
         )
     except Exception as e:
         logger.error(f"Failed to calibrate timebase for {file_path}: {e}")
@@ -992,6 +1034,8 @@ def recommend_shape(
     *,
     settings: Optional[TauCalibrationSettings] = None,
     preset: Optional[str] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> ShapeRecommendation:
     """Run the 3-way L/G/V shape-recommendation hook, equivalent to
     :meth:`Pipeline.recommend_shape`.
@@ -1012,11 +1056,16 @@ def recommend_shape(
     record, while the ``preset`` seeds only the fields neither the explicit
     layer nor the persisted record has fixed (the persisted record outranks the
     preset, per D11).
+
+    ``events`` / ``cancel``: the event callback and cancel token (see
+    :meth:`Pipeline.recommend_shape`).
     """
     try:
         return Pipeline.open(file_path).recommend_shape(
             settings=settings,
             preset=preset,
+            events=events,
+            cancel=cancel,
         )
     except Exception as e:
         logger.error(f"Failed to recommend shape for {file_path}: {e}")
@@ -1077,6 +1126,8 @@ def detect_peaks(
     *,
     settings: Optional[PeakDetectionSettings] = None,
     preset: Optional[str] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> List[Peak]:
     """Detect and classify peaks (Stage 3), equivalent to Pipeline.detect_peaks().
 
@@ -1116,12 +1167,17 @@ def detect_peaks(
         ``internal_snr``, ``internal_frequency``, and ``detection_pass``. The
         list is a :class:`PeakList`, whose ``invalidated`` names the stages
         this run invalidated.
+
+    ``events`` / ``cancel``: the event callback and cancel token (see
+    :meth:`Pipeline.detect_peaks`).
     """
     try:
         pipeline = Pipeline.open(file_path)
         return pipeline.detect_peaks(
             settings=settings,
             preset=preset,
+            events=events,
+            cancel=cancel,
         )
     except Exception as e:
         logger.error(f"Failed to detect peaks for {file_path}: {e}")
@@ -1213,6 +1269,8 @@ def assign_windows(
     *,
     settings: Optional[WindowPlanningSettings] = None,
     preset: Optional[str] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> WindowPlan:
     """Assign analysis windows (Stage 4), equivalent to Pipeline.assign_windows().
 
@@ -1249,12 +1307,17 @@ def assign_windows(
     WindowPlan
         The fit plan: disjoint windows, dependency DAG, topological order,
         parallel batches, parameters and diagnostics.
+
+    ``events`` / ``cancel``: the event callback and cancel token (see
+    :meth:`Pipeline.assign_windows`).
     """
     try:
         pipeline = Pipeline.open(file_path)
         return pipeline.assign_windows(
             settings=settings,
             preset=preset,
+            events=events,
+            cancel=cancel,
         )
     except Exception as e:
         logger.error(f"Failed to assign windows for {file_path}: {e}")
@@ -1339,6 +1402,8 @@ def fit_peaks(
     settings: Optional[StageFitSettings] = None,
     preset: Optional[str] = None,
     jobs: Optional[int] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> SpectrumFit:
     """Fit each Stage 4 window's lines (Stage 5), equivalent to Pipeline.fit_peaks().
 
@@ -1391,6 +1456,11 @@ def fit_peaks(
         default) resolves the pool from the ``FTMW_MAX_WORKERS`` environment
         variable, falling back to ``cpu_count() - 2``; ``1`` forces a sequential
         fit. The fit result is byte-identical regardless of the worker count.
+    events : callable, optional
+        Called on this thread with each event (see :meth:`Pipeline.fit_peaks`).
+    cancel : CancelToken, optional
+        Stops the fit between windows once set, raising
+        :class:`OperationCancelledError` and leaving the file unchanged.
 
     Returns
     -------
@@ -1401,6 +1471,10 @@ def fit_peaks(
     ------
     StageDependencyError
         If Stage 4 has not been completed.
+    OperationCancelledError
+        If ``cancel`` was set.
+    CallbackFailedError
+        If ``events`` raised.
     RuntimeError
         If fitting fails.
     """
@@ -1413,6 +1487,8 @@ def fit_peaks(
             settings=settings,
             preset=preset,
             jobs=jobs,
+            events=events,
+            cancel=cancel,
         )
     except Exception as e:
         logger.error(f"Failed to fit peaks for {file_path}: {e}")
@@ -1467,6 +1543,8 @@ def review_edit(
     remove: Sequence[Union[float, str]] = (),
     snap_tol_mhz: Optional[float] = None,
     frame: Optional[Frame] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> RefitWindowResult:
     """User-directed single-window refit (Stage 6 ``review edit``).
 
@@ -1519,9 +1597,18 @@ def review_edit(
         (both frames).
 
     Requires Stage 5 completed.
+
+    ``events`` / ``cancel``: the event callback and cancel token (see
+    :meth:`Pipeline.review_edit`).
     """
     return Pipeline.open(file_path).review_edit(
-        window_id, add=add, remove=remove, snap_tol_mhz=snap_tol_mhz, frame=frame
+        window_id,
+        add=add,
+        remove=remove,
+        snap_tol_mhz=snap_tol_mhz,
+        frame=frame,
+        events=events,
+        cancel=cancel,
     )
 
 
@@ -1556,6 +1643,8 @@ def review_create(
     *,
     snap_tol_mhz: Optional[float] = None,
     frame: Optional[Frame] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> CreateWindowResult:
     """Install a fit window covering ``anchor_mhz`` (Stage 6 ``review create``).
 
@@ -1588,9 +1677,16 @@ def review_create(
         extent, and contributor count (both frames).
 
     Requires Stage 5 completed.
+
+    ``events`` / ``cancel``: the event callback and cancel token (see
+    :meth:`Pipeline.review_create`).
     """
     return Pipeline.open(file_path).review_create(
-        anchor_mhz, snap_tol_mhz=snap_tol_mhz, frame=frame
+        anchor_mhz,
+        snap_tol_mhz=snap_tol_mhz,
+        frame=frame,
+        events=events,
+        cancel=cancel,
     )
 
 
@@ -1600,6 +1696,8 @@ def review_run(
     bar: float = DEFAULT_DISPLAY_BAR,
     attention_candidate_evidence: float = DEFAULT_ATTENTION_CANDIDATE_EVIDENCE,
     sigma_floor_khz: Optional[float] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> "ReviewRunResult":
     """Build or refresh the Stage 6 curation layer and final-products table.
 
@@ -1624,11 +1722,16 @@ def review_run(
         Total window count, attention count, and per-kind breakdown.
 
     Requires Stage 5 completed.
+
+    ``events`` / ``cancel``: the event callback and cancel token (see
+    :meth:`Pipeline.review_run`).
     """
     return Pipeline.open(file_path).review_run(
         bar=bar,
         attention_candidate_evidence=attention_candidate_evidence,
         sigma_floor_khz=sigma_floor_khz,
+        events=events,
+        cancel=cancel,
     )
 
 
@@ -1684,6 +1787,8 @@ def report_run(
     catalog: Optional[Union[str, Path]] = None,
     catalog_n_sigma: float = 3.0,
     jobs: Optional[int] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> Dict[str, Optional[str]]:
     """Write the default Stage 6 deliverables: the L1 table + the L3 report.
 
@@ -1701,6 +1806,9 @@ def report_run(
     from the ``FTMW_MAX_WORKERS`` environment variable, falling back to
     ``cpu_count() - 2``; ``1`` renders sequentially).
     Returns ``{"table": <path|None>, "html": <path|None>}``.
+
+    ``events`` / ``cancel``: the event callback and cancel token (see
+    :meth:`Pipeline.report_run`).
     """
     return Pipeline.open(file_path).report_run(
         output_dir=output_dir,
@@ -1712,6 +1820,8 @@ def report_run(
         catalog=catalog,
         catalog_n_sigma=catalog_n_sigma,
         jobs=jobs,
+        events=events,
+        cancel=cancel,
     )
 
 
@@ -1739,6 +1849,8 @@ def run_pipeline(
     output: Optional[Union[str, Path]] = None,
     *,
     trim: Optional[Tuple[float, float]] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
     **kwargs: Any,
 ) -> Dict[str, Any]:
     """Drive a raw *source* through every pipeline stage end-to-end.
@@ -1757,10 +1869,18 @@ def run_pipeline(
     it warns and skips when no clock declaration is resolvable), ``report`` /
     ``report_output_dir`` emit the report, and ``progress=False`` silences the
     display.  Returns the structured run result (``pipeline_file``, ``status``,
-    ``completed_stages``, ``failed_stage``, ``error``, ``timebase``, ``report``,
-    ``elapsed_s``); stops at the first failing stage.
+    ``completed_stages``, ``failed_stage`` -- a canonical stage name --,
+    ``error`` -- the failure's ``ftmw/error@1`` dict --, ``timebase``,
+    ``report``, ``elapsed_s``); stops at the first failing stage.
+
+    ``events`` receives every event (``operation="run"``) on this thread;
+    ``cancel`` is checked before every stage and inside the stages that check
+    it. A cancel raises :class:`OperationCancelledError` and a failing callback
+    :class:`CallbackFailedError`; neither is folded into the result.
     """
-    return Pipeline.build(source, trim=trim, output=output, **kwargs)
+    return Pipeline.build(
+        source, trim=trim, output=output, events=events, cancel=cancel, **kwargs
+    )
 
 
 def review_accept(
@@ -1770,6 +1890,8 @@ def review_accept(
     candidate_freq: Optional[float] = None,
     snap_tol_mhz: Optional[float] = None,
     frame: Optional[Frame] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> Optional[RefitWindowResult]:
     """Accept a window as-is or accept a specific revived candidate.
 
@@ -1801,12 +1923,17 @@ def review_accept(
         ``candidate_freq`` is given (both frames).
 
     Requires Stage 5 completed.
+
+    ``events`` / ``cancel``: the event callback and cancel token (see
+    :meth:`Pipeline.review_accept`).
     """
     return Pipeline.open(file_path).review_accept(
         window_id,
         candidate_freq=candidate_freq,
         snap_tol_mhz=snap_tol_mhz,
         frame=frame,
+        events=events,
+        cancel=cancel,
     )
 
 
@@ -1818,6 +1945,8 @@ def review_apply(
     dry_run: bool = False,
     frame: Optional[Frame] = None,
     log_prefix: Optional[int] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> CurationApplyResult:
     """Apply a curation file of batched review edits.
 
@@ -1874,6 +2003,9 @@ def review_apply(
         plan installs or grows.
 
     Requires Stage 5 completed.
+
+    ``events`` / ``cancel``: the event callback and cancel token (see
+    :meth:`Pipeline.review_apply`).
     """
     return Pipeline.open(file_path).review_apply(
         curation_path,
@@ -1881,6 +2013,8 @@ def review_apply(
         dry_run=dry_run,
         frame=frame,
         log_prefix=log_prefix,
+        events=events,
+        cancel=cancel,
     )
 
 
@@ -1890,6 +2024,8 @@ def review_preview(
     *,
     actions: Optional[Sequence[Union[CurationAction, Mapping[str, Any]]]] = None,
     frame: Optional[Frame] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> ReviewPreviewResult:
     """Run a curation file's resolved plan to completion in memory and report
     the fitted outcome, without writing anything.
@@ -1924,9 +2060,12 @@ def review_preview(
     ReviewPreviewResult
 
     Requires Stage 5 completed.
+
+    ``events`` / ``cancel``: the event callback and cancel token (see
+    :meth:`Pipeline.review_preview`).
     """
     return Pipeline.open(file_path).review_preview(
-        curation_path, actions=actions, frame=frame
+        curation_path, actions=actions, frame=frame, events=events, cancel=cancel
     )
 
 
@@ -1952,6 +2091,8 @@ def review_undo(
     ids: Sequence[int],
     *,
     dry_run: bool = False,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> UndoResult:
     """Undo recorded decisions by id, replaying the rest from baseline.
 
@@ -1973,8 +2114,13 @@ def review_undo(
     Returns
     -------
     UndoResult
+
+    ``events`` / ``cancel``: the event callback and cancel token (see
+    :meth:`Pipeline.review_undo`).
     """
-    return Pipeline.open(file_path).review_undo(ids, dry_run=dry_run)
+    return Pipeline.open(file_path).review_undo(
+        ids, dry_run=dry_run, events=events, cancel=cancel
+    )
 
 
 def get_review_status(file_path: Union[str, Path]) -> Stage6Review:
@@ -2476,6 +2622,8 @@ def scan_run(
     fit_freqs: Optional[Sequence[float]] = None,
     fit_sample_seed: int = 0,
     fit_all: bool = False,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> Any:
     """Sweep a single pipeline knob across a grid, equivalent to
     :meth:`Pipeline.scan_run`.
@@ -2513,6 +2661,9 @@ def scan_run(
         brightest windows + a seeded ``fit_sample`` random sample + the windows
         nearest each ``fit_freqs`` value, rather than the whole plan.
         ``fit_all=True`` re-fits every window. Ignored by non-fit knobs.
+
+    ``events`` / ``cancel``: the event callback and cancel token (see
+    :meth:`Pipeline.scan_run`).
     """
     try:
         pipeline = Pipeline.open(file_path)
@@ -2531,6 +2682,8 @@ def scan_run(
             fit_freqs=fit_freqs,
             fit_sample_seed=fit_sample_seed,
             fit_all=fit_all,
+            events=events,
+            cancel=cancel,
         )
     except Exception as e:
         logger.error(f"Failed to scan knob {knob!r} for {file_path}: {e}")
@@ -2554,6 +2707,8 @@ def scan_all(
     fit_freqs: Optional[Sequence[float]] = None,
     fit_sample_seed: int = 0,
     fit_all: bool = False,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> Any:
     """Sweep every knob matched by ``selector`` on its default grid, equivalent
     to :meth:`Pipeline.scan_all`.
@@ -2571,6 +2726,9 @@ def scan_all(
     list of BatchItem
         One per matched knob, in registry order; ``item.ok`` / ``item.result`` /
         ``item.error`` report each knob's outcome.
+
+    ``events`` / ``cancel``: the event callback and cancel token (see
+    :meth:`Pipeline.scan_all`).
     """
     try:
         pipeline = Pipeline.open(file_path)
@@ -2589,6 +2747,8 @@ def scan_all(
             fit_freqs=fit_freqs,
             fit_sample_seed=fit_sample_seed,
             fit_all=fit_all,
+            events=events,
+            cancel=cancel,
         )
     except Exception as e:
         logger.error(f"Failed to batch-scan {selector!r} for {file_path}: {e}")

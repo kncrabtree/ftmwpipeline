@@ -16,9 +16,25 @@ import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, TextIO, Tuple, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Sequence,
+    TextIO,
+    Tuple,
+    cast,
+)
 
-from ...file_manager import requires_pipeline_file
+from ...contract import CancelToken, EventCallback, ScanProgress
+from ...file_manager import (
+    CallbackFailedError,
+    OperationCancelledError,
+    requires_pipeline_file,
+)
 from ...io.noise_settings_serialization import STAGE2_NOISE_SETTINGS_PATH
 from ...io.peak_detection_settings_serialization import STAGE3_PEAKS_SETTINGS_PATH
 from ...io.stage_fit_settings_serialization import STAGE_FIT_PATH
@@ -26,6 +42,9 @@ from ...io.tau_calibration_settings_serialization import STAGE2B_TAU_SETTINGS_PA
 from ...io.window_planning_settings_serialization import STAGE4_WINDOWS_SETTINGS_PATH
 from .fit_support import FitWindowSelection
 from .registry import KnobSpec
+
+if TYPE_CHECKING:
+    from ..events import OperationEvents, StageScope
 
 # Persisted settings group per stage prefix. A sweep clears the knob's stage
 # block before each per-value run so the swept value (which enters the resolver
@@ -253,6 +272,20 @@ def _apply_instructions(spec: KnobSpec, rec: Optional[Recommendation]) -> str:
     )
 
 
+def scan_run_summary(result: "SweepResult") -> Dict[str, Any]:
+    """The ``StageFinished.summary`` of one knob's scan (``scan run``, or one
+    knob of ``scan all``). The scan verbs have no ``run_result`` (they write
+    no stage); these are the result's scalars."""
+    rec = result.recommendation
+    return {
+        "knob": result.knob,
+        "n_values": len(result.rows),
+        "recommended_value": None if rec is None else rec.value,
+        "csv_path": None if result.csv_path is None else str(result.csv_path),
+        "plot_path": None if result.plot_path is None else str(result.plot_path),
+    }
+
+
 @requires_pipeline_file("ftmw_path")
 def run_scan(
     spec: KnobSpec,
@@ -273,8 +306,17 @@ def run_scan(
     fit_sample_seed: int = 0,
     fit_all: bool = False,
     progress: Optional[Callable[[int, int, Any], None]] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> SweepResult:
     """Sweep ``spec`` across ``grid`` on a working copy of ``ftmw_path``.
+
+    A long operation (``scan run``). A scan is not a stage (it writes only its
+    working copy and artifacts), so its events carry ``stage: null``:
+    ``StageStarted``, a ``ScanProgress`` per scanned value, then
+    ``StageFinished`` with :func:`scan_run_summary`. ``cancel`` is checked
+    before the scan and between values (the value running completes);
+    ``progress`` keeps working alongside ``events``.
 
     Parameters
     ----------
@@ -314,7 +356,67 @@ def run_scan(
         Optional custom callback invoked as ``progress(done, total, value)``
         after each grid value completes. Overrides the default reporter; with
         a callback set, ``quiet`` is ignored.
+    events, cancel :
+        The long-operation event callback and cancel token.
     """
+    from ..events import operation_events
+
+    ops = operation_events("scan run", events, cancel)
+    return _scan_in_scope(
+        ops,
+        "scan run",
+        spec,
+        Path(ftmw_path),
+        grid=grid,
+        output_dir=output_dir,
+        reuse=reuse,
+        make_plot=make_plot,
+        interactive=interactive,
+        quiet=quiet,
+        zoom_regions=zoom_regions,
+        n_zoom=n_zoom,
+        zoom_width_mhz=zoom_width_mhz,
+        fit_top_snr=fit_top_snr,
+        fit_sample=fit_sample,
+        fit_freqs=fit_freqs,
+        fit_sample_seed=fit_sample_seed,
+        fit_all=fit_all,
+        progress=progress,
+    )
+
+
+def _scan_in_scope(
+    ops: "OperationEvents", verb: str, spec: KnobSpec, ftmw_path: Path, **kwargs: Any
+) -> SweepResult:
+    """One knob's scan as one scope of the operation *ops*."""
+    with ops.stage(None, verb=verb, file_path=ftmw_path) as scope:
+        result = _scan(spec, ftmw_path, events=scope, **kwargs)
+        scope.finish(scan_run_summary(result), wrote=False)
+    return result
+
+
+def _scan(
+    spec: KnobSpec,
+    ftmw_path: Path,
+    *,
+    grid: Optional[Sequence[Any]],
+    output_dir: Optional[Path],
+    reuse: bool,
+    make_plot: bool,
+    interactive: bool,
+    quiet: bool,
+    zoom_regions: Optional[Sequence[Tuple[float, float]]],
+    n_zoom: Optional[int],
+    zoom_width_mhz: Optional[float],
+    fit_top_snr: int,
+    fit_sample: int,
+    fit_freqs: Optional[Sequence[float]],
+    fit_sample_seed: int,
+    fit_all: bool,
+    progress: Optional[Callable[[int, int, Any], None]],
+    events: "StageScope",
+) -> SweepResult:
+    """The body of :func:`run_scan` (inside the knob's scope)."""
     ftmw_path = Path(ftmw_path)
     out = Path(output_dir) if output_dir is not None else Path.cwd()
     out.mkdir(parents=True, exist_ok=True)
@@ -351,6 +453,7 @@ def run_scan(
     last_result: Any = None
     total = len(values)
     for i, value in enumerate(values):
+        events.check_cancel()
         _clear_persisted_stage_settings(work, spec.path)
         last_result = spec.run(work, value)
         rows.append(
@@ -362,6 +465,9 @@ def run_scan(
         )
         if reporter is not None:
             reporter(i + 1, total, value)
+        events.emit(
+            ScanProgress(events.operation, None, spec.path, value, i + 1, total)
+        )
 
     csv_path = out / f"scan_{_safe(spec.path)}_{ftmw_path.stem}.csv"
     _write_csv(csv_path, spec, rows)
@@ -405,8 +511,16 @@ def run_scan_batch(
     fit_freqs: Optional[Sequence[float]] = None,
     fit_sample_seed: int = 0,
     fit_all: bool = False,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> List[BatchItem]:
     """Sweep every knob in ``specs`` sequentially, each on its default grid.
+
+    A long operation (``scan all``): each knob reports as its own scope of the
+    one operation (``StageStarted``, a ``ScanProgress`` per value,
+    ``StageFinished``; ``stage: null``), and ``cancel`` is checked before each
+    knob and between values. A cancel or a failing events callback stops the
+    whole batch (it is never recorded as one knob's failure).
 
     A convenience over :func:`run_scan` for reviewing a whole stage / sub-block
     at once (pair with :func:`registry.list_knobs` and its selector). Each knob
@@ -415,15 +529,22 @@ def run_scan_batch(
     a failed :class:`BatchItem` and the batch continues. Per-knob progress is the
     same stderr header :func:`run_scan` prints unless ``quiet=True``.
     """
+    from ..events import operation_events
+
+    ops = operation_events("scan all", events, cancel)
     items: List[BatchItem] = []
     for spec in specs:
         try:
-            result = run_scan(
+            result = _scan_in_scope(
+                ops,
+                "scan all",
                 spec,
-                ftmw_path,
+                Path(ftmw_path),
+                grid=None,
                 output_dir=output_dir,
                 reuse=reuse,
                 make_plot=make_plot,
+                interactive=False,
                 quiet=quiet,
                 zoom_regions=zoom_regions,
                 n_zoom=n_zoom,
@@ -433,8 +554,11 @@ def run_scan_batch(
                 fit_freqs=fit_freqs,
                 fit_sample_seed=fit_sample_seed,
                 fit_all=fit_all,
+                progress=None,
             )
             items.append(BatchItem(knob=spec.path, result=result))
+        except (OperationCancelledError, CallbackFailedError):
+            raise  # stops the batch; not one knob's failure
         except Exception as e:  # one knob's failure must not abort the batch
             items.append(BatchItem(knob=spec.path, error=str(e)))
     return items

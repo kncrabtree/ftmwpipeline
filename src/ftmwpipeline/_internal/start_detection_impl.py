@@ -20,10 +20,11 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Tuple
 
 import h5py
 
+from ..contract import CancelToken, EventCallback
 from ..core.data_structures import ChirpWindow
 from ..core.settings import FT_PROCESSING_PATH, RECOMMENDED_PATH
 from ..core.start_detection_settings import StartDetectionSettings
@@ -41,6 +42,9 @@ from .stage1_impl import (
     ft_record_is_authoritative,
     write_recommended_ft_params,
 )
+
+if TYPE_CHECKING:
+    from .events import StageScope
 
 logger = logging.getLogger(__name__)
 
@@ -66,13 +70,43 @@ def _resolve_band(
     return _resolve_settings(file_path, None).trim
 
 
+def start_run_summary(out: Mapping[str, Any]) -> Dict[str, Any]:
+    """The scalar ``ftmw/run_result@1`` summary of ``start run`` -- also its
+    ``StageFinished.summary`` -- from a :func:`detect_start_time_impl` result."""
+    r = out["start_detection"]
+    band = (
+        f"{r.band_mhz[0]:.0f}-{r.band_mhz[1]:.0f} MHz"
+        if r.band_mhz is not None
+        else "full spectrum"
+    )
+    return {
+        "integration_band": band,
+        "chirp_detected": bool(r.chirp_detected),
+        "plateau_floor_ratio": None if not r.floor else r.plateau / r.floor,
+        "chirp_end_declared_us": out["chirp_end_declared_us"],
+        "chirp_end_detected_us": out["chirp_end_detected_us"],
+        "chirp_end_us": r.chirp_end_us,
+        "declaration_used": bool(out["declaration_used"]),
+        "start_us": out["start_us"],
+        "stamped": bool(out["stamped"]),
+    }
+
+
 def detect_start_time_impl(
     file_path: str,
     *,
     settings: Optional[StartDetectionSettings] = None,
     stamp: bool = True,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> Dict[str, Any]:
     """Detect a good ``start_us`` from the FID and (optionally) stamp it.
+
+    A long operation (``start run``). Start detection stamps a recommendation
+    on the data stage rather than running a stage of its own, so its events
+    carry ``stage: null``: ``StageStarted``, ``Invalidated`` (when the stamp
+    moved a pre-provenance Stage 1 record's settings), then ``StageFinished``
+    with :func:`start_run_summary`. ``cancel`` is checked before it starts.
 
     When the file carries a declared chirp-window (persisted at import time),
     the declaration governs the recommended start:
@@ -105,6 +139,25 @@ def detect_start_time_impl(
         settings a pre-provenance Stage 1 record falls through to (see
         :func:`~.stage1_impl.write_recommended_ft_params`).
     """
+    from .events import operation_events
+
+    ops = operation_events("start run", events, cancel)
+    with ops.stage(None, verb="start run", file_path=file_path) as scope:
+        out = _detect_start_time(
+            file_path, settings=settings, stamp=stamp, events=scope
+        )
+        scope.finish(start_run_summary(out))
+    return out
+
+
+def _detect_start_time(
+    file_path: str,
+    *,
+    settings: Optional[StartDetectionSettings],
+    stamp: bool,
+    events: "StageScope",
+) -> Dict[str, Any]:
+    """The body of :func:`detect_start_time_impl` (inside its scope)."""
     settings = settings or StartDetectionSettings()
     fid = load_fid_from_pipeline_impl(file_path)
     band = _resolve_band(file_path, settings)
@@ -182,7 +235,7 @@ def detect_start_time_impl(
     can_stamp = declaration_used or result.chirp_detected
     if stamp and can_stamp:
         invalidated = write_recommended_ft_params(
-            file_path, {"start_us": float(final_start_us)}
+            file_path, {"start_us": float(final_start_us)}, events=events
         )
         stamped = True
         _note_stage1_unaffected(file_path, float(final_start_us))

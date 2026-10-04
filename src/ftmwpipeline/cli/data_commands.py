@@ -11,6 +11,7 @@ from pathlib import Path
 import h5py
 
 from .._internal.stage0_impl import (
+    data_import_summary,
     get_pipeline_info_impl,
     import_data_impl,
     visualize_fid_impl,
@@ -18,6 +19,7 @@ from .._internal.stage0_impl import (
 from ..file_manager import PipelineFileError
 from ..io.data_loaders import get_format_info, list_formats
 from ..io.fid_serialization import load_acquisition_segments_from_hdf5
+from ._events import add_events_argument, operation_controls
 from ._json_output import json_mode, record_payload, record_run_result
 from .utils import add_stage_object, print_invalidated, setup_logging
 
@@ -93,31 +95,21 @@ def cmd_data_load(args: argparse.Namespace) -> int:
             format_params["start_margin_us"] = args.start_margin_us
 
         # Use shared implementation for data import
-        result = import_data_impl(
-            file_path=file_path,
-            source=args.source,
-            format_name=args.format,
-            force=getattr(args, "force", False),
-            **format_params,
-        )
+        with operation_controls(args) as (events, cancel):
+            result = import_data_impl(
+                file_path=file_path,
+                source=args.source,
+                format_name=args.format,
+                force=getattr(args, "force", False),
+                events=events,
+                cancel=cancel,
+                **format_params,
+            )
 
         if json_mode(args):
-            fid_meta = result["fid_metadata"]
+            # One builder for this summary and the stage's StageFinished.
             record_run_result(
-                args,
-                stage="data",
-                result=result,
-                summary={
-                    "pipeline_file": str(result["pipeline_file"]),
-                    "source_format": result["format_name"],
-                    "n_points": fid_meta["n_points"],
-                    "duration_us": fid_meta["duration_us"],
-                    "probe_freq_mhz": fid_meta["probe_freq_mhz"],
-                    "sideband": fid_meta["sideband"],
-                    "shots": fid_meta["shots"],
-                    "file_size_mb": Path(result["pipeline_file"]).stat().st_size
-                    / (1024 * 1024),
-                },
+                args, stage="data", result=result, summary=data_import_summary(result)
             )
 
         # Display results
@@ -533,6 +525,7 @@ Examples:
         "when --chirp-end-us is set.",
     )
 
+    add_events_argument(load_parser)
     load_parser.set_defaults(func=cmd_data_load)
 
     # data show

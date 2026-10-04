@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .._internal.stage2_impl import (
     compute_noise_estimation_impl,
+    noise_run_summary,
     visualize_noise_impl,
 )
 from ..core.noise_settings import NoiseSettings
@@ -17,6 +18,7 @@ from ..core.noise_settings import NoiseSettings
 # Import shared implementations
 from ..file_manager import PipelineFileError
 from ._argspec import add_settings_args, settings_from_namespace
+from ._events import add_events_argument, operation_controls
 from ._json_output import json_mode, record_run_result
 from .utils import (
     add_stage_object,
@@ -74,11 +76,14 @@ def cmd_estimate_noise(args: argparse.Namespace) -> int:
             print("Using default parameters for all settings")
 
         # Perform noise estimation using shared implementation
-        result = compute_noise_estimation_impl(
-            file_path=file_path,
-            settings=None if settings.is_empty() else settings,
-            preset=preset,
-        )
+        with operation_controls(args) as (events, cancel):
+            result = compute_noise_estimation_impl(
+                file_path=file_path,
+                settings=None if settings.is_empty() else settings,
+                preset=preset,
+                events=events,
+                cancel=cancel,
+            )
 
         noise_result = result["noise_result"]
 
@@ -87,29 +92,12 @@ def cmd_estimate_noise(args: argparse.Namespace) -> int:
         # grid); the CLI only displays the summary.
 
         if json_mode(args):
-            rms = noise_result.rms_noise
-            bin_info = noise_result.bin_info
+            # One builder for this summary and the stage's StageFinished.
             record_run_result(
                 args,
                 stage="noise",
                 result=result,
-                summary={
-                    "total_points": result["total_points"],
-                    "noise_points": result["noise_points"],
-                    "noise_fraction": result["noise_points"] / result["total_points"],
-                    "freq_min_mhz": result["frequency_range"][0],
-                    "freq_max_mhz": result["frequency_range"][1],
-                    "rms_mean": rms.mean(),
-                    "rms_std": rms.std(),
-                    "rms_min": rms.min(),
-                    "rms_max": rms.max(),
-                    "algorithm": bin_info.get("algorithm"),
-                    "n_region_windows": bin_info.get("n_region_windows"),
-                    "n_line_bins": bin_info.get("n_line_bins"),
-                    "region_aware": bin_info.get("region_aware"),
-                    "smoothing_mhz": bin_info.get("smoothing_mhz"),
-                    "pipeline_file": file_path,
-                },
+                summary=noise_run_summary(result, file_path),
             )
 
         # Display summary results
@@ -332,6 +320,7 @@ def register_noise_commands(subparsers: argparse._SubParsersAction) -> None:
         action="store_true",
         help="Enable verbose output and detailed diagnostics",
     )
+    add_events_argument(parser_estimate)
 
     parser_estimate.set_defaults(func=cmd_estimate_noise)
 

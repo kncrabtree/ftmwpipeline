@@ -16,10 +16,14 @@ import argparse
 import logging
 from typing import Any, Dict, Optional
 
-from .._internal.start_detection_impl import detect_start_time_impl
+from .._internal.start_detection_impl import (
+    detect_start_time_impl,
+    start_run_summary,
+)
 from ..core.start_detection_settings import StartDetectionSettings
 from ..file_manager import PipelineFileError
 from ._argspec import add_start_detection_args, start_settings_from_namespace
+from ._events import add_events_argument, operation_controls
 from ._json_output import json_mode, record_run_result
 from .utils import add_stage_object, print_error, print_invalidated, setup_logging
 
@@ -51,9 +55,14 @@ def cmd_detect_start(args: argparse.Namespace) -> int:
     settings = _settings_from_args(args)
     print(f"Detecting FID start time for: {file_path}")
     try:
-        out = detect_start_time_impl(
-            file_path, settings=settings, stamp=not args.no_stamp
-        )
+        with operation_controls(args) as (events, cancel):
+            out = detect_start_time_impl(
+                file_path,
+                settings=settings,
+                stamp=not args.no_stamp,
+                events=events,
+                cancel=cancel,
+            )
     except PipelineFileError:
         raise
     except FileNotFoundError as e:
@@ -76,22 +85,8 @@ def cmd_detect_start(args: argparse.Namespace) -> int:
     drop = r.plateau / r.floor if r.floor else float("inf")
     declared_end = out["chirp_end_declared_us"]
     if json_mode(args):
-        record_run_result(
-            args,
-            stage=None,
-            result=out,
-            summary={
-                "integration_band": band,
-                "chirp_detected": bool(r.chirp_detected),
-                "plateau_floor_ratio": None if not r.floor else drop,
-                "chirp_end_declared_us": declared_end,
-                "chirp_end_detected_us": out["chirp_end_detected_us"],
-                "chirp_end_us": r.chirp_end_us,
-                "declaration_used": bool(out["declaration_used"]),
-                "start_us": out["start_us"],
-                "stamped": bool(out["stamped"]),
-            },
-        )
+        # One builder for this summary and the operation's StageFinished.
+        record_run_result(args, stage=None, result=out, summary=start_run_summary(out))
     print("\nStart detection completed!")
     print("\nResults summary:")
     print(f"  integration band   : {band}")
@@ -233,6 +228,7 @@ def register_start_commands(subparsers: Any) -> None:
         action="store_true",
         help="Report the recommendation without writing it to the file",
     )
+    add_events_argument(parser_det)
     parser_det.set_defaults(func=cmd_detect_start)
 
     parser_viz = verbs.add_parser(

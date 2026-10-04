@@ -23,11 +23,16 @@ Wrapped identically by the CLI, Pipeline class, and functional API.
 
 from __future__ import annotations
 
+import functools
+import inspect
 import json
 import logging
 import math
 import os
 import re
+import time
+from contextlib import nullcontext
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import (
@@ -35,6 +40,7 @@ from typing import (
     Any,
     Callable,
     Collection,
+    ContextManager,
     Dict,
     Iterable,
     List,
@@ -51,6 +57,7 @@ from typing import (
 import h5py
 import numpy as np
 
+from ..contract import CancelToken, EventCallback, Stage
 from ..core.absent import Absent
 from ..core.calibration import CalibrationStamp, CalibrationState
 from ..core.curation import (
@@ -79,8 +86,10 @@ from ..core.data_structures import (
 )
 from ..file_manager import (
     BadSettingError,
+    CallbackFailedError,
     NotFoundError,
     NotFoundValueError,
+    OperationCancelledError,
     PipelineFileError,
     StageDependencyError,
     requires_pipeline_file,
@@ -124,6 +133,7 @@ from .absence_rules import (
     knockout_absence,
 )
 from .compaction import compact_file, deferred_compaction
+from .events import StageScope, detached_scope, operation_events
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage2_impl import _update_stage_completion
 
@@ -136,6 +146,255 @@ if TYPE_CHECKING:  # annotation-only imports (PEP 563 lazy)
     from .stage5_impl import Stage5FitContext
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Events and cancellation (dev-docs/CONTRACT_STRATEGY.md §Events and
+# cancellation)
+# ---------------------------------------------------------------------------
+
+#: The ``review`` stage scope of the Stage 6 long operation running now, or
+#: ``None``. Set by :func:`_review_operation` for the duration of one public
+#: call, so the engine (:func:`_open_batch`, the action loops, the cascade, the
+#: epoch gate, the frame advisory) reports into it without every internal
+#: signature carrying it. A call made with no scope set (a ``ReviewSession``
+#: step, a replay helper) reports nothing beyond its log lines and is never
+#: cancelled.
+_REVIEW_SCOPE: ContextVar[Optional[StageScope]] = ContextVar(
+    "ftmw_review_scope", default=None
+)
+
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+
+def _review_operation(
+    verb: str,
+    summary: Callable[[Any, Mapping[str, Any]], Mapping[str, Any]],
+    *,
+    wrote: Callable[[Any, Mapping[str, Any]], bool] = lambda result, args: True,
+) -> Callable[[_F], _F]:
+    """Make a Stage 6 entry point a long operation (``verb``).
+
+    The decorated function takes ``events`` / ``cancel`` keyword arguments
+    (declared in its own signature, unused in its body). The wrapper opens the
+    ``review`` stage (cancel check, ``StageStarted``, the operation's
+    ``environment_drift`` check), runs the body with the scope current
+    (:data:`_REVIEW_SCOPE`), and emits ``StageFinished`` with
+    ``summary(result, call_args)`` -- the same builder as the verb's
+    ``ftmw/run_result@1`` summary. ``wrote(result, call_args)`` says whether
+    the call wrote anything (``False`` for a dry run or a preview, which then
+    records no completed stage).
+
+    Called from inside another Stage 6 operation without its own events or
+    token (a bare-accept apply dispatching to ``review_accept_impl``), it
+    reports into the enclosing operation instead of opening a stage.
+    """
+
+    def decorate(fn: _F) -> _F:
+        signature = inspect.signature(fn)
+
+        @functools.wraps(fn)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            bound = signature.bind(*args, **kwargs)
+            bound.apply_defaults()
+            call = bound.arguments
+            events = call.get("events")
+            cancel = call.get("cancel")
+            if _REVIEW_SCOPE.get() is not None and events is None and cancel is None:
+                return fn(*args, **kwargs)
+            ops = operation_events(verb, events, cancel)
+            path = str(call["file_path"])
+            with ops.stage(Stage.REVIEW, verb=verb, file_path=path) as scope:
+                token = _REVIEW_SCOPE.set(scope)
+                try:
+                    result = fn(*args, **kwargs)
+                finally:
+                    _REVIEW_SCOPE.reset(token)
+                scope.finish(summary(result, call), wrote=wrote(result, call))
+            return result
+
+        return wrapper  # type: ignore[return-value]
+
+    return decorate
+
+
+def _committing() -> ContextManager[None]:
+    """The running Stage 6 operation's :meth:`StageScope.committing` block (a
+    no-op with no scope): a restore-then-replay is one unit that, once begun,
+    completes -- a cancel is honoured only before it."""
+    scope = _REVIEW_SCOPE.get()
+    return scope.committing() if scope is not None else nullcontext()
+
+
+def _review_scope() -> StageScope:
+    """The current Stage 6 scope, or a detached one (log lines only)."""
+    scope = _REVIEW_SCOPE.get()
+    return scope if scope is not None else detached_scope(Stage.REVIEW)
+
+
+def _check_cancel() -> None:
+    """A Stage 6 cancel check point (between windows); no-op with no scope."""
+    scope = _REVIEW_SCOPE.get()
+    if scope is not None:
+        scope.check_cancel()
+
+
+def _report_window(
+    ctx: "_BatchCtx",
+    window_id: int,
+    *,
+    index: int,
+    total: int,
+    elapsed_s: float,
+) -> None:
+    """Emit the ``WindowProgress`` (``stage: review``) of one refit window of
+    *ctx*'s in-memory fit. No-op when the batch has no scope."""
+    scope = ctx.events
+    if scope is None:
+        return
+    wf = next(
+        (
+            w
+            for w in ctx.changeset.spectrum_fit.window_fits
+            if w.window_id is not None and int(w.window_id) == int(window_id)
+        ),
+        None,
+    )
+    fit_win = ctx.changeset.fit_window_map.get(int(window_id))
+    freq_range: Tuple[float, float] = (
+        (float(fit_win.freq_range[0]), float(fit_win.freq_range[1]))
+        if fit_win is not None and fit_win.freq_range is not None
+        else (math.nan, math.nan)
+    )
+    scope.window_progress(
+        phase="initial",
+        round=0,
+        index=index,
+        total=total,
+        window_id=int(window_id),
+        n_peaks=Absent.NOT_RUN if wf is None else len(wf.fitted_peaks),
+        chi2r=Absent.NOT_RUN if wf is None else float(wf.reduced_chi2),
+        elapsed_s=elapsed_s,
+        dropped=False,
+        freq_range=freq_range,
+    )
+
+
+# The ``ftmw/run_result@1`` summaries of the Stage 6 verbs -- each also the
+# ``StageFinished.summary`` of its operation (one builder for both).
+
+
+def review_edit_summary(
+    result: "RefitWindowResult",
+    add: Sequence[Union[float, str]],
+    remove: Sequence[Union[float, str]],
+) -> Dict[str, Any]:
+    """``review edit``'s summary (``add`` / ``remove`` as the call gave them)."""
+    return {
+        "window_id": result.window_id,
+        "n_peaks_before": result.n_peaks_before,
+        "n_peaks_after": result.n_peaks_after,
+        "chi2r_before": result.chi2r_before,
+        "chi2r_after": result.chi2r_after,
+        "converged": result.converged,
+        "n_added": len(add),
+        "n_removed": len(remove),
+        "created_window_mode": result.created_window_mode,
+    }
+
+
+def review_create_summary(result: "CreateWindowResult") -> Dict[str, Any]:
+    """``review create``'s summary."""
+    lo, hi = result.freq_range
+    return {
+        "window_id": result.window_id,
+        "mode": result.mode,
+        "anchor_mhz": result.anchor_mhz,
+        "freq_lo_mhz": lo,
+        "freq_hi_mhz": hi,
+        "n_points": result.n_points,
+        "n_contributors": result.n_contributors,
+        "n_peaks": result.n_peaks,
+    }
+
+
+def review_accept_summary(
+    result: Optional["RefitWindowResult"], window_id: int
+) -> Dict[str, Any]:
+    """``review accept``'s summary: a bare accept (``result`` ``None``) or an
+    accepted candidate."""
+    if result is None:
+        return {
+            "window_id": window_id,
+            "provenance": "reviewed",
+            "candidate_accepted": False,
+        }
+    return {
+        "window_id": result.window_id,
+        "candidate_accepted": True,
+        "n_peaks_before": result.n_peaks_before,
+        "n_peaks_after": result.n_peaks_after,
+        "chi2r_before": result.chi2r_before,
+        "chi2r_after": result.chi2r_after,
+        "converged": result.converged,
+    }
+
+
+def review_apply_summary(
+    result: "CurationApplyResult", dry_run: bool
+) -> Dict[str, Any]:
+    """``review apply``'s summary."""
+    return {
+        "dry_run": bool(dry_run),
+        "n_actions": len(result.plan),
+        "applied": result.applied,
+        "n_warnings": len(result.warnings),
+        "n_created_windows": len(result.created_windows),
+        "n_windows_refit": len(result.windows),
+        "base_changed": bool(result.base_changed),
+    }
+
+
+def review_undo_summary(result: "UndoResult", dry_run: bool) -> Dict[str, Any]:
+    """``review undo``'s summary."""
+    return {
+        "dry_run": bool(dry_run),
+        "n_removed": len(result.removed),
+        "n_replayed": len(result.plan),
+        "applied": result.applied,
+    }
+
+
+def review_preview_summary(result: "ReviewPreviewResult") -> Dict[str, Any]:
+    """``review preview``'s ``StageFinished.summary``. The verb has no
+    ``run_result`` (it writes nothing and prints its payload); these are the
+    payload's counts."""
+    return {
+        "n_actions": len(result.plan),
+        "n_warnings": len(result.warnings),
+        "n_created_windows": len(result.created_windows),
+        "n_windows": len(result.windows),
+    }
+
+
+def review_run_summary(
+    result: "ReviewRunResult", final_products: Optional[FinalProducts]
+) -> Dict[str, Any]:
+    """``review run``'s summary; ``final_products`` is the file's current
+    table (:func:`get_final_products_impl`), or ``None``."""
+    summary: Dict[str, Any] = {
+        "n_windows": result.n_windows,
+        "n_attention": result.n_attention,
+        "reason_counts": dict(result.reason_counts),
+    }
+    if final_products is not None:
+        summary.update(
+            n_final_peaks=len(final_products.peaks),
+            calibration_state=final_products.calibration_state,
+            epsilon=final_products.epsilon,
+            sigma_floor_khz=final_products.sigma_floor_khz,
+        )
+    return summary
 
 
 # ---------------------------------------------------------------------------
@@ -1460,12 +1719,13 @@ def require_splice_compatible_environment(path: str) -> None:
     if ack is not None:
         acked = EnvironmentRecord.from_dict(ack.get("acknowledged_environment", {}))
         if not gating_fields_differ(current, acked):
-            logger.warning(
-                "Editing a Stage 5 fit produced under analysis epoch %s with "
-                "epoch %s; proceeding on the acknowledgement recorded in the "
-                "file. The curated fit mixes two analysis environments.",
-                fit_env.analysis_epoch,
-                current.analysis_epoch,
+            # The epoch_acknowledged warning: its log line is rendered from the
+            # event (events.WARNING_LINES), through the running operation's
+            # scope when there is one.
+            _review_scope().warn(
+                "epoch_acknowledged",
+                file_epoch=fit_env.analysis_epoch,
+                current_epoch=current.analysis_epoch,
             )
             return
 
@@ -2590,6 +2850,7 @@ def _cascade_refit_dependents(
     peak_frequencies_mhz: List[float],
     min_freeze_snr: float,
     snap_tol_mhz: float,
+    events: Optional[StageScope] = None,
 ) -> List[int]:
     """Refresh + identity-refit every dependent in the transitive closure of
     ``edited_wids`` (window-level), in dependency order; splice the results back
@@ -2599,6 +2860,10 @@ def _cascade_refit_dependents(
     The refit is identity (no add/remove): a directly-edited dependent already
     carries its own edit in its peak set, so the identity refit honors both the edit
     and the refreshed skirt in one fit (design §3). Mutates ``spectrum_fit``.
+
+    ``events`` (the Stage 6 operation's scope) gets a ``WindowProgress`` per
+    re-fit dependent (phase ``"cascade"``, round 0, ``index`` over the
+    cascade) and is checked for a cancel before each one.
     """
     from ..fitting.result_conversion import sort_fitting_result_by_frequency
 
@@ -2633,11 +2898,17 @@ def _cascade_refit_dependents(
     ordered = _cascade_topo(closure, preds)
 
     cascaded: List[int] = []
+    n_cascade = sum(
+        1 for d in ordered if fit_map.get(d) is not None and fit_window_map.get(d)
+    )
     for d in ordered:
         wf = fit_map.get(d)
         fit_win = fit_window_map.get(d)
         if wf is None or fit_win is None:
             continue
+        if events is not None:
+            events.check_cancel()
+        t_window = time.monotonic()
         _refresh_frozen_window_level(wf, fit_window_map, fit_map, min_freeze_snr)
         tm, st = _resolve_refit_window_tau(
             fit_win, resolved, persisted_cal, tau_maj_us, sigma_tau_us, tau_source
@@ -2656,6 +2927,19 @@ def _cascade_refit_dependents(
         sort_fitting_result_by_frequency(new_wf)
         fit_map[d] = new_wf
         cascaded.append(d)
+        if events is not None:
+            events.window_progress(
+                phase="cascade",
+                round=0,
+                index=len(cascaded),
+                total=n_cascade,
+                window_id=int(d),
+                n_peaks=len(new_wf.fitted_peaks),
+                chi2r=float(new_wf.reduced_chi2),
+                elapsed_s=time.monotonic() - t_window,
+                dropped=False,
+                freq_range=(float(fit_win.freq_range[0]), float(fit_win.freq_range[1])),
+            )
 
     if cascaded:
         cset = set(cascaded)
@@ -2839,6 +3123,9 @@ def _derive_review_edit_window_id(
 
 
 @requires_pipeline_file()
+@_review_operation(
+    "review edit", lambda r, a: review_edit_summary(r, a["add"], a["remove"])
+)
 def refit_window_impl(
     file_path: Union[Path, str],
     window_id: Optional[int] = None,
@@ -2848,6 +3135,8 @@ def refit_window_impl(
     add_seeds: Optional[List[ModelPeak]] = None,
     snap_tol_mhz: Optional[float] = None,
     frame: Optional[Frame] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
     _shared: Optional["_SharedFitCtx"] = None,
 ) -> RefitWindowResult:
     """User-directed single-window refit for Stage 6 review decisions.
@@ -3355,6 +3644,9 @@ def _record_decision(
 
 
 @requires_pipeline_file()
+@_review_operation(
+    "review accept", lambda r, a: review_accept_summary(r, a["window_id"])
+)
 def review_accept_impl(
     file_path: Union[Path, str],
     window_id: int,
@@ -3362,6 +3654,8 @@ def review_accept_impl(
     candidate_freq: Optional[float] = None,
     snap_tol_mhz: Optional[float] = None,
     frame: Optional[Frame] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
     _shared: Optional["_SharedFitCtx"] = None,
 ) -> Optional[RefitWindowResult]:
     """Accept a window as-is or accept a specific revived candidate.
@@ -3641,12 +3935,15 @@ def _frozen_parameters_from_sources(
 
 
 @requires_pipeline_file()
+@_review_operation("review create", lambda r, a: review_create_summary(r))
 def create_window_impl(
     file_path: Union[Path, str],
     anchor_mhz: float,
     *,
     snap_tol_mhz: Optional[float] = None,
     frame: Optional[Frame] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
     _replay_window_id: Optional[int] = None,
     _shared: Optional["_SharedFitCtx"] = None,
 ) -> CreateWindowResult:
@@ -5391,7 +5688,8 @@ def _frame_mismatch_warnings(
 
     residuals: List[float] = []
     predicted: List[float] = []
-    for action in plan:
+    flagged: List[int] = []
+    for action_index, action in enumerate(plan):
         wid = action.window_id
         targets: List[float] = []
         if action.kind == "edit":
@@ -5411,6 +5709,8 @@ def _frame_mismatch_warnings(
                 continue
             residuals.append(f - match)
             predicted.append((probe_freq_mhz - match) * epsilon / (1.0 + epsilon))
+            if action_index not in flagged:
+                flagged.append(action_index)
 
     if len(residuals) < _FRAME_MISMATCH_MIN_CANDIDATES:
         return []
@@ -5426,14 +5726,21 @@ def _frame_mismatch_warnings(
             return []
 
     mean_residual_khz = (sum(residuals) / len(residuals)) * 1e3
-    return [
+    advisory = (
         f"{len(residuals)} candidate(s) in this batch resolved with a "
         f"residual clustered near {mean_residual_khz:+.1f} kHz -- matching "
         f"what this file's epsilon ({epsilon * 1e6:+.3f} ppm) predicts for a "
         f"calibrated frequency submitted as raw. The curation file may have "
         f"been staged in the calibrated frame but declared (or defaulted to) "
         f"raw; double check its frame before trusting this batch."
-    ]
+    )
+    # The same advisory as a frame_mismatch event of the running operation
+    # (``actions``: the 0-based plan positions whose candidates matched). It
+    # stays in the result's warnings too; it has no log line.
+    scope = _REVIEW_SCOPE.get()
+    if scope is not None:
+        scope.warn("frame_mismatch", advisory, actions=sorted(flagged))
+    return [advisory]
 
 
 # --- the automatic-fit baseline (for undo replay) --------------------------
@@ -5755,6 +6062,17 @@ class _BatchCtx:
     see ``test_engine_invariants.py``'s docstring on why this module prefers
     guards enforced by structure.
     """
+    events: Optional[StageScope] = None
+    """The Stage 6 operation's scope (:data:`_REVIEW_SCOPE` when the batch was
+    opened), through which the batch reports its windows and checks for a
+    cancel; ``None`` reports nothing and never cancels."""
+    baseline_created: bool = False
+    """Whether THIS batch's :func:`_open_batch` created the undo baseline (it
+    did not exist before). A batch discarded before its persist removes it
+    again (:func:`_discard_batch`), so the file is exactly as before."""
+    persist_started: bool = False
+    """Set by :func:`_finish_batch` as its persist begins; from there the batch
+    completes and is never discarded."""
 
 
 def _build_shared_fit_ctx(path: str) -> _SharedFitCtx:
@@ -7647,14 +7965,29 @@ def _open_batch(
     # operation that can mix two analysis models inside one artifact. Checked
     # before the snapshot so a refused batch leaves the file untouched.
     require_splice_compatible_environment(path)
+    baseline_created = False
     if snapshot:
         # Snapshot the automatic fit before the first edit mutates it in place
         # (a no-op after the first time), so 'review undo' can restore it and
-        # replay.
+        # replay. Whether this call created it is remembered, so a batch
+        # cancelled before its persist can take it back (_discard_batch).
+        baseline_created = not _has_stage5_baseline(path)
         _snapshot_stage5_baseline(path)
     ctx = _build_batch_ctx(path, snap_tol_mhz=snap_tol_mhz, shared=shared)
     ctx.baseline_taken = snapshot
+    ctx.baseline_created = baseline_created
+    ctx.events = _REVIEW_SCOPE.get()
     return ctx
+
+
+def _discard_batch(ctx: _BatchCtx, path: str) -> None:
+    """Undo the one write an opened batch makes before its persist: the undo
+    baseline, when this batch created it. For a batch abandoned on a cancel
+    or a failing events callback, which leaves the file exactly as it was.
+    A batch whose persist has begun is never discarded."""
+    if ctx.baseline_created and not ctx.persist_started:
+        clear_stage5_baseline(path)
+        ctx.baseline_created = False
 
 
 def _cascade_batch(ctx: _BatchCtx, *, snap_tol_mhz: float) -> List[int]:
@@ -7684,6 +8017,7 @@ def _cascade_batch(ctx: _BatchCtx, *, snap_tol_mhz: float) -> List[int]:
             peak_frequencies_mhz=ctx.shared.peak_frequencies_mhz,
             min_freeze_snr=ctx.shared.min_freeze_snr,
             snap_tol_mhz=snap_tol_mhz,
+            events=ctx.events,
         )
         if cascaded:
             ctx.changeset.mutated_wids.update(cascaded)
@@ -7736,6 +8070,9 @@ def _finish_batch(
     if cascaded is None:
         cascaded = _cascade_batch(ctx, snap_tol_mhz=snap_tol_mhz)
 
+    # The batch's final write: from here it completes (no cancel check point
+    # and no events below), so it is never discarded.
+    ctx.persist_started = True
     shape_attr = str(ctx.changeset.spectrum_fit.parameters.get("shape", "lorentzian"))
     # Only the windows this batch touched are rewritten (S4). The batch knows
     # exactly which those are -- ``mutated_wids`` is what the cascade above
@@ -7791,8 +8128,18 @@ def _run_single_action(
     exactly as before.
     """
     ctx = _open_batch(path, snap_tol_mhz=snap_tol_mhz, shared=shared)
-    result = apply(ctx)
-    _finish_batch(ctx, path, snap_tol_mhz=snap_tol_mhz)
+    try:
+        _check_cancel()
+        t0 = time.monotonic()
+        result = apply(ctx)
+        wid = getattr(result, "window_id", None)
+        if isinstance(wid, int):
+            _report_window(ctx, wid, index=1, total=1, elapsed_s=time.monotonic() - t0)
+        _finish_batch(ctx, path, snap_tol_mhz=snap_tol_mhz)
+    except (OperationCancelledError, CallbackFailedError):
+        # Nothing of the action persists: the file is as it was.
+        _discard_batch(ctx, path)
+        raise
     return result
 
 
@@ -8048,7 +8395,15 @@ def _apply_batch_segment(
         plan,
         "Stage 5 fit",
     )
+    # One WindowProgress per action that fits (every kind but a bare accept),
+    # naming the window it targeted; a cancel is honoured before each action.
+    fit_total = sum(1 for a in plan if a.kind != "accept" or a.candidate is not None)
+    fit_index = 0
     for original_index, action in _canonicalize_batch_plan(plan):
+        if ctx.events is not None:
+            ctx.events.check_cancel()
+        t_action = time.monotonic()
+        counts_before = {k: len(v) for k, v in action_indices.items()}
         try:
             if action.kind == "create":
                 if action.anchor is None:
@@ -8160,8 +8515,40 @@ def _apply_batch_segment(
                     )
         except (ValueError, KeyError) as exc:
             _raise_curation_failure(original_index, action, exc)
+        fit_index = _report_action_window(
+            ctx, action_indices, counts_before, fit_index, fit_total, t_action
+        )
         applied += 1
     return applied, created_facts
+
+
+def _report_action_window(
+    ctx: _BatchCtx,
+    action_indices: Mapping[int, Sequence[int]],
+    counts_before: Mapping[int, int],
+    fit_index: int,
+    fit_total: int,
+    t_action: float,
+) -> int:
+    """Report the window the action just applied targeted (the entry its
+    branch added to ``action_indices``), if it fit one. Returns the updated
+    fit-action count."""
+    grown = [
+        wid
+        for wid, idx in action_indices.items()
+        if len(idx) != counts_before.get(wid, 0)
+    ]
+    if not grown:
+        return fit_index  # a bare accept fits nothing
+    fit_index += 1
+    _report_window(
+        ctx,
+        grown[0],
+        index=fit_index,
+        total=max(fit_total, fit_index),
+        elapsed_s=time.monotonic() - t_action,
+    )
+    return fit_index
 
 
 def _execute_curation_batch(
@@ -8226,7 +8613,28 @@ def _execute_curation_batch(
     # reads as non-mutating to the callers' "any non-accept action" pre-check,
     # so a caller-side gate alone would let that shape through.
     ctx = _open_batch(path, snap_tol_mhz=snap_tol_mhz, shared=shared)
+    try:
+        return _run_curation_batch(
+            ctx, path, plan, snap_tol_mhz=snap_tol_mhz, deferred=deferred
+        )
+    except (OperationCancelledError, CallbackFailedError):
+        # A curation batch is one unit: a cancel (or a failing events
+        # callback) before its persist discards all of it.
+        _discard_batch(ctx, path)
+        raise
 
+
+def _run_curation_batch(
+    ctx: _BatchCtx,
+    path: str,
+    plan: List[PlannedAction],
+    *,
+    snap_tol_mhz: float,
+    deferred: Optional[_DeferredCuration],
+) -> _BatchOutcome:
+    """The body of :func:`_execute_curation_batch` once its batch is open:
+    apply every action in memory, then cascade and persist once
+    (:func:`_finish_batch`)."""
     # Snapshot every window's pre-batch stats now, before any action mutates
     # ctx.changeset.spectrum_fit in place -- the same snapshot, taken at the
     # same point and for the same reason, _run_review_preview takes.
@@ -8448,6 +8856,11 @@ def _resolve_created_window_structure(
 
 
 @requires_pipeline_file()
+@_review_operation(
+    "review apply",
+    lambda r, a: review_apply_summary(r, a["dry_run"]),
+    wrote=lambda r, a: not a["dry_run"],
+)
 def apply_curation_impl(
     file_path: Union[Path, str],
     curation_path: Optional[Union[Path, str]] = None,
@@ -8456,6 +8869,8 @@ def apply_curation_impl(
     dry_run: bool = False,
     frame: Optional[Frame] = None,
     log_prefix: Optional[int] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
     _shared: Optional["_SharedFitCtx"] = None,
 ) -> CurationApplyResult:
     """Apply a curation file to *file_path*, delegating to the edit impls.
@@ -8676,7 +9091,10 @@ def _apply_curation_at_prefix(
         require_splice_compatible_environment(path)
 
     snap_tol = resolve_snap_tol_mhz(path, None)
-    with deferred_compaction():
+    # The restore-then-replay is one unit: a cancel is honoured here, before
+    # the restore, and never once it has begun.
+    _check_cancel()
+    with deferred_compaction(), _committing():
         _reset_to_baseline(path, restore_fit=baseline)
         try:
             outcome = _execute_curation_batch(
@@ -8984,7 +9402,15 @@ def _run_review_preview(
     # appears here -- one window, not two.
     created_facts: Dict[int, CreateWindowResult] = {}
     _require_known_plan_windows(set(before_stats), plan, "Stage 5 fit")
+    # One WindowProgress per action that fits (every kind but a bare accept),
+    # naming the window it targeted; a cancel is honoured before each action.
+    fit_total = sum(1 for a in plan if a.kind != "accept" or a.candidate is not None)
+    fit_index = 0
     for original_index, action in _canonicalize_batch_plan(plan):
+        if ctx.events is not None:
+            ctx.events.check_cancel()
+        t_action = time.monotonic()
+        counts_before = {k: len(v) for k, v in action_indices.items()}
         try:
             if action.kind == "create":
                 if action.anchor is None:
@@ -9090,6 +9516,9 @@ def _run_review_preview(
                     )
         except (ValueError, KeyError) as exc:
             _raise_curation_failure(original_index, action, exc)
+        fit_index = _report_action_window(
+            ctx, action_indices, counts_before, fit_index, fit_total, t_action
+        )
 
     # Direct = every window some action touched this batch, snapshotted
     # BEFORE the cascade runs (mutated_wids only grows from here). Anything
@@ -9185,6 +9614,11 @@ def _run_review_preview(
 
 
 @requires_pipeline_file()
+@_review_operation(
+    "review preview",
+    lambda r, a: review_preview_summary(r),
+    wrote=lambda r, a: False,
+)
 def review_preview_impl(
     file_path: Union[Path, str],
     curation_path: Optional[Union[Path, str]] = None,
@@ -9192,6 +9626,8 @@ def review_preview_impl(
     actions: Optional[Sequence[Union[CurationAction, Mapping[str, Any]]]] = None,
     frame: Optional[Frame] = None,
     snap_tol_mhz: Optional[float] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> ReviewPreviewResult:
     """Run a curation file's resolved plan to completion in memory and report
     the fitted outcome -- final-product numbers, post-cascade -- without
@@ -9347,11 +9783,18 @@ def _decision_to_op(entry: DecisionLogEntry) -> List[CurationOp]:
 
 
 @requires_pipeline_file()
+@_review_operation(
+    "review undo",
+    lambda r, a: review_undo_summary(r, a["dry_run"]),
+    wrote=lambda r, a: not a["dry_run"],
+)
 def review_undo_impl(
     file_path: Union[Path, str],
     ids: Sequence[int],
     *,
     dry_run: bool = False,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
     _shared: Optional["_SharedFitCtx"] = None,
 ) -> UndoResult:
     """Undo one or more recorded decisions by id, replaying the rest.
@@ -9489,8 +9932,10 @@ def review_undo_impl(
     # review afresh from it, then replay the surviving decisions onto it as one
     # batch (_execute_curation_batch): a single shared fit context, one
     # combined cascade, one persist -- instead of one full rebuild per
-    # surviving decision.
-    with deferred_compaction():
+    # surviving decision. Restore-then-replay is one unit: a cancel is honoured
+    # here, before the restore, and never once it has begun.
+    _check_cancel()
+    with deferred_compaction(), _committing():
         _reset_to_baseline(path, restore_fit=baseline)
         outcome = _execute_curation_batch(
             path, plan, snap_tol_mhz=resolve_snap_tol_mhz(path, None), shared=_shared
@@ -10411,8 +10856,16 @@ def review_run_impl(
     kappa: float = DEFAULT_SHAPE_ERROR_KAPPA,
     noise_floor: float = DEFAULT_CHI2R_NOISE_FLOOR,
     sigma_floor_khz: Optional[float] = None,
+    events: Optional[EventCallback] = None,
+    cancel: Optional[CancelToken] = None,
 ) -> ReviewRunResult:
     """Build or refresh the Stage 6 attention-routing layer and final products.
+
+    A long operation (``review run``), reported as the ``review`` stage:
+    ``StageStarted`` (after the fit is read, so its start line can name the
+    window count), then ``StageFinished`` with :func:`review_run_summary`
+    once the review is written. ``cancel`` is checked before the stage
+    starts; it has no window loop.
 
     Loads the Stage 5 fit, computes advisory attention reasons for every
     window, consolidates the calibrated final-products table (frequencies
@@ -10483,7 +10936,6 @@ def review_run_impl(
             existing_review = Stage6Review()
 
     fid = load_fid_from_pipeline_impl(path)
-    sideband = Sideband.coerce(fid.sideband)
 
     spur_centers_mhz: List[float] = [
         float(v) for v in spectrum_fit.parameters.get("spur_centers_mhz", [])
@@ -10491,12 +10943,52 @@ def review_run_impl(
     acquisition_us: float = float(spectrum_fit.parameters.get("acquisition_us", 0.0))
     merged_window_freqs = _auto_merged_window_freqs(spectrum_fit)
 
-    logger.info(
-        "Stage 6 review: routing attention for %d windows in %s",
-        len(spectrum_fit.window_fits),
-        path,
-    )
+    # The "Stage 6 review: routing attention for N windows" start line and
+    # the "Saved Stage 6 review to ..." end line are rendered from the
+    # stage's StageStarted / StageFinished events.
+    ops = operation_events("review run", events, cancel)
+    with ops.stage(
+        Stage.REVIEW,
+        verb="review run",
+        detail={"n_windows": len(spectrum_fit.window_fits), "path": path},
+        file_path=path,
+    ) as scope:
+        result, final_products = _review_run(
+            path,
+            spectrum_fit,
+            existing_review,
+            fid,
+            spur_centers_mhz=spur_centers_mhz,
+            acquisition_us=acquisition_us,
+            merged_window_freqs=merged_window_freqs,
+            bar=bar,
+            attention_candidate_evidence=attention_candidate_evidence,
+            kappa=kappa,
+            noise_floor=noise_floor,
+            sigma_floor_khz=sigma_floor_khz,
+        )
+        scope.finish(review_run_summary(result, final_products), detail={"path": path})
+    return result
 
+
+def _review_run(
+    path: str,
+    spectrum_fit: SpectrumFit,
+    existing_review: Stage6Review,
+    fid: Any,
+    *,
+    spur_centers_mhz: List[float],
+    acquisition_us: float,
+    merged_window_freqs: Dict[int, Any],
+    bar: float,
+    attention_candidate_evidence: float,
+    kappa: float,
+    noise_floor: float,
+    sigma_floor_khz: Optional[float],
+) -> Tuple[ReviewRunResult, Optional[FinalProducts]]:
+    """The writing half of :func:`review_run_impl` (inside its stage scope).
+    Returns the result and the final-products table it wrote."""
+    sideband = Sideband.coerce(fid.sideband)
     new_statuses: Dict[int, WindowReviewStatus] = {}
     for wf in spectrum_fit.window_fits:
         wid = int(wf.window_id) if wf.window_id is not None else -1
@@ -10577,17 +11069,13 @@ def review_run_impl(
         for reason in status.attention_reasons:
             reason_counts[reason.kind] = reason_counts.get(reason.kind, 0) + 1
 
-    logger.info(
-        "Saved Stage 6 review to %s: %d windows, %d need attention",
-        path,
-        len(new_statuses),
-        n_attention,
-    )
-
-    return ReviewRunResult(
-        n_windows=len(new_statuses),
-        n_attention=n_attention,
-        reason_counts=reason_counts,
+    return (
+        ReviewRunResult(
+            n_windows=len(new_statuses),
+            n_attention=n_attention,
+            reason_counts=reason_counts,
+        ),
+        final_products,
     )
 
 

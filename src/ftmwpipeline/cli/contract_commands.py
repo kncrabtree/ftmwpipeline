@@ -46,8 +46,9 @@ from .utils import setup_logging
 
 #: Exit code for each contract error code that does not exit
 #: :data:`DEFAULT_ERROR_EXIT` (CONTRACT_STRATEGY §Errors). The single place this
-#: mapping lives; every other code exits 1. ``algorithm_failed`` and
-#: ``cancelled`` are listed ahead of the waves that introduce them.
+#: mapping lives; every other code exits 1 (``callback_failed`` among them).
+#: ``cancelled`` (a set cancel token, e.g. the first Ctrl-C of a long verb)
+#: exits 130 like a bare interrupt.
 EXIT_CODES: Dict[str, int] = {
     "file_corrupt": 2,
     "algorithm_failed": 2,

@@ -446,6 +446,38 @@ The same operations on the Python interfaces:
 The fit is deterministic: a re-run on the same inputs and settings reproduces it
 exactly. Re-running supersedes any review or report built on the old fit.
 
+**Progress and cancelling.** The fit is the longest stage, so it reports each
+window as it finishes and can be stopped part-way. Pass ``events=`` (a callable)
+to receive a ``WindowProgress`` per finished window and ``cancel=`` (anything
+with ``is_set()``, such as a ``threading.Event``) to stop the walk:
+
+.. code-block:: python
+
+   import threading
+   import ftmwpipeline.api as ftmw
+   from ftmwpipeline import OperationCancelledError, WindowProgress
+
+   stop = threading.Event()
+
+   def on_event(event):
+       if isinstance(event, WindowProgress):
+           print(f"{event.phase} {event.index}/{event.total}: window {event.window_id}")
+
+   try:
+       ftmw.fit_peaks("exp_2638.ftmw", events=on_event, cancel=stop)
+   except OperationCancelledError as err:
+       print("stopped; the file is as it was:", err.completed_windows)  # []
+
+The callback runs on the calling thread, never in a pool worker. A cancel is
+checked between windows. With a worker pool the parent polls about every 0.2 s
+and, once the token is set, terminates the workers instead of waiting for the
+windows still fitting; the sequential walk (``--jobs 1``) stops after the current
+window. No check is made inside a single window's least-squares fit. A cancelled
+fit writes nothing: the file is exactly as it was, with no invalidation, and
+``OperationCancelledError.completed_windows`` is always ``[]`` for now. On the
+command line the first Ctrl-C cancels the same way (exit ``130``) and ``--events``
+writes the events to stderr; see :doc:`machine_contract`.
+
 .. figure:: figures/stage5_fitting.png
    :width: 95%
    :align: center
