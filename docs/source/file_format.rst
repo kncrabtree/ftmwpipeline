@@ -48,15 +48,27 @@ is meant to be inspected through the :doc:`cli` (``ftmwpipeline info``) and the
 fixed paths. Because the container is plain HDF5, it is also readable with any
 HDF5 tool (``h5dump``, ``h5py``) for ad hoc inspection.
 
-The file on disk is always as small as its content. HDF5 never reclaims the
+Writes are atomic. Every call that writes a ``.ftmw`` file does all of its
+writes in a temporary copy beside it, named
+``.<file name>.ftmw-tmp.<hostname>.<pid>``, and then replaces the file with
+that copy in one ``os.replace``. A process killed at any point leaves either the
+file exactly as it was before the call or the file as the call completed it --
+never a half-written stage, a stage marked complete over missing results, or a
+file that will not open. A call that fails or is cancelled discards its copy.
+If the writer was killed, its copy may be left beside the file; it is
+harmless, and the next write to the file from the same host removes it (a client
+that knows no write is in progress may delete any file matching the pattern).
+Because the copy lives in the same directory, the directory must be writable
+for a write to succeed. See :doc:`machine_contract`, *Crash safety*.
+
+The file on disk stays as small as its content. HDF5 never reclaims the
 space a rewritten attribute or a deleted variable-length dataset leaves behind
 -- exactly what a stage re-run or a Stage 6 curation write churns -- so without
 intervention a curated file grew by roughly a review group plus a fit table per
-edit and never shrank. Every stage run and every curation write therefore ends
-by repacking the file (the equivalent of ``h5repack``: every object copied into
-a fresh file that atomically replaces the original), which costs tens of
-milliseconds; ``ftmwpipeline run`` repacks once at the end of the whole run.
-There is no verb for it and nothing to configure.
+edit and never shrank. The temporary copy of every write is therefore written
+compacted (the equivalent of ``h5repack``: every object copied into a fresh
+file), which costs tens of milliseconds; the space a write frees is reclaimed
+by the next write. There is no verb for it and nothing to configure.
 
 Stage tracking and dependencies
 -------------------------------

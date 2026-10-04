@@ -104,7 +104,7 @@ def test_warning_flattens_its_code_fields_on_the_wire():
 def test_event_schemas_codes_and_vocabulary_are_declared():
     for cls in (StageStarted, StageFinished, WindowProgress, Invalidated):
         assert cls.__ftmw_schema__ in MANIFEST.schemas
-    assert {"cancelled", "callback_failed"} <= set(MANIFEST.codes)
+    assert {"cancelled", "callback_failed", "write_conflict"} <= set(MANIFEST.codes)
     assert set(MANIFEST.vocabularies["warning_code"]) == set(WARNING_FIELDS)
 
 

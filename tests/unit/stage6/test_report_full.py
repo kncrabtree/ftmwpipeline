@@ -24,7 +24,7 @@ import numpy as np  # noqa: E402
 import pytest  # noqa: E402
 
 import ftmwpipeline.api as ftmw  # noqa: E402
-from ftmwpipeline.contract import Absent  # noqa: E402
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline._internal.report_html_impl import (  # noqa: E402
     _LIGHTBOX_JS,
     _STYLESHEET,
@@ -46,6 +46,7 @@ from ftmwpipeline._internal.stage6_impl import (  # noqa: E402
     get_candidate_ledger_impl,
     review_run_impl,
 )
+from ftmwpipeline.contract import Absent  # noqa: E402
 from ftmwpipeline.core.data_structures import FinalPeak  # noqa: E402
 from ftmwpipeline.pipeline import Pipeline  # noqa: E402
 
@@ -819,7 +820,8 @@ def stage5_small_file(tmp_path_factory):
     plan.dependency_edges = [
         (a, b) for (a, b) in plan.dependency_edges if a in keep and b in keep
     ]
-    save_window_plan_impl(str(fp), plan)
+    with atomic_write(str(fp)):
+        save_window_plan_impl(str(fp), plan)
 
     ftmw.fit_peaks(str(fp))
     review_run_impl(str(fp))

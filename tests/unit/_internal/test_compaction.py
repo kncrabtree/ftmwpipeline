@@ -176,4 +176,33 @@ def test_compact_failure_warns_and_leaves_the_file(churned: Path, caplog) -> Non
     assert any("Could not compact" in r.getMessage() for r in caplog.records)
     # And the original is untouched by a failure on another path.
     assert _dump(churned) == content
-    assert not list(churned.parent.glob(".*.tmp"))
+    assert not list(churned.parent.glob(".*ftmw-tmp*"))
+
+
+def test_compact_inside_a_transaction_does_nothing(churned: Path) -> None:
+    """The transaction's working copy is already compacted, so a
+    ``compact_file`` inside one neither copies nor replaces anything."""
+    from ftmwpipeline._internal.atomic import atomic_write
+
+    inode = os.stat(churned).st_ino
+    with atomic_write(churned):
+        compact_file(churned)
+        assert not list(churned.parent.glob(".*ftmw-tmp*"))
+    assert os.stat(churned).st_ino == inode
+
+
+def test_compaction_uses_the_working_copy_name(churned: Path, monkeypatch) -> None:
+    """Compaction goes through the same copy and the same name as any other
+    write (§Crash safety: "Compaction uses the same pattern")."""
+    from ftmwpipeline._internal import atomic
+
+    seen = []
+    real = atomic.copy_compacted
+
+    def spy(src, dst):
+        seen.append(os.path.basename(dst))
+        real(src, dst)
+
+    monkeypatch.setattr(atomic, "copy_compacted", spy)
+    compact_file(churned)
+    assert seen == [os.path.basename(atomic.tmp_copy_name(churned))]

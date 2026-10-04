@@ -21,6 +21,7 @@ import h5py
 import numpy as np
 import pytest
 
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline.core.data_structures import FID, Sideband
 from ftmwpipeline.file_manager import (
     PipelineExistsError,
@@ -466,7 +467,8 @@ class TestAcquisitionSegmentSerialization:
             format_name="keysight-mat",
             loader_parameters=layout,
         )
-        create_pipeline_file(pipeline_path, fid, src_meta)
+        with atomic_write(pipeline_path):
+            create_pipeline_file(pipeline_path, fid, src_meta)
 
         with h5py.File(pipeline_path, "r") as h5f:
             segs = load_acquisition_segments_from_hdf5(h5f["stage0_fid_data"])
@@ -494,7 +496,8 @@ class TestAcquisitionSegmentSerialization:
             format_name="keysight-mat",
             loader_parameters={**layout, "keep_frames": True},
         )
-        create_pipeline_file(pipeline_path, fid, src_meta)
+        with atomic_write(pipeline_path):
+            create_pipeline_file(pipeline_path, fid, src_meta)
 
         with h5py.File(pipeline_path, "r") as h5f:
             segs = load_acquisition_segments_from_hdf5(h5f["stage0_fid_data"])
@@ -516,7 +519,8 @@ class TestAcquisitionSegmentSerialization:
             format_name="keysight-mat",
             loader_parameters={**layout, "frame": 2},
         )
-        create_pipeline_file(pipeline_path, fid, src_meta)
+        with atomic_write(pipeline_path):
+            create_pipeline_file(pipeline_path, fid, src_meta)
 
         with h5py.File(pipeline_path, "r") as h5f:
             segs = load_acquisition_segments_from_hdf5(h5f["stage0_fid_data"])
@@ -555,7 +559,8 @@ class TestAcquisitionSegmentSerialization:
             format_name="keysight-mat",
             loader_parameters={**layout, "keep_frames": True},
         )
-        create_pipeline_file(pipeline_path, fid, src_meta)
+        with atomic_write(pipeline_path):
+            create_pipeline_file(pipeline_path, fid, src_meta)
 
         with h5py.File(pipeline_path, "r") as h5f:
             segs = load_acquisition_segments_from_hdf5(h5f["stage0_fid_data"])
@@ -593,10 +598,12 @@ class TestReImportSemantics:
             format_name="keysight-mat",
             loader_parameters=layout,
         )
-        create_pipeline_file(pipeline_path, fid, src_meta)
+        with atomic_write(pipeline_path):
+            create_pipeline_file(pipeline_path, fid, src_meta)
 
         # Second create with same params must not raise
-        result = create_pipeline_file(pipeline_path, fid, src_meta)
+        with atomic_write(pipeline_path):
+            result = create_pipeline_file(pipeline_path, fid, src_meta)
         assert result == pipeline_path
 
     def test_different_frame_refuses_without_force(self, tmp_path):
@@ -612,7 +619,8 @@ class TestReImportSemantics:
             loader_parameters=params_a,
         )
         pipeline_path = tmp_path / "frame_refusal.ftmw"
-        create_pipeline_file(pipeline_path, fid_a, src_a)
+        with atomic_write(pipeline_path):
+            create_pipeline_file(pipeline_path, fid_a, src_a)
 
         params_b = {**layout, "frame": 1}
         fid_b = loader.load_fid(mat_path, **params_b)
@@ -622,7 +630,8 @@ class TestReImportSemantics:
             loader_parameters=params_b,
         )
         with pytest.raises(PipelineExistsError):
-            create_pipeline_file(pipeline_path, fid_b, src_b)
+            with atomic_write(pipeline_path):
+                create_pipeline_file(pipeline_path, fid_b, src_b)
 
     def test_different_frame_succeeds_with_force(self, tmp_path):
         """force=True overwrites even when frame selection changed."""
@@ -637,7 +646,8 @@ class TestReImportSemantics:
             loader_parameters=params_a,
         )
         pipeline_path = tmp_path / "frame_force.ftmw"
-        create_pipeline_file(pipeline_path, fid_a, src_a)
+        with atomic_write(pipeline_path):
+            create_pipeline_file(pipeline_path, fid_a, src_a)
 
         params_b = {**layout, "frame": 0}
         fid_b = loader.load_fid(mat_path, **params_b)
@@ -646,7 +656,8 @@ class TestReImportSemantics:
             format_name="keysight-mat",
             loader_parameters=params_b,
         )
-        result = create_pipeline_file(pipeline_path, fid_b, src_b, force=True)
+        with atomic_write(pipeline_path):
+            result = create_pipeline_file(pipeline_path, fid_b, src_b, force=True)
         assert result == pipeline_path
 
 
@@ -663,7 +674,8 @@ class TestPrivateMetadataNotPersisted:
             loader_parameters=dict(layout),
         )
         pipeline_path = tmp_path / "private_meta.ftmw"
-        create_pipeline_file(pipeline_path, fid, src)
+        with atomic_write(pipeline_path):
+            create_pipeline_file(pipeline_path, fid, src)
 
         with h5py.File(pipeline_path, "r") as f:
             raw = f["stage0_fid_data/metadata/experimental_data"][()]
@@ -922,7 +934,8 @@ class TestInterleavePatternSerialization:
             format_name="keysight-mat",
             loader_parameters={**layout, "interleave_factors": [m]},
         )
-        create_pipeline_file(pipeline_path, fid, src)
+        with atomic_write(pipeline_path):
+            create_pipeline_file(pipeline_path, fid, src)
 
         import h5py
 
@@ -946,7 +959,8 @@ class TestInterleavePatternSerialization:
             format_name="keysight-mat",
             loader_parameters=layout,
         )
-        create_pipeline_file(pipeline_path, fid, src)
+        with atomic_write(pipeline_path):
+            create_pipeline_file(pipeline_path, fid, src)
 
         import h5py
 
@@ -988,7 +1002,8 @@ class TestInterleavePatternSerialization:
             format_name="keysight-mat",
             loader_parameters={**layout, "interleave_factors": [m1, m2]},
         )
-        create_pipeline_file(pipeline_path, fid, src)
+        with atomic_write(pipeline_path):
+            create_pipeline_file(pipeline_path, fid, src)
 
         import h5py
 

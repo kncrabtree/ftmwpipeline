@@ -16,6 +16,7 @@ from typing import Any
 import h5py
 import pytest
 
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline.core.data_structures import FinalProducts, Stage6Review
 from ftmwpipeline.core.peak_detection_settings import PeakDetectionSettings
 from ftmwpipeline.core.stage_fit_settings import ClockSource, StageFitSettings
@@ -65,17 +66,19 @@ class TestStage3Consumed:
         consumed = Stage3Consumed(
             tau_basis_us=9.5, gap_shape="gaussian", tau_basis_source="stage2b_tau_G_maj"
         )
-        save_peak_detection_settings_to_h5(
-            empty_ftmw, PeakDetectionSettings(), consumed=consumed
-        )
+        with atomic_write(empty_ftmw):
+            save_peak_detection_settings_to_h5(
+                empty_ftmw, PeakDetectionSettings(), consumed=consumed
+            )
         assert load_peak_detection_consumed_from_h5(empty_ftmw) == consumed
 
     def test_the_resolver_never_sees_it(self, empty_ftmw: str) -> None:
-        save_peak_detection_settings_to_h5(
-            empty_ftmw,
-            PeakDetectionSettings(),
-            consumed=Stage3Consumed(5.0, "lorentzian", "default_5us"),
-        )
+        with atomic_write(empty_ftmw):
+            save_peak_detection_settings_to_h5(
+                empty_ftmw,
+                PeakDetectionSettings(),
+                consumed=Stage3Consumed(5.0, "lorentzian", "default_5us"),
+            )
         assert load_peak_detection_settings_from_h5(empty_ftmw) == (
             PeakDetectionSettings()
         )
@@ -83,7 +86,8 @@ class TestStage3Consumed:
     def test_absent_reads_none(self, empty_ftmw: str) -> None:
         assert load_peak_detection_consumed_from_h5(empty_ftmw) is None
         # The sparse user layer (``settings set``) writes no consumed block.
-        save_peak_detection_settings_to_h5(empty_ftmw, PeakDetectionSettings())
+        with atomic_write(empty_ftmw):
+            save_peak_detection_settings_to_h5(empty_ftmw, PeakDetectionSettings())
         with h5py.File(empty_ftmw, "r") as h5f:
             assert "consumed" not in h5f[STAGE3_PEAKS_SETTINGS_PATH]
         assert load_peak_detection_consumed_from_h5(empty_ftmw) is None
@@ -106,7 +110,10 @@ class TestStage5Consumed:
             peak_survival_snr_floor=3.3,
             stft_spur_nominees=((27000.0, True), (27100.5, False)),
         )
-        save_stage_fit_settings_to_h5(empty_ftmw, StageFitSettings(), consumed=consumed)
+        with atomic_write(empty_ftmw):
+            save_stage_fit_settings_to_h5(
+                empty_ftmw, StageFitSettings(), consumed=consumed
+            )
         assert load_stage_fit_consumed_from_h5(empty_ftmw) == consumed
 
     def test_round_trip_with_nothing_consumed(self, empty_ftmw: str) -> None:
@@ -119,12 +126,18 @@ class TestStage5Consumed:
             timebase_sigma_epsilon=None,
             peak_survival_snr_floor=5.0,
         )
-        save_stage_fit_settings_to_h5(empty_ftmw, StageFitSettings(), consumed=consumed)
+        with atomic_write(empty_ftmw):
+            save_stage_fit_settings_to_h5(
+                empty_ftmw, StageFitSettings(), consumed=consumed
+            )
         assert load_stage_fit_consumed_from_h5(empty_ftmw) == consumed
 
     def test_an_empty_band_table_is_not_none(self, empty_ftmw: str) -> None:
         consumed = Stage5Consumed("persisted", 9.5, 0.09, (), None, None, 3.3)
-        save_stage_fit_settings_to_h5(empty_ftmw, StageFitSettings(), consumed=consumed)
+        with atomic_write(empty_ftmw):
+            save_stage_fit_settings_to_h5(
+                empty_ftmw, StageFitSettings(), consumed=consumed
+            )
         loaded = load_stage_fit_consumed_from_h5(empty_ftmw)
         assert loaded is not None and loaded.band_majorities == ()
 
@@ -132,22 +145,27 @@ class TestStage5Consumed:
         consumed = Stage5Consumed(
             "persisted", 9.5, 0.09, None, None, None, 3.3, stft_spur_nominees=()
         )
-        save_stage_fit_settings_to_h5(empty_ftmw, StageFitSettings(), consumed=consumed)
+        with atomic_write(empty_ftmw):
+            save_stage_fit_settings_to_h5(
+                empty_ftmw, StageFitSettings(), consumed=consumed
+            )
         loaded = load_stage_fit_consumed_from_h5(empty_ftmw)
         assert loaded is not None and loaded.stft_spur_nominees == ()
 
     def test_the_resolver_never_sees_it(self, empty_ftmw: str) -> None:
         resolved = resolve_stage_fit()
-        save_stage_fit_settings_to_h5(
-            empty_ftmw,
-            resolved,
-            consumed=Stage5Consumed("none", None, None, None, None, None, 5.0),
-        )
+        with atomic_write(empty_ftmw):
+            save_stage_fit_settings_to_h5(
+                empty_ftmw,
+                resolved,
+                consumed=Stage5Consumed("none", None, None, None, None, None, 5.0),
+            )
         assert load_stage_fit_settings_from_h5(empty_ftmw) == resolved
 
     def test_absent_reads_none(self, empty_ftmw: str) -> None:
         assert load_stage_fit_consumed_from_h5(empty_ftmw) is None
-        save_stage_fit_settings_to_h5(empty_ftmw, StageFitSettings())
+        with atomic_write(empty_ftmw):
+            save_stage_fit_settings_to_h5(empty_ftmw, StageFitSettings())
         with h5py.File(empty_ftmw, "r") as h5f:
             assert "consumed" not in h5f[STAGE_FIT_PATH]
         assert load_stage_fit_consumed_from_h5(empty_ftmw) is None

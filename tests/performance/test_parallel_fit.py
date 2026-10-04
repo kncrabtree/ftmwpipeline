@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 import ftmwpipeline.api as ftmw
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline.core.data_structures import SpectrumFit
 
 pytestmark = [pytest.mark.performance, pytest.mark.slow]
@@ -97,7 +98,8 @@ def stage4_multiwindow(tmp_path_factory):
     plan.dependency_edges = [
         (a, b) for (a, b) in plan.dependency_edges if a in keep_set and b in keep_set
     ]
-    save_window_plan_impl(str(fp), plan)
+    with atomic_write(str(fp)):
+        save_window_plan_impl(str(fp), plan)
     return fp
 
 

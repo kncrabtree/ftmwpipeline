@@ -1058,18 +1058,41 @@ has begun its final write completes, and the cancel is honoured at the next
 check point.
 
 **Crash safety.** Every call that writes a ``.ftmw`` file -- a stage run,
-curation, ``settings set``/``unset``, ``clocks``, ``start run`` -- writes
-atomically: it works in a temporary copy beside the file, named
-``.<file name>.ftmw-tmp.<hostname>.<pid>``, and replaces the file with that
-copy in one step when it finishes. A process killed at any point leaves either
-the file as it was before the call or the file as the call completed it, never
-a mix. A cancel, a ``callback_failed`` or any other failure discards the copy.
-``StageFinished`` is emitted once the replace has happened. Within
-``run_pipeline`` each stage is its own atomic write, so a kill keeps every
-stage that finished before it. If another process wrote the file after the
-call's copy was taken, the call raises ``write_conflict`` and leaves the other
-write in place. A copy left behind by a killed process is removed by the next
-write to the file from the same host.
+curation, ``settings set``/``unset``, ``clocks``, ``start run``, a stamp --
+writes atomically: it does all its writes in a temporary copy beside the file
+and replaces the file with that copy in one ``os.replace`` when it finishes.
+
+* *Kill.* A process killed at any point, ``SIGKILL`` included, leaves the file
+  exactly as it was before the call or as the call completed it, never a mix, a
+  stage marked complete over missing or partial results, or a file that will not
+  open. A reader that already has the file open keeps the version it opened.
+* *Failure.* A cancel, a ``callback_failed`` or any other failure discards the
+  copy, so the file is left exactly as it was before the call. If the replace
+  itself fails (a platform that refuses to replace a file another process holds
+  open, for example) the call raises and the file is unchanged.
+* *Events.* ``StageFinished`` is emitted once the replace has happened;
+  ``Invalidated`` precedes it, so a call that fails at the replace may have
+  announced an invalidation that did not land.
+* *Pipelines.* Within ``run_pipeline`` each stage is its own atomic write, so a
+  kill keeps every stage that finished before it.
+* *Concurrent writers.* The copy is taken when the call's write begins. If
+  another process wrote the file after that, the call raises ``write_conflict``
+  (``WriteConflictError``, attribute ``path``, exit ``1``) instead of replacing
+  it; the other write stands and nothing of this call is kept. Re-run the call
+  to apply it to the file as it now is. Writes from one process to one file are
+  serialized.
+* *Size.* The copy is written compacted, so the space a write frees is
+  reclaimed by the next write.
+* *Temporary copies.* The copy is in the target's own directory (so the replace
+  stays on one filesystem) and is named
+  ``.<target basename>.ftmw-tmp.<hostname>.<pid>``, the basename including its
+  extension and ``<pid>`` the writer's decimal process id. A kill between making
+  the copy and the replace leaves it behind. Before making its own copy, every
+  write removes the leftover copies of the same target made on the same host by
+  a process that is no longer running. Copies from other hosts are never
+  touched, and neither are copies whose pid is alive, even if that pid has been
+  reused. A client that knows no write to the file is in progress may delete
+  every file matching the pattern.
 
 On the command line every long verb takes ``--events``, which writes each event
 to stderr as one JSON line. The first Ctrl-C cancels: the verb stops at its

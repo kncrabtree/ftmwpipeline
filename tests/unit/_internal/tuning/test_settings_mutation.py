@@ -14,6 +14,7 @@ from pathlib import Path
 import h5py
 import pytest
 
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline._internal.tuning import (
     export_settings,
     set_setting,
@@ -280,12 +281,14 @@ def test_unset_unknown_knob_raises(bare_ftmw: Path) -> None:
 
 # --- export_settings -------------------------------------------------------
 def test_export_round_trips_via_load_preset(bare_ftmw: Path, tmp_path: Path) -> None:
-    save_noise_settings_to_h5(
-        str(bare_ftmw), noise_mod.NoiseSettings(window_mhz=77.0, line_k=9.0)
-    )
+    with atomic_write(str(bare_ftmw)):
+        save_noise_settings_to_h5(
+            str(bare_ftmw), noise_mod.NoiseSettings(window_mhz=77.0, line_k=9.0)
+        )
     fit = fit_mod.StageFitSettings(shape=fit_mod.ShapeSpec(ps_mod.PeakShape.GAUSSIAN))
     fit.tau.max_decay_factor = 4.0
-    save_stage_fit_settings_to_h5(str(bare_ftmw), fit)
+    with atomic_write(str(bare_ftmw)):
+        save_stage_fit_settings_to_h5(str(bare_ftmw), fit)
 
     out = tmp_path / "preset.yml"
     result = export_settings(bare_ftmw, out)
@@ -301,10 +304,14 @@ def test_export_round_trips_via_load_preset(bare_ftmw: Path, tmp_path: Path) -> 
 
 
 def test_export_selector_scopes_blocks(bare_ftmw: Path, tmp_path: Path) -> None:
-    save_noise_settings_to_h5(str(bare_ftmw), noise_mod.NoiseSettings(window_mhz=77.0))
+    with atomic_write(str(bare_ftmw)):
+        save_noise_settings_to_h5(
+            str(bare_ftmw), noise_mod.NoiseSettings(window_mhz=77.0)
+        )
     fit = fit_mod.StageFitSettings()
     fit.tau.max_decay_factor = 4.0
-    save_stage_fit_settings_to_h5(str(bare_ftmw), fit)
+    with atomic_write(str(bare_ftmw)):
+        save_stage_fit_settings_to_h5(str(bare_ftmw), fit)
 
     out = tmp_path / "preset.yml"
     result = export_settings(bare_ftmw, out, "stage5")

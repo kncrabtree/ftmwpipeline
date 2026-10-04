@@ -139,6 +139,7 @@ def test_read_capabilities_lists_only_implemented_codes():
     # algorithm_failed are documented as such); cancelled has one since 5.1.
     assert "cancelled" in payload["codes"]
     assert "callback_failed" in payload["codes"]
+    assert "write_conflict" in payload["codes"]
 
 
 # ---- file-bound accessor (probe), JSON on stderr --------------------------

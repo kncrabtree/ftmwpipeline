@@ -34,6 +34,7 @@ import pytest
 
 import ftmwpipeline.api as ftmw
 from ftmwpipeline._internal import stage5_impl  # noqa: F401  -- monkeypatch target
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline.core.peak_shape import PeakShape
 from ftmwpipeline.core.stage_fit_settings import (
     ShapeSpec,
@@ -721,7 +722,8 @@ class TestExplicitSettingsOverridePersisted:
 
         persisted = StageFitSettings()
         persisted.tau.tau_penalty_lambda = 111.0
-        save_stage_fit_settings_to_h5(str(variant), persisted)
+        with atomic_write(str(variant)):
+            save_stage_fit_settings_to_h5(str(variant), persisted)
 
         mock, captured = _intercept_execute_plan()
         monkeypatch.setattr(stage5_impl, "execute_plan", mock)

@@ -18,6 +18,7 @@ import h5py
 import numpy as np
 import pytest
 
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline._internal.read_impl import (
     READ_TABLES,
     format_metadata_impl,
@@ -637,13 +638,15 @@ class TestReadMetadata:
 
     def test_no_recommended_shape_reads_as_none(self, ftmw_file):
         """A Stage 2b vote with no winner stamps the sentinel: UNDEFINED."""
-        write_stage2b_recommended_shape(str(ftmw_file), None)
+        with atomic_write(str(ftmw_file)):
+            write_stage2b_recommended_shape(str(ftmw_file), None)
         meta = read_metadata_impl(ftmw_file)
         assert meta["tau.recommended_shape"] is Absent.UNDEFINED
         assert meta["tau_g.recommended_shape"] is Absent.UNDEFINED
 
     def test_recommended_shape_reads_back_when_the_vote_named_one(self, ftmw_file):
-        write_stage2b_recommended_shape(str(ftmw_file), "gaussian")
+        with atomic_write(str(ftmw_file)):
+            write_stage2b_recommended_shape(str(ftmw_file), "gaussian")
         meta = read_metadata_impl(ftmw_file)
         assert meta["tau.recommended_shape"] == "gaussian"
         assert meta["tau_g.recommended_shape"] == "gaussian"

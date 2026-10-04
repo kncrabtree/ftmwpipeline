@@ -16,6 +16,7 @@ import h5py
 import numpy as np
 import pytest
 
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline.core.data_structures import FID, FIDProcessingParameters, Sideband
 from ftmwpipeline.file_manager import (
     SourceMetadata,
@@ -100,7 +101,8 @@ class TestFIDSerializationInPipelineFiles:
 
         # Create pipeline file
         filepath = temp_dir / "test_pipeline.ftmw"
-        create_pipeline_file(filepath, sample_fid, source_metadata)
+        with atomic_write(filepath):
+            create_pipeline_file(filepath, sample_fid, source_metadata)
 
         # Load FID data directly from pipeline file
         with h5py.File(filepath, "r") as h5f:
@@ -136,7 +138,8 @@ class TestFIDSerializationInPipelineFiles:
         """Test that pipeline files contain correct HDF5 structure for FID data."""
         source_metadata = SourceMetadata("/test/source", "blackchirp")
         filepath = temp_dir / "test_structure.ftmw"
-        create_pipeline_file(filepath, sample_fid, source_metadata)
+        with atomic_write(filepath):
+            create_pipeline_file(filepath, sample_fid, source_metadata)
 
         # Verify pipeline file structure
         with h5py.File(filepath, "r") as h5f:
@@ -186,7 +189,8 @@ class TestFIDSerializationInPipelineFiles:
         """Test that processing parameters are correctly saved and loaded from pipeline files."""
         source_metadata = SourceMetadata("/test/source", "blackchirp")
         filepath = temp_dir / "test_params.ftmw"
-        create_pipeline_file(filepath, sample_fid, source_metadata)
+        with atomic_write(filepath):
+            create_pipeline_file(filepath, sample_fid, source_metadata)
 
         # Update processing parameters (canonical FT is unapodized: only
         # data-selection / scaling knobs are persisted).
@@ -198,7 +202,8 @@ class TestFIDSerializationInPipelineFiles:
             "trim_end_mhz": 40000.0,
         }
 
-        update_processing_parameters(filepath, new_params)
+        with atomic_write(filepath):
+            update_processing_parameters(filepath, new_params)
 
         # Load FID and verify updated parameters are accessible
         with h5py.File(filepath, "r") as h5f:
@@ -226,7 +231,8 @@ class TestFIDSerializationInPipelineFiles:
 
         source_metadata = SourceMetadata("/test/source", "test_format")
         filepath = temp_dir / "test_none_values.ftmw"
-        create_pipeline_file(filepath, fid, source_metadata)
+        with atomic_write(filepath):
+            create_pipeline_file(filepath, fid, source_metadata)
 
         # Load and verify None values are preserved
         with h5py.File(filepath, "r") as h5f:
@@ -252,7 +258,8 @@ class TestFIDSerializationInPipelineFiles:
 
         source_metadata = SourceMetadata("/test/source", "blackchirp")
         filepath = temp_dir / "test_metadata.ftmw"
-        create_pipeline_file(filepath, sample_fid, source_metadata)
+        with atomic_write(filepath):
+            create_pipeline_file(filepath, sample_fid, source_metadata)
 
         # Check that metadata is properly separated in pipeline file
         with h5py.File(filepath, "r") as h5f:
@@ -348,7 +355,8 @@ class TestRealExperimentalDataIntegration:
             )
 
             filepath = temp_dir / "exp_2638_test.ftmw"
-            create_pipeline_file(filepath, original_fid, source_metadata)
+            with atomic_write(filepath):
+                create_pipeline_file(filepath, original_fid, source_metadata)
             assert filepath.exists()
 
             # Check file size (should be reasonable for 750k points)
@@ -408,7 +416,8 @@ class TestRealExperimentalDataIntegration:
 
             # Create pipeline file
             filepath = temp_dir / "exp_2638_portable.ftmw"
-            create_pipeline_file(filepath, original_fid, source_metadata)
+            with atomic_write(filepath):
+                create_pipeline_file(filepath, original_fid, source_metadata)
 
             # Verify pipeline file is self-contained
             with h5py.File(filepath, "r") as h5f:
@@ -467,7 +476,8 @@ class TestErrorConditionsAndEdgeCases:
 
         # Should raise error for non-FID object
         with pytest.raises(RuntimeError):
-            create_pipeline_file(filepath, "not_a_fid", source_metadata)
+            with atomic_write(filepath):
+                create_pipeline_file(filepath, "not_a_fid", source_metadata)
 
     def test_corrupted_pipeline_file_loading(self, temp_dir):
         """Test error handling when loading corrupted pipeline files."""
@@ -514,4 +524,5 @@ class TestErrorConditionsAndEdgeCases:
         with pytest.raises(
             RuntimeError, match="Failed to update processing parameters"
         ):
-            update_processing_parameters(filepath, {"start_us": 2.0})
+            with atomic_write(filepath):
+                update_processing_parameters(filepath, {"start_us": 2.0})

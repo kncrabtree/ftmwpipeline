@@ -17,6 +17,7 @@ import h5py
 import numpy as np
 import pytest
 
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline.core.data_structures import ChirpWindow
 from ftmwpipeline.io.data_loaders.blackchirp import BlackChirpLoader
 from ftmwpipeline.io.data_loaders.keysight_mat import KeysightMatLoader
@@ -100,19 +101,22 @@ class TestChirpWindowHDF5RoundTrip:
 
     def test_write_none_reads_none(self, tmp_path: Path) -> None:
         p = _make_bare_stage0_ftmw(tmp_path)
-        write_recommended_chirp_window(p, None)
+        with atomic_write(p):
+            write_recommended_chirp_window(p, None)
         assert read_recommended_chirp_window(p) is None
 
     def test_no_stage0_group_write_noop(self, tmp_path: Path) -> None:
         p = _make_no_stage0_ftmw(tmp_path)
         cw = ChirpWindow(chirp_end_us=2.0, chirp_start_us=0.5)
-        write_recommended_chirp_window(p, cw)
+        with atomic_write(p):
+            write_recommended_chirp_window(p, cw)
         assert read_recommended_chirp_window(p) is None
 
     def test_round_trip_all_fields(self, tmp_path: Path) -> None:
         p = _make_bare_stage0_ftmw(tmp_path)
         cw = ChirpWindow(chirp_end_us=1.6, chirp_start_us=0.6, start_margin_us=3.0)
-        write_recommended_chirp_window(p, cw)
+        with atomic_write(p):
+            write_recommended_chirp_window(p, cw)
         result = read_recommended_chirp_window(p)
         assert result is not None
         assert result.chirp_end_us == pytest.approx(1.6)
@@ -123,7 +127,8 @@ class TestChirpWindowHDF5RoundTrip:
         """chirp_start_us absent → reads back None."""
         p = _make_bare_stage0_ftmw(tmp_path)
         cw = ChirpWindow(chirp_end_us=2.68)
-        write_recommended_chirp_window(p, cw)
+        with atomic_write(p):
+            write_recommended_chirp_window(p, cw)
         result = read_recommended_chirp_window(p)
         assert result is not None
         assert result.chirp_end_us == pytest.approx(2.68)
@@ -134,15 +139,18 @@ class TestChirpWindowHDF5RoundTrip:
         """start_margin_us absent → reads back None."""
         p = _make_bare_stage0_ftmw(tmp_path)
         cw = ChirpWindow(chirp_end_us=1.6, chirp_start_us=0.6)
-        write_recommended_chirp_window(p, cw)
+        with atomic_write(p):
+            write_recommended_chirp_window(p, cw)
         result = read_recommended_chirp_window(p)
         assert result is not None
         assert result.start_margin_us is None
 
     def test_overwrite_replaces_previous(self, tmp_path: Path) -> None:
         p = _make_bare_stage0_ftmw(tmp_path)
-        write_recommended_chirp_window(p, ChirpWindow(chirp_end_us=1.0))
-        write_recommended_chirp_window(p, ChirpWindow(chirp_end_us=2.5))
+        with atomic_write(p):
+            write_recommended_chirp_window(p, ChirpWindow(chirp_end_us=1.0))
+        with atomic_write(p):
+            write_recommended_chirp_window(p, ChirpWindow(chirp_end_us=2.5))
         result = read_recommended_chirp_window(p)
         assert result is not None
         assert result.chirp_end_us == pytest.approx(2.5)

@@ -21,6 +21,7 @@ from typing import List
 import pytest
 
 import ftmwpipeline.api as ftmw
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline._internal.stage4_impl import load_windows_impl, save_window_plan_impl
 from ftmwpipeline._internal.stage6_impl import review_run_impl
 
@@ -72,7 +73,8 @@ def _build_stage5_small(
     plan.dependency_edges = [
         (a, b) for (a, b) in plan.dependency_edges if a in keep and b in keep
     ]
-    save_window_plan_impl(str(dest), plan)
+    with atomic_write(str(dest)):
+        save_window_plan_impl(str(dest), plan)
 
     ftmw.fit_peaks(str(dest))
 
@@ -193,7 +195,8 @@ def _build_stage5_multi(dest: Path, data_path: str) -> None:
     plan.dependency_edges = [
         (a, b) for (a, b) in plan.dependency_edges if a in keep and b in keep
     ]
-    save_window_plan_impl(str(dest), plan)
+    with atomic_write(str(dest)):
+        save_window_plan_impl(str(dest), plan)
 
     ftmw.fit_peaks(str(dest))
 

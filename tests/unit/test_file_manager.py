@@ -18,6 +18,7 @@ import numpy as np
 import pytest
 
 from ftmwpipeline import __version__
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline.core.data_structures import FID, FIDProcessingParameters, Sideband
 from ftmwpipeline.file_manager import (
     FTMW_FORMAT_VERSION,
@@ -29,6 +30,7 @@ from ftmwpipeline.file_manager import (
     StageDependencyError,
     create_pipeline_file,
     open_pipeline_file,
+    pipeline_file_path,
     update_processing_parameters,
     validate_pipeline_file,
 )
@@ -193,7 +195,10 @@ class TestFileManagerFunctions:
         filepath = temp_dir / "test_pipeline.ftmw"
 
         # Create pipeline file
-        result_path = create_pipeline_file(filepath, sample_fid, sample_source_metadata)
+        with atomic_write(filepath):
+            result_path = create_pipeline_file(
+                filepath, sample_fid, sample_source_metadata
+            )
 
         # Verify file was created correctly
         assert result_path == filepath
@@ -223,9 +228,10 @@ class TestFileManagerFunctions:
         """Test that .ftmw extension is added automatically for user convenience."""
         filepath_no_ext = temp_dir / "test_pipeline"
 
-        result_path = create_pipeline_file(
-            filepath_no_ext, sample_fid, sample_source_metadata
-        )
+        with atomic_write(pipeline_file_path(filepath_no_ext)):
+            result_path = create_pipeline_file(
+                filepath_no_ext, sample_fid, sample_source_metadata
+            )
 
         assert result_path.suffix == ".ftmw"
         assert result_path.exists()
@@ -238,11 +244,13 @@ class TestFileManagerFunctions:
         source2 = SourceMetadata("/source2", "format2")
 
         # Create first file
-        create_pipeline_file(filepath, sample_fid, source1)
+        with atomic_write(filepath):
+            create_pipeline_file(filepath, sample_fid, source1)
 
         # Try to create with different source - should raise conflict error
         with pytest.raises(PipelineExistsError) as exc_info:
-            create_pipeline_file(filepath, sample_fid, source2)
+            with atomic_write(filepath):
+                create_pipeline_file(filepath, sample_fid, source2)
 
         error = exc_info.value
         assert error.filepath == filepath
@@ -258,10 +266,14 @@ class TestFileManagerFunctions:
         source2 = SourceMetadata("/source2", "format2")
 
         # Create first file
-        create_pipeline_file(filepath, sample_fid, source1)
+        with atomic_write(filepath):
+            create_pipeline_file(filepath, sample_fid, source1)
 
         # Force overwrite with different source
-        result_path = create_pipeline_file(filepath, sample_fid, source2, force=True)
+        with atomic_write(filepath):
+            result_path = create_pipeline_file(
+                filepath, sample_fid, source2, force=True
+            )
         assert result_path == filepath
 
         # Verify source was updated
@@ -275,7 +287,8 @@ class TestFileManagerFunctions:
         filepath = temp_dir / "test_pipeline.ftmw"
 
         # Create file first
-        create_pipeline_file(filepath, sample_fid, sample_source_metadata)
+        with atomic_write(filepath):
+            create_pipeline_file(filepath, sample_fid, sample_source_metadata)
 
         # Open file
         opened_path, source_metadata, stage_tracker = open_pipeline_file(filepath)
@@ -308,7 +321,8 @@ class TestFileManagerFunctions:
     ):
         """Test file validation detects real corruption issues."""
         filepath = temp_dir / "test_pipeline.ftmw"
-        create_pipeline_file(filepath, sample_fid, sample_source_metadata)
+        with atomic_write(filepath):
+            create_pipeline_file(filepath, sample_fid, sample_source_metadata)
 
         # Test valid file validation
         report = validate_pipeline_file(filepath)
@@ -332,7 +346,8 @@ class TestFileManagerFunctions:
     ):
         """Test parameter persistence works correctly for interactive workflows."""
         filepath = temp_dir / "test_pipeline.ftmw"
-        create_pipeline_file(filepath, sample_fid, sample_source_metadata)
+        with atomic_write(filepath):
+            create_pipeline_file(filepath, sample_fid, sample_source_metadata)
 
         # Update processing parameters (canonical FT is unapodized: only the
         # data-selection / scaling knobs are persisted).
@@ -344,7 +359,8 @@ class TestFileManagerFunctions:
             "trim_end_mhz": 40000.0,
         }
 
-        update_processing_parameters(filepath, new_params)
+        with atomic_write(filepath):
+            update_processing_parameters(filepath, new_params)
 
         # Verify parameters were saved by checking HDF5 structure
         with h5py.File(filepath, "r") as h5f:
@@ -365,12 +381,14 @@ class TestFileManagerFunctions:
     ):
         """Test that None values are handled correctly in parameter updates."""
         filepath = temp_dir / "test_pipeline.ftmw"
-        create_pipeline_file(filepath, sample_fid, sample_source_metadata)
+        with atomic_write(filepath):
+            create_pipeline_file(filepath, sample_fid, sample_source_metadata)
 
         # Update with None values
         params_with_none = {"start_us": None, "end_us": None, "units_power": 6}
 
-        update_processing_parameters(filepath, params_with_none)
+        with atomic_write(filepath):
+            update_processing_parameters(filepath, params_with_none)
 
         # Verify None values are stored as "__None__" string
         with h5py.File(filepath, "r") as h5f:
@@ -411,7 +429,8 @@ class TestRealDataIntegration:
             filepath = temp_dir / "exp_2638_test.ftmw"
 
             # 1. Create pipeline file
-            created_path = create_pipeline_file(filepath, fid, source_metadata)
+            with atomic_write(filepath):
+                created_path = create_pipeline_file(filepath, fid, source_metadata)
             assert created_path.exists()
 
             # 2. Open and verify
@@ -432,7 +451,8 @@ class TestRealDataIntegration:
                 "trim_start_mhz": 26500.0,
                 "trim_end_mhz": 40000.0,
             }
-            update_processing_parameters(created_path, processing_params)
+            with atomic_write(created_path):
+                update_processing_parameters(created_path, processing_params)
 
             # 5. Verify parameters persistence
             with h5py.File(created_path, "r") as h5f:
@@ -477,7 +497,8 @@ class TestErrorHandlingAndEdgeCases:
         filepath = temp_dir / "nonexistent.ftmw"
 
         with pytest.raises(FileNotFoundError) as exc_info:
-            update_processing_parameters(filepath, {"start_us": 2.0})
+            with atomic_write(filepath):
+                update_processing_parameters(filepath, {"start_us": 2.0})
 
         assert "does not exist" in str(exc_info.value)
 
@@ -493,10 +514,13 @@ class TestErrorHandlingAndEdgeCases:
             side_effect=RuntimeError("Save failed"),
         ):
             with pytest.raises(RuntimeError):
-                create_pipeline_file(filepath, sample_fid, sample_source)
+                with atomic_write(filepath):
+                    create_pipeline_file(filepath, sample_fid, sample_source)
 
-            # File should be cleaned up on error
+            # Nothing is left: the failing transaction discards its working
+            # copy, and the file itself was never created.
             assert not filepath.exists()
+            assert not list(temp_dir.glob(".*ftmw-tmp*"))
 
 
 class TestCustomExceptions:
@@ -573,7 +597,8 @@ class TestVersionStamping:
     ):
         """A freshly created file carries both root stamps."""
         filepath = tmp_path / "stamped.ftmw"
-        create_pipeline_file(filepath, sample_fid, source_metadata)
+        with atomic_write(filepath):
+            create_pipeline_file(filepath, sample_fid, source_metadata)
 
         with h5py.File(filepath, "r") as h5f:
             assert h5f.attrs["ftmw_format_version"] == FTMW_FORMAT_VERSION
@@ -584,7 +609,8 @@ class TestVersionStamping:
     ):
         """The validation report surfaces the stamps for the info command."""
         filepath = tmp_path / "stamped.ftmw"
-        create_pipeline_file(filepath, sample_fid, source_metadata)
+        with atomic_write(filepath):
+            create_pipeline_file(filepath, sample_fid, source_metadata)
 
         report = validate_pipeline_file(filepath)
         assert report["valid"] is True
@@ -596,7 +622,8 @@ class TestVersionStamping:
     ):
         """A file from a newer MAJOR format cannot be read and raises."""
         filepath = tmp_path / "future.ftmw"
-        create_pipeline_file(filepath, sample_fid, source_metadata)
+        with atomic_write(filepath):
+            create_pipeline_file(filepath, sample_fid, source_metadata)
         with h5py.File(filepath, "a") as h5f:
             h5f.attrs["ftmw_format_version"] = "2.0"
 
@@ -612,7 +639,8 @@ class TestVersionStamping:
     ):
         """A newer MINOR (same MAJOR) is readable, with a warning."""
         filepath = tmp_path / "newer_minor.ftmw"
-        create_pipeline_file(filepath, sample_fid, source_metadata)
+        with atomic_write(filepath):
+            create_pipeline_file(filepath, sample_fid, source_metadata)
         cur_major = FTMW_FORMAT_VERSION.split(".")[0]
         with h5py.File(filepath, "a") as h5f:
             h5f.attrs["ftmw_format_version"] = f"{cur_major}.99"
@@ -627,7 +655,8 @@ class TestVersionStamping:
     ):
         """A file without the stamp (legacy) opens with a warning, no raise."""
         filepath = tmp_path / "legacy.ftmw"
-        create_pipeline_file(filepath, sample_fid, source_metadata)
+        with atomic_write(filepath):
+            create_pipeline_file(filepath, sample_fid, source_metadata)
         with h5py.File(filepath, "a") as h5f:
             del h5f.attrs["ftmw_format_version"]
 

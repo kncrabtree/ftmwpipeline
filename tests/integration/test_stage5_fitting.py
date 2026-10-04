@@ -23,6 +23,7 @@ import pytest
 
 import ftmwpipeline.api as ftmw
 from ftmwpipeline import Pipeline
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline.core.data_structures import SpectrumFit
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
@@ -691,7 +692,8 @@ def _build_synthetic_doublet_stage4(tmp_dir):
     )
 
     fp = tmp_dir / "synth_doublet.ftmw"
-    create_pipeline_file(fp, fid, source_meta, force=True)
+    with atomic_write(fp):
+        create_pipeline_file(fp, fid, source_meta, force=True)
 
     # Stage 1: unapodized FT trimmed to the active band.
     ftmw.compute_ft(fp, start_us=0.0, end_us=10.0, trim=(9998.0, 10003.0))

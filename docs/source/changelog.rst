@@ -49,6 +49,32 @@ had to reach into ``_internal`` or parse out of prose to obtain are now
 published, and the Stage 6 edit paths that carry them were collapsed onto one
 engine so they cannot answer differently.
 
+* **Machine contract, Wave 5.1b: crash safety.** ``CONTRACT_VERSION`` is now
+  ``10``. Every call that writes a ``.ftmw`` file -- a stage run, curation,
+  ``settings set`` / ``unset``, ``clocks``, ``start run``, a stamp -- now writes
+  atomically: it does all its writes in a temporary copy beside the file
+  (``.<file name>.ftmw-tmp.<hostname>.<pid>``) and replaces the original with
+  one ``os.replace``. A process killed at any point, ``SIGKILL`` included,
+  leaves the file as it was before the call or as the call completed it, never
+  a mix and never a file that will not open; a cancel, a ``callback_failed`` or
+  any other failure discards the copy, so the file is left exactly as it was
+  (byte for byte, where it used to be equal in content). ``StageFinished`` is
+  emitted once the replace has happened. Within ``run_pipeline`` each stage is
+  its own atomic write, so a kill keeps every stage that finished. A new code,
+  ``write_conflict`` (``WriteConflictError``, attribute ``path``, exit ``1``),
+  is raised when another process wrote the file after the call's copy was
+  taken; the other write stands and this call's changes are discarded. Writes
+  from one process to one file are serialized. A copy left behind by a killed
+  process is removed by the next write to the file from the same host (never
+  another host's copy, and never one whose pid is alive). A reader that already
+  has the file open keeps the version it opened, and a pure read (a preview, the
+  import of an identical source, ``compute_ft`` from saved parameters) now
+  leaves the file untouched. **Behaviour changes:** compaction happens when the
+  copy is made, so a file carries the dead space of its last write until the
+  next write reclaims it (a stage run no longer ends by repacking, and
+  ``run_pipeline`` no longer repacks once at the end); and a failed
+  ``review apply --log-prefix N`` row now leaves the file exactly as it was
+  before the call, where it used to leave it aligned at the prefix.
 * **Machine contract, Wave 5.1: events and cancellation.**
   ``CONTRACT_VERSION`` is now ``9``. Every long operation (each stage run, the
   curation calls, ``report_run``, ``scan_run`` / ``scan_all`` and

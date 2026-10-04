@@ -20,6 +20,7 @@ import pytest
 
 import ftmwpipeline.api as ftmw
 from ftmwpipeline._internal import stage6_impl as s6
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline._internal.stage6_impl import (
     STAGE5_BASELINE_GROUP,
     CurationOp,
@@ -1040,7 +1041,8 @@ def test_undo_refused_when_baseline_missing(stage5_small_source, tmp_path):
     apply_curation_impl(fp, _write_curation(tmp_path, f"add,{wid},{freq + 0.4},\n"))
     log = review_log_impl(fp)
 
-    clear_stage5_baseline(fp)  # simulate the snapshot becoming unavailable
+    with atomic_write(fp):
+        clear_stage5_baseline(fp)  # simulate the snapshot becoming unavailable
     with pytest.raises(ValueError, match="baseline is unavailable"):
         review_undo_impl(fp, [log[0].order_index])
 
@@ -1676,23 +1678,27 @@ def test_apply_log_prefix_argument_checks(stage5_multi_file, tmp_path):
 
 
 @pytest.mark.integration
-def test_apply_log_prefix_failed_batch_leaves_the_file_aligned(
+def test_apply_log_prefix_failed_batch_leaves_the_file_as_it_was(
     stage5_multi_file, tmp_path
 ):
-    """A row that fails costs the caller the failed rows only: the file ends
-    up at the prefix (undo of the dropped decisions), not at the bare
-    baseline the restore passed through."""
+    """A row that fails discards the whole call (§Crash safety: any failure
+    leaves the file exactly as it was before the call): the restore to the
+    prefix happens in the call's working copy, so the file keeps every decision
+    it had, not the prefix and not the bare baseline the restore passed
+    through."""
     fp, wa, fa, wb, fb = _two_adds(stage5_multi_file, tmp_path)
-    ref = tmp_path / "ref.ftmw"
-    shutil.copy(fp, ref)
-    review_undo_impl(ref, [1])
+    before = hashlib.md5(fp.read_bytes()).hexdigest()
+    log_before = [(e.window_id, e.kind) for e in review_log_impl(fp)]
 
     bad = _write_curation(tmp_path, f"remove,{wa},99999.0,\n")
     with pytest.raises(ValueError, match="curation action 1.*failed"):
         apply_curation_impl(fp, bad, log_prefix=1)
 
-    assert _close(_fitted_by_window(fp), _fitted_by_window(ref))
-    assert [(e.window_id, e.kind) for e in review_log_impl(fp)] == [(wa, "add")]
+    assert hashlib.md5(fp.read_bytes()).hexdigest() == before
+    assert [(e.window_id, e.kind) for e in review_log_impl(fp)] == log_before
+    assert len(log_before) == 2
+    # No working copy is left beside the file.
+    assert [p.name for p in fp.parent.glob(".*ftmw-tmp*")] == []
 
 
 @pytest.mark.integration

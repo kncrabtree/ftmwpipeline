@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import pytest
 
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline._internal.stage5_impl import (
     _collapse_rank,
     _is_brightness_sidelobe,
@@ -377,7 +378,8 @@ class TestSettingsRoundTrip:
         s = StageFitSettings(
             peak_survival=PeakSurvivalSubSettings(enabled=False, snr_survival_floor=5.0)
         )
-        save_stage_fit_settings_to_h5(str(p), s)
+        with atomic_write(str(p)):
+            save_stage_fit_settings_to_h5(str(p), s)
         loaded = load_stage_fit_settings_from_h5(str(p))
         assert loaded is not None
         assert (
@@ -400,7 +402,8 @@ class TestSettingsRoundTrip:
             h5f.create_group("placeholder")
 
         resolved = resolve()
-        save_stage_fit_settings_to_h5(str(p), resolved)
+        with atomic_write(str(p)):
+            save_stage_fit_settings_to_h5(str(p), resolved)
         loaded = load_stage_fit_settings_from_h5(str(p))
         assert loaded is not None
         assert loaded.peak_survival.enabled == True  # noqa: E712 (np.True_ != is True)

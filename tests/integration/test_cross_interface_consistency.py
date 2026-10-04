@@ -26,6 +26,7 @@ import pytest
 
 import ftmwpipeline.api as ftmw
 from ftmwpipeline import Pipeline
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline.core.data_structures import FID, ComplexFT
 from ftmwpipeline.file_manager import PipelineFileError, StageDependencyError
 from ftmwpipeline.preprocessing.noise_estimation import NoiseResult
@@ -320,10 +321,11 @@ class TestIdenticalResults:
         shutil.copy(baseline_2638_stage1, c_copy)
 
         # Persist the same declaration the CLI path will read.
-        save_stage_fit_settings_to_h5(
-            str(c_copy),
-            StageFitSettings(spur=SpurSubSettings(clocks=tuple(clocks))),
-        )
+        with atomic_write(str(c_copy)):
+            save_stage_fit_settings_to_h5(
+                str(c_copy),
+                StageFitSettings(spur=SpurSubSettings(clocks=tuple(clocks))),
+            )
 
         tc_pipeline = Pipeline.open(p_copy).calibrate_timebase(clocks=clocks)
         tc_functional = ftmw.calibrate_timebase(f_copy, clocks=clocks)

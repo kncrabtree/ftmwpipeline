@@ -21,6 +21,7 @@ from typing import Any, Callable, Dict, Tuple
 import pytest
 
 from ftmwpipeline._internal import stage2_impl
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline.core.noise_settings import NoiseSettings
 
 pytestmark = [
@@ -164,7 +165,8 @@ class TestPersistedLayerInherit:
 
         persisted = NoiseSettings()
         persisted.window_mhz = 137.0
-        save_noise_settings_to_h5(str(variant), persisted)
+        with atomic_write(str(variant)):
+            save_noise_settings_to_h5(str(variant), persisted)
 
         mock, captured = _intercept()
         monkeypatch.setattr(stage2_impl, "estimate_active_ft_noise", mock)
@@ -199,7 +201,8 @@ class TestExplicitSettingsOverridePersisted:
 
         persisted = NoiseSettings()
         persisted.window_mhz = 137.0
-        save_noise_settings_to_h5(str(variant), persisted)
+        with atomic_write(str(variant)):
+            save_noise_settings_to_h5(str(variant), persisted)
 
         mock, captured = _intercept()
         monkeypatch.setattr(stage2_impl, "estimate_active_ft_noise", mock)

@@ -22,6 +22,7 @@ import pytest
 
 import ftmwpipeline.api as ftmw
 from ftmwpipeline import Absent, Pipeline, to_jsonable
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline._internal.stage6_impl import (
     _final_products_is_stale,
     refresh_persisted_final_products_impl,
@@ -253,7 +254,8 @@ def _persist_via_set_sigma_floor(path):
 
 
 def _persist_via_refresh(path):
-    assert refresh_persisted_final_products_impl(path) is True
+    with atomic_write(path):
+        assert refresh_persisted_final_products_impl(path) is True
 
 
 def _persist_via_review_run(path):
@@ -282,7 +284,8 @@ def test_write_paths_persist_the_new_fields(legacy, write):
 
 def test_refresh_of_a_current_table_writes_nothing(stamped):
     before = _md5(stamped)
-    assert refresh_persisted_final_products_impl(stamped) is False
+    with atomic_write(stamped):
+        assert refresh_persisted_final_products_impl(stamped) is False
     assert _md5(stamped) == before
 
 

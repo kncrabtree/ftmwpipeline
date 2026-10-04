@@ -18,6 +18,7 @@ import numpy as np
 import pytest
 
 import ftmwpipeline.api as ftmw
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline._internal.stage6_impl import (
     _resolve_calibration_clocks,
     _write_stage6_review_only,
@@ -98,12 +99,14 @@ class TestVersionsAndPreProvenance:
         assert STAGE3_PEAKS_FIELD_SET_VERSION >= 2
         assert STAGE5_FIT_FIELD_SET_VERSION >= 2
         assert TIMEBASE_FIELD_SET_VERSION >= 2
-        save_peak_detection_settings_to_h5(
-            empty_ftmw, PeakDetectionSettings(), consumed=S3_CONSUMED
-        )
-        save_stage_fit_settings_to_h5(
-            empty_ftmw, StageFitSettings(), consumed=S5_CONSUMED
-        )
+        with atomic_write(empty_ftmw):
+            save_peak_detection_settings_to_h5(
+                empty_ftmw, PeakDetectionSettings(), consumed=S3_CONSUMED
+            )
+        with atomic_write(empty_ftmw):
+            save_stage_fit_settings_to_h5(
+                empty_ftmw, StageFitSettings(), consumed=S5_CONSUMED
+            )
         p3 = peak_detection_settings_provenance(empty_ftmw)
         p5 = stage_fit_settings_provenance(empty_ftmw)
         assert p3 is not None and p3.is_current
@@ -114,12 +117,14 @@ class TestVersionsAndPreProvenance:
     ) -> None:
         # Mutation: the loader invents a consumed value for an old record, or
         # the provenance reader calls a version-1 record current.
-        save_peak_detection_settings_to_h5(
-            empty_ftmw, PeakDetectionSettings(), consumed=S3_CONSUMED
-        )
-        save_stage_fit_settings_to_h5(
-            empty_ftmw, StageFitSettings(), consumed=S5_CONSUMED
-        )
+        with atomic_write(empty_ftmw):
+            save_peak_detection_settings_to_h5(
+                empty_ftmw, PeakDetectionSettings(), consumed=S3_CONSUMED
+            )
+        with atomic_write(empty_ftmw):
+            save_stage_fit_settings_to_h5(
+                empty_ftmw, StageFitSettings(), consumed=S5_CONSUMED
+            )
         with h5py.File(empty_ftmw, "a") as h5f:
             for path in (STAGE3_PEAKS_SETTINGS_PATH, STAGE_FIT_PATH):
                 grp = h5f[path]
@@ -138,9 +143,10 @@ class TestVersionsAndPreProvenance:
 
     def test_a_record_with_no_version_is_pre_provenance(self, empty_ftmw: str) -> None:
         # Mutation: treating a missing version attr as current.
-        save_stage_fit_settings_to_h5(
-            empty_ftmw, StageFitSettings(), consumed=S5_CONSUMED
-        )
+        with atomic_write(empty_ftmw):
+            save_stage_fit_settings_to_h5(
+                empty_ftmw, StageFitSettings(), consumed=S5_CONSUMED
+            )
         with h5py.File(empty_ftmw, "a") as h5f:
             del h5f[STAGE_FIT_PATH].attrs["field_set_version"]
         prov = stage_fit_settings_provenance(empty_ftmw)
@@ -196,7 +202,8 @@ class TestNoneMeansUnset:
             ),
             peak_survival=replace(resolved.peak_survival, snr_survival_floor=None),
         )
-        save_stage_fit_settings_to_h5(empty_ftmw, settings)
+        with atomic_write(empty_ftmw):
+            save_stage_fit_settings_to_h5(empty_ftmw, settings)
         loaded = load_stage_fit_settings_from_h5(empty_ftmw)
         assert loaded is not None
         assert loaded.tau.fit_tau is None
@@ -207,7 +214,8 @@ class TestNoneMeansUnset:
     def test_stage5_resolved_fit_tau_persists_true(self, empty_ftmw: str) -> None:
         # Mutation: removing fit_tau from the hard defaults, so the persisted
         # record says None where the fit used True.
-        save_stage_fit_settings_to_h5(empty_ftmw, resolve_stage_fit())
+        with atomic_write(empty_ftmw):
+            save_stage_fit_settings_to_h5(empty_ftmw, resolve_stage_fit())
         loaded = load_stage_fit_settings_from_h5(empty_ftmw)
         # The codec reads bool knobs back as numpy bools, hence not ``is True``.
         assert loaded is not None
@@ -217,20 +225,23 @@ class TestNoneMeansUnset:
         # Mutation: the codec drops or defaults an unset leakage.tau_us.
         settings = WindowPlanningSettings()
         assert settings.leakage.tau_us is None
-        save_window_planning_settings_to_h5(empty_ftmw, settings)
+        with atomic_write(empty_ftmw):
+            save_window_planning_settings_to_h5(empty_ftmw, settings)
         loaded = load_window_planning_settings_from_h5(empty_ftmw)
         assert loaded is not None and loaded.leakage.tau_us is None
         set_value = replace(settings, leakage=replace(settings.leakage, tau_us=6.0))
-        save_window_planning_settings_to_h5(empty_ftmw, set_value)
+        with atomic_write(empty_ftmw):
+            save_window_planning_settings_to_h5(empty_ftmw, set_value)
         loaded = load_window_planning_settings_from_h5(empty_ftmw)
         assert loaded is not None and loaded.leakage.tau_us == 6.0
 
 
 def _persist_clocks(path: str, clocks: Optional[Tuple[ClockSource, ...]]) -> None:
     resolved = resolve_stage_fit()
-    save_stage_fit_settings_to_h5(
-        path, replace(resolved, spur=replace(resolved.spur, clocks=clocks))
-    )
+    with atomic_write(path):
+        save_stage_fit_settings_to_h5(
+            path, replace(resolved, spur=replace(resolved.spur, clocks=clocks))
+        )
 
 
 RECOMMENDED = [
@@ -283,9 +294,10 @@ class TestStage6ClockRule:
         # the resolved declaration the calibration state was derived under.
         _persist_clocks(imported, ())
         ftmw.set_clock_sources(imported, RECOMMENDED)
-        _write_stage6_review_only(
-            Stage6Review(final_products=FinalProducts()), imported
-        )
+        with atomic_write(imported):
+            _write_stage6_review_only(
+                Stage6Review(final_products=FinalProducts()), imported
+            )
         with h5py.File(imported, "r") as h5f:
             got = read_final_products_calibration_clocks(h5f["stage6_review"])
         assert got == _resolve_calibration_clocks(imported)
@@ -295,9 +307,10 @@ class TestStage6ClockRule:
         # Mutation: a writer that bypasses _write_stage6_review_only (or drops
         # calibration_clocks=) leaves the table without its declaration.
         _persist_clocks(imported, PERSISTED)
-        _write_stage6_review_only(
-            Stage6Review(final_products=FinalProducts()), imported
-        )
+        with atomic_write(imported):
+            _write_stage6_review_only(
+                Stage6Review(final_products=FinalProducts()), imported
+            )
         with h5py.File(imported, "r") as h5f:
             got = read_final_products_calibration_clocks(h5f["stage6_review"])
         assert got == PERSISTED
@@ -305,6 +318,7 @@ class TestStage6ClockRule:
     def test_no_table_means_no_declaration_recorded(self, imported: str) -> None:
         # Mutation: recording a declaration for a review with no final
         # products, claiming a derivation that never happened.
-        _write_stage6_review_only(Stage6Review(final_products=None), imported)
+        with atomic_write(imported):
+            _write_stage6_review_only(Stage6Review(final_products=None), imported)
         with h5py.File(imported, "r") as h5f:
             assert read_final_products_calibration_clocks(h5f["stage6_review"]) is None

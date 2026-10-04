@@ -22,6 +22,7 @@ import h5py
 import numpy as np
 import pytest
 
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline._internal.stage0_impl import import_data_impl
 from ftmwpipeline._internal.stage1_impl import compute_ft_impl
 from ftmwpipeline.core.data_structures import ComplexFT
@@ -71,7 +72,8 @@ class TestD7ImplPersistence:
         f = _create_ftmw(exp_2638_data_path, tmp_path)
 
         settings = FTSettings(start_us=2.0, units_power=6, trim=(26500.0, 40000.0))
-        compute_ft_impl(str(f), settings=settings, persist=True)
+        with atomic_write(str(f)):
+            compute_ft_impl(str(f), settings=settings, persist=True)
 
         attrs = _read_ft_attrs(str(f))
         assert float(attrs["trim_min_mhz"]) == pytest.approx(26500.0)
@@ -83,7 +85,8 @@ class TestD7ImplPersistence:
         """pipeline_stages.completed_stages must include stage1_complex_ft."""
         f = _create_ftmw(exp_2638_data_path, tmp_path)
         settings = FTSettings(start_us=2.0, units_power=6, trim=(26500.0, 40000.0))
-        compute_ft_impl(str(f), settings=settings, persist=True)
+        with atomic_write(str(f)):
+            compute_ft_impl(str(f), settings=settings, persist=True)
 
         with h5py.File(str(f), "r") as h5f:
             completed = json.loads(h5f["pipeline_stages"].attrs["completed_stages"])
@@ -97,7 +100,8 @@ class TestD7ImplPersistence:
         f = _create_ftmw(exp_2638_data_path, tmp_path)
 
         settings = FTSettings(start_us=2.0, units_power=6, trim=(26500.0, 40000.0))
-        first = compute_ft_impl(str(f), settings=settings, persist=True)
+        with atomic_write(str(f)):
+            first = compute_ft_impl(str(f), settings=settings, persist=True)
         ft1: ComplexFT = first["complex_ft"]
 
         # No-arg call — resolves through persisted record only
@@ -125,7 +129,8 @@ class TestD7ImplPersistence:
         f = _create_ftmw(exp_2638_data_path, tmp_path)
 
         settings = FTSettings(start_us=2.0, units_power=6, trim=(26500.0, 40000.0))
-        compute_ft_impl(str(f), settings=settings, persist=True)
+        with atomic_write(str(f)):
+            compute_ft_impl(str(f), settings=settings, persist=True)
 
         result = compute_ft_impl(str(f))
         ft: ComplexFT = result["complex_ft"]
@@ -144,7 +149,8 @@ class TestD7ImplPersistence:
         """
         f = _create_ftmw(exp_2638_data_path, tmp_path)
         settings = FTSettings(start_us=2.0, units_power=6, trim=(26500.0, 40000.0))
-        compute_ft_impl(str(f), settings=settings, persist=True)
+        with atomic_write(str(f)):
+            compute_ft_impl(str(f), settings=settings, persist=True)
 
         # Close implicit by function; open fresh
         attrs_fresh = _read_ft_attrs(str(f))
@@ -157,7 +163,8 @@ class TestD7ImplPersistence:
         """FTSettings.from_attrs(attrs) must round-trip the persisted record."""
         f = _create_ftmw(exp_2638_data_path, tmp_path)
         settings = FTSettings(start_us=2.0, units_power=6, trim=(26500.0, 40000.0))
-        compute_ft_impl(str(f), settings=settings, persist=True)
+        with atomic_write(str(f)):
+            compute_ft_impl(str(f), settings=settings, persist=True)
 
         attrs = _read_ft_attrs(str(f))
         restored = FTSettings.from_attrs(attrs)

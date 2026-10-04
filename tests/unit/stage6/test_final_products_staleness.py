@@ -29,6 +29,7 @@ import h5py
 import pytest
 
 import ftmwpipeline.api as ftmw
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline._internal.report_impl import report_table_impl
 from ftmwpipeline._internal.stage0_impl import load_fid_from_pipeline_impl
 from ftmwpipeline._internal.stage4_impl import load_windows_impl, save_window_plan_impl
@@ -76,7 +77,8 @@ def _declare_unlocked_digitizer(path: Path) -> None:
             ),
         ),
     )
-    save_stage_fit_settings_to_h5(str(path), new_settings)
+    with atomic_write(str(path)):
+        save_stage_fit_settings_to_h5(str(path), new_settings)
 
 
 def _stamp_timebase(path: Path, *, epsilon: float, sigma_epsilon: float) -> None:
@@ -148,7 +150,8 @@ def _build_stage5_multi(dest: Path, data_path: str) -> None:
     plan.dependency_edges = [
         (a, b) for (a, b) in plan.dependency_edges if a in keep and b in keep
     ]
-    save_window_plan_impl(str(dest), plan)
+    with atomic_write(str(dest)):
+        save_window_plan_impl(str(dest), plan)
 
     ftmw.fit_peaks(str(dest))
 
@@ -544,10 +547,12 @@ def test_refresh_rewrites_only_the_stale_table(sc_multi_file):
     review_accept_impl(str(fp), wid)
     before = load_stage6_review_from_file(str(fp))
 
-    assert refresh_persisted_final_products_impl(str(fp)) is False  # current
+    with atomic_write(str(fp)):
+        assert refresh_persisted_final_products_impl(str(fp)) is False  # current
 
     _stamp_timebase(fp, epsilon=EPS_2, sigma_epsilon=SIGMA_EPS)
-    assert refresh_persisted_final_products_impl(str(fp)) is True
+    with atomic_write(str(fp)):
+        assert refresh_persisted_final_products_impl(str(fp)) is True
 
     after = load_stage6_review_from_file(str(fp))
     assert after.final_products is not None
@@ -640,9 +645,10 @@ def test_clock_declaration_change_refreshes_the_stored_table(sc_multi_file, via)
     fp = sc_multi_file
     persisted = load_stage_fit_settings_from_h5(str(fp))
     assert persisted is not None
-    save_stage_fit_settings_to_h5(
-        str(fp), replace(persisted, spur=replace(persisted.spur, clocks=()))
-    )
+    with atomic_write(str(fp)):
+        save_stage_fit_settings_to_h5(
+            str(fp), replace(persisted, spur=replace(persisted.spur, clocks=()))
+        )
     ftmw.set_clock_sources(
         str(fp),
         [ClockSource(5120.0, locked=True), ClockSource(6250.0, locked=False)],

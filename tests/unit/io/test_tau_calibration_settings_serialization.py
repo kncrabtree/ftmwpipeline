@@ -11,6 +11,7 @@ from __future__ import annotations
 import h5py
 import pytest
 
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline.core.tau_calibration_settings import (
     PRODUCER_FIELDS,
     TauCalibrationSettings,
@@ -62,7 +63,8 @@ class TestStage2bTauSettingsPersistence:
 
     def test_round_trip_resolved_settings(self, empty_ftmw) -> None:
         original = resolve()
-        save_tau_calibration_settings_to_h5(empty_ftmw, original)
+        with atomic_write(empty_ftmw):
+            save_tau_calibration_settings_to_h5(empty_ftmw, original)
         assert tau_calibration_settings_present(empty_ftmw)
         loaded = load_tau_calibration_settings_from_h5(empty_ftmw)
         assert loaded is not None
@@ -79,7 +81,8 @@ class TestStage2bTauSettingsPersistence:
 
     def test_round_trip_sparse_settings(self, empty_ftmw) -> None:
         s = TauCalibrationSettings()
-        save_tau_calibration_settings_to_h5(empty_ftmw, s)
+        with atomic_write(empty_ftmw):
+            save_tau_calibration_settings_to_h5(empty_ftmw, s)
         loaded = load_tau_calibration_settings_from_h5(empty_ftmw)
         assert loaded is not None
         assert loaded.is_empty()
@@ -89,7 +92,8 @@ class TestStage2bTauSettingsPersistence:
         s.gaussian.tau_G_seeds = (50.0, 10.0, 2.0)
         s.band.band_labels = ("A", "B", "C")
         s.band.band_edges_mhz = (30000.0, 36000.0)
-        save_tau_calibration_settings_to_h5(empty_ftmw, s)
+        with atomic_write(empty_ftmw):
+            save_tau_calibration_settings_to_h5(empty_ftmw, s)
         loaded = load_tau_calibration_settings_from_h5(empty_ftmw)
         assert loaded is not None
         assert loaded.gaussian.tau_G_seeds == (50.0, 10.0, 2.0)
@@ -101,7 +105,8 @@ class TestStage2bTauSettingsPersistence:
     def test_preset_name_audit_attr(self, empty_ftmw) -> None:
         s = TauCalibrationSettings()
         s.stft.n_seg = 8
-        save_tau_calibration_settings_to_h5(empty_ftmw, s, preset_name="defaults")
+        with atomic_write(empty_ftmw):
+            save_tau_calibration_settings_to_h5(empty_ftmw, s, preset_name="defaults")
         with h5py.File(empty_ftmw, "r") as h5f:
             attrs = dict(h5f[STAGE2B_TAU_SETTINGS_PATH].attrs)
         assert attrs.get("preset_name") == "defaults"
@@ -110,17 +115,20 @@ class TestStage2bTauSettingsPersistence:
     def test_overwrites_prior_block(self, empty_ftmw) -> None:
         s1 = TauCalibrationSettings()
         s1.stft.n_seg = 8
-        save_tau_calibration_settings_to_h5(empty_ftmw, s1)
+        with atomic_write(empty_ftmw):
+            save_tau_calibration_settings_to_h5(empty_ftmw, s1)
         s2 = TauCalibrationSettings()
         s2.stft.n_seg = 20
-        save_tau_calibration_settings_to_h5(empty_ftmw, s2)
+        with atomic_write(empty_ftmw):
+            save_tau_calibration_settings_to_h5(empty_ftmw, s2)
         loaded = load_tau_calibration_settings_from_h5(empty_ftmw)
         assert loaded is not None
         assert loaded.stft.n_seg == 20
 
     def test_hdf5_subgroup_layout(self, empty_ftmw) -> None:
         s = resolve()
-        save_tau_calibration_settings_to_h5(empty_ftmw, s)
+        with atomic_write(empty_ftmw):
+            save_tau_calibration_settings_to_h5(empty_ftmw, s)
         with h5py.File(empty_ftmw, "r") as h5f:
             grp = h5f[STAGE2B_TAU_SETTINGS_PATH]
             for sub_name in _SUB_NAMES:
@@ -131,7 +139,8 @@ class TestStage2bTauSettingsPersistence:
         """A persisted record missing a sub-block still loads (forward-compat)."""
         s = TauCalibrationSettings()
         s.stft.n_seg = 8
-        save_tau_calibration_settings_to_h5(empty_ftmw, s)
+        with atomic_write(empty_ftmw):
+            save_tau_calibration_settings_to_h5(empty_ftmw, s)
         # Manually delete one sub-group and verify the loader survives.
         with h5py.File(empty_ftmw, "a") as h5f:
             del h5f[STAGE2B_TAU_SETTINGS_PATH]["recommendation"]
@@ -166,7 +175,8 @@ class TestStage2bProducerRecords:
     @pytest.mark.parametrize("producer", ["lorentzian", "gaussian"])
     def test_twin_record_holds_exactly_its_fields(self, empty_ftmw, producer) -> None:
         resolved = resolve()
-        save_tau_producer_settings_to_h5(empty_ftmw, producer, resolved)
+        with atomic_write(empty_ftmw):
+            save_tau_producer_settings_to_h5(empty_ftmw, producer, resolved)
         loaded = load_tau_producer_settings_from_h5(empty_ftmw, producer)
         assert loaded is not None
         expected = PRODUCER_FIELDS[producer]
@@ -181,7 +191,8 @@ class TestStage2bProducerRecords:
     def test_resolved_unset_round_trips_as_none(self, empty_ftmw) -> None:
         resolved = resolve()
         assert resolved.stft.tau_max_us is None
-        save_tau_producer_settings_to_h5(empty_ftmw, "lorentzian", resolved)
+        with atomic_write(empty_ftmw):
+            save_tau_producer_settings_to_h5(empty_ftmw, "lorentzian", resolved)
         loaded = load_tau_producer_settings_from_h5(empty_ftmw, "lorentzian")
         assert loaded is not None
         assert "tau_max_us" in loaded["stft"]
@@ -189,7 +200,8 @@ class TestStage2bProducerRecords:
         assert loaded["band"]["band_edges_mhz"] is None
 
     def test_values_read_back_as_python_scalars(self, empty_ftmw) -> None:
-        save_tau_producer_settings_to_h5(empty_ftmw, "lorentzian", resolve())
+        with atomic_write(empty_ftmw):
+            save_tau_producer_settings_to_h5(empty_ftmw, "lorentzian", resolve())
         loaded = load_tau_producer_settings_from_h5(empty_ftmw, "lorentzian")
         assert loaded is not None
         assert type(loaded["stft"]["n_seg"]) is int
@@ -197,21 +209,25 @@ class TestStage2bProducerRecords:
         assert type(loaded["polish"]["polish"]) is bool
 
     def test_records_do_not_overwrite_each_other(self, empty_ftmw) -> None:
-        save_tau_producer_settings_to_h5(
-            empty_ftmw, "lorentzian", _resolved_with_n_seg(12)
-        )
-        save_tau_calibration_settings_to_h5(empty_ftmw, _resolved_with_n_seg(6))
-        save_tau_producer_settings_to_h5(
-            empty_ftmw, "gaussian", _resolved_with_n_seg(8)
-        )
-        save_shape_recommendation_record(
-            empty_ftmw,
-            _resolved_with_n_seg(14),
-            consumed=_CONSUMED,
-            tau_max_us=63.65,
-            recommended_shape="gaussian",
-            vote_rates={"exp": 0.1, "gauss": 0.9, "voigt": 0.0},
-        )
+        with atomic_write(empty_ftmw):
+            save_tau_producer_settings_to_h5(
+                empty_ftmw, "lorentzian", _resolved_with_n_seg(12)
+            )
+        with atomic_write(empty_ftmw):
+            save_tau_calibration_settings_to_h5(empty_ftmw, _resolved_with_n_seg(6))
+        with atomic_write(empty_ftmw):
+            save_tau_producer_settings_to_h5(
+                empty_ftmw, "gaussian", _resolved_with_n_seg(8)
+            )
+        with atomic_write(empty_ftmw):
+            save_shape_recommendation_record(
+                empty_ftmw,
+                _resolved_with_n_seg(14),
+                consumed=_CONSUMED,
+                tau_max_us=63.65,
+                recommended_shape="gaussian",
+                vote_rates={"exp": 0.1, "gauss": 0.9, "voigt": 0.0},
+            )
         n_seg = {
             p: load_tau_producer_settings_from_h5(empty_ftmw, p)["stft"]["n_seg"]
             for p in ("lorentzian", "gaussian", "recommendation")
@@ -231,14 +247,18 @@ class TestStage2bProducerRecords:
 
     def test_twin_writer_refuses_the_recommendation(self, empty_ftmw) -> None:
         with pytest.raises(ValueError, match="twin"):
-            save_tau_producer_settings_to_h5(empty_ftmw, "recommendation", resolve())
+            with atomic_write(empty_ftmw):
+                save_tau_producer_settings_to_h5(
+                    empty_ftmw, "recommendation", resolve()
+                )
 
     def test_unknown_producer_raises(self, empty_ftmw) -> None:
         with pytest.raises(ValueError, match="producer"):
             load_tau_producer_settings_from_h5(empty_ftmw, "voigt")
 
     def test_field_set_version_is_stamped(self, empty_ftmw) -> None:
-        save_tau_producer_settings_to_h5(empty_ftmw, "lorentzian", resolve())
+        with atomic_write(empty_ftmw):
+            save_tau_producer_settings_to_h5(empty_ftmw, "lorentzian", resolve())
         with h5py.File(empty_ftmw, "r") as h5f:
             attrs = h5f[STAGE2B_LORENTZIAN_SETTINGS_PATH].attrs
             assert int(attrs[FIELD_SET_VERSION_ATTR]) == (
@@ -249,14 +269,15 @@ class TestStage2bProducerRecords:
 class TestShapeRecommendationRecord:
     def test_round_trip(self, empty_ftmw) -> None:
         resolved = _resolved_with_n_seg(14)
-        save_shape_recommendation_record(
-            empty_ftmw,
-            resolved,
-            consumed=_CONSUMED,
-            tau_max_us=63.65,
-            recommended_shape="gaussian",
-            vote_rates={"exp": 0.25, "gauss": 0.75, "voigt": 0.0},
-        )
+        with atomic_write(empty_ftmw):
+            save_shape_recommendation_record(
+                empty_ftmw,
+                resolved,
+                consumed=_CONSUMED,
+                tau_max_us=63.65,
+                recommended_shape="gaussian",
+                vote_rates={"exp": 0.25, "gauss": 0.75, "voigt": 0.0},
+            )
         rec = load_shape_recommendation_record(empty_ftmw)
         assert rec is not None
         assert rec.recommended_shape == "gaussian"
@@ -270,14 +291,15 @@ class TestShapeRecommendationRecord:
         assert prov.version == SHAPE_RECOMMENDATION_FIELD_SET_VERSION
 
     def test_no_clear_winner_round_trips_as_none(self, empty_ftmw) -> None:
-        save_shape_recommendation_record(
-            empty_ftmw,
-            resolve(),
-            consumed=_CONSUMED,
-            tau_max_us=None,
-            recommended_shape=None,
-            vote_rates={},
-        )
+        with atomic_write(empty_ftmw):
+            save_shape_recommendation_record(
+                empty_ftmw,
+                resolve(),
+                consumed=_CONSUMED,
+                tau_max_us=None,
+                recommended_shape=None,
+                vote_rates={},
+            )
         rec = load_shape_recommendation_record(empty_ftmw)
         assert rec is not None
         assert rec.recommended_shape is None
@@ -286,24 +308,28 @@ class TestShapeRecommendationRecord:
 
     def test_missing_consumed_value_raises(self, empty_ftmw) -> None:
         with pytest.raises(ValueError, match="consumed"):
+            with atomic_write(empty_ftmw):
+                save_shape_recommendation_record(
+                    empty_ftmw,
+                    resolve(),
+                    consumed={"start_us": 0.0},
+                    tau_max_us=None,
+                    recommended_shape=None,
+                    vote_rates={},
+                )
+
+    def test_delete(self, empty_ftmw) -> None:
+        with atomic_write(empty_ftmw):
+            assert delete_shape_recommendation_record(empty_ftmw) is False
+        with atomic_write(empty_ftmw):
             save_shape_recommendation_record(
                 empty_ftmw,
                 resolve(),
-                consumed={"start_us": 0.0},
-                tau_max_us=None,
-                recommended_shape=None,
+                consumed=_CONSUMED,
+                tau_max_us=1.0,
+                recommended_shape="lorentzian",
                 vote_rates={},
             )
-
-    def test_delete(self, empty_ftmw) -> None:
-        assert delete_shape_recommendation_record(empty_ftmw) is False
-        save_shape_recommendation_record(
-            empty_ftmw,
-            resolve(),
-            consumed=_CONSUMED,
-            tau_max_us=1.0,
-            recommended_shape="lorentzian",
-            vote_rates={},
-        )
-        assert delete_shape_recommendation_record(empty_ftmw) is True
+        with atomic_write(empty_ftmw):
+            assert delete_shape_recommendation_record(empty_ftmw) is True
         assert load_shape_recommendation_record(empty_ftmw) is None

@@ -1,7 +1,9 @@
-"""A ``.ftmw`` on disk stays as small as its content: every stage run and
-every curation write compacts the file (``_internal.compaction``), so the
+"""A ``.ftmw`` on disk stays as small as its content: every write starts from a
+compacted copy of the file (``_internal.atomic``, §Crash safety), so the
 attribute and vlen churn Stage 6 inflicts -- a review group rewritten per
-apply, a fit table restored per undo -- does not accumulate."""
+apply, a fit table restored per undo -- does not accumulate. The space a write
+frees is reclaimed by the next write, so a file carries at most one write's
+dead space."""
 
 from __future__ import annotations
 
@@ -41,7 +43,9 @@ def test_compacting_a_pipeline_file_preserves_its_content(stage5_small_file):
 
 
 def test_edit_undo_churn_does_not_grow_the_file(stage5_small_file):
-    """Five edit/undo cycles; the size after each cycle stays put."""
+    """Five edit/undo cycles; the size after each cycle stays put once the
+    first cycle has put the undo baseline in (each write is compacted when its
+    copy is made, so only the last write's dead space is carried)."""
     wid, freq = _a_peak(stage5_small_file)
     sizes = []
     for _ in range(5):
@@ -49,7 +53,8 @@ def test_edit_undo_churn_does_not_grow_the_file(stage5_small_file):
         last = ftmw.review_log(str(stage5_small_file))[-1].order_index
         review_undo_impl(stage5_small_file, [last])
         sizes.append(os.path.getsize(stage5_small_file))
-    assert max(sizes) <= 1.02 * min(sizes), sizes
+    steady = sizes[1:]
+    assert max(steady) <= 1.02 * min(steady), sizes
 
 
 def test_stage_rerun_does_not_grow_the_file(stage5_small_file):

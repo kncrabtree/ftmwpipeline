@@ -51,6 +51,7 @@ import pytest
 
 import ftmwpipeline.api as ftmw
 from ftmwpipeline import BadSettingError, CurationAction
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline._internal.stage4_impl import load_windows_impl
 from ftmwpipeline._internal.stage6_impl import (
     FittingResult,
@@ -112,7 +113,8 @@ def _declare_unlocked_digitizer(path: Path) -> None:
             ),
         ),
     )
-    save_stage_fit_settings_to_h5(str(path), new_settings)
+    with atomic_write(str(path)):
+        save_stage_fit_settings_to_h5(str(path), new_settings)
 
 
 def _stamp_timebase(path: Path, *, epsilon: float, sigma_epsilon: float) -> None:
