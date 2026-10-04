@@ -770,8 +770,8 @@ the message (``curation action <n> (...) failed: ...``).
     the action), and a ``uid:N`` no fitted peak carries;
   * ``kind`` ``"window"``: a window id the fit does not have (every unknown
     id of a batch at once, including when the batch also creates windows:
-    only an id above every existing window, which a ``create`` might mint, is
-    left to the per-action check), and an omitted-window ``add`` / ``remove``
+    only an id one of the batch's ``create`` rows could mint is left to the
+    per-action check), and an omitted-window ``add`` / ``remove``
     target that no live window covers (``ids`` the uncovered frequencies);
   * ``kind`` ``"decision"``: ``review_undo`` ids the decision log does not
     hold, every one of them (on a file with no recorded decisions, every

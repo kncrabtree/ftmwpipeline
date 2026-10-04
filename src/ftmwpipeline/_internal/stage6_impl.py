@@ -5164,9 +5164,7 @@ def actions_from_curation_file(
     the actions are checked for drift exactly as the file is.
     """
     ops = parse_curation_file(curation_path)
-    return [
-        action_from_op(op, ops.header.frame, ops.header.epsilon) for op in ops
-    ]
+    return [action_from_op(op, ops.header.frame, ops.header.epsilon) for op in ops]
 
 
 def _resolve_curation_window_ids(
@@ -5289,7 +5287,9 @@ def _unknown_peak_uids_error(uids: Sequence[int]) -> NotFoundValueError:
 
 
 def _unknown_plan_window_ids(
-    known: Collection[int], plan: Sequence[PlannedAction]
+    known: Collection[int],
+    plan: Sequence[PlannedAction],
+    plan_window_ids: Optional[Collection[int]] = None,
 ) -> List[int]:
     """Every window id *plan* names that is not in *known* and that no
     ``create`` of the plan can install, in plan order.
@@ -5299,34 +5299,52 @@ def _unknown_plan_window_ids(
     pinned ``create`` installs its own id. A ``create`` without a pinned id
     mints an id it cannot know yet -- one above every window of the plan, so
     above every *known* id -- and a later row may legitimately name it: such
-    an id is left to the per-action lookup once the creates have run. Every
-    other unknown id cannot exist and is reported here, all at once, even
-    when the plan holds an unpinned create.
+    an id is left to the per-action lookup once the creates have run. Given
+    *plan_window_ids* (the window plan the creates mint against), the ids the
+    unpinned creates can mint are bounded above too: the plan's ``n``
+    minting creates (unpinned and fresh implied ones) mint at most ``n`` ids
+    past the largest window id of the plan, its known windows and its pinned
+    creates. Every other unknown id cannot exist and is
+    reported here, all at once, even when the plan holds an unpinned create.
     """
     live = set(known) | {
         int(a.window_id) for a in plan if a.kind == "create" and a.window_id >= 0
     }
-    mints = any(
-        a.kind == "create" and a.window_id == _NEW_WINDOW_SENTINEL for a in plan
+    n_mints = sum(
+        1 for a in plan if a.kind == "create" and a.window_id == _NEW_WINDOW_SENTINEL
     )
     # A minted id is max(plan) + 1, and every known window is in the plan.
     mint_floor = max(known, default=-1)
+    mint_ceiling: Optional[int] = None
+    if plan_window_ids is not None:
+        # A fresh implied create mints too, raising the ids later creates take.
+        n_implied = sum(
+            1 for a in plan if a.kind == "create" and _is_implied_window_id(a.window_id)
+        )
+        mint_ceiling = (
+            max(live | set(plan_window_ids), default=-1) + n_mints + n_implied
+        )
     unknown: List[int] = []
     for a in plan:
         wid = int(a.window_id)
         if a.kind == "create" or wid < 0 or wid in live or wid in unknown:
             continue
-        if mints and wid > mint_floor:
-            continue
+        if n_mints and wid > mint_floor:
+            if mint_ceiling is None or wid <= mint_ceiling:
+                continue
         unknown.append(wid)
     return unknown
 
 
 def _require_known_plan_windows(
-    known: Collection[int], plan: Sequence[PlannedAction], where: str
+    known: Collection[int],
+    plan: Sequence[PlannedAction],
+    where: str,
+    plan_window_ids: Optional[Collection[int]] = None,
 ) -> None:
-    """Refuse a plan naming windows the fit does not have, all of them at once."""
-    unknown = _unknown_plan_window_ids(known, plan)
+    """Refuse a plan naming windows the fit does not have, all of them at once
+    (see :func:`_unknown_plan_window_ids`)."""
+    unknown = _unknown_plan_window_ids(known, plan, plan_window_ids)
     if unknown:
         listed = ", ".join(str(w) for w in unknown)
         raise NotFoundValueError(
@@ -5349,9 +5367,7 @@ def _raise_curation_failure(
     tag = f"curation action {index + 1} ({describe_planned_action(action)}) failed"
     if isinstance(exc, NotFoundError):
         # The batch refused with ValueError before it was typed.
-        raise NotFoundValueError(
-            exc.kind, exc.ids, message=f"{tag}: {exc}"
-        ) from exc
+        raise NotFoundValueError(exc.kind, exc.ids, message=f"{tag}: {exc}") from exc
     if isinstance(exc, CurationConflictError):
         raise CurationConflictError(
             exc.reason, exc.ids, message=f"{tag}: {exc}"
@@ -6563,6 +6579,20 @@ def _build_batch_ctx(
         shared = _build_shared_fit_ctx(path)
     changeset = _build_batch_changeset(path, shared, snap_tol_mhz=snap_tol_mhz)
     return _BatchCtx(shared=shared, changeset=changeset)
+
+
+def _batch_plan_window_ids(
+    ctx: _BatchCtx, plan: Sequence["PlannedAction"]
+) -> Optional[Set[int]]:
+    """The window ids of the plan this batch's creates mint against, for
+    bounding the ids an unpinned create can mint
+    (:func:`_unknown_plan_window_ids`); ``None`` (no bound) when the plan
+    has no unpinned create, so the overlay is only built when it is needed."""
+    if not any(
+        a.kind == "create" and a.window_id == _NEW_WINDOW_SENTINEL for a in plan
+    ):
+        return None
+    return {int(w.window_id) for w in _batch_effective_plan(ctx).windows}
 
 
 def _batch_effective_plan(ctx: _BatchCtx) -> "WindowPlan":
@@ -8611,6 +8641,7 @@ def _apply_batch_segment(
         },
         plan,
         "Stage 5 fit",
+        _batch_plan_window_ids(ctx, plan),
     )
     # One WindowProgress per action that fits (every kind but a bare accept),
     # naming the window it targeted; a cancel is honoured before each action.
@@ -9284,9 +9315,7 @@ def _apply_curation_at_prefix(
     as an undo followed by a failed apply would.
     """
     kept = list(log[:keep])
-    ops, resolved_frame, stamp, raw_targets = _parse_curation_call(
-        path, source, frame
-    )
+    ops, resolved_frame, stamp, raw_targets = _parse_curation_call(path, source, frame)
     deferred = _DeferredCuration(
         ops=ops, frame=resolved_frame, stamp=stamp, raw_targets=raw_targets
     )
@@ -9614,7 +9643,9 @@ def _run_review_preview(
     # them None. A COALESCED implied create installs nothing, so it never
     # appears here -- one window, not two.
     created_facts: Dict[int, CreateWindowResult] = {}
-    _require_known_plan_windows(set(before_stats), plan, "Stage 5 fit")
+    _require_known_plan_windows(
+        set(before_stats), plan, "Stage 5 fit", _batch_plan_window_ids(ctx, plan)
+    )
     # One WindowProgress per action that fits (every kind but a bare accept),
     # naming the window it targeted; a cancel is honoured before each action.
     fit_total = sum(1 for a in plan if a.kind != "accept" or a.candidate is not None)
@@ -10070,11 +10101,9 @@ def review_undo_impl(
             unknown.append(int(i))
     if unknown:
         detail = (
-            f"no recorded decisions to undo (decision id(s) {unknown} do not "
-            f"exist)"
+            f"no recorded decisions to undo (decision id(s) {unknown} do not exist)"
             if not log
-            else f"unknown decision id(s) {unknown}; run 'review log' for "
-            f"valid ids"
+            else f"unknown decision id(s) {unknown}; run 'review log' for valid ids"
         )
         raise NotFoundValueError("decision", unknown, message=detail)
     undo_set = {int(i) for i in ids}
@@ -11425,9 +11454,7 @@ def _resolve_curation_call(
     raw frame, since window ranges are stored raw) and is reused for the
     final plan-level conversion, so it runs exactly once per call.
     """
-    ops, resolved_frame, stamp, raw_targets = _parse_curation_call(
-        path, source, frame
-    )
+    ops, resolved_frame, stamp, raw_targets = _parse_curation_call(path, source, frame)
     plan = _resolve_curation_ops(ops, path, frame=resolved_frame, stamp=stamp)
     return plan, raw_targets, stamp
 
