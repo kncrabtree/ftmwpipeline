@@ -118,6 +118,38 @@ Two distinct meanings of "no value" exist and must survive every surface:
   `None` and is documented per setting in the typed registry (§Status and
   settings).
 
+**Migration rules for pre-contract fields** (Wave 3):
+
+- **Storage keeps its encodings.** The file format does not change.
+  Conversion happens once, at the contract boundary, through
+  `_internal/absence_rules.py`. So a quantity exposed on two surfaces (a
+  `FinalPeak` field and its `fit_peaks` column) reports one status.
+- **Status codes are derived at read time.**
+  - A fill that the reader synthesized because a column predates the file is
+    `NOT_RUN`.
+  - A stored `nan`, `inf` or sentinel in a present column is classified per
+    field. The per-field rules are documented with each table in
+    `docs/source/machine_contract.rst`.
+  - Knockout: the test did not run (no record, a negative tri-state, or a
+    `nan` Δχ²) → every knockout field is `NOT_RUN`. Otherwise each non-finite
+    knockout value is `UNDEFINED`.
+  - An uncertainty that does not exist because its parameter was held fixed
+    is `UNDEFINED`, matching `FinalPeak.decay_time_error_us`.
+- **Honest uncertainty.** When a line has no statistical frequency error, its
+  `sigma_stat_khz` and `sigma_f_khz` are `UNDEFINED`. They are never computed
+  with the statistical term silently dropped.
+- **`read_metadata`.** The keys of a stage that has not run are omitted, as
+  documented, so `.get()` callers keep working. A key that is present without
+  a value is `Absent`.
+- **Pre-contract return types stay.**
+  - `get_final_products` still returns `None` in Python before Stage 6.
+  - Its CLI envelope is `{"value": null, "value_absent": "not_run"}`.
+  - Dict-shaped accessors (`get_pipeline_info`, `read_metadata`) hold
+    `Absent` values instead of `None`.
+- **Unchanged.** Storage types (`FittedPeak`, `KnockoutInfo`, the HDF5
+  encodings) keep their `Optional`, `nan` and `-1` forms. Settings echoes stay
+  `None`.
+
 ## Accessors
 
 Each accessor below is a read: it never writes the file, and it is exposed on
