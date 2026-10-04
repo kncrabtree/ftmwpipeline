@@ -96,6 +96,11 @@ touching Stage 5, override Stage 3 SNR cutoffs without re-running the
 τ calibration, and so on. The persisted layer for one stage is
 unrelated to the persisted layer for another.
 
+Stage 2b's row is the recipe its three producers (the Lorentzian and Gaussian
+calibrations and the shape recommendation) resolve against, and it follows the
+most recent of them. Each producer also records what its own result used, in a
+record no other producer writes; see :doc:`stage2b_tau`.
+
 Three ways to drive a stage
 ---------------------------
 
