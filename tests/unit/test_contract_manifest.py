@@ -82,6 +82,7 @@ SNAPSHOT_SCHEMAS = frozenset(
         "ftmw/display_ft@1",
         "ftmw/curation_action@1",
         "ftmw/status@1",
+        "ftmw/run_result@1",
     }
 )
 SNAPSHOT_CODES = frozenset(
