@@ -1714,13 +1714,12 @@ def refit_window_core(
     # windows it is the converged free tau from the original fit -- in both
     # cases it is the best seed available.
     tau0_for_window = tau_persisted
-    # fit_tau legitimately stays None in _HARD_DEFAULTS (the None means "use
-    # the per-window decision from the original fit").  Mirror the same None
-    # fallback that fit_peaks_impl uses.
+    # ``tau.fit_tau`` True means what it means to the fit: tau is free where
+    # the fit's SNR gate freed it, so the refit follows the per-window decision
+    # the original fit made. Only False holds every window's tau fixed. (Unset,
+    # on a record written before the hard default, reads the same as True.)
     tau_was_fit = bool(wf.shared_parameters.get("tau_us", {}).get("fitted", True))
-    fit_tau_for_window: bool = (
-        tau_was_fit if resolved.tau.fit_tau is None else bool(resolved.tau.fit_tau)
-    )
+    fit_tau_for_window: bool = tau_was_fit and resolved.tau.fit_tau is not False
 
     # Build the constraint kwargs forwarded to fit_window.  Only the knobs
     # fit_window actually accepts (not the conservative-loop add-gate ones).

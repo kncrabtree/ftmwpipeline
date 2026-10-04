@@ -770,9 +770,12 @@ _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "tau_penalty_lambda": 50.0,
         "tau_penalty_n_sigma": 5.0,
         "per_band_tau": True,
-        # ``tau0_us`` / ``fit_tau`` / overrides legitimately stay None
-        # (tau0_us derives at runtime from Stage 2b / expf_us / T_active/3;
-        # fit_tau defaults to True inside the impl; overrides are unset by
+        # tau is free (subject to the fit_tau_min_snr gate) unless switched
+        # off. Concrete here, not left to the impl, so the persisted record
+        # says what the fit used.
+        "fit_tau": True,
+        # ``tau0_us`` / overrides legitimately stay None (tau0_us derives at
+        # runtime from Stage 2b / expf_us / T_active/3; overrides are unset by
         # design until a user supplies the atomic pair).
     },
     "seeder": {

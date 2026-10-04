@@ -85,6 +85,7 @@ from ..io.fitting_serialization import (
     save_spectrum_fit_to_hdf5,
 )
 from ..io.stage_fit_settings_serialization import (
+    Stage5Consumed,
     load_stage_fit_settings_from_h5,
     read_recommended_clock_sources,
     read_stage2b_recommended_shape,
@@ -1302,6 +1303,12 @@ class Stage5FitContext:
     # derive the analysis-band extent for the spur sweep).
     user_ft: Any  # ComplexFT
 
+    # The timebase (epsilon, sigma_epsilon) the spur gate's eps-aware match
+    # window used, or None for both when it used none. Recorded by the fit
+    # (``Stage5Consumed``) because a timebase re-run does not invalidate it.
+    timebase_epsilon: Optional[float] = None
+    timebase_sigma_epsilon: Optional[float] = None
+
 
 def replay_spur_set(catalog: Mapping[str, Any], sorted_freq: np.ndarray) -> Any:
     """Rebuild a Stage 5 :class:`~ftmwpipeline.fitting.spur_detection.SpurSet`
@@ -1475,6 +1482,8 @@ def build_stage5_fit_context(
     # --- Spur gating (optional) ------------------------------------------
     spur_set: Optional[Any] = None
     clock_lattice: Optional[Any] = None
+    tb_epsilon: Optional[float] = None
+    tb_sigma_epsilon: float = 0.0
     if spur_enabled and replay_spur_catalog is not None:
         # Replay the persisted Stage 5 gated catalog verbatim (no detection):
         # the catalog is a Stage 5 product, so a later-stage refit reproduces
@@ -1558,8 +1567,6 @@ def build_stage5_fit_context(
         # is read only under ``spur_cfg.clocks`` -- the no-declaration path never
         # touches it and stays byte-identical. Absent eps -> ``None`` -> no
         # widening in build_spur_set.
-        tb_epsilon: Optional[float] = None
-        tb_sigma_epsilon: float = 0.0
         if spur_cfg.clocks:
             drift_window_v = _required_float(
                 spur_cfg.drift_window_mhz, "spur.drift_window_mhz"
@@ -1672,6 +1679,8 @@ def build_stage5_fit_context(
         n_raw=n_raw,
         trim_range=trim_range,
         user_ft=user_ft,
+        timebase_epsilon=tb_epsilon,
+        timebase_sigma_epsilon=None if tb_epsilon is None else tb_sigma_epsilon,
     )
 
 
@@ -2043,7 +2052,7 @@ def _fit_peaks_impl(
             f"tau0_us must be positive (got {tau0_us_v}); the active "
             f"acquisition is {acquisition_us} us"
         )
-    fit_tau_v = True if resolved.tau.fit_tau is None else bool(resolved.tau.fit_tau)
+    fit_tau_v = _required_bool(resolved.tau.fit_tau, "tau.fit_tau")
 
     # --- Structural-replan context (skipped when caller asks for 0 rounds) -
     replan_ctx: Optional[ReplanContext]
@@ -2548,7 +2557,25 @@ def _fit_peaks_impl(
     # Stamp the resolved settings as the persisted record for this fit so
     # a follow-up call with no explicit args inherits exactly the same
     # knobs (the persisted layer of the resolution chain).
-    save_stage_fit_settings_to_h5(file_path, resolved, preset_name=preset_name)
+    # What the fit took from other stages goes in its own record: neither a
+    # Stage 2b nor a timebase re-run invalidates Stage 5, so this is what says
+    # which anchor, epsilon and survival floor the fit actually used.
+    consumed = Stage5Consumed(
+        tau_calibration_source=tau_source,
+        tau_maj_us=tau_maj_us,
+        sigma_tau_us=sigma_tau_us,
+        band_majorities=(
+            tuple(persisted_cal.band_majorities)
+            if per_band_used and persisted_cal is not None
+            else None
+        ),
+        timebase_epsilon=fit_ctx.timebase_epsilon,
+        timebase_sigma_epsilon=fit_ctx.timebase_sigma_epsilon,
+        peak_survival_snr_floor=float(peak_survival_floor_v),
+    )
+    save_stage_fit_settings_to_h5(
+        file_path, resolved, preset_name=preset_name, consumed=consumed
+    )
     _update_stage_completion(file_path, "stage5_fitting")
     # A Stage 5 re-fit invalidates nothing (Stage 5 is the terminal
     # stage); this call is a no-op and a guard for future stages.
