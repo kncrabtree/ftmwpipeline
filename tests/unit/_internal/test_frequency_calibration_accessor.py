@@ -178,11 +178,10 @@ class TestDerivedState:
         assert stamp.state == "self_calibrated"
         assert stamp.epsilon == pytest.approx(EPS)
 
-    def test_a_persisted_empty_declaration_is_authoritative(self, imported):
-        """The Stage 5 resolver's rule: a fit that persisted *no* declaration
-        (``spur.clocks == ()``) used none, and a later ``clocks set`` does not
-        change the state its products were derived under. Re-running Stage 5
-        is what picks the new declaration up."""
+    def test_a_persisted_empty_declaration_falls_through(self, imported):
+        """The timebase's rule: a fit that persisted *no* declaration
+        (``spur.clocks == ()``) does not hide a later ``clocks set``, so a
+        timebase measured under that declaration is applied."""
         save_stage_fit_settings_to_h5(
             str(imported), resolve_stage_fit_settings(persisted=None)
         )
@@ -195,8 +194,8 @@ class TestDerivedState:
         )
         _stamp_timebase(imported)
         stamp = frequency_calibration_impl(imported)
-        assert stamp.state == "rb_locked"
-        assert stamp.epsilon == 0.0
+        assert stamp.state == "self_calibrated"
+        assert stamp.epsilon == pytest.approx(EPS)
 
 
 # ---------------------------------------------------------------------------
