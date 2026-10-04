@@ -137,7 +137,8 @@ def test_settings_codec_stamps_its_version(
     version: int,
 ) -> None:
     assert read(empty_ftmw) is None
-    save(empty_ftmw, cls())
+    with atomic_write(empty_ftmw):
+        save(empty_ftmw, cls())
     prov = read(empty_ftmw)
     assert prov is not None
     assert prov.version == version

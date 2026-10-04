@@ -31,7 +31,7 @@ import math
 import os
 import re
 import time
-from contextlib import nullcontext
+from contextlib import ExitStack, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -1780,13 +1780,13 @@ def acknowledge_environment_impl(
 
     path = str(file_path)
     current = capture_environment()
-    with h5open(path, "r") as h5f:
-        envs = load_stage_environments(h5f)
-    fit_env = envs.get("stage5_fitting")
-    mismatch = gating_fields_differ(current, fit_env)
-
-    with atomic_write(path), h5open(path, "a") as h5f:
-        save_environment_ack(h5f, current, reason=reason)
+    with atomic_write(path):
+        with h5open(path, "r") as h5f:
+            envs = load_stage_environments(h5f)
+        fit_env = envs.get("stage5_fitting")
+        mismatch = gating_fields_differ(current, fit_env)
+        with h5open(path, "a") as h5f:
+            save_environment_ack(h5f, current, reason=reason)
 
     logger.info(
         "Recorded an analysis-environment acknowledgement for %s (epoch %s)",
@@ -3429,17 +3429,20 @@ def merge_peaks_impl(
     # re-checks, since a curation row reaches it without passing through here.
     _check_merge_arity(peaks)
     path = str(file_path)
-    snap_tol = resolve_snap_tol_mhz(path, snap_tol_mhz)
-    resolved_frame, stamp = _resolve_frame(path, frame)
-    peaks_raw = [_frame_to_raw(f, frame=resolved_frame, stamp=stamp) for f in peaks]
-    return _run_single_action(
-        path,
-        lambda ctx: _batch_apply_merge(
-            ctx, window_id, peaks_raw, snap_tol_mhz=snap_tol
-        ),
-        snap_tol_mhz=snap_tol,
-        shared=_shared,
-    )
+    # One atomic write, opened before the inputs are read (joins an enclosing
+    # transaction, e.g. a curation replay).
+    with atomic_write(path):
+        snap_tol = resolve_snap_tol_mhz(path, snap_tol_mhz)
+        resolved_frame, stamp = _resolve_frame(path, frame)
+        peaks_raw = [_frame_to_raw(f, frame=resolved_frame, stamp=stamp) for f in peaks]
+        return _run_single_action(
+            path,
+            lambda ctx: _batch_apply_merge(
+                ctx, window_id, peaks_raw, snap_tol_mhz=snap_tol
+            ),
+            snap_tol_mhz=snap_tol,
+            shared=_shared,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -3508,17 +3511,20 @@ def split_peak_impl(
     # Checked before the batch opens: see :func:`merge_peaks_impl`.
     _check_split_arity(into)
     path = str(file_path)
-    snap_tol = resolve_snap_tol_mhz(path, snap_tol_mhz)
-    resolved_frame, stamp = _resolve_frame(path, frame)
-    peak_raw = _frame_to_raw(peak, frame=resolved_frame, stamp=stamp)
-    return _run_single_action(
-        path,
-        lambda ctx: _batch_apply_split(
-            ctx, window_id, peak_raw, into, snap_tol_mhz=snap_tol
-        ),
-        snap_tol_mhz=snap_tol,
-        shared=_shared,
-    )
+    # One atomic write, opened before the inputs are read (joins an enclosing
+    # transaction, e.g. a curation replay).
+    with atomic_write(path):
+        snap_tol = resolve_snap_tol_mhz(path, snap_tol_mhz)
+        resolved_frame, stamp = _resolve_frame(path, frame)
+        peak_raw = _frame_to_raw(peak, frame=resolved_frame, stamp=stamp)
+        return _run_single_action(
+            path,
+            lambda ctx: _batch_apply_split(
+                ctx, window_id, peak_raw, into, snap_tol_mhz=snap_tol
+            ),
+            snap_tol_mhz=snap_tol,
+            shared=_shared,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -10884,43 +10890,52 @@ def review_run_impl(
         When Stage 5 has not been run yet.
     """
     path = str(file_path)
-
-    with h5open(path, "r") as h5f:
-        if "stage5_fitting" not in h5f:
-            raise StageDependencyError(
-                "review",
-                ["stage5_fitting"],
-                Path(str(path)),
-                command="fit run",
-                message="No Stage 5 fit found in this file. Run 'fit run' first.",
-            )
-        spectrum_fit: SpectrumFit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
-        # Load existing review to preserve provenance/decision_log.
-        existing_review: Stage6Review
-        if "stage6_review" in h5f:
-            existing_review = load_stage6_review_from_hdf5(h5f["stage6_review"])
-        else:
-            existing_review = Stage6Review()
-
-    fid = load_fid_from_pipeline_impl(path)
-
-    spur_centers_mhz: List[float] = [
-        float(v) for v in spectrum_fit.parameters.get("spur_centers_mhz", [])
-    ]
-    acquisition_us: float = float(spectrum_fit.parameters.get("acquisition_us", 0.0))
-    merged_window_freqs = _auto_merged_window_freqs(spectrum_fit)
-
-    # The "Stage 6 review: routing attention for N windows" start line and
-    # the "Saved Stage 6 review to ..." end line are rendered from the
-    # stage's StageStarted / StageFinished events.
     ops = operation_events("review run", events, cancel)
-    with ops.stage(
-        Stage.REVIEW,
-        verb="review run",
-        detail={"n_windows": len(spectrum_fit.window_fits), "path": path},
-        file_path=path,
-    ) as scope:
-        with atomic_write(path):
+    # One atomic write that covers the reads it is built from: the transaction
+    # (and its write_conflict stat) begins before the fit is read, and commits
+    # before StageFinished. The stage scope opens after the read (its start
+    # line names the window count), so the two are closed by hand in order:
+    # the transaction first (the replace), then StageFinished.
+    with ExitStack() as transaction:
+        transaction.enter_context(atomic_write(path))
+        with h5open(path, "r") as h5f:
+            if "stage5_fitting" not in h5f:
+                raise StageDependencyError(
+                    "review",
+                    ["stage5_fitting"],
+                    Path(str(path)),
+                    command="fit run",
+                    message="No Stage 5 fit found in this file. Run 'fit run' first.",
+                )
+            spectrum_fit: SpectrumFit = load_spectrum_fit_from_hdf5(
+                h5f["stage5_fitting"]
+            )
+            # Load existing review to preserve provenance/decision_log.
+            existing_review: Stage6Review
+            if "stage6_review" in h5f:
+                existing_review = load_stage6_review_from_hdf5(h5f["stage6_review"])
+            else:
+                existing_review = Stage6Review()
+
+        fid = load_fid_from_pipeline_impl(path)
+
+        spur_centers_mhz: List[float] = [
+            float(v) for v in spectrum_fit.parameters.get("spur_centers_mhz", [])
+        ]
+        acquisition_us: float = float(
+            spectrum_fit.parameters.get("acquisition_us", 0.0)
+        )
+        merged_window_freqs = _auto_merged_window_freqs(spectrum_fit)
+
+        # The "Stage 6 review: routing attention for N windows" start line and
+        # the "Saved Stage 6 review to ..." end line are rendered from the
+        # stage's StageStarted / StageFinished events.
+        with ops.stage(
+            Stage.REVIEW,
+            verb="review run",
+            detail={"n_windows": len(spectrum_fit.window_fits), "path": path},
+            file_path=path,
+        ) as scope:
             result, final_products = _review_run(
                 path,
                 spectrum_fit,
@@ -10935,7 +10950,10 @@ def review_run_impl(
                 noise_floor=noise_floor,
                 sigma_floor_khz=sigma_floor_khz,
             )
-        scope.finish(review_run_summary(result, final_products), detail={"path": path})
+            transaction.close()  # the replace
+            scope.finish(
+                review_run_summary(result, final_products), detail={"path": path}
+            )
     return result
 
 
@@ -11396,17 +11414,20 @@ class ReviewSession:
         full contract; the only difference is that this session's shared fit
         context is reused -- validated fresh first -- rather than rebuilt.
         """
-        shared = self._sync()
-        self._drop_staged(base_changed=True)
-        result = refit_window_impl(
-            self._path,
-            window_id,
-            add=add,
-            remove=remove,
-            snap_tol_mhz=snap_tol_mhz,
-            frame=frame,
-            _shared=shared,
-        )
+        # The verb's transaction opens before the freshness check, so its
+        # write_conflict stat predates every input the edit is built from.
+        with atomic_write(self._path):
+            shared = self._sync()
+            self._drop_staged(base_changed=True)
+            result = refit_window_impl(
+                self._path,
+                window_id,
+                add=add,
+                remove=remove,
+                snap_tol_mhz=snap_tol_mhz,
+                frame=frame,
+                _shared=shared,
+            )
         self._resync_after_write()
         return result
 
@@ -11425,16 +11446,17 @@ class ReviewSession:
         <ftmwpipeline.pipeline.Pipeline.review_accept>`, reusing this
         session's shared fit context.
         """
-        shared = self._sync()
-        self._drop_staged(base_changed=True)
-        result = review_accept_impl(
-            self._path,
-            window_id,
-            candidate_freq=candidate_freq,
-            snap_tol_mhz=snap_tol_mhz,
-            frame=frame,
-            _shared=shared,
-        )
+        with atomic_write(self._path):  # before the check: see review_edit
+            shared = self._sync()
+            self._drop_staged(base_changed=True)
+            result = review_accept_impl(
+                self._path,
+                window_id,
+                candidate_freq=candidate_freq,
+                snap_tol_mhz=snap_tol_mhz,
+                frame=frame,
+                _shared=shared,
+            )
         self._resync_after_write()
         return result
 
@@ -11452,15 +11474,16 @@ class ReviewSession:
         <ftmwpipeline.pipeline.Pipeline.review_create>`, reusing this
         session's shared fit context.
         """
-        shared = self._sync()
-        self._drop_staged(base_changed=True)
-        result = create_window_impl(
-            self._path,
-            anchor_mhz,
-            snap_tol_mhz=snap_tol_mhz,
-            frame=frame,
-            _shared=shared,
-        )
+        with atomic_write(self._path):  # before the check: see review_edit
+            shared = self._sync()
+            self._drop_staged(base_changed=True)
+            result = create_window_impl(
+                self._path,
+                anchor_mhz,
+                snap_tol_mhz=snap_tol_mhz,
+                frame=frame,
+                _shared=shared,
+            )
         self._resync_after_write()
         return result
 
@@ -11477,10 +11500,11 @@ class ReviewSession:
         <ftmwpipeline.pipeline.Pipeline.review_undo>`, reusing this
         session's shared fit context.
         """
-        shared = self._sync()
-        if not dry_run:
-            self._drop_staged(base_changed=True)
-        result = review_undo_impl(self._path, ids, dry_run=dry_run, _shared=shared)
+        with atomic_write(self._path):  # before the check: see review_edit
+            shared = self._sync()
+            if not dry_run:
+                self._drop_staged(base_changed=True)
+            result = review_undo_impl(self._path, ids, dry_run=dry_run, _shared=shared)
         if not dry_run:
             self._resync_after_write()
         return result
@@ -11540,6 +11564,7 @@ class ReviewSession:
         persisted bytes are guaranteed to be exactly what the preview showed
         rather than a second computation trusted to agree with the first.
         """
+        # Called inside review_apply's transaction.
         snap_tol = resolve_snap_tol_mhz(self._path, None)
         with atomic_write(self._path):
             gate_ctx = _open_batch(
@@ -11588,6 +11613,22 @@ class ReviewSession:
         prefix is given.
         """
         source = curation_source(curation_path, actions)
+        # The transaction opens before the freshness check, so its
+        # write_conflict stat predates every input this apply is built from
+        # (the fingerprint, the staged preview, the shared context).
+        with atomic_write(self._path):
+            result = self._apply(source, frame=frame, log_prefix=log_prefix)
+        self._resync_after_write()
+        return result
+
+    def _apply(
+        self,
+        source: CurationSource,
+        *,
+        frame: Optional[Frame],
+        log_prefix: Optional[int],
+    ) -> CurationApplyResult:
+        """The body of :meth:`review_apply`, inside its transaction."""
         shared = self._sync()
         base_changed = self._pending_base_changed
         self._pending_base_changed = False
@@ -11605,7 +11646,6 @@ class ReviewSession:
                 if plan == staged.resolved_plan:
                     self._persist_staged(staged)
                     self._staged = None
-                    self._resync_after_write()
                     return CurationApplyResult(
                         plan=plan,
                         warnings=staged.warnings,
@@ -11628,5 +11668,4 @@ class ReviewSession:
         )
         if base_changed:
             result = replace(result, base_changed=True)
-        self._resync_after_write()
         return result
