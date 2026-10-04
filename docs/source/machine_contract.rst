@@ -675,6 +675,11 @@ carries a stable ``code`` and typed attributes, and ``to_dict()`` returns::
      - ``CallbackFailedError``
      - ``event_schema`` (the event being delivered); the callback's exception
        is the ``__cause__``
+   * - ``write_conflict``
+     - ``WriteConflictError``
+     - ``path`` (the file another process wrote while this call was writing
+       it; this call's changes were discarded and the other write stands); see
+       *Crash safety* below
    * - ``pipeline_error``
      - ``PipelineFileError`` (the base class)
      - none. The declared fallback: a direct raise of the base class carries
@@ -1051,6 +1056,20 @@ apply with ``log_prefix``) honours a cancel only before it restores the
 automatic fit; once the restore has begun, the replay completes. A stage that
 has begun its final write completes, and the cancel is honoured at the next
 check point.
+
+**Crash safety.** Every call that writes a ``.ftmw`` file -- a stage run,
+curation, ``settings set``/``unset``, ``clocks``, ``start run`` -- writes
+atomically: it works in a temporary copy beside the file, named
+``.<file name>.ftmw-tmp.<hostname>.<pid>``, and replaces the file with that
+copy in one step when it finishes. A process killed at any point leaves either
+the file as it was before the call or the file as the call completed it, never
+a mix. A cancel, a ``callback_failed`` or any other failure discards the copy.
+``StageFinished`` is emitted once the replace has happened. Within
+``run_pipeline`` each stage is its own atomic write, so a kill keeps every
+stage that finished before it. If another process wrote the file after the
+call's copy was taken, the call raises ``write_conflict`` and leaves the other
+write in place. A copy left behind by a killed process is removed by the next
+write to the file from the same host.
 
 On the command line every long verb takes ``--events``, which writes each event
 to stderr as one JSON line. The first Ctrl-C cancels: the verb stops at its
