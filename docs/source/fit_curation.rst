@@ -635,12 +635,14 @@ rather than a ``0.000`` that would read as a perfect fit.
 A window whose joint fit did not converge prints a ``WARNING`` line under its
 row, and reports ``PreviewWindowResult.converged`` (``RefitWindowResult.converged``
 for a single-window verb) as ``False``. A failed nonlinear least-squares returns
-the window's seed positions verbatim with an infinite χ²ᵣ, so every number on
-that row describes a fit that did not happen: treat the peaks as seeds rather
-than measurements, and do not fold them into anything downstream. The flag is
-read off the same post-cascade fit ``chi2r_after`` is, and is ``None`` — like
-``chi2r_after`` and for exactly the same windows — when a window carries no fit
-on the after side at all.
+the window's seed positions verbatim with an infinite χ²ᵣ (reported as
+``Absent.UNDEFINED`` and printed ``undefined``), so every number on that row
+describes a fit that did not happen: treat the peaks as seeds rather than
+measurements, and do not fold them into anything downstream. The flag is read
+off the same post-cascade fit ``chi2r_after`` is, and is ``Absent.NOT_RUN`` —
+like ``chi2r_after`` and for exactly the same windows — when a window carries
+no fit on the after side at all. ``Absent`` is truthy, so test the flag with
+``converged is False``, never ``not converged``.
 
 An ``add`` whose frequency no live window covers implies the window it needs
 rather than erroring (above, under "Curation files"), and a file's own
@@ -660,7 +662,7 @@ plausible:
 
 The extra line only appears on a window the batch created or widened —
 ``PreviewWindowResult.created_window_mode`` is ``"created"`` or ``"widened"``
-there, and ``None`` (no line) for a window the batch only edited, merged,
+there, and ``Absent.NOT_RUN`` (no line) for a window the batch only edited, merged,
 split, accepted, or cascaded into. When present, ``created_window_freq_range``
 / ``created_window_n_points`` / ``created_window_n_contributors`` /
 ``created_window_depends_on`` carry the rest of the structural facts, straight
@@ -693,11 +695,12 @@ no fit and previews as ``(no fit-mutating actions; nothing to preview)``.
 .. code-block:: python
 
    import ftmwpipeline.api as ftmw
+   from ftmwpipeline.contract import Absent
 
    preview = ftmw.review_preview("exp_2638.ftmw", "exp_2638_curation.csv")
    for wid, w in sorted(preview.windows.items()):
        print(wid, w.n_peaks_before, "->", w.n_peaks_after, w.chi2r_after)
-       if w.created_window_mode is not None:
+       if w.created_window_mode is not Absent.NOT_RUN:
            lo, hi = w.created_window_freq_range
            print(f"  {w.created_window_mode}: {lo:.4f}-{hi:.4f} MHz")
 
@@ -761,10 +764,12 @@ persists that result directly instead of computing it a second time:
 
 .. code-block:: python
 
+   from ftmwpipeline.contract import Absent
+
    with Pipeline.open("exp_2638.ftmw").review_session() as session:
        preview = session.review_preview("exp_2638_curation.csv")
        fitted = [w.chi2r_after for w in preview.windows.values()
-                 if w.chi2r_after is not None]
+                 if not isinstance(w.chi2r_after, Absent)]
        if fitted and max(fitted) < 2.0:
            result = session.review_apply("exp_2638_curation.csv")
 

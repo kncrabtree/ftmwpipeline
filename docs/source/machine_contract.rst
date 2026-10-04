@@ -77,9 +77,10 @@ Rules every accessor follows
   dataclass is *stamped directly* (``{"schema": ..., <fields>}``); a list or
   tuple is *wrapped as items* (``{"schema": ..., "items": [...]}``); a scalar
   is *wrapped as value* (``{"schema": ..., "value": x}``). An absent result is
-  an ``Absent`` in a named field, like any other absence: ``read
-  get_final_products`` before Stage 6 prints ``{"schema":
-  "ftmw/final_products@1", "items": null, "items_absent": "not_run"}``.
+  an ``Absent`` in a named field, like any other absence: a pre-contract
+  accessor that returns ``None`` in Python (``get_final_products`` before
+  Stage 6) prints ``{"schema": "ftmw/final_products@1", "value": null,
+  "value_absent": "not_run"}``.
 * **The payload carries its schema in Python too**, wherever the Python type
   can: a dict payload has a ``"schema"`` key, a dataclass payload declares
   ``__ftmw_schema__``, so the API, ``Pipeline`` and the CLI return the same
@@ -142,11 +143,41 @@ Each declared accessor, with its absence cases:
   ``windows run`` or ``fit run``, for every table. ``read read_table FILE TABLE [--columns a,b]`` writes each column to
   ``<column>.npy`` under ``--output``.
 * ``get_final_products`` -- the persisted final-products table, or ``None``
-  before Stage 6 (``None`` becomes ``Absent`` in a later wave; ``read
-  get_final_products`` already prints ``"items": null, "items_absent":
-  "not_run"``). Each
-  ``FinalPeak`` carries ``peak_uid``, ``window_id``, ``origin``, ``derivation``,
-  ``clock_lattice``, the ``knockout_*`` fields, the frequency and its sigma.
+  before Stage 6. The Python return stays ``None``; ``read
+  get_final_products`` prints ``"value": null, "value_absent": "not_run"``.
+  Each ``FinalPeak`` carries ``peak_uid``, ``window_id``, ``origin``,
+  ``derivation``, ``clock_lattice``, the ``knockout_*`` fields, the frequency
+  and its sigma. Every field that can lack a value is ``Absent``, never
+  ``None`` or ``nan``:
+
+  * ``sigma_stat_khz`` and ``sigma_f_khz`` are *undefined* when the fit left
+    the line without a finite frequency error. The total is never computed
+    with its statistical term dropped (before this rule it read
+    ``sigma_stat_khz`` ``0.0`` and a total without that term).
+    ``sigma_eps_khz`` and ``sigma_floor_khz`` are always present.
+  * ``phase``, ``snr``, ``amplitude_error``, ``phase_error`` and ``snr_error``
+    are *undefined* when the fit gave no finite value (``snr_error`` also when
+    ``snr`` or ``amplitude_error`` is absent, or the amplitude is zero).
+  * ``window_id`` and ``peak_uid`` are *not run* when the source peak records
+    none (a fit written before peak identity existed); ``derivation`` is *not
+    run* for a line no Stage 6 decision created or altered.
+  * ``clock_lattice`` is the lattice identity of an on-lattice line; *not run*
+    when the Stage 5 fit recorded no clock declaration (``spur.clocks``), so
+    the lattice test never ran; *undefined* when a declaration was recorded and
+    the line is off-lattice.
+  * ``knockout_p_value``, ``knockout_supported`` and ``knockout_aicc_delta``
+    are all *not run* when the knockout test never ran for the line (no
+    record, or a ``nan`` Δχ²). When it ran, ``knockout_p_value`` and
+    ``knockout_aicc_delta`` are *undefined* if not finite (a refit that did
+    not converge, or an AICc with too few effective points);
+    ``knockout_supported`` is then always a bool.
+
+  The same quantity reports one status on every surface: these rules are the
+  ones ``read_table``'s ``fit_peaks`` status columns follow. The stored table
+  keeps each value with a ``<field>__status`` code; a table stored before those
+  codes existed is decoded field by field by the rules above (its ``None``,
+  ``nan`` and ``sigma_stat_khz`` ``0.0`` sentinels), without a rebuild and
+  without writing the file.
   It also carries the per-line fit fields, joined from the Stage 5 fit of the
   line's window: ``decay_time_us`` and ``decay_time_error_us`` (the window's
   ``tau`` and its 1-sigma error), ``shape``, ``fwhm_mhz``,
@@ -168,11 +199,31 @@ Each declared accessor, with its absence cases:
 * ``review_log`` -- the ``DecisionLogEntry`` rows in execution order (an empty
   list when nothing was edited). ``kind`` is one of ``add``, ``remove``,
   ``merge``, ``split``, ``accept``, ``create_window``; ``provenance`` is
-  ``user``.
+  ``user``. ``evidence`` is a free-form snapshot dict and keeps its floats in
+  Python: a non-finite ``chi2r_before`` / ``chi2r_after`` (no degrees of
+  freedom, a fit that did not converge) stays ``inf`` there and is written as
+  ``null`` with ``"<key>_absent": "undefined"`` on the wire.
 * ``get_pipeline_info`` -- the status dict. ``warnings`` is always present (an
   empty list when there are none).
-* ``frequency_calibration``, ``refit_snap_tol_mhz``, ``settings_show``,
-  ``settings_defaults`` -- unchanged; ``settings_defaults`` needs no file.
+* ``frequency_calibration`` -- the ``CalibrationStamp``. ``probe_freq_mhz`` and
+  ``sideband`` are *not run* when the file carries no Stage 0 FID acquisition
+  header to read them from (no frame conversion is possible then); ``state``,
+  ``epsilon``, ``sigma_epsilon`` and ``sigma_floor_khz`` are always present,
+  with ``state`` saying why ``epsilon`` is ``0.0``.
+* ``refit_snap_tol_mhz``, ``settings_show``, ``settings_defaults`` --
+  unchanged; ``settings_defaults`` needs no file. ``refit_snap_tol_mhz`` has no
+  absence case: a file it cannot resolve raises ``StageDependencyError``.
+* The curation results ``RefitWindowResult`` (``review edit`` / ``accept`` /
+  merge / split), ``PreviewWindowResult`` (``review preview``) and
+  ``AppliedWindowResult`` (``review apply``) carry ``Absent`` the same way:
+  ``chi2r_before`` / ``chi2r_after`` are *not run* on a side with no fit (a
+  window the batch created has no "before") and *undefined* when the fit's
+  value is not finite; ``converged`` is *not run* exactly where
+  ``chi2r_after`` is (``RefitWindowResult.converged`` is always a bool); the
+  five ``created_window_*`` fields are all *not run* on a window the batch did
+  not create or widen (an empty ``created_window_depends_on`` list is a
+  present value). ``Absent`` is truthy: test a convergence flag with ``is
+  False``, never ``not converged``.
 * ``compute_display_ft`` -- ``freq_array`` and ``complex_spectrum`` plus
   ``metadata`` (``amplitude_scale``, ``units_label``, ``pad_factor``). It is
   the active-portion FT Stage 5 fits, zero-filled to ``pad_factor`` times its
@@ -335,7 +386,8 @@ carries a stable ``code`` and typed attributes, and ``to_dict()`` returns::
    * - ``stage_not_run``
      - ``StageDependencyError``
      - ``missing_dependencies`` (canonical stage names, see below),
-       ``command``
+       ``command`` (``null`` with ``command_absent`` ``not_run`` when the
+       refusal names no producing verb; the Python attribute is ``None``)
    * - ``not_found``
      - ``NotFoundError``
      - ``kind``, ``ids`` (every id the request named that does not exist)

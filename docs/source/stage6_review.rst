@@ -301,9 +301,10 @@ flags the line as redundant), and ``knockout_aicc_delta`` (the gate statistic
 itself). These are carried through from the Stage 5 fitted peak rather than
 recomputed, so a caller holding only a ``review preview`` result — which
 persists nothing — has the same significance numbers an applied fit would have
-written. All three are ``None`` when the source peak carries no knockout result
-at all; ``nan`` (a float, not ``None``) when the test ran but its own refit did
-not converge. They are fields on ``FinalPeak``, not columns of the exported
+written. All three are ``Absent.NOT_RUN`` when the knockout test never ran for
+the source peak; ``knockout_p_value`` and ``knockout_aicc_delta`` are
+``Absent.UNDEFINED`` when the test ran but the value is not finite (its own
+refit did not converge). They are fields on ``FinalPeak``, not columns of the exported
 table. A line held out of a refit by a thaw is re-attached verbatim, so its
 statistics describe its earlier fit while its neighbors' describe the new one.
 
@@ -319,7 +320,10 @@ The frequency uncertainty is composed as three independent terms in quadrature:
   degenerate pair this term also carries the unresolved-component spread (see
   :doc:`Stage 5 <stage5_fitting>`), and keeps carrying it across curation: every refit
   re-applies the widening to its own freshly computed formal error, including a refit a
-  line reaches only as the cascaded dependent of an edit elsewhere.
+  line reaches only as the cascaded dependent of an edit elsewhere. A line the fit
+  left without a finite frequency error has no statistical term, so both its
+  ``sigma_stat_khz`` and its total ``sigma_f_khz`` are ``Absent.UNDEFINED`` (empty
+  cells in the exported table): the total is never computed with a term dropped.
 - :math:`\sigma_\varepsilon\, f_\text{baseband}` is the **timebase-calibration
   residual**: a fractional digitizer-clock scale error :math:`\varepsilon` multiplies
   the line's baseband offset from the probe, so it grows with distance from the local
