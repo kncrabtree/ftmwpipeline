@@ -45,7 +45,11 @@ from ..core.peak_detection_settings import (
 )
 from ..core.peak_detection_settings import load_preset as load_peak_detection_preset
 from ..core.peak_detection_settings import resolve as resolve_peak_detection_settings
-from ..file_manager import StageDependencyError, invalidate_downstream_stages
+from ..file_manager import (
+    BadSettingError,
+    StageDependencyError,
+    invalidate_downstream_stages,
+)
 from ..io.peak_detection_settings_serialization import (
     Stage3Consumed,
     load_peak_detection_settings_from_h5,
@@ -181,6 +185,62 @@ def _grid_aware_sg_window(
     return max(int(min_window), target_bins)
 
 
+def _validate_detection_settings(
+    *,
+    promotion_min_snr: float,
+    internal_min_snr: float,
+    weak_medium_snr: float,
+    medium_strong_snr: float,
+    sg_window: int,
+    sg_order: int,
+) -> None:
+    """Refuse resolved Stage 3 settings the detection kernels cannot run.
+
+    The conditions are the ones the kernels check on their arguments; raised
+    here, before any work, as typed refusals naming the registry path.
+    """
+    if promotion_min_snr <= 0:
+        raise BadSettingError(
+            "stage3.promotion.min_snr",
+            "a number > 0",
+            promotion_min_snr,
+            message=f"min_snr must be positive (got {promotion_min_snr})",
+        )
+    if internal_min_snr <= 0:
+        raise BadSettingError(
+            "stage3.promotion.internal_min_snr",
+            "a number > 0",
+            internal_min_snr,
+            message=f"min_snr must be positive (got {internal_min_snr})",
+        )
+    if not 0.0 < weak_medium_snr <= medium_strong_snr:
+        raise BadSettingError(
+            "stage3.promotion.weak_medium_snr",
+            f"a number > 0 and <= promotion.medium_strong_snr ({medium_strong_snr})",
+            weak_medium_snr,
+            message=(
+                "thresholds must satisfy 0 < weak_medium_snr <= medium_strong_snr"
+            ),
+        )
+    if sg_order < 1:
+        raise BadSettingError(
+            "stage3.savgol.sg_order",
+            "an integer >= 1",
+            sg_order,
+            message="order must be a positive integer",
+        )
+    if sg_window < 1 or sg_window % 2 == 0 or sg_window <= sg_order:
+        raise BadSettingError(
+            "stage3.savgol.sg_window",
+            f"an odd integer greater than sg_order ({sg_order})",
+            sg_window,
+            message=(
+                "window must be a positive odd integer greater than order "
+                f"(got window={sg_window}, order={sg_order})"
+            ),
+        )
+
+
 def _active_window_indices(fid: Any, base_pp: Any) -> Tuple[int, int, float]:
     """Active-region ``(start_idx, end_idx, sample_dt_us)`` for the detection FFTs.
 
@@ -298,7 +358,9 @@ def _primary_active_spectrum(
     """
     start_idx, end_idx, _ = _active_window_indices(fid, base_pp)
     window = make_apodization(
-        window_function, np.arange(end_idx - start_idx, dtype=float)
+        window_function,
+        np.arange(end_idx - start_idx, dtype=float),
+        setting="stage3.primary_pass.primary_window",
     )
     return _active_windowed_spectrum(fid, base_pp, trim_range, window, zpf_active)
 
@@ -541,6 +603,15 @@ def detect_peaks_impl(
     )
     gap_leakage_floor_k_v: float = float(
         _required(gap.gap_leakage_floor_k, "gap_pass.gap_leakage_floor_k")
+    )
+
+    _validate_detection_settings(
+        promotion_min_snr=promotion_v,
+        internal_min_snr=internal_floor,
+        weak_medium_snr=weak_medium_v,
+        medium_strong_snr=medium_strong_v,
+        sg_window=sg_window_v,
+        sg_order=sg_order_v,
     )
 
     params: Dict[str, Any] = {
