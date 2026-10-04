@@ -237,6 +237,23 @@ def test_committing_defers_cancel_and_callback_failure():
         scope.check_cancel()  # honoured at the next check point
 
 
+def test_held_callback_failure_survives_a_raising_committing_block():
+    def cb(event):
+        raise RuntimeError("listener broke")
+
+    ops = operation_events("review undo", cb)
+    scope = ops.detached_scope(Stage.REVIEW)
+    with pytest.raises(CallbackFailedError) as info:
+        with scope.committing():
+            scope.invalidated([Stage.FIT], reason="r")  # raises, held
+            raise OSError("write failed")
+    assert isinstance(info.value.__cause__, RuntimeError)
+    assert isinstance(info.value.__context__, OSError)
+    # Cleared: the next block is not haunted by the old failure.
+    with scope.committing():
+        pass
+
+
 def _stamp_environments(path: Path, epoch_offset: int) -> None:
     rec = capture_environment().to_dict()
     rec["analysis_epoch"] = int(rec["analysis_epoch"]) + epoch_offset
