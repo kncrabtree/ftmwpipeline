@@ -480,6 +480,40 @@ def _check_types(objects: List[Any]) -> None:
                 continue  # an undeclared stash the walk did not set
             if not _conforms(vars(obj)[name], tp, set()):
                 raise PartialCodecError(f"{cls.__qualname__}.{name} is not a {tp!r}")
+        if cls is WindowOutcome:
+            _check_outcome_shapes(obj)
+
+
+#: The per-bin arrays of a :class:`WindowOutcome`, all on its offset grid.
+_OUTCOME_GRID_ARRAYS = (
+    "offset_grid_mhz",
+    "complex_spectrum",
+    "rms_noise",
+    "background",
+    "full_fitted_spectrum",
+    "full_residual",
+)
+
+
+def _check_outcome_shapes(outcome: WindowOutcome) -> None:
+    """The arrays the walk indexes together agree: every per-bin array of the
+    outcome and its fit is 1-D on the outcome's grid, the grid is real, and
+    the fit has one error record per peak."""
+    n = None
+    for name in _OUTCOME_GRID_ARRAYS:
+        arr = getattr(outcome, name)
+        if arr.ndim != 1 or (n is not None and arr.shape[0] != n):
+            raise PartialCodecError(f"WindowOutcome.{name} is not on the grid")
+        n = arr.shape[0]
+    if outcome.offset_grid_mhz.dtype.kind not in "iuf":
+        raise PartialCodecError("WindowOutcome.offset_grid_mhz is not real")
+    inner = outcome.fit.fit
+    for name in ("fitted_spectrum", "residual"):
+        arr = getattr(inner, name)
+        if arr.ndim != 1 or arr.shape[0] != n:
+            raise PartialCodecError(f"WindowFitResult.{name} is not on the grid")
+    if len(inner.peak_errors) != len(inner.peaks):
+        raise PartialCodecError("WindowFitResult has peaks without errors")
 
 
 def _as_list(v: Any) -> List[Any]:

@@ -484,6 +484,27 @@ def test_wrongly_typed_outcome_fields_are_refused():
     assert node["f"]["_center_mhz"] == 100.0
 
 
+@pytest.mark.parametrize(
+    "edit",
+    [
+        lambda o: setattr(o, "complex_spectrum", o.complex_spectrum[:-1]),
+        lambda o: setattr(o, "rms_noise", o.rms_noise.reshape(1, -1)),
+        lambda o: setattr(o, "offset_grid_mhz", o.offset_grid_mhz + 0j),
+        lambda o: setattr(o.fit.fit, "residual", o.fit.fit.residual[:3]),
+        lambda o: o.fit.fit.peak_errors.pop(),
+    ],
+    ids=["short_spectrum", "2d_noise", "complex_grid", "short_residual", "errors"],
+)
+def test_arrays_off_the_outcome_grid_are_refused(edit):
+    """Well-typed but inconsistent: the arrays the walk indexes together must
+    agree, or the window is not read back."""
+    out, record = _outcome()
+    edit(out)
+    text, names, buffers = encode_graph({"outcome": out, "record": record})
+    with pytest.raises(PartialCodecError):
+        decode_graph(text, names, buffers)
+
+
 def test_an_undeclared_attribute_is_not_written():
     out, record = _outcome()
     out.extra = 1.0  # type: ignore[attr-defined]
