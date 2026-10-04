@@ -41,7 +41,9 @@ def test_mappings_cover_every_stage_and_are_read_only():
 def test_settings_prefixes_are_exactly_those_of_the_settings_code():
     # Mutation: a prefix renamed or assigned to the wrong stage.
     mapped = {p for p in STAGE_SETTINGS_PREFIX.values() if p is not None}
-    assert mapped == {s.prefix for s in _STAGE_SPECS} == set(_MUT_SPECS)
+    assert mapped == {s.prefix for s in _STAGE_SPECS}
+    # stage1 is mutated through its own windowing knobs, not _MUT_SPECS.
+    assert set(_MUT_SPECS) == mapped - {"stage1"}
     assert STAGE_SETTINGS_PREFIX[Stage.TAU] == STAGE_SETTINGS_PREFIX[Stage.TAU_G]
     for stage in (Stage.DATA, Stage.TIMEBASE, Stage.REVIEW):
         assert STAGE_SETTINGS_PREFIX[stage] is None
