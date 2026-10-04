@@ -47,6 +47,7 @@ from ..core.peak_detection_settings import load_preset as load_peak_detection_pr
 from ..core.peak_detection_settings import resolve as resolve_peak_detection_settings
 from ..file_manager import StageDependencyError, invalidate_downstream_stages
 from ..io.peak_detection_settings_serialization import (
+    Stage3Consumed,
     load_peak_detection_settings_from_h5,
     save_peak_detection_settings_to_h5,
 )
@@ -663,15 +664,22 @@ def detect_peaks_impl(
     # Record the resolved gap-pass τ/shape in the diagnostics dict so callers
     # (and persisted ``/stage3_peaks`` consumers) can see which branch of the
     # shape-aware feeder fired.
-    params["tau_basis_us"] = float(tau_basis_us)
-    params["gap_shape"] = gap_shape
-    params["tau_basis_source"] = (
-        "stage2b_tau_G_maj"
-        if gap_shape == "gaussian"
-        else (
-            "stage2b_tau_maj" if tau_calibration_present(file_path) else "default_5us"
-        )
+    consumed = Stage3Consumed(
+        tau_basis_us=float(tau_basis_us),
+        gap_shape=gap_shape,
+        tau_basis_source=(
+            "stage2b_tau_G_maj"
+            if gap_shape == "gaussian"
+            else (
+                "stage2b_tau_maj"
+                if tau_calibration_present(file_path)
+                else "default_5us"
+            )
+        ),
     )
+    params["tau_basis_us"] = consumed.tau_basis_us
+    params["gap_shape"] = consumed.gap_shape
+    params["tau_basis_source"] = consumed.tau_basis_source
     # SavGol window feed: the line's nominal FWHM at ``tau_basis``. The
     # ``_SG_FWHM_COVERAGE`` coefficient was empirically calibrated against the
     # matched-filter gap grid (sg_window≈13; see the _SG_FWHM_COVERAGE comment),
@@ -774,10 +782,14 @@ def detect_peaks_impl(
     # resolver's persisted layer reads. Both blocks are live, for different
     # consumers.
     save_peak_parameters_impl(file_path, full_params)
+    # What the gap pass took from Stage 2b goes in Stage 3's own record:
+    # a later Stage 2b re-run does not invalidate Stage 3, so this is what
+    # says which decay time and shape it actually used.
     save_peak_detection_settings_to_h5(
         file_path,
         resolved,
         preset_name=preset_name,
+        consumed=consumed,
     )
     _update_stage_completion(file_path, "stage3_peaks")
     # Re-detection supersedes any Stage 4 window plan built on the old peaks.
