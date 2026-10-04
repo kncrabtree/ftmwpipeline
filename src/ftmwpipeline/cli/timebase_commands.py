@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 from typing import Any, Dict
 
 from .._internal.stage6_impl import frequency_calibration_impl
@@ -28,9 +29,30 @@ from .._internal.timebase_impl import (
     load_timebase_calibration_impl,
 )
 from ..contract import Absent
+from ..serialize import to_jsonable
 from .utils import add_stage_object, print_error, setup_logging
 
 logger = logging.getLogger(__name__)
+
+
+def _print_epsilon_and_lattice(tc: Any) -> None:
+    """Print eps and the lattice spacing, naming the undefined cases.
+
+    With no usable tones the stored eps is ``0.0`` and its uncertainty ``inf``
+    (neither is a measurement); a lattice spacing of ``0.0`` means no locked
+    lattice was found. ``read_metadata`` reports both as ``Absent.UNDEFINED``.
+    """
+    if tc.n_used == 0 or not math.isfinite(tc.sigma_epsilon):
+        print("  epsilon            : (undefined; no usable lattice tones)")
+    else:
+        print(
+            f"  epsilon            : {tc.epsilon * 1e6:+.3f} +- "
+            f"{tc.sigma_epsilon * 1e6:.3f} ppm"
+        )
+    if tc.lattice_g_mhz > 0.0:
+        print(f"  lattice g          : {tc.lattice_g_mhz:.1f} MHz")
+    else:
+        print("  lattice g          : (undefined; no locked lattice)")
 
 
 def cmd_calibrate_timebase(args: argparse.Namespace) -> int:
@@ -66,11 +88,7 @@ def cmd_calibrate_timebase(args: argparse.Namespace) -> int:
     tc = result["timebase_calibration"]
     print("\nTimebase calibration completed successfully!")
     print("\nResults summary:")
-    print(
-        f"  epsilon            : {tc.epsilon * 1e6:+.3f} +- "
-        f"{tc.sigma_epsilon * 1e6:.3f} ppm"
-    )
-    print(f"  lattice g          : {tc.lattice_g_mhz:.1f} MHz")
+    _print_epsilon_and_lattice(tc)
     print(f"  tones used         : {tc.n_used} / {tc.n_detected} detected")
     print(f"  preconditions pass : {tc.preconditions_passed}")
     if not tc.preconditions_passed:
@@ -108,11 +126,7 @@ def cmd_show_timebase(args: argparse.Namespace) -> int:
     tc = loaded["timebase_calibration"]
     print(f"Timebase calibration for: {file_path}")
     print(f"  created            : {loaded.get('creation_time', 'unknown')}")
-    print(
-        f"  epsilon            : {tc.epsilon * 1e6:+.3f} +- "
-        f"{tc.sigma_epsilon * 1e6:.3f} ppm"
-    )
-    print(f"  lattice g          : {tc.lattice_g_mhz:.1f} MHz")
+    _print_epsilon_and_lattice(tc)
     print(f"  tones used         : {tc.n_used} / {tc.n_detected} detected")
     print(f"  kappa_sys          : {tc.kappa_sys * 1e6:.3f} ppm")
     print(f"  snr_min            : {tc.snr_min:.1f}")
@@ -168,11 +182,6 @@ _STATE_NOTES = {
 }
 
 
-def _or_none(value: Any) -> Any:
-    """``None`` for an :class:`~ftmwpipeline.contract.Absent` value, else it."""
-    return None if isinstance(value, Absent) else value
-
-
 def cmd_timebase_state(args: argparse.Namespace) -> int:
     """Print the derived frequency-calibration state (never mutates)."""
     setup_logging(args.verbose)
@@ -194,18 +203,19 @@ def cmd_timebase_state(args: argparse.Namespace) -> int:
         return 1
 
     if args.format == "json":
+        # Absent fields are written as null plus a "<field>_absent" sibling.
         print(
             json.dumps(
-                {
-                    "state": stamp.state,
-                    "epsilon": stamp.epsilon,
-                    "sigma_epsilon": stamp.sigma_epsilon,
-                    "sigma_floor_khz": stamp.sigma_floor_khz,
-                    # Pre-contract verb: an absent header stays a bare null
-                    # here (``read frequency_calibration`` adds the reason).
-                    "probe_freq_mhz": _or_none(stamp.probe_freq_mhz),
-                    "sideband": _or_none(stamp.sideband),
-                },
+                to_jsonable(
+                    {
+                        "state": stamp.state,
+                        "epsilon": stamp.epsilon,
+                        "sigma_epsilon": stamp.sigma_epsilon,
+                        "sigma_floor_khz": stamp.sigma_floor_khz,
+                        "probe_freq_mhz": stamp.probe_freq_mhz,
+                        "sideband": stamp.sideband,
+                    }
+                ),
                 indent=2,
             )
         )
@@ -221,7 +231,7 @@ def cmd_timebase_state(args: argparse.Namespace) -> int:
         f"{stamp.sigma_epsilon * 1e6:.3f} ppm"
     )
     print(f"  sigma floor        : {stamp.sigma_floor_khz:.3f} kHz")
-    if isinstance(stamp.probe_freq_mhz, Absent):
+    if isinstance(stamp.probe_freq_mhz, Absent) or stamp.probe_freq_mhz is None:
         print("  probe / sideband   : (no FID header; no frame conversion possible)")
     else:
         print(f"  probe frequency    : {stamp.probe_freq_mhz:.6f} MHz")

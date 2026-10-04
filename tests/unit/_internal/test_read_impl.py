@@ -342,6 +342,112 @@ class TestReadTables:
         assert listing["peaks"]["available"] is True
 
 
+class TestReadMetadataAbsence:
+    """The file-level wiring of the Wave 3 absence rules in read_metadata."""
+
+    def test_unstamped_file_reports_not_run(self, ftmw_file):
+        # Mutation: restore the ``None`` fallbacks for the root attributes.
+        with h5py.File(ftmw_file, "a") as h5f:
+            del h5f.attrs["ftmw_format_version"]
+            del h5f.attrs["created_with_ftmwpipeline"]
+        meta = read_metadata_impl(ftmw_file)
+        assert meta["file.format_version"] is Absent.NOT_RUN
+        assert meta["file.created_with"] is Absent.NOT_RUN
+
+    def test_unset_source_attrs_are_not_run(self, ftmw_file):
+        # Mutation: drop the source.* sentinel conversion.
+        with h5py.File(ftmw_file, "a") as h5f:
+            h5f["source_metadata"].attrs["source_hash"] = "__None__"
+        meta = read_metadata_impl(ftmw_file)
+        assert meta["source.source_hash"] is Absent.NOT_RUN
+        assert meta["source.format_name"] == "blackchirp"
+
+    def test_stage3_cutoff_predating_the_record_is_not_run(self, ftmw_file):
+        # The fixture records promotion_min_snr only. Mutation: pass None through.
+        meta = read_metadata_impl(ftmw_file)
+        assert meta["stage3.promotion_min_snr"] == 5.0
+        assert meta["stage3.internal_min_snr"] is Absent.NOT_RUN
+
+    @pytest.mark.parametrize(
+        "parameters, expected",
+        [
+            ({}, Absent.NOT_RUN),
+            ({"acquisition_us": 0.0}, Absent.UNDEFINED),
+            ({"acquisition_us": -3.0}, Absent.UNDEFINED),
+            ({"acquisition_us": 12.5}, 12.5),
+        ],
+    )
+    def test_stage5_acquisition_from_the_fit_record(
+        self, ftmw_file, parameters, expected
+    ):
+        # Mutation: pass the stored value through unconverted.
+        with h5py.File(ftmw_file, "a") as h5f:
+            h5f["stage5_fitting"].attrs["parameters"] = json.dumps(parameters)
+        assert read_metadata_impl(ftmw_file)["stage5.acquisition_us"] == expected
+
+    def test_no_chirp_end_is_undefined(self, ftmw_file):
+        # Mutation: drop the chirp_detected check in _read_start_record.
+        with h5py.File(ftmw_file, "a") as h5f:
+            group = h5f["stage0_fid_data"]
+            record = json.loads(group.attrs["recommended_start_detection"])
+            record.update(chirp_detected=False, chirp_end_us=0.0)
+            group.attrs["recommended_start_detection"] = json.dumps(record)
+        meta = read_metadata_impl(ftmw_file)
+        assert meta["start.chirp_end_us"] is Absent.UNDEFINED
+        assert meta["start.chirp_detected"] is False
+
+    def _write_timebase(self, path, **attrs) -> None:
+        with h5py.File(path, "a") as h5f:
+            group = h5f.create_group("timebase_calibration")
+            for key, value in attrs.items():
+                group.attrs[key] = value
+
+    def test_timebase_without_lattice_is_undefined(self, ftmw_file):
+        # Mutation: remove the _timebase_absence call from read_metadata_impl.
+        self._write_timebase(
+            ftmw_file,
+            epsilon=0.0,
+            sigma_epsilon=float("inf"),
+            lattice_g_mhz=0.0,
+            n_used=0,
+            n_detected=0,
+        )
+        meta = read_metadata_impl(ftmw_file)
+        assert meta["timebase.epsilon"] is Absent.UNDEFINED
+        assert meta["timebase.sigma_epsilon"] is Absent.UNDEFINED
+        assert meta["timebase.lattice_g_mhz"] is Absent.UNDEFINED
+        assert meta["timebase.n_used"] == 0
+
+    def test_timebase_with_lattice_keeps_values(self, ftmw_file):
+        self._write_timebase(
+            ftmw_file,
+            epsilon=2e-6,
+            sigma_epsilon=7e-8,
+            lattice_g_mhz=640.0,
+            n_used=11,
+            n_detected=12,
+        )
+        meta = read_metadata_impl(ftmw_file)
+        assert meta["timebase.epsilon"] == 2e-6
+        assert meta["timebase.sigma_epsilon"] == 7e-8
+        assert meta["timebase.lattice_g_mhz"] == 640.0
+
+    def test_unrun_stage_section_stays_omitted(self, ftmw_file):
+        # Spec decision: omission, not Absent. Mutation: emit NOT_RUN for
+        # every key of a section whose stage has not run.
+        meta = read_metadata_impl(ftmw_file)
+        assert not any(key.startswith("timebase.") for key in meta)
+
+    def test_json_carries_null_and_absent_sibling(self, ftmw_file):
+        from ftmwpipeline.serialize import to_jsonable
+
+        with h5py.File(ftmw_file, "a") as h5f:
+            del h5f.attrs["ftmw_format_version"]
+        wire = to_jsonable(read_metadata_impl(ftmw_file))
+        assert wire["file.format_version"] is None
+        assert wire["file.format_version_absent"] == "not_run"
+
+
 class TestReadMetadata:
     def test_reports_dotted_scalars(self, ftmw_file):
         meta = read_metadata_impl(ftmw_file)
@@ -530,11 +636,11 @@ class TestReadMetadata:
         assert meta["tau.n_bands"] == 2
 
     def test_no_recommended_shape_reads_as_none(self, ftmw_file):
-        """A Stage 2b vote with no winner stamps the sentinel, which reads as None."""
+        """A Stage 2b vote with no winner stamps the sentinel: UNDEFINED."""
         write_stage2b_recommended_shape(str(ftmw_file), None)
         meta = read_metadata_impl(ftmw_file)
-        assert meta["tau.recommended_shape"] is None
-        assert meta["tau_g.recommended_shape"] is None
+        assert meta["tau.recommended_shape"] is Absent.UNDEFINED
+        assert meta["tau_g.recommended_shape"] is Absent.UNDEFINED
 
     def test_recommended_shape_reads_back_when_the_vote_named_one(self, ftmw_file):
         write_stage2b_recommended_shape(str(ftmw_file), "gaussian")

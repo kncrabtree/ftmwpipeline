@@ -297,6 +297,23 @@ class TestPipelineStamping:
         assert info["environment_drift"] == []
         assert info["environment_acknowledged"] is False
 
+    def test_info_on_an_unstamped_file_reports_not_run(self, stamped_file):
+        """Mutation: report None / {} / [] for an unstamped file again."""
+        from ftmwpipeline.contract import Absent
+
+        with h5py.File(stamped_file, "a") as f:
+            del f["pipeline_stages"].attrs["stage_environments"]
+            del f.attrs["last_written_with"]
+        info = ftmw.get_pipeline_info(str(stamped_file))
+        for key in (
+            "stage_environments",
+            "last_written_with",
+            "environment_drift",
+            "runtime_environment_drift",
+        ):
+            assert info[key] is Absent.NOT_RUN, key
+        assert info["current_environment"]["ftmwpipeline"]
+
 
 class TestMixedFileDetection:
     @staticmethod

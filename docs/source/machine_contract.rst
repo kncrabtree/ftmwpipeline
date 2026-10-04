@@ -195,6 +195,28 @@ Each declared accessor, with its absence cases:
     and ``noise_std_local``: non-finite is ``2``. ``index`` ``-1`` and
     ``classification`` ``""`` are ``1``. ``promoted``: ``1`` for every row when
     the file records no promotion cutoff (it predates the record), else ``0``.
+
+  ``read_metadata`` has two kinds of absence. A key of a stage that has not
+  run is *omitted* (read with ``.get()``). A key that is present without a
+  value is ``Absent`` (``null`` plus ``"<key>_absent"`` on the wire), never
+  ``None``:
+
+  - *not run* (the file predates the record): ``file.format_version``,
+    ``file.created_with``, ``source.source_path`` / ``format_name`` /
+    ``import_timestamp`` / ``source_hash`` (an unset import field),
+    ``stage5.acquisition_us`` (the fit recorded none), and
+    ``stage3.promotion_min_snr`` / ``stage3.internal_min_snr``.
+  - *undefined* (computed, no value): ``start.chirp_end_us`` when no chirp
+    was detected; ``timebase.epsilon`` and ``timebase.sigma_epsilon`` when no
+    lattice tone was used; ``timebase.lattice_g_mhz`` when no locked lattice
+    exists; ``stage5.acquisition_us`` when the recorded value is not a positive
+    finite number; ``tau.`` / ``tau_g.`` scalars that are not finite (a decay
+    time with zero contributors, a bimodality or correlation statistic on too
+    few points); and ``tau.recommended_shape`` when the vote had no winner.
+
+  The ``ft.`` / ``stage1.`` settings echoes (an unset bound or trim) stay
+  ``None``, as do ``start.resolved_band_min_mhz`` / ``resolved_band_max_mhz``
+  (no band restriction).
 * ``get_final_products`` -- the persisted final-products table, or ``None``
   before Stage 6. The Python return stays ``None``; ``read
   get_final_products`` prints ``"value": null, "value_absent": "not_run"``.
@@ -257,7 +279,24 @@ Each declared accessor, with its absence cases:
   freedom, a fit that did not converge) stays ``inf`` there and is written as
   ``null`` with ``"<key>_absent": "undefined"`` on the wire.
 * ``get_pipeline_info`` -- the status dict. ``warnings`` is always present (an
-  empty list when there are none).
+  empty list when there are none). The environment fields hold ``Absent``
+  rather than ``None`` / ``{}`` / ``[]``:
+
+  - *not run*: ``format_version``, ``created_with`` and ``last_written_with``
+    when the file carries no stamp; ``stage_environments`` when no stage was
+    stamped (a file that predates the record); ``environment_drift`` and
+    ``runtime_environment_drift`` when there are no stamps to compare (with
+    stamps, ``[]`` means no drift); ``analysis_epoch`` and any other field of an
+    environment record that was not captured, including inside
+    ``current_environment``.
+  - *undefined*: when validation could not read the stamps, every file-derived
+    environment key (``format_version``, ``created_with``, ``stage_environments``,
+    ``last_written_with``, both drift lists, ``environment_acknowledged``).
+    ``current_environment`` does not depend on the file and is always reported.
+
+  ``ftmwpipeline info`` prints ``Absent`` values as its usual "(unknown)" /
+  "(not recorded)" placeholders, and ``info --format json`` writes them as
+  ``null`` plus a ``"<key>_absent"`` sibling.
 * ``frequency_calibration`` -- the ``CalibrationStamp``. ``probe_freq_mhz`` and
   ``sideband`` are *not run* when the file carries no Stage 0 FID acquisition
   header to read them from (no frame conversion is possible then); ``state``,
