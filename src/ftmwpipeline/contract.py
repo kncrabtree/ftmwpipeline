@@ -84,7 +84,7 @@ from .file_manager import (
 #: The machine-contract version. The first published contract is ``1``; each
 #: release that adds (or, before 1.0.0, changes) contract elements raises it by
 #: one, so a client can gate on it as well as on :func:`capabilities`.
-CONTRACT_VERSION: int = 11
+CONTRACT_VERSION: int = 12
 
 #: Schema name of the :func:`capabilities` payload.
 CAPABILITIES_SCHEMA = "ftmw/capabilities@1"
@@ -922,7 +922,7 @@ _FIELDS: Dict[str, Tuple[str, ...]] = {
         "choices",
         "bounds",
     ),
-    "ComplexFT": ("freq_array", "complex_spectrum", "metadata"),
+    "ComplexFT": ("freq_array", "complex_spectrum", "metadata", "invalidated"),
     "ComplexFT.metadata": ("amplitude_scale", "units_label", "pad_factor"),
     # Events (Wave 5.1). Declared as their wire form. PipelineWarning's
     # code-specific fields live in ``details`` in Python and are flattened on
