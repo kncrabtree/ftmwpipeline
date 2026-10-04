@@ -241,10 +241,53 @@ Every stage key is always present. A stage that has not run contributes
 `Absent.NOT_RUN` under its key, so the digest changes as stages complete; a key
 is never omitted.
 
+The guarantee runs one way: the same digest means the same results. Different
+digests do not imply different results. `@1` hashes every recorded input,
+including a knob that a sibling setting makes ineffective in a particular run
+(for example `tau.stft.tau_max_factor` when `tau.stft.tau_max_us` is set). It
+never infers that a knob had no effect.
+
 **Incomplete provenance.** A file written before a stage persisted everything
 it resolved cannot yield a complete fingerprint. The accessor then raises a
 typed `incomplete_provenance` error naming the missing inputs (re-running the
 stage persists them). It never computes a digest over incomplete inputs.
+
+**Reading the records.**
+
+- A stage is read only when it is **complete** in the stage tracker. An
+  incomplete stage is `NOT_RUN`, whatever records remain on disk. A sparse
+  record written by `settings set` before a re-run is one example.
+- A complete stage raises `incomplete_provenance` when any of these hold:
+  - it has no analysis-epoch stamp;
+  - one of its records is absent, has no field-set version, or is at an older
+    version (`is_pre_provenance`);
+  - one of its records is at a **newer** version than this build knows;
+  - a field its current version requires is missing (e.g. a version-2 timebase
+    record without `clock_sources`).
+
+  The error lists every such input as a dotted canonical key, such as
+  `tau.stft`, `timebase.clock_sources` or `ft.analysis_epoch`.
+- **`review.sigma_floor_khz`.** When a completed review has no
+  `/frequency_calibration` record, the value is `0.0`: no floor was declared,
+  and Stage 6 has always applied `0.0` in that case. A record that is present
+  but unversioned is pre-provenance and raises, as above.
+- **The shape recommendation is not hashed itself.** Its verdict reaches the
+  science only through its consumers. Stage 3 records the gap-pass shape and
+  decay time it took (`peaks.consumed`). Stage 5 persists the resolved fit
+  shape. The fingerprint covers the verdict there, where it was used. The
+  recommendation's own record is provenance for display. Its stale epoch stamp
+  is never read.
+- **Stage 2b.**
+  - `tau` and `tau_g` come from each twin's own producer record, never from the
+    shared `stage2b_tau` recipe.
+  - A twin's Stage 1 inputs are covered by `ft`, because a Stage 1 re-run
+    invalidates the twins.
+  - So are Stage 2's, because the twins depend on Stage 2.
+- **Consumed blocks** are hashed as recorded, under `<stage>.consumed`.
+- **`data`** holds the acquisition parameters the analysis read:
+  - the probe frequency, sideband and sample spacing;
+  - any import-time overrides;
+  - `data.analysis_epoch`, the import's stamp.
 
 **Excluded:**
 
