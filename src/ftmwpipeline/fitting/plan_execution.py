@@ -3529,8 +3529,9 @@ def _abort_pool(ex: Any) -> None:
     ``wait=True`` it blocks until the running ones finish (a cancel would wait
     for the slowest window). So this reads the executor's **private**
     ``_processes`` mapping (pid -> ``Process``; CPython 3.9-3.13) to terminate
-    the workers. That is the only private-API use, kept in this one helper. The
-    broken-pool state the termination causes (``BrokenProcessPool`` on the
+    the workers, and closes the parent's write end of the private
+    ``_result_queue`` pipe (see below). Those are the only private-API uses,
+    kept in this one helper. The broken-pool state the termination causes (``BrokenProcessPool`` on the
     abandoned futures, raised in the executor's manager thread) is absorbed: the
     futures are never read again.
     """
@@ -3540,6 +3541,19 @@ def _abort_pool(ex: Any) -> None:
     for proc in processes:
         try:
             proc.terminate()
+        except Exception:
+            pass
+    # A worker terminated mid-``put`` leaves a partial message in the result
+    # pipe, and the executor's manager thread then blocks in ``recv`` on it --
+    # forever while the parent still holds its own copy of the pipe's write end
+    # (the forked workers' copies close as they die). Closing the parent's copy
+    # gives that ``recv`` EOF, so the manager thread marks the pool broken and
+    # exits instead of hanging. Done before ``shutdown``, which drops the
+    # executor's reference to the queue.
+    result_queue = getattr(ex, "_result_queue", None)
+    if result_queue is not None:
+        try:
+            result_queue._writer.close()
         except Exception:
             pass
     try:
