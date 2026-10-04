@@ -31,8 +31,13 @@ import numpy as np
 
 from ..contract import SPECTRUM_MODEL_SCHEMA, WINDOW_MODEL_SCHEMA, Absent
 from ..core.data_structures import FittingResult, Sideband, SpectrumFit
-from ..file_manager import NotFoundError, StageDependencyError
+from ..file_manager import (
+    IncompleteProvenanceError,
+    NotFoundError,
+    StageDependencyError,
+)
 from ..fitting.model_eval import (
+    FROZEN_PEAK_PREFIX,
     evaluate_spectrum_model,
     evaluate_window_terms,
     window_center_mhz,
@@ -72,6 +77,24 @@ class _ModelContext:
     sideband: Sideband
     acquisition_us: float
     spur_set: Optional[Any]  # SpurSet on the active grid, else None
+    fit_epoch: Optional[int] = None  # analysis epoch the Stage 5 fit ran under
+
+
+#: The first analysis epoch whose fits draw frozen contributors at the window's
+#: fitted decay time (ROADMAP D18). Earlier free-tau fits held them at an
+#: unrecorded starting tau, so their model cannot be reproduced.
+FROZEN_SKIRT_FOLLOWS_TAU_EPOCH = 4
+
+
+def _fit_epoch(file_path: str) -> Optional[int]:
+    """The analysis epoch the persisted Stage 5 fit was produced under."""
+    import h5py
+
+    from ..io.environment_serialization import load_stage_environments
+
+    with h5py.File(file_path, "r") as h5f:
+        env = load_stage_environments(h5f).get("stage5_fitting")
+    return None if env is None else env.analysis_epoch
 
 
 def _require_fit(file_path: Union[str, Path], accessor: str) -> None:
@@ -191,6 +214,7 @@ def _load_model_context(
         sideband=Sideband.coerce(sideband),
         acquisition_us=float(acquisition_us),
         spur_set=spur_set,
+        fit_epoch=_fit_epoch(path),
     )
 
 
@@ -255,6 +279,7 @@ def _window_payload(
 ) -> Dict[str, Any]:
     """:func:`window_model_impl` on an already-built context."""
     wf = _window_fit(ctx.fit, window_id)
+    _require_reproducible_frozen_skirt(ctx, wf, window_id)
     lo, hi = window_fit_range_mhz(wf)
     in_range = (ctx.grid.freq_mhz >= lo) & (ctx.grid.freq_mhz <= hi)
     freq = np.ascontiguousarray(ctx.grid.freq_mhz[in_range])
@@ -295,6 +320,34 @@ def _window_payload(
         "excluded": excluded,
         "components": comp,
     }
+
+
+def _require_reproducible_frozen_skirt(
+    ctx: _ModelContext, wf: FittingResult, window_id: int
+) -> None:
+    """Refuse a window whose fit held its frozen contributors at an unrecorded tau.
+
+    Before :data:`FROZEN_SKIRT_FOLLOWS_TAU_EPOCH`, a window with frozen
+    contributors and a free decay time subtracted their skirt once, at the
+    starting tau, and never recorded it; drawing it at the fitted tau would
+    present a model the fit never minimised.
+    """
+    has_frozen = any(k.startswith(FROZEN_PEAK_PREFIX) for k in wf.fixed_parameters)
+    tau_free = (wf.shared_parameters.get("tau_us") or {}).get("fitted") is not False
+    epoch = ctx.fit_epoch
+    if not (has_frozen and tau_free):
+        return
+    if epoch is not None and epoch >= FROZEN_SKIRT_FOLLOWS_TAU_EPOCH:
+        return
+    raise IncompleteProvenanceError(
+        [f"stage5_fitting.window[{int(window_id)}].frozen_skirt_tau_us"],
+        message=(
+            f"Window {int(window_id)} was fitted with frozen contributors and a "
+            f"free decay time under analysis epoch {epoch}, which held their "
+            f"skirt at a starting decay time it did not record, so its model "
+            f"cannot be reproduced. Re-run 'fit run'."
+        ),
+    )
 
 
 def spectrum_model_impl(

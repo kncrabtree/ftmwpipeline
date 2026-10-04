@@ -1907,8 +1907,17 @@ def local_thaw_cofit(
     # Subtract any *other* frozen contributors from each side as background, so
     # the joint fit only handles free peaks plus the thawed line.
     primary_other = [fp for fp in primary.fixed_peaks if fp is not thawed]
+    # A FrozenPeak's offset is in its *dependent* window's frame; the joint
+    # grid carries the dependent's bins in the primary's frame (``+ shift``),
+    # so the dependent's other contributors are remapped by the same shift
+    # before they are subtracted or follow the joint tau.
     dep_other = [
-        fp
+        replace(
+            fp,
+            model_peak=replace(
+                fp.model_peak, offset_mhz=float(fp.model_peak.offset_mhz) + shift
+            ),
+        )
         for fp in dependent.fixed_peaks
         if fp.peak_index != thawed.peak_index
         or fp.primary_window_id != thawed.primary_window_id
@@ -4671,10 +4680,9 @@ def _install_cofit_outcome(
 
     # chi-squared / dof are recomputed from this window's own (freshly
     # rebuilt) full residual rather than sliced from the joint fit's: the
-    # joint residual was weighed against the *other* frozen contributors
-    # subtracted at ``tau0_us`` (see ``local_thaw_cofit``), while the
-    # installed background above is re-evaluated at the new ``tau_us`` --
-    # so this window's own ``full_residual`` is the authoritative one
+    # joint fit spans both windows' bins, while this window's statistic must
+    # cover its own grid alone, with its background at the final ``tau_us``
+    # -- so this window's own ``full_residual`` is the authoritative one
     # (it is also what the edge-coherence check above just used).
     sigma = np.asarray(outcome.rms_noise, dtype=float)
     if sigma.ndim == 0:

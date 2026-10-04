@@ -387,7 +387,10 @@ spectrum, so `display_units` applies to both. Magnitudes are `abs()` of the
 complex arrays. The evaluation is the same code path every plot uses.
 
 An unknown `window_id` raises `not_found`; a file without a Stage 5 fit raises
-`stage_not_run`.
+`stage_not_run`. A window fitted before analysis epoch 4 with frozen
+contributors and a free decay time held their skirt at a starting decay time
+it did not record; its model cannot be reproduced and raises
+`incomplete_provenance` (re-run `fit run`).
 
 ### Spectrum model
 
