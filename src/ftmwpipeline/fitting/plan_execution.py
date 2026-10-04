@@ -2147,6 +2147,8 @@ def execute_plan(
     probe_freq_mhz: Optional[float] = None,
     sample_dt_us: Optional[float] = None,
     events: Optional[StageScope] = None,
+    carried: Optional[CarriedWindows] = None,
+    tracker: Optional[WalkTracker] = None,
 ) -> PlanFitOutcome:
     """Walk a Stage 4 :class:`WindowPlan` and fit every window on the active-FT.
 
@@ -2283,6 +2285,19 @@ def execute_plan(
         and its cancel token is checked between windows and between replan
         rounds. ``None`` (the default) renders the same log lines with no
         callback and no cancel.
+    carried : CarriedWindows, optional
+        Finished windows of a partial fit, taken over as they are (a resume):
+        the initial walk fits only the other windows, reading the carried
+        outcomes wherever a dependent needs a primary, and reports its
+        ``WindowProgress`` ``index`` from the carried count against the full
+        window count. The plan-level histories come out in the order an
+        uninterrupted walk appends them. An accepted thaw during the resumed
+        walk discards the carried windows and refits every window sequentially
+        (a ``walk_fallback`` warning, then a ``"fallback"`` pass), as an
+        uninterrupted walk with an accepted thaw does.
+    tracker : WalkTracker, optional
+        Records the finished windows as the walk goes (and freezes the initial
+        walk's), so an interrupted fit can persist them. Writes nothing.
 
     Returns
     -------
@@ -2335,26 +2350,13 @@ def execute_plan(
     replan_history: list[ReplanEvent] = []
     cleanup_history: list[dict[str, Any]] = []
 
-    # --- Initial walk over the plan as given --------------------------------
-    # Cross-window parallel: levelize the DAG and fit each antichain concurrently
-    # (barrier between levels). Falls back to the in-process sequential walk when
-    # the pool is unavailable or forced off (``_FIT_WINDOW_WORKERS == 1``). The
-    # post-replan re-walk below stays sequential (small affected set + the
-    # structural-renegotiation bookkeeping is inherently serial).
-    _t_initial = time.monotonic()
-    _walk_windows_parallel(
-        plan,
-        plan.topological_order or [w.window_id for w in plan.windows],
-        events=events,
-        phase="initial",
-        walk_round=0,
+    # The per-window arguments every walk below shares (the initial walk, a
+    # resumed walk's fallback, and each replan re-walk).
+    walk_kwargs: dict[str, Any] = dict(
         active_ft=active_ft,
         noise=noise,
         peak_frequencies_mhz=peak_frequencies_mhz,
         peak_detection_passes=peak_detection_passes,
-        outcomes=outcomes,
-        thaw_history=thaw_history,
-        rescue_history=rescue_history,
         sideband=sideband,
         acquisition_us=acquisition_us,
         tau0_us=tau0_us,
@@ -2372,14 +2374,111 @@ def execute_plan(
         baseline_edge_threshold=baseline_edge_threshold,
         baseline_smooth_threshold=baseline_smooth_threshold,
         doublet_kwargs=doublet_kwargs,
-        jobs=jobs,
         min_freeze_snr=min_freeze_snr,
         finalize_node=finalize_node,
-        cleanup_history=cleanup_history,
         final_add_snr_threshold=final_add_snr_threshold,
         probe_freq_mhz=probe_freq_mhz,
         sample_dt_us=sample_dt_us,
     )
+
+    full_order = list(plan.topological_order or [w.window_id for w in plan.windows])
+    if tracker is None:
+        tracker = WalkTracker()
+    walk_mode = walk_mode_for(jobs)
+    tracker.begin(
+        outcomes=outcomes,
+        thaw_history=thaw_history,
+        walk_mode=walk_mode,
+        n_windows=len(full_order),
+    )
+    ledger = tracker.ledger
+
+    # A resume takes the carried windows over as they are: their outcomes enter
+    # ``outcomes`` in the order they finished (a dependent reads them like any
+    # finished primary), their records the ledger.
+    resuming = carried is not None and bool(carried.order)
+    remaining = full_order
+    if resuming:
+        assert carried is not None
+        for wid in carried.order:
+            carried_outcome = carried.outcomes.get(wid)
+            if carried_outcome is not None:
+                outcomes[wid] = carried_outcome
+            ledger[wid] = carried.records[wid]
+        remaining = [wid for wid in full_order if wid not in ledger]
+        tracker.windows_carried = len(carried.order)
+        logger.info(
+            "resuming a partial fit: %d of %d windows carried, %d to fit",
+            len(carried.order),
+            len(full_order),
+            len(remaining),
+        )
+
+    # --- Initial walk over the plan as given --------------------------------
+    # Cross-window parallel: levelize the DAG and fit each antichain concurrently
+    # (barrier between levels). Falls back to the in-process sequential walk when
+    # the pool is unavailable or forced off (``_FIT_WINDOW_WORKERS == 1``). The
+    # post-replan re-walk below stays sequential (small affected set + the
+    # structural-renegotiation bookkeeping is inherently serial).
+    _t_initial = time.monotonic()
+    if remaining:
+        try:
+            _walk_windows_parallel(
+                plan,
+                remaining,
+                events=events,
+                phase="initial",
+                walk_round=0,
+                outcomes=outcomes,
+                thaw_history=thaw_history,
+                rescue_history=rescue_history,
+                jobs=jobs,
+                cleanup_history=cleanup_history,
+                ledger=ledger,
+                progress_base=len(full_order) - len(remaining),
+                progress_total=len(full_order),
+                abort_on_accepted_thaw=resuming,
+                **walk_kwargs,
+            )
+        except _ResumeThawRefit:
+            # The carried windows may have read a primary this thaw would have
+            # changed first: refit every window sequentially from scratch, as an
+            # uninterrupted walk does when a thaw is accepted.
+            events.warn(
+                "walk_fallback", reason="accepted thaw", n_windows=len(full_order)
+            )
+            tracker.thaw_refit = True
+            tracker.accepted_thaw_seen = True
+            tracker.windows_carried = 0
+            resuming = False
+            outcomes.clear()
+            ledger.clear()
+            thaw_history.clear()
+            rescue_history.clear()
+            cleanup_history.clear()
+            _walk_windows_in_order(
+                plan,
+                full_order,
+                events=events,
+                phase="fallback",
+                walk_round=0,
+                outcomes=outcomes,
+                thaw_history=thaw_history,
+                rescue_history=rescue_history,
+                cleanup_history=cleanup_history,
+                ledger=ledger,
+                **walk_kwargs,
+            )
+    if resuming:
+        # The plan-level histories in the order an uninterrupted walk appends
+        # them (the walk above appended only its own windows').
+        hist_order = [
+            wid for wid in history_order(plan, full_order, walk_mode) if wid in ledger
+        ]
+        thaw_history[:] = [e for wid in hist_order for e in ledger[wid].thaws]
+        rescue_history[:] = [e for wid in hist_order for e in ledger[wid].rescues]
+        cleanup_history[:] = [r for wid in hist_order for r in ledger[wid].cleanups]
+    tracker.freeze_initial()
     logger.info("initial walk: %.1fs", time.monotonic() - _t_initial)
 
     # --- Structural renegotiation loop -------------------------------------
@@ -2446,37 +2545,12 @@ def execute_plan(
                 events=events,
                 phase="replan",
                 walk_round=replan_round,
-                active_ft=active_ft,
-                noise=noise,
-                peak_frequencies_mhz=peak_frequencies_mhz,
-                peak_detection_passes=peak_detection_passes,
                 outcomes=outcomes,
                 thaw_history=thaw_history,
                 rescue_history=rescue_history,
-                sideband=sideband,
-                acquisition_us=acquisition_us,
-                tau0_us=tau0_us,
-                fit_tau=fit_tau,
-                residual_edge_threshold=residual_edge_threshold,
-                residual_edge_m=residual_edge_m,
-                max_thaw_rounds=max_thaw_rounds,
-                conservative_kwargs=conservative_kwargs,
-                max_residual_rescue_rounds=max_residual_rescue_rounds,
-                rescue_kwargs=rescue_kwargs,
-                window_tau_overrides=window_tau_overrides,
-                spur_set=spur_set,
-                baseline_enabled=baseline_enabled,
-                baseline_order=baseline_order,
-                baseline_edge_threshold=baseline_edge_threshold,
-                baseline_smooth_threshold=baseline_smooth_threshold,
-                doublet_kwargs=doublet_kwargs,
                 jobs=jobs,
-                min_freeze_snr=min_freeze_snr,
-                finalize_node=finalize_node,
                 cleanup_history=cleanup_history,
-                final_add_snr_threshold=final_add_snr_threshold,
-                probe_freq_mhz=probe_freq_mhz,
-                sample_dt_us=sample_dt_us,
+                **walk_kwargs,
             )
 
             applied_pairs = {
@@ -2833,6 +2907,183 @@ class _WindowReport:
         return self.n_peaks is None
 
 
+@dataclass
+class WalkRecord:
+    """The per-window histories of one *finished* window of a fit walk.
+
+    A window is finished when its whole per-window pass
+    (:func:`_process_one_window`) ran. ``thaws`` / ``rescues`` / ``cleanups`` are
+    the records that pass appended to the plan-level thaw / rescue / cleanup
+    histories, in order (the same objects, so the aliasing between them and the
+    outcome's own ``thaw_events`` / ``rescue_events`` is kept). The window's
+    outcome lives in the walk's ``outcomes`` dict; a window the per-node cleanup
+    emptied has none.
+    """
+
+    thaws: list[ThawEvent] = field(default_factory=list)
+    rescues: list[RescueEvent] = field(default_factory=list)
+    cleanups: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class CarriedWindows:
+    """Finished windows a resumed fit takes over instead of fitting them again.
+
+    ``order`` is the order the windows finished in (it is the order their
+    outcomes enter the walk's ``outcomes`` dict); ``outcomes[wid]`` is ``None``
+    for a window the per-node cleanup emptied. Every id in ``order`` has a
+    :class:`WalkRecord` in ``records``.
+    """
+
+    order: list[int]
+    outcomes: dict[int, Optional[WindowOutcome]]
+    records: dict[int, WalkRecord]
+
+
+@dataclass
+class PartialWalk:
+    """The finished windows of an interrupted fit (:meth:`WalkTracker.snapshot`).
+
+    ``phase`` is ``"initial"`` when the interruption fell in the initial walk
+    (the windows that finished so far), or ``"replan"`` when it fell after it
+    (every initial-walk window, as the initial walk left it; a resume redoes the
+    structural replan). ``accepted_thaw`` is true when any thaw was accepted
+    before the interruption: the windows may then hold a primary that thaw
+    mutated, so a resume refits from scratch.
+    """
+
+    phase: str
+    order: list[int]
+    outcomes: dict[int, Optional[WindowOutcome]]
+    records: dict[int, WalkRecord]
+    accepted_thaw: bool
+    walk_mode: str
+    n_windows: int
+
+
+class WalkTracker:
+    """Tracks the finished windows of one :func:`execute_plan` call.
+
+    The walk records every window it finishes (``ledger``, in finishing order);
+    at the end of the initial walk :func:`execute_plan` freezes a copy, so an
+    interruption during the structural replan (or after it) still knows the
+    initial walk's windows. :meth:`snapshot` is what an interrupted fit persists
+    as a partial fit. Nothing here writes anything.
+    """
+
+    def __init__(self) -> None:
+        self.ledger: dict[int, WalkRecord] = {}
+        self.walk_mode = ""
+        self.n_windows = 0
+        #: Windows taken over from a partial fit (``0`` once a thaw refit
+        #: discarded them).
+        self.windows_carried = 0
+        #: A resume found an accepted thaw and refit every window sequentially.
+        self.thaw_refit = False
+        self.accepted_thaw_seen = False
+        self._outcomes: Optional[dict[int, WindowOutcome]] = None
+        self._thaw_history: Optional[list[ThawEvent]] = None
+        self._frozen: Optional[
+            tuple[list[int], dict[int, Optional[WindowOutcome]], dict[int, WalkRecord]]
+        ] = None
+
+    def begin(
+        self,
+        *,
+        outcomes: dict[int, WindowOutcome],
+        thaw_history: list[ThawEvent],
+        walk_mode: str,
+        n_windows: int,
+    ) -> None:
+        self._outcomes = outcomes
+        self._thaw_history = thaw_history
+        self.walk_mode = walk_mode
+        self.n_windows = int(n_windows)
+
+    def freeze_initial(self) -> None:
+        """Freeze the initial walk's finished windows (all of them)."""
+        live = self._outcomes or {}
+        order = list(self.ledger)
+        self._frozen = (
+            order,
+            {wid: live.get(wid) for wid in order},
+            dict(self.ledger),
+        )
+
+    def snapshot(self) -> Optional[PartialWalk]:
+        """The finished windows to persist now, or ``None`` when none finished."""
+        if self._frozen is not None:
+            order, outcomes, records = self._frozen
+            phase = "replan"
+        else:
+            live = self._outcomes or {}
+            order = list(self.ledger)
+            outcomes = {wid: live.get(wid) for wid in order}
+            records = dict(self.ledger)
+            phase = "initial"
+        if not order:
+            return None
+        accepted = (
+            self.accepted_thaw_seen
+            or any(e.accepted for r in records.values() for e in r.thaws)
+            or any(e.accepted for e in (self._thaw_history or []))
+        )
+        return PartialWalk(
+            phase=phase,
+            order=list(order),
+            outcomes=dict(outcomes),
+            records=dict(records),
+            accepted_thaw=bool(accepted),
+            walk_mode=self.walk_mode,
+            n_windows=self.n_windows,
+        )
+
+
+class _ResumeThawRefit(Exception):
+    """A resumed walk met an accepted thaw: refit every window from scratch.
+
+    Internal control flow between the walks and :func:`execute_plan`; never
+    leaves :func:`execute_plan`.
+    """
+
+
+def _record_window(
+    ledger: Optional[dict[int, WalkRecord]],
+    wid: int,
+    thaws: list[ThawEvent],
+    rescues: list[RescueEvent],
+    cleanups: list[dict[str, Any]],
+) -> WalkRecord:
+    record = WalkRecord(list(thaws), list(rescues), list(cleanups))
+    if ledger is not None:
+        ledger[wid] = record
+    return record
+
+
+def walk_mode_for(jobs: Optional[int]) -> str:
+    """Which walk :func:`_walk_windows_parallel` takes for ``jobs``:
+    ``"sequential"``, ``"dag"`` (the default pool walk) or ``"level"``."""
+    import multiprocessing
+
+    max_workers = resolve_worker_count(jobs, override=_FIT_WINDOW_WORKERS)
+    if max_workers < 2 or "fork" not in multiprocessing.get_all_start_methods():
+        return "sequential"
+    return "level" if os.environ.get("FTMW_LEGACY_LEVEL_WALK") else "dag"
+
+
+def history_order(plan: WindowPlan, order: Sequence[int], walk_mode: str) -> list[int]:
+    """The window order a walk of ``order`` appends the plan-level histories in.
+
+    The sequential and the dependency-gated walks append them in ``order``; the
+    legacy level walk appends them level by level.
+    """
+    if walk_mode != "level":
+        return list(order)
+    by_id = {w.window_id: w for w in plan.windows}
+    levels = _levelize(order, by_id, plan.dependency_edges)
+    return [wid for level in levels for wid in level]
+
+
 def _report_window(
     events: StageScope,
     report: _WindowReport,
@@ -3187,6 +3438,10 @@ def _walk_windows_in_order(
     final_add_snr_threshold: Optional[float] = None,
     probe_freq_mhz: Optional[float] = None,
     sample_dt_us: Optional[float] = None,
+    ledger: Optional[dict[int, WalkRecord]] = None,
+    progress_base: int = 0,
+    progress_total: Optional[int] = None,
+    abort_on_accepted_thaw: bool = False,
 ) -> None:
     """Fit each window in ``order``, run the bounded local-thaw loop, and
     (when ``max_residual_rescue_rounds > 0``) the residual-rescue B-loop.
@@ -3223,14 +3478,23 @@ def _walk_windows_in_order(
     (``phase``, ``walk_round``; ``index`` from 1, ``total`` the windows in
     ``order``); a cancel is honoured before each window, i.e. after the
     current one.
+
+    Each finished window's histories are recorded in ``ledger`` (when given)
+    before it is reported. A resumed walk reports ``index`` from
+    ``progress_base + 1`` against ``progress_total``, and with
+    ``abort_on_accepted_thaw`` raises :class:`_ResumeThawRefit` once a window
+    accepts a thaw.
     """
     if window_tau_overrides is None:
         window_tau_overrides = {}
     by_id = {w.window_id: w for w in plan.windows}
-    n_total = len(order)
+    n_total = len(order) if progress_total is None else int(progress_total)
     for n_done, wid in enumerate(order, start=1):
         events.check_cancel()
         win = by_id[wid]
+        n_thaw0 = len(thaw_history)
+        n_rescue0 = len(rescue_history)
+        n_cleanup0 = len(cleanup_history) if cleanup_history is not None else 0
         report = _process_one_window(
             win,
             active_ft=active_ft,
@@ -3264,14 +3528,23 @@ def _walk_windows_in_order(
             probe_freq_mhz=probe_freq_mhz,
             sample_dt_us=sample_dt_us,
         )
+        record = _record_window(
+            ledger,
+            wid,
+            thaw_history[n_thaw0:],
+            rescue_history[n_rescue0:],
+            cleanup_history[n_cleanup0:] if cleanup_history is not None else [],
+        )
         _report_window(
             events,
             report,
             phase=phase,
             walk_round=walk_round,
-            index=n_done,
+            index=progress_base + n_done,
             total=n_total,
         )
+        if abort_on_accepted_thaw and any(e.accepted for e in record.thaws):
+            raise _ResumeThawRefit()
 
 
 # ---------------------------------------------------------------------------
@@ -3622,6 +3895,10 @@ def _walk_windows_dag(
     max_workers: int,
     shared_kwargs: dict[str, Any],
     cleanup_history: Optional[list[dict[str, Any]]] = None,
+    ledger: Optional[dict[int, WalkRecord]] = None,
+    progress_base: int = 0,
+    progress_total: Optional[int] = None,
+    abort_on_accepted_thaw: bool = False,
 ) -> None:
     """Dependency-gated cross-window walk over one persistent fork pool.
 
@@ -3651,6 +3928,12 @@ def _walk_windows_dag(
     fit. A cancel -- or any exception here, such as a failing events callback --
     aborts the pool at once (:func:`_abort_pool`) rather than waiting for the
     windows in flight.
+
+    Each finished window's histories are recorded in ``ledger`` (when given)
+    before it is reported; the fallback re-walk replaces them. A resumed walk
+    reports ``index`` from ``progress_base + 1`` against ``progress_total``,
+    and with ``abort_on_accepted_thaw`` an accepted thaw raises
+    :class:`_ResumeThawRefit` (the pool is aborted) instead of falling back.
     """
     import multiprocessing
     from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
@@ -3658,6 +3941,7 @@ def _walk_windows_dag(
     by_id = {w.window_id: w for w in plan.windows}
     in_order = list(order)
     n_total = len(in_order)
+    pass_total = n_total if progress_total is None else int(progress_total)
     preds = _build_preds(in_order, by_id, plan.dependency_edges)
     succs: dict[int, list[int]] = {wid: [] for wid in in_order}
     for wid in in_order:
@@ -3726,6 +4010,7 @@ def _walk_windows_dag(
                     if outcome is not None:
                         outcomes[wid] = outcome
                     results[wid] = (thaws, rescues, cleanups)
+                    _record_window(ledger, wid, thaws, rescues, cleanups)
                     # Progress counts windows FINISHED, in the parent: the
                     # submission order and the completion order differ under a
                     # dependency-gated walk, so a worker-side ordinal would make
@@ -3736,11 +4021,13 @@ def _walk_windows_dag(
                         report,
                         phase=phase,
                         walk_round=walk_round,
-                        index=len(results),
-                        total=n_total,
+                        index=progress_base + len(results),
+                        total=pass_total,
                     )
                     if any(e.accepted for e in thaws):
                         accepted_thaw = True
+                        if abort_on_accepted_thaw:
+                            raise _ResumeThawRefit()
                     for s in succs[wid]:
                         indeg[s] -= 1
                         if indeg[s] == 0:
@@ -3769,6 +4056,9 @@ def _walk_windows_dag(
         # in-order outcomes before any dependent reads them.
         if cleanup_history is not None:
             cleanup_history.clear()
+        if ledger is not None:
+            for wid in in_order:
+                ledger.pop(wid, None)
         # Reported as its own pass: phase "fallback", the same round, index
         # from 1 over the windows re-walked (all of them).
         _walk_windows_in_order(
@@ -3781,6 +4071,7 @@ def _walk_windows_dag(
             thaw_history=thaw_history,
             rescue_history=rescue_history,
             cleanup_history=cleanup_history,
+            ledger=ledger,
             **shared_kwargs,
         )
         return
@@ -3833,6 +4124,10 @@ def _walk_windows_parallel(
     final_add_snr_threshold: Optional[float] = None,
     probe_freq_mhz: Optional[float] = None,
     sample_dt_us: Optional[float] = None,
+    ledger: Optional[dict[int, WalkRecord]] = None,
+    progress_base: int = 0,
+    progress_total: Optional[int] = None,
+    abort_on_accepted_thaw: bool = False,
 ) -> None:
     """Cross-window parallel form of :func:`_walk_windows_in_order`.
 
@@ -3864,9 +4159,21 @@ def _walk_windows_parallel(
     re-walks. Every walk honours a cancel between
     windows; the pool walks poll for it every :data:`CANCEL_POLL_S` and abort
     their pool on a cancel or error.
+
+    Every walk records each finished window's histories in ``ledger`` (when
+    given) before reporting it. A resumed walk (a partial fit's remaining
+    windows) reports ``index`` from ``progress_base + 1`` against
+    ``progress_total``; with ``abort_on_accepted_thaw`` an accepted thaw raises
+    :class:`_ResumeThawRefit` instead of the walk's own fallback.
     """
     if window_tau_overrides is None:
         window_tau_overrides = {}
+    progress: dict[str, Any] = dict(
+        ledger=ledger,
+        progress_base=progress_base,
+        progress_total=progress_total,
+        abort_on_accepted_thaw=abort_on_accepted_thaw,
+    )
 
     shared_kwargs: dict[str, Any] = dict(
         active_ft=active_ft,
@@ -3916,6 +4223,7 @@ def _walk_windows_parallel(
             thaw_history=thaw_history,
             rescue_history=rescue_history,
             cleanup_history=cleanup_history,
+            **progress,
             **shared_kwargs,
         )
         return
@@ -3938,12 +4246,14 @@ def _walk_windows_parallel(
             max_workers=max_workers,
             shared_kwargs=shared_kwargs,
             cleanup_history=cleanup_history,
+            **progress,
         )
         return
 
     by_id = {w.window_id: w for w in plan.windows}
     levels = _levelize(order, by_id, plan.dependency_edges)
     n_total = len(order)
+    walk_total = n_total if progress_total is None else int(progress_total)
 
     def _run_sequential(
         level: Sequence[int], n_done0: int, *, pass_phase: str, pass_total: int
@@ -3952,6 +4262,9 @@ def _walk_windows_parallel(
         for wid in level:
             events.check_cancel()
             nd += 1
+            n_thaw0 = len(thaw_history)
+            n_rescue0 = len(rescue_history)
+            n_cleanup0 = len(cleanup_history) if cleanup_history is not None else 0
             report = _process_one_window(
                 by_id[wid],
                 outcomes=outcomes,
@@ -3959,6 +4272,13 @@ def _walk_windows_parallel(
                 rescue_history=rescue_history,
                 cleanup_history=cleanup_history,
                 **shared_kwargs,
+            )
+            record = _record_window(
+                ledger,
+                wid,
+                thaw_history[n_thaw0:],
+                rescue_history[n_rescue0:],
+                cleanup_history[n_cleanup0:] if cleanup_history is not None else [],
             )
             _report_window(
                 events,
@@ -3968,6 +4288,8 @@ def _walk_windows_parallel(
                 index=nd,
                 total=pass_total,
             )
+            if abort_on_accepted_thaw and any(e.accepted for e in record.thaws):
+                raise _ResumeThawRefit()
 
     if len(levels) > 1 or any(len(lv) > 1 for lv in levels):
         logger.info(
@@ -3983,7 +4305,12 @@ def _walk_windows_parallel(
         t_level = time.monotonic()
         # A width-1 level forks nothing -- run it in-process (no pool overhead).
         if len(level) < 2:
-            _run_sequential(level, n_done, pass_phase=phase, pass_total=n_total)
+            _run_sequential(
+                level,
+                progress_base + n_done,
+                pass_phase=phase,
+                pass_total=walk_total,
+            )
             n_done += len(level)
             continue
 
@@ -4020,9 +4347,11 @@ def _walk_windows_parallel(
                         res[5],
                         phase=phase,
                         walk_round=walk_round,
-                        index=n_done + len(results),
-                        total=n_total,
+                        index=progress_base + n_done + len(results),
+                        total=walk_total,
                     )
+                    if abort_on_accepted_thaw and any(e.accepted for e in res[2]):
+                        raise _ResumeThawRefit()
             except BaseException:
                 _abort_pool(ex)
                 raise
@@ -4047,6 +4376,9 @@ def _walk_windows_parallel(
             )
             # Reported as its own pass: phase "fallback", the same round,
             # index from 1 over this level's windows.
+            if ledger is not None:
+                for wid in level:
+                    ledger.pop(wid, None)
             _run_sequential(level, 0, pass_phase="fallback", pass_total=len(level))
         else:
             for wid in level:
@@ -4055,6 +4387,10 @@ def _walk_windows_parallel(
                 # out of ``outcomes`` (the next level reads it as absent).
                 if outcome is not None:
                     outcomes[wid] = outcome
+                # Recorded once merged: until its level is merged, a window's
+                # outcome is not in ``outcomes`` (an interrupted level's windows
+                # count as unfinished).
+                _record_window(ledger, wid, thaws, rescues, cleanups)
                 thaw_history.extend(thaws)
                 rescue_history.extend(rescues)
                 if cleanup_history is not None:
