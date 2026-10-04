@@ -57,8 +57,17 @@ declares. It needs no file and is the same on every interface:
    $ ftmwpipeline read capabilities --format json
 
 The payload is ``{"schema": "ftmw/capabilities@1", "contract_version": int,
-"schemas": [...], "accessors": [...], "codes": [...], "stages": [...]}``
-(``stages`` is described under `Stage names`_). Every accessor listed
+"schemas": [...], "accessors": [...], "codes": [...], "stages": [...],
+"metadata_keys": [...], "tables": {name: [columns]}, "fields": {type: [fields]},
+"vocabularies": {name: [values]}, "file_bound": {accessor: bool},
+"pipeline_names": {accessor: name}}``
+(``stages`` is described under `Stage names`_). Every group of the manifest the
+contract tests check is present, in manifest order, so a client can discover
+the whole surface without importing the package: ``tables`` and ``fields``
+list the declared columns and result-type fields, ``vocabularies`` the closed
+value sets, ``file_bound`` whether each accessor takes a file, and
+``pipeline_names`` the ``Pipeline`` method serving each accessor (every
+accessor is listed, defaulting to its own name). Every accessor listed
 exists on the API, on ``Pipeline`` and as exactly one CLI verb,
 ``ftmwpipeline read <name>``, spelled as the API name. An accessor that
 reads a file takes the path as its first argument on the API and as the

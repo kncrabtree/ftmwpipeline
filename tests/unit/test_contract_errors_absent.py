@@ -29,8 +29,8 @@ from ftmwpipeline.contract import (
     AnalysisEpochMismatchError,
     BadSettingError,
     IncompleteProvenanceError,
-    NotFoundValueError,
     NotFoundError,
+    NotFoundValueError,
     PipelineCompatibilityError,
     PipelineCorruptionError,
     PipelineExistsError,
@@ -84,12 +84,12 @@ def test_contract_version_is_int():
     assert isinstance(CONTRACT_VERSION, int)
 
 
-def test_contract_version_is_seven():
+def test_contract_version_is_eight():
     # Wave 0 published 1; Wave 1's accessors raised it to 2; the final-products
     # fit fields (Wave 2) to 3; the window_model / spectrum_model accessors to 4;
     # the analysis_fingerprint accessor to 5; CurationAction (curation as data)
-    # to 6.
-    assert CONTRACT_VERSION == 7
+    # to 6; Wave 7 to 7; Wave 8 (full capabilities) to 8.
+    assert CONTRACT_VERSION == 8
 
 
 # ---- stage vocabulary -----------------------------------------------------
