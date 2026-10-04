@@ -40,6 +40,7 @@ from ftmwpipeline.contract import (
     PipelineFileNotFoundError,
     Stage,
     StageDependencyError,
+    WriteConflictError,
     key_for_stage,
     stage_for_key,
 )
@@ -86,13 +87,13 @@ def test_contract_version_is_int():
     assert isinstance(CONTRACT_VERSION, int)
 
 
-def test_contract_version_is_nine():
+def test_contract_version_is_ten():
     # Wave 0 published 1; Wave 1's accessors raised it to 2; the final-products
     # fit fields (Wave 2) to 3; the window_model / spectrum_model accessors to 4;
     # the analysis_fingerprint accessor to 5; CurationAction (curation as data)
     # to 6; Wave 7 to 7; Wave 8 (full capabilities) to 8; Wave 5.1 (events and
-    # cancellation) to 9.
-    assert CONTRACT_VERSION == 9
+    # cancellation) to 9; Wave 5.1b (atomic writes, write_conflict) to 10.
+    assert CONTRACT_VERSION == 10
 
 
 # ---- stage vocabulary -----------------------------------------------------
@@ -271,6 +272,12 @@ def _errors():
             CallbackFailedError("ftmw/window_progress@1"),
             "callback_failed",
             {"event_schema": "ftmw/window_progress@1"},
+            (),
+        ),
+        (
+            WriteConflictError("/data/exp.ftmw"),
+            "write_conflict",
+            {"path": "/data/exp.ftmw"},
             (),
         ),
     ]

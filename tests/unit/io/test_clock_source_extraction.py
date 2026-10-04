@@ -19,6 +19,7 @@ import h5py
 import pandas as pd
 import pytest
 
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline.core.stage_fit_settings import (
     ClockSource,
     SpurSubSettings,
@@ -308,18 +309,21 @@ class TestRecommendedClocksRoundTrip:
         assert read_recommended_clock_sources(bare_stage0_ftmw) is None
 
     def test_write_none_reads_none(self, bare_stage0_ftmw) -> None:
-        write_recommended_clock_sources(bare_stage0_ftmw, None)
+        with atomic_write(bare_stage0_ftmw):
+            write_recommended_clock_sources(bare_stage0_ftmw, None)
         assert read_recommended_clock_sources(bare_stage0_ftmw) is None
 
     def test_no_stage0_group_write_noop(self, bare_ftmw_no_stage0) -> None:
         """write is a no-op when stage0_fid_data is absent."""
         clocks = (ClockSource(freq_mhz=5120.0, locked=True, label="test"),)
-        write_recommended_clock_sources(bare_ftmw_no_stage0, clocks)
+        with atomic_write(bare_ftmw_no_stage0):
+            write_recommended_clock_sources(bare_ftmw_no_stage0, clocks)
         assert read_recommended_clock_sources(bare_ftmw_no_stage0) is None
 
     def test_round_trip_single_clock(self, bare_stage0_ftmw) -> None:
         clocks = (ClockSource(freq_mhz=5120.0, locked=True, label="downconv-ref"),)
-        write_recommended_clock_sources(bare_stage0_ftmw, clocks)
+        with atomic_write(bare_stage0_ftmw):
+            write_recommended_clock_sources(bare_stage0_ftmw, clocks)
         result = read_recommended_clock_sources(bare_stage0_ftmw)
         assert result is not None
         assert len(result) == 1
@@ -334,7 +338,8 @@ class TestRecommendedClocksRoundTrip:
             ClockSource(freq_mhz=16000.0, locked=True, label="awg"),
             ClockSource(freq_mhz=50000.0, locked=False, label="digitizer"),
         )
-        write_recommended_clock_sources(bare_stage0_ftmw, clocks)
+        with atomic_write(bare_stage0_ftmw):
+            write_recommended_clock_sources(bare_stage0_ftmw, clocks)
         result = read_recommended_clock_sources(bare_stage0_ftmw)
         assert result is not None
         assert len(result) == 4
@@ -347,15 +352,18 @@ class TestRecommendedClocksRoundTrip:
         """Second write replaces the first (re-import semantics)."""
         first = (ClockSource(freq_mhz=5120.0, locked=True, label="first"),)
         second = (ClockSource(freq_mhz=9999.0, locked=False, label="second"),)
-        write_recommended_clock_sources(bare_stage0_ftmw, first)
-        write_recommended_clock_sources(bare_stage0_ftmw, second)
+        with atomic_write(bare_stage0_ftmw):
+            write_recommended_clock_sources(bare_stage0_ftmw, first)
+        with atomic_write(bare_stage0_ftmw):
+            write_recommended_clock_sources(bare_stage0_ftmw, second)
         result = read_recommended_clock_sources(bare_stage0_ftmw)
         assert result is not None
         assert len(result) == 1
         assert result[0].freq_mhz == 9999.0
 
     def test_empty_tuple_reads_back_empty(self, bare_stage0_ftmw) -> None:
-        write_recommended_clock_sources(bare_stage0_ftmw, ())
+        with atomic_write(bare_stage0_ftmw):
+            write_recommended_clock_sources(bare_stage0_ftmw, ())
         result = read_recommended_clock_sources(bare_stage0_ftmw)
         assert result is not None
         assert len(result) == 0

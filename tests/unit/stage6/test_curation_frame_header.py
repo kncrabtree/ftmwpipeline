@@ -27,6 +27,7 @@ import h5py
 import pytest
 
 import ftmwpipeline.api as ftmw
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline._internal.stage6_impl import (
     FittingResult,
     _current_calibration_stamp,
@@ -83,7 +84,8 @@ def _declare_unlocked_digitizer(path: Path) -> None:
             ),
         ),
     )
-    save_stage_fit_settings_to_h5(str(path), new_settings)
+    with atomic_write(str(path)):
+        save_stage_fit_settings_to_h5(str(path), new_settings)
 
 
 def _stamp_timebase(path: Path, *, epsilon: float, sigma_epsilon: float) -> None:
@@ -167,7 +169,8 @@ def _build_stage5_multi(dest: Path, data_path: str) -> None:
     plan.dependency_edges = [
         (a, b) for (a, b) in plan.dependency_edges if a in keep and b in keep
     ]
-    save_window_plan_impl(str(dest), plan)
+    with atomic_write(str(dest)):
+        save_window_plan_impl(str(dest), plan)
 
     ftmw.fit_peaks(str(dest))
 

@@ -650,8 +650,10 @@ Every event has `schema`, `operation` (the CLI verb, such as `"fit run"`) and
 
   Stage 6 refits and cascades emit `WindowProgress` with `stage: "review"`.
 - **`Invalidated.stages`** are canonical names in `rerun_order`. The event is
-  emitted once per call that invalidates something, at the moment it
-  invalidates. It matches the result's `invalidated` field.
+  emitted once per call that invalidates something, after the call's write
+  is durable (§Crash safety) and just before `StageFinished`. An invalidation
+  that never landed is therefore never announced. The event matches the
+  result's `invalidated` field.
 - **`ScanProgress`** is emitted once per scanned value; `knob` is a registry
   path.
 - **`PipelineWarning.code`** comes from the vocabulary `warning_code`.

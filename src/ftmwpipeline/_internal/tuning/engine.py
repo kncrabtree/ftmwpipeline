@@ -40,6 +40,7 @@ from ...io.peak_detection_settings_serialization import STAGE3_PEAKS_SETTINGS_PA
 from ...io.stage_fit_settings_serialization import STAGE_FIT_PATH
 from ...io.tau_calibration_settings_serialization import STAGE2B_TAU_SETTINGS_PATH
 from ...io.window_planning_settings_serialization import STAGE4_WINDOWS_SETTINGS_PATH
+from ..atomic import atomic_write, h5open
 from .fit_support import FitWindowSelection
 from .registry import KnobSpec
 
@@ -75,9 +76,8 @@ def _clear_persisted_stage_settings(work: Path, knob_path: str) -> None:
     group = _STAGE_SETTINGS_GROUPS.get(knob_path.split(".")[0])
     if group is None:
         return
-    import h5py
 
-    with h5py.File(work, "a") as h5f:
+    with h5open(work, "a") as h5f:
         if group in h5f:
             del h5f[group]
 
@@ -431,20 +431,23 @@ def _scan(
         # (Stage 5 fit knobs trim the window plan to a representative subset so
         # each value re-fits only a handful of windows). It gets the knob spec
         # and resolved grid so SNR-threshold knobs can straddle-sample. Runs only
-        # on a fresh copy — a reused working file was already prepared.
+        # on a fresh copy — a reused working file was already prepared. The
+        # preparation is one transaction on the working copy, so a reused copy
+        # is either fully prepared or a plain copy, never half of each.
         if spec.prepare is not None:
-            spec.prepare(
-                work,
-                FitWindowSelection(
-                    top_snr=fit_top_snr,
-                    sample=fit_sample,
-                    freqs=tuple(fit_freqs) if fit_freqs else (),
-                    sample_seed=fit_sample_seed,
-                    fit_all=fit_all,
-                ),
-                spec,
-                values,
-            )
+            with atomic_write(work):
+                spec.prepare(
+                    work,
+                    FitWindowSelection(
+                        top_snr=fit_top_snr,
+                        sample=fit_sample,
+                        freqs=tuple(fit_freqs) if fit_freqs else (),
+                        sample_seed=fit_sample_seed,
+                        fit_all=fit_all,
+                    ),
+                    spec,
+                    values,
+                )
     reporter = progress
     if reporter is None and not quiet:
         reporter = _make_default_reporter(spec, values)
@@ -452,22 +455,26 @@ def _scan(
     rows: List[SweepRow] = []
     last_result: Any = None
     total = len(values)
-    for i, value in enumerate(values):
-        events.check_cancel()
-        _clear_persisted_stage_settings(work, spec.path)
-        last_result = spec.run(work, value)
-        rows.append(
-            SweepRow(
-                value=value,
-                metrics=dict(spec.metric(last_result)),
-                result=last_result,
+    # The whole sweep is one transaction on the scratch working copy (never
+    # the user's file): each value's stage run joins it instead of copying the
+    # working file once per value.
+    with atomic_write(work):
+        for i, value in enumerate(values):
+            events.check_cancel()
+            _clear_persisted_stage_settings(work, spec.path)
+            last_result = spec.run(work, value)
+            rows.append(
+                SweepRow(
+                    value=value,
+                    metrics=dict(spec.metric(last_result)),
+                    result=last_result,
+                )
             )
-        )
-        if reporter is not None:
-            reporter(i + 1, total, value)
-        events.emit(
-            ScanProgress(events.operation, None, spec.path, value, i + 1, total)
-        )
+            if reporter is not None:
+                reporter(i + 1, total, value)
+            events.emit(
+                ScanProgress(events.operation, None, spec.path, value, i + 1, total)
+            )
 
     csv_path = out / f"scan_{_safe(spec.path)}_{ftmw_path.stem}.csv"
     _write_csv(csv_path, spec, rows)

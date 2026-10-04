@@ -105,6 +105,7 @@ SNAPSHOT_CODES = frozenset(
         "algorithm_failed",
         "cancelled",
         "callback_failed",
+        "write_conflict",
         "pipeline_error",
     }
 )
@@ -522,7 +523,7 @@ def test_manifest_sequences_are_tuples():
 
 
 def test_manifest_version_matches_package():
-    assert MANIFEST.contract_version == ftmwpipeline.CONTRACT_VERSION == 9
+    assert MANIFEST.contract_version == ftmwpipeline.CONTRACT_VERSION == 10
     assert isinstance(ftmwpipeline.CONTRACT_VERSION, int)
 
 

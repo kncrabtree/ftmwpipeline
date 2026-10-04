@@ -18,7 +18,15 @@ one :class:`OperationEvents`, built once at the top of the operation by
   check *between* stages), emits ``StageStarted``, and yields a
   :class:`StageScope`; the stage calls :meth:`StageScope.finish` after its
   results are written, which emits ``StageFinished``. A stage that raises emits
-  no ``StageFinished``.
+  no ``StageFinished``. "Written" means durable: a writing stage runs its body
+  inside :func:`~ftmwpipeline._internal.atomic.atomic_write` *within* the
+  stage scope and calls ``finish`` after that block, i.e. after the replace
+  (§Crash safety).
+- :meth:`StageScope.invalidated` renders the invalidation warning line at the
+  moment stages are dropped, but the :class:`~ftmwpipeline.contract.Invalidated`
+  event waits: every invalidation of the stage is merged into ONE event that
+  :meth:`StageScope.finish` delivers after the replace, just before
+  ``StageFinished``. No event announces an invalidation that never landed.
 
 With no callback and no token the same object still renders every log line, so
 call sites never branch on whether a caller is listening, and a call site that
@@ -79,6 +87,7 @@ from ..file_manager import (
     CallbackFailedError,
     OperationCancelledError,
 )
+from .atomic import h5open
 
 #: The parent's cancel poll interval while pool workers fit (seconds). Bounds the
 #: cancel latency of the parallel Stage 5 walk.
@@ -395,7 +404,8 @@ class OperationEvents:
         self.completed_windows: List[int] = []
         self.current_stage: Optional[Stage] = None
         self._environment_checked = False
-        # committing(): depth, and a callback failure held until it ends.
+        # committing(): depth, and a callback failure held until the stage
+        # finishes (after its write is durable).
         self._committing = 0
         self._held_failure: Optional[CallbackFailedError] = None
 
@@ -425,12 +435,13 @@ class OperationEvents:
         """Deliver *event* to the callback without rendering any log line.
 
         For an event whose line(s) were already rendered step by step (the
-        merged ``Invalidated`` of :meth:`StageScope.collect_invalidations`).
+        merged ``Invalidated`` :meth:`StageScope.finish` delivers).
 
         Raises
         ------
         CallbackFailedError
-            When the callback raises (chained as ``__cause__``).
+            When the callback raises (chained as ``__cause__``) -- except
+            inside :meth:`committing`, where the failure is held instead.
         """
         if self.callback is None or self._held_failure is not None:
             return
@@ -440,30 +451,39 @@ class OperationEvents:
             failure = CallbackFailedError(event.schema)
             failure.__cause__ = exc
             if self._committing:
-                # Inside a write that must complete: hold the failure (and
-                # stop delivering) until the write is done.
+                # Inside a block that must complete: hold the failure (and
+                # stop delivering) until the stage has finished its write.
                 self._held_failure = failure
                 return
             raise failure from exc
 
     @contextmanager
     def committing(self) -> Iterator[None]:
-        """A block that, once begun, completes: the final write of a stage, or
-        a restore-then-replay that must not stop half way.
+        """A block that, once begun, completes: a Stage 6 restore-then-replay,
+        which must not stop half way.
 
         Inside it a cancel is not honoured (check points pass and
-        :meth:`cancel_requested` is ``False``; the next check point after the
-        block honours it), and a callback that raises is not allowed to abort
-        the block: its :class:`CallbackFailedError` is raised when the block
-        ends, and nothing more is delivered meanwhile. Log lines still render.
+        :meth:`cancel_requested` is ``False``), and a callback that raises is
+        not allowed to abort it: its :class:`CallbackFailedError` is held, and
+        nothing more is delivered for the rest of the stage. Log lines still
+        render.
 
-        If the block itself raises an ordinary exception while a callback
-        failure is held, the caller still sees ``callback_failed``: the held
-        :class:`CallbackFailedError` is raised (its ``__cause__`` stays the
-        callback's exception) with the block's exception as its
-        ``__context__``. A ``BaseException`` that is not an ``Exception`` (a
-        second Ctrl-C's ``KeyboardInterrupt``) propagates as is. Either way the
-        held failure is cleared once the outermost block ends.
+        A cancel and a callback failure at the same moment therefore end the
+        same way: the block completes, the call's transaction commits, and only
+        then does the stage fail -- a held failure is raised by
+        :meth:`StageScope.finish` (after the replace, before ``Invalidated`` and
+        ``StageFinished``, neither of which is delivered), or when the stage
+        scope ends if nothing finishes it. The write stays in place
+        (§Callback failure: what is left is the same as after a cancel at that
+        point).
+
+        If the block itself raises an ordinary exception while a failure is
+        held, the caller sees ``callback_failed`` (the call's write is
+        discarded with that exception): the held error is raised with the
+        block's exception as its ``__context__`` (``__cause__`` stays the
+        callback's). A ``BaseException`` that is not an ``Exception`` (a second
+        Ctrl-C's ``KeyboardInterrupt``) propagates as is and clears the held
+        failure.
         """
         self._committing += 1
         try:
@@ -482,7 +502,10 @@ class OperationEvents:
                 self._held_failure = None
             raise
         self._committing -= 1
-        if not self._committing and self._held_failure is not None:
+
+    def raise_held_failure(self) -> None:
+        """Raise (and clear) a callback failure :meth:`committing` held."""
+        if self._held_failure is not None:
             failure, self._held_failure = self._held_failure, None
             raise failure
 
@@ -554,7 +577,18 @@ class OperationEvents:
             )
             if file_path is not None:
                 self.check_environment(file_path, stage=st)
-            yield scope
+            try:
+                yield scope
+            except Exception:
+                if self._held_failure is None:
+                    raise
+                failure, self._held_failure = self._held_failure, None
+                raise failure
+            except BaseException:
+                self._held_failure = None
+                raise
+            # A failure held by committing() that no finish() raised.
+            self.raise_held_failure()
         finally:
             self.current_stage = previous
 
@@ -595,12 +629,11 @@ class OperationEvents:
         if self.callback is None:
             return
         try:
-            import h5py
 
             from ..core.environment import capture_environment, describe_runtime_drift
             from ..io.environment_serialization import load_stage_environments
 
-            with h5py.File(os.fspath(file_path), "r") as h5f:
+            with h5open(os.fspath(file_path), "r") as h5f:
                 envs = load_stage_environments(h5f)
             lines = describe_runtime_drift(envs, capture_environment())
         except (OSError, KeyError, ValueError):
@@ -649,8 +682,9 @@ class StageScope:
         self.verb = verb
         self._t0 = time.monotonic()
         self.finished = False
-        # The stages invalidated while collect_invalidations() is active.
-        self._collected: Optional[Set[Stage]] = None
+        # The stages this stage invalidated, delivered as ONE Invalidated by
+        # finish() -- after the stage's write is durable.
+        self._invalidated: Set[Stage] = set()
 
     @property
     def operation(self) -> str:
@@ -723,69 +757,28 @@ class StageScope:
     def invalidated(
         self, stages: Sequence[StageLike], *, reason: Optional[str]
     ) -> None:
-        """Emit :class:`Invalidated` for *stages* (nothing when empty).
+        """Record that this stage invalidated *stages* (nothing when empty).
 
-        ``reason`` is the log line's lead (why the stages were dropped);
-        ``None`` renders no line (a step that never logged one, such as an
-        import overwriting a file) while the event is still delivered.
+        The warning line is rendered now, at the moment the stages are
+        dropped; ``reason`` is its lead (why), and ``None`` renders no line (a
+        step that never logged one, such as an import overwriting a file).
+        The :class:`Invalidated` event is NOT delivered now: every stage this
+        call invalidates is merged into one event that :meth:`finish` delivers
+        once the call's write is durable, just before ``StageFinished``. An
+        invalidation inside a write that is then discarded (a cancel, a
+        failure) is therefore never announced.
         """
         if not stages:
             return
         names = {Stage(s) for s in stages}
-        ordered = tuple(s for s in rerun_order() if s in names)
-        event = Invalidated(self.operation, self.stage, ordered)
-        if self._collected is not None:
-            # Each step logs its own line as it invalidates; only the event
-            # is merged (delivered once, when the collection ends).
-            if reason is not None:
-                render(event, verb=self.verb, detail={"reason": reason})
-            self._collected.update(names)
-            return
-        if reason is None:
-            self.ops.deliver(event)
-        else:
-            self.emit(event, detail={"reason": reason})
-
-    @contextmanager
-    def collect_invalidations(self) -> Iterator[None]:
-        """Combine every invalidation inside into ONE delivered
-        :class:`Invalidated`.
-
-        For a call that invalidates in several steps (an import that both
-        overwrites an analysed file and moves its start hint): each step still
-        logs its own warning line at the moment it invalidates; the event is
-        delivered once, when the block ends, naming the union of the stages
-        (the result's ``invalidated``). If the block raises after something was
-        already invalidated, the event is still delivered (best effort: a
-        callback that raises then does not mask the block's exception) and the
-        block's exception propagates. Nested use joins the outer collection.
-        """
-        if self._collected is not None:
-            yield
-            return
-        self._collected = set()
-        try:
-            yield
-        except BaseException:
-            stages, self._collected = self._collected, None
-            if stages:
-                held = self.ops._held_failure
-                try:
-                    self._deliver_collected(stages)
-                except CallbackFailedError:
-                    # The block's own exception is what the caller must see.
-                    pass
-                # Likewise a failure this delivery left held (inside
-                # committing()), which would otherwise replace it there.
-                self.ops._held_failure = held
-            raise
-        stages, self._collected = self._collected, None
-        if stages:
-            self._deliver_collected(stages)
-
-    def _deliver_collected(self, stages: Set[Stage]) -> None:
-        ordered = tuple(s for s in rerun_order() if s in stages)
-        self.ops.deliver(Invalidated(self.operation, self.stage, ordered))
+        if reason is not None:
+            ordered = tuple(s for s in rerun_order() if s in names)
+            render(
+                Invalidated(self.operation, self.stage, ordered),
+                verb=self.verb,
+                detail={"reason": reason},
+            )
+        self._invalidated.update(names)
 
     def finish(
         self,
@@ -794,9 +787,14 @@ class StageScope:
         detail: Optional[Mapping[str, Any]] = None,
         wrote: bool = True,
     ) -> None:
-        """The stage's results are written: record it and emit ``StageFinished``.
+        """The stage's results are written: record it, deliver the merged
+        ``Invalidated`` (if this stage invalidated anything), then emit
+        ``StageFinished``.
 
-        Call once, after the final write (and after any ``Invalidated``).
+        Call once, after the final write is durable (after the transaction's
+        replace). A callback that raises on ``Invalidated`` fails the call
+        with ``callback_failed`` and no ``StageFinished`` follows; the write
+        stays in place.
         ``detail`` carries render-only values for the verb's end line.
         ``wrote=False`` (a dry run, a preview) finishes without recording the
         stage in ``completed_stages`` -- it wrote nothing.
@@ -807,6 +805,13 @@ class StageScope:
         self.finished = True
         if wrote and self.stage is not None:
             self.ops.mark_completed(self.stage)
+        # A callback failure held inside committing(): the write is durable,
+        # and now the call fails, with no Invalidated and no StageFinished.
+        self.ops.raise_held_failure()
+        if self._invalidated:
+            ordered = tuple(s for s in rerun_order() if s in self._invalidated)
+            self._invalidated = set()
+            self.ops.deliver(Invalidated(self.operation, self.stage, ordered))
         self.emit(
             StageFinished(
                 self.operation,

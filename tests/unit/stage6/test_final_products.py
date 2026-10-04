@@ -19,6 +19,7 @@ import h5py
 import pytest
 
 import ftmwpipeline.api as ftmw
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline._internal.stage6_impl import (
     _build_final_products,
     get_final_products_impl,
@@ -29,8 +30,8 @@ from ftmwpipeline.contract import Absent
 from ftmwpipeline.core.data_structures import (
     FinalProducts,
     FittedPeak,
-    KnockoutInfo,
     FrequencyCalibration,
+    KnockoutInfo,
     Sideband,
     SpectrumFit,
     Stage6Review,
@@ -623,8 +624,7 @@ def test_fit_and_detection_record_what_they_consumed(stage5_small_source):
             continue
         candidates.append(
             tuple(
-                (float(c.center_freq_mhz), bool(c.saturated))
-                for c in cal.spur_clusters
+                (float(c.center_freq_mhz), bool(c.saturated)) for c in cal.spur_clusters
             )
         )
     # With no calibration the gate still consulted the (empty) catalog.
@@ -683,7 +683,8 @@ def _write_clocks(path, clocks) -> None:
 
     settings = resolve()
     settings = replace(settings, spur=replace(settings.spur, clocks=clocks))
-    save_stage_fit_settings_to_h5(str(path), settings)
+    with atomic_write(str(path)):
+        save_stage_fit_settings_to_h5(str(path), settings)
 
 
 def _write_timebase(path, *, epsilon, sigma_epsilon, preconditions_passed) -> None:

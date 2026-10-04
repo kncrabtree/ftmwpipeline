@@ -71,6 +71,7 @@ from ...io.tau_calibration_settings_serialization import (
 from ...io.window_planning_settings_serialization import (
     load_window_planning_settings_from_h5,
 )
+from ..atomic import h5open
 from ..stage1_impl import _read_settings_layer, ft_record_is_authoritative
 from .registry import get_knob
 
@@ -193,9 +194,8 @@ def _ft_persisted(file_path: str) -> Optional[Any]:
 
 def _ft_persisted_is_authoritative(file_path: str) -> bool:
     """Whether Stage 1's record is authoritative, as its resolver decides."""
-    import h5py
 
-    with h5py.File(file_path, "r") as h5f:
+    with h5open(file_path, "r") as h5f:
         return ft_record_is_authoritative(h5f)
 
 

@@ -45,6 +45,7 @@ from ..fitting.model_eval import (
     window_fit_range_mhz,
 )
 from ..fitting.peak_model import sideband_sign
+from .atomic import h5open
 
 __all__ = [
     "MODEL_GRIDS",
@@ -89,11 +90,10 @@ FROZEN_SKIRT_FOLLOWS_TAU_EPOCH = 4
 
 def _fit_epoch(file_path: str) -> Optional[int]:
     """The analysis epoch the persisted Stage 5 fit was produced under."""
-    import h5py
 
     from ..io.environment_serialization import load_stage_environments
 
-    with h5py.File(file_path, "r") as h5f:
+    with h5open(file_path, "r") as h5f:
         env = load_stage_environments(h5f).get("stage5_fitting")
     return None if env is None else env.analysis_epoch
 

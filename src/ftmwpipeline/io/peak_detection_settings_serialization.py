@@ -55,6 +55,7 @@ from typing import Any, Dict, Mapping, Optional
 
 import h5py
 
+from .._internal.atomic import h5open
 from ..core.peak_detection_settings import (
     PeakDetectionSettings,
 )
@@ -152,7 +153,7 @@ def load_peak_detection_consumed_from_h5(file_path: str) -> Optional[Stage3Consu
     ``consumed`` block (a record written before version 2, or the sparse user
     layer). :func:`peak_detection_settings_provenance` tells those apart.
     """
-    with h5py.File(file_path, "r") as h5f:
+    with h5open(file_path, "r") as h5f:
         group = h5f.get(f"{STAGE3_PEAKS_SETTINGS_PATH}/{_CONSUMED}")
         if not isinstance(group, h5py.Group):
             return None

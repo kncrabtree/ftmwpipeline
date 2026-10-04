@@ -20,6 +20,7 @@ import pytest
 
 import ftmwpipeline.api as ftmw
 from ftmwpipeline._internal.active_ft_support import compute_persisted_active_ft
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline._internal.stage1_impl import (
     _resolve_settings,
     compute_ft_impl,
@@ -62,7 +63,8 @@ def _make_fid(duration_us: float = 20.0, dt_s: float = 4e-9) -> FID:
 def _create_ftmw(tmp_path: Path, name: str = "s1.ftmw") -> str:
     p = str(tmp_path / name)
     src = SourceMetadata(source_path=tmp_path, format_name="test")
-    create_pipeline_file(p, _make_fid(), src, force=True)
+    with atomic_write(p):
+        create_pipeline_file(p, _make_fid(), src, force=True)
     return p
 
 
@@ -108,9 +110,11 @@ def test_concrete_window_selects_the_same_spectrum(tmp_path: Path) -> None:
     """0.0 / the duration select exactly what unset bounds selected."""
     p = _create_ftmw(tmp_path)
     ftmw.compute_ft(p)
-    concrete = compute_persisted_active_ft(p)
+    with atomic_write(p):
+        concrete = compute_persisted_active_ft(p)
     _make_pre_provenance(p, start_us="__None__", end_us="__None__")
-    unset = compute_persisted_active_ft(p)
+    with atomic_write(p):
+        unset = compute_persisted_active_ft(p)
     np.testing.assert_array_equal(concrete.complex_spectrum, unset.complex_spectrum)
     np.testing.assert_array_equal(concrete.freq_mhz, unset.freq_mhz)
 
@@ -124,9 +128,11 @@ def test_a_later_recommended_start_changes_nothing_stage1_used(
     p = _create_ftmw(tmp_path)
     ftmw.compute_ft(p, trim=_TRIM)
     duration = float(ftmw.load_fid(p).duration_us)
-    before = compute_persisted_active_ft(p).complex_spectrum.copy()
+    with atomic_write(p):
+        before = compute_persisted_active_ft(p).complex_spectrum.copy()
 
-    update_processing_parameters(p, {"start_us": 3.0, "end_us": 12.0})
+    with atomic_write(p):
+        update_processing_parameters(p, {"start_us": 3.0, "end_us": 12.0})
 
     assert _resolve_settings(p, None).start_us == 0.0
     assert compute_ft_impl(p)["resolved_settings"].active_window_us() == (
@@ -137,9 +143,10 @@ def test_a_later_recommended_start_changes_nothing_stage1_used(
         0.0,
         duration,
     )
-    np.testing.assert_array_equal(
-        compute_persisted_active_ft(p).complex_spectrum, before
-    )
+    with atomic_write(p):
+        np.testing.assert_array_equal(
+            compute_persisted_active_ft(p).complex_spectrum, before
+        )
     # The recommendation is still stored, for display.
     with h5py.File(p, "r") as h5f:
         assert h5f[RECOMMENDED_PATH].attrs["start_us"] == 3.0
@@ -165,7 +172,8 @@ def test_start_run_after_stage1_warns_and_leaves_it(
     p = _create_ftmw(tmp_path)
     ftmw.compute_ft(p)
     completed = _completed(p)
-    write_recommended_chirp_window(p, ChirpWindow(chirp_end_us=1.5))
+    with atomic_write(p):
+        write_recommended_chirp_window(p, ChirpWindow(chirp_end_us=1.5))
     with caplog.at_level(logging.WARNING):
         out = detect_start_time_impl(p, settings=_FAST, stamp=True)
     assert out["stamped"] is True
@@ -206,7 +214,8 @@ def test_pre_provenance_record_keeps_its_fall_through(tmp_path: Path) -> None:
     duration = float(ftmw.load_fid(p).duration_us)
     ftmw.compute_ft(p, trim=_TRIM)
     _make_pre_provenance(p, start_us="__None__")
-    update_processing_parameters(p, {"start_us": 3.0})
+    with atomic_write(p):
+        update_processing_parameters(p, {"start_us": 3.0})
 
     assert compute_ft_impl(p)["resolved_settings"].start_us == 3.0
     assert persisted_ft_settings(p, "x", duration).start_us == 3.0
@@ -234,7 +243,8 @@ def test_upgrading_an_unchanged_old_record_invalidates_nothing(
 # Mutation caught: 'settings unset' records None, reopening the fall-through.
 def test_settings_unset_re_resolves_from_the_recommendation(tmp_path: Path) -> None:
     p = _create_ftmw(tmp_path)
-    update_processing_parameters(p, {"start_us": 1.25})
+    with atomic_write(p):
+        update_processing_parameters(p, {"start_us": 1.25})
     ftmw.settings_set(p, "stage1.start_us", "2.5")
     assert _record(p)["start_us"] == 2.5
     ftmw.settings_unset(p, "stage1.start_us")
@@ -319,7 +329,8 @@ def test_consumers_read_the_window_from_the_persisted_record(
 ) -> None:
     p = _create_ftmw(tmp_path)
     ftmw.compute_ft(p, start_us=2.0, end_us=11.0, trim=_TRIM)
-    update_processing_parameters(p, {"start_us": 4.0, "end_us": 9.0})
+    with atomic_write(p):
+        update_processing_parameters(p, {"start_us": 4.0, "end_us": 9.0})
     duration = float(ftmw.load_fid(p).duration_us)
     got = persisted_ft_settings(p, "timebase_calibration", duration)
     assert got.active_window_us() == (2.0, 11.0)
@@ -413,7 +424,8 @@ def test_start_stamp_through_an_old_record_invalidates_downstream(
     ftmw.compute_ft(p)
     ftmw.estimate_noise(p)
     _make_pre_provenance(p, start_us="__None__")
-    write_recommended_chirp_window(p, ChirpWindow(chirp_end_us=1.5))
+    with atomic_write(p):
+        write_recommended_chirp_window(p, ChirpWindow(chirp_end_us=1.5))
     out = detect_start_time_impl(p, settings=_FAST, stamp=True)
     assert out["stamped"] is True
     assert _resolve_settings(p, None).start_us == out["start_us"]
@@ -431,7 +443,8 @@ def test_start_stamp_under_a_current_record_invalidates_nothing(
     p = _create_ftmw(tmp_path)
     ftmw.compute_ft(p)
     ftmw.estimate_noise(p)
-    write_recommended_chirp_window(p, ChirpWindow(chirp_end_us=1.5))
+    with atomic_write(p):
+        write_recommended_chirp_window(p, ChirpWindow(chirp_end_us=1.5))
     out = detect_start_time_impl(p, settings=_FAST, stamp=True)
     assert out["invalidated"] == []
     assert "stage2_noise_result" in _completed(p)
@@ -447,5 +460,6 @@ def test_stage1_rerun_reports_canonical_invalidated(tmp_path: Path) -> None:
     assert same.invalidated == ()
     moved = ftmw.compute_ft(p, start_us=2.0)
     assert moved.invalidated == ("noise",)
-    result = compute_ft_impl(p, persist=True)
+    with atomic_write(p):
+        result = compute_ft_impl(p, persist=True)
     assert result["invalidated"] == []

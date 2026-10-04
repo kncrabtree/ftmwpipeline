@@ -11,6 +11,7 @@ from __future__ import annotations
 import h5py
 import pytest
 
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline.core.tau_calibration_settings import resolve
 from ftmwpipeline.io.provenance import FIELD_SET_VERSION_ATTR
 from ftmwpipeline.io.tau_calibration_settings_serialization import (
@@ -58,16 +59,18 @@ def ftmw_file(tmp_path):
 def _write(path: str, producer: str) -> None:
     resolved = resolve()
     if producer == "recommendation":
-        save_shape_recommendation_record(
-            path,
-            resolved,
-            consumed=_CONSUMED,
-            tau_max_us=63.65,
-            recommended_shape="gaussian",
-            vote_rates={"exp": 0.1, "gauss": 0.9, "voigt": 0.0},
-        )
+        with atomic_write(path):
+            save_shape_recommendation_record(
+                path,
+                resolved,
+                consumed=_CONSUMED,
+                tau_max_us=63.65,
+                recommended_shape="gaussian",
+                vote_rates={"exp": 0.1, "gauss": 0.9, "voigt": 0.0},
+            )
     else:
-        save_tau_producer_settings_to_h5(path, producer, resolved)
+        with atomic_write(path):
+            save_tau_producer_settings_to_h5(path, producer, resolved)
 
 
 def _provenance(path: str, producer: str):

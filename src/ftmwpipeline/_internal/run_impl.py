@@ -24,7 +24,6 @@ from ..file_manager import (
     OperationCancelledError,
     PipelineFileError,
 )
-from .compaction import deferred_compaction
 from .events import OperationEvents, operation_events
 from .progress import StageProgress
 
@@ -215,9 +214,9 @@ def run_pipeline_impl(
     }
 
     t0 = time.monotonic()
-    # One compaction of the output file at the end of the run, not one per
-    # stage (see ``_internal.compaction``).
-    with reporter.capture_logs(), deferred_compaction():
+    # No transaction around the run: each stage call is its own atomic write
+    # (§Crash safety), so a kill keeps every stage that finished before it.
+    with reporter.capture_logs():
         try:
             ops.check_cancel()
             with reporter.stage("import"):

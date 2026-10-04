@@ -11,6 +11,7 @@ from __future__ import annotations
 import h5py
 import pytest
 
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline.core.window_planning_settings import (
     WindowPlanningSettings,
     resolve,
@@ -40,7 +41,8 @@ class TestStage4WindowsSettingsPersistence:
 
     def test_round_trip_resolved_settings(self, empty_ftmw) -> None:
         original = resolve()
-        save_window_planning_settings_to_h5(empty_ftmw, original)
+        with atomic_write(empty_ftmw):
+            save_window_planning_settings_to_h5(empty_ftmw, original)
         assert window_planning_settings_present(empty_ftmw)
         loaded = load_window_planning_settings_from_h5(empty_ftmw)
         assert loaded is not None
@@ -56,7 +58,8 @@ class TestStage4WindowsSettingsPersistence:
 
     def test_round_trip_sparse_settings(self, empty_ftmw) -> None:
         s = WindowPlanningSettings()
-        save_window_planning_settings_to_h5(empty_ftmw, s)
+        with atomic_write(empty_ftmw):
+            save_window_planning_settings_to_h5(empty_ftmw, s)
         loaded = load_window_planning_settings_from_h5(empty_ftmw)
         assert loaded is not None
         assert loaded.is_empty()
@@ -64,7 +67,8 @@ class TestStage4WindowsSettingsPersistence:
     def test_preset_name_audit_attr(self, empty_ftmw) -> None:
         s = WindowPlanningSettings()
         s.coherence.edge_m = 32
-        save_window_planning_settings_to_h5(empty_ftmw, s, preset_name="defaults")
+        with atomic_write(empty_ftmw):
+            save_window_planning_settings_to_h5(empty_ftmw, s, preset_name="defaults")
         with h5py.File(empty_ftmw, "r") as h5f:
             attrs = dict(h5f[STAGE4_WINDOWS_SETTINGS_PATH].attrs)
         assert attrs.get("preset_name") == "defaults"
@@ -73,17 +77,20 @@ class TestStage4WindowsSettingsPersistence:
     def test_overwrites_prior_block(self, empty_ftmw) -> None:
         s1 = WindowPlanningSettings()
         s1.coherence.edge_m = 32
-        save_window_planning_settings_to_h5(empty_ftmw, s1)
+        with atomic_write(empty_ftmw):
+            save_window_planning_settings_to_h5(empty_ftmw, s1)
         s2 = WindowPlanningSettings()
         s2.coherence.edge_m = 128
-        save_window_planning_settings_to_h5(empty_ftmw, s2)
+        with atomic_write(empty_ftmw):
+            save_window_planning_settings_to_h5(empty_ftmw, s2)
         loaded = load_window_planning_settings_from_h5(empty_ftmw)
         assert loaded is not None
         assert loaded.coherence.edge_m == 128
 
     def test_hdf5_subgroup_layout(self, empty_ftmw) -> None:
         s = resolve()
-        save_window_planning_settings_to_h5(empty_ftmw, s)
+        with atomic_write(empty_ftmw):
+            save_window_planning_settings_to_h5(empty_ftmw, s)
         with h5py.File(empty_ftmw, "r") as h5f:
             grp = h5f[STAGE4_WINDOWS_SETTINGS_PATH]
             for sub_name in _SUB_NAMES:
@@ -93,7 +100,8 @@ class TestStage4WindowsSettingsPersistence:
     def test_load_tolerates_missing_subgroup(self, empty_ftmw) -> None:
         s = WindowPlanningSettings()
         s.coherence.edge_m = 32
-        save_window_planning_settings_to_h5(empty_ftmw, s)
+        with atomic_write(empty_ftmw):
+            save_window_planning_settings_to_h5(empty_ftmw, s)
         with h5py.File(empty_ftmw, "a") as h5f:
             del h5f[STAGE4_WINDOWS_SETTINGS_PATH]["leakage"]
         loaded = load_window_planning_settings_from_h5(empty_ftmw)
@@ -106,7 +114,8 @@ class TestStage4WindowsSettingsPersistence:
         from the /stage4_windows results group at the root."""
         s = WindowPlanningSettings()
         s.coherence.edge_m = 32
-        save_window_planning_settings_to_h5(empty_ftmw, s)
+        with atomic_write(empty_ftmw):
+            save_window_planning_settings_to_h5(empty_ftmw, s)
         with h5py.File(empty_ftmw, "r") as h5f:
             assert STAGE4_WINDOWS_SETTINGS_PATH in h5f
             assert "stage4_windows" not in h5f, (

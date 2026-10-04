@@ -273,9 +273,12 @@ def test_api_scan_accepts_zoom_count_width(baseline_2638_stage2, tmp_path):
 
 def test_reduce_plan_for_fit_subsets_windows(baseline_2638_stage4, tmp_path):
     # the window-selection prepare hook trims the plan to the requested budget
-    # (top-SNR + sample, dependency-closed) without any fitting.
+    # (top-SNR + sample, dependency-closed) without any fitting. The scan
+    # engine always runs it inside a transaction on its working copy, so the
+    # direct call does too.
     import shutil
 
+    from ftmwpipeline._internal.atomic import atomic_write
     from ftmwpipeline._internal.tuning.fit_support import (
         FitWindowSelection,
         reduce_plan_for_fit,
@@ -284,7 +287,8 @@ def test_reduce_plan_for_fit_subsets_windows(baseline_2638_stage4, tmp_path):
     fp = tmp_path / "reduce.ftmw"
     shutil.copy(baseline_2638_stage4, fp)
     before = ftmw.load_windows(fp).n_windows
-    reduce_plan_for_fit(fp, FitWindowSelection(top_snr=3, sample=10))
+    with atomic_write(fp):
+        reduce_plan_for_fit(fp, FitWindowSelection(top_snr=3, sample=10))
     after = ftmw.load_windows(fp).n_windows
     assert 3 <= after < before  # reduced, but kept at least the top-SNR windows
 

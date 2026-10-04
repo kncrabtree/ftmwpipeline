@@ -19,6 +19,7 @@ import ftmwpipeline.api as ftmw
 
 # Import all interfaces for testing
 from ftmwpipeline import Pipeline
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline.core.data_structures import ComplexFT
 
 
@@ -176,7 +177,8 @@ def baseline_2638_stage4_small(baseline_2638_stage4, tmp_path_factory):
     plan.dependency_edges = [
         (a, b) for (a, b) in plan.dependency_edges if a in keep and b in keep
     ]
-    save_window_plan_impl(str(fp), plan)
+    with atomic_write(str(fp)):
+        save_window_plan_impl(str(fp), plan)
     return fp
 
 

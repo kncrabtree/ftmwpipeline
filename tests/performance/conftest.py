@@ -20,6 +20,7 @@ from typing import List
 import pytest
 
 import ftmwpipeline.api as ftmw
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline.core.data_structures import SpectrumFit
 
 EXAMPLE_DATA = Path("examples/blackchirp_data/2638")
@@ -102,7 +103,8 @@ def built_pipeline(example_data: Path, tmp_path_factory) -> BuiltPipeline:
     plan.dependency_edges = [
         (a, b) for (a, b) in plan.dependency_edges if a in keep_set and b in keep_set
     ]
-    save_window_plan_impl(str(fp), plan)
+    with atomic_write(str(fp)):
+        save_window_plan_impl(str(fp), plan)
 
     fit = ftmw.fit_peaks(fp, jobs=1)
     ftmw.calibrate_timebase(fp)

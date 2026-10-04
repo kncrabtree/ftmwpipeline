@@ -33,6 +33,7 @@ import h5py
 import numpy as np
 import pytest
 
+from ftmwpipeline._internal.compaction import compact_file
 from ftmwpipeline._internal.stage6_impl import apply_curation_impl
 from ftmwpipeline.io import fitting_serialization as fitser
 from ftmwpipeline.io.fitting_serialization import (
@@ -248,12 +249,14 @@ def test_curation_writes_land_at_content_size_whichever_writer_ran(
 ):
     """The other half of the point used to be measured as file growth: the
     incremental writer leaked less than a full delete-and-rewrite (919 kB per
-    write on the 2638 build). Every curation write now ends by compacting the
-    file (``_internal.compaction``), so growth no longer distinguishes the two
-    writers -- both land at the size of the content. This pins that: the same
-    two edits through either writer give the same file size (within the
-    noise of a repack), and the second edit adds nothing the first did not
-    (the one-time undo baseline is the only real growth).
+    write on the 2638 build). Every write now starts from a compacted copy of
+    the file (§Crash safety), so growth no longer distinguishes the two writers
+    once the next write has reclaimed what the last one freed -- both land at
+    the size of the content. This pins that: after each edit the file is
+    compacted (the reclamation the next write would do), and the same two edits
+    through either writer give the same file size (within the noise of a
+    repack); the second edit adds nothing the first did not (the one-time undo
+    baseline is the only real growth).
     """
     incremental = tmp_path / "incr.ftmw"
     full = tmp_path / "full.ftmw"
@@ -270,6 +273,7 @@ def test_curation_writes_land_at_content_size_whichever_writer_ran(
             apply_curation_impl(
                 target, _write_curation(tmp_path, f"{target.stem}{i}.csv", text)
             )
+            compact_file(target)  # what the next write's copy does
             sizes.append(target.stat().st_size)
         return sizes
 

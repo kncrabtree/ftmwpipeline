@@ -25,7 +25,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-import h5py
 import numpy as np
 
 from ..contract import Absent, CancelToken, EventCallback, Stage
@@ -46,6 +45,7 @@ from ..io.timebase_serialization import (
     load_timebase_calibration_from_hdf5,
     save_timebase_calibration_to_hdf5,
 )
+from .atomic import atomic_write, h5open
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage1_impl import persisted_ft_settings
 from .stage2_impl import _update_stage_completion
@@ -195,9 +195,10 @@ def calibrate_timebase_impl(
 
     ops = operation_events("timebase run", events, cancel)
     with ops.stage(Stage.TIMEBASE, verb="timebase run", file_path=file_path) as scope:
-        result = _calibrate_timebase(
-            file_path, clocks=clocks, kappa_sys=kappa_sys, snr_min=snr_min
-        )
+        with atomic_write(file_path):
+            result = _calibrate_timebase(
+                file_path, clocks=clocks, kappa_sys=kappa_sys, snr_min=snr_min
+            )
         scope.finish(timebase_summary(result["timebase_calibration"]))
     return result
 
@@ -211,7 +212,7 @@ def _calibrate_timebase(
 ) -> Dict[str, Any]:
     """The body of :func:`calibrate_timebase_impl` (inside its stage scope)."""
     file_path_obj = Path(file_path)
-    with h5py.File(file_path, "r") as h5f:
+    with h5open(file_path, "r") as h5f:
         if "stage0_fid_data" not in h5f:
             raise StageDependencyError(
                 STAGE_NAME,
@@ -296,7 +297,7 @@ def save_timebase_calibration_impl(
     parameters_used: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Write a :class:`TimebaseCalibrationResult` into ``/timebase_calibration``."""
-    with h5py.File(file_path, "a") as h5f:
+    with h5open(file_path, "a") as h5f:
         if TIMEBASE_GROUP_PATH in h5f:
             del h5f[TIMEBASE_GROUP_PATH]
         grp = h5f.create_group(TIMEBASE_GROUP_PATH)
@@ -315,7 +316,7 @@ def load_timebase_calibration_impl(file_path: str) -> Dict[str, Any]:
     ValueError
         If the timebase calibration has not been completed.
     """
-    with h5py.File(file_path, "r") as h5f:
+    with h5open(file_path, "r") as h5f:
         if TIMEBASE_GROUP_PATH not in h5f:
             raise StageDependencyError(
                 "load timebase",
@@ -346,7 +347,7 @@ def load_timebase_calibration_impl(file_path: str) -> Dict[str, Any]:
 def timebase_calibration_present(file_path: str) -> bool:
     """Lightweight: does the ``.ftmw`` file have a persisted timebase result?"""
     try:
-        with h5py.File(file_path, "r") as h5f:
+        with h5open(file_path, "r") as h5f:
             return TIMEBASE_GROUP_PATH in h5f
     except (OSError, KeyError):
         return False

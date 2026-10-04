@@ -675,6 +675,11 @@ carries a stable ``code`` and typed attributes, and ``to_dict()`` returns::
      - ``CallbackFailedError``
      - ``event_schema`` (the event being delivered); the callback's exception
        is the ``__cause__``
+   * - ``write_conflict``
+     - ``WriteConflictError``
+     - ``path`` (the file another process wrote while this call was writing
+       it; this call's changes were discarded and the other write stands); see
+       *Crash safety* below
    * - ``pipeline_error``
      - ``PipelineFileError`` (the base class)
      - none. The declared fallback: a direct raise of the base class carries
@@ -1030,7 +1035,8 @@ detection, the report, a scan):
 * ``ScanProgress`` (``ftmw/scan_progress@1``: ``knob``, ``value``, ``index``,
   ``total``) follows each scanned value.
 * ``Invalidated`` (``ftmw/invalidated@1``: ``stages``) is emitted once per
-  call that drops downstream stages, and equals the result's ``invalidated``.
+  call that drops downstream stages, after the call's write is durable and
+  just before ``StageFinished``, and equals the result's ``invalidated``.
 * ``PipelineWarning`` (``ftmw/warning@1``: ``code``, ``message`` and the
   code's own fields, flattened beside them; ``capabilities()["fields"]`` lists
   them as ``PipelineWarning.<code>``) with ``code`` one of ``slow_window``, ``walk_fallback``,
@@ -1039,7 +1045,12 @@ detection, the report, a scan):
   operation, when the file's recorded environment differs from the running
   one) and ``timebase_skipped``.
 
-A callback that raises aborts the operation with ``callback_failed``.
+A callback that raises aborts the operation with ``callback_failed``. What is
+left in the file is what a cancel at that point would leave: a callback that
+raises on ``Invalidated`` or ``StageFinished`` -- both delivered after the
+write is durable -- leaves the write in place, and no ``StageFinished``
+follows; one that raises while ``review_undo`` replays (where a cancel is not
+honoured) lets the replay complete and be written, and then fails the call.
 
 ``cancel`` is checked before every stage, between the windows of the Stage 5
 walk, of a Stage 6 refit and its cascade and of the report's rendering, and
@@ -1051,6 +1062,44 @@ apply with ``log_prefix``) honours a cancel only before it restores the
 automatic fit; once the restore has begun, the replay completes. A stage that
 has begun its final write completes, and the cancel is honoured at the next
 check point.
+
+**Crash safety.** Every call that writes a ``.ftmw`` file -- a stage run,
+curation, ``settings set``/``unset``, ``clocks``, ``start run``, a stamp --
+writes atomically: it does all its writes in a temporary copy beside the file
+and replaces the file with that copy in one ``os.replace`` when it finishes.
+
+* *Kill.* A process killed at any point, ``SIGKILL`` included, leaves the file
+  exactly as it was before the call or as the call completed it, never a mix, a
+  stage marked complete over missing or partial results, or a file that will not
+  open. A reader that already has the file open keeps the version it opened.
+* *Failure.* A cancel, a ``callback_failed`` or any other failure discards the
+  copy, so the file is left exactly as it was before the call. If the replace
+  itself fails (a platform that refuses to replace a file another process holds
+  open, for example) the call raises and the file is unchanged.
+* *Events.* ``Invalidated`` and then ``StageFinished`` are emitted once the
+  replace has happened, so an invalidation that never landed is never
+  announced. A callback reading the file from inside either one sees the
+  call's write.
+* *Pipelines.* Within ``run_pipeline`` each stage is its own atomic write, so a
+  kill keeps every stage that finished before it.
+* *Concurrent writers.* The copy is taken when the call's write begins. If
+  another process wrote the file after that, the call raises ``write_conflict``
+  (``WriteConflictError``, attribute ``path``, exit ``1``) instead of replacing
+  it; the other write stands and nothing of this call is kept. Re-run the call
+  to apply it to the file as it now is. Writes from one process to one file are
+  serialized.
+* *Size.* The copy is written compacted, so the space a write frees is
+  reclaimed by the next write.
+* *Temporary copies.* The copy is in the target's own directory (so the replace
+  stays on one filesystem) and is named
+  ``.<target basename>.ftmw-tmp.<hostname>.<pid>``, the basename including its
+  extension and ``<pid>`` the writer's decimal process id. A kill between making
+  the copy and the replace leaves it behind. Before making its own copy, every
+  write removes the leftover copies of the same target made on the same host by
+  a process that is no longer running. Copies from other hosts are never
+  touched, and neither are copies whose pid is alive, even if that pid has been
+  reused. A client that knows no write to the file is in progress may delete
+  every file matching the pattern.
 
 On the command line every long verb takes ``--events``, which writes each event
 to stderr as one JSON line. The first Ctrl-C cancels: the verb stops at its

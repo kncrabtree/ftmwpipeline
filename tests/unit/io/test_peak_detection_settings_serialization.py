@@ -11,6 +11,7 @@ from __future__ import annotations
 import h5py
 import pytest
 
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline.core.peak_detection_settings import (
     PeakDetectionSettings,
     resolve,
@@ -40,7 +41,8 @@ class TestStage3PeaksSettingsPersistence:
 
     def test_round_trip_resolved_settings(self, empty_ftmw) -> None:
         original = resolve()
-        save_peak_detection_settings_to_h5(empty_ftmw, original)
+        with atomic_write(empty_ftmw):
+            save_peak_detection_settings_to_h5(empty_ftmw, original)
         assert peak_detection_settings_present(empty_ftmw)
         loaded = load_peak_detection_settings_from_h5(empty_ftmw)
         assert loaded is not None
@@ -55,7 +57,8 @@ class TestStage3PeaksSettingsPersistence:
 
     def test_round_trip_sparse_settings(self, empty_ftmw) -> None:
         s = PeakDetectionSettings()
-        save_peak_detection_settings_to_h5(empty_ftmw, s)
+        with atomic_write(empty_ftmw):
+            save_peak_detection_settings_to_h5(empty_ftmw, s)
         loaded = load_peak_detection_settings_from_h5(empty_ftmw)
         assert loaded is not None
         assert loaded.is_empty()
@@ -63,7 +66,8 @@ class TestStage3PeaksSettingsPersistence:
     def test_preset_name_audit_attr(self, empty_ftmw) -> None:
         s = PeakDetectionSettings()
         s.promotion.min_snr = 4.0
-        save_peak_detection_settings_to_h5(empty_ftmw, s, preset_name="defaults")
+        with atomic_write(empty_ftmw):
+            save_peak_detection_settings_to_h5(empty_ftmw, s, preset_name="defaults")
         with h5py.File(empty_ftmw, "r") as h5f:
             attrs = dict(h5f[STAGE3_PEAKS_SETTINGS_PATH].attrs)
         assert attrs.get("preset_name") == "defaults"
@@ -72,17 +76,20 @@ class TestStage3PeaksSettingsPersistence:
     def test_overwrites_prior_block(self, empty_ftmw) -> None:
         s1 = PeakDetectionSettings()
         s1.promotion.min_snr = 4.0
-        save_peak_detection_settings_to_h5(empty_ftmw, s1)
+        with atomic_write(empty_ftmw):
+            save_peak_detection_settings_to_h5(empty_ftmw, s1)
         s2 = PeakDetectionSettings()
         s2.promotion.min_snr = 7.0
-        save_peak_detection_settings_to_h5(empty_ftmw, s2)
+        with atomic_write(empty_ftmw):
+            save_peak_detection_settings_to_h5(empty_ftmw, s2)
         loaded = load_peak_detection_settings_from_h5(empty_ftmw)
         assert loaded is not None
         assert loaded.promotion.min_snr == 7.0
 
     def test_hdf5_subgroup_layout(self, empty_ftmw) -> None:
         s = resolve()
-        save_peak_detection_settings_to_h5(empty_ftmw, s)
+        with atomic_write(empty_ftmw):
+            save_peak_detection_settings_to_h5(empty_ftmw, s)
         with h5py.File(empty_ftmw, "r") as h5f:
             grp = h5f[STAGE3_PEAKS_SETTINGS_PATH]
             for sub_name in _SUB_NAMES:
@@ -92,7 +99,8 @@ class TestStage3PeaksSettingsPersistence:
     def test_load_tolerates_missing_subgroup(self, empty_ftmw) -> None:
         s = PeakDetectionSettings()
         s.promotion.min_snr = 4.0
-        save_peak_detection_settings_to_h5(empty_ftmw, s)
+        with atomic_write(empty_ftmw):
+            save_peak_detection_settings_to_h5(empty_ftmw, s)
         with h5py.File(empty_ftmw, "a") as h5f:
             del h5f[STAGE3_PEAKS_SETTINGS_PATH]["gap_pass"]
         loaded = load_peak_detection_settings_from_h5(empty_ftmw)
@@ -105,7 +113,8 @@ class TestStage3PeaksSettingsPersistence:
         from the /stage3_peaks results group at the root."""
         s = PeakDetectionSettings()
         s.promotion.min_snr = 4.0
-        save_peak_detection_settings_to_h5(empty_ftmw, s)
+        with atomic_write(empty_ftmw):
+            save_peak_detection_settings_to_h5(empty_ftmw, s)
         with h5py.File(empty_ftmw, "r") as h5f:
             assert STAGE3_PEAKS_SETTINGS_PATH in h5f
             assert "stage3_peaks" not in h5f, (

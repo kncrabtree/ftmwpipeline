@@ -82,6 +82,7 @@ from ftmwpipeline.file_manager import (
     PipelineFileError,
     PipelineFileNotFoundError,
     StageDependencyError,
+    WriteConflictError,
 )
 from ftmwpipeline.serialize import to_jsonable
 
@@ -134,6 +135,7 @@ __all__ = [
     "AlgorithmFailedError",
     "OperationCancelledError",
     "CallbackFailedError",
+    "WriteConflictError",
     # Machine contract
     "CONTRACT_VERSION",
     "MANIFEST",

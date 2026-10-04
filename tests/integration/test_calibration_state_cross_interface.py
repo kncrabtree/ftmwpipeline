@@ -18,6 +18,7 @@ import pytest
 
 import ftmwpipeline.api as ftmw
 from ftmwpipeline import Pipeline
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline.core.stage_fit_settings import ClockSource
 from ftmwpipeline.core.stage_fit_settings import resolve as resolve_stage_fit_settings
 from ftmwpipeline.fitting.timebase_calibration import TimebaseCalibrationResult
@@ -51,19 +52,20 @@ def _make_native_ftmw(tmp_path):
 def _make_uncalibrated(path):
     """Declare an unlocked digitizer, with nothing measured against it."""
     resolved = resolve_stage_fit_settings(persisted=None)
-    save_stage_fit_settings_to_h5(
-        str(path),
-        replace(
-            resolved,
-            spur=replace(
-                resolved.spur,
-                clocks=(
-                    ClockSource(5120.0, locked=True),
-                    ClockSource(6250.0, locked=False),
+    with atomic_write(str(path)):
+        save_stage_fit_settings_to_h5(
+            str(path),
+            replace(
+                resolved,
+                spur=replace(
+                    resolved.spur,
+                    clocks=(
+                        ClockSource(5120.0, locked=True),
+                        ClockSource(6250.0, locked=False),
+                    ),
                 ),
             ),
-        ),
-    )
+        )
 
 
 def _make_self_calibrated(path):

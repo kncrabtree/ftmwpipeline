@@ -13,6 +13,7 @@ from pathlib import Path
 import h5py
 import pytest
 
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline.core.start_detection_settings import StartDetectionSettings
 from ftmwpipeline.io.stage_fit_settings_serialization import (
     read_recommended_start_detection,
@@ -59,7 +60,8 @@ class TestStartDetectionRecordRoundTrip:
 
     def test_no_stage0_group_write_noop(self, tmp_path: Path) -> None:
         p = _make_no_stage0_ftmw(tmp_path)
-        write_recommended_start_detection(p, StartDetectionSettings(), _result())
+        with atomic_write(p):
+            write_recommended_start_detection(p, StartDetectionSettings(), _result())
         assert read_recommended_start_detection(p) is None
 
     def test_round_trip_settings(self, tmp_path: Path) -> None:
@@ -72,7 +74,8 @@ class TestStartDetectionRecordRoundTrip:
             guard_margin_us=0.9,
             min_chirp_drop_ratio=8.0,
         )
-        write_recommended_start_detection(p, settings, _result())
+        with atomic_write(p):
+            write_recommended_start_detection(p, settings, _result())
         record = read_recommended_start_detection(p)
         assert record is not None
         assert record.settings == settings
@@ -80,7 +83,10 @@ class TestStartDetectionRecordRoundTrip:
     def test_round_trip_band_override(self, tmp_path: Path) -> None:
         p = _make_bare_stage0_ftmw(tmp_path)
         settings = StartDetectionSettings(band_min_mhz=100.0, band_max_mhz=200.0)
-        write_recommended_start_detection(p, settings, _result(band_mhz=(100.0, 200.0)))
+        with atomic_write(p):
+            write_recommended_start_detection(
+                p, settings, _result(band_mhz=(100.0, 200.0))
+            )
         record = read_recommended_start_detection(p)
         assert record is not None
         assert record.settings.band_min_mhz == pytest.approx(100.0)
@@ -89,9 +95,10 @@ class TestStartDetectionRecordRoundTrip:
 
     def test_round_trip_no_band(self, tmp_path: Path) -> None:
         p = _make_bare_stage0_ftmw(tmp_path)
-        write_recommended_start_detection(
-            p, StartDetectionSettings(), _result(band_mhz=None)
-        )
+        with atomic_write(p):
+            write_recommended_start_detection(
+                p, StartDetectionSettings(), _result(band_mhz=None)
+            )
         record = read_recommended_start_detection(p)
         assert record is not None
         assert record.settings.band_min_mhz is None
@@ -100,11 +107,14 @@ class TestStartDetectionRecordRoundTrip:
 
     def test_round_trip_diagnostic_fields(self, tmp_path: Path) -> None:
         p = _make_bare_stage0_ftmw(tmp_path)
-        write_recommended_start_detection(
-            p,
-            StartDetectionSettings(),
-            _result(chirp_end_us=1.7, chirp_detected=True, floor=42.0, plateau=4.2e5),
-        )
+        with atomic_write(p):
+            write_recommended_start_detection(
+                p,
+                StartDetectionSettings(),
+                _result(
+                    chirp_end_us=1.7, chirp_detected=True, floor=42.0, plateau=4.2e5
+                ),
+            )
         record = read_recommended_start_detection(p)
         assert record is not None
         assert record.chirp_end_us == pytest.approx(1.7)
@@ -114,21 +124,24 @@ class TestStartDetectionRecordRoundTrip:
 
     def test_round_trip_no_chirp_found(self, tmp_path: Path) -> None:
         p = _make_bare_stage0_ftmw(tmp_path)
-        write_recommended_start_detection(
-            p, StartDetectionSettings(), _result(chirp_detected=False)
-        )
+        with atomic_write(p):
+            write_recommended_start_detection(
+                p, StartDetectionSettings(), _result(chirp_detected=False)
+            )
         record = read_recommended_start_detection(p)
         assert record is not None
         assert record.chirp_detected is False
 
     def test_overwrite_replaces_previous(self, tmp_path: Path) -> None:
         p = _make_bare_stage0_ftmw(tmp_path)
-        write_recommended_start_detection(
-            p, StartDetectionSettings(), _result(chirp_end_us=1.0)
-        )
-        write_recommended_start_detection(
-            p, StartDetectionSettings(), _result(chirp_end_us=2.5)
-        )
+        with atomic_write(p):
+            write_recommended_start_detection(
+                p, StartDetectionSettings(), _result(chirp_end_us=1.0)
+            )
+        with atomic_write(p):
+            write_recommended_start_detection(
+                p, StartDetectionSettings(), _result(chirp_end_us=2.5)
+            )
         record = read_recommended_start_detection(p)
         assert record is not None
         assert record.chirp_end_us == pytest.approx(2.5)

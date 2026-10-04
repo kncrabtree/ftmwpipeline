@@ -49,6 +49,7 @@ from ..io.tau_calibration_settings_serialization import (
     save_shape_recommendation_record,
     save_tau_calibration_settings_to_h5,
 )
+from .atomic import atomic_write, h5open
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage1_impl import persisted_ft_settings
 from .tau_settings_resolution import (
@@ -134,7 +135,10 @@ def recommend_shape_impl(
 
     ops = operation_events("tau recommend", events, cancel)
     with ops.stage(Stage.TAU, verb="tau recommend", file_path=file_path) as scope:
-        result = run_shape_recommendation(file_path, settings=settings, preset=preset)
+        with atomic_write(file_path):
+            result = run_shape_recommendation(
+                file_path, settings=settings, preset=preset
+            )
         scope.finish(tau_recommend_summary(result))
     return result
 
@@ -254,7 +258,6 @@ def run_shape_recommendation(
     # ``__None__`` sentinel is written when the verdict's
     # ``recommended_shape`` is None so the attr explicitly reflects
     # "no clear winner" rather than carrying a stale prior value.
-    import h5py
 
     groups_written: list[str] = []
     write_stage2b_recommended_shape(
@@ -262,7 +265,7 @@ def run_shape_recommendation(
         verdict.recommended_shape,
         vote_rates=verdict.vote_rates,
     )
-    with h5py.File(file_path, "r") as h5f:
+    with h5open(file_path, "r") as h5f:
         for path in (
             "stage2b_tau_calibration",
             "stage2b_tau_G_calibration",

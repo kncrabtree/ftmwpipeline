@@ -23,6 +23,7 @@ from typing import Any, Callable, Dict, Tuple
 import pytest
 
 from ftmwpipeline._internal import stage4_impl
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline.core.window_planning_settings import WindowPlanningSettings
 
 pytestmark = [
@@ -191,7 +192,8 @@ class TestPersistedLayerInherit:
 
         persisted = WindowPlanningSettings()
         persisted.coherence.edge_m = 128
-        save_window_planning_settings_to_h5(str(variant), persisted)
+        with atomic_write(str(variant)):
+            save_window_planning_settings_to_h5(str(variant), persisted)
 
         mock, captured = _intercept()
         monkeypatch.setattr(stage4_impl, "build_window_plan", mock)
@@ -224,7 +226,8 @@ class TestExplicitSettingsOverridePersisted:
 
         persisted = WindowPlanningSettings()
         persisted.coherence.edge_m = 99
-        save_window_planning_settings_to_h5(str(variant), persisted)
+        with atomic_write(str(variant)):
+            save_window_planning_settings_to_h5(str(variant), persisted)
 
         mock, captured = _intercept()
         monkeypatch.setattr(stage4_impl, "build_window_plan", mock)

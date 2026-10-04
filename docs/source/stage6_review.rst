@@ -257,8 +257,10 @@ after the first ``N`` are dropped and the kept ones are replayed together with
 the new batch as one replay -- the same outcome as an undo of the dropped ids
 followed by an apply, one cascade and one persist instead of two. The batch's
 frequencies and omitted window ids resolve against the state the kept decisions
-leave, never the file as it stood; should a row fail, the file is left aligned
-at the prefix rather than at the bare automatic fit.
+leave, never the file as it stood; should a row fail, the call is discarded
+whole and the file is left exactly as it was before the call (the restore to the
+prefix happens in the call's working copy; see :doc:`machine_contract`, *Crash
+safety*).
 
 Because the decisions are anchored rather than baked in, re-running an upstream stage
 does not silently discard them. **Replay re-applies each decision wherever its anchor

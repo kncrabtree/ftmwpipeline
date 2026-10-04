@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 
 import ftmwpipeline.api as ftmw
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline._internal.start_detection_impl import (
     detect_start_time_impl,
     resolve_start_provenance,
@@ -60,7 +61,8 @@ def _make_fid(
 def _create_ftmw(tmp_path: Path, fid: FID, filename: str = "test.ftmw") -> str:
     p = str(tmp_path / filename)
     src = SourceMetadata(source_path=tmp_path, format_name="test")
-    create_pipeline_file(p, fid, src, force=True)
+    with atomic_write(p):
+        create_pipeline_file(p, fid, src, force=True)
     return p
 
 
@@ -78,9 +80,11 @@ class TestNone:
 class TestDeclared:
     def test_declaration_governs(self, tmp_path: Path) -> None:
         p = _create_ftmw(tmp_path, _make_fid(chirp_start_us=0.5, chirp_dur_us=1.0))
-        write_recommended_chirp_window(
-            p, ChirpWindow(chirp_end_us=1.5, chirp_start_us=0.5, start_margin_us=0.8)
-        )
+        with atomic_write(p):
+            write_recommended_chirp_window(
+                p,
+                ChirpWindow(chirp_end_us=1.5, chirp_start_us=0.5, start_margin_us=0.8),
+            )
         detect_start_time_impl(p, settings=_FAST, stamp=True)
         ftmw.compute_ft(p)
         prov = resolve_start_provenance(p)
@@ -95,13 +99,15 @@ class TestDeclared:
     def test_declared_without_start_run(self, tmp_path: Path) -> None:
         """No start_detection record at all -- declaration alone is enough."""
         p = _create_ftmw(tmp_path, _make_fid())
-        write_recommended_chirp_window(p, ChirpWindow(chirp_end_us=1.6))
+        with atomic_write(p):
+            write_recommended_chirp_window(p, ChirpWindow(chirp_end_us=1.6))
         # No detect_start_time_impl call: only the import-time-style declaration.
         from ftmwpipeline.file_manager import update_processing_parameters
 
-        update_processing_parameters(
-            p, {"start_us": 1.6 + StartDetectionSettings().guard_margin_us}
-        )
+        with atomic_write(p):
+            update_processing_parameters(
+                p, {"start_us": 1.6 + StartDetectionSettings().guard_margin_us}
+            )
         ftmw.compute_ft(p)
         prov = resolve_start_provenance(p)
         assert prov.source == "declared"
@@ -140,7 +146,8 @@ class TestNoChirpFound:
 class TestManual:
     def test_stage1_override_wins(self, tmp_path: Path) -> None:
         p = _create_ftmw(tmp_path, _make_fid(chirp_start_us=0.5, chirp_dur_us=1.0))
-        write_recommended_chirp_window(p, ChirpWindow(chirp_end_us=1.5))
+        with atomic_write(p):
+            write_recommended_chirp_window(p, ChirpWindow(chirp_end_us=1.5))
         detect_start_time_impl(p, settings=_FAST, stamp=True)
         ftmw.compute_ft(p)  # inherit the Stage 0 recommendation into ft_processing
         recommended = resolve_start_provenance(p).start_us

@@ -11,6 +11,7 @@ from __future__ import annotations
 import h5py
 import pytest
 
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline.core.noise_settings import (
     NoiseSettings,
     resolve,
@@ -38,7 +39,8 @@ class TestStage2NoiseSettingsPersistence:
 
     def test_round_trip_resolved_settings(self, empty_ftmw) -> None:
         original = resolve()
-        save_noise_settings_to_h5(empty_ftmw, original)
+        with atomic_write(empty_ftmw):
+            save_noise_settings_to_h5(empty_ftmw, original)
         assert noise_settings_present(empty_ftmw)
         loaded = load_noise_settings_from_h5(empty_ftmw)
         assert loaded is not None
@@ -49,7 +51,8 @@ class TestStage2NoiseSettingsPersistence:
     def test_round_trip_bool_and_int(self, empty_ftmw) -> None:
         """The region_aware bool and n_iter int survive the HDF5 round-trip."""
         s = NoiseSettings(window_mhz=60.0, n_iter=5, region_aware=False)
-        save_noise_settings_to_h5(empty_ftmw, s)
+        with atomic_write(empty_ftmw):
+            save_noise_settings_to_h5(empty_ftmw, s)
         loaded = load_noise_settings_from_h5(empty_ftmw)
         assert loaded is not None
         assert loaded.window_mhz == 60.0
@@ -57,14 +60,16 @@ class TestStage2NoiseSettingsPersistence:
         assert bool(loaded.region_aware) is False
 
     def test_round_trip_sparse_settings(self, empty_ftmw) -> None:
-        save_noise_settings_to_h5(empty_ftmw, NoiseSettings())
+        with atomic_write(empty_ftmw):
+            save_noise_settings_to_h5(empty_ftmw, NoiseSettings())
         loaded = load_noise_settings_from_h5(empty_ftmw)
         assert loaded is not None
         assert loaded.is_empty()
 
     def test_preset_name_audit_attr(self, empty_ftmw) -> None:
         s = NoiseSettings(window_mhz=60.0)
-        save_noise_settings_to_h5(empty_ftmw, s, preset_name="defaults")
+        with atomic_write(empty_ftmw):
+            save_noise_settings_to_h5(empty_ftmw, s, preset_name="defaults")
         with h5py.File(empty_ftmw, "r") as h5f:
             attrs = dict(h5f[STAGE2_NOISE_SETTINGS_PATH].attrs)
         assert attrs.get("preset_name") == "defaults"
@@ -72,9 +77,10 @@ class TestStage2NoiseSettingsPersistence:
 
     def test_audit_attrs_do_not_leak_into_settings(self, empty_ftmw) -> None:
         """creation_time / preset_name are group bookkeeping, not fields."""
-        save_noise_settings_to_h5(
-            empty_ftmw, NoiseSettings(window_mhz=60.0), preset_name="p"
-        )
+        with atomic_write(empty_ftmw):
+            save_noise_settings_to_h5(
+                empty_ftmw, NoiseSettings(window_mhz=60.0), preset_name="p"
+            )
         loaded = load_noise_settings_from_h5(empty_ftmw)
         assert loaded is not None
         assert loaded.window_mhz == 60.0
@@ -82,14 +88,17 @@ class TestStage2NoiseSettingsPersistence:
         assert loaded.pedestal_mhz is None
 
     def test_overwrites_prior_block(self, empty_ftmw) -> None:
-        save_noise_settings_to_h5(empty_ftmw, NoiseSettings(window_mhz=60.0))
-        save_noise_settings_to_h5(empty_ftmw, NoiseSettings(window_mhz=120.0))
+        with atomic_write(empty_ftmw):
+            save_noise_settings_to_h5(empty_ftmw, NoiseSettings(window_mhz=60.0))
+        with atomic_write(empty_ftmw):
+            save_noise_settings_to_h5(empty_ftmw, NoiseSettings(window_mhz=120.0))
         loaded = load_noise_settings_from_h5(empty_ftmw)
         assert loaded is not None
         assert loaded.window_mhz == 120.0
 
     def test_hdf5_attr_layout(self, empty_ftmw) -> None:
-        save_noise_settings_to_h5(empty_ftmw, resolve())
+        with atomic_write(empty_ftmw):
+            save_noise_settings_to_h5(empty_ftmw, resolve())
         with h5py.File(empty_ftmw, "r") as h5f:
             grp = h5f[STAGE2_NOISE_SETTINGS_PATH]
             # Flat: fields are attrs on the group, no sub-groups.
@@ -100,7 +109,8 @@ class TestStage2NoiseSettingsPersistence:
     def test_distinct_from_stage2_noise_result(self, empty_ftmw) -> None:
         """Settings persist under processing_parameters/stage2_noise — distinct
         from the /stage2_noise_result results group."""
-        save_noise_settings_to_h5(empty_ftmw, NoiseSettings(window_mhz=60.0))
+        with atomic_write(empty_ftmw):
+            save_noise_settings_to_h5(empty_ftmw, NoiseSettings(window_mhz=60.0))
         with h5py.File(empty_ftmw, "r") as h5f:
             assert STAGE2_NOISE_SETTINGS_PATH in h5f
             assert (

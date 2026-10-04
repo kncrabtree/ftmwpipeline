@@ -14,6 +14,7 @@ from typing import Dict
 import h5py
 import pytest
 
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline._internal.tuning import SettingRow, resolve_settings_view
 from ftmwpipeline._internal.tuning.settings_inspection import (
     SOURCE_DEFAULT,
@@ -76,7 +77,10 @@ def test_default_provenance_matches_resolver(bare_ftmw: Path) -> None:
 
 
 def test_persisted_provenance(bare_ftmw: Path) -> None:
-    save_noise_settings_to_h5(str(bare_ftmw), noise_mod.NoiseSettings(window_mhz=137.0))
+    with atomic_write(str(bare_ftmw)):
+        save_noise_settings_to_h5(
+            str(bare_ftmw), noise_mod.NoiseSettings(window_mhz=137.0)
+        )
     win = _by_path(resolve_settings_view(bare_ftmw, include_advanced=True))[
         "stage2.window_mhz"
     ]
@@ -88,7 +92,10 @@ def test_persisted_beats_preset_and_preset_seeds(
     bare_ftmw: Path, tmp_path: Path
 ) -> None:
     # window_mhz is persisted; pedestal_mhz is only in the preset.
-    save_noise_settings_to_h5(str(bare_ftmw), noise_mod.NoiseSettings(window_mhz=137.0))
+    with atomic_write(str(bare_ftmw)):
+        save_noise_settings_to_h5(
+            str(bare_ftmw), noise_mod.NoiseSettings(window_mhz=137.0)
+        )
     preset = tmp_path / "inst.yaml"
     preset.write_text(
         "name: inst\nstage2:\n  window_mhz: 999.0\n  pedestal_mhz: 42.0\n"

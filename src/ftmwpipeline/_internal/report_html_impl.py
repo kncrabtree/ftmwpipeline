@@ -53,6 +53,7 @@ from ..fitting.peak_model import sideband_sign as _sideband_sign
 from ..fitting.validation import DEFAULT_CHI2R_NOISE_FLOOR, shape_error_fraction
 from ..io.stage6_review_serialization import load_stage6_review_from_file
 from ..utils.parallelism import resolve_worker_count
+from .atomic import h5open
 from .catalog_xref import CatalogCrossRef, CatalogMatch, load_cross_ref
 from .report_impl import (
     _CAL_STATE_PHRASE,
@@ -1336,7 +1337,6 @@ def _environment_block(file_path: Any) -> List[str]:
     result cannot be reproduced from any single version, and a report that
     quietly printed one version would be claiming more than the record supports.
     """
-    import h5py
 
     from ..core.environment import EnvironmentRecord, describe_environment_drift
     from ..io.environment_serialization import (
@@ -1345,7 +1345,7 @@ def _environment_block(file_path: Any) -> List[str]:
     )
 
     try:
-        with h5py.File(str(file_path), "r") as h5f:
+        with h5open(str(file_path), "r") as h5f:
             envs = load_stage_environments(h5f)
             ack = load_environment_ack(h5f)
     except (OSError, KeyError):  # pragma: no cover - the report already read it

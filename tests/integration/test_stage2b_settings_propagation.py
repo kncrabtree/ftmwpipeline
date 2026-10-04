@@ -27,6 +27,7 @@ from ftmwpipeline._internal import (
     shape_recommendation_impl,
     stage2b_impl,
 )
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline.core.tau_calibration_settings import (
     RecommendationSubSettings,
     StftSubSettings,
@@ -613,7 +614,8 @@ class TestPersistedLayerInherit:
         # the hard default 10.
         persisted = TauCalibrationSettings()
         persisted.stft.n_seg = 12
-        save_tau_calibration_settings_to_h5(str(variant), persisted)
+        with atomic_write(str(variant)):
+            save_tau_calibration_settings_to_h5(str(variant), persisted)
 
         mock, captured = _intercept()
         monkeypatch.setattr(stage2b_impl, "extract_tau_majority", mock)
@@ -647,7 +649,8 @@ class TestExplicitSettingsOverridePersisted:
 
         persisted = TauCalibrationSettings()
         persisted.stft.n_seg = 12
-        save_tau_calibration_settings_to_h5(str(variant), persisted)
+        with atomic_write(str(variant)):
+            save_tau_calibration_settings_to_h5(str(variant), persisted)
 
         mock, captured = _intercept()
         monkeypatch.setattr(stage2b_impl, "extract_tau_majority", mock)

@@ -36,7 +36,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Tuple, cast
 
-import h5py
 import numpy as np
 
 from ..contract import CancelToken, EventCallback, Stage
@@ -76,6 +75,7 @@ from ..preprocessing.peak_detection import (
 )
 from ..utils.signal_processing import make_apodization, matched_filter_window
 from .active_ft_support import build_active_grid_with_noise
+from .atomic import atomic_write, h5open
 from .shared_utils import active_acquisition_us, require_resolved
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage1_impl import compute_ft_impl
@@ -569,9 +569,10 @@ def detect_peaks_impl(
 
     ops = operation_events("peaks run", events, cancel)
     with ops.stage(Stage.PEAKS, verb="peaks run", file_path=file_path) as scope:
-        result = _detect_peaks(
-            file_path, settings=settings, preset=preset, events=scope
-        )
+        with atomic_write(file_path):
+            result = _detect_peaks(
+                file_path, settings=settings, preset=preset, events=scope
+            )
         scope.finish(peaks_run_summary(result))
     return result
 
@@ -687,7 +688,7 @@ def _detect_peaks(
         "gap_active_zpf": gap_active_zpf_v,
     }
 
-    with h5py.File(file_path, "r") as h5f:
+    with h5open(file_path, "r") as h5f:
         if (
             "processing_parameters" not in h5f
             or "ft_processing" not in h5f["processing_parameters"]
@@ -989,7 +990,7 @@ def save_peaks_impl(
     parameters: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Persist a peak list to ``/stage3_peaks`` (overwriting any existing)."""
-    with h5py.File(file_path, "a") as h5f:
+    with h5open(file_path, "a") as h5f:
         if "stage3_peaks" in h5f:
             del h5f["stage3_peaks"]
         grp = h5f.create_group("stage3_peaks")
@@ -1010,7 +1011,7 @@ def read_promotion_min_snr(file_path: str) -> Optional[float]:
     Reads only the attribute (no peaks are deserialized); ``None`` when the
     file has no Stage 3 group or the group predates persisting the cutoff.
     """
-    with h5py.File(file_path, "r") as h5f:
+    with h5open(file_path, "r") as h5f:
         if "stage3_peaks" not in h5f:
             return None
         return _promotion_attr_to_float(
@@ -1020,7 +1021,7 @@ def read_promotion_min_snr(file_path: str) -> Optional[float]:
 
 def load_peaks_impl(file_path: str) -> Dict[str, Any]:
     """Load the persisted Stage 3 peak list (validates structure loudly)."""
-    with h5py.File(file_path, "r") as h5f:
+    with h5open(file_path, "r") as h5f:
         if "stage3_peaks" not in h5f:
             raise StageDependencyError(
                 "load peaks",
@@ -1173,7 +1174,7 @@ def visualize_primary_detection_impl(
 
 def _write_peak_parameters_record(file_path: str, parameters: Dict[str, Any]) -> None:
     """Write the ``processing_parameters/peak_detection`` record (JSON blob)."""
-    with h5py.File(file_path, "a") as h5f:
+    with h5open(file_path, "a") as h5f:
         grp = h5f.require_group("processing_parameters")
         if "peak_detection" in grp:
             del grp["peak_detection"]
@@ -1190,6 +1191,7 @@ def save_peak_parameters_impl(file_path: str, parameters: Dict[str, Any]) -> Lis
     peaks -- and every curated result after them -- for a call documented as
     "save for reuse" would destroy work on a bookkeeping write.
     """
-    _write_peak_parameters_record(file_path, parameters)
+    with atomic_write(file_path):
+        _write_peak_parameters_record(file_path, parameters)
     logger.info("Saved Stage 3 parameters to %s", file_path)
     return []

@@ -62,6 +62,7 @@ from typing import Any, Dict, Mapping, Optional, Tuple
 import h5py
 import numpy as np
 
+from .._internal.atomic import h5open
 from ..core.tau_calibration_settings import (
     PRODUCER_FIELDS,
     PRODUCER_GAUSSIAN,
@@ -341,7 +342,7 @@ def load_tau_producer_settings_from_h5(
     resolved to unset.
     """
     path, _version = _producer_record(producer)
-    with h5py.File(file_path, "r") as h5f:
+    with h5open(file_path, "r") as h5f:
         grp = h5f.get(path)
         if not isinstance(grp, h5py.Group):
             return None
@@ -434,7 +435,7 @@ def load_shape_recommendation_record(
     The record is removed when a primary Stage 2b calibration resets the
     verdict, so its presence means the verdict it holds is the one in effect.
     """
-    with h5py.File(file_path, "r") as h5f:
+    with h5open(file_path, "r") as h5f:
         grp = h5f.get(SHAPE_RECOMMENDATION_SETTINGS_PATH)
         if not isinstance(grp, h5py.Group):
             return None
@@ -475,7 +476,7 @@ def delete_shape_recommendation_record(file_path: str) -> bool:
     Called when a primary Stage 2b calibration resets the verdict, so a
     withdrawn verdict is never read as the one in effect.
     """
-    with h5py.File(file_path, "a") as h5f:
+    with h5open(file_path, "a") as h5f:
         if SHAPE_RECOMMENDATION_SETTINGS_PATH not in h5f:
             return False
         del h5f[SHAPE_RECOMMENDATION_SETTINGS_PATH]

@@ -78,12 +78,13 @@ from .file_manager import (
     PipelineFileNotFoundError,
     PipelineStageTracker,
     StageDependencyError,
+    WriteConflictError,
 )
 
 #: The machine-contract version. The first published contract is ``1``; each
 #: release that adds (or, before 1.0.0, changes) contract elements raises it by
 #: one, so a client can gate on it as well as on :func:`capabilities`.
-CONTRACT_VERSION: int = 9
+CONTRACT_VERSION: int = 10
 
 #: Schema name of the :func:`capabilities` payload.
 CAPABILITIES_SCHEMA = "ftmw/capabilities@1"
@@ -720,6 +721,7 @@ _CODES: Tuple[str, ...] = (
     AlgorithmFailedError.code,  # "algorithm_failed"
     OperationCancelledError.code,  # "cancelled"
     CallbackFailedError.code,  # "callback_failed"
+    WriteConflictError.code,  # "write_conflict"
     # The base class's declared fallback: run_pipeline reports a failure that
     # is not a typed error under it (§Events and cancellation).
     PipelineFileError.code,  # "pipeline_error"
@@ -1103,4 +1105,5 @@ __all__ = [
     "AlgorithmFailedError",
     "OperationCancelledError",
     "CallbackFailedError",
+    "WriteConflictError",
 ]

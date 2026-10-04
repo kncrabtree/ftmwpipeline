@@ -40,7 +40,7 @@ from ftmwpipeline.contract import (
     Stage,
     capabilities,
 )
-from ftmwpipeline.file_manager import PipelineFileError
+from ftmwpipeline.file_manager import PipelineFileError, WriteConflictError
 from tests._events_support import Recorder, Token
 
 pytestmark = [pytest.mark.unit]
@@ -341,6 +341,7 @@ def test_callback_failed_error_code_attributes_and_dict():
         OperationCancelledError("fit", ["data", "ft", "noise"], []),
         OperationCancelledError(None, [], []),
         CallbackFailedError("ftmw/stage_started@1"),
+        WriteConflictError("/data/exp.ftmw"),
     ],
 )
 def test_errors_pickle_round_trip(err):
@@ -354,7 +355,13 @@ def test_errors_pickle_round_trip(err):
 def test_errors_are_exported_from_the_package_root():
     assert ftmwpipeline.OperationCancelledError is OperationCancelledError
     assert ftmwpipeline.CallbackFailedError is CallbackFailedError
-    for name in ("OperationCancelledError", "CallbackFailedError", "CancelToken"):
+    assert ftmwpipeline.WriteConflictError is WriteConflictError
+    for name in (
+        "OperationCancelledError",
+        "CallbackFailedError",
+        "CancelToken",
+        "WriteConflictError",
+    ):
         assert name in ftmwpipeline.__all__
     for cls in (
         StageStarted,
@@ -442,10 +449,12 @@ def test_stage_order_is_started_other_invalidated_finished():
 # ---- manifest and capabilities ---------------------------------------------------
 
 
-def test_contract_version_is_nine():
-    assert ftmwpipeline.CONTRACT_VERSION == 9
-    assert MANIFEST.contract_version == 9
-    assert capabilities()["contract_version"] == 9
+def test_contract_version_is_ten():
+    # 9: events and cancellation (Wave 5.1); 10: write_conflict and atomic
+    # writes (Wave 5.1b).
+    assert ftmwpipeline.CONTRACT_VERSION == 10
+    assert MANIFEST.contract_version == 10
+    assert capabilities()["contract_version"] == 10
 
 
 def test_event_schemas_are_in_the_manifest_and_capabilities():
@@ -457,12 +466,13 @@ def test_event_schemas_are_in_the_manifest_and_capabilities():
 
 def test_error_codes_are_in_the_manifest_and_capabilities():
     caps = capabilities()
-    for code in ("cancelled", "callback_failed", "pipeline_error"):
+    for code in ("cancelled", "callback_failed", "write_conflict", "pipeline_error"):
         assert code in MANIFEST.codes
         assert code in caps["codes"]
     # The manifest and the exception classes agree.
     assert OperationCancelledError.code in caps["codes"]
     assert CallbackFailedError.code in caps["codes"]
+    assert WriteConflictError.code in caps["codes"]
 
 
 @pytest.mark.parametrize("cls,schema,extra", EVENT_TABLE)
@@ -494,6 +504,12 @@ def test_cancelled_exits_130_and_callback_failed_exits_1():
     assert EXIT_CODES["cancelled"] == 130
     assert exit_code_for(OperationCancelledError("fit", [], [])) == 130
     assert exit_code_for(CallbackFailedError("ftmw/warning@1")) == 1
+
+
+def test_write_conflict_exits_1():
+    # Not in the table: every code outside it exits 1 (§Errors).
+    assert "write_conflict" not in EXIT_CODES
+    assert exit_code_for(WriteConflictError("/x/y.ftmw")) == 1
 
 
 # ---- run_pipeline ------------------------------------------------------------------------

@@ -8,12 +8,10 @@ API interfaces.
 
 import json
 import logging
-from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Mapping, Optional, Tuple
 
-import h5py
 import numpy as np
 
 from ..contract import CancelToken, EventCallback, Stage
@@ -44,7 +42,7 @@ from ..preprocessing.noise_estimation import (
     estimate_active_ft_noise,
 )
 from .active_ft_support import build_trimmed_active_ft
-from .compaction import compact_file
+from .atomic import atomic_write, h5open
 from .shared_utils import require_resolved
 
 if TYPE_CHECKING:
@@ -158,9 +156,10 @@ def compute_noise_estimation_impl(
 
     ops = operation_events("noise run", events, cancel)
     with ops.stage(Stage.NOISE, verb="noise run", file_path=file_path) as scope:
-        result = _compute_noise_estimation(
-            file_path, settings=settings, preset=preset, events=scope
-        )
+        with atomic_write(file_path):
+            result = _compute_noise_estimation(
+                file_path, settings=settings, preset=preset, events=scope
+            )
         scope.finish(noise_run_summary(result, file_path))
     return result
 
@@ -176,7 +175,7 @@ def _compute_noise_estimation(
     # Compute ComplexFT on-demand using Stage 1 implementation (correct architecture)
     try:
         # Check that Stage 1 parameters are available (Stage 1 dependency)
-        with h5py.File(file_path, "r") as h5f:
+        with h5open(file_path, "r") as h5f:
             if (
                 "processing_parameters" not in h5f
                 or "ft_processing" not in h5f["processing_parameters"]
@@ -335,29 +334,25 @@ def _compute_noise_scatter(
         raise ValueError(f"Noise estimation failed: {e}")
 
     try:
-        # The final write completes once begun: a raising events callback (the
-        # Invalidated event is delivered between the invalidation and the
-        # completion stamp) is held and raised only once the stage is whole.
-        with events.committing() if events is not None else nullcontext():
-            save_noise_result_impl(
-                file_path=file_path,
-                noise_result=noise_result,
-                frequencies=active_ft.freq_array,
-                magnitudes=active_ft.magnitude_spectrum,
-                parameters_used=processing_params,
+        save_noise_result_impl(
+            file_path=file_path,
+            noise_result=noise_result,
+            frequencies=active_ft.freq_array,
+            magnitudes=active_ft.magnitude_spectrum,
+            parameters_used=processing_params,
+        )
+        # Persist the resolved NoiseSettings to
+        # ``processing_parameters/stage2_noise`` so a no-kwargs re-run
+        # inherits it via the resolver's persisted layer.
+        save_noise_settings_to_h5(file_path, settings, preset_name=preset_name)
+        invalidated = (
+            invalidate_downstream_stages(
+                file_path, "stage2_noise_result", events=events
             )
-            # Persist the resolved NoiseSettings to
-            # ``processing_parameters/stage2_noise`` so a no-kwargs re-run
-            # inherits it via the resolver's persisted layer.
-            save_noise_settings_to_h5(file_path, settings, preset_name=preset_name)
-            invalidated = (
-                invalidate_downstream_stages(
-                    file_path, "stage2_noise_result", events=events
-                )
-                if previous is not None and previous != settings
-                else []
-            )
-            _update_stage_completion(file_path, "stage2_noise_result")
+            if previous is not None and previous != settings
+            else []
+        )
+        _update_stage_completion(file_path, "stage2_noise_result")
         # The "Stage 2: ... saved and marked complete" line is rendered from
         # the stage's StageFinished event (compute_noise_estimation_impl).
     except PipelineFileError:
@@ -430,7 +425,7 @@ def visualize_noise_impl(
     """
     # Load NoiseResult and ComplexFT from pipeline file
     try:
-        with h5py.File(file_path, "r") as h5f:
+        with h5open(file_path, "r") as h5f:
             # Check dependencies
             if "stage2_noise_result" not in h5f:
                 raise StageDependencyError(
@@ -469,7 +464,7 @@ def visualize_noise_impl(
         complex_ft = build_trimmed_active_ft(file_path, stage1_result.get("trim_range"))
 
         # Load NoiseResult data
-        with h5py.File(file_path, "r") as h5f:
+        with h5open(file_path, "r") as h5f:
 
             noise_result = load_noise_result_from_hdf5(
                 h5f["stage2_noise_result"],
@@ -567,7 +562,7 @@ def save_noise_result_impl(
         Parameters used for noise estimation
     """
     try:
-        with h5py.File(file_path, "a") as h5f:
+        with h5open(file_path, "a") as h5f:
             # Remove existing noise result if present
             if "stage2_noise_result" in h5f:
                 del h5f["stage2_noise_result"]
@@ -611,7 +606,7 @@ def load_noise_result_impl(file_path: str) -> Dict[str, Any]:
         Dict containing 'noise_result', 'complex_ft', and metadata
     """
     try:
-        with h5py.File(file_path, "r") as h5f:
+        with h5open(file_path, "r") as h5f:
             # Check dependencies
             if "stage2_noise_result" not in h5f:
                 raise StageDependencyError(
@@ -648,7 +643,7 @@ def load_noise_result_impl(file_path: str) -> Dict[str, Any]:
         complex_ft = active_ft
 
         # Load NoiseResult on the active-FT grid
-        with h5py.File(file_path, "r") as h5f:
+        with h5open(file_path, "r") as h5f:
 
             # Load NoiseResult
             noise_result = load_noise_result_from_hdf5(
@@ -691,12 +686,13 @@ def _update_stage_completion(file_path: str, stage_name: str) -> None:
     stage_name : str
         Name of the stage to mark as completed
 
-    Compacts the file afterwards: a stage re-run deletes and recreates its
-    group, and HDF5 never reclaims the attribute and vlen space that leaves
-    behind (see :mod:`~ftmwpipeline._internal.compaction`).
+    Called inside the stage's transaction
+    (:func:`~ftmwpipeline._internal.atomic.atomic_write`), whose working copy
+    was written compacted: the dead space a re-run leaves is reclaimed by the
+    next write (see :mod:`~ftmwpipeline._internal.compaction`).
     """
     try:
-        with h5py.File(file_path, "a") as h5f:
+        with h5open(file_path, "a") as h5f:
             # Load current stage tracker
             from ..file_manager import _load_stage_tracker
 
@@ -739,8 +735,3 @@ def _update_stage_completion(file_path: str, stage_name: str) -> None:
         raise
     except Exception as e:
         raise RuntimeError(f"Failed to update stage completion: {e}")
-
-    # Every stage from noise through review stamps its completion here, last,
-    # so this is the one place a finished stage run reclaims the dead space
-    # its rewrite left (see ``_internal.compaction``).
-    compact_file(file_path)

@@ -52,7 +52,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Tuple
 
-import h5py
 import numpy as np
 
 from ..contract import CancelToken, EventCallback, Stage
@@ -79,6 +78,7 @@ from ..io.tau_calibration_settings_serialization import (
     save_tau_calibration_settings_to_h5,
     save_tau_producer_settings_to_h5,
 )
+from .atomic import atomic_write, h5open
 from .shape_recommendation_impl import run_shape_recommendation
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage1_impl import persisted_ft_settings
@@ -319,7 +319,9 @@ def calibrate_tau_impl(
     _check_shape(shape)
     ops = operation_events("tau run", events, cancel)
     with ops.stage(_tau_stage(shape), verb="tau run", file_path=file_path) as scope:
-        with scope.collect_invalidations():
+        # One transaction: the calibration, its twin and the shape
+        # recommendation land together or not at all.
+        with atomic_write(file_path):
             result, twin = _calibrate_tau(
                 file_path,
                 shape=shape,
@@ -352,7 +354,7 @@ def _calibrate_tau(
     _check_shape(shape)
     stage_name = _stage_name_for_shape(shape)
     file_path_obj = Path(file_path)
-    with h5py.File(file_path, "r") as h5f:
+    with h5open(file_path, "r") as h5f:
         if "stage2_noise_result" not in h5f:
             raise StageDependencyError(
                 stage_name,
@@ -675,7 +677,7 @@ def save_tau_calibration_impl(
 
     _check_shape(shape)
     group_path = _group_path_for_shape(shape)
-    with h5py.File(file_path, "a") as h5f:
+    with h5open(file_path, "a") as h5f:
         if group_path in h5f:
             del h5f[group_path]
         grp = h5f.create_group(group_path)
@@ -701,7 +703,7 @@ def load_tau_calibration_impl(
     """
     _check_shape(shape)
     group_path = _group_path_for_shape(shape)
-    with h5py.File(file_path, "r") as h5f:
+    with h5open(file_path, "r") as h5f:
         if group_path not in h5f:
             verb = "tau run --gaussian" if shape == "gaussian" else "tau run"
             raise StageDependencyError(
@@ -735,7 +737,7 @@ def tau_calibration_present(file_path: str, *, shape: str = "lorentzian") -> boo
     _check_shape(shape)
     group_path = _group_path_for_shape(shape)
     try:
-        with h5py.File(file_path, "r") as h5f:
+        with h5open(file_path, "r") as h5f:
             return group_path in h5f
     except (OSError, KeyError):
         return False

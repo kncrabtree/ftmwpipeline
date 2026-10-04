@@ -25,6 +25,7 @@ from typing import Any, Callable, Dict, Tuple
 import pytest
 
 from ftmwpipeline._internal import stage3_impl
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline.core.peak_detection_settings import PeakDetectionSettings
 
 pytestmark = [
@@ -597,7 +598,8 @@ class TestPersistedLayerInherit:
 
         persisted = PeakDetectionSettings()
         persisted.savgol.sg_window = 17
-        save_peak_detection_settings_to_h5(str(variant), persisted)
+        with atomic_write(str(variant)):
+            save_peak_detection_settings_to_h5(str(variant), persisted)
 
         mock, captured = _intercept_kernel()
         monkeypatch.setattr(stage3_impl, "detect_peaks", mock)
@@ -630,7 +632,8 @@ class TestExplicitSettingsOverridePersisted:
 
         persisted = PeakDetectionSettings()
         persisted.savgol.sg_window = 17
-        save_peak_detection_settings_to_h5(str(variant), persisted)
+        with atomic_write(str(variant)):
+            save_peak_detection_settings_to_h5(str(variant), persisted)
 
         mock, captured = _intercept_kernel()
         monkeypatch.setattr(stage3_impl, "detect_peaks", mock)

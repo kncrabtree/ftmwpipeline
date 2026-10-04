@@ -21,6 +21,7 @@ from ..file_manager import (
     canonical_invalidated,
     create_pipeline_file,
     open_pipeline_file,
+    pipeline_file_path,
     stages_an_import_replaces,
     validate_pipeline_file,
 )
@@ -32,6 +33,7 @@ from ..io.data_loaders import (
 )
 from ..io.fid_serialization import load_fid_from_hdf5
 from ..io.stage_fit_settings_serialization import write_recommended_chirp_window
+from .atomic import atomic_write, h5open
 
 if TYPE_CHECKING:
     from .events import StageScope
@@ -242,15 +244,20 @@ def import_data_impl(
 
     ops = operation_events("data import", events, cancel)
     with ops.stage(Stage.DATA, verb="data import") as scope:
-        result = _import_data(
-            file_path,
-            source,
-            format_name,
-            force,
-            fid_index=fid_index,
-            events=scope,
-            format_params=format_params,
-        )
+        # One atomic write of the file the import creates (or overwrites):
+        # ``create_pipeline_file`` adds the ``.ftmw`` suffix, so the
+        # transaction is on the suffixed path. StageFinished follows the
+        # replace.
+        with atomic_write(pipeline_file_path(file_path)):
+            result = _import_data(
+                file_path,
+                source,
+                format_name,
+                force,
+                fid_index=fid_index,
+                events=scope,
+                format_params=format_params,
+            )
         scope.finish(data_import_summary(result))
     return result
 
@@ -337,27 +344,25 @@ def _import_data(
 
         # Create the pipeline file. Overwriting a file discards every stage it
         # held, which the result reports as invalidated. The overwrite and the
-        # loader's start hint are reported as ONE Invalidated event.
-        with events.collect_invalidations():
-            invalidated = stages_an_import_replaces(file_path, force)
-            pipeline_file = create_pipeline_file(
-                filepath=file_path,
-                fid=fid,
-                source_metadata=source_metadata,
-                force=force,
-            )
-            logger.info(f"Pipeline file created: {pipeline_file}")
-            # The overwrite logs no warning line of its own (it never did);
-            # its stages join the one delivered Invalidated event.
-            events.invalidated(
-                [stage_for_key(k) for k in invalidated],
-                reason=None,
-            )
+        # loader's start hint are reported as ONE Invalidated event (the
+        # stage scope merges them and delivers it after the replace).
+        invalidated = stages_an_import_replaces(file_path, force)
+        pipeline_file = create_pipeline_file(
+            filepath=file_path,
+            fid=fid,
+            source_metadata=source_metadata,
+            force=force,
+        )
+        logger.info(f"Pipeline file created: {pipeline_file}")
+        # The overwrite logs no warning line of its own (it never did); its
+        # stages join the one Invalidated event.
+        events.invalidated(
+            [stage_for_key(k) for k in invalidated],
+            reason=None,
+        )
 
-            # Written after create_pipeline_file so stage0_fid_data exists.
-            invalidated += persist_loader_metadata(
-                str(pipeline_file), fid, events=events
-            )
+        # Written after create_pipeline_file so stage0_fid_data exists.
+        invalidated += persist_loader_metadata(str(pipeline_file), fid, events=events)
     except (PipelineFileError, ValueError, OSError):
         # OSError (PermissionError, a full disk, ...) propagates unwrapped, as
         # creating the file always did on the Python interfaces.
@@ -413,9 +418,8 @@ def load_fid_from_pipeline_impl(file_path: str) -> FID:
         file_path_obj, source_metadata, stage_tracker = open_pipeline_file(file_path)
 
         # Load FID data from the validated file
-        import h5py
 
-        with h5py.File(file_path_obj, "r") as h5f:
+        with h5open(file_path_obj, "r") as h5f:
             if "stage0_fid_data" not in h5f:
                 raise ValueError("Invalid pipeline file: missing 'fid_data' group")
             fid = load_fid_from_hdf5(h5f["stage0_fid_data"])

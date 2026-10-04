@@ -43,6 +43,7 @@ import pytest
 import ftmwpipeline
 import ftmwpipeline.api as ftmw
 from ftmwpipeline._internal import stage6_impl as s6
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline._internal.stage4_impl import load_windows_impl, save_window_plan_impl
 from ftmwpipeline._internal.stage6_impl import (
     apply_curation_impl,
@@ -102,7 +103,8 @@ def _build_stage5_multi(dest: Path, data_path: str) -> None:
     plan.dependency_edges = [
         (a, b) for (a, b) in plan.dependency_edges if a in keep and b in keep
     ]
-    save_window_plan_impl(str(dest), plan)
+    with atomic_write(str(dest)):
+        save_window_plan_impl(str(dest), plan)
 
     ftmw.fit_peaks(str(dest))
 
@@ -120,7 +122,8 @@ def _declare_unlocked_digitizer(path: Path) -> None:
             ),
         ),
     )
-    save_stage_fit_settings_to_h5(str(path), new_settings)
+    with atomic_write(str(path)):
+        save_stage_fit_settings_to_h5(str(path), new_settings)
 
 
 def _stamp_timebase(path: Path, *, epsilon: float, sigma_epsilon: float) -> None:
@@ -1020,21 +1023,23 @@ class TestEngineInvariantsStillHold:
     ) -> None:
         """My new ``cascaded``/``precomputed_review`` params on
         ``_finish_batch`` must not bypass the baseline guard."""
-        ctx = s6._open_batch(
-            str(sc_multi_file),
-            snap_tol_mhz=s6.resolve_snap_tol_mhz(str(sc_multi_file), None),
-            snapshot=False,
-        )
+        with atomic_write(str(sc_multi_file)):
+            ctx = s6._open_batch(
+                str(sc_multi_file),
+                snap_tol_mhz=s6.resolve_snap_tol_mhz(str(sc_multi_file), None),
+                snapshot=False,
+            )
         assert ctx.baseline_taken is False
         before = _digest(sc_multi_file)
         with pytest.raises(ValueError, match="undo baseline was.*never taken"):
-            s6._finish_batch(
-                ctx,
-                str(sc_multi_file),
-                snap_tol_mhz=s6.resolve_snap_tol_mhz(str(sc_multi_file), None),
-                cascaded=[],
-                precomputed_review=s6.Stage6Review(),
-            )
+            with atomic_write(str(sc_multi_file)):
+                s6._finish_batch(
+                    ctx,
+                    str(sc_multi_file),
+                    snap_tol_mhz=s6.resolve_snap_tol_mhz(str(sc_multi_file), None),
+                    cascaded=[],
+                    precomputed_review=s6.Stage6Review(),
+                )
         assert _digest(sc_multi_file) == before
 
 

@@ -72,6 +72,7 @@ from .._internal.absence_rules import (
     int_or_absent,
     knockout_absence,
 )
+from .._internal.atomic import h5open
 from ..core.absent import STATUS_PRESENT, Absent
 from ..core.data_structures import (
     AttentionReason,
@@ -589,7 +590,7 @@ def load_stage6_review_from_file(file_path: str) -> Stage6Review:
     propagates rather than silently discarding the user's curation.
     """
     try:
-        h5f = h5py.File(file_path, "r")
+        h5f = h5open(file_path, "r")
     except OSError:
         return Stage6Review()
     with h5f:

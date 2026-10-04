@@ -14,6 +14,7 @@ from typing import Any, Callable, Optional
 import h5py
 import pytest
 
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline.core.data_structures import FrequencyCalibration
 from ftmwpipeline.core.environment import ANALYSIS_EPOCH
 from ftmwpipeline.core.noise_settings import NoiseSettings
@@ -136,7 +137,8 @@ def test_settings_codec_stamps_its_version(
     version: int,
 ) -> None:
     assert read(empty_ftmw) is None
-    save(empty_ftmw, cls())
+    with atomic_write(empty_ftmw):
+        save(empty_ftmw, cls())
     prov = read(empty_ftmw)
     assert prov is not None
     assert prov.version == version
@@ -145,14 +147,16 @@ def test_settings_codec_stamps_its_version(
 
 def test_flat_reader_ignores_the_version_attr(empty_ftmw: str) -> None:
     original = resolve_noise()
-    save_noise_settings_to_h5(empty_ftmw, original)
+    with atomic_write(empty_ftmw):
+        save_noise_settings_to_h5(empty_ftmw, original)
     assert load_noise_settings_from_h5(empty_ftmw) == original
 
 
 def test_pre_provenance_record_reads_unchanged(empty_ftmw: str) -> None:
     """Stripping the version (a legacy record) changes only the provenance."""
     original = resolve_noise()
-    save_noise_settings_to_h5(empty_ftmw, original)
+    with atomic_write(empty_ftmw):
+        save_noise_settings_to_h5(empty_ftmw, original)
     with h5py.File(empty_ftmw, "a") as h5f:
         del h5f[STAGE2_NOISE_SETTINGS_PATH].attrs[FIELD_SET_VERSION_ATTR]
     assert load_noise_settings_from_h5(empty_ftmw) == original
@@ -220,5 +224,6 @@ class TestAFailedStampLeavesTheStageIncomplete:
             _fail,
         )
         with pytest.raises(RuntimeError, match="disk full"):
-            _update_stage_completion(empty_ftmw, "stage3_peaks")
+            with atomic_write(empty_ftmw):
+                _update_stage_completion(empty_ftmw, "stage3_peaks")
         assert "stage3_peaks" not in self._completed(empty_ftmw)

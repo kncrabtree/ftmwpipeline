@@ -27,11 +27,10 @@ import math
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
-import h5py
-
 from ..core.data_structures import FittingResult, SpectrumFit
 from ..file_manager import requires_pipeline_file
 from ..fitting.validation import DEFAULT_CHI2R_NOISE_FLOOR, shape_error_fraction
+from .atomic import h5open
 from .stage5_impl import _resolve_detail_bundle, render_fit_panels_impl
 from .stage6_impl import STAGE5_BASELINE_GROUP
 
@@ -190,7 +189,7 @@ def _load_baseline_fit(path: str) -> Optional[SpectrumFit]:
     """Load the automatic-fit baseline snapshot, or ``None`` if not present."""
     from ..io.fitting_serialization import load_spectrum_fit_from_hdf5
 
-    with h5py.File(path, "r") as h5f:
+    with h5open(path, "r") as h5f:
         if STAGE5_BASELINE_GROUP not in h5f:
             return None
         return load_spectrum_fit_from_hdf5(h5f[STAGE5_BASELINE_GROUP])

@@ -82,6 +82,7 @@ from ..io.window_planning_settings_serialization import (
     load_window_planning_settings_from_h5,
     window_planning_settings_provenance,
 )
+from .atomic import h5open
 from .read_impl import _open
 from .stage1_impl import _read_settings_layer, ft_settings_provenance
 
@@ -300,7 +301,7 @@ def _read_data(file_path: str) -> Optional[_Read]:
     every stage used. The spacing is hashed in the stored unit (seconds), so no
     conversion can merge two distinct values.
     """
-    with h5py.File(file_path, "r") as h5f:
+    with h5open(file_path, "r") as h5f:
         group = h5f.get(key_for_stage(Stage.DATA))
         if not isinstance(group, h5py.Group):
             return None
@@ -399,7 +400,7 @@ _TIMEBASE_KEYS = ("kappa_sys", "snr_min", "start_us", "end_us", "clock_sources")
 def _read_timebase(file_path: str) -> Optional[_Read]:
     """The timebase calibration's inputs: its knobs, the active region it ran
     on and the clock declaration it resolved."""
-    with h5py.File(file_path, "r") as h5f:
+    with h5open(file_path, "r") as h5f:
         group = h5f.get(TIMEBASE_GROUP_PATH)
         if not isinstance(group, h5py.Group):
             return None
@@ -420,7 +421,7 @@ def _read_timebase(file_path: str) -> Optional[_Read]:
 
 
 def _timebase_provenance(file_path: str) -> Optional[RecordProvenance]:
-    with h5py.File(file_path, "r") as h5f:
+    with h5open(file_path, "r") as h5f:
         group = h5f.get(TIMEBASE_GROUP_PATH)
         if not isinstance(group, h5py.Group):
             return None
@@ -532,7 +533,7 @@ def _read_fit_consumed(file_path: str) -> Optional[_Read]:
 
 # -- review (Stage 6) ---------------------------------------------------------
 def _read_review(file_path: str) -> Optional[_Read]:
-    with h5py.File(file_path, "r") as h5f:
+    with h5open(file_path, "r") as h5f:
         try:
             calibration = load_frequency_calibration_record(h5f)
         except KeyError:
@@ -552,7 +553,7 @@ def _read_calibration_clocks(file_path: str) -> Optional[_Read]:
 
 
 def _review_provenance(file_path: str) -> Optional[RecordProvenance]:
-    with h5py.File(file_path, "r") as h5f:
+    with h5open(file_path, "r") as h5f:
         return frequency_calibration_provenance(h5f)
 
 

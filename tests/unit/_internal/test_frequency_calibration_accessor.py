@@ -29,6 +29,7 @@ import numpy as np
 import pytest
 
 import ftmwpipeline.api as ftmw
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline._internal.stage6_impl import (
     _current_calibration_stamp,
     frequency_calibration_impl,
@@ -78,7 +79,8 @@ def _persist_unlocked_digitizer(path) -> None:
             ),
         ),
     )
-    save_stage_fit_settings_to_h5(str(path), settings)
+    with atomic_write(str(path)):
+        save_stage_fit_settings_to_h5(str(path), settings)
 
 
 def _stamp_timebase(path, *, epsilon=EPS, sigma_epsilon=SIGMA_EPS, passed=True) -> None:
@@ -150,13 +152,16 @@ class TestDerivedState:
     def test_locked_clocks_only_stay_rb_locked(self, imported):
         """Declaring only locked clocks is not a reason to doubt the axis."""
         resolved = resolve_stage_fit_settings(persisted=None)
-        save_stage_fit_settings_to_h5(
-            str(imported),
-            replace(
-                resolved,
-                spur=replace(resolved.spur, clocks=(ClockSource(5120.0, locked=True),)),
-            ),
-        )
+        with atomic_write(str(imported)):
+            save_stage_fit_settings_to_h5(
+                str(imported),
+                replace(
+                    resolved,
+                    spur=replace(
+                        resolved.spur, clocks=(ClockSource(5120.0, locked=True),)
+                    ),
+                ),
+            )
         assert frequency_calibration_impl(imported).state == "rb_locked"
 
     def test_recommended_declaration_counts_before_stage5(self, imported):
@@ -182,9 +187,10 @@ class TestDerivedState:
         """The timebase's rule: a fit that persisted *no* declaration
         (``spur.clocks == ()``) does not hide a later ``clocks set``, so a
         timebase measured under that declaration is applied."""
-        save_stage_fit_settings_to_h5(
-            str(imported), resolve_stage_fit_settings(persisted=None)
-        )
+        with atomic_write(str(imported)):
+            save_stage_fit_settings_to_h5(
+                str(imported), resolve_stage_fit_settings(persisted=None)
+            )
         ftmw.set_clock_sources(
             str(imported),
             [
