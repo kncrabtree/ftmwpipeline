@@ -127,10 +127,21 @@ The ``clocks`` verbs write the **recommended** settings layer — the same layer
 importer populates from instrument metadata. In the resolution order
 (:doc:`settings_and_presets`), an explicit fit-time clock argument and a
 *persisted* Stage 5 spur declaration both outrank it, so the recommended
-declaration is the "declare before you fit" baseline rather than an override. If a
-Stage 5 fit already exists when you change the declaration, the change does not
-retroactively alter that fit; rerun the fit to apply it. The CLI warns when this
-is the case.
+declaration is the "declare before you fit" baseline rather than an override.
+
+A fit persists the declaration it ran with -- an empty one included -- and that
+persisted value keeps winning on a plain ``fit run``. So a declaration changed
+after a fit does not reach Stage 5 by re-running the fit alone. To adopt it, clear
+the fit's own declaration and re-fit::
+
+    ftmwpipeline settings unset FILE stage5.spur.clocks   # invalidates the fit
+    ftmwpipeline fit run FILE
+
+(or set the fit's declaration directly with ``settings set FILE stage5.spur.clocks
+'[...]'``). The CLI prints this when a fit already exists. The timebase calibration
+and the Stage 6 calibration state read a *non-empty* fit declaration first and
+otherwise the recommended one, so a ``clocks set`` followed by ``timebase run``
+applies the measured scale correction without a re-fit.
 
 Automatic population from Blackchirp
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
