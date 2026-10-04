@@ -198,3 +198,24 @@ def test_the_plan_identity_follows_the_plan():
     assert base["n_windows"] == 1
     assert plan_identity(_plan(rng=(10.0, 21.0)))["digest"] != base["digest"]
     assert plan_identity(_plan(revision=1))["digest"] != base["digest"]
+
+
+# ---- the clocks stale-declaration note sees a partial fit ---------------------------
+
+
+@pytest.mark.parametrize(
+    "groups, expected",
+    [((), False), (("stage5_fitting",), True), (("stage5_partial",), True)],
+    ids=["no_fit", "complete_fit", "partial_fit"],
+)
+def test_stage5_fit_present_counts_a_partial_fit(groups, expected, tmp_path):
+    """A partial fit keeps the clock declaration it started with (its resume
+    compares it), so ``clocks set`` after a cancelled fit gets the
+    ``settings unset stage5.spur.clocks`` note too."""
+    from ftmwpipeline._internal.clocks_impl import stage5_fit_present
+
+    path = tmp_path / "f.ftmw"
+    with h5py.File(path, "w") as h5f:
+        for name in groups:
+            h5f.create_group(name)
+    assert stage5_fit_present(str(path)) is expected

@@ -22,7 +22,7 @@ import logging
 from typing import Any, List, Optional, Sequence, Tuple
 
 from ..core.stage_fit_settings import ClockSource, coerce_clock_sources
-from ..file_manager import open_pipeline_file
+from ..file_manager import STAGE5_PARTIAL_PATH, open_pipeline_file
 from ..io.stage_fit_settings_serialization import (
     read_recommended_clock_sources,
     write_recommended_clock_sources,
@@ -70,10 +70,12 @@ def get_clock_sources_impl(file_path: str) -> Optional[Tuple[ClockSource, ...]]:
 
 
 def stage5_fit_present(file_path: str) -> bool:
-    """Return ``True`` if a Stage 5 fit exists (so a clock edit post-dates it)."""
+    """Return ``True`` if a Stage 5 fit -- complete or partial -- exists (so a
+    clock edit post-dates it; a partial fit's resume keeps the declaration it
+    started with, too)."""
     try:
         with h5open(file_path, "r") as h5f:
-            return "stage5_fitting" in h5f
+            return "stage5_fitting" in h5f or STAGE5_PARTIAL_PATH in h5f
     except OSError:
         return False
 
