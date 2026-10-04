@@ -17,6 +17,7 @@ from ..core.start_detection_settings import StartDetectionSettings
 from ..file_manager import (
     BadSettingError,
     PipelineFileError,
+    PipelineFileNotFoundError,
     SourceMetadata,
     canonical_invalidated,
     create_pipeline_file,
@@ -235,10 +236,13 @@ def import_data_impl(
 
     Raises
     ------
-    FileNotFoundError
-        If source path does not exist
-    ValueError
-        If format detection fails or validation errors occur
+    PipelineFileNotFoundError
+        (``not_found``, kind ``"file"``; also a ``FileNotFoundError``) If the
+        source path does not exist.
+    BadSettingError
+        (``bad_setting``; also a ``ValueError``) ``path`` ``"format"`` if
+        format detection fails or the format is unknown; ``path`` ``"source"``
+        if the source does not validate under the resolved format.
     """
     from .events import operation_events
 
@@ -275,7 +279,10 @@ def _import_data(
     """The body of :func:`import_data_impl` (inside the ``data`` stage scope)."""
     source_path = Path(source)
     if not source_path.exists():
-        raise FileNotFoundError(f"Source path does not exist: {source_path}")
+        # not_found, kind "file" (also a FileNotFoundError), as preview_source.
+        raise PipelineFileNotFoundError(
+            source_path, message=f"Source path does not exist: {source_path}"
+        )
 
     # Format detection or validation
     if format_name is None:
@@ -313,7 +320,12 @@ def _import_data(
 
     if not validation["valid"]:
         error_details = "; ".join(validation["errors"])
-        raise ValueError(f"Source validation failed: {error_details}")
+        raise BadSettingError(
+            "source",
+            f"a source the {format_name} loader can read",
+            str(source_path),
+            message=f"Source validation failed: {error_details}",
+        )
 
     logger.info("Source validation passed")
 
