@@ -306,7 +306,8 @@ persists nothing — has the same significance numbers an applied fit would have
 written. All three are ``Absent.NOT_RUN`` when the knockout test never ran for
 the source peak; ``knockout_p_value`` and ``knockout_aicc_delta`` are
 ``Absent.UNDEFINED`` when the test ran but the value is not finite (its own
-refit did not converge). They are fields on ``FinalPeak``, not columns of the exported
+refit did not converge; for ``knockout_p_value`` also a degenerate F-test, one with
+no residual degrees of freedom or a non-positive chi-squared). They are fields on ``FinalPeak``, not columns of the exported
 table. A line held out of a refit by a thaw is re-attached verbatim, so its
 statistics describe its earlier fit while its neighbors' describe the new one.
 

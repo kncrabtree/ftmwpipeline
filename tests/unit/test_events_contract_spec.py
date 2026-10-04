@@ -456,7 +456,8 @@ def test_stage_order_is_started_other_invalidated_finished():
 def test_contract_version_is_twelve():
     # 9: events and cancellation (Wave 5.1); 10: write_conflict and atomic
     # writes (Wave 5.1b); 11: Stage 5 partial fits and resume (Wave 5.2);
-    # 12: typed curation and import refusals (curation_conflict).
+    # 12: the cleanup wave (curation_conflict, ComplexFT.invalidated,
+    # degenerate statistics read UNDEFINED).
     assert ftmwpipeline.CONTRACT_VERSION == 12
     assert MANIFEST.contract_version == 12
     assert capabilities()["contract_version"] == 12

@@ -106,6 +106,7 @@ from ..fitting.validation import (
 from ..io.fitting_serialization import (
     FitWindowCoverage,
     load_spectrum_fit_from_hdf5,
+    read_fit_diagnostics,
     read_fit_parameters,
     read_fit_peak_freqs_and_uids_by_window,
     read_fit_peak_frequencies_by_window,
@@ -547,6 +548,14 @@ def _audit_step_candidates(
         elif not math.isnan(step.p_value):
             # Rejected by separation / blend-split / nan-AICc path; use F-test p.
             evidence = step.p_value
+            kind = "f_p"
+        elif not math.isnan(step.chi2_before - step.chi2_after):
+            # A degenerate F-test (no residual degrees of freedom, a
+            # non-positive chi-squared): its p is undefined (nan), but with
+            # both chi-squared values in hand it carries no evidence, and it
+            # ranks as p = 1 -- what it was stored as before the statistic
+            # became undefined, so the ledger is unchanged.
+            evidence = 1.0
             kind = "f_p"
         else:
             evidence = abs(step.chi2_before - step.chi2_after)
@@ -6435,6 +6444,7 @@ def _build_shared_fit_ctx(path: str) -> _SharedFitCtx:
         Stage5FitContext,
         _resolve_tau_calibration_for_fit,
         build_stage5_fit_context,
+        gated_spur_catalog,
     )
 
     with h5open(path, "r") as h5f:
@@ -6446,14 +6456,18 @@ def _build_shared_fit_ctx(path: str) -> _SharedFitCtx:
                 command="fit run",
                 message="No Stage 5 fit found in this file. Run 'fit run' first.",
             )
-        # The ``parameters`` attr alone, read only to seed the spur-catalog
-        # replay below -- never the whole fit, which is per-batch state that
-        # each batch reloads for itself (see ``_BatchChangeset``) and which
-        # this function has always deliberately declined to return. The spur
-        # catalog inside ``parameters`` is a Stage 5 product Stage 6 never
-        # rewrites, so reading it here, once, is not the staleness risk that
-        # retaining the fit would be.
-        fit_parameters: Dict[str, Any] = read_fit_parameters(h5f["stage5_fitting"])
+        # The ``parameters`` and ``diagnostics`` attrs alone, read only to
+        # seed the spur-catalog replay below -- never the whole fit, which is
+        # per-batch state that each batch reloads for itself (see
+        # ``_BatchChangeset``) and which this function has always deliberately
+        # declined to return. The spur catalog is a Stage 5 product Stage 6
+        # never rewrites, so reading it here, once, is not the staleness risk
+        # that retaining the fit would be. ``diagnostics`` holds the catalog
+        # at full precision (``parameters`` rounds the centers for display).
+        spur_catalog: Dict[str, Any] = gated_spur_catalog(
+            read_fit_parameters(h5f["stage5_fitting"]),
+            read_fit_diagnostics(h5f["stage5_fitting"]),
+        )
 
     base_plan: "WindowPlan" = load_windows_impl(path)["plan"]
 
@@ -6507,7 +6521,7 @@ def _build_shared_fit_ctx(path: str) -> _SharedFitCtx:
         resolved,
         persisted_cal,
         shape_enum,
-        replay_spur_catalog=fit_parameters,
+        replay_spur_catalog=spur_catalog,
     )
 
     min_freeze_snr = float(

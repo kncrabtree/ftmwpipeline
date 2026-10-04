@@ -801,8 +801,11 @@ def line_evidence_escape(
     (see :func:`line_escape_nuisance_columns`). Returns
     ``(fires, delta_chi2_line)`` with ``fires = delta_chi2_line >
     2 * penalty_lambda * n_params_peak``;
-    ``penalty_lambda`` defaults to :data:`DEFAULT_GATE_LINE_ESCAPE_LAMBDA`
-    and ``(False, 0.0)`` is returned when that is ``None`` (disabled).
+    ``penalty_lambda`` defaults to :data:`DEFAULT_GATE_LINE_ESCAPE_LAMBDA`.
+    When no test runs -- the escape is disabled (that is ``None``), the
+    template is empty or zero, or its support spans fewer than 3 bins --
+    ``delta_chi2_line`` is undefined and ``(False, nan)`` is returned (the
+    escape never fires). Earlier releases returned ``(False, 0.0)``.
 
     Callers may pre-restrict all arrays to the template's support slice
     (via :func:`line_escape_support_slice`) before calling: passing
@@ -812,7 +815,7 @@ def line_evidence_escape(
     """
     lam = DEFAULT_GATE_LINE_ESCAPE_LAMBDA if penalty_lambda is None else penalty_lambda
     if lam is None:
-        return False, 0.0
+        return False, float("nan")
     e = np.asarray(evidence, dtype=np.complex128)
     tpl = np.asarray(template, dtype=np.complex128)
     sigma = np.asarray(rms_noise, dtype=float)
@@ -820,7 +823,7 @@ def line_evidence_escape(
         sigma = np.full(e.shape, float(sigma))
     amax = float(np.abs(tpl).max()) if tpl.size else 0.0
     if amax <= 0.0 or e.size < 3:
-        return False, 0.0
+        return False, float("nan")
     sup = np.abs(tpl) >= support_fraction * amax
     idx = np.where(sup)[0]
     lo = max(int(idx.min()) - support_dilate, 0)
@@ -828,7 +831,7 @@ def line_evidence_escape(
     sl = slice(lo, hi)
     m = hi - lo
     if m < 3:
-        return False, 0.0
+        return False, float("nan")
 
     w = np.sqrt(2.0) / sigma[sl]
     b = e[sl] * w
@@ -1521,8 +1524,15 @@ def calculate_chi_squared_improvement(
 
         F = (chi2_diff / dof_change) / (new_chi2 / (n_data - n_params_new))
 
-    and the p-value is its upper tail. A non-improvement (or degenerate
-    degrees of freedom) returns ``(1.0, 0.0, chi2_diff)``.
+    and the p-value is its upper tail. A genuine non-improvement
+    (``chi2_diff <= 0``) returns ``(1.0, 0.0, chi2_diff)``: the test ran and
+    found no evidence. A degenerate test -- no added parameter
+    (``dof_change <= 0``), no residual degrees of freedom
+    (``n_data <= n_params_new``) or a non-positive ``new_chi2`` -- has no
+    F-statistic at all and returns ``(nan, nan, chi2_diff)``. The degenerate
+    checks come first: an undefined test is undefined whatever the sign of
+    ``chi2_diff``. (Earlier releases stored ``(1.0, 0.0)`` for both; readers
+    recover the degenerate rows of such files from the stored values.)
 
     Parameters
     ----------
@@ -1542,7 +1552,9 @@ def calculate_chi_squared_improvement(
     """
     chi2_diff = old_chi2 - new_chi2
     df_residual = n_data - n_params_new
-    if dof_change <= 0 or chi2_diff <= 0.0 or df_residual <= 0 or new_chi2 <= 0.0:
+    if dof_change <= 0 or df_residual <= 0 or new_chi2 <= 0.0:
+        return float("nan"), float("nan"), chi2_diff
+    if chi2_diff <= 0.0:
         return 1.0, 0.0, chi2_diff
     f_statistic = (chi2_diff / dof_change) / (new_chi2 / df_residual)
     p_value = float(1.0 - f_distribution.cdf(f_statistic, dof_change, df_residual))

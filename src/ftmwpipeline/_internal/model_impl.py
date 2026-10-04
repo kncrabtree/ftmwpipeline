@@ -119,26 +119,16 @@ def _require_fit(file_path: Union[str, Path], accessor: str) -> None:
 def _fit_spur_set(fit: SpectrumFit, sorted_active_freq: np.ndarray) -> Optional[Any]:
     """The gated-spur set the Stage 5 fit masked with, replayed from the file.
 
-    The catalog in ``SpectrumFit.parameters`` carries the spur centers rounded
-    for display; ``diagnostics["gated_spurs"]`` carries them, and the per-spur
-    mask overrides, at full precision, so it is preferred when present. The
-    mask geometry (bin spacing, default half width) is the fit's.
+    The catalog is the fit's, at full precision (see
+    :func:`~ftmwpipeline._internal.stage5_impl.gated_spur_catalog`). The mask
+    geometry (bin spacing, default half width) is the fit's.
     """
-    from .stage5_impl import replay_spur_set
+    from .stage5_impl import gated_spur_catalog, replay_spur_set
 
     params: Mapping[str, Any] = fit.parameters or {}
     if not params.get("spur_masking_enabled", False):
         return None
-    catalog: Dict[str, Any] = dict(params)
-    gated = (fit.diagnostics or {}).get("gated_spurs")
-    if gated:
-        catalog["spur_centers_mhz"] = [float(g["center_mhz"]) for g in gated]
-        catalog["spur_sources"] = [str(g.get("source", "narrow")) for g in gated]
-        catalog["spur_lattice"] = [g.get("lattice") for g in gated]
-        catalog["spur_drift"] = [bool(g.get("drift", False)) for g in gated]
-        catalog["spur_mask_half_width_bins_per_spur"] = [
-            g.get("mask_half_width_bins") for g in gated
-        ]
+    catalog = gated_spur_catalog(params, fit.diagnostics)
     spur_set = replay_spur_set(catalog, sorted_active_freq)
     return spur_set if spur_set else None
 

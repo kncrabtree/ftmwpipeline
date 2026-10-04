@@ -118,6 +118,7 @@ mismatched peak-column lengths, unknown audit-step decision) raises
 from __future__ import annotations
 
 import json
+import math
 from typing import (
     Any,
     Dict,
@@ -175,6 +176,7 @@ __all__ = [
     "FIT_RESCUE_COLUMN_SPECS",
     "read_fit_peak_columns",
     "read_fit_window_columns",
+    "read_fit_window_quality_recorded",
     "read_fit_audit_columns",
     "read_fit_doublet_columns",
     "read_fit_thaw_columns",
@@ -182,6 +184,7 @@ __all__ = [
     "read_fit_rescue_columns",
     "read_fit_scalars",
     "read_fit_parameters",
+    "read_fit_diagnostics",
     "read_fit_peak_frequencies_by_window",
     "read_fit_peak_uids_by_window",
     "read_fit_peak_freqs_and_uids_by_window",
@@ -1104,13 +1107,14 @@ def _window_fit_from_row(
     result.fixed_parameters = _row_json(window_columns, "fixed_parameters", row, {})
     result.quality_metrics = _row_json(window_columns, "quality_metrics", row, {})
     # The scalar edge-coherence columns are canonical: they make it back into
-    # quality_metrics even if a hand-edit nuked the JSON cell.
-    result.quality_metrics["edge_coherence_low"] = float(
-        window_columns["edge_coherence_low"][row]
-    )
-    result.quality_metrics["edge_coherence_high"] = float(
-        window_columns["edge_coherence_high"][row]
-    )
+    # quality_metrics even if a hand-edit nuked the JSON cell. A NaN column
+    # with no key in the cell is a window the fit never evaluated; injecting
+    # the key would make the next save record it as computed, turning NOT_RUN
+    # into UNDEFINED (read_fit_window_quality_recorded).
+    for edge_key in ("edge_coherence_low", "edge_coherence_high"):
+        edge_value = float(window_columns[edge_key][row])
+        if edge_key in result.quality_metrics or not math.isnan(edge_value):
+            result.quality_metrics[edge_key] = edge_value
 
     result.audit_trail = [
         _json_to_audit_step(blob, f"{where}/audit_trail[{i}]")
@@ -1524,6 +1528,19 @@ def read_fit_parameters(h5_group: h5py.Group) -> Dict[str, Any]:
     return parameters
 
 
+def read_fit_diagnostics(h5_group: h5py.Group) -> Dict[str, Any]:
+    """Cheap substitute for ``load_spectrum_fit_from_hdf5(h5_group).diagnostics``.
+
+    Reads only the ``diagnostics`` JSON attribute, as :func:`read_fit_parameters`
+    reads ``parameters``. Returns ``{}`` when the attribute is absent, matching
+    the full loader's default.
+    """
+    diagnostics: Dict[str, Any] = load_json_attr(
+        h5_group, "diagnostics", {}, label="stage5_fitting"
+    )
+    return diagnostics
+
+
 def _window_slices(h5_group: h5py.Group) -> List[Tuple[int, int, int]]:
     """``(window_id, start, stop)`` per window, ascending by ``window_id``.
 
@@ -1643,6 +1660,36 @@ class FitWindowCoverage(NamedTuple):
     window_id: int
     freq_range: Optional[Tuple[float, float]]
     peak_uids: Set[int]
+
+
+def read_fit_window_quality_recorded(
+    h5_group: h5py.Group, keys: Sequence[str]
+) -> Dict[str, np.ndarray]:
+    """Per window, whether its ``quality_metrics`` record carries each of *keys*.
+
+    One boolean array per key, rows ascending by ``window_id`` like
+    :func:`read_fit_window_columns`. A quality value the fit computed is
+    recorded even when it has no finite value (it is then ``NaN``); a window
+    the fit never evaluated (a created window not yet fit) records nothing.
+    The columnar mirrors (``edge_coherence_low`` / ``_high``) store ``NaN`` for
+    both, so this is what tells them apart. Parses one JSON cell per window.
+    """
+    windows_group = _windows_group(h5_group)
+    ids = np.asarray(windows_group["window_id"][:], dtype="i8")
+    out = {key: np.zeros(ids.size, dtype=bool) for key in keys}
+    if "quality_metrics" not in windows_group:
+        return out
+    cells = windows_group["quality_metrics"][:]
+    for row, src in enumerate(np.argsort(ids, kind="stable")):
+        raw = _decode(cells[src])
+        try:
+            blob = json.loads(raw) if raw else {}
+        except (json.JSONDecodeError, TypeError):
+            blob = {}
+        if isinstance(blob, dict):
+            for key in keys:
+                out[key][row] = key in blob
+    return out
 
 
 def read_fit_window_coverage(h5_group: h5py.Group) -> List[FitWindowCoverage]:

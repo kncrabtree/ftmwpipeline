@@ -97,7 +97,7 @@ from ..contract import (
     Absent,
     WindowStatusRow,
 )
-from ..core.absent import STATUS_NOT_RUN, STATUS_PRESENT
+from ..core.absent import STATUS_NOT_RUN, STATUS_PRESENT, STATUS_UNDEFINED
 from ..core.settings_framework import NONE as NONE_SENTINEL
 from ..file_manager import (
     BadSettingError,
@@ -130,6 +130,7 @@ from ..io.fitting_serialization import (
     read_fit_scalars,
     read_fit_thaw_columns,
     read_fit_window_columns,
+    read_fit_window_quality_recorded,
 )
 from ..io.peak_serialization import (
     PEAK_COLUMN_SPECS,
@@ -167,6 +168,11 @@ from ..io.window_serialization import (
 from ..serialize import STATUS_SUFFIX, with_status_columns
 from .absence_rules import (
     clock_lattice_or_absent,
+    degenerate_edge_coherence,
+    degenerate_f_test,
+    degenerate_internal_snr,
+    degenerate_orth_evidence,
+    degenerate_stage3_snr,
     float_or_absent,
     int_or_absent,
     knockout_absence,
@@ -275,9 +281,12 @@ _COMMAND_BY_GROUP: Dict[str, str] = {
 # fills) untouched; this layer adds a ``<column>__status`` companion to each
 # absent-capable column, derived at read time with the shared rules in
 # ``absence_rules`` so a quantity reports the same status here as on
-# ``FinalPeak``. The value column keeps its stored fill, with one exception:
+# ``FinalPeak``. The value column keeps its stored fill, with two exceptions:
 # a ``fit_audit`` separation reject stored placeholder ``f_statistic`` 0.0 and
-# ``p_value`` 1.0 for a test that never ran, and those read as ``nan``.
+# ``p_value`` 1.0 for a test that never ran, and those read as ``nan``; and a
+# degenerate statistic an earlier writer stored as an ordinary number (the
+# ``absence_rules.degenerate_*`` predicates) reads as the ``nan`` a current
+# writer stores, with status ``UNDEFINED``, so old and new files read alike.
 # ---------------------------------------------------------------------------
 
 _StatusDeriver = Callable[[h5py.Group, Dict[str, np.ndarray]], Dict[str, np.ndarray]]
@@ -414,15 +423,35 @@ _FIT_WINDOW_ABSENT_CAPABLE = (
 )
 
 
+_EDGE_COHERENCE_COLUMNS = ("edge_coherence_low", "edge_coherence_high")
+
+
 def _fit_window_status(
     h5_group: h5py.Group, raw: Dict[str, np.ndarray]
 ) -> Dict[str, np.ndarray]:
     out: Dict[str, np.ndarray] = {}
+    edges = [c for c in _EDGE_COHERENCE_COLUMNS if c in raw]
+    recorded = read_fit_window_quality_recorded(h5_group, edges) if edges else {}
     for col in _FIT_WINDOW_ABSENT_CAPABLE:
         if col not in raw:
             continue
         values = raw[col]
-        if col in ("freq_min", "freq_max", "edge_coherence_low", "edge_coherence_high"):
+        if col in edges:
+            # NaN is UNDEFINED when the fit computed the edge (it was
+            # degenerate: an empty residual or no positive noise; read-time
+            # masking turns an earlier writer's 0.0 into that NaN) and NOT_RUN
+            # when it never evaluated the window.
+            out[col] = _status_of(
+                [
+                    (
+                        (Absent.UNDEFINED if recorded[col][i] else Absent.NOT_RUN)
+                        if math.isnan(float(v))
+                        else float_or_absent(v)
+                    )
+                    for i, v in enumerate(values)
+                ]
+            )
+        elif col in ("freq_min", "freq_max"):
             out[col] = _nan_not_run(values)
         elif col == "tau_fitted":
             out[col] = _ints(values)
@@ -433,6 +462,13 @@ def _fit_window_status(
         else:
             out[col] = _floats(values)
     return out
+
+
+def _mask_degenerate_edges(raw: Dict[str, np.ndarray]) -> None:
+    """Read an earlier writer's 0.0 for an undefined edge coherence as ``nan``."""
+    for col in _EDGE_COHERENCE_COLUMNS:
+        if col in raw:
+            raw[col] = np.where(degenerate_edge_coherence(raw[col]), np.nan, raw[col])
 
 
 # -- fit_audit ---------------------------------------------------------------
@@ -446,7 +482,15 @@ _FIT_AUDIT_ABSENT_CAPABLE = (
     "aicc_delta",
 )
 
-_FIT_AUDIT_NEEDS = ("decision", "separation_ok", "n_eff")
+_FIT_AUDIT_NEEDS = (
+    "decision",
+    "separation_ok",
+    "n_eff",
+    "f_statistic",
+    "p_value",
+    "chi2_before",
+    "chi2_after",
+)
 
 
 def _audit_masks(raw: Dict[str, np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
@@ -483,11 +527,28 @@ def _fit_audit_status(
 
 
 def _mask_unrun_gates(raw: Dict[str, np.ndarray]) -> None:
-    """Replace the 0.0 / 1.0 a separation reject stores for F and p with NaN."""
-    _, sep_reject = _audit_masks(raw)
+    """Replace the 0.0 / 1.0 stored for F and p where no F-test value exists with NaN.
+
+    A separation reject stores them for a test that never ran (status
+    ``NOT_RUN``). An earlier writer also stored them for a degenerate test (no
+    residual degrees of freedom, a non-positive chi-squared), which a current
+    writer stores as ``nan`` (status ``UNDEFINED``); see
+    :func:`~ftmwpipeline._internal.absence_rules.degenerate_f_test`. The
+    ``knockout-null`` step's p comes from the reversed knockout test and is
+    left as stored.
+    """
+    decision, sep_reject = _audit_masks(raw)
+    degenerate = (
+        degenerate_f_test(
+            raw["f_statistic"], raw["p_value"], raw["chi2_before"], raw["chi2_after"]
+        )
+        & ~sep_reject
+        & (decision != "spur-drop")
+        & (decision != "knockout-null")
+    )
     for col in ("f_statistic", "p_value"):
         if col in raw:
-            raw[col] = np.where(sep_reject, np.nan, raw[col])
+            raw[col] = np.where(sep_reject | degenerate, np.nan, raw[col])
 
 
 # -- fit_doublets ------------------------------------------------------------
@@ -508,6 +569,15 @@ def _fit_doublet_status(
     h5_group: h5py.Group, raw: Dict[str, np.ndarray]
 ) -> Dict[str, np.ndarray]:
     return {col: _floats(raw[col]) for col in _FIT_DOUBLET_ABSENT_CAPABLE if col in raw}
+
+
+def _mask_untested_orth_evidence(raw: Dict[str, np.ndarray]) -> None:
+    """Read an earlier writer's 0.0 orthogonal evidence from an untested pair as ``nan``."""
+    col = "orth_evidence_delta_chi2"
+    if col in raw:
+        raw[col] = np.where(
+            degenerate_orth_evidence(raw[col], raw["support_bins"]), np.nan, raw[col]
+        )
 
 
 # -- peaks -------------------------------------------------------------------
@@ -549,9 +619,33 @@ def _peak_status(
             out[col] = np.full(len(values), code, dtype=np.uint8)
         elif col in ("snr", "noise_std_local"):
             out[col] = _floats(values)
+        elif col == "internal_snr":
+            undefined = degenerate_internal_snr(values, raw["internal_frequency"])
+            out[col] = np.where(
+                undefined, STATUS_UNDEFINED, _nan_not_run(values)
+            ).astype(np.uint8)
         else:
             out[col] = _nan_not_run(values)
     return out
+
+
+def _mask_degenerate_snr(raw: Dict[str, np.ndarray]) -> None:
+    """Read an earlier writer's 0.0 for an undefined Stage 3 SNR as ``nan``.
+
+    ``snr`` is undefined where the stored local noise is not positive;
+    ``internal_snr`` where the internal pass contributed the peak and stored no
+    value (see :mod:`~ftmwpipeline._internal.absence_rules`).
+    """
+    if "snr" in raw:
+        raw["snr"] = np.where(
+            degenerate_stage3_snr(raw["noise_std_local"]), np.nan, raw["snr"]
+        )
+    if "internal_snr" in raw:
+        raw["internal_snr"] = np.where(
+            degenerate_internal_snr(raw["internal_snr"], raw["internal_frequency"]),
+            np.nan,
+            raw["internal_snr"],
+        )
 
 
 @dataclass(frozen=True)
@@ -662,6 +756,7 @@ _STATUS_LAYOUTS: Dict[str, _StatusLayout] = {
             _fit_window_status,
             dataset_group="windows",
             derived=("n_peaks",),
+            adjust=_mask_degenerate_edges,
         ),
         _StatusLayout(
             "fit_audit",
@@ -679,7 +774,9 @@ _STATUS_LAYOUTS: Dict[str, _StatusLayout] = {
             read_fit_doublet_columns,
             _FIT_DOUBLET_ABSENT_CAPABLE,
             _fit_doublet_status,
+            needs=("support_bins",),
             json_log=True,
+            adjust=_mask_untested_orth_evidence,
         ),
         _StatusLayout(
             "peaks",
@@ -687,7 +784,9 @@ _STATUS_LAYOUTS: Dict[str, _StatusLayout] = {
             read_peak_columns,
             _PEAK_ABSENT_CAPABLE,
             _peak_status,
+            needs=("noise_std_local", "internal_frequency"),
             derived=("promoted",),
+            adjust=_mask_degenerate_snr,
         ),
     )
 }
@@ -894,7 +993,11 @@ def read_table_impl(
         for each absent-capable column (``0`` present, ``1`` not run, ``2``
         undefined); the value column keeps its stored fill, except that a
         ``fit_audit`` separation reject's placeholder ``f_statistic`` /
-        ``p_value`` (no test ran) read as ``nan``.
+        ``p_value`` (no test ran) read as ``nan``, and so does a degenerate
+        statistic an earlier release stored as a number (an F-test without
+        degrees of freedom, an untested doublet's orthogonal evidence, an
+        undefined residual edge coherence, a Stage 3 SNR without positive
+        noise), with status ``2``.
 
     Raises
     ------
