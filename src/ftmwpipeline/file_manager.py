@@ -357,10 +357,11 @@ class AnalysisEpochMismatchError(PipelineFileError, ValueError):
 class NotFoundError(PipelineFileError, KeyError):
     """Raised when a request names something the file does not hold.
 
-    ``kind`` says what was looked up (``"window"``, ``"peak"``, ``"file"``) and
-    ``ids`` lists **every** id of the request that does not exist -- for a batch
-    (e.g. a curation file naming several windows) all unknown ids at once, not
-    only the first. Also a :class:`KeyError`, which is what such lookups raised
+    ``kind`` says what was looked up (``"window"``, ``"peak"``, ``"file"``,
+    ``"decision"``) and ``ids`` lists **every** id of the request that does
+    not exist -- for a batch (e.g. a curation file naming several windows) all
+    unknown ids at once, not only the first. A peak or window named by
+    frequency is reported by that frequency (MHz). Also a :class:`KeyError`, which is what such lookups raised
     before they were typed; ``str(exc)`` is the plain message (``KeyError``
     would otherwise wrap it in quotes).
 
@@ -368,7 +369,7 @@ class NotFoundError(PipelineFileError, KeyError):
     ----------
     kind : str
         What kind of thing was looked up.
-    ids : list of int or str
+    ids : list of int, float or str
         Every requested id that does not exist, in request order.
     """
 
@@ -378,14 +379,14 @@ class NotFoundError(PipelineFileError, KeyError):
     def __init__(
         self,
         kind: str,
-        ids: Sequence[Union[int, str]],
+        ids: Sequence[Union[int, float, str]],
         *,
         message: Optional[str] = None,
     ) -> None:
         if isinstance(ids, (str, bytes)):
             raise TypeError("ids must be a sequence of ids, not a single string")
         self.kind = kind
-        self.ids: List[Union[int, str]] = list(ids)
+        self.ids: List[Union[int, float, str]] = list(ids)
         if message is None:
             listed = ", ".join(str(i) for i in self.ids)
             message = f"No {kind} with id: {listed}"
@@ -509,6 +510,48 @@ class BadSettingError(PipelineFileError, ValueError):
         except (TypeError, ValueError):
             value = repr(value)
         return {"path": self.path, "expected": self.expected, "value": value}
+
+
+class CurationConflictError(PipelineFileError, ValueError):
+    """Raised when a valid curation request conflicts with the file's review
+    state (an add at a line already fitted, targets that resolve to different
+    windows, an undo that would orphan a created window, a replay whose pinned
+    window id no longer fits, no automatic-fit baseline to replay from).
+    Also a :class:`ValueError`, which is what these refusals raised before
+    they were typed.
+
+    Attributes
+    ----------
+    reason : str
+        A stable snake_case slug naming the conflict (``"line_already_fitted"``,
+        ``"targets_span_windows"``, ``"orphans_created_window"``,
+        ``"baseline_unavailable"``, ``"replay_conflict"``, ...). The full set
+        is listed in ``docs/source/machine_contract.rst``.
+    ids : list of int
+        The windows, peaks or decisions the conflict involves (which kind is
+        fixed by ``reason``); empty when the conflict names none.
+    """
+
+    code: ClassVar[str] = "curation_conflict"
+    contract_fields: ClassVar[Tuple[str, ...]] = ("reason", "ids")
+
+    def __init__(
+        self,
+        reason: str,
+        ids: Sequence[int] = (),
+        *,
+        message: Optional[str] = None,
+    ) -> None:
+        if isinstance(ids, (str, bytes)):
+            raise TypeError("ids must be a sequence of ids, not a single string")
+        self.reason = str(reason)
+        self.ids: List[int] = list(ids)
+        if message is None:
+            listed = ", ".join(str(i) for i in self.ids)
+            message = f"curation conflict ({self.reason})" + (
+                f": {listed}" if listed else ""
+            )
+        super().__init__(message)
 
 
 class AlgorithmFailedError(PipelineFileError, RuntimeError):

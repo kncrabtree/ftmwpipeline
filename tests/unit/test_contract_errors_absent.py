@@ -29,6 +29,7 @@ from ftmwpipeline.contract import (
     AnalysisEpochMismatchError,
     BadSettingError,
     CallbackFailedError,
+    CurationConflictError,
     IncompleteProvenanceError,
     NotFoundError,
     NotFoundValueError,
@@ -94,7 +95,7 @@ def test_contract_version_is_eleven():
     # to 6; Wave 7 to 7; Wave 8 (full capabilities) to 8; Wave 5.1 (events and
     # cancellation) to 9; Wave 5.1b (atomic writes, write_conflict) to 10;
     # Wave 5.2 (Stage 5 partial fits, restart_reason) to 11.
-    assert CONTRACT_VERSION == 11
+    assert CONTRACT_VERSION == 12
 
 
 # ---- stage vocabulary -----------------------------------------------------
@@ -280,6 +281,12 @@ def _errors():
             "write_conflict",
             {"path": "/data/exp.ftmw"},
             (),
+        ),
+        (
+            CurationConflictError("orphans_created_window", [4, 7]),
+            "curation_conflict",
+            {"reason": "orphans_created_window", "ids": [4, 7]},
+            (ValueError,),
         ),
     ]
 

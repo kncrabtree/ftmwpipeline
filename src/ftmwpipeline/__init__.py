@@ -72,6 +72,7 @@ from ftmwpipeline.file_manager import (
     AnalysisEpochMismatchError,
     BadSettingError,
     CallbackFailedError,
+    CurationConflictError,
     IncompleteProvenanceError,
     NotFoundError,
     NotFoundValueError,
@@ -136,6 +137,7 @@ __all__ = [
     "OperationCancelledError",
     "CallbackFailedError",
     "WriteConflictError",
+    "CurationConflictError",
     # Machine contract
     "CONTRACT_VERSION",
     "MANIFEST",
