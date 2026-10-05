@@ -16,6 +16,17 @@ Accumulating toward ``1.0.0``. ``0.1.0b4`` is the last published release;
 everything below is reachable only from a source checkout. No further beta is
 planned — these entries fold into the ``1.0.0`` section when it is dated.
 
+**A remove is logged at the peak it removed; ``CONTRACT_VERSION`` moves 15 → 16.**
+A ``remove`` decision-log row's ``frequency_mhz``, and a merge's ``merged_from``,
+are now the fitted frequencies (raw frame) of the peaks the request resolved to,
+not the frequencies sent. An undo or log-prefix replay runs at the file's snap
+tolerance, so a remove made with a widened ``snap_tol_mhz`` (``--snap-tol-mhz``)
+that only the wider tolerance could resolve made every later undo on the file
+fail; the replay now finds the logged peak at no distance. Rows written before
+hold the frequencies sent. A remove sent in the wrong frame still resolves to
+the same peak, and its log row now names that peak rather than the shifted
+frequency.
+
 **Decision-log action groups, empty-window ``converged``, canonical ``run_pipeline`` and
 provenance names; ``CONTRACT_VERSION`` moves 14 → 15.** Four changes from the
 documentation audit. ``action_index`` and ``failed_step`` are additions; the

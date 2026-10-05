@@ -295,7 +295,9 @@ the ``.ftmw`` reproduces the curated analysis with no side channel. Each entry i
 **anchored** to a window identity and a molecular frequency, and records its kind, its
 ``user`` provenance, and an evidence snapshot (the window's reduced :math:`\chi^2` and
 peak count before and after, and for an inferred split or merge the frequency that was
-requested). A coalesced edit logs one entry per add or remove it carried; every entry
+requested). A remove is logged at the fitted peak it removed, not at the frequency you
+typed, so an undo's replay finds that peak even when the edit was made with a widened
+``--snap-tol-mhz``. A coalesced edit logs one entry per add or remove it carried; every entry
 also carries ``action_index`` in its evidence, the ``order_index`` of the first entry
 the same user action recorded (an action that logged one entry, a bare accept
 included, carries its own ``order_index``). The entries sharing an ``action_index`` are

@@ -99,7 +99,7 @@ def test_contract_version_is_fourteen():
     # windows after a structural merge (merged_from, fit_plan_unavailable) to 13;
     # review attention (AttentionReason, attention_kind with
     # empty_window_residual) to 14.
-    assert CONTRACT_VERSION == 15
+    assert CONTRACT_VERSION == 16
 
 
 # ---- stage vocabulary -----------------------------------------------------

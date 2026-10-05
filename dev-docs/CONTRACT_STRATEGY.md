@@ -232,7 +232,11 @@ These exist today; the contract freezes their names and the listed fields.
   (a one-row action, a bare accept included, carries its own); undo and a
   log-prefix apply replay one action group at a time, and rows written before
   the key are grouped by inference. The key is part of `evidence`, so a hash
-  taken over `evidence` changes with it (contract version 15).
+  taken over `evidence` changes with it (contract version 15). A `remove`
+  row's `frequency_mhz` and a merge's `merged_from` are the fitted (raw-frame)
+  frequencies of the peaks the request resolved to, never the frequencies
+  sent, so a replay at any snap tolerance finds them (contract version 16;
+  older rows hold the frequencies sent).
 - The curation result types (`RefitWindowResult`, `PreviewWindowResult`,
   `AppliedWindowResult`, …) and their `converged` flag: a bool, `Absent.NOT_RUN`
   where `chi2r_after` is, and `Absent.UNDEFINED` for a window left with no peak

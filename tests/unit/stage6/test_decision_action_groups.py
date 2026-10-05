@@ -59,6 +59,12 @@ def _fitted_by_window(path: Path) -> Dict[int, List[float]]:
     }
 
 
+def _r6(freqs: Any) -> List[float]:
+    """A replayed remove list at the precision of :func:`_fitted_by_window`:
+    removes are logged at the fitted peak they resolved to, in full precision."""
+    return [round(float(f), 6) for f in freqs]
+
+
 def _multi_peak_window(path: Path) -> Tuple[int, List[float], int]:
     """``(wid, peaks, other)``: a window with at least three fitted peaks no
     two of which sit within snap tolerance of each other (so removing two of
@@ -282,7 +288,7 @@ def test_undo_later_decision_after_joint_edit(stage5_multi_file, tmp_path):
     wid, peaks, other = _joint_then_unrelated(path, tmp_path)
 
     dry = review_undo_impl(path, [2], dry_run=True)
-    assert [(a.kind, a.window_id, a.remove) for a in dry.plan] == [
+    assert [(a.kind, a.window_id, _r6(a.remove)) for a in dry.plan] == [
         ("edit", wid, [peaks[0], peaks[1]])
     ]
 
@@ -335,7 +341,7 @@ def test_undo_one_row_of_group_replays_survivors_jointly(stage5_multi_source, tm
     refit_window_impl(str(ref), wid, remove=[peaks[0], peaks[1]])
 
     result = review_undo_impl(path, [0])  # the add
-    assert [(a.kind, a.add, a.remove) for a in result.plan] == [
+    assert [(a.kind, a.add, _r6(a.remove)) for a in result.plan] == [
         ("edit", [], [peaks[0], peaks[1]])
     ]
     assert _fitted_by_window(path) == _fitted_by_window(ref)
@@ -385,7 +391,9 @@ def test_legacy_log_without_action_index_is_grouped_by_inference(
     assert all(ai is None for *_, ai in _log_shape(path))
 
     dry = review_undo_impl(path, [2], dry_run=True)
-    assert [(a.kind, a.remove) for a in dry.plan] == [("edit", [peaks[0], peaks[1]])]
+    assert [(a.kind, _r6(a.remove)) for a in dry.plan] == [
+        ("edit", [peaks[0], peaks[1]])
+    ]
     review_undo_impl(path, [2])
 
     assert _fitted_by_window(path) == _saved_state(tmp_path)
@@ -642,7 +650,7 @@ def test_replay_refits_once_per_action_not_once_per_row(
     real = s6._batch_apply_edit_action
 
     def counting(ctx: Any, window_id: int, add: Any, remove: Any, **kw: Any) -> Any:
-        calls.append((window_id, tuple(remove)))
+        calls.append((window_id, tuple(_r6(remove))))
         return real(ctx, window_id, add, remove, **kw)
 
     monkeypatch.setattr(s6, "_batch_apply_edit_action", counting)
@@ -650,3 +658,38 @@ def test_replay_refits_once_per_action_not_once_per_row(
 
     assert calls == [(wid, (peaks[0], peaks[1]))]
     assert _fitted_by_window(path) == _saved_state(tmp_path)
+
+
+@pytest.mark.integration
+def test_widened_tolerance_remove_replays_at_the_resolved_peak(
+    stage5_multi_file, tmp_path
+):
+    """A remove that only a widened ``snap_tol_mhz`` resolves is logged at the
+    fitted peak it removed, so a later undo's replay -- which runs at the
+    file's own tolerance -- still finds that peak."""
+    path = stage5_multi_file
+    wid, peaks, other = _multi_peak_window(path)
+    tol = _snap_tol(path)
+    gap = min(b - a for a, b in zip(peaks, peaks[1:]))
+    offset = min(1.5 * tol, 0.4 * gap)  # beyond the default tolerance
+    if offset <= tol:
+        pytest.skip("peaks too close to place a remove beyond the default tolerance")
+    with h5py.File(str(path), "r") as h5f:
+        sf = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+    wf = next(w for w in sf.window_fits if w.window_id == wid)
+    target = min(float(p.frequency_mhz) for p in wf.fitted_peaks)
+
+    refit_window_impl(
+        str(path), wid, remove=[target + offset], snap_tol_mhz=2.0 * offset
+    )
+    log = review_log_impl(path)
+    assert [(e.kind, e.frequency_mhz) for e in log] == [("remove", target)]
+    after_remove = _fitted_by_window(path)
+
+    fv = _clear_add_freq(path, other)
+    cur = tmp_path / "later.csv"
+    cur.write_text(f"add,{other},{fv},\n")
+    apply_curation_impl(path, cur)
+
+    review_undo_impl(path, [1])
+    assert _fitted_by_window(path) == after_remove

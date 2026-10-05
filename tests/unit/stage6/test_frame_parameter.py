@@ -314,8 +314,7 @@ class TestConversionBeforeSnapping:
         # Wrong: the calibrated equivalent declared raw -- simulates omitting
         # the conversion. Still resolves to the SAME peak (that is exactly
         # the silent-failure mode the plan describes: the 50 kHz snap
-        # tolerance forgives the ~31.6 kHz disagreement), but its own record
-        # of what it removed is wrong.
+        # tolerance forgives the ~31.6 kHz disagreement).
         result_wrong = refit_window_impl(
             str(path_wrong), wf.window_id, remove=[f_cal], frame="raw"
         )
@@ -333,8 +332,9 @@ class TestConversionBeforeSnapping:
         for a, b in zip(freqs_raw, freqs_cal):
             assert a == pytest.approx(b, abs=1e-6)
 
-        # The decision log is where the difference becomes visible: it
-        # records the caller's (converted, pre-snap) frequency verbatim.
+        # The decision log records the fitted peak each remove resolved to,
+        # not the frequency the caller sent, so all three record the same
+        # peak (a replay then finds it whatever snap tolerance was used).
         log_raw = load_stage6_review_from_file(str(path_raw)).decision_log
         log_cal = load_stage6_review_from_file(str(path_cal)).decision_log
         log_wrong = load_stage6_review_from_file(str(path_wrong)).decision_log
@@ -343,13 +343,9 @@ class TestConversionBeforeSnapping:
         rec_cal = next(e for e in log_cal if e.kind == "remove")
         rec_wrong = next(e for e in log_wrong if e.kind == "remove")
 
-        assert rec_raw.frequency_mhz == pytest.approx(f_raw, abs=1e-6)
-        assert rec_cal.frequency_mhz == pytest.approx(f_raw, abs=1e-6)
-
-        expected_delta = (probe - f_raw) * eps / (1.0 + eps)
-        assert (rec_wrong.frequency_mhz - f_raw) == pytest.approx(
-            expected_delta, rel=1e-6
-        )
+        assert rec_raw.frequency_mhz == f_raw
+        assert rec_cal.frequency_mhz == f_raw
+        assert rec_wrong.frequency_mhz == f_raw
 
 
 # ---------------------------------------------------------------------------

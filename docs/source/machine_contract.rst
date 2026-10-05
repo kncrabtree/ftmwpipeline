@@ -39,10 +39,10 @@ The contract version
 ``__version__``::
 
     import ftmwpipeline
-    if ftmwpipeline.CONTRACT_VERSION < 15:
+    if ftmwpipeline.CONTRACT_VERSION < 16:
         raise RuntimeError("needs a newer ftmwpipeline")
 
-The first published contract is version ``1``; this release is version ``15``.
+The first published contract is version ``1``; this release is version ``16``.
 An addition (a new accessor, field or code) raises the version by one and never
 breaks an existing field. Every machine-readable payload also carries a
 **schema name** of the form ``ftmw/<payload>@<n>``; a schema name never changes
@@ -1016,7 +1016,11 @@ Each, with its absence cases:
   of the same user action (a one-row action, a bare accept included, carries its
   own ``order_index``; a bare accept's evidence is no longer ``{}``). Rows with
   the same ``action_index`` were applied as one joint refit. Files written before
-  the key existed have none; ``review_undo`` infers their groups (see below).
+  the key existed have none; ``review_undo`` infers their groups (see below). A
+  ``remove`` row's ``frequency_mhz``, and a merge's ``merged_from``, are the
+  fitted frequencies (raw frame) of the peaks the request resolved to, not the
+  frequencies sent, so a replay finds those peaks whatever snap tolerance the
+  original call used. Rows written before contract 16 hold the frequencies sent.
 * ``get_pipeline_info`` -- the status dict. ``warnings`` is always present (an
   empty list when there are none). The environment fields hold ``Absent``
   rather than ``None`` / ``{}`` / ``[]``:

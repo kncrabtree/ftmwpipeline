@@ -2035,9 +2035,15 @@ def refit_window_core(
     add_derivations: Optional[Sequence[Optional[int]]] = None,
     snap_tol_mhz: float,
     freeze_inherited: bool = False,
+    resolved_removes: Optional[List[float]] = None,
 ) -> FittingResult:
     """In-memory single-window refit core (no file I/O, no spur replay, no
     decision recording).
+
+    ``resolved_removes``, when given, receives the persisted (raw-frame)
+    ``frequency_mhz`` of the fitted peak each ``remove`` entry resolved to, in
+    ``remove`` order -- what a caller records in the decision log, so a replay
+    finds the same peak whatever snap tolerance the original call was given.
 
     Given a window's already-loaded shared context (``fit_ctx``), its
     :class:`~ftmwpipeline.core.data_structures.FitWindow`, and its persisted
@@ -2274,6 +2280,8 @@ def refit_window_core(
     seed_peaks_with_origin: List[
         Tuple[ModelPeak, str, Optional[int], Optional[float]]
     ] = []
+    # Each inherited seed's persisted frequency, for ``resolved_removes``.
+    seed_freq_by_id: Dict[int, float] = {}
     for fp in wf.fitted_peaks:
         freq_mhz = float(fp.frequency_mhz)
         offset = float(s * (freq_mhz - center_mhz))
@@ -2317,6 +2325,7 @@ def refit_window_core(
             seed_peaks_with_origin.append(
                 (mp, fp.origin, fp.derivation, fp.unresolved_spread_mhz)
             )
+            seed_freq_by_id[id(mp)] = freq_mhz
 
     # Apply "remove" edits: drop seeds closest to remove frequencies.
     # A "remove" on a thawed line drops it entirely (not frozen): the user
@@ -2339,6 +2348,8 @@ def refit_window_core(
             # Drop the thawed peak from the frozen background and the hold-out
             # list.  Find the matching FrozenPeak by frequency and remove it.
             removed_fp = thawed_held_peaks.pop(thawed_match_idx)
+            if resolved_removes is not None:
+                resolved_removes.append(float(removed_fp.frequency_mhz))
             frozen_peaks = [
                 fp
                 for fp in frozen_peaks
@@ -2375,8 +2386,10 @@ def refit_window_core(
             )
             continue
         # Record the exact fitted offset as forbidden (rescue must not re-add it).
-        removed_offset = seed_peaks_with_origin.pop(closest_idx)[0].offset_mhz
-        forbidden_offsets.append(removed_offset)
+        removed_mp = seed_peaks_with_origin.pop(closest_idx)[0]
+        forbidden_offsets.append(removed_mp.offset_mhz)
+        if resolved_removes is not None:
+            resolved_removes.append(float(seed_freq_by_id[id(removed_mp)]))
     if unmatched_removes:
         raise NotFoundValueError(
             "peak", unmatched_removes, message="; ".join(unmatched_details)
@@ -6979,6 +6992,7 @@ def _batch_apply_edit_core(
     add_seeds: Optional[List[ModelPeak]] = None,
     add_derivations: Optional[Sequence[Optional[int]]] = None,
     snap_tol_mhz: float,
+    resolved_removes: Optional[List[float]] = None,
 ) -> FittingResult:
     """In-memory equivalent of the fit-mutating middle of
     :func:`refit_window_impl` (materialize -> NLS -> splice), reusing the
@@ -7019,6 +7033,7 @@ def _batch_apply_edit_core(
         add_seeds=add_seeds,
         add_derivations=add_derivations,
         snap_tol_mhz=snap_tol_mhz,
+        resolved_removes=resolved_removes,
     )
     sort_fitting_result_by_frequency(new_wf)
     _splice_edit_result(ctx.changeset.spectrum_fit, window_id, new_wf)
@@ -7362,6 +7377,10 @@ def _batch_apply_edit_plain(
         base_idx = ctx.changeset.next_decision_index
         add_derivations = [base_idx + i for i in range(len(add))]
 
+    # Each remove is logged at the fitted peak it resolved to, not the
+    # frequency typed: a replay then finds that peak whatever snap tolerance
+    # this call was given (the tolerance is not recorded).
+    resolved_removes: List[float] = []
     new_wf = _batch_apply_edit_core(
         ctx,
         window_id,
@@ -7370,6 +7389,7 @@ def _batch_apply_edit_plain(
         add_seeds=add_seeds,
         add_derivations=add_derivations,
         snap_tol_mhz=snap_tol_mhz,
+        resolved_removes=resolved_removes,
     )
 
     chi2r_after = float(new_wf.reduced_chi2)
@@ -7391,7 +7411,7 @@ def _batch_apply_edit_plain(
                 }
             )
             ctx.changeset.next_decision_index += 1
-        for f in remove:
+        for f in resolved_removes:
             ctx.changeset.decisions.append(
                 {
                     "window_id": window_id,
@@ -7564,7 +7584,9 @@ def _batch_apply_merge(
         "chi2r_after": chi2r_after,
         "n_peaks_before": n_before,
         "n_peaks_after": n_after,
-        "merged_from": [float(f) for f in peaks],
+        # The fitted peaks the request resolved to, not the frequencies typed
+        # (see _batch_apply_edit_plain's resolved removes).
+        "merged_from": [float(fp.frequency_mhz) for fp in matched],
     }
     if requested_freq is not None:
         evidence["inferred"] = True
