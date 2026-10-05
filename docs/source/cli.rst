@@ -54,13 +54,32 @@ Conventions
   ``ftmw/error@1`` object on stderr. A ``run`` or curation verb prints the
   ``ftmw/run_result@1`` envelope (``verb``, ``stage``, ``invalidated``,
   ``summary``); a ``show`` / ``list`` verb prints its natural payload, and a
-  plot verb the image paths it wrote. Where ``--format json`` exists today
-  (``info``, ``timebase state``, ``review snap-tolerance``) it is a synonym.
-  The per-verb contents are in :ref:`machine-contract-cli-json`.
-* **Progress events and Ctrl-C.** Every long verb (each stage ``run``, the
-  ``review`` curation verbs, ``report run``, ``scan run`` / ``scan all`` and
-  ``run``) accepts ``--events``, which writes each progress event to stderr as
-  one JSON line (``ftmw/stage_started@1``, ``ftmw/window_progress@1``, …)::
+  plot verb the image paths it wrote. ``--format json`` is a synonym for
+  ``--json`` on ``info``, ``timebase state`` and ``review snap-tolerance``; on
+  ``read table``, ``read meta`` and ``report table`` it selects the JSON
+  rendering of the table. The per-verb contents are in
+  :ref:`machine-contract-cli-json`.
+* **Exit codes.** ``0`` on success; ``1`` for an error (a missing file, a stage
+  that has not run, a refused setting, ...); ``2`` for a file that exists but
+  is not a readable pipeline file (``file_corrupt``) and for a command-line
+  usage error; ``130`` for a cancelled verb (Ctrl-C). The full table is in
+  :ref:`contract-exit-codes`.
+* **Atomic writes.** Every verb that writes a ``.ftmw`` does its writes in a
+  temporary copy beside the file and replaces the file in one step when it
+  finishes, so a crash, a kill or an error leaves the file as it was before
+  the verb or as the verb completed it. A process killed mid-write can leave
+  its copy, ``.<name>.ftmw-tmp.<host>.<pid>``, beside the file; the next
+  write from the same host removes it, and it may be deleted by hand when no
+  write to the file is in progress. A write that finds the file changed by
+  another process since it began refuses (``write_conflict``) and keeps the
+  other write. See :ref:`contract-crash-safety`.
+* **Progress events and Ctrl-C.** Every long verb accepts ``--events``, which
+  writes each progress event to stderr as one JSON line
+  (``ftmw/stage_started@1``, ``ftmw/window_progress@1``, …): ``data import``,
+  ``start run``, every stage ``run``, ``tau recommend``, the ``review``
+  verbs that fit or write (``run``, ``apply``, ``preview``, ``edit``,
+  ``accept``, ``create``, ``undo``), ``report run``, ``scan run`` / ``scan
+  all`` and ``run``::
 
       ftmwpipeline fit run exp_2638.ftmw --events 2> events.jsonl
 
@@ -100,8 +119,8 @@ Command summary
      - ``run``, ``recommend``, ``show``
      - Decay-time calibration; line-shape vote
    * - ``timebase``
-     - ``run``, ``show``
-     - Digitizer-clock scale-error calibration
+     - ``run``, ``show``, ``state``
+     - Digitizer-clock scale-error calibration; the derived calibration state
    * - ``peaks`` (``stage3``)
      - ``run``, ``show``
      - Detect and classify peaks
@@ -113,23 +132,28 @@ Command summary
      - Fit lines; assess the fit
    * - ``review`` (``stage6``)
      - | ``run``, ``show``, ``rank``, ``edit``,
-       | ``accept``, ``apply``, ``log``, ``undo``
+       | ``accept``, ``create``, ``apply``,
+       | ``preview``, ``log``, ``undo``,
+       | ``snap-tolerance``,
+       | ``acknowledge-environment``
      - Curate the fitted model
    * - ``report``
-     - ``table``, ``run``
-     - Export the finalized line list and report
+     - ``table``, ``run``, ``diff``
+     - Export the finalized line list and report; compare curated windows
    * - ``scan``
      - ``list``, ``run``, ``all``
      - Sweep tunable knobs for an instrument
    * - ``settings``
-     - ``show``, ``set``, ``export``
-     - Inspect / persist / export resolved settings
+     - ``show``, ``defaults``, ``set``, ``unset``,
+       ``export``
+     - Inspect / persist / clear / export resolved settings
    * - ``clocks``
      - ``show``, ``set``, ``add``, ``remove``, ``clear``
      - Declare instrument clock fundamentals
    * - ``read``
-     - ``list``, ``table``, ``meta``
-     - Dump persisted data as CSV/TSV/JSON, no recompute
+     - ``list``, ``table``, ``meta``; one ``read <accessor>`` per contract
+       accessor
+     - Dump persisted data as CSV/TSV/JSON, no recompute; contract JSON
    * - ``run``
      - —
      - Drive a raw source through every stage
@@ -218,7 +242,9 @@ auto-recommend is on). ``tau show --kind heatmap|distribution`` (add
 Rb-locked spur lattice and persists it; the clock declaration comes from the
 Stage 5 ``spur.clocks`` settings (declare it first via ``clocks`` or a preset).
 ``--kappa-sys`` and ``--snr-min`` tune the per-tone budget and detection gate.
-``timebase show`` prints ε ± σ and the per-tone table. See
+``timebase show`` prints ε ± σ and the per-tone table; ``timebase state``
+prints the calibration state the file's frequencies are under now (derived
+from the clock declaration and the calibration, never stored). See
 :doc:`clock_declaration`.
 
 ``peaks`` — peak detection (Stage 3)
@@ -300,8 +326,12 @@ verb -- an ``--add``
 within snap tolerance of a fitted peak is read as a split of it, and removing
 the mutually-close components of one feature while adding one frequency in
 their span is read as a merge. ``apply`` replays a curation CSV of batched
-edits; ``log`` lists the decision log; ``undo --id N`` rolls a decision back
-by replay-from-baseline. ``apply --log-prefix N`` applies the file as if the
+edits, or with ``--actions FILE`` the same batch as data: a JSON array of
+``CurationAction`` objects (``-`` reads standard input; see
+:ref:`curation-as-data-contract`). ``log`` lists the decision log; ``undo``
+rolls decisions back by replay-from-baseline, naming them by their log ids
+(``--id 3 5``, or repeated, ``--id 3 --id 5``; ``--dry-run`` shows the replay
+plan without writing). ``apply --log-prefix N`` applies the file as if the
 decision log ended after its first ``N`` decisions: the later ones are
 dropped and the kept ones are replayed together with the file in one pass --
 the outcome of ``undo`` of the dropped ids followed by ``apply``, at the cost
@@ -310,7 +340,8 @@ of one replay instead of two. See :doc:`stage6_review`.
 Two read-only verbs support the editing ones. ``review preview`` runs a
 curation file's plan to completion in memory and reports the fitted outcome
 (peak counts and χ²ᵣ per affected window) without writing anything --- the
-question ``apply --dry-run`` does not answer, since a dry run resolves the
+question ``apply --dry-run`` does not answer (it takes ``--actions`` as
+``apply`` does), since a dry run resolves the
 plan rather than fitting it, and so reports no fitted outcome. For a window the plan created or widened -- an implied
 create (an uncovered ``add``) or an explicit ``create`` row -- ``review
 preview`` prints an extra line with the extent it was built (or widened) to,
@@ -328,6 +359,20 @@ analysis band, a create whose window cannot be placed. ``review snap-tolerance``
 came from (``--format json`` for a script); the tolerance is defined in
 active-FT bins, so it is a property of the file rather than a fixed
 frequency. All three are covered in :doc:`fit_curation`.
+
+``review create --at F`` installs a fit window for a line no window covers
+(or widens the adjacent window when the gap is too narrow); put the line in it
+with a separate ``review edit --window N --add F``.
+
+``review acknowledge-environment`` records, in the file, that you accept a
+fit produced under a different analysis epoch, so the editing verbs (which
+otherwise refuse with ``epoch_mismatch``) can proceed; ``--reason`` stores a
+note with it. Re-running ``fit run`` is usually the cleaner fix. See
+:doc:`file_format` (*What a version difference permits*).
+
+Re-running ``fit run`` or any earlier stage discards the review, its decision
+log and the automatic-fit baseline. To keep a curation across such a re-run,
+save it as a curation file (or ``--actions`` JSON) and apply it again.
 
 ``report`` — finalized deliverables
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -353,15 +398,20 @@ Cross-cutting commands
 ``settings`` — resolved settings
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``settings show`` reports, per setting, the value in effect for a file and the
-layer that supplied it (file / preset / recommended / default); ``--all``
-includes advanced-tier knobs and ``--preset`` previews a preset's contribution.
-``settings set <file> <knob> <value>`` persists a dotted-path knob (e.g.
-``stage2.window_mhz``) and invalidates the affected and downstream stages. A
-value outside the ``choices`` or ``bounds`` that ``settings show --format json``
-reports for the knob is refused (``bad_setting``) before anything is written.
-``settings export`` writes the file's persisted Stage 2–5 values to a reusable
-``.yml`` preset (Stage 1 FT settings are excluded). See
+``settings show <file> [selector]`` reports, per setting, the value in effect
+for a file and the layer that supplied it (file / preset / recommended /
+default); ``--all`` includes advanced-tier knobs and ``--preset`` previews a
+preset's contribution. ``settings defaults [selector]`` prints the same table
+at the hard defaults, with no file. ``settings set <file> <knob> <value>``
+persists a dotted-path knob (e.g. ``stage2.window_mhz``) and invalidates the
+stage it configures and every downstream stage; a value that does not parse,
+or lies outside the ``choices`` or ``bounds`` that ``settings show --json``
+reports for the knob, is refused (``bad_setting``) before anything is written.
+``settings unset <file> <knob>`` clears a persisted value so the next run
+resolves it again from the preset, recommended and default layers, with the
+same invalidation. ``settings export <file> <out.yml>`` writes the file's
+persisted Stage 2–5 values to a reusable ``.yml`` preset (Stage 1 FT settings
+are excluded). Every ``settings`` verb takes ``--json``. See
 :doc:`settings_and_presets`.
 
 ``scan`` — knob sweeps
@@ -417,6 +467,11 @@ one has. ``read table <file> <name>`` dumps one of them:
   plan-level thaw, replan and rescue histories. These read JSON-encoded
   records, so they cost a parse rather than a bulk read — still far below a
   full fit load, but not free.
+* ``window_status`` — one row per window of the plan the fit was made on
+  (after any structural merge) and per window Stage 6 created: bounds,
+  ``created``, ``n_fitted_peaks``, ``live`` and ``merged_from``. This is the
+  table to join fit rows to; ``windows`` stays the Stage 4 plan as planned.
+  See :ref:`contract-window-status`.
 
 Stages 1 and 2 have no table: the canonical FT is recomputed from the FID
 rather than persisted, and the Stage 2 noise model is a reconstruction over the
@@ -442,32 +497,51 @@ of stdout::
         --columns frequency_mhz,decay_rate,shape --output lines.csv
     ftmwpipeline read meta  exp_2638.ftmw --format json
 
-This is the *persisted* data as stored: floats round-trip exactly and the
-on-disk sentinels are preserved (NaN for an absent float, ``-1`` for an absent
-id). The presentation view — the calibrated final line list with its
+This is the *persisted* data as stored: floats round-trip exactly. A column
+that can lack a value is followed by a ``<column>__status`` companion (``0``
+present, ``1`` not run, ``2`` undefined); where the status is not ``0`` the
+value column holds the stored fill (``nan``, ``-1``, ``""``), which is not a
+value: read the status column, not the fill. ``read list`` shows the
+companions with the other columns, and ``--columns`` selects them by name. The
+presentation view — the calibrated final line list with its
 uncertainty budget — is ``report table``, not this.
+
+**Contract accessors.** Besides ``list`` / ``table`` / ``meta``, ``read`` has
+one verb per machine-contract accessor, spelled as the API name: ``read
+status``, ``read window_status``, ``read read_table``, ``read
+get_final_products``, ``read capabilities``, ``read fid_samples``, ``read
+window_model`` and the rest (``ftmwpipeline read --help`` lists them). Each
+prints a schema-stamped JSON envelope and writes array fields as ``.npy`` files
+under ``--output DIR``. Their payloads, absence rules and errors are
+documented in :doc:`machine_contract` (:ref:`contract-accessors`).
 
 Whole-pipeline command
 ----------------------
 
 ``run <source>`` drives a raw source through every stage in sequence — import →
-FT → noise → tau → peaks → windows → fit → timebase → review — with live
-per-stage progress. ``--trim MIN:MAX`` (the active band) is required;
+[start detection] → FT → timebase → noise → tau → peaks → windows → fit →
+review → [report] — with live per-stage progress. ``--trim MIN:MAX`` (the active band) is required;
 ``--output`` names the destination file. Start detection and tau calibration run
 by default; timebase calibration runs by default but is non-fatal and skippable
 with ``--no-cal``. ``--report`` also emits the Level-1 table and Level-3 HTML
 report. ``--preset`` forwards a settings preset to the stages that accept one,
 and ``--clocks`` declares the instrument clocks for the spur gate and timebase
 calibration. Every stage's individual knobs are also reachable as namespaced
-``--<stage>.<knob>`` flags. See :doc:`run` for the full reference, including
-Stage 0 start-time control and worked preset examples.
+``--<stage>.<knob>`` flags. Each stage is its own atomic write, so a cancelled
+or failed ``run`` keeps every stage it finished. ``run`` builds afresh: run
+again, it re-imports the source and discards everything, a partial fit
+included. To continue an interrupted build instead, run ``fit run FILE``
+(which resumes a partial fit), then ``review run FILE`` and, if wanted,
+``report run FILE``. See :doc:`run` for the full reference, including Stage 0
+start-time control and worked preset examples.
 
 Utility commands
 ----------------
 
 * ``info <file.ftmw>`` — print the provenance record and stage-completion
   status (stages named canonically, in re-run order); ``--json`` (or
-  ``--format json``) for machine-readable output.
+  ``--format json``) for machine-readable output. The contract form of the
+  same status is ``read status`` / ``read get_pipeline_info``.
 * ``formats`` — list the registered input-format loaders; ``--format NAME`` for
   one loader's details.
 * ``validate`` — check the installation and its dependencies.
