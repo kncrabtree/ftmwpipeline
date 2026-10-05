@@ -483,6 +483,64 @@ that joins fit rows to windows joins them to `window_status`.
 Before a complete fit, while Stage 5 is `partial` included, rows follow the
 Stage 4 plan.
 
+### Review attention
+
+`review run` routes windows to a human: each window it flags gets a
+`WindowReviewStatus` in `get_review_status(path).window_statuses` (Python
+`Pipeline.review_status()`), keyed by window id, whose `attention_reasons` are
+`AttentionReason` records:
+- `kind`, from the closed vocabulary `attention_kind`: `worst_eps`,
+  `auto_merged_review`, `candidate_bearing`, `spur_adjacent`, `edge_boundary`,
+  `flat_decay`, `empty_window_residual`. Kinds are only ever added.
+- `severity` (float; higher asks for a look sooner);
+- `locations`: the molecular frequencies (MHz) the reason points at, empty for
+  a window-wide reason;
+- `evidence`: a dict of the kind's declared keys (below), empty for a kind that
+  declares none;
+- `detail`: a human sentence. Its text is not contract.
+
+`auto_merged_review` and `flat_decay` are advisory: they stay on the status but
+do not by themselves put the window in the queue (`needs_attention`).
+Attention is advice. It never changes a fitted number, a final product or the
+analysis fingerprint.
+
+The CLI reports the same records: `review show --attention --json` gives one
+row per queued window with its top reason (`window_id`, `label`, `kind`,
+`severity`, `detail`) and every reason in `reasons` (`kind`, `severity`,
+`detail`, `locations`, `evidence`); `review show --window N --json` gives the
+window's `attention_reasons` in the same form.
+
+**`empty_window_residual`.** A window of the fitted plan in which the fit holds
+no line, while Stage 5 measured a coherent residual on its edge. It flags a
+window when all of these hold:
+- the window is a window of the fitted plan, not one Stage 6 created;
+- the current fit holds no line in it;
+- no Stage 6 decision that changes the fit has been recorded on it (an edit
+  resolves the item; `review accept` marks it reviewed, as for any kind);
+- Stage 5's residual edge-coherence handshake flagged at least one of its
+  edges: a structural-replan record the window triggered, or a thaw record of
+  the window that was not accepted, with `S_coh` above the fit's own
+  `residual_edge_threshold`. An edge a thaw resolved does not count.
+
+The trigger reads only what Stage 5 recorded; a fit run with the thaw and the
+replan disabled records no flags and raises none. The window has a status
+although the fit has no window result for it, so `window_statuses` may hold ids
+that `load_fit` does not. Its `severity` is the strongest flagged edge's `S_coh`
+over the threshold, its `locations` the frequencies of the Stage 3 peaks the
+plan put in the window, and its `evidence`:
+- `edges`: one `{"side": "low" | "high", "s_coh": float}` per flagged edge, low
+  first;
+- `residual_edge_threshold`: the threshold the fit applied;
+- `candidates`: one `{"detection_index": int, "frequency_mhz": float, "snr":
+  float, "gated_spur": bool}` per Stage 3 peak the plan put in the window,
+  ascending in frequency. `snr` is the Stage 3 SNR, present when Stage 3
+  recorded one. `gated_spur` is true when the peak sits within the
+  `spur_adjacent` tolerance of a spur the fit gated.
+
+The report gives such a window a page: the data and the residual on the
+window's range (the residual is the data, since no model was fitted), with the
+candidates marked.
+
 A fit made before fits stored their plan does not hold a merged window's
 geometry. Its rows follow the merges its replan record names, and a Stage 6 call
 that would refit those windows, or create one inside a merged range, is refused
