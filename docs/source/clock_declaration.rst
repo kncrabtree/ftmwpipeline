@@ -258,8 +258,10 @@ It is read-only and mutates nothing.
 
 Because it degrades to documented defaults at every step rather than raising,
 it answers on a file that has been through nothing but the FID import —
-**before Stage 5 or Stage 6 have ever run.** The only error case is the file
-not existing at all. This makes it the read an integrator should build
+**before Stage 5 or Stage 6 have ever run.** The only error cases are about the
+file itself: it does not exist (``not_found``), it is not a readable pipeline
+file (``file_corrupt``), or it was written by a newer major file format
+(``file_incompatible``). This makes it the read an integrator should build
 against for "is this file's frequency axis calibrated," rather than
 :func:`~ftmwpipeline.api.load_timebase_calibration` (raises if no measurement
 exists yet) or the Stage 6 :class:`~ftmwpipeline.core.data_structures.FinalProducts`
@@ -284,31 +286,37 @@ The returned value is a
   every peak's frequency budget (``0.0`` until one is declared).
 - ``probe_freq_mhz`` / ``sideband`` — the probe/LO frequency and sideband the
   calibrated frame is defined against, read from the FID header; both are
-  ``None`` only when the file carries no FID header to read them from, in
-  which case no raw/calibrated frame conversion is possible yet.
+  ``Absent.NOT_RUN`` (the contract's missing-value marker, not ``None``) only
+  when the file carries no FID header to read them from, in which case no
+  raw/calibrated frame conversion is possible yet.
 
-The examples below are from a file with an unlocked digitizer clock declared
-and a measured :math:`\varepsilon = +2.2\pm0.1` ppm persisted against it.
+For programs, the same stamp is the ``ftmw/calibration@1`` payload of
+``ftmwpipeline read frequency_calibration FILE`` (see :doc:`machine_contract`).
+
+The examples below are from the example experiment after ``run``: the
+Blackchirp import declares an unlocked digitizer clock, and the timebase
+calibration measured :math:`\varepsilon = +2.191\pm0.074` ppm.
 
 .. code-block:: console
 
-   $ ftmwpipeline timebase state exp.ftmw
-   Frequency calibration for: exp.ftmw
+   $ ftmwpipeline timebase state exp_2638.ftmw
+   Frequency calibration for: exp_2638.ftmw
      state              : self_calibrated
                           (unlocked digitizer with a measured timebase calibration applied; raw and calibrated frames differ)
-     epsilon            : +2.200 +- 0.100 ppm
+     epsilon            : +2.191 +- 0.074 ppm
      sigma floor        : 0.000 kHz
      probe frequency    : 40960.000000 MHz
-     sideband           : upper
+     sideband           : lower
 
-   $ ftmwpipeline timebase state exp.ftmw --format json
+   $ ftmwpipeline read frequency_calibration exp_2638.ftmw
    {
+     "schema": "ftmw/calibration@1",
      "state": "self_calibrated",
-     "epsilon": 2.2e-06,
-     "sigma_epsilon": 1e-07,
+     "epsilon": 2.190878685182457e-06,
+     "sigma_epsilon": 7.40736355557135e-08,
      "sigma_floor_khz": 0.0,
      "probe_freq_mhz": 40960.0,
-     "sideband": "upper"
+     "sideband": "lower"
    }
 
 .. code-block:: python
@@ -316,27 +324,29 @@ and a measured :math:`\varepsilon = +2.2\pm0.1` ppm persisted against it.
    import ftmwpipeline.api as ftmw
    from ftmwpipeline import Pipeline
 
-   stamp = ftmw.frequency_calibration("exp.ftmw")
-   # CalibrationStamp(state='self_calibrated', epsilon=2.2e-06,
-   #                   sigma_epsilon=1e-07, sigma_floor_khz=0.0,
-   #                   probe_freq_mhz=40960.0, sideband='upper')
+   stamp = ftmw.frequency_calibration("exp_2638.ftmw")
+   stamp.state, stamp.epsilon      # ('self_calibrated', 2.190878685182457e-06)
 
    # Equivalently, bound to an open Pipeline:
-   Pipeline.open("exp.ftmw").frequency_calibration() == stamp   # True
+   Pipeline.open("exp_2638.ftmw").frequency_calibration() == stamp   # True
 
-On a freshly-imported file with no clock declaration at all, ``state`` reads
-``"rb_locked"`` and :math:`\varepsilon` is identically zero:
+The same experiment freshly imported, before ``timebase run``, has the unlocked
+digitizer declared but nothing measured, so ``state`` reads
+``"uncalibrated"`` and :math:`\varepsilon` is zero:
 
 .. code-block:: console
 
    $ ftmwpipeline timebase state exp_fresh.ftmw
    Frequency calibration for: exp_fresh.ftmw
-     state              : rb_locked
-                          (no unlocked clock declared; axis absolutely calibrated as acquired (eps is a null op))
+     state              : uncalibrated
+                          (unlocked digitizer with no usable timebase calibration; frequencies reported as acquired and caveated -- run 'timebase run')
      epsilon            : +0.000 +- 0.000 ppm
      sigma floor        : 0.000 kHz
      probe frequency    : 40960.000000 MHz
-     sideband           : upper
+     sideband           : lower
+
+A file with no unlocked clock declared reads ``"rb_locked"`` instead, with
+:math:`\varepsilon` identically zero.
 
 Interfaces
 ----------

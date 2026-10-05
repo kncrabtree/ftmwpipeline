@@ -137,11 +137,17 @@ the noise estimate, the peak list, the window plan, and the fit are all defined
 against one consistent set of settings.
 
 Changing these settings therefore invalidates that downstream work. If
-``ft run`` is repeated with settings that differ from the stored ones, the results
-that depend on the FT (Stage 2 noise and everything after it) are removed and a
-warning is logged, so they are recomputed against the new settings rather than
-silently mixed with stale results. Repeating the transform with identical settings
-changes nothing, which keeps re-running an import-and-FT cell in a notebook safe.
+``ft run`` is repeated with settings that differ from the stored ones, every
+result that depends on the FT — ``noise``, ``tau``, ``tau_g``, ``timebase``,
+``peaks``, ``windows``, ``fit``, and ``review``, together with any partial fit —
+is removed, so it is recomputed against the new settings rather than silently
+mixed with stale results. The run reports what it removed: the CLI prints
+``Invalidated (re-run to refresh): ...``, the ``--json`` result carries the
+canonical names in its ``invalidated`` list, ``--events`` emits an
+``ftmw/invalidated@1`` event, and the Python result's ``invalidated`` key holds the same
+list. Repeating the transform with identical settings changes nothing (an empty
+``invalidated`` list), which keeps re-running an import-and-FT cell in a
+notebook safe.
 
 Saving settings without running the transform does the same.
 :func:`~ftmwpipeline.api.save_ft_parameters` (and ``visualize_ft(save_params=True)``)
@@ -151,9 +157,12 @@ names in re-run order (for example ``["noise", "peaks"]``), or ``[]`` when the
 record did not change or nothing was built on it; ``visualize_ft`` still returns
 its figure and names the stages in its log line.
 
-The stored settings are the concrete values the transform ran with: an unset
-``start_us`` is stored as ``0.0`` and an unset ``end_us`` as the record's duration
-(the same samples either way), and no ``trim`` is stored as "no trim". Once they
+The stored settings are the concrete values the transform ran with. A first
+``ft run`` with no explicit ``start_us`` uses, and stores, the start recommended
+at import or by ``start run`` (see :doc:`stage0_import`); only when nothing
+recommends one is ``start_us`` stored as ``0.0``. An unset ``end_us`` is stored
+as the record's duration (the same samples either way), and no ``trim`` is
+stored as "no trim". Once they
 are stored they are authoritative. A recommendation written afterwards -- a later
 ``start run``, for example -- is kept and shown, but does not change what Stage 1
 used or any result built on it; to adopt it, re-run ``ft run --start-us`` with the

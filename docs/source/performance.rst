@@ -68,9 +68,14 @@ The same control is available programmatically as a ``jobs`` argument:
    ftmw.fit_peaks("exp.ftmw", jobs=8)
    ftmw.report_run("exp.ftmw", jobs=8)
 
-The worker count does **not** change the result — the fit and the rendered
-figures are identical regardless of how many workers run them — so it is purely a
-speed/occupancy choice, safe to set per run. And because each worker already pins
+The worker count does **not** change the result. A fit is identical whatever the
+worker count — the same windows and lines with the same parameter values, not
+merely values that agree to rounding — and so is the rendered report, so the
+count is purely a speed/occupancy choice, safe to set per run. Interrupting a
+long fit costs little either: the finished windows are kept, and the next ``fit
+run`` resumes from them (see :ref:`partial fits <stage5-partial>`), giving the same
+lines, ``peak_uid`` values and windows as an uninterrupted fit, with parameters
+guaranteed equal to floating-point rounding. And because each worker already pins
 its math libraries to one thread, the ``OMP_NUM_THREADS`` /
 ``OPENBLAS_NUM_THREADS`` variables need not be set by hand for the pool; the
 pipeline manages that to avoid oversubscription.

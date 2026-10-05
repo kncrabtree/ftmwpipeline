@@ -36,10 +36,9 @@ against the Stage 2 noise — an **SNR classification** (``weak``, ``medium``, o
 ``strong``), the **pass** that found it (``primary`` or ``gap``), a **promoted**
 flag marking whether it clears the cutoff that advances peaks to Stage 4, and its
 detection **provenance** (frequency and SNR on the internal detection grid, and
-the subtracted leakage pedestal) for curation. Every detected peak is stored, not only the promoted ones, so the
-promotion threshold can be re-chosen without re-running detection, and the list is
-a flat enough structure to be hand-edited between Stage 3 and Stage 4 (see
-:ref:`stage3-handedit`).
+the subtracted leakage pedestal) for curation. Every detected peak is stored, not
+only the promoted ones, so the effect of the promotion cutoff can be inspected
+against the whole candidate list (see :ref:`stage3-handedit`).
 
 Method
 ------
@@ -167,11 +166,9 @@ line is sharp, so its own height is diluted across the coherence band and barely
 enters the pedestal, leaving its SNR essentially unchanged, while broad leakage is
 removed. The raw magnitude is still reported as the amplitude.
 
-A peak whose local noise is not positive has no SNR: it is stored as ``nan`` (it
-reads ``UNDEFINED``, never ``0``), classified ``weak``, and dropped when the peak
-is re-measured on the active grid, since an undefined SNR cannot clear the
-(positive) detection floor. Peaks whose excess over the pedestal is clamped to zero
-on a positive noise keep a measured SNR of ``0.0``.
+A detection whose local noise is not positive has no SNR. It is dropped when
+the peak is re-measured on the active grid, since an undefined SNR cannot clear
+the (positive) detection floor, so no stored peak carries an undefined SNR.
 
 Re-measuring on the active grid also corrects two position artifacts. The
 second-derivative locator lands a few points off the true apex for ultra-narrow
@@ -210,18 +207,19 @@ without flooding the later stages:
   default sits at the cross-fixture knee where the candidate count transitions from
   noise-and-leakage structure to the real-line plateau.
 - Detection itself runs at a fixed lower **internal floor** (``2.0``), independent
-  of the promotion cutoff. Detecting at the promotion cutoff and then re-measuring
+  of the promotion cutoff; a promotion cutoff set below the floor lowers the
+  detection floor to match (detection runs at the smaller of the two). Detecting at the promotion cutoff and then re-measuring
   on the active grid would lose lines that genuinely clear the cutoff there;
   detecting lower recovers them, and below the internal floor there is only noise.
   The floor is re-applied to the active-grid excess SNR after re-measurement: the
   apodized detection spectra flatten the leakage pedestal on their own grids, so a
   pedestal-noise bump can clear the floor there yet be pure pedestal on the active
   FT, and the second pass drops it before it is stored. Peaks between the internal
-  floor and the promotion cutoff are kept (so the cutoff stays re-thresholdable);
+  floor and the promotion cutoff are kept (so they show in the candidate list);
   only sub-floor pedestal noise is discarded.
 
-Each detected peak is persisted with a ``promoted`` flag derived from the stored
-cutoff, so re-thresholding is free and an edited list re-derives the flag cleanly.
+Each detected peak is persisted with a ``promoted`` flag derived from the
+cutoff the run used.
 
 .. figure:: figures/stage3_peaks.png
    :width: 95%
@@ -263,9 +261,13 @@ The same operations on the Python interfaces:
    peaks = pipe.detect_peaks()
    promoted = [p for p in peaks if p.properties["promoted"]]
 
-``detect_peaks`` returns the full candidate list (the curation substrate); Stage 4
-consumes only the promoted subset. Re-running detection invalidates any Stage 4
-window plan built on the old peaks.
+``detect_peaks`` returns the full candidate list; Stage 4 consumes only the
+promoted subset. Every ``peaks run`` replaces the peak list and discards the
+stages built on it — ``windows``, ``fit`` (with any partial fit), and
+``review``, including every curation decision — even when the settings are
+unchanged; the result's ``invalidated`` list names them. To carry curation
+across such a re-run, keep it in a curation file and re-apply that file with
+``review apply`` after the new fit (see :doc:`fit_curation`).
 
 The defaults are calibrated for the reference instrument and need no adjustment for
 routine use. The behavior is controlled by the knobs below, set with per-knob flags
@@ -328,17 +330,20 @@ instead.
 
 .. _stage3-handedit:
 
-Curation and the handoff to Stage 4
------------------------------------
+Choosing the cutoff and the handoff to Stage 4
+----------------------------------------------
 
 Detection and window assignment are deliberately separate stages, so the
-detected-peak list is a curation point: an analyst can load it, add or remove
-peaks, adjust the promotion threshold, and re-save before windows are built. The
-peak list is persisted as a flat set of equal-length parallel arrays plus the
-detection parameters, an on-disk form built to edit. The loader validates the
-structure loudly: a missing column, mismatched lengths, or an unknown
-classification label raises an error rather than silently dropping data, so a
-malformed edit fails immediately rather than corrupting the fit.
+detected-peak list is the point to choose the promotion cutoff. ``peaks show
+--snr-histogram`` shows where the cutoff falls against the whole candidate
+list; to move it, re-run detection with the new value, ``peaks run --min-snr
+4``, and then rebuild the windows. Individual peaks are not edited in the peak
+list: lines the automatic pipeline missed or should not have fitted are handled
+after the fit, by the review edits described on :doc:`fit_curation`. The peak
+list is persisted as a flat set of equal-length parallel arrays plus the
+detection parameters, and the loader validates that structure loudly: a missing
+column, mismatched lengths, or an unknown classification label raises an error
+rather than silently dropping data.
 
 The promoted peaks then drive two downstream consumers.
 :doc:`Stage 4 <stage4_windows>` builds the analysis windows from the promoted
@@ -359,5 +364,5 @@ Limitations
 - Detection runs on the trimmed active band, so a line outside it is never seen.
   Set the band wide enough at Stage 1 to cover every region of interest.
 
-With a classified, curated peak list in hand, :doc:`Stage 4 <stage4_windows>`
+With a classified peak list in hand, :doc:`Stage 4 <stage4_windows>`
 groups the promoted peaks into the disjoint analysis windows the fit runs on.

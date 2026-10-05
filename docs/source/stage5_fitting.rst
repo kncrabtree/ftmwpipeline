@@ -280,12 +280,15 @@ residual leakage, and if so it renegotiates rather than shipping an under-fit wi
   contributor is unfrozen and co-fit jointly with the dependent window. This does not
   fit the line a second time: its single free fit is reopened and re-determined
   jointly across the coupled windows, replacing the frozen copy rather than adding
-  another. It is the common, cheap case (the reference experiment's 36350/36389 MHz
-  pair, each the other's contributor, resolves this way).
+  another. It is the cheaper of the two remedies, but it needs a fixed contributor on
+  the flagged side: on the reference experiment no window carries one at the default
+  :doc:`materiality gate <stage4_windows>`, so its nine flagged edges record thaw
+  attempts with nothing to thaw (``Thaw events: 0 accepted of 9``) and pass to the
+  structural replan below.
 - **Structural replan.** When no contributor accounts for the coherent edge, because
   a real line straddles the boundary, Stage 5 asks Stage 4 to **merge** the two
   windows through its :doc:`re-plan entry point <stage4_windows>`, bumping the plan
-  revision, and refits the affected batches. The flagged window's own fit must hold at
+  revision, and refits the merged survivor and every window that depends on it. The flagged window's own fit must hold at
   least one line: a window whose lines the cleanup pruned has no fitted line to
   straddle its boundary, so its edge residual is not evidence for a merge. Only a
   neighbour that **touches** the window qualifies: at most one active-FT bin may lie
@@ -505,7 +508,9 @@ The same operations on the Python interfaces:
    fit = pipe.fit_peaks()
 
 The fit is deterministic: a re-run on the same inputs and settings reproduces it
-exactly. Re-running supersedes any review or report built on the old fit.
+exactly. Every ``fit run`` replaces the fit and discards the ``review`` stage built
+on it, including the curation decision log; the result's ``invalidated`` list names
+it.
 
 **Progress and cancelling.** The fit is the longest stage, so it reports each
 window as it finishes and can be stopped part-way. Pass ``events=`` (a callable)
@@ -537,56 +542,54 @@ and, once the token is set, terminates the workers instead of waiting for the
 windows still fitting; the sequential walk (``--jobs 1``) stops after the current
 window. No check is made inside a single window's least-squares fit. On the
 command line the first Ctrl-C cancels the same way (exit ``130``) and ``--events``
-writes the events to stderr; see :doc:`machine_contract`.
+writes the events to stderr; see :doc:`machine_contract`. A second Ctrl-C
+interrupts at once: the call ends with ``KeyboardInterrupt``, its uncommitted work
+is discarded, no partial fit is kept, and the file is left exactly as it was
+before the call.
+
+.. _stage5-partial:
 
 **Partial fits and resuming.** A cancelled fit keeps the windows that had
 finished as a *partial fit*, and ``OperationCancelledError.completed_windows``
-lists them. The same write discards the previous fit and everything built on it
-(a review, the final products); if no window had finished, nothing is written
-and the previous fit is kept. A callback that raises leaves the same (its
-``CallbackFailedError.completed_windows`` lists the kept windows too). While a
-partial fit is present ``status`` reports the fit as ``partial``,
-``window_status`` reports the kept windows, and everything that reads a fit or
-the final products behaves as before Stage 5 (``review run`` and curation
-refuse with ``stage_not_run``).
+lists them; a callback that raises keeps them the same way. Keeping them discards
+the previous fit and the review built on it. While a partial fit is present the
+file behaves as if Stage 5 had not run (``status`` reports the fit as
+``partial``), and the next ``fit run`` resumes it: it fits only the windows not
+yet kept, then finishes as usual over the whole fit, and the result equals an
+uninterrupted fit with the same settings (the same lines, ``peak_uid`` values and
+windows; parameters to floating-point rounding). A resume needs the same settings and
+inputs as the partial fit; when they differ, or ``--restart`` (``restart=True``)
+is passed, the fit starts over and says why in its summary's
+``restart_reason``. Anything that discards a fit discards a partial fit too.
 
-The next ``fit_peaks`` (``fit run``) resumes it: it fits only the windows not
-yet kept, then finishes as usual -- structural replan, cleanup and sorting over
-the whole fit -- and the result equals an uninterrupted fit with the same
-settings (the same lines, ``peak_uid`` values and windows; parameters to
-floating-point rounding). The settings a cancelled fit resolved are stored as
-the file's Stage 5 settings, so a plain re-run resumes with them. The fit starts
-over instead, and says why in its summary's ``restart_reason``, when you pass
-``restart=True`` (``--restart``: ``"restart_requested"``); when the requested
-settings, the values the fit takes from other stages (the decay anchor, the
-timebase epsilon, the survival floor) or the analysis epoch differ from the
-partial fit's (``"settings_changed"``); when the partial fit lacks the record
-needed to compare them (``"incomplete_provenance"``); or when a local thaw was
-accepted (``"thaw_refit"``: every window is refit sequentially, as an
-uninterrupted fit with an accepted thaw does). The summary also carries
-``resumed`` and ``windows_carried``. Anything that discards a fit discards a
-partial fit too: re-running an earlier stage, changing a ``stage5`` setting
-(``settings set`` or ``settings unset``), or a forced re-import. Clocks and the
-timebase leave a partial fit in place, as they leave a complete one; but the
-timebase epsilon is one of the values the fit takes from other stages, so a
-fit run after the timebase changed starts over (``"settings_changed"``).
+The partial fit is written once, in the cancelled call's single atomic write, so
+a process killed at any point (``SIGKILL`` included) leaves the file as it was
+before the call. If another process writes the file while the fit runs, the
+fit's own write is refused with ``write_conflict`` when it commits; its work,
+partial fit included, is discarded and the other write stands.
 
-Nothing is written while the walk runs. The partial fit is written once, in the
-cancelled call's single atomic write, so a process killed at any point
-(``SIGKILL`` included) leaves the file as it was before the call: no partial
-fit from that call, and any earlier partial fit or fit intact. The same holds
-for a kill of the run that resumes a partial fit. To discard a partial fit
-without refitting, re-run an earlier stage or change a ``stage5`` setting; to
-refit everything, pass ``restart=True`` (``fit run --restart``):
+On the example experiment, interrupting the walk and then either resuming or
+restarting looks like this:
 
 .. code-block:: console
 
-   $ ftmwpipeline fit run exp_2638.ftmw          # Ctrl-C partway: exit 130
-   $ ftmwpipeline fit run exp_2638.ftmw          # resumes the kept windows
-   $ ftmwpipeline fit run exp_2638.ftmw --restart --json   # starts over
+   $ ftmwpipeline fit run exp_2638.ftmw     # Ctrl-C partway: exit 130
+   $ ftmwpipeline fit run exp_2638.ftmw --json
+   {"schema": "ftmw/run_result@1", "verb": "fit run", ...,
+    "summary": {..., "resumed": true, "windows_carried": 188,
+                "restart_reason": null}}
+
+   # or, instead of resuming, start over:
+   $ ftmwpipeline fit run exp_2638.ftmw --restart --json
    {"schema": "ftmw/run_result@1", "verb": "fit run", ...,
     "summary": {..., "resumed": false, "windows_carried": 0,
                 "restart_reason": "restart_requested"}}
+
+``restart_reason`` is ``null`` whenever there was nothing to start over from: a
+resumed fit, or a fit with no partial fit present (a ``--restart`` after the fit
+has completed reports ``null`` too). The full rules — what a resume compares, every
+``restart_reason`` value, and what keeps or discards a partial fit — are part of
+:doc:`machine_contract`.
 
 A partial fit is a private checkpoint, not part of the file's layout contract:
 it is stored as plain numeric arrays and JSON (nothing is pickled), reading it
@@ -614,8 +617,8 @@ can be supplied for an A/B test with ``--tau-maj-override`` / ``--sigma-tau-over
 (an atomic pair). Settings resolve in the usual order (explicit flags, then a
 persisted record, then a preset, then the recommended values, then the hard defaults)
 as described on :doc:`settings_and_presets`. The packaged ``defaults`` preset is a
-copy-and-edit template of every knob at its default; a preset composes with explicit
-flags.
+copy-and-edit template of the knobs at their defaults (a knob it does not list takes
+its hard default); a preset composes with explicit flags.
 
 The decay-time anchor the fit used (override, persisted Stage 2b calibration, or
 none; with the per-band majorities table when it routed per band), the timebase
@@ -689,8 +692,11 @@ structure stands out. It is read-only; it grades the fit without changing it.
 
 **Tuning.** The defaults are calibrated for the reference instrument and generalize
 across a wide signal-to-noise range; routine use needs no adjustment. The most
-commonly touched knobs are below. Set them with per-knob flags on ``fit run``,
-through a preset, or via ``settings=StageFitSettings(...)`` on the Python interfaces.
+commonly touched knobs are below. Set them through a preset, via
+``settings=StageFitSettings(...)`` on the Python interfaces, or with
+``settings set``; four of them also have a ``fit run`` flag: ``--shape``,
+``--per-band-tau`` / ``--no-per-band-tau``, ``--rescue-snr-threshold``, and
+``--residual-edge-threshold``.
 
 .. list-table::
    :header-rows: 1

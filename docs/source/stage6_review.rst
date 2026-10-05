@@ -57,8 +57,11 @@ Method
 consolidated, calibrated **final-products table** the reports present. The analyst
 works the worklist window by window, either **editing** it (which re-runs that
 window's fit) or **accepting** the automatic fit unchanged; either way the flag
-clears. Every edit is appended to an **anchored decision log** that replays against
-the file when an upstream stage is re-run, so curation survives re-analysis. Finally,
+clears. Every edit is appended to an **anchored decision log** persisted in the
+file. The curation belongs to the fit it was made on: re-running ``fit`` or any
+earlier stage discards Stage 6 entirely, decision log and undo baseline included,
+and the way to carry curation across a re-analysis is to keep it in a
+:doc:`curation file <fit_curation>` and re-apply it with ``review apply``. Finally,
 ``report`` renders the finalized record (the calibrated line table and a
 self-contained HTML report), read-only. The sections below detail the flag model, the
 worklist, the edit-and-refit verbs, the decision log, and the calibrated products.
@@ -69,7 +72,7 @@ worklist, the edit-and-refit verbs, the decision log, and the calibrated product
 
    The Stage 6 curation loop. ``review run`` builds the worklist and the
    final-products table; the analyst edits or accepts each flagged window (blue), each
-   edit re-running that window's fit and logging an anchored, replayable decision;
+   edit re-running that window's fit and logging an anchored decision;
    ``report`` then renders the finalized record (gold), read-only.
 
 Curation state and report-readiness
@@ -91,28 +94,27 @@ The two axes are orthogonal. A window can be ``user-edited · needs-attention``
 to flag. Each **peak** additionally carries an ``origin`` of ``auto`` or ``user`` that
 survives serialization, so a hand-added line is visibly marked wherever it appears.
 
-Report-readiness is **computed, not asserted**. The only hard bar to generating a
-report is a ``user-edited`` window whose decision has been **invalidated** by
-re-running an upstream stage (see :ref:`the decision log <stage6-decisions>` below).
-``needs-attention`` flags are reported honestly but never block.
+Nothing about curation gates a report. A report needs only the final-products table
+that ``review run`` builds; ``needs-attention`` flags, edited windows, and
+unreviewed windows are all reported honestly and never block it.
 
 Attention routing and the candidate ledger
 -------------------------------------------
 
 ``review run`` builds one consolidated, ranked "needs attention" surface rather than a
-scatter of per-feature lists, so the analyst has a single worklist. A window is
-flagged for any of:
+scatter of per-feature lists, so the analyst has a single worklist. Each reason has a
+stable kind, the slug every output uses. A window enters the worklist (the review
+queue) for any of:
 
-- **worst-ε** — the window's reduced :math:`\chi^2` fails the
+- ``worst_eps`` — the window's reduced :math:`\chi^2` fails the
   signal-to-noise-aware acceptance gate (the same standard ``fit check`` uses);
-- **over-split** — a sub-resolution pair was auto-merged, or a member's amplitude
-  variance-inflation factor flags a degenerate split for the analyst to confirm;
-- **candidate-bearing** — the candidate ledger (below) holds a revivable rejected line
+- ``candidate_bearing`` — the candidate ledger (below) holds a revivable rejected line
   with strong residual evidence (gated by a stiffer bar than the display ledger, so
   the surface stays actionable);
-- **spur-adjacent** — a fitted line sits next to a masked clock/LO spur;
-- **edge/boundary** — a line sits at a window edge, where leakage coupling is hardest;
-- **empty window, coherent residual** (``empty_window_residual``) — the fit holds no
+- ``spur_adjacent`` — a fitted line sits on a gated clock/LO spur node;
+- ``edge_boundary`` — a fitted line sits within one resolution element of a window
+  edge, where leakage coupling is hardest;
+- ``empty_window_residual`` — the fit holds no
   line in a window of its plan, yet Stage 5 measured a coherent residual on the
   window's edge (its edge-coherence ``S_coh`` stayed above the fit's
   ``residual_edge_threshold``, and neither a thaw nor a structural merge could act
@@ -120,13 +122,22 @@ flagged for any of:
   every gated spur, so a line may be missing. The flag lists the flagged edges and
   those Stage 3 peaks.
 
-When every Stage 3 peak in such a window sits on a gated spur, the edge residual is
-consistent with the spur's skirt reaching past its mask. The window then carries the
-**advisory** ``empty_window_spur`` instead, naming the spur: it stays on the
-window's status and in the report, but does not enter the queue (like the
-auto-merge note). (``review rank`` ranks fitted windows only, so it lists neither
-kind.) On the 2638 fixture this is the case for windows 100,
-158 and 227, each holding only a saturated spur.
+Three further kinds are **advisory**: they stay on the window's status, in
+``review rank`` and in the report, but do not on their own put the window in the
+queue.
+
+- ``auto_merged_review`` — Stage 5 merged a degenerate sub-resolution pair into one
+  line. The merge is usually the right call; the note marks a re-split opportunity
+  (an ``add`` beside the line, read as a split) where a catalog or model supports two
+  lines.
+- ``flat_decay`` — a line in the ambiguous spur-decay band (a real line and a CW tone
+  are indistinguishable there) was kept rather than masked; confirm it is molecular.
+- ``empty_window_spur`` — as ``empty_window_residual``, but every Stage 3 peak in the
+  window sits on a gated spur, so the edge residual is consistent with the spur's
+  skirt reaching past its mask. The reason names the spur. (``review rank`` ranks
+  fitted windows only, so it lists neither empty-window kind.) On the example
+  experiment this is the case for windows 100, 158 and 227, each holding only a
+  saturated spur.
 
 A window flagged either way has no fit of its own, so it cannot be
 edited by its id. To fit the line, create a window at it and add the line there::
@@ -224,25 +235,23 @@ Creating a window
 - ``review create --at F`` — install a fit window covering ``F``, as an
   explicit, structural-only step. Creating one implicitly, as a side effect of
   the ``add`` that needs it, is usually what you want instead; this verb
-  remains for pinning a window's id (what a replay writes) and for installing
-  structure now to fill later.
+  remains for installing structure now to fill later.
 
 Windows come from Stage 4, which builds them around the lines Stage 3 *promoted*.
 A real line the detector missed therefore has no window to edit, and reaching it by
-lowering the detection threshold re-runs Stage 3 — which invalidates Stages 5 and 6
-and discards the entire curated edit set. ``review create`` supplies the missing
+lowering the detection threshold re-runs Stage 3 — which discards Stages 4, 5 and 6,
+the entire curated edit set included. ``review create`` supplies the missing
 structure instead, so nothing already decided is lost.
-
-A Stage 5 structural merge revises the windows: the survivor keeps the lower id and the
-merged range, the absorbed id is no longer a window, and Stage 6 works on the plan the
-fit was made on.
 
 It is deliberately **structural only**: the window is installed and fit with an empty
 peak set. Putting the line in it is a separate ``review edit --window N --add F``, and
-the log records the two operations as two decisions. Creating structure and changing a
-window's peak set are different acts, and a log that spelled both ``add`` could not be
-replayed or diffed without re-deriving window membership from scratch. A client is free
-to offer both as one gesture; the log still shows two.
+the log records the two operations as two decisions (``create_window``, then
+``add``). Creating structure and changing a window's peak set are different acts, and
+a log that spelled both ``add`` could not be diffed without re-deriving window
+membership from scratch. An ``add`` that *implies* its window — ``review edit
+--add F`` with no ``--window``, or an omitted-window curation-file row, for a
+frequency no live window covers — is different: the create is a mechanism the engine
+chose, not a decision, so the log records the one ``add`` (into the new window).
 
 Three properties make the operation safe to build on:
 
@@ -261,8 +270,8 @@ Three properties make the operation safe to build on:
   side of the anchor, shifted (not shrunk) when the gap cannot center it.
 
 Two boundary cases resolve rather than fail. An anchor that already falls inside a
-window is refused with a message pointing at ``review edit --add`` on that window —
-that frequency has a home. And when the gap is too narrow to hold a fittable window,
+window is refused (``bad_setting``, ``path`` ``anchor_mhz``) with a message pointing
+at ``review edit --add`` on that window — that frequency has a home. And when the gap is too narrow to hold a fittable window,
 the adjacent window is **widened** to absorb the anchor and re-fit over its new extent;
 the result reports ``mode="widened"`` and the decision log records it, so the change to
 an existing window is never silent. Windows Stage 5 dropped (all their peaks failed
@@ -278,35 +287,108 @@ one, because either would make the verb feel broken.
 
 .. _stage6-decisions:
 
+The decision log and undo
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
 Every edit appends an entry to an **ordered decision log** persisted in the file, so
 the ``.ftmw`` reproduces the curated analysis with no side channel. Each entry is
 **anchored** to a window identity and a molecular frequency, and records its kind, its
-``user`` provenance, and an evidence snapshot. ``review log`` lists the history;
-``review undo`` reverts the most recent decisions by restoring the snapshotted
-automatic fit and replaying the surviving decisions on top. A client that keeps
-its own position in the log (an editor whose undo steps back through the
-decisions without re-fitting) aligns the file on its next real edit with
-``review apply --log-prefix N`` (``log_prefix=N`` on the API): the decisions
-after the first ``N`` are dropped and the kept ones are replayed together with
-the new batch as one replay -- the same outcome as an undo of the dropped ids
-followed by an apply, one cascade and one persist instead of two. The batch's
-frequencies and omitted window ids resolve against the state the kept decisions
-leave, never the file as it stood; should a row fail, the call is discarded
-whole and the file is left exactly as it was before the call (the restore to the
-prefix happens in the call's working copy; see :doc:`machine_contract`, *Crash
-safety*).
+``user`` provenance, and an evidence snapshot (the window's reduced :math:`\chi^2` and
+peak count before and after, and for an inferred split or merge the frequency that was
+requested). A coalesced edit logs one entry per add or remove it carried. ``review
+log`` lists the history.
 
-Because the decisions are anchored rather than baked in, re-running an upstream stage
-does not silently discard them. **Replay re-applies each decision wherever its anchor
-still resolves** — refitting the window just as the original edit did — and surfaces a
-comparison (reduced :math:`\chi^2` with and without the decision, the peak-count and
-frequency deltas) so the analyst can decide whether to revisit it. A decision is
-**invalidated** only when its anchor no longer resolves: the window is gone, or the
-frequency has fallen out of any window or out of band. An invalidated ``user-edited``
-window is the sole hard bar to report generation; the report, when generated, logs the
-Stage 6 decisions for honesty. Throughout, the curated result stays separable from the
-automatic one, so a curated fixture never silently masquerades as an automatic
-benchmark.
+``review undo --id N`` reverts the decisions it names, any of them, not only the most
+recent. The first fit-changing edit snapshots the automatic fit inside the file (the
+**undo baseline**); an undo restores that baseline and replays every surviving
+decision onto it, in log order, so the decision ids are renumbered afterwards.
+``--dry-run`` prints what would be undone and the replay plan without writing. An undo
+that would drop a created window surviving decisions still act on is refused
+(``curation_conflict``, ``orphans_created_window``), as is an id the log does not hold
+(``not_found``, kind ``decision``).
+
+A client that keeps its own position in the log (an editor whose undo steps back
+through the decisions without re-fitting) aligns the file on its next real edit with
+``review apply --log-prefix N`` (``log_prefix=N`` on the API): the decisions after
+the first ``N`` are dropped and the kept ones are replayed together with the new batch
+as one replay -- the same outcome as an undo of the dropped ids followed by an apply,
+one cascade and one persist instead of two. The batch's frequencies and omitted window
+ids resolve against the state the kept decisions leave, never the file as it stood.
+
+Each of these calls is one unit. ``review apply`` checks for a cancel before each
+action, and a cancel, a failing row, or a failing events callback discards the whole
+batch, leaving the file exactly as it was before the call. An undo or a log-prefix
+apply honours a cancel only before it restores the baseline; once the restore has
+begun it completes. (The guarantee is the call's single atomic write; see
+:doc:`machine_contract`.)
+
+**The log belongs to the fit.** Re-running ``fit`` or any stage before it discards the
+whole of Stage 6 — the attention layer, the final-products table, the decision log
+and the undo baseline. Nothing is replayed onto the new fit. To carry curation across
+a re-analysis, keep it in a :doc:`curation file <fit_curation>` (the report's
+in-browser cart writes one) and apply that file to the new fit with ``review
+apply``. Throughout, the curated result stays separable from the automatic one, so a
+curated fixture never silently masquerades as an automatic benchmark.
+
+.. _stage6-merged-windows:
+
+Windows after a structural merge
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A Stage 5 structural merge revises the windows the fit is made on: the survivor keeps
+the lower id and the merged range, and the absorbed id is no longer a window (see
+:doc:`stage4_windows`). Stage 6 works on that **fitted plan**, never on the Stage 4
+plan as built. ``window_status`` reports it: one row per window of the fitted plan and
+per created window, the survivor's row carrying ``merged_from``, the ids it absorbed.
+
+- A curation call that names an absorbed id is refused as ``not_found`` (kind
+  ``window``); name the survivor instead.
+- A window Stage 6 creates never takes an absorbed id. A recorded window creation that
+  is replayed (by an undo or a log-prefix apply) and no longer reproduces its window —
+  it would now widen another window, or its id is taken — is refused
+  (``curation_conflict``, ``replay_conflict``).
+- A fit made before fits stored their plan holds merges whose geometry is not in the
+  file. Edits that would refit such a merged window, or create a window inside or
+  against one, are refused (``curation_conflict``, ``fit_plan_unavailable``);
+  re-running ``fit run`` stores the plan and clears the refusal.
+
+.. _stage6-epoch-gate:
+
+The analysis-epoch gate
+~~~~~~~~~~~~~~~~~~~~~~~
+
+An edit refits one window and splices it into a fit whose other windows were fit
+earlier. If the fitting code changed in between — the file's Stage 5 fit was produced
+under a different analysis epoch from the running package — the spliced result would
+mix two fitting models inside one product. Every verb that refits or creates a window
+(``review edit``, ``accept --candidate``, ``create``, ``apply``, ``preview``, ``undo``)
+therefore refuses with ``epoch_mismatch``, whose ``file_epoch`` and ``current_epoch``
+name the two. Reading the file, ``review run``, and a plain ``review accept`` are not
+gated. Two ways forward:
+
+- ``fit run`` re-fits the whole spectrum under the current epoch (discarding the old
+  Stage 6, as above); or
+- ``review acknowledge-environment`` (``--reason TEXT`` optional) records in the file
+  that the curation knowingly crosses the epoch boundary. Edits then proceed with a
+  warning, and the reports state that the curated fit mixes two analysis
+  environments.
+
+.. _stage6-refusals:
+
+Refusals
+~~~~~~~~
+
+Every refusal leaves the file exactly as it was, and each is a typed error with a
+stable ``code``: ``bad_setting`` for a malformed request (its ``path`` names the
+argument, cell or field, such as ``anchor_mhz`` or ``curation[line 3].freqs``),
+``not_found`` for a peak, window, or decision id that does not resolve,
+``curation_conflict`` for a valid request that conflicts with the file's review state
+(its ``reason`` a stable slug, such as ``target_outside_window`` or
+``baseline_unavailable``), ``epoch_mismatch`` for the gate above, and
+``write_conflict`` when another process wrote the file during the call. On the
+command line, ``--json`` prints the error as an ``ftmw/error@1`` object on stderr. The
+full vocabulary, field by field, is in :doc:`machine_contract`; :doc:`fit_curation`
+shows the refusals a curation file meets.
 
 Final products and the frequency budget
 ---------------------------------------
@@ -432,17 +514,51 @@ pass, printing a summary of the worklist and the calibration state:
 .. code-block:: console
 
    $ ftmwpipeline review run exp_2638.ftmw
-   review run: 277 window(s), 5 needing attention
-     candidate-bearing: 3
-     over-split: 1
-     spur-adjacent: 1
-   final products: 638 peak(s), calibration Rb-locked (eps=±0.000 ppm), sigma_floor=0.000 kHz
+   review run: 265 window(s), 6 needing attention
+     auto_merged_review: 6
+     candidate_bearing: 6
+     empty_window_spur: 3
+   final products: 511 peak(s), calibration self_calibrated (eps=+2.191 ppm), sigma_floor=0.000 kHz
+
+The reason counts tally every reason recorded, advisory ones included; the six windows
+needing attention are the six ``candidate_bearing`` ones (the ``auto_merged_review``
+and ``empty_window_spur`` notes are advisory). The window count includes the three
+empty windows the fit left in its plan.
+
+Ranking the windows by fit quality, then editing window 59, one of the
+candidate-bearing windows: its ledger holds a residual candidate at
+28817.0306 MHz (``review show --window 59 --candidates``), and the add revives it.
+The file is ``self_calibrated``, so the frequency's frame must be stated (see
+:ref:`curation-frames`):
+
+.. code-block:: console
 
    $ ftmwpipeline review rank --by chi2r --top 3 exp_2638.ftmw
-   $ ftmwpipeline review edit --window 217 --add 31214.20 exp_2638.ftmw   # refits window 217
+   review rank by chi2r (window reduced chi-squared (fit quality)), worst first:
+       win         value       freq_lo       freq_hi   peaks     chi2r  label
+     ------------------------------------------------------------------------------
+       179         193.5    33836.4336    33841.6968       2    193.48  auto·needs-attention[1]
+       240         119.2    36346.4101    36354.9725       4    119.23  auto·—
+       282         34.21    38857.4863    38863.5350       3     34.21  auto·needs-attention[1]
+
+   $ ftmwpipeline review edit exp_2638.ftmw --window 59 --add 28817.03 --frame raw
+   review edit  window=59  peaks 2 → 3  chi2r 24.43 → 5.817
+     Added seeds (1): ['28817.0300']
+         freq (MHz)         amp       snr  origin
+     ----------------------------------------------
+         28817.1677   1.396e-05     271.5    user
+         28817.1875   2.702e-05     525.4    auto
+         28817.3494   1.706e-05     331.8    auto
+
    $ ftmwpipeline report run exp_2638.ftmw --output-dir report/
    report run: wrote table to report/exp_2638_lines.csv
    report run: wrote self-contained full HTML report to report/exp_2638_report.html
+
+The refit converged the added line to 28817.1677 MHz, 20 kHz from the strong
+28817.1875 MHz line rather than at the seed, and :math:`\chi^2_r` fell from 24.4 to
+5.8. A pair that close is a judgment call (its amplitude uncertainties, in the table
+below, are as large as the amplitudes), which is what ``review show --window 59`` and
+``report diff`` are for.
 
 The same operations on the Python interfaces, with the values each call returns:
 
@@ -451,17 +567,18 @@ The same operations on the Python interfaces, with the values each call returns:
    import ftmwpipeline.api as ftmw
 
    result = ftmw.review_run("exp_2638.ftmw")
-   print(result.n_windows, result.n_attention)        # -> 277 5
-   print(result.reason_counts)                         # -> {'candidate-bearing': 3, ...}
+   print(result.n_windows, result.n_attention)        # -> 265 6
+   print(result.reason_counts)
+   # -> {'auto_merged_review': 6, 'candidate_bearing': 6, 'empty_window_spur': 3}
 
    for w in ftmw.rank_windows("exp_2638.ftmw", by="chi2r", top=3):
        print(w.window_id, w.metric, round(w.value, 2), w.n_peaks)
-   # 217 chi2r 3.81 2
-   # 49  chi2r 2.94 5
-   # 188 chi2r 2.40 1
+   # 179 chi2r 193.48 2
+   # 240 chi2r 119.23 4
+   # 282 chi2r 34.21 3
 
-   edit = ftmw.review_edit("exp_2638.ftmw", window_id=217, add=[31214.20])
-   print(edit.n_peaks_before, edit.n_peaks_after, round(edit.chi2r_after, 2))   # -> 2 3 1.18
+   edit = ftmw.review_edit("exp_2638.ftmw", window_id=59, add=[28817.03], frame="raw")
+   print(edit.n_peaks_before, edit.n_peaks_after, round(edit.chi2r_after, 2))   # -> 2 3 5.82
 
    paths = ftmw.report_run("exp_2638.ftmw", output_dir="report/")
    print(paths)   # -> {'table': 'report/exp_2638_lines.csv', 'html': 'report/exp_2638_report.html'}
@@ -510,23 +627,34 @@ an empty cell. With
 
 .. code-block:: text
 
+   # ftmwpipeline final products
    # experiment: exp_2638
-   # calibration_state: rb_locked
-   # epsilon_ppm: 0.000
+   # calibration_state: self_calibrated
+   # epsilon_ppm: +2.191 +- 0.074
    # sigma_floor_khz: 0.000
-   # probe_freq_mhz: 26000.000
-   # sideband: upper
+   # probe_freq_mhz: 40960.0000
+   # sideband: lower
    # amplitude_unit: uV
-   # n_peaks: 638
-   frequency_mhz,sigma_f_khz,sigma_stat_khz,sigma_eps_khz,sigma_floor_khz,frequency_raw_mhz,f_baseband_mhz,amplitude,amplitude_err,phase_rad,phase_err_rad,snr,snr_err,origin,window_id,clock_lattice,derivation
-   36350.112100,0.42,0.42,0.000,0.000,36350.112100,10350.112100,18.3,0.37,0.31,0.02,210.4,4.2,auto,217,,
-   36389.044700,0.55,0.55,0.000,0.000,36389.044700,10389.044700,9.1,0.41,-1.12,0.05,71.6,3.2,auto,218,,
+   # n_peaks: 512
+   # fit_environment: ftmwpipeline 0.1.0b6 (epoch 5), python 3.11.15, numpy 2.4.6, scipy 1.17.1
+   # fit_blas: openblas 0.3.33 (1 threads)
+   frequency_mhz,sigma_f_khz,sigma_stat_khz,sigma_eps_khz,sigma_floor_khz,frequency_raw_mhz,f_baseband_mhz,amplitude,amplitude_err,phase_rad,phase_err_rad,snr,snr_err,origin,window_id,clock_lattice,derivation,peak_uid,decay_time_us,decay_time_error_us,shape,fwhm_mhz,detection_index,fit_window_low_mhz,fit_window_high_mhz
+   26613.613007,1.571,1.158,1.063,0,26613.581576,14346.418424,1.905,0.03924,-1.084,0.0306,34.58,0.7123,auto,1,,,18263000,8.50794,0.165,gaussian,0.118106,7,26611.091924,26616.747842
+   28817.194312,7.492,7.438,0.8995,0,28817.167709,12142.832291,13.96,10.39,2.202,0.2736,271.5,202.1,user,59,,0,15458000,8.21607,0.0263,gaussian,0.120706,247,28814.700607,28819.885199
+   28817.214055,21.44,21.42,0.8995,0,28817.187452,12142.812548,27.02,10.37,-0.2039,0.1491,525.4,201.7,auto,59,,,15457780,8.21607,0.0263,gaussian,0.120706,247,28814.700607,28819.885199
+
+The excerpt is the table after the window 59 edit above: the first line came through
+the fit unchanged, while the added line carries ``origin`` ``user`` and
+``derivation`` ``0``, the index of the decision that created it. The calibrated
+``frequency_mhz`` sits 31.4 kHz above ``frequency_raw_mhz`` at 26613 MHz and 26.6 kHz
+above it at 28817 MHz: on this lower-sideband file the correction scales with the
+baseband offset ``f_baseband_mhz``.
 
 ``report run`` is the default deliverable: it writes that table (``<stem>_lines.csv`` by
 default) and a **self-contained HTML report** (``<stem>_report.html``), one portable
 file with the stylesheet inlined and every figure embedded. The report opens
 **read-only**, with an opt-in ``Curate`` toggle that collects edits in the browser and
-exports them as a **curation file** for ``review apply`` to replay. Its anatomy, the
+exports them as a **curation file** that ``review apply`` applies. Its anatomy, the
 in-browser curation cart, and the curation-file language are documented on the
 :doc:`Fit Curation <fit_curation>` page.
 
