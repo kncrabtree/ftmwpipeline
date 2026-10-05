@@ -1,0 +1,337 @@
+"""The ``empty_window_residual`` review item (pure trigger, no file).
+
+``dev-docs/CONTRACT_STRATEGY.md`` §Review attention: a fitted-plan window the fit
+holds no line in, not taken over or edited in Stage 6, whose edge Stage 5's
+thaw / replan handshake left flagged above the fit's own
+``residual_edge_threshold``.
+"""
+
+from __future__ import annotations
+
+import json
+from typing import List, Optional, Sequence
+
+import numpy as np
+import pytest
+
+from ftmwpipeline._internal.empty_window_attention import (
+    EMPTY_WINDOW_RESIDUAL,
+    empty_window_reasons,
+    flagged_empty_edges,
+    flagged_lineless_ids,
+    lineless_window_fit,
+    superseded_window_ids,
+)
+from ftmwpipeline._internal.stage6_impl import _settle_empty_window_reasons
+from ftmwpipeline.core.data_structures import (
+    _ADVISORY_REASON_KINDS,
+    ATTENTION_KINDS,
+    AttentionReason,
+    FittedPeak,
+    FittingResult,
+    FitWindow,
+    Peak,
+    ReplanInfo,
+    SpectrumFit,
+    Stage6Review,
+    ThawInfo,
+    WindowReviewStatus,
+)
+from ftmwpipeline.io.stage6_review_serialization import (
+    _status_from_dict,
+    _status_to_dict,
+)
+
+pytestmark = [pytest.mark.unit]
+
+THR = 8.0
+TOL = 0.2  # MHz; the spur_adjacent tolerance a caller passes
+
+
+def _replan(wid: int, side: str, s_coh: float, accepted: bool = False) -> ReplanInfo:
+    return ReplanInfo(
+        triggering_window_id=wid,
+        partner_window_id=wid + 1,
+        surviving_window_id=wid,
+        edge_side=side,
+        edge_coherence_before=s_coh,
+        revision_before=0,
+        revision_after=1 if accepted else 0,
+        accepted=accepted,
+        reason="" if accepted else "not merged: the window's fit holds no line",
+    )
+
+
+def _thaw(wid: int, side: str, before: float, accepted: bool) -> ThawInfo:
+    return ThawInfo(
+        dependent_window_id=wid,
+        primary_window_id=wid - 1,
+        contributor_peak_index=0,
+        contributor_frequency_mhz=1000.0,
+        edge_side=side,
+        edge_coherence_before=before,
+        edge_coherence_after=1.0 if accepted else before,
+        accepted=accepted,
+    )
+
+
+def _live_fit(wid: int, freq: float) -> FittingResult:
+    wf = FittingResult(window_id=wid)
+    wf.fitted_peaks = [
+        FittedPeak(detection_index=0, frequency_mhz=freq, amplitude=1.0, window_id=wid)
+    ]
+    return wf
+
+
+def _fit(
+    *,
+    replans: Sequence[ReplanInfo] = (),
+    thaws: Sequence[ThawInfo] = (),
+    window_fits: Sequence[FittingResult] = (),
+    threshold: Optional[float] = THR,
+    spurs: Sequence[float] = (),
+) -> SpectrumFit:
+    params = {} if threshold is None else {"residual_edge_threshold": threshold}
+    params["spur_centers_mhz"] = list(spurs)
+    params["shape"] = "gaussian"
+    return SpectrumFit(
+        window_fits=list(window_fits),
+        replan_history=list(replans),
+        thaw_history=list(thaws),
+        parameters=params,
+        diagnostics={
+            "gated_spurs": [
+                {"center_mhz": f, "source": "flat+saturated"} for f in spurs
+            ]
+        },
+    )
+
+
+def _plan() -> List[FitWindow]:
+    return [
+        FitWindow(window_id=1, freq_range=(990.0, 995.0), free_peak_indices=[0]),
+        FitWindow(window_id=2, freq_range=(1000.0, 1005.0), free_peak_indices=[2, 1]),
+        FitWindow(window_id=3, freq_range=(1010.0, 1015.0), free_peak_indices=[3]),
+    ]
+
+
+def _peaks() -> List[Peak]:
+    return [
+        Peak(992.5, 1.0, snr=12.0),
+        Peak(1002.5, 5.0, snr=69.0),
+        Peak(1001.0, 0.5, snr=None),
+        Peak(1012.0, 1.0, snr=9.0),
+    ]
+
+
+def _reasons(fit: SpectrumFit, excluded: Sequence[int] = ()) -> dict:
+    return empty_window_reasons(
+        fit,
+        _plan(),
+        _peaks(),
+        excluded_window_ids=set(excluded),
+        spur_tol_mhz=TOL,
+    )
+
+
+# ---- the kind --------------------------------------------------------------
+
+
+def test_kind_is_declared_and_queues():
+    assert EMPTY_WINDOW_RESIDUAL == "empty_window_residual"
+    assert EMPTY_WINDOW_RESIDUAL in ATTENTION_KINDS
+    assert EMPTY_WINDOW_RESIDUAL not in _ADVISORY_REASON_KINDS
+    st = WindowReviewStatus(
+        window_id=2,
+        attention_reasons=[AttentionReason(EMPTY_WINDOW_RESIDUAL, "x", 2.0)],
+    )
+    assert st.needs_attention
+
+
+# ---- the trigger -----------------------------------------------------------
+
+
+def test_replan_flag_on_an_empty_window_triggers():
+    fit = _fit(replans=[_replan(2, "low", 17.6), _replan(2, "high", 11.4)])
+    out = _reasons(fit)
+    assert set(out) == {2}
+    r = out[2]
+    assert r.kind == EMPTY_WINDOW_RESIDUAL
+    assert r.severity == pytest.approx(17.6 / THR)
+    assert r.evidence["edges"] == [
+        {"side": "low", "s_coh": 17.6},
+        {"side": "high", "s_coh": 11.4},
+    ]
+    assert r.evidence["residual_edge_threshold"] == THR
+    # Candidates ascend in frequency, whatever the plan's index order.
+    assert [c["detection_index"] for c in r.evidence["candidates"]] == [2, 1]
+    assert r.locations == [1001.0, 1002.5]
+
+
+def test_edge_at_or_below_threshold_does_not_trigger():
+    assert _reasons(_fit(replans=[_replan(2, "low", THR)])) == {}
+    assert _reasons(_fit(replans=[_replan(2, "low", 3.0)])) == {}
+    assert _reasons(_fit(replans=[_replan(2, "low", float("nan"))])) == {}
+
+
+def test_a_window_holding_a_line_does_not_trigger():
+    fit = _fit(replans=[_replan(2, "low", 20.0)], window_fits=[_live_fit(2, 1002.5)])
+    assert _reasons(fit) == {}
+
+
+def test_a_window_result_with_no_line_still_triggers():
+    """A window result that holds no line counts as empty."""
+    fit = _fit(
+        replans=[_replan(2, "low", 20.0)],
+        window_fits=[FittingResult(window_id=2)],
+    )
+    assert set(_reasons(fit)) == {2}
+
+
+def test_excluded_windows_do_not_trigger():
+    fit = _fit(replans=[_replan(2, "low", 20.0)])
+    assert _reasons(fit, excluded=[2]) == {}
+
+
+def test_a_fit_without_a_threshold_flags_nothing():
+    assert _reasons(_fit(replans=[_replan(2, "low", 20.0)], threshold=None)) == {}
+
+
+def test_an_accepted_replan_is_not_a_flag():
+    assert _reasons(_fit(replans=[_replan(2, "low", 20.0, accepted=True)])) == {}
+
+
+def test_rejected_thaw_flags_and_accepted_thaw_resolves():
+    flagged = _fit(thaws=[_thaw(2, "high", 12.0, accepted=False)])
+    assert flagged_empty_edges(flagged, 2, THR) == [("high", 12.0)]
+    resolved = _fit(thaws=[_thaw(2, "high", 12.0, accepted=True)])
+    assert flagged_empty_edges(resolved, 2, THR) == []
+
+
+def test_replan_after_an_accepted_thaw_flags_again():
+    """Records are read in Stage 5's order: thaw, then replan."""
+    fit = _fit(
+        thaws=[_thaw(2, "low", 12.0, accepted=True)],
+        replans=[_replan(2, "low", 15.0)],
+    )
+    assert flagged_empty_edges(fit, 2, THR) == [("low", 15.0)]
+
+
+def test_strongest_record_per_edge_wins():
+    fit = _fit(replans=[_replan(2, "low", 10.0), _replan(2, "low", 14.0)])
+    assert flagged_empty_edges(fit, 2, THR) == [("low", 14.0)]
+
+
+def test_other_windows_records_are_ignored():
+    fit = _fit(replans=[_replan(3, "low", 20.0)])
+    assert flagged_empty_edges(fit, 2, THR) == []
+
+
+def test_gated_spur_and_snr_evidence():
+    fit = _fit(replans=[_replan(2, "low", 20.0)], spurs=[1002.55])
+    cands = _reasons(fit)[2].evidence["candidates"]
+    by_idx = {c["detection_index"]: c for c in cands}
+    assert by_idx[1]["gated_spur"] is True
+    assert by_idx[1]["snr"] == 69.0
+    assert by_idx[2]["gated_spur"] is False
+    assert "snr" not in by_idx[2]  # Stage 3 recorded none
+    assert "gated spur" in _reasons(fit)[2].detail
+
+
+def test_evidence_is_json_and_round_trips():
+    reason = _reasons(_fit(replans=[_replan(2, "low", 20.0)], spurs=[1002.5]))[2]
+    st = WindowReviewStatus(window_id=2, attention_reasons=[reason])
+    blob = json.loads(json.dumps(_status_to_dict(st)))
+    back = _status_from_dict(blob)
+    assert back.attention_reasons[0] == reason
+
+
+def test_legacy_reason_without_evidence_loads_empty():
+    st = _status_from_dict(
+        {
+            "window_id": 4,
+            "attention_reasons": [{"kind": "worst_eps", "detail": "d", "severity": 1}],
+        }
+    )
+    assert st.attention_reasons[0].evidence == {}
+
+
+# ---- supersession and acceptance ------------------------------------------
+
+
+def test_superseded_by_overlap_or_same_id():
+    created = [
+        FitWindow(window_id=9, freq_range=(1004.0, 1007.0)),
+        FitWindow(window_id=3, freq_range=(1011.0, 1016.0)),
+    ]
+    assert superseded_window_ids(_plan(), created) == {2, 3}
+    assert superseded_window_ids(_plan(), []) == set()
+
+
+def test_flagged_lineless_ids():
+    review = Stage6Review(
+        window_statuses={
+            2: WindowReviewStatus(
+                2, attention_reasons=[AttentionReason(EMPTY_WINDOW_RESIDUAL, "", 1.0)]
+            ),
+            3: WindowReviewStatus(
+                3, attention_reasons=[AttentionReason("worst_eps", "", 1.0)]
+            ),
+        }
+    )
+    assert flagged_lineless_ids(review, {7}) == {2}
+    assert flagged_lineless_ids(review, {2}) == set()
+
+
+def test_lineless_window_fit_draws_the_plan_range():
+    wf = lineless_window_fit(_plan()[1], "gaussian")
+    assert wf.window_id == 2
+    assert wf.window is not None and wf.window.freq_range == (1000.0, 1005.0)
+    assert wf.fitted_peaks == [] and wf.shape == "gaussian"
+    assert not np.isfinite(wf.reduced_chi2)
+
+
+# ---- a batch drops the reason it resolved ---------------------------------
+
+
+def _flagged_statuses(provenance: str = "auto") -> dict:
+    return {
+        2: WindowReviewStatus(
+            2,
+            provenance=provenance,
+            attention_reasons=[AttentionReason(EMPTY_WINDOW_RESIDUAL, "", 2.0)],
+        )
+    }
+
+
+def test_settle_drops_a_status_a_created_window_took_over():
+    statuses = _flagged_statuses()
+    _settle_empty_window_reasons(
+        statuses,
+        _fit(),
+        [FitWindow(window_id=9, freq_range=(1000.0, 1005.0))],
+        base_plan_windows=_plan(),
+        edited_window_ids=set(),
+    )
+    assert 2 not in statuses
+
+
+def test_settle_keeps_a_reviewed_status_without_the_reason():
+    statuses = _flagged_statuses("reviewed")
+    _settle_empty_window_reasons(
+        statuses,
+        _fit(window_fits=[_live_fit(2, 1002.5)]),
+        [],
+        base_plan_windows=_plan(),
+        edited_window_ids=set(),
+    )
+    assert statuses[2].provenance == "reviewed"
+    assert statuses[2].attention_reasons == []
+
+
+def test_settle_leaves_an_unresolved_item_alone():
+    statuses = _flagged_statuses()
+    _settle_empty_window_reasons(
+        statuses, _fit(), [], base_plan_windows=_plan(), edited_window_ids=set()
+    )
+    assert [r.kind for r in statuses[2].attention_reasons] == [EMPTY_WINDOW_RESIDUAL]
