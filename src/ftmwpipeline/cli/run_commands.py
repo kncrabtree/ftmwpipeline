@@ -13,7 +13,7 @@ import json
 import sys
 from typing import Any, Dict, List, Optional, Tuple
 
-from .._internal.run_impl import canonical_run_step, run_pipeline_impl
+from .._internal.run_impl import run_pipeline_impl
 from ..contract import CancelToken, EventCallback
 from ..core.noise_settings import NoiseSettings
 from ..core.peak_detection_settings import PeakDetectionSettings
@@ -108,13 +108,13 @@ def cmd_run(args: argparse.Namespace) -> int:
                 "status": result["status"],
                 "pipeline_file": str(result["pipeline_file"]),
                 "n_completed_stages": len(result["completed_stages"]),
-                # Canonical stage names (contract.Stage values), not the
-                # progress labels the human output prints.
-                "completed_stages": ", ".join(
-                    canonical_run_step(s) for s in result["completed_stages"]
-                ),
-                # Already canonical in the result.
+                # Canonical stage names (contract.Stage values), one string.
+                "completed_stages": ", ".join(result["completed_stages"]),
+                # Already canonical in the result; None for a step that is
+                # not a stage (start detection, report).
                 "failed_stage": result.get("failed_stage"),
+                # The failing step's progress label (None on success).
+                "failed_step": result.get("failed_step"),
                 # The failure's code and message; its full ftmw/error@1 dict
                 # goes to stderr below.
                 "error_code": error.get("code"),
@@ -130,7 +130,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         if json_mode(args):
             print(json.dumps(error, allow_nan=False), file=sys.stderr)
         print(
-            f"run: failed at stage '{result['failed_stage']}': "
+            f"run: failed at step '{result['failed_step']}': "
             f"{error.get('message')} [{error.get('code')}]\n"
             f"     completed: {', '.join(result['completed_stages']) or '(none)'}"
         )

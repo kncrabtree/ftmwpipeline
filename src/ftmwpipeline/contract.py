@@ -7,7 +7,10 @@ program may rely on (normative spec: ``dev-docs/CONTRACT_STRATEGY.md``):
   ``__version__``).
 - :class:`Stage` -- the canonical stage vocabulary every contract payload
   uses to name a stage, with :func:`stage_for_key` / :func:`key_for_stage`
-  mapping to and from the internal storage keys.
+  mapping to and from the internal storage keys, and
+  :func:`canonical_provenance_name` naming every environment-record key a
+  contract payload publishes (a stage's canonical name, or ``tau_shape`` for
+  the shape recommendation, which is not a stage).
 - :class:`Absent` -- the two meanings of "no value" (``NOT_RUN`` and
   ``UNDEFINED``) every contract field uses instead of ``None`` / ``nan`` /
   ``-1``. Its wire and columnar forms are applied by
@@ -244,6 +247,32 @@ def stage_for_key(key: str) -> Stage:
         return _STAGE_BY_KEY[key]
     except KeyError:
         raise ValueError(f"no canonical stage for internal key {key!r}") from None
+
+
+#: Provenance entries that are not a stage's own storage key but are stamped in
+#: the per-stage environment map: the published name of each (read-only). The
+#: HDF5 key stays as written; only the name a report publishes differs.
+PROVENANCE_NAMES: Mapping[str, str] = MappingProxyType(
+    {"stage2b_shape_recommendation": "tau_shape"}
+)
+
+
+def canonical_provenance_name(key: str) -> str:
+    """The published name for a per-stage provenance key.
+
+    A stage's storage key gives its canonical stage name
+    (:func:`stage_for_key`); the shape recommendation's environment entry
+    (``stage2b_shape_recommendation``) is published as ``tau_shape``. A key that
+    is neither is returned unchanged (a record may carry keys from a later
+    release).
+    """
+    named = PROVENANCE_NAMES.get(key)
+    if named is not None:
+        return named
+    try:
+        return stage_for_key(key).value
+    except ValueError:
+        return key
 
 
 def key_for_stage(stage: Union[Stage, str]) -> str:
@@ -1102,6 +1131,8 @@ __all__ = [
     "STAGE_KEYS",
     "stage_for_key",
     "key_for_stage",
+    "PROVENANCE_NAMES",
+    "canonical_provenance_name",
     "STAGE_SETTINGS_PREFIX",
     "STAGE_KNOB_PREFIX",
     "stage_depends_on",

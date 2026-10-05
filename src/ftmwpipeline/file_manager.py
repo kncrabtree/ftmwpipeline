@@ -1367,14 +1367,12 @@ def _warn_active_window_past_record(h5f: "h5py.File", fid: Any) -> List[str]:
 
 
 def _canonical_stage_label(key: str) -> str:
-    """A stage's canonical name for a storage key, or ``key`` unchanged when it
-    is not a known stage's storage key (provenance records may carry others)."""
-    from .contract import stage_for_key
+    """A provenance key's published name: a stage's canonical name for its storage
+    key, ``tau_shape`` for the shape recommendation's entry, else ``key``
+    unchanged (provenance records may carry others)."""
+    from .contract import canonical_provenance_name
 
-    try:
-        return stage_for_key(key).value
-    except ValueError:
-        return key
+    return canonical_provenance_name(key)
 
 
 def validate_pipeline_file(filepath: Union[str, Path]) -> Dict[str, Any]:

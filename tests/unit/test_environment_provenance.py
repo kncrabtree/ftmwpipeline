@@ -304,6 +304,22 @@ class TestPipelineStamping:
         assert info["environment_drift"] == []
         assert info["environment_acknowledged"] is False
 
+    def test_info_publishes_the_shape_recommendation_as_tau_shape(self, stamped_file):
+        with h5py.File(stamped_file, "a") as f:
+            g = f["pipeline_stages"]
+            blob = json.loads(str(g.attrs["stage_environments"]))
+            blob["stage2b_shape_recommendation"] = dict(blob["stage3_peaks"])
+            g.attrs["stage_environments"] = json.dumps(blob)
+        info = ftmw.get_pipeline_info(str(stamped_file))
+        envs = info["stage_environments"]
+        assert "tau_shape" in envs
+        assert "stage2b_shape_recommendation" not in envs
+        report = ftmw.validate_pipeline(str(stamped_file))
+        assert "tau_shape" in report["stage_environments"]
+        # The storage key is unchanged on disk.
+        with h5py.File(stamped_file, "r") as f:
+            assert "stage2b_shape_recommendation" in load_stage_environments(f)
+
     def test_info_on_an_unstamped_file_reports_not_run(self, stamped_file):
         """Mutation: report None / {} / [] for an unstamped file again."""
         from ftmwpipeline.contract import Absent
@@ -426,3 +442,82 @@ class TestLegacyRerunWarning:
         with caplog.at_level(logging.WARNING):
             ftmw.detect_peaks(str(stamped_file))
         assert not any("cannot be verified" in r.getMessage() for r in caplog.records)
+
+
+def test_shape_recommendation_environment_is_published_as_tau_shape():
+    from ftmwpipeline.contract import canonical_provenance_name
+    from ftmwpipeline.file_manager import _canonical_stage_label
+
+    assert canonical_provenance_name("stage2b_shape_recommendation") == "tau_shape"
+    assert _canonical_stage_label("stage2b_shape_recommendation") == "tau_shape"
+    # Stage keys still map to stages; an unknown key passes through.
+    assert canonical_provenance_name("stage3_peaks") == "peaks"
+    assert canonical_provenance_name("stage9_future") == "stage9_future"
+
+
+class TestPublishedSurfacesNameStagesCanonically:
+    """No published surface prints a storage key: drift lines, the report
+    table, the HTML report and the re-run drift log all say ``peaks``,
+    ``fit``, ``tau_shape`` -- never ``stage3_peaks`` and friends."""
+
+    @staticmethod
+    def _forge(path: Path) -> None:
+        """peaks and the shape recommendation disagree with the rest."""
+        with h5py.File(path, "a") as f:
+            g = f["pipeline_stages"]
+            blob = json.loads(str(g.attrs["stage_environments"]))
+            blob["stage2b_shape_recommendation"] = dict(blob["stage3_peaks"])
+            blob["stage3_peaks"] = {**blob["stage3_peaks"], "ftmwpipeline": "9.9.9"}
+            blob["stage2b_shape_recommendation"]["ftmwpipeline"] = "8.8.8"
+            g.attrs["stage_environments"] = json.dumps(blob, sort_keys=True)
+
+    @staticmethod
+    def _assert_canonical(text: str) -> None:
+        assert "peaks" in text and "tau_shape" in text
+        assert "stage3_peaks" not in text
+        assert "stage2b_shape_recommendation" not in text
+
+    def test_helper_rekeys_in_order_and_keeps_unknown_keys(self):
+        from ftmwpipeline.core.environment import canonical_environment_stages
+
+        rec = capture_environment()
+        out = canonical_environment_stages(
+            {
+                "stage5_fitting": rec,
+                "stage2b_shape_recommendation": rec,
+                "stage9_future": rec,
+            }
+        )
+        assert list(out) == ["fit", "tau_shape", "stage9_future"]
+
+    def test_environment_drift_warning_message(self, stamped_file):
+        self._forge(stamped_file)
+        seen: list = []
+        ftmw.estimate_noise(str(stamped_file), events=seen.append)
+        warnings = [e for e in seen if getattr(e, "code", None) == "environment_drift"]
+        assert len(warnings) == 1
+        self._assert_canonical(warnings[0].message)
+
+    def test_report_table_environment_mixed_row(self, stamped_file):
+        from ftmwpipeline._internal.report_impl import _environment_provenance
+
+        self._forge(stamped_file)
+        rows = dict(_environment_provenance(stamped_file))
+        self._assert_canonical(rows["environment_mixed"])
+
+    def test_html_report_environment_block(self, stamped_file):
+        from ftmwpipeline._internal.report_html_impl import _environment_block
+
+        self._forge(stamped_file)
+        html = "\n".join(_environment_block(stamped_file))
+        self._assert_canonical(html)
+        assert "<td>tau_shape</td>" in html
+
+    def test_rerun_drift_log(self, stamped_file, caplog):
+        self._forge(stamped_file)
+        with caplog.at_level(logging.WARNING):
+            ftmw.estimate_noise(str(stamped_file))
+        text = "\n".join(r.getMessage() for r in caplog.records)
+        assert "mixes analysis environments" in text
+        self._assert_canonical(text)
+        assert "noise was written" in text

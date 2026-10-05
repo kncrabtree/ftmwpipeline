@@ -119,8 +119,18 @@ def test_run_full_sequence_in_order(patch_pipeline):
         "fit",
         "review",
     ]
-    assert res["completed_stages"][0] == "import"
-    assert res["completed_stages"][-1] == "review"
+    # Canonical stages written; start detection (a step, not a stage) adds none.
+    assert res["completed_stages"] == [
+        "data",
+        "ft",
+        "timebase",
+        "noise",
+        "tau",
+        "peaks",
+        "windows",
+        "fit",
+        "review",
+    ]
     assert res["timebase"] == "calibrated"
 
 
@@ -186,6 +196,161 @@ def test_run_stops_at_first_failure(patch_pipeline):
     # windows / fit never ran.
     assert "windows" not in pipe.calls and "fit" not in pipe.calls
     assert "peaks" not in res["completed_stages"]
+
+
+def test_failure_at_start_detection_has_no_stage_but_a_step(patch_pipeline):
+    patch_pipeline(_FakePipe(fail_on="start"))
+    res = run_pipeline_impl("src", output="x.ftmw", trim=(1, 2), progress=False)
+    assert res["status"] == "error"
+    assert res["failed_stage"] is None  # start detection is not a stage
+    assert res["failed_step"] == "start detection"
+    assert res["completed_stages"] == ["data"]  # the import finished
+
+
+def test_failure_at_report_has_no_stage_but_a_step(patch_pipeline):
+    patch_pipeline(_FakePipe(fail_on="report"))
+    res = run_pipeline_impl(
+        "src", output="x.ftmw", trim=(1, 2), report=True, progress=False
+    )
+    assert res["status"] == "error"
+    assert res["failed_stage"] is None  # the report is not a stage
+    assert res["failed_step"] == "report"
+    assert res["completed_stages"][-1] == "review"
+    assert res["completed_stages"].count("review") == 1
+
+
+def test_failed_step_is_the_progress_label_and_none_on_success(patch_pipeline):
+    patch_pipeline(_FakePipe())
+    ok = run_pipeline_impl("src", output="x.ftmw", trim=(1, 2), progress=False)
+    assert ok["failed_step"] is None and ok["failed_stage"] is None
+    for fail, step, stage in (
+        ("ft", "FT", "ft"),
+        ("tau", "calibrate tau", "tau"),
+        ("review", "review", "review"),
+    ):
+        patch_pipeline(_FakePipe(fail_on=fail))
+        bad = run_pipeline_impl("src", output="x.ftmw", trim=(1, 2), progress=False)
+        assert (bad["failed_step"], bad["failed_stage"]) == (step, stage)
+
+
+def test_gaussian_tau_without_a_twin_does_not_list_tau(patch_pipeline):
+    """calibrate_tau(shape="gaussian") writes tau_g (and tau only when it builds
+    the twin, which the stage itself records): the run must not assume tau."""
+    patch_pipeline(_FakePipe())
+    res = run_pipeline_impl(
+        "src",
+        output="x.ftmw",
+        trim=(1, 2),
+        progress=False,
+        tau_params={"shape": "gaussian"},
+    )
+    assert "tau_g" in res["completed_stages"]
+    assert "tau" not in res["completed_stages"]
+
+
+def test_gaussian_tau_failure_names_tau_g(patch_pipeline):
+    """A gaussian tau step is the tau_g stage, as its events and a cancel name it."""
+    patch_pipeline(_FakePipe(fail_on="tau"))
+    res = run_pipeline_impl(
+        "src",
+        output="x.ftmw",
+        trim=(1, 2),
+        progress=False,
+        tau_params={"shape": "gaussian"},
+    )
+    assert (res["failed_step"], res["failed_stage"]) == ("calibrate tau", "tau_g")
+
+
+def test_completed_stages_come_from_what_the_stages_recorded(patch_pipeline):
+    """A twin the stage itself records (through the shared events) is listed."""
+
+    class _TwinPipe(_FakePipe):
+        def calibrate_tau(self, *, events=None, **k):
+            super().calibrate_tau(**k)
+            events.mark_completed("tau_g")
+
+    patch_pipeline(_TwinPipe())
+    res = run_pipeline_impl("src", output="x.ftmw", trim=(1, 2), progress=False)
+    stages = res["completed_stages"]
+    assert {"tau", "tau_g"} <= set(stages)
+    assert len(stages) == len(set(stages))
+
+
+def test_failed_and_completed_stages_are_all_canonical(patch_pipeline):
+    from ftmwpipeline.contract import Stage
+
+    valid = {s.value for s in Stage}
+    patch_pipeline(_FakePipe())
+    ok = run_pipeline_impl(
+        "src", output="x.ftmw", trim=(1, 2), report=True, progress=False
+    )
+    assert set(ok["completed_stages"]) <= valid
+    for fail in ("start", "ft", "tau", "report"):
+        patch_pipeline(_FakePipe(fail_on=fail))
+        bad = run_pipeline_impl(
+            "src", output="x.ftmw", trim=(1, 2), report=True, progress=False
+        )
+        assert bad["failed_stage"] in valid | {None}
+        assert set(bad["completed_stages"]) <= valid
+
+
+def test_cancel_and_result_use_the_same_stage_names(patch_pipeline):
+    from ftmwpipeline.file_manager import OperationCancelledError
+
+    class _Tok:
+        def __init__(self):
+            self._set = False
+
+        def is_set(self):
+            return self._set
+
+        def set(self):
+            self._set = True
+
+    tok = _Tok()
+
+    class _CancelPipe(_FakePipe):
+        def estimate_noise(self, **k):
+            super().estimate_noise(**k)
+            tok.set()
+
+    patch_pipeline(_CancelPipe())
+    with pytest.raises(OperationCancelledError) as info:
+        run_pipeline_impl(
+            "src", output="x.ftmw", trim=(1, 2), progress=False, cancel=tok
+        )
+    assert info.value.completed_stages == ["data", "ft", "timebase", "noise"]
+
+
+def test_cli_json_summary_completed_stages_is_one_canonical_string(
+    patch_pipeline, capsys, tmp_path
+):
+    import json
+
+    patch_pipeline(_FakePipe(fail_on="report"))
+    rc = run_cli(
+        [
+            "run",
+            "raw.dat",
+            "--trim",
+            "8000:18000",
+            "--output",
+            str(tmp_path / "x.ftmw"),
+            "--report",
+            "--json",
+        ]
+    )
+    assert rc == 1
+    # The failure line follows the envelope on stdout; read just the envelope.
+    doc, _ = json.JSONDecoder().raw_decode(capsys.readouterr().out)
+    summary = doc["summary"]
+    assert (
+        summary["completed_stages"]
+        == "data, ft, timebase, noise, tau, peaks, windows, fit, review"
+    )
+    assert summary["failed_stage"] is None  # the report is not a stage
+    assert summary["failed_step"] == "report"
+    assert summary["n_completed_stages"] == 9
 
 
 def test_timebase_failure_warns_and_skips(patch_pipeline):
@@ -684,7 +849,7 @@ def test_run_end_to_end_real(tmp_path):
         progress=False,
     )
     assert res["status"] == "success", res["error"]
-    assert res["completed_stages"][0] == "import"
+    assert res["completed_stages"][0] == "data"
     assert "review" in res["completed_stages"]
     assert out.exists()
 
