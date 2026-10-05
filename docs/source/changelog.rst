@@ -49,6 +49,9 @@ planned — these entries fold into the ``1.0.0`` section when it is dated.
   largest value over the file's fitted windows (31.4 kHz on ``exp_2638``),
   instead of the ``probe_freq * eps/(1+eps)`` constant (89.7 kHz there), which
   no line is off by.
+* The ``defaults`` preset carries every knob with a package default: it gained
+  ``stage5.tau.fit_tau`` and ``stage5.rescue.final_add_snr_threshold``.
+  Applying it still changes nothing.
 
 **A window the fit leaves empty while its edge stays coherent is flagged for
 review; ``CONTRACT_VERSION`` moves 13 → 14.** Stage 5 can finish a window of its
