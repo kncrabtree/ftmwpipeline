@@ -282,9 +282,17 @@ The same operations on the Python interfaces:
    tau = pipe.calibrate_tau()
    tau_g = pipe.calibrate_tau(shape="gaussian")
 
+The two calibrations are separate stages with canonical names ``tau`` (the
+Lorentzian, pure-exponential calibration) and ``tau_g`` (the Gaussian τ\ :sub:`G`
+twin); ``info`` lists whichever are complete, and an ``invalidated`` list names
+them the same way.
+
 Re-running Stage 2b invalidates no other stage. Stage 3 and Stage 5 each
 record the decay time and shape they took from it, so their records still say
-what they used; re-run them to pick up a new calibration.
+what they used; re-run them to pick up a new calibration. In the other
+direction, both calibrations depend on the spectrum they were measured on: a
+Stage 1 or Stage 2 re-run with changed settings discards ``tau`` and ``tau_g``
+(see :doc:`stage1_ft` and :doc:`stage2_noise`), and they must be re-run.
 
 The defaults are calibrated for the reference instrument and need no adjustment
 for routine use. The behavior is controlled by the knobs below, set with

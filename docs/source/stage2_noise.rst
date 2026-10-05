@@ -170,6 +170,21 @@ explicit, preset, persisted, and recommended values resolve is described on
 The Rician correction table and the :math:`\sigma_x = \sigma_c\sqrt{2}`
 conversion are analytic and are not tunable.
 
+A refused value is a ``bad_setting`` error whose ``path`` names the knob, for
+example ``stage2.n_iter`` for ``n_iter = 0`` (it must be at least 1) or
+``stage2.smoothing_percentile`` for a percentile outside ``[0, 100]``; the
+stored estimate is left untouched.
+
+Re-running the stage
+--------------------
+
+Re-running ``noise run`` with the same resolved settings keeps everything built
+on the stored estimate. Re-running it with changed settings replaces the
+estimate and discards every stage that depends on it — ``tau``, ``tau_g``,
+``peaks``, ``windows``, ``fit``, and ``review`` (with any partial fit) — and
+reports them in the result's ``invalidated`` list. The ``timebase`` calibration
+does not depend on the noise estimate and is kept.
+
 Inspecting the estimate
 -----------------------
 
