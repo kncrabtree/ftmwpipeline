@@ -143,8 +143,9 @@ def test_bins_restrict_the_skirt_and_follow_a_reordering():
 
 def test_analysis_epoch_records_the_d18_fit_change():
     # The skirt following tau moves free-tau fits with frozen contributors, so
-    # files fitted before it must be re-fit or acknowledged.
-    assert ANALYSIS_EPOCH == 4
+    # files fitted before it must be re-fit or acknowledged. Epoch 4 recorded
+    # it; later epochs keep it.
+    assert ANALYSIS_EPOCH >= 4
 
 
 # ---------------------------------------------------------------------------

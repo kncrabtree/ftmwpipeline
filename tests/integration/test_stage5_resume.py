@@ -747,15 +747,18 @@ def test_resuming_the_full_2638_fit_equals_an_uninterrupted_fit(
 
 
 #: Five adjacent one-line windows of the 2638 plan: cheap to fit and to merge.
-_REPLAN_WINDOWS = range(95, 100)
+_REPLAN_WINDOWS = range(100, 104)
+"""Windows 100/101 and 102/103 of the 2638 plan abut (a structural merge needs a
+touching partner), and none of the four depends on a window outside the set."""
 
 
 def _one_merge() -> Callable[..., Any]:
     """``_dispatch_structural_round`` that requests exactly one structural
     merge -- the lowest flagged window with its neighbour -- in the first
-    replan round, and none after. The whole 2638 plan's real replan merges its
-    largest windows (most of a Lorentzian fit's time); this one merges two
-    small ones, deterministically, through the same replan machinery."""
+    replan round, and none after. Every edge counts as flagged here, so the
+    merge (100 with 101, two small windows) is deterministic rather than left
+    to the fit's own edge statistics, and it runs through the same replan
+    machinery."""
     real = plan_execution._dispatch_structural_round
 
     def dispatch(outcomes: Any, plan: Any, threshold: float) -> Any:
