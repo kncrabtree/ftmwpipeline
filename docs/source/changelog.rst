@@ -16,6 +16,33 @@ Accumulating toward ``1.0.0``. ``0.1.0b4`` is the last published release;
 everything below is reachable only from a source checkout. No further beta is
 planned — these entries fold into the ``1.0.0`` section when it is dated.
 
+**Fixes from the documentation audit.**
+
+* A source its format's loader refuses at import — an unknown sidecar key, a
+  CSV without ``spacing_us``, an unknown ``--column`` — is now ``bad_setting``
+  (``path`` ``"source"``) with the loader's message, as promised, instead of
+  ``RuntimeError("Failed to load FID data")``; ``data import --json`` prints the
+  ``ftmw/error@1`` dict. ``preview_source`` given a source its named (or
+  detected) format refuses raises the same error instead of a plain
+  ``ValueError``. ``data import`` no longer turns a second Ctrl-C into exit 1.
+* ``review undo --id`` takes one or more ids per flag and repeats
+  (``--id 3 5`` or ``--id 3 --id 5``), so the report's curation cart command
+  runs.
+* ``report run --summary`` no longer builds window pages it then drops: it
+  draws only each window's magnitude panel (the index's hover thumbnail). The
+  file is unchanged; on ``exp_2638`` it takes about half the time it did.
+* ``start run`` no longer says a later FT run will inherit the stamped start
+  once Stage 1 has run; it says how to adopt it (``ft run --start-us``). The
+  ``target_outside_window`` message names the implied create of an add with no
+  window.
+* The invalidation warning log line names stages canonically (``noise``,
+  ``fit``), as the ``Invalidated`` event does, not by storage key.
+* Typed errors print as JSON under ``--json`` and the ``--format json``
+  synonyms only; ``report run --format json`` (the table file's format) and a
+  dump written with ``--output`` keep text errors.
+* ``run --help``, the top-level ``--help`` and the ``run_pipeline`` /
+  ``Pipeline.build`` docstrings state the real run order and verbs.
+
 **A window the fit leaves empty while its edge stays coherent is flagged for
 review; ``CONTRACT_VERSION`` moves 13 → 14.** Stage 5 can finish a window of its
 plan with no line while the residual on the window's edge stays coherent. The

@@ -645,9 +645,7 @@ def test_top_level_help_lists_the_real_object_verbs():
 
     parser = create_parser()
     epilog = parser.epilog or ""
-    sub = next(
-        a for a in parser._actions if isinstance(a, argparse._SubParsersAction)
-    )
+    sub = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
     for obj in ("review", "report", "settings", "clocks", "tau", "timebase"):
         verbs_action = next(
             a

@@ -605,14 +605,12 @@ def _invalidate_inclusive(path: str, own_stages: Tuple[str, ...]) -> Tuple[str, 
     with h5open(path, "a") as h5f:
         if "pipeline_stages" not in h5f:
             return ()
+        names = ", ".join(canonical_invalidated(own_stages))
         invalidated = invalidate_stages_in_file(
             h5f,
             own_stages,
             include_roots=True,
-            reason=(
-                f"Settings of {', '.join(canonical_invalidated(own_stages))} "
-                "changed"
-            ),
+            reason=f"Settings of {names} changed",
         )
     return canonical_invalidated(invalidated)
 
