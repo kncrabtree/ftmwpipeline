@@ -601,9 +601,9 @@ def test_decision_to_op_merge_ops_still_coalesce_into_one_action():
     """Coalescing WITHIN one decision's own emitted ops still applies -- an
     inferred merge's remove/remove/add must resolve to exactly one ``edit``
     action (what lets ``_infer_curation_intent`` see the whole thing and
-    re-derive the merge on replay), even though ``review_undo_impl`` now
-    resolves each decision independently rather than resolving the whole
-    surviving set as one flat op list."""
+    re-derive the merge on replay), even though ``review_undo_impl``
+    resolves each recorded action on its own (``_replay_plan``) rather than
+    resolving the whole surviving set as one flat op list."""
     ops = _decision_to_op(
         _entry(
             0,
@@ -884,7 +884,7 @@ def test_undo_replays_two_dependent_inferred_decisions_without_coalescing(
     PRE-split state -- the merge's removes then match nothing and the whole
     replay fails, rolling the file back to the automatic fit with the
     surviving decisions lost. This is the scenario ``review_undo_impl``'s
-    per-decision ``plan`` construction exists to keep resolvable, without a
+    per-action ``plan`` construction exists to keep resolvable, without a
     ``review accept`` (or any other) barrier between the two decisions.
     """
     wa, freq = _a_peak(stage5_multi_file)

@@ -3727,6 +3727,18 @@ def split_peak_impl(
 # Decision recording helpers and review-accept/status impls
 # ---------------------------------------------------------------------------
 
+#: Evidence key tying the decision-log rows of ONE user action together: the
+#: ``order_index`` of the first row that action recorded (a one-row action
+#: carries its own ``order_index``). A ``review edit`` with several
+#: ``add``/``remove`` frequencies, or a run of add/remove rows on one window
+#: in a curation file or action batch, is applied as one joint refit but logs
+#: one row per frequency; this key is what lets a replay
+#: (:func:`review_undo_impl`, a log-prefix apply) re-apply those rows as the
+#: one action they were (:func:`_decision_action_groups`). Additive evidence
+#: only -- :class:`DecisionLogEntry`'s schema is unchanged. A row recorded
+#: before the key existed carries none, and its group is inferred instead.
+ACTION_INDEX_EVIDENCE_KEY = "action_index"
+
 
 def _record_decision(
     path: str,
@@ -3741,8 +3753,10 @@ def _record_decision(
     """Append one entry to the Stage 6 decision log and update window provenance.
 
     Loads the persisted :class:`Stage6Review` (creating an empty one if absent),
-    appends a :class:`DecisionLogEntry` for the given window and kind, sets
-    the window's provenance to ``"user-edited"``, and re-persists.
+    appends a :class:`DecisionLogEntry` for the given window and kind (a
+    one-row action, so its ``action_index`` evidence is its own
+    ``order_index``), sets the window's provenance to ``"user-edited"``, and
+    re-persists.
 
     Attention reasons are refreshed from the current Stage 5 fit when available
     (the caller's edit may have resolved a misfit); when Stage 5 is absent the
@@ -3760,13 +3774,15 @@ def _record_decision(
             else None
         )
 
+    order_index = len(existing_review.decision_log)
     new_entry = DecisionLogEntry(
-        order_index=len(existing_review.decision_log),
+        order_index=order_index,
         window_id=window_id,
         frequency_mhz=frequency_mhz,
         kind=kind,
         provenance="user",
-        evidence=dict(evidence),
+        # A one-row action: its group is itself (see ACTION_INDEX_EVIDENCE_KEY).
+        evidence={**evidence, ACTION_INDEX_EVIDENCE_KEY: order_index},
     )
     new_log = list(existing_review.decision_log) + [new_entry]
 
@@ -4053,17 +4069,19 @@ def _record_bare_accept(path: str, window_id: int) -> None:
     # forward unchanged would re-persist a stale table (this is exactly the
     # bug -- a bare accept must not launder it back to disk).
     final_products = _current_final_products(existing_review.final_products, path)
+    order_index = len(existing_review.decision_log)
     new_review = Stage6Review(
         window_statuses=new_statuses,
         decision_log=list(existing_review.decision_log)
         + [
             DecisionLogEntry(
-                order_index=len(existing_review.decision_log),
+                order_index=order_index,
                 window_id=window_id,
                 frequency_mhz=anchor_freq,
                 kind="accept",
                 provenance="user",
-                evidence={},
+                # A one-row action (see ACTION_INDEX_EVIDENCE_KEY).
+                evidence={ACTION_INDEX_EVIDENCE_KEY: order_index},
             )
         ],
         final_products=final_products,
@@ -4352,7 +4370,9 @@ def _is_implied_window_id(window_id: int) -> bool:
 class CurationOp:
     """One parsed row of a curation file (before coalescing), or one op
     :func:`_decision_to_op` reconstructs from a persisted decision-log entry
-    for undo replay.
+    for undo replay. A replay resolves the ops of every entry one user action
+    recorded together (:func:`_replay_plan`), so the rows of one joint edit
+    coalesce back into that one ``edit`` exactly as the file rows did.
 
     Attributes
     ----------
@@ -6540,7 +6560,11 @@ class _BatchChangeset:
     final-products / attention-reason refresh."""
     decisions: List[Dict[str, Any]] = field(default_factory=list)
     """Pending decision-log entries, in the order they will be recorded
-    (``window_id`` / ``frequency_mhz`` / ``kind`` / ``evidence`` / ``bare``)."""
+    (``window_id`` / ``frequency_mhz`` / ``kind`` / ``evidence`` / ``bare``,
+    plus ``action_start`` -- the position in this list of the first entry the
+    same action recorded, set by :func:`_close_batch_action` once the action
+    succeeds and turned into the ``action_index`` evidence key by
+    :func:`_derive_batch_review`)."""
     next_decision_index: int = 0
     lineless_reviewable: FrozenSet[int] = frozenset()
     """Windows the persisted review flagged ``empty_window_residual`` that the
@@ -8345,10 +8369,30 @@ def _canonicalize_batch_plan(
     return creates + rest
 
 
+def _close_batch_action(ctx: _BatchCtx, start: int) -> None:
+    """Mark every pending decision recorded since position *start* of
+    ``ctx.changeset.decisions`` as one action's rows.
+
+    Called once per executed action -- after each plan action in a batch
+    (:func:`_apply_batch_segment`, :func:`_run_review_preview`) and after the
+    one action of :func:`_run_single_action` -- so the rows one action records
+    (a coalesced edit's one row per frequency, or an inferred merge/split plus
+    its residual edit) share one ``action_start``, which
+    :func:`_derive_batch_review` turns into their common
+    :data:`ACTION_INDEX_EVIDENCE_KEY`. An action that recorded nothing (the
+    create half of an implied create) marks nothing.
+    """
+    for dec in ctx.changeset.decisions[start:]:
+        dec.setdefault("action_start", start)
+
+
 def _derive_batch_review(ctx: _BatchCtx, path: str) -> Stage6Review:
     """Derive the new ``/stage6_review`` for the whole batch, without writing
     it: append every pending decision (assigning sequential ``order_index``
-    values after whatever the file already held), refresh each touched
+    values after whatever the file already held, and stamping each with the
+    :data:`ACTION_INDEX_EVIDENCE_KEY` of the action that recorded it -- the
+    ``order_index`` of that action's first row; a decision no action closed
+    counts as its own one-row action), refresh each touched
     window's provenance / attention reasons, rebuild the final-products table
     once if any fit changed or its persisted stamp has gone stale against the
     file's current calibration (a bare-accept-only batch mutates no fit but
@@ -8442,6 +8486,11 @@ def _derive_batch_review(ctx: _BatchCtx, path: str) -> Stage6Review:
     for offset, dec in enumerate(ctx.changeset.decisions):
         wid = int(dec["window_id"])
         kind = str(dec["kind"])
+        # A copy per entry: a coalesced edit's rows share ONE evidence dict.
+        evidence = dict(dec["evidence"])
+        evidence[ACTION_INDEX_EVIDENCE_KEY] = base_index + int(
+            dec.get("action_start", offset)
+        )
         new_entries.append(
             DecisionLogEntry(
                 order_index=base_index + offset,
@@ -8449,7 +8498,7 @@ def _derive_batch_review(ctx: _BatchCtx, path: str) -> Stage6Review:
                 frequency_mhz=float(dec["frequency_mhz"]),
                 kind=kind,
                 provenance="user",
-                evidence=dict(dec["evidence"]),
+                evidence=evidence,
             )
         )
         if dec.get("bare"):
@@ -8807,7 +8856,10 @@ def _run_single_action(
     ctx = _open_batch(path, snap_tol_mhz=snap_tol_mhz, shared=shared)
     _check_cancel()
     t0 = time.monotonic()
+    n_decisions = len(ctx.changeset.decisions)
     result = apply(ctx)
+    # One verb call is one user action, however many rows it recorded.
+    _close_batch_action(ctx, n_decisions)
     wid = getattr(result, "window_id", None)
     if isinstance(wid, int):
         _report_window(ctx, wid, index=1, total=1, elapsed_s=time.monotonic() - t0)
@@ -9077,6 +9129,7 @@ def _apply_batch_segment(
             ctx.events.check_cancel()
         t_action = time.monotonic()
         counts_before = {k: len(v) for k, v in action_indices.items()}
+        n_decisions = len(ctx.changeset.decisions)
         try:
             if action.kind == "create":
                 if action.anchor is None:
@@ -9188,6 +9241,7 @@ def _apply_batch_segment(
                     )
         except (ValueError, KeyError) as exc:
             _raise_curation_failure(original_index, action, exc)
+        _close_batch_action(ctx, n_decisions)
         fit_index = _report_action_window(
             ctx, action_indices, counts_before, fit_index, fit_total, t_action
         )
@@ -9730,8 +9784,10 @@ def _apply_curation_at_prefix(
     holds the bare automatic fit, and before the restore it held the dropped
     decisions too -- neither is the state the caller's rows were written
     against. The prefix's own decisions are replayed exactly as
-    :func:`review_undo_impl` replays survivors (one action per decision, see
-    there), and are renumbered from zero; the new decisions follow.
+    :func:`review_undo_impl` replays survivors (one action per recorded user
+    action, :func:`_replay_plan`; see there), and are renumbered from zero;
+    the new decisions follow. A prefix that cuts through one action's rows
+    replays that action's in-prefix rows jointly, as one action.
 
     Should the caller's segment fail (an unmatched remove, say), the file is
     left at the aligned prefix -- the kept decisions replayed and persisted
@@ -9754,7 +9810,7 @@ def _apply_curation_at_prefix(
             f"is unavailable ({_BASELINE_MISSING_CAUSE}). Rebuild from the "
             "source and re-edit.",
         )
-    prefix_plan = [a for e in kept for a in _resolve_curation_plan(_decision_to_op(e))]
+    prefix_plan = _replay_plan(kept)
     # The restore-then-replay is one unit: gate first, so a refusal leaves the
     # file as it was rather than rolled back to the automatic fit.
     if any(e.kind in _FIT_EDIT_KINDS for e in kept) or deferred.needs_fit():
@@ -10083,6 +10139,7 @@ def _run_review_preview(
             ctx.events.check_cancel()
         t_action = time.monotonic()
         counts_before = {k: len(v) for k, v in action_indices.items()}
+        n_decisions = len(ctx.changeset.decisions)
         try:
             if action.kind == "create":
                 if action.anchor is None:
@@ -10188,6 +10245,7 @@ def _run_review_preview(
                     )
         except (ValueError, KeyError) as exc:
             _raise_curation_failure(original_index, action, exc)
+        _close_batch_action(ctx, n_decisions)
         fit_index = _report_action_window(
             ctx, action_indices, counts_before, fit_index, fit_total, t_action
         )
@@ -10352,9 +10410,102 @@ class UndoResult:
     invalidated: Tuple[str, ...] = field(default=(), compare=False)
 
 
+def _same_decision_action(prev: DecisionLogEntry, entry: DecisionLogEntry) -> bool:
+    """Whether *entry* was recorded by the same user action as *prev*, the
+    entry immediately before it in a (possibly filtered) decision log.
+
+    Rows that carry :data:`ACTION_INDEX_EVIDENCE_KEY` answer directly: same
+    value, same action. A row recorded before the key existed has none, so
+    its action is inferred from what a coalesced edit has always recorded:
+    one row per frequency, adds then removes, every row on the one window it
+    refit and every row carrying the SAME evidence dict (the one refit's
+    before/after snapshot, :func:`_batch_apply_edit_plain`). Two such rows
+    from different actions would need identical post-refit chi2r floats,
+    which separate refits do not produce. An implied-create ``add``
+    (``created_window`` evidence) is always its own action, and a row with
+    the key never joins one without it.
+
+    The inference recovers the plain edit only: an old edit that inference
+    split into a merge/split plus a residual edit is recovered as those
+    sub-actions (the merge/split rows carry their own evidence), replayed in
+    the order the original applied them.
+    """
+    prev_ai = prev.evidence.get(ACTION_INDEX_EVIDENCE_KEY)
+    entry_ai = entry.evidence.get(ACTION_INDEX_EVIDENCE_KEY)
+    if prev_ai is not None or entry_ai is not None:
+        return (
+            prev_ai is not None
+            and entry_ai is not None
+            and int(prev_ai) == int(entry_ai)
+        )
+    return (
+        prev.window_id == entry.window_id
+        and prev.kind in ("add", "remove")
+        and entry.kind in ("add", "remove")
+        and "created_window" not in prev.evidence
+        and "created_window" not in entry.evidence
+        and bool(prev.evidence)
+        and prev.evidence == entry.evidence
+    )
+
+
+def _decision_action_groups(
+    entries: Sequence[DecisionLogEntry],
+) -> List[List[DecisionLogEntry]]:
+    """Partition *entries* (in log order) into the user actions that recorded
+    them -- see :func:`_same_decision_action` for what one action is, both for
+    rows carrying :data:`ACTION_INDEX_EVIDENCE_KEY` and for older rows that
+    predate it.
+
+    One action's rows are always contiguous in the log (an action records
+    all of them before the next one runs), so grouping compares each entry
+    only with the one before it. *entries* may be a filtered log -- an
+    undo's survivors, a log prefix -- and the rows of a partially dropped
+    action that remain are still one group.
+    """
+    groups: List[List[DecisionLogEntry]] = []
+    for entry in entries:
+        if groups and _same_decision_action(groups[-1][-1], entry):
+            groups[-1].append(entry)
+        else:
+            groups.append([entry])
+    return groups
+
+
+def _replay_plan(entries: Sequence[DecisionLogEntry]) -> List[PlannedAction]:
+    """The resolved replay of *entries*, one action group at a time.
+
+    Each group (:func:`_decision_action_groups`) is resolved on its own, its
+    rows' ops together in ONE :func:`_resolve_curation_plan` call, and the
+    per-group plans are concatenated in log order. A group is one action the
+    user took -- several add/remove rows of one joint edit coalesce back into
+    that one edit, exactly as the original applied them -- while separate
+    actions stay separate: resolving the whole set as one flat op list would
+    coalesce add/remove ops from DIFFERENT actions on the same window into
+    one, evaluated against the wrong state (see :func:`review_undo_impl`).
+    Shared by the undo replay and a log-prefix apply
+    (:func:`_apply_curation_at_prefix`), so both replay identically.
+    """
+    return [
+        a
+        for group in _decision_action_groups(entries)
+        for a in _resolve_curation_plan(
+            [op for e in group for op in _decision_to_op(e)]
+        )
+    ]
+
+
 def _decision_to_op(entry: DecisionLogEntry) -> List[CurationOp]:
     """Convert a decision-log entry back into the replayable curation op(s)
     that reproduce it.
+
+    The ops are one entry's share of its action: a replay
+    (:func:`_replay_plan`) concatenates the ops of every entry of one action
+    group (:func:`_decision_action_groups`) and resolves them in ONE
+    :func:`_resolve_curation_plan` call, so the rows of a joint edit -- and an
+    inferred merge/split's expansion below together with the residual rows
+    the same edit recorded -- coalesce back into the one ``edit`` the user
+    made, which inference then reinterprets exactly as it did the first time.
 
     Add/remove/accept replay from the entry alone. A **non-inferred** merge
     replays from the recorded ``merged_from`` peak set and a non-inferred
@@ -10496,13 +10647,24 @@ def review_undo_impl(
     predate the snapshot -- rebuild and re-edit instead).
 
     What undo promises for ``peak_uid`` is replay equivalence: the surviving
-    decisions are replayed in order, each as its own action against the state
-    the previous ones left -- exactly the sequence the original apply(s)
-    produced, with the undone entries removed -- so the identifiers afterward
-    are exactly those that sequence produces. This is deliberately NOT the
-    same as a fresh curation file naming the same surviving frequencies: a
-    file coalesces a run of add/remove rows into one action, which is wrong
-    here whenever a later decision touches peaks an earlier one created (see
+    decisions are replayed in order, one ACTION at a time, each against the
+    state the previous ones left -- exactly the sequence of actions the
+    original apply(s) produced, with the undone entries removed -- so the
+    identifiers afterward are exactly those that sequence produces. An action
+    is the group of rows one user action recorded
+    (:func:`_decision_action_groups`: the ``action_index`` evidence key, or
+    for rows predating it, the inferred shape of a coalesced edit): a
+    ``review edit`` with several ``--add``/``--remove``, or a run of
+    add/remove rows on one window in a curation file or action batch, was
+    ONE joint refit that logs one row per frequency, and its surviving rows
+    replay together as one joint refit again. Undoing some rows of such a
+    group replays the group's remaining rows jointly, as one action -- never
+    one refit per row, which is a different fit and can leave a later remove
+    target beyond snap tolerance of the peak it named. This is deliberately
+    NOT the same as a fresh curation file naming the same surviving
+    frequencies: a file coalesces a run of add/remove rows on a window into
+    one action even when they came from different actions, which is wrong
+    here whenever a later action touches peaks an earlier one created (see
     :func:`_decision_to_op` and this function's ``plan`` construction below).
 
     A peak restored from the baseline snapshot carries the baseline's
@@ -10588,20 +10750,24 @@ def review_undo_impl(
             "re-edit.",
         )
 
-    # Each decision was originally applied as its own action, against the
-    # state the previous decisions left. Resolving the whole surviving set as
-    # one flat op list would let _resolve_curation_plan coalesce add/remove
-    # ops from DIFFERENT decisions on the same window into one action -- wrong
-    # whenever a later decision touches peaks an earlier one created (an
-    # inferred split followed by an inferred merge on that split's own
-    # products, say): the combined action would be evaluated against the
-    # window's PRE-split state and fail to resolve, or -- worse -- silently
-    # seed differently. Resolving each decision independently and
-    # concatenating keeps the per-decision action boundary the original apply
-    # had, while still coalescing the ops *within* one decision (a merge's own
-    # remove/remove/add) into the one action _infer_curation_intent needs to
-    # see whole.
-    plan = [a for e in surviving for a in _resolve_curation_plan(_decision_to_op(e))]
+    # Each user action was originally applied as its own action, against the
+    # state the previous ones left. Resolving the whole surviving set as one
+    # flat op list would let _resolve_curation_plan coalesce add/remove ops
+    # from DIFFERENT actions on the same window into one -- wrong whenever a
+    # later action touches peaks an earlier one created (an inferred split
+    # followed by an inferred merge on that split's own products, say): the
+    # combined action would be evaluated against the window's PRE-split state
+    # and fail to resolve, or -- worse -- silently seed differently. Resolving
+    # each decision independently is wrong the other way: the rows of ONE
+    # joint edit would replay as one refit each, a different fit whose
+    # drifted peaks a later remove can no longer snap to. So each action
+    # group (_decision_action_groups) is resolved on its own, its rows' ops
+    # together -- the action boundary the original apply had, with the ops
+    # *within* one action (a joint edit's rows, a merge's own
+    # remove/remove/add) coalesced into the one action _infer_curation_intent
+    # needs to see whole. Grouping only ever joins rows that WERE one action,
+    # so the split-then-merge case above stays two actions.
+    plan = _replay_plan(surviving)
 
     # Undo is restore-then-replay, so the restore happens before any replayed
     # edit could hit the epoch gate. Check first: otherwise a refusal partway
