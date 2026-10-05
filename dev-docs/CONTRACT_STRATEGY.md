@@ -513,10 +513,10 @@ window's `attention_reasons` in the same form.
 **`empty_window_residual`.** A window of the fitted plan in which the fit holds
 no line, while Stage 5 measured a coherent residual on its edge. It flags a
 window when all of these hold:
-- the window is a window of the fitted plan, not one Stage 6 created;
+- the window is a window of the fitted plan, not one Stage 6 created, and no
+  created window has taken it over (the same id, or an overlapping range);
 - the current fit holds no line in it;
-- no Stage 6 decision that changes the fit has been recorded on it (an edit
-  resolves the item; `review accept` marks it reviewed, as for any kind);
+- no Stage 6 decision that changes the fit has been recorded on it.
 - Stage 5's residual edge-coherence handshake flagged at least one of its
   edges: a structural-replan record the window triggered, or a thaw record of
   the window that was not accepted, with `S_coh` above the fit's own
@@ -537,9 +537,12 @@ plan put in the window, and its `evidence`:
   recorded one. `gated_spur` is true when the peak sits within the
   `spur_adjacent` tolerance of a spur the fit gated.
 
-The report gives such a window a page: the data and the residual on the
-window's range (the residual is the data, since no model was fitted), with the
-candidates marked.
+The fit holds no window to edit, so the item resolves when a created window
+takes the window over (a create at the line, then an edit of the new window),
+dropped in the batch that creates it. A bare `review accept` may name the
+window and marks it reviewed, as for any kind. The report gives such a window a
+page: the data and the residual on the window's range (the residual is the
+data, since no model was fitted), with the candidates marked.
 
 A fit made before fits stored their plan does not hold a merged window's
 geometry. Its rows follow the merges its replan record names, and a Stage 6 call
