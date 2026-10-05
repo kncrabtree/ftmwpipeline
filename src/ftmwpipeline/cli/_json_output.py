@@ -51,6 +51,32 @@ def json_mode(args: argparse.Namespace) -> bool:
     return bool(getattr(args, _MODE_ATTR, False))
 
 
+#: Verbs whose ``--format json`` formats what they print on stdout, so a typed
+#: error is printed as its ``ftmw/error@1`` dict too: the ``--json`` synonyms,
+#: and the ``read`` / ``report table`` dumps when they print (no ``--output``).
+_ERROR_JSON_FORMAT_VERBS = frozenset(_FORMAT_SYNONYM_VERBS) | {
+    "read table",
+    "read meta",
+    "report table",
+}
+
+
+def error_json_mode(args: argparse.Namespace) -> bool:
+    """Whether a typed error is reported as JSON (``ftmw/error@1`` on stderr).
+
+    Under ``--json``, and under a ``--format json`` that formats the verb's
+    printed output. A ``--format`` that names the format of a file the verb
+    writes (``report run``'s table, a dump given ``--output``) does not.
+    """
+    if json_mode(args):
+        return True
+    return (
+        getattr(args, _VERB_ATTR, None) in _ERROR_JSON_FORMAT_VERBS
+        and getattr(args, "format", None) == "json"
+        and getattr(args, "output", None) is None
+    )
+
+
 def invalidated_of(result: Any) -> List[str]:
     """The stages *result* invalidated, as a list of canonical names.
 
@@ -152,6 +178,7 @@ def _wrap(
     """Wrap one verb handler with the ``--json`` behaviour."""
 
     def wrapped(args: argparse.Namespace) -> int:
+        setattr(args, _VERB_ATTR, verb)
         wants = bool(getattr(args, "json_output", False))
         synonym = (
             verb in _FORMAT_SYNONYM_VERBS and getattr(args, "format", None) == "json"
@@ -168,7 +195,6 @@ def _wrap(
         ):
             args.format = "json"
         setattr(args, _MODE_ATTR, True)
-        setattr(args, _VERB_ATTR, verb)
         real_stdout = sys.stdout
         captured = io.StringIO()
         saved: List[str] = []

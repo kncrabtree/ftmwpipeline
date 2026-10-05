@@ -1713,7 +1713,8 @@ def invalidate_stages_in_file(
         emit_invalidated(
             events,
             invalidated,
-            reason=reason or f"Stage(s) {', '.join(root_list)} re-run",
+            reason=reason
+            or f"Stage(s) {', '.join(canonical_invalidated(root_list))} re-run",
         )
     return invalidated
 
@@ -1752,7 +1753,10 @@ def invalidate_downstream_stages(
         if "pipeline_stages" not in h5f:
             return []
         return invalidate_stages_in_file(
-            h5f, [stage_name], reason=f"Stage {stage_name} re-run", events=events
+            h5f,
+            [stage_name],
+            reason=f"Stage {', '.join(canonical_invalidated([stage_name]))} re-run",
+            events=events,
         )
 
 

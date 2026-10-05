@@ -1719,10 +1719,14 @@ def register_review_commands(subparsers: Any) -> None:
         "--id",
         dest="ids",
         type=int,
-        action="append",
+        action="extend",
+        nargs="+",
         default=None,
         metavar="N",
-        help="Decision id to undo; repeat for several: --id 2 --id 4.",
+        help=(
+            "Decision id(s) to undo; one or more per flag, and the flag "
+            "repeats: --id 2 4 or --id 2 --id 4."
+        ),
     )
     p_undo.add_argument(
         "--dry-run",

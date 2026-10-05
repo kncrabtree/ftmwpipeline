@@ -517,6 +517,10 @@ def test_target_outside_window(stage5_multi_file, via):
             Pipeline.open(f).review_edit(wa, add=[add])
     err = _assert_conflict(exc, "target_outside_window", [wa])
     assert f"outside window {wa}'s range" in str(err)
+    # The remedy names the implied create (an add with no window named), not
+    # only 'review create'.
+    assert "name no window" in str(err)
+    assert "creates one there if none does" in str(err)
     assert content_digest(f) == before
 
 

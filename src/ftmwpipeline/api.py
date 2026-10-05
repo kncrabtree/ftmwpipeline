@@ -140,12 +140,15 @@ def import_data(
     ------
     PipelineExistsError
         If file exists with different source and force=False
-    FileNotFoundError
-        If source data does not exist
-    ValueError
-        If format detection or validation fails
+    PipelineFileNotFoundError
+        If source data does not exist (``not_found``; also a
+        ``FileNotFoundError``)
+    BadSettingError
+        ``path`` ``"format"`` if format detection fails or the format is
+        unknown; ``path`` ``"source"`` if the source does not validate or its
+        format's loader refuses it (also a ``ValueError``)
     RuntimeError
-        If data loading or file creation fails
+        If file creation fails
 
     Examples
     --------
@@ -309,7 +312,9 @@ def validate_pipeline(file_path: Union[str, Path]) -> Dict[str, Any]:
     Validate pipeline file integrity.
 
     This function performs comprehensive validation of a .ftmw pipeline file,
-    equivalent to Pipeline.validate().
+    equivalent to Pipeline.validate(). Validation reports problems in a file
+    that opens; it does not stand in for opening one, exactly as
+    :meth:`Pipeline.validate`.
 
     Parameters
     ----------
@@ -329,9 +334,6 @@ def validate_pipeline(file_path: Union[str, Path]) -> Dict[str, Any]:
         If the path exists but cannot be opened as a pipeline file.
     PipelineCompatibilityError
         If the file was written by an incompatible format version.
-
-    Validation reports problems in a file that opens; it does not stand in for
-    opening one, exactly as :meth:`Pipeline.validate`.
 
     Examples
     --------
@@ -1876,11 +1878,11 @@ def run_pipeline(
 ) -> Dict[str, Any]:
     """Drive a raw *source* through every pipeline stage end-to-end.
 
-    Equivalent to :meth:`Pipeline.build`.  Imports *source*, then runs FT ->
-    noise -> tau -> peaks -> windows -> fit -> timebase -> review (and, with
-    ``report=True``, the report) in order, showing live per-stage progress.
-    *trim* (the active-band FT range, MHz) is required; ``output`` is the
-    destination ``.ftmw`` (derived from *source* if omitted).
+    Equivalent to :meth:`Pipeline.build`.  Imports *source*, then runs start
+    detection -> FT -> timebase -> noise -> tau -> peaks -> windows -> fit ->
+    review (and, with ``report=True``, the report) in order, showing live
+    per-stage progress. *trim* (the active-band FT range, MHz) is required;
+    ``output`` is the destination ``.ftmw`` (derived from *source* if omitted).
 
     Per-stage behavior is tuned with override dicts forwarded to each stage
     (``ft_params``, ``noise_params``, ``tau_params``, ``peak_params``,
@@ -2684,9 +2686,8 @@ def scan_run(
         brightest windows + a seeded ``fit_sample`` random sample + the windows
         nearest each ``fit_freqs`` value, rather than the whole plan.
         ``fit_all=True`` re-fits every window. Ignored by non-fit knobs.
-
-    ``events`` / ``cancel``: the event callback and cancel token (see
-    :meth:`Pipeline.scan_run`).
+    events, cancel : optional
+        The event callback and cancel token (see :meth:`Pipeline.scan_run`).
     """
     try:
         pipeline = Pipeline.open(file_path)
@@ -2948,10 +2949,10 @@ def preview_source(
     ------
     PipelineFileNotFoundError
         ``source`` does not exist.
-    NotFoundError
-        ``kind == "format"``: ``format_name`` is unknown, or none was detected.
-    ValueError
-        The source is not valid for the format.
+    BadSettingError
+        ``path`` ``"format"``: ``format_name`` is unknown, or none was
+        detected. ``path`` ``"source"``: the format's loader refuses the
+        source (its message kept). Also a ``ValueError``.
     """
     return Pipeline.preview_source(source, format_name)
 

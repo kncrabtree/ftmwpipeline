@@ -247,3 +247,51 @@ def test_json_does_not_change_the_format_of_a_written_file(
     assert doc["schema"] == "ftmw/run_result@1"
     assert str(doc["summary"]["table"]).endswith(".csv")
     assert list(out_dir.glob("*.csv")) and not list(out_dir.glob("*.json"))
+
+
+# ---- which --format json makes errors JSON ---------------------------------
+
+
+def _last_error_dict(err):
+    lines = [ln for ln in err.splitlines() if ln.strip()]
+    return json.loads(lines[-1])
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("info", "{f}", "--format", "json"),
+        ("read", "meta", "{f}", "--format", "json"),
+        ("read", "table", "{f}", "fit_peaks", "--format", "json"),
+        ("report", "table", "{f}", "--format", "json"),
+        ("report", "run", "{f}", "--json"),
+    ],
+    ids=lambda a: " ".join(a[:2]),
+)
+def test_json_error_under_json_and_printing_format_synonyms(tmp_path, capsys, argv):
+    missing = str(tmp_path / "absent.ftmw")
+    rc, _, err = _cli(capsys, *(a.format(f=missing) for a in argv))
+    assert rc == 1
+    payload = _last_error_dict(err)
+    assert payload["schema"] == "ftmw/error@1"
+    assert payload["code"] == "not_found"
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        # --format names the table file report run writes, not the output mode.
+        ("report", "run", "{f}", "--format", "json"),
+        # --format names the format of the --output file.
+        ("read", "table", "{f}", "fit_peaks", "--format", "json", "--output", "{o}"),
+        ("report", "table", "{f}", "--format", "json", "--output", "{o}"),
+    ],
+    ids=lambda a: " ".join(a[:2]) + (" --output" if "--output" in a else ""),
+)
+def test_a_file_format_json_does_not_make_errors_json(tmp_path, capsys, argv):
+    missing = str(tmp_path / "absent.ftmw")
+    out = str(tmp_path / "out.json")
+    rc, stdout, err = _cli(capsys, *(a.format(f=missing, o=out) for a in argv))
+    assert rc == 1
+    assert "ftmw/error@1" not in stdout + err
+    assert "Pipeline file not found" in stdout + err

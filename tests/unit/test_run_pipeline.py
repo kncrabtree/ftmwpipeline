@@ -124,6 +124,40 @@ def test_run_full_sequence_in_order(patch_pipeline):
     assert res["timebase"] == "calibrated"
 
 
+_RUN_ORDER = (
+    "start detection -> FT -> timebase -> noise -> tau -> peaks -> windows -> "
+    "fit -> review"
+)
+
+
+def _one_line(text: str) -> str:
+    return " ".join(text.split())
+
+
+def test_every_run_order_string_matches_the_orchestrator():
+    """``run --help``, the module docstrings and the API/Pipeline docstrings
+    state the order ``run_pipeline_impl`` calls the stages in (timebase right
+    after FT, not after fit)."""
+    import ftmwpipeline._internal.run_impl as run_impl_mod
+    import ftmwpipeline.cli.run_commands as run_commands_mod
+
+    sub = argparse.ArgumentParser().add_subparsers()
+    register_run_command(sub)
+    help_text = sub.choices["run"].format_help()
+    texts = {
+        "run --help": help_text,
+        "cli.run_commands": run_commands_mod.__doc__ or "",
+        "run_impl": run_impl_mod.__doc__ or "",
+        "run_pipeline_impl": run_pipeline_impl.__doc__ or "",
+        "api.run_pipeline": ftmw.run_pipeline.__doc__ or "",
+        "Pipeline.build": Pipeline.build.__doc__ or "",
+    }
+    for name, text in texts.items():
+        flat = _one_line(text)
+        assert _RUN_ORDER in flat, name
+        assert "fit -> timebase" not in flat, name
+
+
 def test_timebase_runs_before_noise(patch_pipeline):
     """Timebase self-calibration runs right after FT, before noise (C3 Part 1)."""
     patch_pipeline(_FakePipe())

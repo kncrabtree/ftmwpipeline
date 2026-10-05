@@ -1,8 +1,8 @@
 """CLI ``run`` command: drive a raw source through the whole pipeline.
 
 A single bare verb that imports a raw source and runs every stage in sequence
-(FT -> noise -> tau -> peaks -> windows -> fit -> timebase -> review, then
-optionally the report), with live per-stage progress. Orchestration only; the
+(start detection -> FT -> timebase -> noise -> tau -> peaks -> windows -> fit
+-> review, then optionally the report), with live per-stage progress. Orchestration only; the
 real logic lives in :func:`run_pipeline_impl`.
 """
 
@@ -261,9 +261,9 @@ def register_run_command(subparsers: Any) -> None:
         help="Run the full pipeline on a raw source (import through review)",
         description=(
             "Drive a raw data source through every pipeline stage in sequence:\n"
-            "import -> FT -> noise -> tau -> peaks -> windows -> fit -> timebase\n"
-            "-> review, with live per-stage progress. With --report it also emits\n"
-            "the Level-1 table + Level-3 HTML report.\n\n"
+            "import -> start detection -> FT -> timebase -> noise -> tau -> peaks\n"
+            "-> windows -> fit -> review, with live per-stage progress. With\n"
+            "--report it also emits the Level-1 table + Level-3 HTML report.\n\n"
             "--trim (the active-band FT range) is required. Tau calibration and\n"
             "start detection run by default; timebase calibration runs by default\n"
             "but is non-fatal — it auto-resolves the instrument clocks (e.g. from\n"

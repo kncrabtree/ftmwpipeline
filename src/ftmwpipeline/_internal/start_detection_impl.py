@@ -279,6 +279,47 @@ def _detect_start_time(
 _INHERITED_TOLERANCE_US = 1e-6
 
 
+def stage1_start_in_force(file_path: str) -> Tuple[bool, Optional[float]]:
+    """``(authoritative, start_us)`` of the file's Stage 1 record.
+
+    ``authoritative`` is ``True`` once Stage 1 has persisted the record every
+    stage reads; a new recommended ``start_us`` then no longer reaches it.
+    ``start_us`` is that record's persisted start (``None`` when it records
+    none, or when there is no authoritative record).
+    """
+    with h5open(file_path, "r") as h5f:
+        if not ft_record_is_authoritative(h5f):
+            return False, None
+    persisted = _read_settings_layer(file_path, FT_PROCESSING_PATH)
+    return True, persisted.start_us if persisted is not None else None
+
+
+def stage1_uses_start(current: Optional[float], start_us: float) -> bool:
+    """Whether a persisted Stage 1 ``start_us`` is ``start_us`` (to copy noise)."""
+    return current is not None and abs(current - start_us) < _INHERITED_TOLERANCE_US
+
+
+def stamped_start_note(file_path: str, start_us: float) -> str:
+    """What a just-stamped recommended ``start_us`` changes, in one sentence.
+
+    Before Stage 1 has persisted its record, a later ``ft run`` with no
+    explicit ``--start-us`` inherits the recommendation. Once it has, Stage 1's
+    record is authoritative: the recommendation is stored but changes nothing
+    until ``ft run --start-us`` adopts it.
+    """
+    authoritative, current = stage1_start_in_force(file_path)
+    if not authoritative:
+        return "A later 'ft run' with no explicit --start-us will inherit it."
+    if stage1_uses_start(current, start_us):
+        return "Stage 1 already runs with this start_us."
+    shown = "unset" if current is None else f"{current:.3f} us"
+    return (
+        f"Stage 1 has already run (start_us = {shown}) and keeps its start; "
+        f"to adopt the new value, re-run 'ft run {file_path} --start-us "
+        f"{start_us:.3f}'."
+    )
+
+
 def _note_stage1_unaffected(file_path: str, recommended_start_us: float) -> None:
     """Say so when a new recommendation will not reach an existing Stage 1 run.
 
@@ -288,14 +329,8 @@ def _note_stage1_unaffected(file_path: str, recommended_start_us: float) -> None
     the old spectrum), but a user who just ran ``start run`` should hear that
     adopting the new value is an explicit Stage 1 re-run.
     """
-    with h5open(file_path, "r") as h5f:
-        if not ft_record_is_authoritative(h5f):
-            return
-    persisted = _read_settings_layer(file_path, FT_PROCESSING_PATH)
-    current = persisted.start_us if persisted is not None else None
-    if current is not None and abs(current - recommended_start_us) < (
-        _INHERITED_TOLERANCE_US
-    ):
+    authoritative, current = stage1_start_in_force(file_path)
+    if not authoritative or stage1_uses_start(current, recommended_start_us):
         return
     logger.warning(
         "Stage 1 has already run with start_us = %s us; the new recommended "

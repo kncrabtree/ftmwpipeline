@@ -18,6 +18,7 @@ from typing import Any, Dict, Optional
 
 from .._internal.start_detection_impl import (
     detect_start_time_impl,
+    stamped_start_note,
     start_run_summary,
 )
 from ..core.start_detection_settings import StartDetectionSettings
@@ -102,7 +103,7 @@ def cmd_detect_start(args: argparse.Namespace) -> int:
         print(
             f"\nStamped recommended start_us = {out['start_us']:.3f} us to {file_path}."
         )
-        print("A later compute_ft with no explicit start_us will inherit it.")
+        print(stamped_start_note(file_path, out["start_us"]))
         print_invalidated(out["invalidated"])
     elif not r.chirp_detected and not out["declaration_used"]:
         print(

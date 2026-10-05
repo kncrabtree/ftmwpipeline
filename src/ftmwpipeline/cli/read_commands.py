@@ -64,7 +64,7 @@ from ..contract import (
     Absent,
 )
 from ..file_manager import PipelineFileError
-from ._json_output import json_mode, record_payload
+from ._json_output import error_json_mode, json_mode, record_payload
 from .contract_commands import exit_code_for, register_accessor, report_contract_error
 from .utils import setup_logging
 
@@ -138,7 +138,7 @@ def cmd_read_table(args: argparse.Namespace) -> int:
         table = read_table_impl(file_path, args.table, columns)
         text = format_table_impl(table, getattr(args, "format", "csv"))
     except _USER_ERRORS as exc:
-        return _report(exc, getattr(args, "format", "csv"))
+        return _report(exc, "json" if error_json_mode(args) else "text")
     if json_mode(args):
         return _emit_json(args, text, getattr(args, "output", None), args.table)
     return _emit(text, getattr(args, "output", None), args.table)
@@ -152,7 +152,7 @@ def cmd_read_meta(args: argparse.Namespace) -> int:
         metadata = read_metadata_impl(file_path)
         text = format_metadata_impl(metadata, getattr(args, "format", "csv"))
     except _USER_ERRORS as exc:
-        return _report(exc, getattr(args, "format", "csv"))
+        return _report(exc, "json" if error_json_mode(args) else "text")
     if json_mode(args):
         return _emit_json(args, text, getattr(args, "output", None), "meta")
     return _emit(text, getattr(args, "output", None), "meta")
@@ -165,7 +165,7 @@ def cmd_read_list(args: argparse.Namespace) -> int:
     try:
         tables = read_tables_impl(file_path)
     except _USER_ERRORS as exc:
-        return _report(exc, getattr(args, "format", "csv"))
+        return _report(exc, "json" if error_json_mode(args) else "text")
 
     if json_mode(args):
         record_payload(args, {"tables": tables})

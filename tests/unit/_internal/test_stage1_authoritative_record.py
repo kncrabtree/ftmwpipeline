@@ -30,6 +30,7 @@ from ftmwpipeline._internal.stage1_impl import (
 from ftmwpipeline._internal.start_detection_impl import (
     detect_start_time_impl,
     resolve_start_provenance,
+    stamped_start_note,
 )
 from ftmwpipeline.core.data_structures import FID, ChirpWindow, Sideband
 from ftmwpipeline.core.settings import (
@@ -180,6 +181,41 @@ def test_start_run_after_stage1_warns_and_leaves_it(
     assert "does not change it" in caplog.text
     assert _resolve_settings(p, None).start_us == 0.0
     assert _completed(p) == completed
+
+
+# Mutation caught: the 'start run' note claims a later FT run inherits the
+# stamp after Stage 1 has persisted its authoritative record.
+def test_stamped_start_note_is_true_before_and_after_stage1(tmp_path: Path) -> None:
+    p = _create_ftmw(tmp_path)
+    before = stamped_start_note(p, 2.0)
+    assert "will inherit it" in before
+
+    ftmw.compute_ft(p)  # start_us 0.0, authoritative
+    after = stamped_start_note(p, 2.0)
+    assert "inherit" not in after
+    assert "start_us = 0.000 us" in after
+    assert f"ft run {p} --start-us 2.000" in after
+
+    same = stamped_start_note(p, 0.0)
+    assert "inherit" not in same and "already runs" in same
+
+
+def test_start_run_cli_prints_the_note_for_the_file_state(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from ftmwpipeline.cli.main import main
+
+    p = _create_ftmw(tmp_path)
+    with atomic_write(p):
+        write_recommended_chirp_window(p, ChirpWindow(chirp_end_us=1.5))
+    assert main(["start", "run", p]) == 0
+    assert "will inherit it" in capsys.readouterr().out
+
+    ftmw.compute_ft(p, start_us=0.0)
+    assert main(["start", "run", p]) == 0
+    out = capsys.readouterr().out
+    assert "will inherit it" not in out
+    assert "--start-us" in out
 
 
 # Mutation caught: an explicit re-run is swallowed, or leaves a stale downstream

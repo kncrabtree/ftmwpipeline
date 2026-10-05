@@ -8,6 +8,7 @@ window still fitting.
 
 from __future__ import annotations
 
+import json
 import logging
 import multiprocessing
 import pickle
@@ -187,11 +188,47 @@ def test_nested_operation_reuses_the_outer_events():
 
 def test_invalidation_line_renders_without_a_listener(caplog):
     with caplog.at_level(logging.WARNING, logger="ftmwpipeline.file_manager"):
-        emit_invalidated(None, ["stage6_review"], reason="Stage stage5_fitting re-run")
+        emit_invalidated(None, ["stage6_review"], reason="Stage fit re-run")
     assert [r.getMessage() for r in caplog.records] == [
-        "Stage stage5_fitting re-run; invalidated stage(s) ['stage6_review'] -- "
-        "re-run them to refresh."
+        "Stage fit re-run; invalidated stage(s) review -- re-run them to refresh."
     ]
+
+
+def test_invalidation_line_names_canonical_stages_in_rerun_order(caplog):
+    """The warning line names stages as the event does: canonical names in
+    rerun order, never storage keys."""
+    keys = ["stage6_review", "stage2_noise_result", "stage5_fitting"]
+    with caplog.at_level(logging.WARNING, logger="ftmwpipeline.file_manager"):
+        emit_invalidated(None, keys, reason="why")
+    (message,) = [r.getMessage() for r in caplog.records]
+    assert message == (
+        "why; invalidated stage(s) noise, fit, review -- re-run them to refresh."
+    )
+
+
+def test_downstream_invalidation_reason_uses_the_canonical_root(tmp_path, caplog):
+    """``invalidate_downstream_stages``' own reason names the re-run stage by
+    its canonical name."""
+    import h5py
+
+    from ftmwpipeline._internal.atomic import atomic_write
+    from ftmwpipeline.file_manager import invalidate_downstream_stages
+
+    path = tmp_path / "f.ftmw"
+    with h5py.File(path, "w") as h5f:
+        group = h5f.create_group("pipeline_stages")
+        group.attrs["completed_stages"] = json.dumps(
+            ["stage0_fid_data", "stage5_fitting", "stage6_review"]
+        )
+        h5f.create_group("stage6_review")
+    with caplog.at_level(logging.WARNING, logger="ftmwpipeline.file_manager"):
+        with atomic_write(path):
+            invalidated = invalidate_downstream_stages(path, "stage5_fitting")
+    assert invalidated == ["stage6_review"]
+    (message,) = [r.getMessage() for r in caplog.records]
+    assert message == (
+        "Stage fit re-run; invalidated stage(s) review -- re-run them to refresh."
+    )
 
 
 # ---- the Stage 5 walk ------------------------------------------------------

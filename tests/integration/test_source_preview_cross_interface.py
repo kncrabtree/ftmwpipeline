@@ -219,17 +219,27 @@ def test_undetectable_source_refuses_identically(tmp_path, capsys):
     assert payload == api_exc.value.to_dict()
 
 
-def test_source_that_does_not_fit_the_format_exits_1_with_text(tmp_path, capsys):
+def test_source_that_does_not_fit_the_format_refuses_identically(tmp_path, capsys):
+    """A loader refusal is ``bad_setting`` (path ``source``), message kept."""
+    from ftmwpipeline.file_manager import BadSettingError
+
     src = str(_csv_source(tmp_path))
-    with pytest.raises(ValueError):
+    with pytest.raises(BadSettingError) as api_exc:
         ftmw.preview_source(src, "blackchirp")
-    with pytest.raises(ValueError):
+    with pytest.raises(BadSettingError) as pipe_exc:
         Pipeline.preview_source(src, "blackchirp")
+    assert isinstance(api_exc.value, ValueError)
+    assert api_exc.value.path == "source"
+    assert api_exc.value.value == src
+    assert "Not a valid Blackchirp experiment directory" in str(api_exc.value)
     rc, out, err = _cli(
         ["read", "preview_source", src, "--source-format", "blackchirp"], capsys
     )
+    payload = json.loads(err)
     assert rc == 1 and out == ""
-    assert err.startswith("Error:")
+    assert payload["schema"] == "ftmw/error@1"
+    assert payload["code"] == "bad_setting" and payload["path"] == "source"
+    assert payload == api_exc.value.to_dict() == pipe_exc.value.to_dict()
 
 
 def test_undefined_chirp_window_and_keysight_channels_agree_across_interfaces(

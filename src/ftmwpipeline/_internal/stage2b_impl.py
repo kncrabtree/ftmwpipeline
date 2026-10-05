@@ -585,7 +585,7 @@ def _calibrate_tau(
         logger.info(
             "Stage 2b (%s) re-run invalidated downstream stages: %s",
             shape,
-            invalidated,
+            ", ".join(canonical_invalidated(invalidated)),
         )
 
     twin: Optional[str] = None

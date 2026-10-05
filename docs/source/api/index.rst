@@ -463,22 +463,34 @@ Exceptions
 ----------
 
 The file-management error family, all subclasses of
-:class:`~ftmwpipeline.file_manager.PipelineFileError`.
+:class:`~ftmwpipeline.contract.PipelineFileError`. These classes are defined in
+``ftmwpipeline.file_manager`` and re-exported, with the rest of the typed-error
+family, by ``ftmwpipeline.contract`` (documented under "Machine contract"
+above), which is where cross-references resolve.
 
 .. autoexception:: ftmwpipeline.file_manager.PipelineFileError
+   :noindex:
 
 .. autoexception:: ftmwpipeline.file_manager.PipelineExistsError
+   :noindex:
 
 .. autoexception:: ftmwpipeline.file_manager.PipelineCorruptionError
+   :noindex:
 
 .. autoexception:: ftmwpipeline.file_manager.StageDependencyError
+   :noindex:
 
 .. autoexception:: ftmwpipeline.file_manager.PipelineCompatibilityError
+   :noindex:
 
 .. autoexception:: ftmwpipeline.file_manager.AnalysisEpochMismatchError
+   :noindex:
 
 .. autoexception:: ftmwpipeline.file_manager.NotFoundError
+   :noindex:
 
 .. autoexception:: ftmwpipeline.file_manager.PipelineFileNotFoundError
+   :noindex:
 
 .. autoexception:: ftmwpipeline.file_manager.IncompleteProvenanceError
+   :noindex:

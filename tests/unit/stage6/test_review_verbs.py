@@ -592,3 +592,70 @@ class TestSplitMergeAreNotVerbs:
 
         with pytest.raises(SystemExit):
             create_parser().parse_args(["review", verb, "f.ftmw", "--window", "0"])
+
+
+class TestUndoIdArgument:
+    """``review undo --id`` takes one or more ids per flag and repeats, so the
+    form the report's curation cart builds (``--id 3 5``) parses."""
+
+    @pytest.mark.parametrize(
+        "argv, expected",
+        [
+            (["--id", "3"], [3]),
+            (["--id", "3", "5"], [3, 5]),
+            (["--id", "3", "--id", "5"], [3, 5]),
+            (["--id", "3", "5", "--id", "7"], [3, 5, 7]),
+            ([], None),
+        ],
+    )
+    def test_parses(self, argv, expected):
+        from ftmwpipeline.cli.main import create_parser
+
+        args = create_parser().parse_args(["review", "undo", "f.ftmw", *argv])
+        assert args.ids == expected
+
+    def test_id_needs_a_value(self):
+        from ftmwpipeline.cli.main import create_parser
+
+        with pytest.raises(SystemExit):
+            create_parser().parse_args(["review", "undo", "f.ftmw", "--id"])
+
+    def test_report_cart_builds_the_space_separated_form(self):
+        """The cart joins the sorted ids with spaces after one ``--id``; the
+        parser above accepts exactly that string."""
+        import shlex
+
+        from ftmwpipeline._internal.report_html_impl import _CURATION_JS
+        from ftmwpipeline.cli.main import create_parser
+
+        assert "'.ftmw --id ' +" in _CURATION_JS
+        assert "ids.join(' ')" in _CURATION_JS
+        cart = "ftmwpipeline review undo exp.ftmw --id " + " ".join(["3", "5"])
+        argv = shlex.split(cart)[1:]
+        assert create_parser().parse_args(argv).ids == [3, 5]
+
+
+def test_top_level_help_lists_the_real_object_verbs():
+    """The top-level ``--help`` epilog names each object's real verbs, and no
+    verb that does not exist (``review merge`` / ``split``)."""
+    import argparse
+    import re
+
+    from ftmwpipeline.cli.main import create_parser
+
+    parser = create_parser()
+    epilog = parser.epilog or ""
+    sub = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+    for obj in ("review", "report", "settings", "clocks", "tau", "timebase"):
+        verbs_action = next(
+            a
+            for a in sub.choices[obj]._actions
+            if isinstance(a, argparse._SubParsersAction)
+        )
+        for verb in verbs_action.choices:
+            assert re.search(rf"(^|[\s|]){re.escape(verb)}($|[\s|])", epilog), (
+                obj,
+                verb,
+            )
+    review_block = epilog[epilog.index("review (stage6)") : epilog.index("Meta")]
+    assert "merge" not in review_block and "split" not in review_block

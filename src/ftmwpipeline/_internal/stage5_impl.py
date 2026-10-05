@@ -35,6 +35,7 @@ from typing import (
     List,
     Mapping,
     Optional,
+    Sequence,
     Tuple,
     Union,
     cast,
@@ -3747,6 +3748,7 @@ def render_fit_panels_impl(
     bundle: Optional[_DetailBundle] = None,
     with_overview: bool = True,
     window_fit: Optional[FittingResult] = None,
+    only: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     """Render one window's detail as separate, standalone panel figures.
 
@@ -3759,7 +3761,8 @@ def render_fit_panels_impl(
     ``with_overview=False`` skips the full-spectrum ``"overview"`` panel; the
     HTML report discards it (it embeds one shared interactive overview), so
     building one per window is wasted work. ``window_fit`` draws that result
-    instead of the fit's own, as for :func:`render_fit_detail_impl`.
+    instead of the fit's own, as for :func:`render_fit_detail_impl`. ``only``
+    builds just the named panels.
     """
     from ..visualization.fit_detail import plot_window_panels
 
@@ -3779,6 +3782,7 @@ def render_fit_panels_impl(
         spec_padded=bundle.spec_padded,
         spurs=(bundle.fit.diagnostics or {}).get("gated_spurs"),
         include_overview=with_overview,
+        only=only,
     )
 
 

@@ -597,6 +597,11 @@ not declare is `Absent.NOT_RUN` — never the default import would apply. A
 declared value that cannot be read (a chirp window that fails to parse, a
 non-finite sidecar value) is `Absent.UNDEFINED`.
 
+A source its format's loader refuses — whether the format was named or
+detected — raises `bad_setting` (`path` `"source"`) with the loader's message,
+as `import_data` does for a source its loader refuses (an unknown sidecar key,
+a missing required value such as `spacing_us`, an unknown `column`).
+
 ### Window model
 
 `window_model(path, window_id, *, grid="active", components=False)` → the
@@ -1145,7 +1150,11 @@ means the report file format (`report`) and the source format (`data import`,
 `review snap-tolerance`, `timebase state`, the `read` accessors), stays a
 synonym. Where `--format` names the format of a file the verb writes
 (`report run`'s table, `read table` / `report table` with `--output`), `--json`
-leaves it alone. Under
+leaves it alone. A typed error is printed as its `ftmw/error@1` dict under
+`--json`, under those synonyms, and under a `--format json` that formats what
+`read table` / `read meta` / `report table` print; never because a written
+file's format is `json` (`report run --format json`, a dump with `--output`).
+Under
 `--json`:
 - a `read` accessor prints its envelope, as today;
 - a stage-running or curation verb prints
