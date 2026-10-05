@@ -134,7 +134,7 @@ marker on its window plot, color-coded by action and removable with a click:
 
 The cart's **Download .csv** and **Copy** controls export the queued edits as a
 **curation file** (``<stem>_curation.csv``) and print the ``review apply``
-command that replays it. A **remove** exports the line's ``peak_uid`` as a
+command that applies it. A **remove** exports the line's ``peak_uid`` as a
 ``uid:N`` token, which names that peak exactly rather than by proximity: a
 neighboring line inside the snap tolerance cannot be matched instead, and the
 frame does not enter into it. Everything else a control emits -- an **add**, and
@@ -180,11 +180,12 @@ surface a ``review undo`` command alongside the ``review apply`` one:
 
 .. code-block:: console
 
-   ftmwpipeline review undo exp_2638.ftmw --id 3 5
+   ftmwpipeline review undo exp_2638.ftmw --id 2 3
 
 ``review undo`` restores the automatic-fit baseline snapshot and replays every
-surviving decision, so undoing by id is exact and order-independent; the ids
-shown in the table are the ones to pass.
+surviving decision onto it in log order, so any decisions can be undone, not
+only the latest; the ids shown in the table are the ones to pass, and the
+surviving decisions are renumbered afterwards (see :ref:`stage6-decisions`).
 
 .. _curation-frames:
 
@@ -221,14 +222,16 @@ file's frequencies — takes a ``frame`` argument of type
 On an ``rb_locked`` or ``uncalibrated`` file ``epsilon`` is ``0.0``, the two
 frames coincide, and ``frame`` is inert. On a ``self_calibrated`` file it is
 not — and the failure is a quiet one. A calibrated frequency submitted as raw
-still resolves, and to the *right* peak, but seeds or anchors it wrong by
-``probe_freq * eps/(1 + eps)``: under the snap tolerance, so it matches, and
-over the statistical σ, so the error shows up in the result without ever
+still resolves, and to the *right* peak, but seeds or anchors it wrong by the
+difference between the frames, ``|f - probe| * eps/(1 + eps)`` (the line's
+baseband offset times ``epsilon``): under the snap tolerance, so it matches,
+and over the statistical σ, so the error shows up in the result without ever
 announcing itself.
 
-The two numbers above are 30.9 kHz apart, on a file whose snap tolerance is
-49.1 kHz (``epsilon`` = 2.19 × 10⁻⁶, probe 40960 MHz). Submitting the
-calibrated one as raw finds the same line — and then seeds it 30.9 kHz off.
+The two numbers above are 30.8 kHz apart, on a file whose snap tolerance is
+49.1 kHz (``epsilon`` = 2.19 × 10⁻⁶, probe 40960 MHz, lower sideband, so this
+line sits 14080 MHz from the probe). Submitting the calibrated one as raw finds
+the same line — and then seeds it 30.8 kHz off.
 
 Because that mistake is invisible, **omitting ``frame`` on a frequency-bearing
 call is a hard error on a ``self_calibrated`` file** rather than a silent
@@ -236,14 +239,13 @@ assumption:
 
 .. code-block:: text
 
-   ValueError: frame is required on a self_calibrated file: pass frame="raw"
-   or frame="calibrated" explicitly rather than relying on the default. A
-   calibrated frequency submitted as raw still resolves to the right peak, but
-   is wrong by probe_freq * eps/(1+eps) -- under the snap tolerance and over
-   the statistical uncertainty, so the mistake would be silent.
+   BadSettingError: frame is required on a self_calibrated file: pass
+   frame="raw" or frame="calibrated" explicitly rather than relying on the
+   default. ...
 
-The refusal is ``bad_setting`` (``path`` ``frame`` for a curation file, and
-``actions[<i>].frame`` for the i-th action of an ``actions=`` batch).
+The refusal is ``bad_setting`` (``BadSettingError``, also a ``ValueError``),
+with ``path`` ``frame`` for a call or a curation file and ``actions[<i>].frame``
+for the i-th action of an ``actions=`` batch.
 Passing ``frame="raw"`` explicitly is never an error on any file, so a script
 that always declares its frame works everywhere. Use
 :func:`~ftmwpipeline.api.frequency_calibration` (or ``ftmwpipeline timebase
@@ -362,7 +364,7 @@ a frequency.
 A ``remove`` row may name its target by identifier instead of by frequency,
 writing ``uid:N`` for the line whose
 :attr:`~ftmwpipeline.core.data_structures.FittedPeak.peak_uid` is ``N`` --
-``remove,12,uid:15425022,``. That names the line exactly rather than by
+``remove,117,uid:12402900,`` (the 31216.9682 MHz line of ``exp_2638``). That names the line exactly rather than by
 proximity, so a neighbor inside the snap tolerance cannot be matched instead
 and the file's frame does not enter into it. The browser cart writes this form;
 the identifier is also the ``peak_uid`` column of ``report table``. Every other
@@ -412,7 +414,7 @@ it:
 
 A ``# frame:`` directive declares the frame every frequency in that file is
 expressed in, which is what makes the file self-describing: it can be mailed to
-a colleague, committed to a repository, or replayed a year later without the
+a colleague, committed to a repository, or applied a year later without the
 frame having to be remembered separately. The browser cart writes
 ``# frame: raw`` for exactly this reason, and a file carrying the directive
 needs no ``frame`` argument even on a ``self_calibrated`` file.
@@ -437,9 +439,9 @@ against the wrong peaks:
 
 .. code-block:: text
 
-   ValueError: curation file frame drift: this file was staged
+   BadSettingError: curation file frame drift: this file was staged
    frame=calibrated at epsilon=2.200000e-06, but the target file's current
-   epsilon is 2.310000e-06. The calibration has changed since this file was
+   epsilon is 2.190879e-06. The calibration has changed since this file was
    written (e.g. a timebase re-run) -- re-stage the curation file against the
    current calibration rather than applying it as-is.
 
@@ -471,36 +473,42 @@ and stamps the frequency that was requested, so the log reports the
 reinterpretation rather than hiding it. See :ref:`stage6-edit` on the Stage 6
 page for the exact rule.
 
-A representative curation file:
+A representative curation file, written against ``exp_2638`` (saved as
+``exp_2638_curation.csv``):
 
 .. code-block:: text
 
+   # frame: raw
    action,window,freqs,params
-   remove,42,26613.6131,
-   add,42,26614.20,
-   remove,17,9001.100,
-   add,5,12000.4875,
-   remove,17,9001.130,
-   add,17,9001.115,
-   accept,8,,candidate=15001.4
+   remove,117,31216.9682,
+   add,249,36848.5529,
+   add,117,31214.36,
+   accept,188,,candidate=34155.13
 
-Window 42's ``add`` seeds a fresh line clear of its other peaks, an ordinary
-add. Window 5's ``add`` is unrelated, interleaved between window 17's rows.
-Window 17's two ``remove`` rows and its ``add`` between them remove a pair of
-lines 30 kHz apart -- mutually inside a 49.4 kHz snap tolerance, so the two
-components of one feature -- and add one frequency in their span, which is read
-as a merge. The interleaved window 5 row does not break that run, because
-coalescing tracks each window independently.
+Window 117's rows remove a weak (SNR 6.7) line and add one at the window's
+residual candidate, 31214.36 MHz, which lies 161 kHz from the nearest fitted
+line — beyond the 49.1 kHz snap tolerance, so it is an ordinary add. Window
+249 carries the ``auto_merged_review`` advisory: Stage 5 merged a degenerate
+pair there into the line at 36848.5433 MHz. The add at 36848.5529 MHz lies
+9.6 kHz from that line, inside the snap tolerance, so it is read as a **split**
+of it — the re-split the advisory invites. Window 188's ``accept`` revives its
+ledger candidate at 34155.13 MHz.
+
+There is no merge in this file because ``exp_2638`` offers none: Stage 5
+already merges every pair of lines closer than the snap tolerance, so no window
+holds two fitted lines within 49.1 kHz of each other. On a fit that does, a
+merge is written as two ``remove`` rows for the pair and one ``add`` in their
+span, on the same window.
 
 Edits on one window are **coalesced** before they are applied. A maximal run of
 ``add`` and ``remove`` rows on one window collapses into a single refit rather
-than one refit per row, so the two rows for window 42 become one edit, the
-three (non-adjacent) rows for window 17 become one edit, and window 5's row
-becomes its own edit -- three edits from six add/remove rows. An ``accept``
-(or ``create``) on a window flushes that window's pending edit first, since
-it changes the file in its own right; a plain add/remove never does, even
-when curation-intent inference will read the coalesced result as a split or a
-merge once the batch actually runs.
+than one refit per row, and the run tracks each window independently, so window
+249's row between them does not break window 117's run: the two rows for window
+117 become one edit and window 249's row its own edit — two edits from three
+add/remove rows. An ``accept`` (or ``create``) on a window flushes that window's
+pending edit first, since it changes the file in its own right; a plain
+add/remove never does, even when curation-intent inference will read the
+coalesced result as a split or a merge once the batch actually runs.
 
 .. _curation-as-data:
 
@@ -517,15 +525,16 @@ action is one curation-file row, typed:
    from ftmwpipeline import CurationAction, Pipeline
 
    actions = [
-       CurationAction("remove", peak_uid=15425022),       # remove,auto,uid:15425022,
-       CurationAction("add", freq_mhz=26880.3),           # add,auto,26880.3,
-       CurationAction("accept", window_id=10),            # accept,10,,
-       CurationAction("create", freq_mhz=26700.0),        # create,new,26700.0,
+       CurationAction("remove", peak_uid=12402900),       # remove,auto,uid:12402900,
+       CurationAction("add", freq_mhz=31214.36),          # add,auto,31214.36,
+       CurationAction("accept", window_id=188),           # accept,188,,
+       CurationAction("create", freq_mhz=30719.94),       # create,new,30719.94,
    ]
    result = Pipeline.open("exp_2638.ftmw").review_apply(actions=actions, frame="raw")
 
 The fields are ``action`` (``add``, ``remove``, ``accept`` or ``create``),
-``window_id``, ``freq_mhz``, ``peak_uid``, ``candidate_mhz`` and ``frame``. A
+``window_id``, ``freq_mhz``, ``peak_uid``, ``candidate_mhz``, ``frame`` and
+``epsilon``. A
 ``window_id`` of ``None`` means "derive it" on ``add`` / ``remove`` (the file's
 ``auto``) and "a new window" on ``create``; ``accept`` needs one. Construction
 checks what the parser checks of a row -- one frequency, or one ``peak_uid`` on
@@ -589,21 +598,24 @@ one edit are not guaranteed to land where they would have had that edit been
 applied on its own. Edits are reproducible together, not independent of each
 other.
 
-``--dry-run`` prints the resolved, coalesced plan in the file's own row order,
-along with any frequency-resolution warnings, without touching the file. The
-plan is pre-inference — every coalesced add/remove group prints as ``edit``,
-even one that will read as a split or a merge once the batch actually runs, so
-this preview shows what was typed, not yet the reinterpretation:
+``--dry-run`` prints the resolved, coalesced plan, along with any
+frequency-resolution warnings, without touching the file. The plan lists each
+``create`` and ``accept`` at the position of its row, and each window's
+coalesced edit where it closes: just before an ``accept`` or ``create`` on the
+same window, or otherwise after the last row, in the order the windows first
+appear. That is neither the file's row order nor the execution order above. The
+plan is also pre-inference — every coalesced add/remove group prints as
+``edit``, even one that will read as a split or a merge once the batch actually
+runs, so this preview shows what was typed, not yet the reinterpretation:
 
 .. code-block:: console
 
    $ ftmwpipeline review apply exp_2638.ftmw exp_2638_curation.csv --dry-run
    review apply (dry run): resolved plan
-       1. edit window 42: add 26614.2000; remove 26613.6131
-       2. edit window 17: add 9001.1150; remove 9001.1000, 9001.1300
-       3. edit window 5: add 12000.4875
-       4. accept window 8: candidate 15001.4000
-   4 action(s) would be applied (nothing written).
+       1. accept window 188: candidate 34155.1300
+       2. edit window 117: add 31214.3600; remove 31216.9682
+       3. edit window 249: add 36848.5529
+   3 action(s) would be applied (nothing written).
 
 The warnings catch the ways an action fails to resolve against the file. For
 ``remove`` that is the target frequency: one that matches no fitted peak within
@@ -635,17 +647,20 @@ Dropping ``--dry-run`` applies the plan, refitting each affected window in place
 
    $ ftmwpipeline review apply exp_2638.ftmw exp_2638_curation.csv
    review apply: plan
-       1. edit window 42: add 26614.2000; remove 26613.6131
-       ...
+       1. accept window 188: candidate 34155.1300
+       2. edit window 117: add 31214.3600; remove 31216.9682
+       3. edit window 249: add 36848.5529
    windows:
-     window   42  [  direct]  actions=1         peaks 2->2  chi2r 1.181->1.004
-     window   43  [cascaded]  actions=-         peaks 3->3  chi2r 1.022->1.019
-     ...
-   applied 4 action(s).
+     window  117  [  direct]  actions=2         peaks 12->12  chi2r 8.710->7.449
+     window  188  [  direct]  actions=1         peaks 2->3  chi2r 7.944->5.940
+     window  249  [  direct]  actions=3         peaks 2->3  chi2r 7.094->2.517
+   applied 3 action(s).
 
 The ``windows:`` block is the live apply's per-window outcome, in the shape
-``review preview`` prints and on the same fields: which actions targeted the
-window, whether it was reached directly or as a cascaded dependent, the peak
+``review preview`` prints and on the same fields: which plan actions (by
+their number) targeted the window, whether it was reached directly
+(``direct``) or as a cascaded dependent (``cascaded``, with ``actions=-``;
+``exp_2638`` has no dependency edges, so nothing cascades here), the peak
 count and χ²ᵣ on each side, and a warning line if its fit did not converge. It
 is ``CurationApplyResult.windows`` on the Python interfaces, keyed by window
 id, so a caller can check the count arithmetic (after == before + adds −
@@ -656,15 +671,29 @@ block rather than a fabricated one; the preview's own ``peaks`` are not
 repeated here, since an apply persists the final-products table and the file is
 the place to read it.
 
-Each applied edit appends an anchored entry to the
+Each applied edit appends anchored entries to the
 :ref:`Stage 6 decision log <stage6-decisions>`, exactly as the interactive verbs
-do, so a curation file's effects carry their provenance and survive re-running
-an upstream stage. This is where a split or merge reading actually shows up —
-the plan printed above and by ``--dry-run`` is pre-inference, but ``review
-log`` afterward reports window 17's coalesced edit as ``kind=merge`` and
-window 5's as ``kind=split``, each with the frequency that was requested. The
-same Python entry points are available on the functional API and the
-``Pipeline`` class:
+do, so a curation file's effects carry their provenance. This is where a split
+or merge reading actually shows up — the plan printed above and by
+``--dry-run`` is pre-inference, but ``review log`` afterward reports window
+249's edit as a ``split``, anchored at the line it split (its evidence records
+the requested 36848.5529 MHz), and the revived candidate as an ``add``:
+
+.. code-block:: console
+
+   $ ftmwpipeline review log exp_2638.ftmw
+   review log (user decisions, execution order):
+       id   action  window    freq (MHz)
+     ------------------------------------
+        0      add     117    31214.3600
+        1   remove     117    31216.9682
+        2      add     188    34155.1300
+        3    split     249    36848.5433
+
+The log, like the rest of Stage 6, belongs to the fit it was made on: re-running
+``fit`` or any earlier stage discards it. The curation file is what outlives the
+fit — apply it again to the new fit to reproduce the curation. The same Python
+entry points are available on the functional API and the ``Pipeline`` class:
 
 .. code-block:: python
 
@@ -676,53 +705,47 @@ same Python entry points are available on the functional API and the
    print(preview.warnings)
 
    result = ftmw.review_apply("exp_2638.ftmw", "exp_2638_curation.csv")
-   print(result.applied)   # number of actions refit
+   print(result.applied)   # -> 3, the plan's actions
    for wid, w in sorted(result.windows.items()):
        print(wid, w.origin, w.n_peaks_before, "->", w.n_peaks_after, w.converged)
+   # 117 direct 12 -> 12 True
+   # 188 direct 2 -> 3 True
+   # 249 direct 2 -> 3 True
+
+A live apply is one unit. A cancel (Ctrl-C, or a cancel token) is honoured
+before each action, and a cancel, a failing row or a failing events callback
+discards the whole batch, leaving the file exactly as it was; on the command
+line a cancel exits 130, ``--events`` streams the progress events, and
+``--json`` prints the result (or the error) as JSON.
 
 .. _curation-refusals:
 
 What a refusal tells a program
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Every refusal below leaves the file exactly as it was, and each is still the
-``ValueError`` it always was (a missing import source, the ``FileNotFoundError``).
-A program can route on the typed error's ``code`` instead of the message
-(:doc:`machine_contract`, *Curation refusals*):
+Every refusal leaves the file exactly as it was, and each is a typed error a
+program can route on by its ``code`` rather than its message; each is also
+still the ``ValueError`` (or, for a missing import source, the
+``FileNotFoundError``) it would otherwise be. In outline:
 
-* A **malformed row or directive** is ``bad_setting``. Its ``path`` is the cell,
-  ``curation[line 3].freqs`` (columns ``action``, ``window``, ``freqs``,
-  ``params``; a ``# frame:`` or ``# epsilon:`` directive is the cell ``frame``
-  or ``epsilon`` of its line). A refused field of an ``actions=`` batch is
-  ``actions[1].freq_mhz``, and a ``review edit`` token is ``add`` or ``remove``.
-  A ``create`` anchor the planner refuses (outside the analysis band, or
-  already inside a window) is the cell or field it came from, including the
-  create an uncovered ``add`` implies. A missing frame on a ``self_calibrated``
-  file is ``frame``, the call's argument, whether the request is a file or
-  actions.
-* A **frequency that matches no fitted peak** is ``not_found`` (kind ``peak``),
-  listing every such frequency of the request, each as you wrote it (a
-  calibrated request gets calibrated MHz back). A **target no live window
-  covers** is ``not_found`` (kind ``window``), and a **window id the plan names
-  that the fit does not have** is ``not_found`` too, every id at once -- also
-  when the batch creates windows, since only the id one of its creates will mint
-  is left to the per-action check. ``review undo`` ids the decision log does not
-  hold are ``not_found`` (kind ``decision``).
-* A **valid request that conflicts with the file's state** is
-  ``curation_conflict``, whose ``reason`` is a stable slug: ``line_already_fitted``
-  (an ``add`` at the birth position of a fitted line), ``targets_span_windows``
-  (one ``review edit`` whose targets fall in different windows),
-  ``orphans_created_window`` (an undo that would drop a window later decisions
-  act on), ``baseline_unavailable`` (an undo or log-prefix apply with no
-  automatic-fit snapshot left), ``replay_conflict`` (a replayed create that no
-  longer reproduces its window), ``target_outside_window`` (an ``add`` whose
-  seed falls outside the window it names) and ``fit_plan_unavailable`` (an edit
-  that would refit, or create a window against, windows a structural merge
-  changed in a fit made before the fit stored its plan; see
-  :doc:`stage5_fitting`).
+* a **malformed row, directive or field** is ``bad_setting``, whose ``path``
+  names the cell, for example ``curation[line 3].freqs`` (or the field of an
+  ``actions=`` batch, ``actions[1].freq_mhz``);
+* a **target that does not resolve** — a frequency or ``uid:N`` matching no
+  fitted peak, a window id the fit does not have, an undo id the log does not
+  hold — is ``not_found``, listing every such target of the request at once;
+* a **valid request that conflicts with the file's review state** is
+  ``curation_conflict``, with a stable ``reason`` slug such as
+  ``target_outside_window`` (an ``add`` whose seed falls outside the window it
+  names) or ``line_already_fitted``;
+* an edit on a fit from another analysis epoch is ``epoch_mismatch``, and a
+  call that loses a race with another process writing the file is
+  ``write_conflict`` (see :doc:`stage6_review`).
 
 Inside a batch the refusal keeps its type and the message names the action
-(``curation action 2 (edit window 4: ...) failed: ...``).
+(``curation action 2 (edit window 4: ...) failed: ...``). The complete
+vocabulary — every ``path`` form, ``not_found`` kind and ``reason`` slug, with
+what each carries in ``ids`` — is in :doc:`machine_contract`.
 
 .. _curation-preview:
 
@@ -743,14 +766,15 @@ outcome, without writing a byte:
 
    $ ftmwpipeline review preview exp_2638.ftmw exp_2638_curation.csv
    review preview (nothing written):
-     window    1  [  direct]  actions=2         peaks 2->3  chi2r 1.066->1.013
-     window    5  [  direct]  actions=1         peaks 4->3  chi2r 1.029->1.339
+     window  117  [  direct]  actions=2         peaks 12->12  chi2r 8.710->7.449
+     window  188  [  direct]  actions=1         peaks 2->3  chi2r 7.944->5.940
+     window  249  [  direct]  actions=3         peaks 2->3  chi2r 7.094->2.517
 
 Each row is one affected window, read *after* the cascade rather than
 per-action: which plan actions touched it, whether the batch reached it
 ``direct`` (an action named it) or as a cascaded dependent, how its peak count
-changed, and χ²ᵣ before and after. Here the window 1 add improves the fit and
-the window 5 remove degrades it — the judgment the dry run cannot offer. A
+changed, and χ²ᵣ before and after. Here all three edits lower χ²ᵣ, the split
+of window 249 most of all — the judgment the dry run cannot offer. A
 window this batch *created* has no "before", and prints ``-`` on that side
 rather than a ``0.000`` that would read as a perfect fit.
 
@@ -774,13 +798,26 @@ letting an ``add`` create structure on its own is that a typo'd frequency
 shows up here as a stray window rather than silently landing somewhere
 plausible:
 
+For example, with a file whose second ``add`` names no window and falls on the
+range of window 100, which the fit left empty (its only Stage 3 peak sits on a
+gated spur; see :doc:`stage6_review`):
+
+.. code-block:: text
+
+   # frame: raw
+   action,window,freqs,params
+   add,117,31214.36,
+   add,,30719.94,
+
 .. code-block:: console
 
-   $ ftmwpipeline review preview exp_2638.ftmw exp_2638_curation.csv
+   $ ftmwpipeline review preview exp_2638.ftmw implied_create.csv
    review preview (nothing written):
-     window    1  [  direct]  actions=2         peaks 2->3  chi2r 1.066->1.013
-     window  298  [  direct]  actions=2         peaks 0->1  chi2r -->1.204
-       Window 298 created: [30850.5734, 30850.6520] MHz (12 points, 2 frozen contributor(s))
+     window  117  [  direct]  actions=2         peaks 12->13  chi2r 8.710->7.320
+     window  297  [  direct]  actions=1,3       peaks 0->1  chi2r -->0.857
+     Window 297 created: [30717.4234, 30722.4509] MHz (65 points, 0 frozen contributor(s))
+
+The created window takes the next free id, 297, one past the plan's highest.
 
 The extra line only appears on a window the batch created or widened —
 ``PreviewWindowResult.created_window_mode`` is ``"created"`` or ``"widened"``
@@ -872,9 +909,11 @@ foreign writer touched the file — it rebuilds from scratch, which is
 byte-for-byte the rebuild a sessionless caller gets on every call anyway. After
 each of the session's own writes the fingerprint is re-read from disk rather
 than predicted, so a foreign writer landing in the same instant is still caught
-on the next call. A session holds no lock and does not protect the file from a
-second writer: single-writer discipline per file is yours, exactly as it is
-without a session.
+on the next call. A session holds no lock across calls. Each verb's write is
+checked when it commits, as every write is: if another process wrote the file
+while the verb ran, the verb is refused with ``write_conflict``, its changes are
+discarded and the other write stands, and the next verb sees the moved
+fingerprint and rebuilds.
 
 Preview then apply
 ~~~~~~~~~~~~~~~~~~
