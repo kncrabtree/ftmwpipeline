@@ -121,10 +121,11 @@ flagged for any of:
   those Stage 3 peaks.
 
 When every Stage 3 peak in such a window sits on a gated spur, the edge residual is
-most likely the spur's skirt reaching past its mask. The window then carries the
+consistent with the spur's skirt reaching past its mask. The window then carries the
 **advisory** ``empty_window_spur`` instead, naming the spur: it stays on the
-window's status, in ``review rank`` and in the report, but does not enter the queue
-(like the auto-merge note). On the 2638 fixture this is the case for windows 100,
+window's status and in the report, but does not enter the queue (like the
+auto-merge note). (``review rank`` ranks fitted windows only, so it lists neither
+kind.) On the 2638 fixture this is the case for windows 100,
 158 and 227, each holding only a saturated spur.
 
 A window flagged either way has no fit of its own, so it cannot be
@@ -133,7 +134,9 @@ edited by its id. To fit the line, create a window at it and add the line there:
    ftmwpipeline review create experiment.ftmw --at 30719.94 --frame raw
    ftmwpipeline review edit experiment.ftmw --window <new id> --add 30719.94 --frame raw
 
-The created window takes the empty one over and the flag clears. To leave the
+A created window takes the empty one over, and the flag clears, once it covers
+the flagged Stage 3 peak (or, with no peak, the flagged edge); a created window
+that merely overlaps the empty one leaves the flag where it is. To leave the
 window empty, ``review accept --window N`` marks it reviewed. ``review show
 --window N`` and the report show its data on the window's range; with nothing
 fitted, the residual is the data.
