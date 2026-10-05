@@ -55,7 +55,7 @@ from ..io.stage6_review_serialization import load_stage6_review_from_file
 from ..utils.parallelism import resolve_worker_count
 from .atomic import h5open
 from .catalog_xref import CatalogCrossRef, CatalogMatch, load_cross_ref
-from .empty_window_attention import EMPTY_WINDOW_RESIDUAL, review_lineless_window_fits
+from .empty_window_attention import EMPTY_WINDOW_KINDS, review_lineless_window_fits
 from .report_impl import (
     _CAL_STATE_PHRASE,
     _amplitude_unit,
@@ -569,6 +569,8 @@ tr.cur-flash > td { background: #fff3bf !important; transition: background 0.3s;
 .attn-svg .attn-auto_merged_review text { fill: #5b6470; }
 .attn-svg .attn-empty_window_residual path { fill: #b42318; }
 .attn-svg .attn-empty_window_residual text { fill: #b42318; }
+.attn-svg .attn-empty_window_spur path { fill: #9a5b00; }
+.attn-svg .attn-empty_window_spur text { fill: #9a5b00; }
 .cur-plot-arm { position: absolute; top: 8px; right: 8px; z-index: 2;
     font-size: 0.85rem; font-weight: 600; padding: 0.3rem 0.75rem;
     border-radius: 4px; border: 1px solid #2c4a6e;
@@ -3497,6 +3499,7 @@ _ATTENTION_MARKERS: Dict[str, str] = {
     "spur_adjacent": "S",
     "auto_merged_review": "M",
     "empty_window_residual": "E",
+    "empty_window_spur": "E",
 }
 
 
@@ -3802,7 +3805,7 @@ def _lineless_candidates_table(status: Optional[WindowReviewStatus]) -> List[str
     """The Stage 3 peaks an ``empty_window_residual`` reason names, as a table."""
     rows: List[List[str]] = []
     for r in status.attention_reasons if status is not None else []:
-        if r.kind != EMPTY_WINDOW_RESIDUAL:
+        if r.kind not in EMPTY_WINDOW_KINDS:
             continue
         for c in r.evidence.get("candidates", []):
             snr = c.get("snr")
@@ -3811,7 +3814,14 @@ def _lineless_candidates_table(status: Optional[WindowReviewStatus]) -> List[str
                     f"{float(c['frequency_mhz']):.4f}",
                     str(int(c["detection_index"])),
                     "&mdash;" if snr is None else f"{float(snr):.1f}",
-                    "yes" if c.get("gated_spur") else "no",
+                    (
+                        _esc(
+                            f"yes: {float(c['spur_center_mhz']):.4f} MHz"
+                            + (f" ({c['spur_source']})" if c.get("spur_source") else "")
+                        )
+                        if c.get("gated_spur") and "spur_center_mhz" in c
+                        else ("yes" if c.get("gated_spur") else "no")
+                    ),
                 ]
             )
     if not rows:

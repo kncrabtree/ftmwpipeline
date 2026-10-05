@@ -1981,7 +1981,9 @@ class LedgerCandidate:
 # but do not, on their own, put the window in the default review queue. The merge
 # advisory is the more-likely-correct call (~92% of the sub-resolution band is
 # over-splits), so it flags a re-split opportunity rather than demanding a look.
-_ADVISORY_REASON_KINDS: frozenset[str] = frozenset({"auto_merged_review", "flat_decay"})
+_ADVISORY_REASON_KINDS: frozenset[str] = frozenset(
+    {"auto_merged_review", "flat_decay", "empty_window_spur"}
+)
 
 #: Every :attr:`AttentionReason.kind` ``review run`` can record, in the order the
 #: kinds were introduced. The contract's frozen ``attention_kind`` vocabulary
@@ -1995,6 +1997,7 @@ ATTENTION_KINDS: Tuple[str, ...] = (
     "edge_boundary",
     "flat_decay",
     "empty_window_residual",
+    "empty_window_spur",
 )
 
 
@@ -2016,8 +2019,8 @@ class AttentionReason:
         peak). Empty for window-wide reasons with no single locus.
     evidence : dict
         The kind's declared evidence keys (JSON-able values); empty for a kind
-        that declares none. ``empty_window_residual`` declares ``edges``,
-        ``residual_edge_threshold`` and ``candidates``
+        that declares none. ``empty_window_residual`` and ``empty_window_spur``
+        declare ``edges``, ``residual_edge_threshold`` and ``candidates``
         (``dev-docs/CONTRACT_STRATEGY.md`` §Review attention).
     """
 

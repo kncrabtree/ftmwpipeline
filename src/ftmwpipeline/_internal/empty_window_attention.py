@@ -36,7 +36,9 @@ from ..core.data_structures import (
 )
 
 __all__ = [
+    "EMPTY_WINDOW_KINDS",
     "EMPTY_WINDOW_RESIDUAL",
+    "EMPTY_WINDOW_SPUR",
     "empty_window_reasons",
     "flagged_empty_edges",
     "flagged_lineless_ids",
@@ -45,8 +47,17 @@ __all__ = [
     "superseded_window_ids",
 ]
 
-#: The attention kind (``ATTENTION_KINDS``).
+#: The queued kind (``ATTENTION_KINDS``): at least one Stage 3 peak in the
+#: window is not on a gated spur, so a line may be missing.
 EMPTY_WINDOW_RESIDUAL = "empty_window_residual"
+
+#: The advisory twin: every Stage 3 peak in the window sits on a gated spur, so
+#: the edge residual is most likely the spur's skirt beyond its mask. Shown on
+#: the window's status, not queued (``_ADVISORY_REASON_KINDS``).
+EMPTY_WINDOW_SPUR = "empty_window_spur"
+
+#: Both kinds an empty, edge-flagged window can carry.
+EMPTY_WINDOW_KINDS: Tuple[str, ...] = (EMPTY_WINDOW_RESIDUAL, EMPTY_WINDOW_SPUR)
 
 _EDGE_ORDER = ("low", "high")
 
@@ -99,10 +110,11 @@ def _gated_spur_near(
     gated_spurs: Sequence[Mapping[str, Any]],
     spur_centers_mhz: Sequence[float],
     tol_mhz: float,
-) -> Tuple[bool, str]:
-    """Whether ``freq_mhz`` sits within ``tol_mhz`` of a gated spur, and the
-    spur's recorded source (empty when the fit recorded none)."""
-    best: Optional[Tuple[float, str]] = None
+) -> Optional[Tuple[float, str]]:
+    """The nearest gated spur within ``tol_mhz`` of ``freq_mhz`` as
+    ``(center_mhz, source)`` (``source`` empty when the fit recorded none), or
+    ``None`` when no gated spur is that close."""
+    best: Optional[Tuple[float, float, str]] = None
     for sp in gated_spurs:
         try:
             c = float(sp.get("center_mhz", float("nan")))
@@ -110,12 +122,13 @@ def _gated_spur_near(
             continue
         sep = abs(c - freq_mhz)
         if math.isfinite(sep) and sep <= tol_mhz and (best is None or sep < best[0]):
-            best = (sep, str(sp.get("source", "") or ""))
-    if best is not None:
-        return True, best[1]
-    if any(abs(float(c) - freq_mhz) <= tol_mhz for c in spur_centers_mhz):
-        return True, ""
-    return False, ""
+            best = (sep, c, str(sp.get("source", "") or ""))
+    if best is None:
+        for c in spur_centers_mhz:
+            sep = abs(float(c) - freq_mhz)
+            if sep <= tol_mhz and (best is None or sep < best[0]):
+                best = (sep, float(c), "")
+    return None if best is None else (best[1], best[2])
 
 
 def empty_window_reasons(
@@ -126,13 +139,19 @@ def empty_window_reasons(
     excluded_window_ids: Set[int],
     spur_tol_mhz: float,
 ) -> Dict[int, AttentionReason]:
-    """The ``empty_window_residual`` reason of every window that carries one.
+    """The empty-window reason of every window that carries one.
 
     A window of ``plan_windows`` (the fitted plan) is flagged when the fit holds
     no line in it, it is not in ``excluded_window_ids`` (the windows Stage 6
     created, and those a fit-changing decision was recorded on), and
     :func:`flagged_empty_edges` finds a flagged edge against the fit's own
     ``residual_edge_threshold``. A fit that recorded no threshold flags nothing.
+
+    The reason is :data:`EMPTY_WINDOW_RESIDUAL` (queued) when at least one Stage
+    3 peak the plan put in the window is not on a gated spur, or the window
+    holds none; it is the advisory :data:`EMPTY_WINDOW_SPUR` when every one sits
+    on a gated spur, whose skirt beyond its mask then most likely explains the
+    edge residual.
 
     ``spur_tol_mhz`` is how close a Stage 3 peak must sit to a gated spur to be
     reported on it (the ``spur_adjacent`` tolerance).
@@ -165,25 +184,23 @@ def empty_window_reasons(
             continue
 
         candidates: List[Dict[str, Any]] = []
-        spur_notes: List[str] = []
         for idx in win.free_peak_indices:
             if not 0 <= int(idx) < len(stage3_peaks):
                 continue
             pk = stage3_peaks[int(idx)]
             freq = float(pk.frequency)
-            gated, source = _gated_spur_near(
-                freq, gated_spurs, spur_centers, spur_tol_mhz
-            )
+            spur = _gated_spur_near(freq, gated_spurs, spur_centers, spur_tol_mhz)
             cand: Dict[str, Any] = {
                 "detection_index": int(idx),
                 "frequency_mhz": freq,
             }
             if pk.snr is not None and math.isfinite(float(pk.snr)):
                 cand["snr"] = float(pk.snr)
-            cand["gated_spur"] = bool(gated)
+            cand["gated_spur"] = spur is not None
+            if spur is not None:
+                cand["spur_center_mhz"] = spur[0]
+                cand["spur_source"] = spur[1]
             candidates.append(cand)
-            if gated:
-                spur_notes.append(source)
         candidates.sort(key=lambda c: float(c["frequency_mhz"]))
 
         worst = max(s for _, s in edges)
@@ -196,23 +213,36 @@ def empty_window_reasons(
                 if "snr" in c:
                     bits.append(f"SNR {c['snr']:.1f}")
                 if c["gated_spur"]:
-                    bits.append("on a gated spur")
+                    src = f" ({c['spur_source']})" if c["spur_source"] else ""
+                    bits.append(
+                        f"on the gated spur at {c['spur_center_mhz']:.4f} MHz{src}"
+                    )
                 extra = f" ({', '.join(bits)})" if bits else ""
                 parts.append(f"{c['frequency_mhz']:.4f} MHz{extra}")
             cand_txt = f"; Stage 3 peak(s) here: {', '.join(parts)}"
-        hint = (
-            "a line may be missing, or a gated spur's skirt leaks past its mask"
-            if spur_notes
-            else "a line may be missing"
-        )
+        all_spur = bool(candidates) and all(c["gated_spur"] for c in candidates)
+        if all_spur:
+            kind = EMPTY_WINDOW_SPUR
+            saturated = any("saturated" in c["spur_source"] for c in candidates)
+            hint = (
+                f"the edge residual is likely the {'saturated ' if saturated else ''}"
+                "spur's skirt beyond its mask; if a line hides under the spur, "
+                "create a window at it (review create) and add the line to the new "
+                "window"
+            )
+        else:
+            kind = EMPTY_WINDOW_RESIDUAL
+            hint = (
+                "a line may be missing: to fit it, create a window at it (review "
+                "create) and add the line to the new window; to leave the window "
+                "empty, mark it reviewed (review accept)"
+            )
         out[wid] = AttentionReason(
-            kind=EMPTY_WINDOW_RESIDUAL,
+            kind=kind,
             detail=(
                 f"the fit holds no line in this window, but Stage 5 flagged a "
                 f"coherent residual on its {edge_txt}, threshold "
-                f"{threshold:g}{cand_txt} -- {hint}: to fit a line here, "
-                "create a window at it (review create) and add the line to the "
-                "new window; to leave it empty, mark it reviewed (review accept)"
+                f"{threshold:g}{cand_txt} -- {hint}"
             ),
             severity=float(worst / threshold),
             locations=[float(c["frequency_mhz"]) for c in candidates],
@@ -247,14 +277,15 @@ def superseded_window_ids(
 
 
 def flagged_lineless_ids(review: Stage6Review, fit_window_ids: Set[int]) -> Set[int]:
-    """Windows the review flagged ``empty_window_residual`` that the fit has no
-    window result for -- the windows a bare ``review accept`` may name although
-    the fit does not hold them."""
+    """Windows the review flagged with an empty-window kind
+    (:data:`EMPTY_WINDOW_KINDS`) that the fit has no window result for -- the
+    windows a bare ``review accept`` may name although the fit does not hold
+    them."""
     return {
         int(wid)
         for wid, st in review.window_statuses.items()
         if int(wid) not in fit_window_ids
-        and any(r.kind == EMPTY_WINDOW_RESIDUAL for r in st.attention_reasons)
+        and any(r.kind in EMPTY_WINDOW_KINDS for r in st.attention_reasons)
     }
 
 

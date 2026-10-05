@@ -197,6 +197,56 @@ def test_fitted_numbers_do_not_move(flagged_source, tmp_path):
         assert list(map(repr, before[col])) == list(map(repr, after[col])), col
 
 
+def test_every_peak_on_a_gated_spur_is_advisory(flagged_source, tmp_path, capsys):
+    """Gate the window's Stage 3 peaks as spurs: the item turns advisory -- on
+    the status, out of the queue -- on every interface, and the report gives the
+    window a page under the default ``all`` filter only, like other advisory
+    windows."""
+    src, wid = flagged_source
+    path = tmp_path / "spur.ftmw"
+    shutil.copy(src, path)
+    peaks = ftmw.load_peaks(str(path))
+    plan = {w.window_id: w for w in ftmw.load_windows(str(path)).windows}
+    centers = [float(peaks[i].frequency) for i in plan[wid].free_peak_indices]
+    with h5py.File(path, "a") as h5f:
+        grp = h5f["stage5_fitting"]
+        diag = json.loads(grp.attrs.get("diagnostics", "{}"))
+        diag["gated_spurs"] = list(diag.get("gated_spurs") or []) + [
+            {"center_mhz": c, "source": "flat+saturated"} for c in centers
+        ]
+        grp.attrs["diagnostics"] = json.dumps(diag)
+
+    p_pipe = tmp_path / "spur_pipe.ftmw"
+    shutil.copy(path, p_pipe)
+    r_api = ftmw.review_run(str(path))
+    r_pipe = Pipeline.open(str(p_pipe)).review_run()
+    assert r_api.reason_counts.get("empty_window_spur") == 1
+    assert KIND not in r_api.reason_counts
+    assert r_api.reason_counts == r_pipe.reason_counts
+    assert r_api.n_attention == r_pipe.n_attention
+
+    status = ftmw.get_review_status(str(path)).window_statuses[wid]
+    assert status == Pipeline.open(str(p_pipe)).review_status().window_statuses[wid]
+    assert not status.needs_attention
+    (reason,) = status.attention_reasons
+    assert reason.kind == "empty_window_spur"
+    assert all(c["gated_spur"] for c in reason.evidence["candidates"])
+
+    queue = _cli_json(["review", "show", str(path), "--attention"], capsys)
+    assert wid not in [r["window_id"] for r in queue["attention"]]
+    detail = _cli_json(["review", "show", str(path), "--window", str(wid)], capsys)
+    assert [r["kind"] for r in detail["attention_reasons"]] == ["empty_window_spur"]
+
+    all_html = ftmw.report_run(
+        str(path), output_dir=tmp_path / "all", windows="all", emit_table=False
+    )["html"]
+    attn_html = ftmw.report_run(
+        str(path), output_dir=tmp_path / "attn", windows="attention", emit_table=False
+    )["html"]
+    assert f'id="window-{wid}"' in open(all_html, encoding="utf-8").read()
+    assert f'id="window-{wid}"' not in open(attn_html, encoding="utf-8").read()
+
+
 def test_the_report_renders_the_empty_window(flagged_source, tmp_path):
     src, wid = flagged_source
     path = tmp_path / "report.ftmw"

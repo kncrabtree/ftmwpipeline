@@ -136,7 +136,7 @@ from .atomic import atomic_write
 from .atomic import exists as pipeline_exists
 from .atomic import h5open, resolve
 from .empty_window_attention import (
-    EMPTY_WINDOW_RESIDUAL,
+    EMPTY_WINDOW_KINDS,
     empty_window_reasons,
     flagged_lineless_ids,
     superseded_window_ids,
@@ -8447,7 +8447,7 @@ def _settle_empty_window_reasons(
     flagged = [
         wid
         for wid, st in statuses.items()
-        if any(r.kind == EMPTY_WINDOW_RESIDUAL for r in st.attention_reasons)
+        if any(r.kind in EMPTY_WINDOW_KINDS for r in st.attention_reasons)
     ]
     if not flagged:
         return
@@ -8468,7 +8468,7 @@ def _settle_empty_window_reasons(
         if wid not in gone:
             continue
         st = statuses[wid]
-        kept = [r for r in st.attention_reasons if r.kind != EMPTY_WINDOW_RESIDUAL]
+        kept = [r for r in st.attention_reasons if r.kind not in EMPTY_WINDOW_KINDS]
         if not kept and st.provenance == "auto" and wid not in fit_ids:
             del statuses[wid]
         else:

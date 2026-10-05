@@ -324,6 +324,7 @@ SNAPSHOT_VOCABULARIES = {
         "edge_boundary",
         "flat_decay",
         "empty_window_residual",
+        "empty_window_spur",
     },
 }
 
@@ -755,7 +756,7 @@ def test_attention_kinds_recorded_by_the_code_are_declared():
     declared = set(MANIFEST.vocabularies["attention_kind"])
     source = inspect.getsource(stage6_impl)
     recorded = set(re.findall(r'AttentionReason\(\s*kind="([a-z_]+)"', source))
-    recorded.add(empty_window_attention.EMPTY_WINDOW_RESIDUAL)
+    recorded.update(empty_window_attention.EMPTY_WINDOW_KINDS)
     assert recorded <= declared
     assert {"worst_eps", "candidate_bearing", "spur_adjacent"} <= recorded
 

@@ -15,7 +15,9 @@ import numpy as np
 import pytest
 
 from ftmwpipeline._internal.empty_window_attention import (
+    EMPTY_WINDOW_KINDS,
     EMPTY_WINDOW_RESIDUAL,
+    EMPTY_WINDOW_SPUR,
     empty_window_reasons,
     flagged_empty_edges,
     flagged_lineless_ids,
@@ -137,10 +139,17 @@ def _reasons(fit: SpectrumFit, excluded: Sequence[int] = ()) -> dict:
 # ---- the kind --------------------------------------------------------------
 
 
-def test_kind_is_declared_and_queues():
+def test_kinds_are_declared_queued_and_advisory():
     assert EMPTY_WINDOW_RESIDUAL == "empty_window_residual"
-    assert EMPTY_WINDOW_RESIDUAL in ATTENTION_KINDS
+    assert EMPTY_WINDOW_SPUR == "empty_window_spur"
+    assert set(EMPTY_WINDOW_KINDS) <= set(ATTENTION_KINDS)
     assert EMPTY_WINDOW_RESIDUAL not in _ADVISORY_REASON_KINDS
+    assert EMPTY_WINDOW_SPUR in _ADVISORY_REASON_KINDS
+    advisory = WindowReviewStatus(
+        window_id=2,
+        attention_reasons=[AttentionReason(EMPTY_WINDOW_SPUR, "x", 2.0)],
+    )
+    assert not advisory.needs_attention
     st = WindowReviewStatus(
         window_id=2,
         attention_reasons=[AttentionReason(EMPTY_WINDOW_RESIDUAL, "x", 2.0)],
@@ -232,10 +241,38 @@ def test_gated_spur_and_snr_evidence():
     cands = _reasons(fit)[2].evidence["candidates"]
     by_idx = {c["detection_index"]: c for c in cands}
     assert by_idx[1]["gated_spur"] is True
+    assert by_idx[1]["spur_center_mhz"] == 1002.55
+    assert by_idx[1]["spur_source"] == "flat+saturated"
     assert by_idx[1]["snr"] == 69.0
     assert by_idx[2]["gated_spur"] is False
+    assert "spur_center_mhz" not in by_idx[2]
     assert "snr" not in by_idx[2]  # Stage 3 recorded none
-    assert "gated spur" in _reasons(fit)[2].detail
+    assert "gated spur at 1002.5500 MHz" in _reasons(fit)[2].detail
+    # One peak of the window is not on a gated spur: the item is queued.
+    assert _reasons(fit)[2].kind == EMPTY_WINDOW_RESIDUAL
+
+
+def test_every_peak_on_a_gated_spur_is_advisory():
+    fit = _fit(replans=[_replan(2, "low", 20.0)], spurs=[1001.0, 1002.5])
+    reason = _reasons(fit)[2]
+    assert reason.kind == EMPTY_WINDOW_SPUR
+    assert all(c["gated_spur"] for c in reason.evidence["candidates"])
+    assert "saturated spur's skirt beyond its mask" in reason.detail
+    assert reason.severity == pytest.approx(20.0 / THR)
+    assert not WindowReviewStatus(2, attention_reasons=[reason]).needs_attention
+
+
+def test_a_window_with_no_stage3_peak_is_queued():
+    plan = [FitWindow(window_id=2, freq_range=(1000.0, 1005.0))]
+    out = empty_window_reasons(
+        _fit(replans=[_replan(2, "low", 20.0)], spurs=[1002.5]),
+        plan,
+        _peaks(),
+        excluded_window_ids=set(),
+        spur_tol_mhz=TOL,
+    )
+    assert out[2].kind == EMPTY_WINDOW_RESIDUAL
+    assert out[2].evidence["candidates"] == [] and out[2].locations == []
 
 
 def test_evidence_is_json_and_round_trips():
@@ -277,10 +314,13 @@ def test_flagged_lineless_ids():
             3: WindowReviewStatus(
                 3, attention_reasons=[AttentionReason("worst_eps", "", 1.0)]
             ),
+            4: WindowReviewStatus(
+                4, attention_reasons=[AttentionReason(EMPTY_WINDOW_SPUR, "", 1.0)]
+            ),
         }
     )
-    assert flagged_lineless_ids(review, {7}) == {2}
-    assert flagged_lineless_ids(review, {2}) == set()
+    assert flagged_lineless_ids(review, {7}) == {2, 4}
+    assert flagged_lineless_ids(review, {2, 4}) == set()
 
 
 def test_lineless_window_fit_draws_the_plan_range():
@@ -327,6 +367,22 @@ def test_settle_keeps_a_reviewed_status_without_the_reason():
     )
     assert statuses[2].provenance == "reviewed"
     assert statuses[2].attention_reasons == []
+
+
+def test_settle_drops_the_advisory_kind_too():
+    statuses = {
+        2: WindowReviewStatus(
+            2, attention_reasons=[AttentionReason(EMPTY_WINDOW_SPUR, "", 2.0)]
+        )
+    }
+    _settle_empty_window_reasons(
+        statuses,
+        _fit(),
+        [FitWindow(window_id=9, freq_range=(1003.0, 1004.0))],
+        base_plan_windows=_plan(),
+        edited_window_ids=set(),
+    )
+    assert 2 not in statuses
 
 
 def test_settle_leaves_an_unresolved_item_alone():
