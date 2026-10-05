@@ -19,8 +19,11 @@ import h5py
 import pytest
 
 from ftmwpipeline._internal.report_impl import _count_nonconverged
-from ftmwpipeline._internal.stage6_impl import review_preview_impl
-from ftmwpipeline.cli.review_commands import cmd_review_preview
+from ftmwpipeline._internal.stage6_impl import (
+    apply_curation_impl,
+    review_preview_impl,
+)
+from ftmwpipeline.cli.review_commands import cmd_review_apply, cmd_review_preview
 from ftmwpipeline.contract import Absent
 from ftmwpipeline.io.fitting_serialization import load_spectrum_fit_from_hdf5
 from ftmwpipeline.serialize import to_jsonable
@@ -54,9 +57,40 @@ def test_removing_every_peak_reports_converged_undefined(stage5_multi_file, tmp_
     assert w.converged is Absent.UNDEFINED
 
 
-def test_wire_form_is_null_plus_absent_marker():
-    wire = json.loads(json.dumps(to_jsonable({"converged": Absent.UNDEFINED})))
-    assert wire == {"converged": None, "converged_absent": "undefined"}
+def test_wire_form_of_a_real_result_is_null_plus_absent_marker(
+    stage5_multi_file, tmp_path
+):
+    wid, freqs = _window_peaks(stage5_multi_file)
+    cur = _curation(tmp_path, wid, freqs)
+    w = review_preview_impl(stage5_multi_file, cur, frame="raw").windows[wid]
+    wire = json.loads(json.dumps(to_jsonable(w)))
+    assert wire["converged"] is None
+    assert wire["converged_absent"] == "undefined"
+
+
+def test_apply_removing_every_peak_reports_undefined_and_no_warning(
+    stage5_multi_file, tmp_path, capsys
+):
+    wid, freqs = _window_peaks(stage5_multi_file)
+    cur = _curation(tmp_path, wid, freqs)
+    rc = cmd_review_apply(
+        argparse.Namespace(
+            file_path=str(stage5_multi_file),
+            curation_file=cur,
+            verbose=False,
+            frame="raw",
+        )
+    )
+    assert rc == 0
+    assert _WARNING not in capsys.readouterr().out
+
+
+def test_python_apply_reports_converged_undefined(stage5_multi_file, tmp_path):
+    wid, freqs = _window_peaks(stage5_multi_file)
+    cur = _curation(tmp_path, wid, freqs)
+    result = apply_curation_impl(stage5_multi_file, cur, frame="raw")
+    assert result.windows[wid].n_peaks_after == 0
+    assert result.windows[wid].converged is Absent.UNDEFINED
 
 
 def test_cli_preview_prints_no_nonconvergence_warning(
