@@ -67,7 +67,7 @@ __all__ = [
 ]
 
 
-ANALYSIS_EPOCH = 4
+ANALYSIS_EPOCH = 5
 """Declared analysis-compatibility epoch of this package.
 
 Bump this **only** when a change alters the numerical output of a stage --
@@ -131,6 +131,19 @@ Epoch history
     VIF-collapse sequential merge, a Stage 6 thawed or held line). A window
     whose ``tau`` is held is bit-identical; a free-``tau`` window with any
     frozen term is not.
+5
+    2026-10-04. Stage 5's structural replan applies merges again. It had asked
+    to merge every flagged window edge with the nearest window at any
+    distance and sent all requests to Stage 4 at once; a window flagged on both
+    edges named in two requests made Stage 4 reject the batch, and the whole
+    round was recorded as failed, so no structural merge was ever applied.
+    A merge partner must now *touch* the flagged window (at most one
+    active-FT bin between them), the merged window must fit the plan's width
+    cap, and each round applies a disjoint set of pairs. Wherever a touching
+    pair flags, the two windows are now fit as one: on the 2638 reference
+    plan that is one pair (windows 100/101), in both the Gaussian and the
+    Lorentzian fit; every other window is bit-identical. A partial Stage 5 fit
+    written under epoch 4 starts over rather than resuming.
 """
 
 

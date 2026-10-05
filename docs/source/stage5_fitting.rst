@@ -285,7 +285,17 @@ residual leakage, and if so it renegotiates rather than shipping an under-fit wi
 - **Structural replan.** When no contributor accounts for the coherent edge, because
   a real line straddles the boundary, Stage 5 asks Stage 4 to **merge** the two
   windows through its :doc:`re-plan entry point <stage4_windows>`, bumping the plan
-  revision, and refits the affected batches.
+  revision, and refits the affected batches. Only a neighbour that **touches** the
+  window qualifies: at most one active-FT bin may lie between them, which is how the
+  Stage 4 planner places windows it split or whose margins just miss. A wider gap holds
+  spectrum no window fits, so a coherent edge beside it is a feature in the gap, not one
+  straddling a boundary; the trigger is recorded as not merged. A merge whose window
+  would exceed the plan's width cap (the same bound on line content the planner applies)
+  is refused and recorded the same way. Each round applies a **disjoint** set of merges,
+  strongest flagged edge first: a request that shares a window with one already taken is
+  recorded as deferred, and is asked again in the next round if the merged window's
+  edge still flags. A request Stage 4 rejects costs only itself; the rest of the round
+  goes ahead.
 
 A window edge whose coherence statistic is undefined (an empty residual, or a band
 with no positive noise) is stored as ``nan`` and never triggers either: the gates
