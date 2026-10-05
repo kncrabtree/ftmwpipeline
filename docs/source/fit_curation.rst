@@ -57,12 +57,14 @@ The report carries three kinds of content:
   auto-merged pair, **E** for a Stage 3 peak in a window the fit left empty — so
   it is obvious *where* to look; hover the caret for the reason detail.
 
-  A window the review flags ``empty_window_residual`` (the fit holds no line in
-  it, yet Stage 5 measured a coherent residual on its edge; see
-  :doc:`stage6_review`) has no fit of its own, but still gets a page: its data on
+  A window the review flags ``empty_window_residual`` or ``empty_window_spur``
+  (the fit holds no line in it, yet Stage 5 measured a coherent residual on its
+  edge; see :doc:`stage6_review`) has no fit of its own, but still gets a page
+  (under ``--windows attention`` only when it is queued, as for any advisory
+  window): its data on
   the window's range in the same panels (with nothing fitted, the residual strip
-  is the data), the Stage 3 peaks the plan put there with their SNR and whether
-  each sits on a gated spur, and how to act on it. The page has no add control,
+  is the data), the Stage 3 peaks the plan put there with their SNR and the
+  gated spur each sits on, if any, and how to act on it. The page has no add control,
   since an add names a window the fit holds: create a window at the line and add
   it there, or mark the window reviewed.
 

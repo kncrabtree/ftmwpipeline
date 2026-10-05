@@ -116,12 +116,18 @@ flagged for any of:
   line in a window of its plan, yet Stage 5 measured a coherent residual on the
   window's edge (its edge-coherence ``S_coh`` stayed above the fit's
   ``residual_edge_threshold``, and neither a thaw nor a structural merge could act
-  on it). The flag lists the flagged edges and the Stage 3 peaks the plan put in the
-  window, and says when one sits on a gated spur: the coherent residual is either a
-  line the fit is missing or a gated spur whose skirt reaches past its mask, and only
-  a look tells which.
+  on it), and at least one of the Stage 3 peaks the plan put in the window sits off
+  every gated spur, so a line may be missing. The flag lists the flagged edges and
+  those Stage 3 peaks.
 
-A window flagged ``empty_window_residual`` has no fit of its own, so it cannot be
+When every Stage 3 peak in such a window sits on a gated spur, the edge residual is
+most likely the spur's skirt reaching past its mask. The window then carries the
+**advisory** ``empty_window_spur`` instead, naming the spur: it stays on the
+window's status, in ``review rank`` and in the report, but does not enter the queue
+(like the auto-merge note). On the 2638 fixture this is the case for windows 100,
+158 and 227, each holding only a saturated spur.
+
+A window flagged either way has no fit of its own, so it cannot be
 edited by its id. To fit the line, create a window at it and add the line there::
 
    ftmwpipeline review create experiment.ftmw --at 30719.94 --frame raw

@@ -1571,17 +1571,18 @@ map a window id to a ``WindowReviewStatus``; each status's
 
 * ``kind``, from the frozen vocabulary ``attention_kind``: ``worst_eps``,
   ``auto_merged_review``, ``candidate_bearing``, ``spur_adjacent``,
-  ``edge_boundary``, ``flat_decay``, ``empty_window_residual``. Kinds are only
-  ever added;
+  ``edge_boundary``, ``flat_decay``, ``empty_window_residual``,
+  ``empty_window_spur``. Kinds are only ever added;
 * ``severity``, a float; higher asks for a look sooner;
 * ``locations``, the molecular frequencies (MHz) the reason points at, empty
   for a window-wide reason;
 * ``evidence``, a dict of the kind's declared keys, empty for a kind that
-  declares none (only ``empty_window_residual`` declares any, below);
+  declares none (only the two empty-window kinds declare any, below);
 * ``detail``, a sentence for a person. Its text is not contract.
 
-``auto_merged_review`` and ``flat_decay`` are advisory: they stay on the status
-but do not put the window in the queue (``needs_attention``) on their own.
+``auto_merged_review``, ``flat_decay`` and ``empty_window_spur`` are advisory:
+they stay on the status but do not put the window in the queue
+(``needs_attention``) on their own.
 Attention is advice: it never changes a fitted number, a final product or the
 analysis fingerprint.
 
@@ -1592,10 +1593,10 @@ in ``reasons`` (``kind``, ``severity``, ``detail``, ``locations``,
 ``evidence``). ``review show --window N --json`` lists the window's
 ``attention_reasons`` in the same form.
 
-**A window the fit holds no line in: ``empty_window_residual``.** Stage 5 can
-finish a window of its plan with no line (its seeds rejected, gated as spurs or
-pruned) while the residual on the window's edge is still coherent. Such a
-window is flagged when:
+**A window the fit holds no line in: ``empty_window_residual`` and
+``empty_window_spur``.** Stage 5 can finish a window of its plan with no line
+(its seeds rejected, gated as spurs or pruned) while the residual on the
+window's edge is still coherent. Such a window is flagged when:
 
 * it is a window of the fitted plan, not one Stage 6 created, and no created
   window has taken it over (the same id, or an overlapping range);
@@ -1608,6 +1609,13 @@ window is flagged when:
   ``residual_edge_threshold``. An edge a later accepted thaw resolved does not
   count.
 
+The kind depends on the Stage 3 peaks the plan put in the window. When every
+one sits on a gated spur, the edge residual is most likely that spur's skirt
+beyond its mask: the reason is the advisory ``empty_window_spur``, and its
+detail names the spur. Otherwise (a peak off every gated spur, or no peak) a
+line may be missing: the reason is ``empty_window_residual``, which queues the
+window. Both carry the same fields.
+
 The trigger reads only what Stage 5 recorded, so a fit run with the thaw and
 the replan disabled raises none. Its ``severity`` is the strongest flagged
 edge's ``S_coh`` divided by the threshold, its ``locations`` the frequencies of
@@ -1617,16 +1625,19 @@ the Stage 3 peaks the plan put in the window, and its ``evidence``:
   edge, low first;
 * ``residual_edge_threshold``: the threshold the fit applied;
 * ``candidates``: one ``{"detection_index", "frequency_mhz", "snr",
-  "gated_spur"}`` per Stage 3 peak the plan put in the window, ascending in
-  frequency. ``snr`` is the Stage 3 SNR, present when Stage 3 recorded one;
-  ``gated_spur`` is true when the peak lies within the ``spur_adjacent``
-  tolerance of a spur the fit gated.
+  "gated_spur", "spur_center_mhz", "spur_source"}`` per Stage 3 peak the plan
+  put in the window, ascending in frequency. ``snr`` is the Stage 3 SNR,
+  present when Stage 3 recorded one; ``gated_spur`` is true when the peak lies
+  within the ``spur_adjacent`` tolerance of a spur the fit gated, and only then
+  are ``spur_center_mhz`` and ``spur_source`` (the nearest such spur; the
+  source empty when the fit recorded none) present.
 
 The fit has no window result for such a window, so ``window_statuses`` can hold
 an id ``load_fit`` does not, and ``ReviewRunResult.n_windows`` counts it.
 ``window_status`` lists it with ``live`` false. ``review show --window N``
 reports it with no fitted line and a ``reduced_chi2`` that is
-``Absent.UNDEFINED``. The item clears when a created window takes the window
+``Absent.UNDEFINED``. The report gives it a page under the ``all`` window
+filter, and under ``attention`` only when it is queued. The item clears when a created window takes the window
 over (``review create`` at the line, then ``review edit`` on the new window to
 add it), in the batch that creates it; ``review accept`` may name the window,
 and marks it reviewed as for any kind.
