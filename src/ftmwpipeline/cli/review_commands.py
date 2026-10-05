@@ -896,7 +896,8 @@ def cmd_review_edit(args: argparse.Namespace) -> int:
         f"chi2r {_fmt_chi2r(result.chi2r_before, '.4g')} → "
         f"{_fmt_chi2r(result.chi2r_after, '.4g')}"
     )
-    # Explicit: a convergence flag is a bool, and Absent would be truthy.
+    # Explicit: a flag is a bool, or Absent.UNDEFINED for a window left with no
+    # peak (no solver ran) -- and Absent is truthy.
     if result.converged is False:
         _print_not_converged()
     if not isinstance(result.created_window_mode, Absent):
@@ -1294,8 +1295,9 @@ def cmd_review_preview(args: argparse.Namespace) -> int:
             f"chi2r {chi2r_before}->{chi2r_after}"
         )
         # `converged` is Absent.NOT_RUN when this window has no fit on the
-        # after side at all -- nothing to warn about, same windows chi2r_after
-        # prints "-" for. Absent is truthy, so test for False explicitly.
+        # after side at all (chi2r_after prints "-"), and Absent.UNDEFINED when
+        # it is left with no peak (no solver ran) -- nothing to warn about in
+        # either case. Absent is truthy, so test for False explicitly.
         if w.converged is False:
             _print_not_converged(indent="    ")
         if not isinstance(w.created_window_mode, Absent):
