@@ -2820,13 +2820,16 @@ def fit_thresholds(file_path: Union[str, Path]) -> Dict[str, Any]:
 
 
 def window_status(file_path: Union[str, Path]) -> Dict[str, Any]:
-    """Per-window status: the Stage 4 plan, created windows and Stage 5 coverage.
+    """Per-window status: the fitted plan, created windows and Stage 5 coverage.
 
     Returns the ``ftmw/window_status@1`` payload ``{"schema", "windows":
-    [WindowStatusRow, ...]}``, one :class:`~ftmwpipeline.contract.WindowStatusRow`
-    per window with ``window_id``, ``freq_min_mhz``, ``freq_max_mhz``,
-    ``created``, ``n_fitted_peaks`` and ``live`` (true when the Stage 5 fit
-    holds at least one fitted line in the window). Before Stage 5, each row's
+    [WindowStatusRow, ...]}``: one :class:`~ftmwpipeline.contract.WindowStatusRow`
+    per window of the plan the fit was made on (the Stage 4 plan before a
+    complete fit or when no merge revised it) and per created window, with
+    ``window_id``, ``freq_min_mhz``, ``freq_max_mhz``, ``created``,
+    ``n_fitted_peaks``, ``live`` (true when the Stage 5 fit holds at least one
+    fitted line in the window) and ``merged_from`` (the ids a merge survivor
+    absorbed, ascending; empty otherwise). Before Stage 5, each row's
     ``n_fitted_peaks`` and ``live`` are ``Absent.NOT_RUN``. The columnar form,
     with ``<column>__status`` columns, is the ``window_status`` table of
     :func:`read_table`.

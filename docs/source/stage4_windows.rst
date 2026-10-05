@@ -433,8 +433,14 @@ not over-provision its windows up front; instead it exposes a **re-plan** entry 
 a Stage 5 fit finds a window edge still carrying a coherent feature with no contributor to
 account for it (a real line crossing the boundary), it emits a request to merge the two
 adjacent windows, and the plan is revised in place with its revision counter bumped. The
-boundary-trim resolution is fine enough that this fires on genuine coupling, not on routine
-edge error, so renegotiation is rare in practice.
+re-plan entry point applies any merge it is handed; it also measures, for a proposed pair,
+how many active-FT bins lie between the two windows, how wide the merged window's line
+content would be against the plan's width cap, and how many promoted lines it would hold
+against the plan's ``max_peaks_per_window`` (when set), so Stage 5 can keep its structural
+merges to neighbours that genuinely touch and to windows the planner itself could have built
+(see :doc:`stage5_fitting`). The boundary-trim resolution is
+fine enough that this fires on genuine coupling, not on routine edge error, so renegotiation
+is rare in practice.
 
 What the later stages consume
 -----------------------------

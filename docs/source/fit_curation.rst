@@ -704,8 +704,11 @@ A program can route on the typed error's ``code`` instead of the message
   ``orphans_created_window`` (an undo that would drop a window later decisions
   act on), ``baseline_unavailable`` (an undo or log-prefix apply with no
   automatic-fit snapshot left), ``replay_conflict`` (a replayed create that no
-  longer reproduces its window) and ``target_outside_window`` (an ``add`` whose
-  seed falls outside the window it names).
+  longer reproduces its window), ``target_outside_window`` (an ``add`` whose
+  seed falls outside the window it names) and ``fit_plan_unavailable`` (an edit
+  that would refit, or create a window against, windows a structural merge
+  changed in a fit made before the fit stored its plan; see
+  :doc:`stage5_fitting`).
 
 Inside a batch the refusal keeps its type and the message names the action
 (``curation action 2 (edit window 4: ...) failed: ...``).

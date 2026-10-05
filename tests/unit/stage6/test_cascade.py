@@ -11,8 +11,11 @@ pin the building blocks so a regression in the graph/refresh logic is caught fas
 
 from __future__ import annotations
 
+import pytest
+
 from ftmwpipeline._internal.stage6_impl import (
     _cascade_closure,
+    _cascade_refit_dependents,
     _cascade_succs,
     _cascade_topo,
     _non_edge_free_primaries,
@@ -23,7 +26,9 @@ from ftmwpipeline.core.data_structures import (
     FittingResult,
     FitWindow,
     FixedContributor,
+    SpectrumFit,
 )
+from ftmwpipeline.file_manager import CurationConflictError
 
 
 def _wf(wid, peaks=(), frozen=()):
@@ -204,3 +209,47 @@ class TestRefreshFrozenWindowLevel:
             dep, {2: _fw(2, [(1, 100.0, False)])}, {1: src, 2: dep}, min_freeze_snr=50.0
         )
         assert dep.fixed_parameters["other_meta"] == {"keep": 1}
+
+
+class TestCascadeIntoAnUnavailableWindow:
+    """A merged fit with no stored plan: survivor 1's fit holds window 3's line
+    as a frozen contributor, but survivor 1's Stage 4 window (narrower than the
+    window its fit was made on) does not name 3, or names it edge-free. An edit
+    of 3 must still reach 1 and be refused, not leave 1's fit stale."""
+
+    def _cascade(self, stage4_window_1, unavailable):
+        fits = [
+            _wf(1, frozen=[(3, 100.0, 1.0, 0.0)]),
+            _wf(3, peaks=[(100.0, 1.0, 0.0, 5000.0)]),
+        ]
+        return _cascade_refit_dependents(
+            spectrum_fit=SpectrumFit(window_fits=fits),
+            edited_wids=[3],
+            fit_window_map={1: stage4_window_1, 3: _fw(3)},
+            fit_ctx=None,
+            resolved=None,
+            shape_enum=None,
+            persisted_cal=None,
+            tau_maj_us=None,
+            sigma_tau_us=None,
+            tau_source="none",
+            peak_frequencies_mhz=[],
+            min_freeze_snr=0.0,
+            snap_tol_mhz=0.0,
+            unavailable_window_ids=unavailable,
+        )
+
+    @pytest.mark.parametrize(
+        "stage4_window_1",
+        [_fw(1), _fw(1, [(3, 100.0, True)])],
+        ids=["not_a_stage4_contributor", "edge_free_in_stage4"],
+    )
+    def test_the_edit_is_refused(self, stage4_window_1):
+        with pytest.raises(CurationConflictError) as info:
+            self._cascade(stage4_window_1, frozenset({1}))
+        assert (info.value.reason, info.value.ids) == ("fit_plan_unavailable", [1])
+
+    def test_an_available_window_keeps_its_plan_edges(self):
+        # The same fit with its geometry available: the plan window says 1 does
+        # not read 3 through a cascade edge, so nothing cascades.
+        assert self._cascade(_fw(1, [(3, 100.0, True)]), frozenset()) == []

@@ -12,11 +12,23 @@ import numpy as np
 import pytest
 
 from ftmwpipeline.core.data_structures import (
+    FitWindow,
     MergeRequest,
     Peak,
     PeakClassification,
+    WindowPlan,
 )
-from ftmwpipeline.preprocessing.window_planning import build_window_plan, replan
+from ftmwpipeline.preprocessing.window_planning import (
+    DEFAULT_MAX_PEAKS_PER_WINDOW,
+    DEFAULT_MAX_WINDOW_WIDTH_MHZ,
+    DEFAULT_MAX_WINDOW_WIDTH_POINTS,
+    build_window_plan,
+    merge_geometry,
+    merged_window_ids,
+    next_window_id,
+    replan,
+    retired_window_ids,
+)
 
 
 def _h_t(df_hz, t_s):
@@ -871,6 +883,69 @@ class TestReplanMerge:
             assert pos[parent] < pos[child]
         _assert_invariants(revised)
 
+    def test_the_revised_plan_records_the_caps_merge_geometry_reads(self):
+        """A revised plan carries both caps, so a later round's
+        :func:`merge_geometry` judges a merge by the settings Stage 4 used."""
+        plan, peaks, freqs, spec, rms = self._two_window_plan()
+        revised = replan(
+            plan,
+            [],
+            peaks,
+            freqs,
+            spec,
+            rms,
+            acquisition_us=15.0,
+            max_window_width_points=80,
+            max_peaks_per_window=5,
+        )
+        assert revised.parameters["max_window_width_points"] == 80
+        assert revised.parameters["max_peaks_per_window"] == 5
+        a, b = revised.windows
+        geom = merge_geometry(revised, a.window_id, b.window_id, peaks, freqs)
+        assert (geom.cap_bins, geom.max_peaks) == (80.0, 5)
+
+    def test_a_chain_of_merges_names_every_absorbed_id(self):
+        """Round 1 folds the top window into the middle one; round 2 folds the
+        middle survivor into the bottom one. The final survivor names both
+        absorbed ids, whichever side carried them, and neither is reusable."""
+        freqs, spec, rms, peaks = _synthetic(
+            [
+                (30030.0, 0.05, PeakClassification.WEAK),
+                (30060.0, 0.05, PeakClassification.WEAK),
+                (30090.0, 0.05, PeakClassification.WEAK),
+            ],
+            n=6000,
+        )
+        plan = build_window_plan(peaks, freqs, spec, rms, acquisition_us=15.0)
+        if plan.n_windows != 3:
+            pytest.skip("setup did not produce 3 windows for this fixture")
+        lo, mid, hi = sorted(plan.windows, key=lambda w: w.freq_range[0])
+        once = replan(
+            plan,
+            [MergeRequest(mid.window_id, hi.window_id)],
+            peaks,
+            freqs,
+            spec,
+            rms,
+            acquisition_us=15.0,
+        )
+        twice = replan(
+            once,
+            [MergeRequest(lo.window_id, min(mid.window_id, hi.window_id))],
+            peaks,
+            freqs,
+            spec,
+            rms,
+            acquisition_us=15.0,
+        )
+        (survivor,) = twice.windows
+        ids = sorted(w.window_id for w in (lo, mid, hi))
+        assert survivor.window_id == ids[0]
+        assert survivor.diagnostics["merged_from"] == ids
+        assert merged_window_ids(twice) == {ids[0]: ids[1:]}
+        assert retired_window_ids(twice) == set(ids[1:])
+        assert next_window_id(twice) == ids[-1] + 1
+
     def test_revision_counter_chains_across_replans(self):
         plan, peaks, freqs, spec, rms = self._two_window_plan()
         once = replan(plan, [], peaks, freqs, spec, rms, acquisition_us=15.0)
@@ -899,3 +974,232 @@ class TestReplanMerge:
         assert plan.plan_revision == snapshot_revision
         assert sorted(w.window_id for w in plan.windows) == snapshot_window_ids
         assert revised.n_windows < plan.n_windows  # merge succeeded
+
+
+# ---------------------------------------------------------------------------
+# merge_geometry: what a proposed merge would span (Stage 5's structural
+# renegotiation reads it to admit only touching pairs within the width cap)
+# ---------------------------------------------------------------------------
+_GEOM_F0 = 30000.0
+_GEOM_STEP = 0.02
+
+
+def _geom_grid(n=2000):
+    return _GEOM_F0 + np.arange(n) * _GEOM_STEP
+
+
+def _geom_plan(windows, parameters=None):
+    """A hand-built plan on the ``_geom_grid``. ``windows`` is a list of
+    ``(window_id, lo_bin, hi_bin, [peak bins])``: each window spans grid bins
+    ``lo_bin..hi_bin`` and owns one free peak per listed bin. Returns the plan
+    and the peak list its ``free_peak_indices`` index into."""
+    freqs = _geom_grid()
+    peaks, fit_windows = [], []
+    for wid, lo, hi, pbins in windows:
+        idx = []
+        for b in pbins:
+            idx.append(len(peaks))
+            peaks.append(
+                Peak(
+                    frequency=float(freqs[b]),
+                    intensity=1.0,
+                    index=b,
+                    snr=100.0,
+                    noise_std_local=0.01,
+                    classification=PeakClassification.STRONG,
+                    promoted=True,
+                )
+            )
+        fit_windows.append(
+            FitWindow(
+                window_id=wid,
+                freq_range=(float(freqs[lo]), float(freqs[hi])),
+                free_peak_indices=idx,
+            )
+        )
+    plan = WindowPlan(
+        windows=fit_windows,
+        topological_order=[w.window_id for w in fit_windows],
+        parameters={} if parameters is None else dict(parameters),
+    )
+    return plan, peaks, freqs
+
+
+class TestMergeGeometry:
+    @pytest.mark.parametrize("uncovered", [0, 1, 2, 7])
+    def test_uncovered_bins_between_the_windows(self, uncovered):
+        """Windows ending at bin 100 and starting at bin 101 + k leave k grid
+        points that neither fits."""
+        plan, peaks, freqs = _geom_plan(
+            [
+                (0, 50, 100, [70]),
+                (1, 101 + uncovered, 150 + uncovered, [130 + uncovered]),
+            ]
+        )
+        geom = merge_geometry(plan, 0, 1, peaks, freqs)
+        assert geom.uncovered_bins == uncovered
+        assert (geom.lower_window_id, geom.upper_window_id) == (0, 1)
+
+    def test_windows_sharing_an_endpoint_leave_nothing_uncovered(self):
+        # The hand-built plans of the Stage 5 tests abut at one frequency.
+        plan, peaks, freqs = _geom_plan([(0, 50, 100, [70]), (1, 100, 150, [130])])
+        assert merge_geometry(plan, 0, 1, peaks, freqs).uncovered_bins == 0
+
+    def test_argument_order_and_window_order_do_not_matter(self):
+        # The higher id sits at the lower frequency, and is named first.
+        plan, peaks, freqs = _geom_plan([(5, 50, 100, [70]), (2, 103, 150, [130])])
+        a = merge_geometry(plan, 5, 2, peaks, freqs)
+        b = merge_geometry(plan, 2, 5, peaks, freqs)
+        assert a == b
+        assert (a.lower_window_id, a.upper_window_id) == (5, 2)
+        assert a.uncovered_bins == 2
+
+    def test_a_reversed_frequency_axis_gives_the_same_geometry(self):
+        plan, peaks, freqs = _geom_plan([(0, 50, 100, [70]), (1, 102, 150, [130])])
+        fwd = merge_geometry(plan, 0, 1, peaks, freqs)
+        assert merge_geometry(plan, 0, 1, peaks, freqs[::-1]) == fwd
+
+    def test_content_is_the_span_between_the_outermost_free_peaks(self):
+        plan, peaks, freqs = _geom_plan(
+            [
+                (0, 50, 100, [60, 90]),
+                (1, 101, 150, [110, 140]),
+            ],
+            {"max_window_width_points": 96},
+        )
+        geom = merge_geometry(plan, 0, 1, peaks, freqs)
+        assert geom.content_bins == 140 - 60
+        assert geom.cap_bins == 96.0
+        assert geom.within_cap
+
+    def test_points_cap_bounds_the_content(self):
+        params = {"max_window_width_points": 96}
+        at_cap, peaks, freqs = _geom_plan(
+            [(0, 0, 100, [10]), (1, 101, 200, [10 + 96])], params
+        )
+        over, peaks2, _ = _geom_plan(
+            [(0, 0, 100, [10]), (1, 101, 200, [10 + 97])], params
+        )
+        assert merge_geometry(at_cap, 0, 1, peaks, freqs).within_cap
+        assert not merge_geometry(over, 0, 1, peaks2, freqs).within_cap
+
+    def test_mhz_cap_applies_when_the_points_cap_is_off(self):
+        """``max_window_width_points == 0`` falls back to the MHz cap over the
+        grid step: 1.0 MHz at 0.02 MHz per bin is 50 bins (cases kept a few bins off the
+        boundary, which the float grid step does not resolve)."""
+        params = {"max_window_width_points": 0, "max_window_width_mhz": 1.0}
+        ok, peaks, freqs = _geom_plan([(0, 0, 100, [10]), (1, 101, 200, [58])], params)
+        bad, peaks2, _ = _geom_plan([(0, 0, 100, [10]), (1, 101, 200, [62])], params)
+        g = merge_geometry(ok, 0, 1, peaks, freqs)
+        assert g.cap_bins == pytest.approx(50.0)
+        assert g.within_cap
+        assert not merge_geometry(bad, 0, 1, peaks2, freqs).within_cap
+
+    def test_a_positive_points_cap_supersedes_the_mhz_cap(self):
+        plan, peaks, freqs = _geom_plan(
+            [(0, 0, 100, [10]), (1, 101, 200, [60])],
+            {"max_window_width_points": 20, "max_window_width_mhz": 40.0},
+        )
+        geom = merge_geometry(plan, 0, 1, peaks, freqs)
+        assert geom.cap_bins == 20.0
+        assert not geom.within_cap
+
+    @pytest.mark.parametrize(
+        "max_peaks, within", [(0, True), (4, True), (3, True), (2, False)]
+    )
+    def test_the_peak_cap_bounds_the_merged_line_count(self, max_peaks, within):
+        """``max_peaks_per_window`` (when positive) bounds the promoted peaks
+        the merged window holds, as the planner's cap split does; ``0`` is no
+        cap."""
+        plan, peaks, freqs = _geom_plan(
+            [(0, 0, 100, [60, 90]), (1, 101, 200, [110])],
+            {"max_peaks_per_window": max_peaks},
+        )
+        geom = merge_geometry(plan, 0, 1, peaks, freqs)
+        assert (geom.n_peaks, geom.max_peaks) == (3, max_peaks)
+        assert geom.within_width_cap
+        assert geom.within_peak_cap is within
+        assert geom.within_cap is within
+
+    def test_a_plan_without_width_parameters_uses_the_stage4_defaults(self):
+        plan, peaks, freqs = _geom_plan([(0, 0, 100, [10]), (1, 101, 200, [60])])
+        geom = merge_geometry(plan, 0, 1, peaks, freqs)
+        expected = (
+            float(DEFAULT_MAX_WINDOW_WIDTH_POINTS)
+            if DEFAULT_MAX_WINDOW_WIDTH_POINTS > 0
+            else DEFAULT_MAX_WINDOW_WIDTH_MHZ / _GEOM_STEP
+        )
+        assert geom.cap_bins == pytest.approx(expected)
+        assert geom.max_peaks == DEFAULT_MAX_PEAKS_PER_WINDOW
+
+    def test_windows_with_fewer_than_two_peaks_have_no_content_span(self):
+        plan, peaks, freqs = _geom_plan([(0, 0, 100, [10]), (1, 101, 200, [])])
+        assert merge_geometry(plan, 0, 1, peaks, freqs).content_bins == 0
+
+    def test_unknown_window_raises(self):
+        plan, peaks, freqs = _geom_plan([(0, 0, 100, [10]), (1, 101, 200, [60])])
+        with pytest.raises(ValueError, match="unknown window 9"):
+            merge_geometry(plan, 0, 9, peaks, freqs)
+
+    def test_identical_ids_raise(self):
+        plan, peaks, freqs = _geom_plan([(0, 0, 100, [10]), (1, 101, 200, [60])])
+        with pytest.raises(ValueError, match="distinct windows"):
+            merge_geometry(plan, 1, 1, peaks, freqs)
+
+    def test_a_real_planner_cap_split_leaves_its_halves_touching(self):
+        """A run of lines longer than the cap is split by the planner into
+        windows that abut -- the neighbours a structural merge is meant for --
+        while two lines far apart leave a wide gap."""
+        lines = [(30040.0 + 0.06 * k, 0.05, PeakClassification.WEAK) for k in range(60)]
+        freqs, spec, rms, peaks = _synthetic(lines)
+        plan = build_window_plan(peaks, freqs, spec, rms, acquisition_us=15.0)
+        ws = sorted(plan.windows, key=lambda w: w.freq_range[0])
+        assert len(ws) >= 2
+        for a, b in zip(ws, ws[1:]):
+            geom = merge_geometry(plan, a.window_id, b.window_id, peaks, freqs)
+            assert geom.uncovered_bins <= 1
+            assert geom.cap_bins == float(DEFAULT_MAX_WINDOW_WIDTH_POINTS)
+
+        far = TestReplanMerge()._two_window_plan()
+        fplan, fpeaks, ffreqs, _spec, _rms = far
+        a, b = fplan.windows
+        assert (
+            merge_geometry(
+                fplan, a.window_id, b.window_id, fpeaks, ffreqs
+            ).uncovered_bins
+            > 100
+        )
+
+
+# ---------------------------------------------------------------------------
+# Window ids after a structural merge: an absorbed id is never minted again.
+# ---------------------------------------------------------------------------
+
+
+def _plan_of(*windows):
+    return WindowPlan(windows=list(windows))
+
+
+def test_an_unmerged_plan_retires_nothing():
+    plan = _plan_of(FitWindow(0, (1.0, 2.0)), FitWindow(3, (4.0, 5.0)))
+    assert merged_window_ids(plan) == {}
+    assert retired_window_ids(plan) == set()
+    assert next_window_id(plan) == 4
+
+
+def test_a_new_id_goes_above_an_absorbed_top_id():
+    """Window 7 (the highest id) was folded into 5: the next id is 8, not 7."""
+    plan = _plan_of(
+        FitWindow(2, (1.0, 2.0)),
+        FitWindow(5, (3.0, 6.0), diagnostics={"merged_from": [5, 7]}),
+    )
+    assert merged_window_ids(plan) == {5: [7]}
+    assert retired_window_ids(plan) == {7}
+    assert next_window_id(plan) == 8
+    assert next_window_id(plan, reserved=[11]) == 12
+
+
+def test_a_merged_from_naming_only_itself_is_not_a_merge():
+    plan = _plan_of(FitWindow(4, (1.0, 2.0), diagnostics={"merged_from": [4]}))
+    assert merged_window_ids(plan) == {}
+    assert next_window_id(plan) == 5

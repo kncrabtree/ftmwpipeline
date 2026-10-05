@@ -126,7 +126,6 @@ from ..io.stage6_review_serialization import (
     load_stage6_review_from_hdf5,
     save_stage6_review_to_hdf5,
 )
-from ..io.window_serialization import read_window_plan_columns
 from .absence_rules import (
     clock_lattice_or_absent,
     float_or_absent,
@@ -1909,7 +1908,11 @@ def _overlay_created_windows(
 
 
 def effective_window_plan(file_path: Union[Path, str]) -> "WindowPlan":
-    """The Stage 4 plan overlaid with any Stage-6-created / widened windows.
+    """The fitted plan overlaid with any Stage-6-created / widened windows.
+
+    The fitted plan is the plan the Stage 5 fit was made on: the Stage 4 plan,
+    or, after a structural merge, the revised plan the fit stored
+    (:func:`~._internal.fitted_plan.load_fitted_plan`).
 
     Stage 6 can install a window for a line the automatic detection missed (see
     :func:`create_window_impl`). Those windows live in the Stage 6 review state,
@@ -1919,9 +1922,9 @@ def effective_window_plan(file_path: Union[Path, str]) -> "WindowPlan":
     ``window_id`` to its geometry goes through here so the base plan and the
     overlay are never read apart.
     """
-    from .stage4_impl import load_windows_impl
+    from .fitted_plan import load_fitted_plan
 
-    plan: "WindowPlan" = load_windows_impl(str(file_path))["plan"]
+    plan: "WindowPlan" = load_fitted_plan(str(file_path)).plan
     review = load_stage6_review_from_file(str(file_path))
     return _overlay_created_windows(plan, review.created_windows)
 
@@ -2835,11 +2838,10 @@ def _resolve_refit_window_tau(
         and tau_source != "override"
         and persisted_cal is not None
     ):
-        from .stage5_impl import resolve_window_tau_anchor
+        from .stage5_impl import resolve_window_range_tau_anchor
 
-        center_mhz = 0.5 * (fit_win.freq_range[0] + fit_win.freq_range[1])
-        return resolve_window_tau_anchor(
-            center_mhz,
+        return resolve_window_range_tau_anchor(
+            fit_win.freq_range,
             persisted_cal.band_majorities,  # type: ignore[attr-defined]
             tau_maj_us,
             sigma_tau_us,
@@ -2915,6 +2917,33 @@ def _refresh_frozen_window_level(
     wf.fixed_parameters = {**non_frozen, **rekeyed}
 
 
+def _refuse_unavailable_fit_plan(
+    unavailable: Collection[int], window_ids: Iterable[int], what: str
+) -> None:
+    """Refuse to refit a window whose fitted geometry the file does not hold.
+
+    *unavailable* is :attr:`_SharedFitCtx.unavailable_window_ids`: in a fit
+    that merged windows before the fitted plan was stored, the windows the
+    merges touched. Refitting one on its Stage 4 geometry would move its lines
+    to a window the fit was not made on, so the request is refused
+    (``curation_conflict``, ``fit_plan_unavailable``, ``ids`` those windows).
+    """
+    blocked = sorted({int(w) for w in window_ids} & {int(w) for w in unavailable})
+    if not blocked:
+        return
+    from .fitted_plan import FIT_PLAN_UNAVAILABLE
+
+    listed = ", ".join(str(w) for w in blocked)
+    raise CurationConflictError(
+        FIT_PLAN_UNAVAILABLE,
+        blocked,
+        message=f"{what} would refit window(s) {listed}, which a structural "
+        f"merge changed in a fit that predates the stored fitted plan: the "
+        f"windows the fit was made on are not in this file. Re-run 'fit run' "
+        f"to curate them.",
+    )
+
+
 def _cascade_refit_dependents(
     *,
     spectrum_fit: SpectrumFit,
@@ -2931,6 +2960,7 @@ def _cascade_refit_dependents(
     min_freeze_snr: float,
     snap_tol_mhz: float,
     events: Optional[StageScope] = None,
+    unavailable_window_ids: Collection[int] = (),
 ) -> List[int]:
     """Refresh + identity-refit every dependent in the transitive closure of
     ``edited_wids`` (window-level), in dependency order; splice the results back
@@ -2944,6 +2974,12 @@ def _cascade_refit_dependents(
     ``events`` (the Stage 6 operation's scope) gets a ``WindowProgress`` per
     re-fit dependent (phase ``"cascade"``, round 0, ``index`` over the
     cascade) and is checked for a cancel before each one.
+
+    A dependent in ``unavailable_window_ids`` refuses the whole cascade before
+    any refit (:func:`_refuse_unavailable_fit_plan`); every frozen contributor
+    of such a window's fit counts as a cascade edge, edge-free or not, since
+    the plan window that would say which are edge-free is not the one the fit
+    was made on.
     """
     from ..fitting.result_conversion import sort_fitting_result_by_frequency
 
@@ -2951,7 +2987,17 @@ def _cascade_refit_dependents(
     fit_map: Dict[int, FittingResult] = {
         int(wf.window_id): wf for wf in window_fits if wf.window_id is not None
     }
-    succs = _cascade_succs(window_fits, fit_window_map)
+    # A window whose fitted geometry the file does not hold (a merged fit with
+    # no stored plan) has no plan window that says which of its fit's frozen
+    # contributors are edge-free -- its Stage 4 window is not the window its fit
+    # was made on. Every frozen contributor of its fit is then a cascade edge,
+    # so an edit any of them read reaches the refusal below instead of leaving
+    # that fit stale.
+    blocked = {int(w) for w in unavailable_window_ids}
+    graph_window_map = {
+        w: fw for w, fw in fit_window_map.items() if int(w) not in blocked
+    }
+    succs = _cascade_succs(window_fits, graph_window_map)
     closure = _cascade_closure(edited_wids, succs)
     # `_cascade_closure` strips the whole `edited_wids` set from its result, so
     # when this call batches several DIRECTLY edited windows together (the
@@ -2976,6 +3022,11 @@ def _cascade_refit_dependents(
         for dep in deps:
             preds[dep].add(primary)
     ordered = _cascade_topo(closure, preds)
+    _refuse_unavailable_fit_plan(
+        unavailable_window_ids,
+        (d for d in ordered if fit_map.get(d) is not None and fit_window_map.get(d)),
+        "the dependency cascade",
+    )
 
     cascaded: List[int] = []
     n_cascade = sum(
@@ -5705,7 +5756,9 @@ def _fitted_peak_index(
 def _planned_window_ranges(path: str) -> Dict[int, Tuple[float, float]]:
     """``freq_range`` of every window in the effective plan, low bound first.
 
-    A three-attribute-per-window read plus the Stage 6 created-window overlay,
+    The fitted plan's bounds (:func:`~._internal.fitted_plan.fitted_window_bounds`:
+    the Stage 4 plan's, or the plan a structurally merged fit stored) plus the
+    Stage 6 created-window overlay -- a three-column read,
     rather than :func:`effective_window_plan` -- a full plan load also
     materializes every window's free-peak index list, its fixed-contributor
     objects and its per-window JSON diagnostics, which is 120 ms of the 124
@@ -5726,18 +5779,15 @@ def _planned_window_ranges(path: str) -> Dict[int, Tuple[float, float]]:
     Best-effort: a file without a Stage 4 plan yields an empty map rather than
     raising, so the advisory pass degrades to the checks it can still make.
     """
+    from .fitted_plan import fitted_window_bounds
+
     try:
         with h5open(path, "r") as h5f:
-            if "stage4_windows" not in h5f:
-                return {}
-            columns = read_window_plan_columns(
-                h5f["stage4_windows"], ["window_id", "freq_min", "freq_max"]
-            )
+            fitted = fitted_window_bounds(h5f)
+        if fitted is None:
+            return {}
         ranges = {
-            int(wid): (min(float(lo), float(hi)), max(float(lo), float(hi)))
-            for wid, lo, hi in zip(
-                columns["window_id"], columns["freq_min"], columns["freq_max"]
-            )
+            wid: (min(lo, hi), max(lo, hi)) for wid, (lo, hi) in fitted[0].items()
         }
         for created in load_stage6_review_from_file(path).created_windows:
             ranges[int(created.window_id)] = (
@@ -6354,8 +6404,16 @@ class _SharedFitCtx:
     """The one mutable slot on this object (S5), and deliberately so: it
     holds no *derived* state, only a copy of what is already on disk, and
     every read of it is gated on a fingerprint read fresh from the file.
-    Everything else here is still built once and never touched again. It is
-    last in the field order because it is the only one with a default."""
+    Everything else here is still built once and never touched again."""
+    retired_window_ids: FrozenSet[int] = frozenset()
+    """Ids a Stage 5 structural merge absorbed: a create never mints one, and
+    a replayed create cannot take one (:class:`~.fitted_plan.FittedPlan`)."""
+    unavailable_window_ids: FrozenSet[int] = frozenset()
+    """Windows of a merged fit that predates the stored fitted plan, whose
+    fitted geometry is not in the file: refitting one is refused
+    (``fit_plan_unavailable``). Empty for every other fit."""
+    unavailable_spans_mhz: Tuple[Tuple[float, float], ...] = ()
+    """The merged ranges of such a fit; a create overlapping one is refused."""
 
 
 @dataclass
@@ -6437,9 +6495,9 @@ def _build_shared_fit_ctx(path: str) -> _SharedFitCtx:
         read_stage2b_recommended_shape,
     )
     from ..preprocessing.window_planning import DEFAULT_MIN_FREEZE_SNR
+    from .fitted_plan import load_fitted_plan
     from .stage2b_impl import load_tau_calibration_impl, tau_calibration_present
     from .stage3_impl import load_peaks_impl
-    from .stage4_impl import load_windows_impl
     from .stage5_impl import (
         Stage5FitContext,
         _resolve_tau_calibration_for_fit,
@@ -6469,7 +6527,10 @@ def _build_shared_fit_ctx(path: str) -> _SharedFitCtx:
             read_fit_diagnostics(h5f["stage5_fitting"]),
         )
 
-    base_plan: "WindowPlan" = load_windows_impl(path)["plan"]
+    # The plan the fit was made on: a structural merge's survivor is refit on
+    # its merged range, and an absorbed id is not a window.
+    fitted = load_fitted_plan(path)
+    base_plan: "WindowPlan" = fitted.plan
 
     peaks_loaded = load_peaks_impl(path)["peaks"]
     peak_frequencies_mhz = [float(p.frequency) for p in peaks_loaded]
@@ -6552,6 +6613,9 @@ def _build_shared_fit_ctx(path: str) -> _SharedFitCtx:
         calibration_state=calibration_state,
         epsilon=epsilon,
         sigma_epsilon=sigma_epsilon,
+        retired_window_ids=fitted.retired_window_ids,
+        unavailable_window_ids=fitted.unavailable_window_ids,
+        unavailable_spans_mhz=fitted.unavailable_spans_mhz,
     )
 
 
@@ -6705,7 +6769,11 @@ def _batch_plan_window_ids(
         a.kind == "create" and a.window_id == _NEW_WINDOW_SENTINEL for a in plan
     ):
         return None
-    return {int(w.window_id) for w in _batch_effective_plan(ctx).windows}
+    # The ids a structural merge absorbed count as taken: a create mints above
+    # them, so naming one is never a forward reference to a minted window.
+    return {int(w.window_id) for w in _batch_effective_plan(ctx).windows} | set(
+        ctx.shared.retired_window_ids
+    )
 
 
 def _batch_effective_plan(ctx: _BatchCtx) -> "WindowPlan":
@@ -6784,6 +6852,9 @@ def _batch_apply_edit_core(
             message=f"window_id={window_id} not found in the Stage 4 WindowPlan. "
             "Stage 4 may have been re-run and changed the window geometry.",
         )
+    _refuse_unavailable_fit_plan(
+        ctx.shared.unavailable_window_ids, [window_id], f"editing window {window_id}"
+    )
     tau_maj_us, sigma_tau_us = _resolve_refit_window_tau(
         fit_win,
         ctx.shared.resolved,
@@ -7713,8 +7784,10 @@ def _plan_batch_create(
             params.get("magnitude_attachment_threshold", 0.1)
         ),
         live_window_ids=sorted(fit_map),
+        reserved_window_ids=ctx.shared.retired_window_ids,
     )
     new_wid = int(proposal.window.window_id)
+    _refuse_create_on_unavailable_fit_plan(ctx, proposal, anchor)
 
     if replay_window_id is not None and int(replay_window_id) != new_wid:
         want = int(replay_window_id)
@@ -7727,6 +7800,7 @@ def _plan_batch_create(
                 f"the base plan or the surviving edit set has changed",
             )
         taken = {int(w.window_id) for w in plan.windows}
+        taken |= set(ctx.shared.retired_window_ids)
         if want in taken:
             raise CurationConflictError(
                 "replay_conflict",
@@ -7738,6 +7812,45 @@ def _plan_batch_create(
         proposal.window.window_id = want
 
     return proposal
+
+
+def _refuse_create_on_unavailable_fit_plan(
+    ctx: _BatchCtx, proposal: "Stage6WindowProposal", anchor: float
+) -> None:
+    """Refuse a create that a fit's unrecorded merge makes unplannable.
+
+    Only for a fit that merged windows before the fitted plan was stored
+    (:attr:`_SharedFitCtx.unavailable_window_ids`): the planner sees the
+    Stage 4 windows there, so a window it proposes inside a merged range would
+    overlap the window the fit has, and one that widens or reads a merged
+    window would use geometry the fit was not made on.
+    """
+    unavailable = ctx.shared.unavailable_window_ids
+    if not unavailable:
+        return
+    window = proposal.window
+    lo, hi = min(window.freq_range), max(window.freq_range)
+    if proposal.mode == "widened":
+        touched = [int(window.window_id)]
+    else:
+        touched = [int(d) for d in proposal.depends_on]
+    _refuse_unavailable_fit_plan(
+        unavailable, touched, f"creating a window at {anchor:.4f} MHz"
+    )
+    for s_lo, s_hi in ctx.shared.unavailable_spans_mhz:
+        if lo <= s_hi and hi >= s_lo:
+            from .fitted_plan import FIT_PLAN_UNAVAILABLE
+
+            blocked = sorted(int(w) for w in unavailable)
+            raise CurationConflictError(
+                FIT_PLAN_UNAVAILABLE,
+                blocked,
+                message=f"creating a window at {anchor:.4f} MHz "
+                f"([{lo:.4f}, {hi:.4f}] MHz) overlaps a range a structural merge "
+                f"joined in a fit that predates the stored fitted plan: the "
+                f"windows the fit was made on are not in this file. Re-run "
+                f"'fit run' to curate there.",
+            )
 
 
 def _batch_implied_create_target(ctx: _BatchCtx, anchor_mhz: float) -> Optional[int]:
@@ -8389,6 +8502,7 @@ def _cascade_batch(ctx: _BatchCtx, *, snap_tol_mhz: float) -> List[int]:
             min_freeze_snr=ctx.shared.min_freeze_snr,
             snap_tol_mhz=snap_tol_mhz,
             events=ctx.events,
+            unavailable_window_ids=ctx.shared.unavailable_window_ids,
         )
         if cascaded:
             ctx.changeset.mutated_wids.update(cascaded)

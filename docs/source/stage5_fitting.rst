@@ -285,7 +285,58 @@ residual leakage, and if so it renegotiates rather than shipping an under-fit wi
 - **Structural replan.** When no contributor accounts for the coherent edge, because
   a real line straddles the boundary, Stage 5 asks Stage 4 to **merge** the two
   windows through its :doc:`re-plan entry point <stage4_windows>`, bumping the plan
-  revision, and refits the affected batches.
+  revision, and refits the affected batches. The flagged window's own fit must hold at
+  least one line: a window whose lines the cleanup pruned has no fitted line to
+  straddle its boundary, so its edge residual is not evidence for a merge. Only a
+  neighbour that **touches** the window qualifies: at most one active-FT bin may lie
+  between them, which is how the Stage 4 planner places windows it split or whose
+  margins just miss. A wider gap holds spectrum no window fits, so a coherent edge
+  beside it is a feature in the gap, not one straddling a boundary. A merge whose window
+  would exceed the plan's width cap (the same bound on line content the planner applies)
+  or, when the plan sets one, its ``max_peaks_per_window`` is refused. Each round
+  applies a **disjoint** set of merges, strongest flagged edge first: a request that
+  shares a window with one already taken is deferred. In the next round the triggering
+  window's current fit is scanned again against the revised plan, and the request is
+  judged afresh from it. A request Stage 4 rejects costs only itself: the round's set is
+  chosen again without it, so a request that waited behind it gets its turn, and the
+  loop stops early only when no qualifying pair is left. A merge drops the thaw, rescue
+  and cleanup records of every window it re-fits or absorbs before the re-fit records
+  its own.
+
+  Every replan attempt is recorded (``fit_replans``). An accepted merge's ``reason`` is
+  the flagged edge it answered; any other ``reason`` starts with one of four prefixes:
+
+  - ``not merged:`` -- the flagged edge is no evidence for a merge: the window's fit
+    holds no line, or no window touches it;
+  - ``refused:`` -- the windows touch, but the merged window would break the plan's
+    width cap or peak cap;
+  - ``deferred:`` -- the pair shares a window with a merge chosen ahead of it this
+    round;
+  - ``failed:`` -- Stage 4 could not apply the merge (its message follows).
+
+  A ``not merged``, ``refused`` or ``failed`` verdict holds until one of the two
+  windows changes, so it is recorded once, not every round.
+
+  A merge leaves the fit on windows Stage 4 did not plan. The survivor keeps the
+  lower id and the merged range; the absorbed id is no longer a window. Before
+  the survivor is re-fit, its per-band :math:`\tau` anchor is resolved again
+  from the merged range, the anchor any later refit of that window resolves. The
+  fit stores the plan it was made on (``final_plan_revision`` above 0) in the
+  same write as its lines. From then on everything that reads window geometry reads
+  that plan: ``window_status`` (whose merged row names the absorbed ids in
+  ``merged_from``), the window model, and every window :doc:`Stage 6
+  <stage6_review>` resolves, edits or refits. A window Stage 6 creates never takes
+  an absorbed id. A fit no merge revised stores nothing extra; its plan is the
+  Stage 4 plan.
+
+  A fit made before the plan was stored, in which a merge was applied, does not
+  hold the merged windows' geometry. Its ``window_status`` reports the recorded
+  merge (a merge's range is the union of its windows'), but Stage 6 refuses to
+  refit the merged windows, or the windows that read their lines as fixed
+  contributors, or to carry an edit into a merged window whose fit read the
+  edited window's lines, with ``curation_conflict`` (reason
+  ``fit_plan_unavailable``). It also refuses to create a window inside a merged range. Re-run ``fit run`` to
+  curate them.
 
 A window edge whose coherence statistic is undefined (an empty residual, or a band
 with no positive noise) is stored as ``nan`` and never triggers either: the gates

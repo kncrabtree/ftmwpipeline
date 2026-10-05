@@ -12,11 +12,20 @@ suite.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
-from ftmwpipeline._internal.stage5_impl import _resolve_tau_calibration_for_fit
+from ftmwpipeline._internal.stage5_impl import (
+    _band_anchor_or_none,
+    _resolve_tau_calibration_for_fit,
+    resolve_window_range_tau_anchor,
+)
+from ftmwpipeline._internal.stage6_impl import _resolve_refit_window_tau
+from ftmwpipeline.core.data_structures import FitWindow
 from ftmwpipeline.fitting.tau_calibration import (
+    BandMajority,
     GMMBimodality,
     TauCalibrationResult,
 )
@@ -143,3 +152,40 @@ class TestResolveTauCalibrationForFit:
         persisted = _make_persisted()
         with pytest.raises(ValueError, match="together"):
             _resolve_tau_calibration_for_fit(persisted, 8.0, None)
+
+
+class TestWindowRangeTauAnchor:
+    """One window-range -> per-band anchor map serves the Stage 5 fit, the
+    re-anchoring of a merge survivor and the Stage 6 refit, so a merged window
+    refit with no change resolves the anchor its fit was made with."""
+
+    _BANDS = (
+        BandMajority("low", 26500.0, 30721.5, 4, 8.4, 0.55),
+        BandMajority("high", 30721.5, 40000.0, 4, 6.6, 0.59),
+    )
+
+    def test_the_anchor_is_the_band_of_the_range_centre(self) -> None:
+        # Stage 4 window: centre 30719.9 (low band); merged with its upper
+        # neighbour: centre 30723.1 (high band).
+        assert resolve_window_range_tau_anchor(
+            (30717.4, 30722.4), self._BANDS, None, None
+        ) == (8.4, 0.55)
+        assert resolve_window_range_tau_anchor(
+            (30717.4, 30728.8), self._BANDS, None, None
+        ) == (6.6, 0.59)
+
+    def test_outside_every_band_falls_back(self) -> None:
+        assert resolve_window_range_tau_anchor(
+            (50000.0, 50001.0), self._BANDS, 7.0, 1.0
+        ) == (7.0, 1.0)
+        assert _band_anchor_or_none((50000.0, 50001.0), self._BANDS) is None
+
+    def test_the_replan_callback_and_the_stage6_refit_agree(self) -> None:
+        merged = (30717.4, 30728.8)
+        resolved = SimpleNamespace(tau=SimpleNamespace(per_band_tau=True))
+        cal = SimpleNamespace(band_majorities=self._BANDS)
+        win = FitWindow(window_id=100, freq_range=merged, free_peak_indices=[0])
+        refit = _resolve_refit_window_tau(
+            win, resolved, cal, 7.0, 1.0, "persisted"  # type: ignore[arg-type]
+        )
+        assert _band_anchor_or_none(merged, self._BANDS) == refit == (6.6, 0.59)

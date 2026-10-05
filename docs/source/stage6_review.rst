@@ -205,6 +205,10 @@ lowering the detection threshold re-runs Stage 3 — which invalidates Stages 5 
 and discards the entire curated edit set. ``review create`` supplies the missing
 structure instead, so nothing already decided is lost.
 
+A Stage 5 structural merge revises the windows: the survivor keeps the lower id and the
+merged range, the absorbed id is no longer a window, and Stage 6 works on the plan the
+fit was made on.
+
 It is deliberately **structural only**: the window is installed and fit with an empty
 peak set. Putting the line in it is a separate ``review edit --window N --add F``, and
 the log records the two operations as two decisions. Creating structure and changing a
@@ -222,8 +226,10 @@ Three properties make the operation safe to build on:
   partitions peaks on ``window_id`` sees exactly the windows an edit touched rather
   than the whole spectrum.
 - **Deterministic extent.** The window's bounds are a function of the anchor and the
-  *base* Stage 4 plan — never of the current curated state — so replaying an edit set
-  in order reproduces the same window. The window takes the plan's own margin each
+  *base* plan — the Stage 4 plan, or, when a structural merge revised it, the plan the
+  fit was made on (see :doc:`stage5_fitting`) — never of the current curated state, so
+  replaying an edit set in order reproduces the same window. A created window never
+  takes an id a structural merge absorbed. The window takes the plan's own margin each
   side of the anchor, shifted (not shrunk) when the gap cannot center it.
 
 Two boundary cases resolve rather than fail. An anchor that already falls inside a

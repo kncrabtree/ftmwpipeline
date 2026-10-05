@@ -517,7 +517,9 @@ class CurationConflictError(PipelineFileError, ValueError):
     """Raised when a valid curation request conflicts with the file's review
     state (an add at a line already fitted, targets that resolve to different
     windows, an undo that would orphan a created window, a replay whose pinned
-    window id no longer fits, no automatic-fit baseline to replay from).
+    window id no longer fits, no automatic-fit baseline to replay from, a refit
+    of windows a structural merge changed in a fit that predates its stored
+    plan).
     Also a :class:`ValueError`, which is what these refusals raised before
     they were typed.
 
@@ -526,7 +528,8 @@ class CurationConflictError(PipelineFileError, ValueError):
     reason : str
         A stable snake_case slug naming the conflict (``"line_already_fitted"``,
         ``"targets_span_windows"``, ``"orphans_created_window"``,
-        ``"baseline_unavailable"``, ``"replay_conflict"``, ...). The full set
+        ``"baseline_unavailable"``, ``"replay_conflict"``,
+        ``"fit_plan_unavailable"``, ...). The full set
         is listed in ``docs/source/machine_contract.rst``.
     ids : list of int
         The windows, peaks or decisions the conflict involves (which kind is

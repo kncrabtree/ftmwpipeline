@@ -25,6 +25,7 @@ import copy
 import logging
 import math
 from dataclasses import dataclass, replace
+from functools import partial
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -111,6 +112,7 @@ from ..io.stage_fit_settings_serialization import (
 )
 from ..io.timebase_serialization import GROUP_PATH as TIMEBASE_GROUP_PATH
 from ..io.timebase_serialization import load_timebase_calibration_from_hdf5
+from ..io.window_serialization import save_fitted_plan_to_hdf5
 from ..preprocessing.peak_detection import DEFAULT_MIN_SNR as DEFAULT_PROMOTION_MIN_SNR
 from .active_ft_support import (
     build_active_grid_with_noise,
@@ -316,6 +318,38 @@ def resolve_window_tau_anchor(
         if band is not None:
             return float(band.tau_maj_us), float(band.sigma_tau_us)
     return fallback_tau_maj_us, fallback_sigma_tau_us
+
+
+def resolve_window_range_tau_anchor(
+    freq_range: Tuple[float, float],
+    band_majorities: Optional[Tuple["BandMajority", ...]],
+    fallback_tau_maj_us: Optional[float],
+    fallback_sigma_tau_us: Optional[float],
+) -> Tuple[Optional[float], Optional[float]]:
+    """A window's tau penalty anchor from its ``freq_range``.
+
+    The one window-to-anchor map every fit and refit uses: the main fit's
+    ``window_tau_overrides`` (Stage 4 windows), the re-anchoring of a merge
+    survivor at its merged range during the structural replan, and the Stage 6
+    refit of a fitted window. Resolves :func:`resolve_window_tau_anchor` at the
+    range's centre, so the same window range always gets the same anchor.
+    """
+    center_mhz = 0.5 * (float(freq_range[0]) + float(freq_range[1]))
+    return resolve_window_tau_anchor(
+        center_mhz, band_majorities, fallback_tau_maj_us, fallback_sigma_tau_us
+    )
+
+
+def _band_anchor_or_none(
+    freq_range: Tuple[float, float],
+    band_majorities: Tuple["BandMajority", ...],
+) -> Optional[Tuple[float, float]]:
+    """The per-band anchor of ``freq_range``, or ``None`` when no band holds it
+    (the replan's re-anchoring callback; module-level so it pickles)."""
+    tm, st = resolve_window_range_tau_anchor(freq_range, band_majorities, None, None)
+    if tm is None or st is None:
+        return None
+    return tm, st
 
 
 def _build_active_ft_inputs(
@@ -2367,15 +2401,21 @@ def _fit_peaks_impl(
                 sigma_tau_us if sigma_tau_us is not None else "None",
             )
         else:
+            band_majorities = tuple(persisted_cal.band_majorities)
             for win in plan.windows:
-                center_mhz = 0.5 * (win.freq_range[0] + win.freq_range[1])
-                tm, st = resolve_window_tau_anchor(
-                    center_mhz, persisted_cal.band_majorities, None, None
+                tm, st = resolve_window_range_tau_anchor(
+                    win.freq_range, band_majorities, None, None
                 )
                 if tm is None:
                     continue
                 window_tau_overrides[int(win.window_id)] = (tm, cast(float, st))
             per_band_used = True
+            if replan_ctx is not None:
+                # A merge survivor re-anchors at its merged range (the anchor a
+                # Stage 6 refit of the merged window resolves) -- same map.
+                replan_ctx.tau_anchor_for_range = partial(
+                    _band_anchor_or_none, band_majorities=band_majorities
+                )
             logger.info(
                 "Stage 5 per-band tau routing on: %d / %d windows mapped "
                 "to a band (others use band-wide tau_maj=%.3f, sigma=%.3f)",
@@ -2912,7 +2952,10 @@ def _fit_peaks_impl(
         events.check_cancel()
     except OperationCancelledError as exc:
         raise _interrupted(exc)
-    save_spectrum_fit_impl(file_path, spectrum_fit)
+    # The plan the fit was made on goes in the same write: a structural merge
+    # leaves it differing from /stage4_windows, and Stage 6 must edit and refit
+    # the windows the fit has, not the ones Stage 4 planned.
+    save_spectrum_fit_impl(file_path, spectrum_fit, fitted_plan=final_plan)
     # The fit supersedes the partial fit it resumed (or discarded).
     with h5open(file_path, "a") as h5f:
         delete_stage5_partial(h5f)
@@ -2971,8 +3014,16 @@ def _fit_peaks_impl(
     }
 
 
-def save_spectrum_fit_impl(file_path: str, fit: SpectrumFit) -> None:
-    """Persist a :class:`SpectrumFit` to ``/stage5_fitting`` (overwriting)."""
+def save_spectrum_fit_impl(
+    file_path: str, fit: SpectrumFit, fitted_plan: Optional[WindowPlan] = None
+) -> None:
+    """Persist a :class:`SpectrumFit` to ``/stage5_fitting`` (overwriting).
+
+    ``fitted_plan`` is the window plan the fit was made on. When a structural
+    replan revised it (``plan_revision > 0``) it is stored with the fit
+    (``/stage5_fitting/fitted_plan``); an unrevised plan is the Stage 4 plan
+    and is not stored again.
+    """
     # The line-shape choice (lorentzian / gaussian) lives in
     # ``fit.parameters['shape']`` from the fit driver; mirror it onto the
     # group attrs so consumers can branch on shape without having to load
@@ -2984,6 +3035,8 @@ def save_spectrum_fit_impl(file_path: str, fit: SpectrumFit) -> None:
         grp = h5f.create_group("stage5_fitting")
         save_spectrum_fit_to_hdf5(fit, grp)
         grp.attrs["shape"] = shape_attr
+        if fitted_plan is not None and fitted_plan.plan_revision > 0:
+            save_fitted_plan_to_hdf5(fitted_plan, grp)
     logger.info(
         "Saved Stage 5 fit (%d windows, %d peaks, shape=%s) to %s",
         fit.n_windows,

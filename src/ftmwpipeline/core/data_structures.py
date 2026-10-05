@@ -1542,8 +1542,10 @@ class WindowPlan:
         :func:`~ftmwpipeline.preprocessing.window_planning.replan` applies a
         structural change. ``0`` is the initial plan from
         :func:`~ftmwpipeline.preprocessing.window_planning.build_window_plan`.
-        It tracks the live plan during Stage 5's structural-replan handshake; it
-        is not persisted (a freshly built plan is always revision 0).
+        It tracks the live plan during Stage 5's structural-replan handshake. A
+        freshly built plan is always revision 0; a Stage 5 fit whose plan a
+        merge revised stores that plan with its revision
+        (``/stage5_fitting/fitted_plan``).
     """
 
     windows: List[FitWindow] = field(default_factory=list)
@@ -1604,15 +1606,19 @@ class ReplanInfo:
 
     Persistent twin of :class:`ftmwpipeline.fitting.plan_execution.ReplanEvent`.
     Emitted when a residual edge-coherence flag has no fixed contributor to
-    thaw and a frequency-adjacent neighbor exists, prompting Stage 4 to
-    merge the two windows and bump the plan revision.
+    thaw and a neighbor exists on that side, prompting Stage 4 to merge the
+    two windows and bump the plan revision -- when the flagged window's fit
+    holds a line, the neighbor touches the window and the merged window fits
+    the plan's width and peak caps. Otherwise the record says why the merge did
+    not happen (``accepted`` False, ``revision_after == revision_before``).
 
     Attributes
     ----------
     triggering_window_id : int
         Window whose flagged edge prompted the merge.
     partner_window_id : int
-        Adjacent window the trigger asked to merge with.
+        Nearest window on the flagged side, the one the trigger asked to merge
+        with (it may be further than a touching distance; see ``reason``).
     surviving_window_id : int
         ``min(triggering_window_id, partner_window_id)`` -- the id that carries
         the merged window in the revised plan.
@@ -1626,7 +1632,10 @@ class ReplanInfo:
     accepted : bool
         Whether the merge was applied and the refit completed.
     reason : str
-        Free-text annotation.
+        For an accepted merge, the trigger's description. Otherwise it starts
+        with one of ``not merged``, ``refused``, ``deferred`` or ``failed``
+        and ``": "``
+        (:data:`ftmwpipeline.fitting.plan_execution.REPLAN_REASON_PREFIXES`).
     """
 
     triggering_window_id: int

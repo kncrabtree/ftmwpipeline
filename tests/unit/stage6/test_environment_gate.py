@@ -68,6 +68,14 @@ class TestSpliceGate:
         result = ftmw.review_edit(str(fitted), wid, remove=[freq])
         assert result.n_peaks_after == result.n_peaks_before - 1
 
+    def test_a_fit_made_under_epoch_four_is_blocked(self, fitted):
+        """Epoch 5 moved the structural replan; an epoch-4 fit must be re-fit
+        (or acknowledged) before Stage 6 splices an edit into it."""
+        _force_fit_epoch(fitted, 4)
+        window_id, freq = self._a_fitted_peak(fitted)
+        with pytest.raises(AnalysisEpochMismatchError, match="analysis epoch"):
+            ftmw.review_edit(str(fitted), window_id, remove=[freq])
+
     def test_edit_blocked_across_an_epoch_change(self, fitted):
         wid, freq = self._a_fitted_peak(fitted)
         _force_fit_epoch(fitted, ANALYSIS_EPOCH + 1)

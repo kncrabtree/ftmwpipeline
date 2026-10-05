@@ -254,6 +254,7 @@ WINDOW_STATUS_COLUMN_SPECS: Dict[str, ColumnSpec] = {
     "n_fitted_peaks__status": ("u1", 0),
     "live": ("bool", False),
     "live__status": ("u1", 0),
+    "merged_from": ("str", REQUIRED),
 }
 
 _WINDOW_STATUS_DTYPES: Dict[str, Any] = {
@@ -263,6 +264,7 @@ _WINDOW_STATUS_DTYPES: Dict[str, Any] = {
     "created": np.bool_,
     "n_fitted_peaks": np.int64,
     "live": np.bool_,
+    "merged_from": object,
 }
 
 _FIT_HINT = "fit_peaks() / 'fit run'"
@@ -1027,7 +1029,7 @@ def read_table_impl(
 
 
 # ---------------------------------------------------------------------------
-# Window status: the Stage 4 plan, the Stage 6 created windows and the Stage 5
+# Window status: the fitted plan, the Stage 6 created windows and the Stage 5
 # fit's per-window line counts, joined on ``window_id``.
 # ---------------------------------------------------------------------------
 
@@ -1035,10 +1037,13 @@ def read_table_impl(
 def _window_status_rows(h5f: h5py.File) -> List[WindowStatusRow]:
     """Build the window-status rows from an open file (raises before Stage 4).
 
-    One row per effective window id: every Stage 4 plan window, with a
+    One row per effective window id: every window of the fitted plan (the
+    Stage 4 plan, or after a structural merge the plan the complete fit was
+    made on -- :func:`~._internal.fitted_plan.fitted_window_bounds`), with a
     Stage-6-created window of the same id replacing the plan row (the
     narrow-gap widening case, as in the effective plan) and flagged
-    ``created``; created windows with fresh ids are appended. Rows ascend by
+    ``created``; created windows with fresh ids are appended. A merged
+    window's row names the ids it absorbed in ``merged_from``. Rows ascend by
     frequency, then ``window_id``.
     """
     if "stage4_windows" not in h5f:
@@ -1052,13 +1057,12 @@ def _window_status_rows(h5f: h5py.File) -> List[WindowStatusRow]:
                 f"'window_status' is unavailable. Run {_WINDOWS_HINT} first."
             ),
         )
-    plan = read_window_plan_columns(
-        h5f["stage4_windows"], ["window_id", "freq_min", "freq_max"]
-    )
-    bounds: Dict[int, Tuple[float, float]] = {
-        int(i): (float(lo), float(hi))
-        for i, lo, hi in zip(plan["window_id"], plan["freq_min"], plan["freq_max"])
-    }
+    from .fitted_plan import fitted_window_bounds
+
+    fitted_plan = fitted_window_bounds(h5f)
+    assert fitted_plan is not None  # Stage 4 is present
+    bounds: Dict[int, Tuple[float, float]] = dict(fitted_plan[0])
+    merged_from = fitted_plan[1]
     created_ids = set()
     review = h5f["stage6_review"] if "stage6_review" in h5f else None
     for wid, lo, hi in read_created_window_bounds(review):
@@ -1091,6 +1095,7 @@ def _window_status_rows(h5f: h5py.File) -> List[WindowStatusRow]:
             created=wid in created_ids,
             n_fitted_peaks=n,
             live=live,
+            merged_from=tuple(merged_from.get(wid, ())),
         )
 
     return [row(w) for w in sorted(bounds, key=lambda w: (bounds[w][0], w))]
@@ -1104,18 +1109,21 @@ def _window_status_columns(
     Each absent-capable column gains its ``<column>__status`` companion.
     """
     rows = _window_status_rows(h5f)
+    values: Dict[str, List[Any]] = {
+        name: [getattr(r, name) for r in rows]
+        for name in (
+            "window_id",
+            "freq_min_mhz",
+            "freq_max_mhz",
+            "created",
+            "n_fitted_peaks",
+            "live",
+        )
+    }
+    # A ragged list per row: the column holds its JSON text ("[]", "[101]").
+    values["merged_from"] = [json.dumps(list(r.merged_from)) for r in rows]
     table = with_status_columns(
-        {
-            name: [getattr(r, name) for r in rows]
-            for name in (
-                "window_id",
-                "freq_min_mhz",
-                "freq_max_mhz",
-                "created",
-                "n_fitted_peaks",
-                "live",
-            )
-        },
+        values,
         absent_capable=_WINDOW_STATUS_ABSENT_CAPABLE,
         fills={"n_fitted_peaks": 0, "live": False},
         dtypes=_WINDOW_STATUS_DTYPES,

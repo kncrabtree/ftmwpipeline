@@ -320,6 +320,18 @@ def _split_span_to_caps(
     ) + _split_span_to_caps(mid + 1, hi, members, cap_idx, max_peaks)
 
 
+def _width_cap_bins(
+    max_window_width_points: int, max_window_width_mhz: float, step_mhz: float
+) -> float:
+    """The window width cap in grid steps: the points cap when positive (the
+    portable form, :data:`DEFAULT_MAX_WINDOW_WIDTH_POINTS`), else the MHz cap
+    over the grid step. The cap bounds a window's *peak content* -- the span
+    between its outermost promoted peaks (see :func:`_split_span_to_caps`)."""
+    if max_window_width_points > 0:
+        return float(max_window_width_points)
+    return float(max_window_width_mhz) / step_mhz
+
+
 def _span_of(spans: List[Tuple[int, int]], idx: int) -> int:
     """Return the position of the span containing ``idx``, or -1 if none."""
     for i, (lo, hi) in enumerate(spans):
@@ -725,11 +737,7 @@ def build_window_plan(
     # fixed-contributor mechanism (Step 4), not by widening the window.
     # A positive points cap is the portable form and supersedes the MHz cap
     # (see :data:`DEFAULT_MAX_WINDOW_WIDTH_POINTS`).
-    cap_idx = (
-        float(max_window_width_points)
-        if max_window_width_points > 0
-        else max_window_width_mhz / step_mhz
-    )
+    cap_idx = _width_cap_bins(max_window_width_points, max_window_width_mhz, step_mhz)
     strong_in_interval: Dict[int, List[_PPeak]] = {}
     for pk in promoted:
         if not pk.is_strong:
@@ -1126,11 +1134,12 @@ def _apply_merge(
     # _finalize_plan overwrites the per-window fields it manages.
     base_diag = dict(by_id[survivor_id].diagnostics)
     base_diag["grid_span"] = [new_lo_idx, new_hi_idx]
-    merged_from = sorted({a.window_id, b.window_id})
-    prior = base_diag.get("merged_from")
-    if prior:
-        merged_from = sorted(set(prior) | set(merged_from))
-    base_diag["merged_from"] = merged_from
+    # Every id either side already absorbed carries over, so a chain of merges
+    # across rounds (100 absorbs 101, then 99 absorbs 100) still names 101.
+    merged_ids = {int(a.window_id), int(b.window_id)}
+    for w in (a, b):
+        merged_ids.update(int(i) for i in w.diagnostics.get("merged_from") or ())
+    base_diag["merged_from"] = sorted(merged_ids)
     if req.reason:
         base_diag["merge_reason"] = req.reason
 
@@ -1151,6 +1160,176 @@ def _apply_merge(
         else:
             out.append(w)
     return out
+
+
+def merged_window_ids(plan: WindowPlan) -> Dict[int, List[int]]:
+    """The ids a structural merge folded into each window of *plan*.
+
+    ``{survivor_id: [absorbed ids, ascending]}`` for every window whose
+    ``diagnostics["merged_from"]`` (written by :func:`replan`) names an id
+    other than its own; a window no merge touched is not a key.
+    """
+    out: Dict[int, List[int]] = {}
+    for w in plan.windows:
+        wid = int(w.window_id)
+        folded = sorted(
+            {int(i) for i in w.diagnostics.get("merged_from") or ()} - {wid}
+        )
+        if folded:
+            out[wid] = folded
+    return out
+
+
+def retired_window_ids(plan: WindowPlan) -> Set[int]:
+    """Window ids a structural merge absorbed: gone from *plan*, never reusable.
+
+    A Stage 6 create mints above these as well as above every window in the
+    plan, so an absorbed id never names a different window later.
+    """
+    present = {int(w.window_id) for w in plan.windows}
+    retired: Set[int] = set()
+    for folded in merged_window_ids(plan).values():
+        retired.update(folded)
+    return retired - present
+
+
+def next_window_id(plan: WindowPlan, reserved: Iterable[int] = ()) -> int:
+    """The id a new window takes: one above every id *plan* holds or retired.
+
+    *reserved* adds ids the caller knows are taken or retired elsewhere.
+    """
+    ids = {int(w.window_id) for w in plan.windows}
+    ids |= retired_window_ids(plan)
+    ids |= {int(i) for i in reserved}
+    return max(ids, default=-1) + 1
+
+
+@dataclass(frozen=True)
+class MergeGeometry:
+    """Grid geometry of a proposed two-window merge (:func:`merge_geometry`).
+
+    Measured on the active-FT grid the plan was built on, so every quantity is a
+    bin count (``dev-docs/SCIENCE_STRATEGY.md`` Requirement 8).
+
+    Attributes
+    ----------
+    lower_window_id, upper_window_id : int
+        The two windows, in frequency order.
+    uncovered_bins : int
+        Grid points strictly between the lower window's top edge and the upper
+        window's bottom edge -- spectrum neither window fits. ``0`` for windows
+        that abut (the planner's cap split leaves exactly this).
+    content_bins : int
+        Grid steps between the outermost promoted free peaks of the merged
+        window: the quantity the planner's width cap bounds.
+    cap_bins : float
+        The plan's width cap in grid steps (``max_window_width_points`` when
+        positive, else ``max_window_width_mhz`` over the grid step) -- the
+        resolved Stage 4 setting recorded on the plan.
+    n_peaks : int
+        Promoted free peaks the merged window would hold (both windows'
+        ``free_peak_indices``): the quantity the planner's peak cap bounds.
+    max_peaks : int
+        The plan's ``max_peaks_per_window``; ``0`` (the default) means no peak
+        cap.
+    """
+
+    lower_window_id: int
+    upper_window_id: int
+    uncovered_bins: int
+    content_bins: int
+    cap_bins: float
+    n_peaks: int = 0
+    max_peaks: int = DEFAULT_MAX_PEAKS_PER_WINDOW
+
+    @property
+    def within_width_cap(self) -> bool:
+        """Whether the merged window's peak content fits the planner's width
+        cap."""
+        return self.content_bins <= self.cap_bins
+
+    @property
+    def within_peak_cap(self) -> bool:
+        """Whether the merged window holds no more promoted peaks than the
+        planner's peak cap (always true when the plan sets none)."""
+        return self.max_peaks <= 0 or self.n_peaks <= self.max_peaks
+
+    @property
+    def within_cap(self) -> bool:
+        """Whether the merged window fits every cap the planner enforces: the
+        width cap and, when set, the peak cap -- the two bounds
+        :func:`_split_span_to_caps` splits a span to satisfy."""
+        return self.within_width_cap and self.within_peak_cap
+
+
+def merge_geometry(
+    plan: WindowPlan,
+    window_a_id: int,
+    window_b_id: int,
+    peaks: Sequence[Peak],
+    freqs: np.ndarray,
+) -> MergeGeometry:
+    """Measure what merging two windows of ``plan`` would produce.
+
+    Pure measurement -- nothing is merged. :func:`replan` applies any merge it is
+    handed; the policy of *which* merges are worth making (Stage 5's structural
+    renegotiation admits only touching pairs within the width cap) reads this.
+
+    Parameters
+    ----------
+    plan : WindowPlan
+        The plan both windows belong to; its ``parameters`` supply the width and
+        peak caps (falling back to the Stage 4 defaults for a plan that predates
+        them).
+    window_a_id, window_b_id : int
+        The two windows, in either order.
+    peaks : sequence of Peak
+        The Stage 3 peak list the plan's ``free_peak_indices`` index into.
+    freqs : np.ndarray
+        The active-FT frequency axis the plan was built on (either order).
+
+    Raises
+    ------
+    ValueError
+        If either id is not in the plan, or both name the same window.
+    """
+    by_id = {w.window_id: w for w in plan.windows}
+    for wid in (window_a_id, window_b_id):
+        if wid not in by_id:
+            raise ValueError(f"merge request references unknown window {wid}")
+    if window_a_id == window_b_id:
+        raise ValueError("merge request must reference two distinct windows")
+    lo_w, hi_w = sorted(
+        (by_id[window_a_id], by_id[window_b_id]), key=lambda w: w.freq_range[0]
+    )
+    ofreqs = np.sort(np.asarray(freqs, dtype=float))
+    n = ofreqs.size
+    if n < 2:
+        raise ValueError("merge geometry needs a frequency grid of 2+ points")
+    step_mhz = abs(float(np.mean(np.diff(ofreqs)))) or 1.0
+    top = _nearest_grid_index(ofreqs, lo_w.freq_range[1])
+    bottom = _nearest_grid_index(ofreqs, hi_w.freq_range[0])
+    uncovered = max(bottom - top - 1, 0)
+    members = sorted(
+        {li for w in (lo_w, hi_w) for li in w.free_peak_indices if 0 <= li < len(peaks)}
+    )
+    gidx = [_nearest_grid_index(ofreqs, float(peaks[li].frequency)) for li in members]
+    content = (max(gidx) - min(gidx)) if len(gidx) >= 2 else 0
+    params = plan.parameters
+    cap = _width_cap_bins(
+        int(params.get("max_window_width_points", DEFAULT_MAX_WINDOW_WIDTH_POINTS)),
+        float(params.get("max_window_width_mhz", DEFAULT_MAX_WINDOW_WIDTH_MHZ)),
+        step_mhz,
+    )
+    return MergeGeometry(
+        lower_window_id=lo_w.window_id,
+        upper_window_id=hi_w.window_id,
+        uncovered_bins=int(uncovered),
+        content_bins=int(content),
+        cap_bins=cap,
+        n_peaks=len(members),
+        max_peaks=int(params.get("max_peaks_per_window", DEFAULT_MAX_PEAKS_PER_WINDOW)),
+    )
 
 
 def replan(
@@ -1174,6 +1353,7 @@ def replan(
     skirt_level_keep: float = DEFAULT_SKIRT_LEVEL_KEEP,
     curvature_keep_sigma: float = DEFAULT_CURVATURE_KEEP_SIGMA,
     max_window_width_points: int = DEFAULT_MAX_WINDOW_WIDTH_POINTS,
+    max_peaks_per_window: int = DEFAULT_MAX_PEAKS_PER_WINDOW,
 ) -> WindowPlan:
     """Re-plan: apply structural change requests to an existing window plan.
 
@@ -1200,12 +1380,20 @@ def replan(
         The plan to revise.
     requests : list of MergeRequest
         Structural change requests, applied in order. An empty list
-        produces a copy of ``plan`` with the revision counter bumped.
+        produces a copy of ``plan`` with the revision counter bumped. A
+        request is applied to the window list the earlier ones left, so a
+        window absorbed by an earlier request cannot be named again (it raises
+        ``unknown window``); Stage 5 hands a disjoint set. Any two adjacent
+        windows may be merged here -- the gap or width of the result is not
+        policed; :func:`merge_geometry` measures both, and the peak count, for
+        a caller that needs to (Stage 5's structural renegotiation).
     peaks, freqs, complex_spectrum, rms_noise : ...
         Same inputs the plan was built from.
     acquisition_us, tau_us, edge_m, trim_m, edge_threshold,
-    max_window_width_mhz, min_freeze_snr, min_window_half_width_mhz : ...
-        Stage 4 parameters; see :func:`build_window_plan`.
+    max_window_width_mhz, min_freeze_snr, min_window_half_width_mhz,
+    max_window_width_points, max_peaks_per_window : ...
+        Stage 4 parameters; see :func:`build_window_plan`. Recorded on the
+        revised plan, so a later :func:`merge_geometry` reads the same caps.
 
     Returns
     -------
@@ -1238,6 +1426,7 @@ def replan(
         "skirt_level_keep": float(skirt_level_keep),
         "curvature_keep_sigma": float(curvature_keep_sigma),
         "max_window_width_points": int(max_window_width_points),
+        "max_peaks_per_window": int(max_peaks_per_window),
         "acquisition_us": float(acquisition_us),
         "tau_us": tau_us,
     }
@@ -1474,6 +1663,7 @@ def plan_stage6_window(
     magnitude_attachment_threshold: float = DEFAULT_MAGNITUDE_ATTACHMENT_THRESHOLD,
     stage6_min_half_width_points: int = DEFAULT_STAGE6_MIN_WINDOW_HALF_WIDTH_POINTS,
     live_window_ids: Optional[Sequence[int]] = None,
+    reserved_window_ids: Iterable[int] = (),
 ) -> Stage6WindowProposal:
     """Propose a fit window covering ``anchor_mhz`` without disturbing the plan.
 
@@ -1544,6 +1734,10 @@ def plan_stage6_window(
         either. Passing the ids keeps both decisions honest. ``None`` (the
         default) treats every plan window as live, which is the right reading
         for a caller reasoning about the plan alone.
+    reserved_window_ids :
+        Ids a fresh window must not take besides those of ``plan`` and the ids
+        its merged windows absorbed (:func:`retired_window_ids`), which are
+        always excluded. A created window takes one above all of them.
 
     Returns
     -------
@@ -1666,7 +1860,8 @@ def plan_stage6_window(
         )
 
     # --- Build the new window ----------------------------------------------
-    new_wid = max(int(w.window_id) for w in plan.windows) + 1
+    # Above every window of the plan and every id a structural merge retired.
+    new_wid = next_window_id(plan, reserved_window_ids)
     promoted = _promoted_ppeaks(peaks, ofreqs, n)
     members = [pk for pk in promoted if lo <= pk.grid_index <= hi]
 

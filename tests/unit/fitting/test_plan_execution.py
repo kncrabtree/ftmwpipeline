@@ -19,6 +19,7 @@ the production code will see.
 
 from __future__ import annotations
 
+import multiprocessing
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -27,11 +28,13 @@ import pytest
 from ftmwpipeline.core.data_structures import (
     FitWindow,
     FixedContributor,
+    MergeRequest,
     Peak,
     PeakClassification,
     Sideband,
     WindowPlan,
 )
+from ftmwpipeline.fitting import plan_execution
 from ftmwpipeline.fitting.active_ft import ActiveFTResult, PointMap
 from ftmwpipeline.fitting.peak_model import (
     ModelPeak,
@@ -42,10 +45,16 @@ from ftmwpipeline.fitting.peak_model import (
 )
 from ftmwpipeline.fitting.plan_execution import (
     DEFAULT_RESIDUAL_EDGE_THRESHOLD,
+    REPLAN_REASON_PREFIXES,
     FrozenPeak,
-    RescueEvent,
     ReplanContext,
+    RescueEvent,
+    ThawEvent,
     WindowOutcome,
+    _apply_structural_merges,
+    _pair_of,
+    _PendingMerge,
+    _select_structural_merges,
     _window_center_mhz,
     attempt_thaw_round,
     evaluate_edge_free_contributors,
@@ -61,6 +70,10 @@ from ftmwpipeline.fitting.validation import feature_fwhm
 
 if TYPE_CHECKING:
     from ftmwpipeline.fitting.residual_screening import ResidualPeakCandidate
+
+needs_fork = pytest.mark.skipif(
+    "fork" not in multiprocessing.get_all_start_methods(), reason="needs fork"
+)
 
 # --- 2638-scale acquisition --------------------------------------------------
 T_US = 12.65
@@ -1288,6 +1301,10 @@ _STAGE4_PARAMS = {
     "probe_freq_mhz": PROBE_MHZ,
 }
 
+#: Stage 4 parameters with the points cap off, so the MHz cap (40 MHz, far wider
+#: than the fixtures) governs.
+_WIDE_PARAMS = {**_STAGE4_PARAMS, "max_window_width_points": 0}
+
 
 def _make_peak(
     frequency_mhz: float,
@@ -1325,17 +1342,69 @@ class TestStructuralReplan:
 
     def _single_peak_setup(self, peak_freq: float, peak_snr: float, sigma: float):
         """Build a one-peak fixture: spectrum + peak list + Stage 5 inputs."""
+        return self._lines_setup([(peak_freq, peak_snr)], sigma)
+
+    @staticmethod
+    def _lines_setup(lines, sigma: float):
+        """Spectrum + peak list + Stage 5 inputs for ``lines = [(MHz, SNR)]``."""
         rng = np.random.default_rng(SEED + 30)
         freq_array = np.arange(36100.0, 36120.0 + DF_MHZ / 2, DF_MHZ)
-        amp = _amp_for_snr(peak_snr, sigma)
-        spectrum = _synth_spectrum(freq_array, [(peak_freq, amp, 0.3)])
+        spectrum = _synth_spectrum(
+            freq_array, [(f, _amp_for_snr(snr, sigma), 0.3) for f, snr in lines]
+        )
         spectrum = spectrum + _complex_noise(freq_array.size, sigma, rng)
         rms = np.full(freq_array.size, sigma)
-        gi = int(np.argmin(np.abs(freq_array - peak_freq)))
         peaks = [
-            _make_peak(peak_freq, peak_snr, sigma, grid_index=gi),
+            _make_peak(f, snr, sigma, grid_index=int(np.argmin(np.abs(freq_array - f))))
+            for f, snr in lines
         ]
         return freq_array, spectrum, rms, peaks
+
+    #: A strong line just inside window A's top edge, and window B's own line.
+    _STRADDLE_LINES = [(36104.9, 300.0), (36112.0, 100.0)]
+
+    def _straddle_run(self, b_low_mhz: float = 36105.0):
+        """Window A ``[36100, 36105]`` holds the strong line 0.1 MHz below its
+        top edge; window B ``[b_low_mhz, 36118]`` holds its own line at 36112
+        MHz, and its low edge sees the strong line's skirt with no contributor
+        to thaw. Returns ``(outcome, freq_array)``."""
+        freq_array, spectrum, rms, peaks = self._lines_setup(
+            self._STRADDLE_LINES, sigma=1.0
+        )
+        win_a = FitWindow(
+            window_id=0,
+            freq_range=(36100.0, 36105.0),
+            free_peak_indices=[0],
+            batch=0,
+        )
+        win_b = FitWindow(
+            window_id=1,
+            freq_range=(b_low_mhz, 36118.0),
+            free_peak_indices=[1],
+            batch=0,
+        )
+        plan = WindowPlan(
+            windows=[win_a, win_b],
+            topological_order=[0, 1],
+            parameters=dict(_WIDE_PARAMS),
+        )
+        ctx = ReplanContext(
+            peaks=peaks,
+            active_freq_mhz=freq_array,
+            active_complex_spectrum=spectrum,
+            active_rms_noise=rms,
+        )
+        out = execute_plan(
+            plan,
+            _make_active_ft(freq_array, spectrum),
+            rms,
+            [f for f, _snr in self._STRADDLE_LINES],
+            sideband=SIDEBAND,
+            acquisition_us=T_US,
+            tau0_us=TAU_US,
+            replan_context=ctx,
+        )
+        return out, freq_array
 
     def test_no_replan_context_skips_structural_loop(self):
         """Without a ReplanContext, ``execute_plan`` behaves exactly as before:
@@ -1366,20 +1435,58 @@ class TestStructuralReplan:
         assert outcome.final_plan is plan
 
     def test_merge_fires_when_feature_crosses_boundary(self):
-        """A peak sitting just inside window A; window B is empty but its low
-        edge sees the peak's leakage skirt. With no contributor attached to
-        B's low side, the dispatcher emits a merge of A and B; replan
-        produces one wide window; refit clears the previously-flagged edge.
+        """A strong line sits just inside window A; window B holds a line of its
+        own, and its low edge sees the strong line's leakage skirt. With no
+        contributor attached to B's low side, the dispatcher emits a merge of A
+        and B; replan produces one wide window; refit clears the
+        previously-flagged edge.
         """
+        outcome, _freqs = self._straddle_run()
+
+        # A structural merge was applied.
+        assert outcome.replan_history, "expected a structural-replan event"
+        accepted = [e for e in outcome.replan_history if e.accepted]
+        assert accepted, "expected the merge to be accepted"
+        ev = accepted[0]
+        assert (ev.triggering_window_id, ev.edge_side) == (1, "low")
+        assert ev.surviving_window_id == 0
+        assert ev.revision_after == ev.revision_before + 1
+        assert outcome.final_plan_revision == 1
+
+        # The revised plan travels back on the outcome so the caller persists
+        # the survivor with the *union* freq_range. Without it the survivor
+        # keeps window A's narrow range while its fit spans the merged span,
+        # which renders fitted peaks outside the stored window (the w340 bug).
+        assert outcome.final_plan is not None
+        survivor = {w.window_id: w for w in outcome.final_plan.windows}
+        assert set(survivor) == {0}
+        assert survivor[0].freq_range == (36100.0, 36118.0)
+
+        # Only one window left; it fits both lines; its edges are clean (the
+        # feature is no longer cut by a boundary).
+        assert set(outcome.window_outcomes.keys()) == {0}
+        merged = outcome.window_outcomes[0]
+        assert merged.fit.fit.success
+        assert merged.fit.n_peaks == 2
+        # The survivor's stored range contains its fitted lines (no escape).
+        lo, hi = survivor[0].freq_range
+        for f, _snr in self._STRADDLE_LINES:
+            assert lo <= f <= hi
+        # Edges below the dispatcher threshold (else another round would fire
+        # if max_replan_rounds allowed).
+        assert merged.edge_coherence_low <= DEFAULT_RESIDUAL_EDGE_THRESHOLD
+        assert merged.edge_coherence_high <= DEFAULT_RESIDUAL_EDGE_THRESHOLD
+
+    def test_a_flag_on_a_window_that_fits_no_line_is_not_merged(self):
+        """Window B is empty: its low edge sees window A's line skirt and has no
+        contributor to thaw, but B's fit holds no line, so no fitted line
+        straddles the boundary. The flag is recorded as not merged and the plan
+        is untouched."""
         sigma = 1.0
         peak_freq = 36104.9
         freq_array, spectrum, rms, peaks = self._single_peak_setup(
             peak_freq, peak_snr=300.0, sigma=sigma
         )
-
-        # Manual two-window plan: boundary at 36105.0, peak in window A.
-        # Both windows have no fixed contributors -- the dispatcher will
-        # blame the flagged edge on no contributor and merge.
         win_a = FitWindow(
             window_id=0,
             freq_range=(36100.0, 36105.0),
@@ -1397,14 +1504,12 @@ class TestStructuralReplan:
             topological_order=[0, 1],
             parameters=dict(_STAGE4_PARAMS),
         )
-
         ctx = ReplanContext(
             peaks=peaks,
             active_freq_mhz=freq_array,
             active_complex_spectrum=spectrum,
             active_rms_noise=rms,
         )
-
         outcome = execute_plan(
             plan,
             _make_active_ft(freq_array, spectrum),
@@ -1415,38 +1520,16 @@ class TestStructuralReplan:
             tau0_us=TAU_US,
             replan_context=ctx,
         )
-
-        # A structural merge was applied.
-        assert outcome.replan_history, "expected a structural-replan event"
-        accepted = [e for e in outcome.replan_history if e.accepted]
-        assert accepted, "expected the merge to be accepted"
-        ev = accepted[0]
-        assert ev.surviving_window_id == 0
-        assert ev.revision_after == ev.revision_before + 1
-        assert outcome.final_plan_revision == 1
-
-        # The revised plan travels back on the outcome so the caller persists
-        # the survivor with the *union* freq_range. Without it the survivor
-        # keeps window A's narrow range while its fit spans the merged span,
-        # which renders fitted peaks outside the stored window (the w340 bug).
-        assert outcome.final_plan is not None
-        survivor = {w.window_id: w for w in outcome.final_plan.windows}
-        assert set(survivor) == {0}
-        assert survivor[0].freq_range == (36100.0, 36110.0)
-
-        # Only one window left; it contains the peak as a free peak; its
-        # edges are clean (the feature is no longer cut by a boundary).
-        assert set(outcome.window_outcomes.keys()) == {0}
-        merged = outcome.window_outcomes[0]
-        assert merged.fit.fit.success
-        assert merged.fit.n_peaks == 1
-        # The survivor's stored range contains its fitted peak (no escape).
-        lo, hi = survivor[0].freq_range
-        assert lo <= peak_freq <= hi
-        # Edges below the dispatcher threshold (else another round would fire
-        # if max_replan_rounds allowed).
-        assert merged.edge_coherence_low <= DEFAULT_RESIDUAL_EDGE_THRESHOLD
-        assert merged.edge_coherence_high <= DEFAULT_RESIDUAL_EDGE_THRESHOLD
+        (ev,) = outcome.replan_history
+        assert (ev.triggering_window_id, ev.edge_side) == (1, "low")
+        assert ev.edge_coherence_before > DEFAULT_RESIDUAL_EDGE_THRESHOLD
+        assert not ev.accepted
+        assert ev.reason.startswith("not merged: ")
+        assert "fit holds no line" in ev.reason
+        assert ev.revision_after == ev.revision_before == 0
+        assert outcome.final_plan_revision == 0
+        assert outcome.final_plan is plan
+        assert outcome.window_outcomes[1].fit.n_peaks == 0
 
     def test_flagged_edge_with_contributor_does_not_merge(self):
         """When a flagged edge already has a fixed contributor, thaw owns
@@ -1593,6 +1676,831 @@ class TestStructuralReplan:
         assert outcome.replan_history == []
         assert outcome.final_plan_revision == 0
         assert set(outcome.window_outcomes.keys()) == {0, 1}
+
+
+# ---------------------------------------------------------------------------
+# Structural replan: which merges a round applies
+# ---------------------------------------------------------------------------
+# Windows below are cut on a bin grid so "bins between two windows" and "bins
+# between the outermost lines" -- what the structural merge is gated on -- are
+# written down directly.
+_BIN_FREQ = 36100.0 + np.arange(1640) * DF_MHZ
+
+
+def _bin_plan(windows, params=None):
+    """``(plan, peaks)`` from ``windows = [(id, lo_bin, hi_bin, [peak bins])]``."""
+    peaks: list[Peak] = []
+    fit_windows = []
+    for wid, lo, hi, pbins in windows:
+        idx = []
+        for b in pbins:
+            idx.append(len(peaks))
+            peaks.append(_make_peak(float(_BIN_FREQ[b]), 100.0, 1.0, grid_index=b))
+        fit_windows.append(
+            FitWindow(
+                window_id=wid,
+                freq_range=(float(_BIN_FREQ[lo]), float(_BIN_FREQ[hi])),
+                free_peak_indices=idx,
+                diagnostics={"grid_span": [int(lo), int(hi)]},
+            )
+        )
+    plan = WindowPlan(
+        windows=fit_windows,
+        topological_order=[w.window_id for w in fit_windows],
+        parameters=dict(_STAGE4_PARAMS if params is None else params),
+    )
+    return plan, peaks
+
+
+def _bin_ctx(peaks):
+    n = _BIN_FREQ.size
+    return ReplanContext(
+        peaks=peaks,
+        active_freq_mhz=_BIN_FREQ,
+        active_complex_spectrum=np.zeros(n, dtype=complex),
+        active_rms_noise=np.ones(n),
+    )
+
+
+def _trig(window_id, partner_id, side, coherence, n_lines=1):
+    return _PendingMerge(
+        window_id=window_id,
+        partner_id=partner_id,
+        edge_side=side,
+        edge_coherence=coherence,
+        reason=f"edge {coherence:g} on {side} of {window_id}",
+        n_lines=n_lines,
+    )
+
+
+def _chain(ids=(4, 5, 6)):
+    """Abutting windows ``X-1, X, X+1`` with one line each: 20 and 70 bins
+    apart, inside the default 96-bin width cap."""
+    x0, x1, x2 = ids
+    return _bin_plan(
+        [
+            (x0, 0, 60, [50]),
+            (x1, 61, 120, [70]),
+            (x2, 121, 180, [140]),
+        ]
+    )
+
+
+def _status(verdicts):
+    return {(v.trigger.window_id, v.trigger.edge_side): v.status for v in verdicts}
+
+
+class TestSelectStructuralMerges:
+    """:func:`_select_structural_merges`: which of a round's triggers become
+    merge requests -- a window that fits a line, a touching partner, a merged
+    window inside the plan's caps, a disjoint set."""
+
+    def test_a_window_flagged_on_both_sides_merges_once_and_defers_once(self):
+        plan, peaks = _chain()
+        pending = [
+            _trig(5, 4, "low", 5.0),
+            _trig(5, 6, "high", 3.0),
+            _trig(4, 5, "high", 4.0),
+            _trig(6, 5, "low", 2.0),
+        ]
+        requests, verdicts = _select_structural_merges(pending, plan, _bin_ctx(peaks))
+        assert len(requests) == 1
+        assert {requests[0].window_a_id, requests[0].window_b_id} == {4, 5}
+        # The request carries the strongest trigger's reason.
+        assert requests[0].reason == "edge 5 on low of 5"
+        status = _status(verdicts)
+        assert status == {
+            (5, "low"): "apply",
+            (4, "high"): "apply",
+            (5, "high"): "deferred",
+            (6, "low"): "deferred",
+        }
+        deferred = [v for v in verdicts if v.status == "deferred"]
+        assert all(
+            v.reason == "deferred: window 5 merges with window 4 this round"
+            for v in deferred
+        )
+
+    def test_one_verdict_per_trigger_in_window_and_side_order(self):
+        plan, peaks = _chain()
+        pending = [_trig(6, 5, "low", 2.0), _trig(5, 6, "high", 3.0)]
+        _requests, verdicts = _select_structural_merges(pending, plan, _bin_ctx(peaks))
+        assert [(v.trigger.window_id, v.trigger.edge_side) for v in verdicts] == [
+            (5, "high"),
+            (6, "low"),
+        ]
+
+    def test_the_stronger_edge_takes_the_shared_window(self):
+        plan, peaks = _chain()
+        pending = [_trig(5, 4, "low", 3.0), _trig(5, 6, "high", 6.0)]
+        requests, verdicts = _select_structural_merges(pending, plan, _bin_ctx(peaks))
+        assert [{r.window_a_id, r.window_b_id} for r in requests] == [{5, 6}]
+        assert _status(verdicts) == {(5, "low"): "deferred", (5, "high"): "apply"}
+
+    def test_a_pair_s_strength_is_its_strongest_trigger(self):
+        """Window 6's weak edge toward 5 does not count against the pair when
+        window 5's edge toward 6 is the strongest of the round."""
+        plan, peaks = _chain()
+        pending = [
+            _trig(5, 4, "low", 4.0),
+            _trig(5, 6, "high", 7.0),
+            _trig(6, 5, "low", 1.0),
+        ]
+        requests, _v = _select_structural_merges(pending, plan, _bin_ctx(peaks))
+        assert [{r.window_a_id, r.window_b_id} for r in requests] == [{5, 6}]
+
+    def test_equal_edges_tie_break_on_the_window_pair(self):
+        plan, peaks = _chain()
+        pending = [_trig(5, 6, "high", 3.0), _trig(5, 4, "low", 3.0)]
+        requests, verdicts = _select_structural_merges(pending, plan, _bin_ctx(peaks))
+        assert [{r.window_a_id, r.window_b_id} for r in requests] == [{4, 5}]
+        assert _status(verdicts) == {(5, "low"): "apply", (5, "high"): "deferred"}
+
+    def test_a_long_chain_pairs_off_into_a_disjoint_set(self):
+        # Neighbouring lines are 101 bins apart: over the default 96-point cap,
+        # so the MHz cap governs here.
+        ids = tuple(range(8))
+        spec = [(i, 101 * i, 101 * i + 100, [101 * i + 50]) for i in ids]
+        plan, peaks = _bin_plan(spec, _WIDE_PARAMS)
+        pending = []
+        for i in ids:
+            if i > 0:
+                pending.append(_trig(i, i - 1, "low", 2.0))
+            if i < ids[-1]:
+                pending.append(_trig(i, i + 1, "high", 2.0))
+        requests, verdicts = _select_structural_merges(pending, plan, _bin_ctx(peaks))
+        used = [w for r in requests for w in (r.window_a_id, r.window_b_id)]
+        assert len(used) == len(set(used)), "a window is in two requests"
+        # Equal edges: the lowest pairs first, so 0/1, 2/3, 4/5, 6/7.
+        assert sorted(frozenset((r.window_a_id, r.window_b_id)) for r in requests) == [
+            frozenset(p) for p in [(0, 1), (2, 3), (4, 5), (6, 7)]
+        ]
+        # Every trigger got a verdict, and each deferral names a busy window.
+        assert len(verdicts) == len(pending)
+        for v in verdicts:
+            assert v.status in ("apply", "deferred")
+            if v.status == "deferred":
+                assert "merges with window" in v.reason
+
+    @pytest.mark.parametrize("gap, qualifies", [(0, True), (1, True), (2, False)])
+    def test_a_partner_with_more_than_one_bin_between_is_not_merged(
+        self, gap, qualifies
+    ):
+        plan, peaks = _bin_plan(
+            [(0, 0, 100, [90]), (1, 101 + gap, 200 + gap, [110 + gap])]
+        )
+        requests, verdicts = _select_structural_merges(
+            [_trig(0, 1, "high", 4.0)], plan, _bin_ctx(peaks)
+        )
+        (v,) = verdicts
+        if qualifies:
+            assert v.status == "apply"
+            assert len(requests) == 1
+        else:
+            assert v.status == "not_merged"
+            assert requests == []
+            assert v.reason.startswith("not merged: ")
+            assert "no window touches it" in v.reason
+            assert f"{gap} active-FT bins lie between" in v.reason
+            assert "window 1" in v.reason
+
+    def test_a_distant_neighbour_is_not_merged_but_a_touching_one_still_merges(
+        self,
+    ):
+        plan, peaks = _bin_plan(
+            [
+                (0, 0, 100, [90]),
+                (1, 101, 200, [110]),
+                (2, 600, 700, [650]),
+            ]
+        )
+        pending = [_trig(1, 0, "low", 3.0), _trig(1, 2, "high", 9.0)]
+        requests, verdicts = _select_structural_merges(pending, plan, _bin_ctx(peaks))
+        # The far, stronger edge neither merges nor shadows the touching pair.
+        assert [{r.window_a_id, r.window_b_id} for r in requests] == [{0, 1}]
+        assert _status(verdicts) == {(1, "low"): "apply", (1, "high"): "not_merged"}
+
+    def test_a_merge_over_the_points_cap_is_refused(self):
+        params = {**_STAGE4_PARAMS, "max_window_width_points": 96}
+        ok, peaks_ok = _bin_plan([(0, 0, 100, [10]), (1, 101, 200, [106])], params)
+        over, peaks_over = _bin_plan([(0, 0, 100, [10]), (1, 101, 200, [107])], params)
+        _r, v_ok = _select_structural_merges(
+            [_trig(0, 1, "high", 4.0)], ok, _bin_ctx(peaks_ok)
+        )
+        reqs, v_over = _select_structural_merges(
+            [_trig(0, 1, "high", 4.0)], over, _bin_ctx(peaks_over)
+        )
+        assert v_ok[0].status == "apply"
+        assert v_over[0].status == "refused"
+        assert reqs == []
+        assert v_over[0].reason.startswith("refused: ")
+        assert "97 active-FT bins" in v_over[0].reason
+        assert "width cap of 96" in v_over[0].reason
+
+    def test_a_merge_over_the_mhz_cap_is_refused_when_the_points_cap_is_off(self):
+        # 0.6 MHz at 0.0122 MHz per bin: a cap of about 49 bins.
+        params = {
+            **_STAGE4_PARAMS,
+            "max_window_width_points": 0,
+            "max_window_width_mhz": 0.6,
+        }
+        ok, peaks_ok = _bin_plan([(0, 0, 100, [10]), (1, 101, 200, [58])], params)
+        over, peaks_over = _bin_plan([(0, 0, 100, [10]), (1, 101, 200, [62])], params)
+        _r, v_ok = _select_structural_merges(
+            [_trig(0, 1, "high", 4.0)], ok, _bin_ctx(peaks_ok)
+        )
+        reqs, v_over = _select_structural_merges(
+            [_trig(0, 1, "high", 4.0)], over, _bin_ctx(peaks_over)
+        )
+        assert v_ok[0].status == "apply"
+        assert (v_over[0].status, reqs) == ("refused", [])
+        assert "52 active-FT bins" in v_over[0].reason
+        assert "width cap of 49." in v_over[0].reason
+
+    def test_a_refused_pair_does_not_shadow_a_qualifying_one(self):
+        """A refusal takes no part in the disjoint set: window 1's weaker edge
+        toward its touching neighbour is not deferred behind a strong one that
+        was refused for width."""
+        plan, peaks = _bin_plan(
+            [
+                (0, 0, 100, [60]),
+                (1, 101, 200, [110]),
+                (2, 201, 400, [300]),
+            ]
+        )
+        pending = [_trig(1, 2, "high", 9.0), _trig(1, 0, "low", 2.0)]
+        requests, verdicts = _select_structural_merges(pending, plan, _bin_ctx(peaks))
+        assert [{r.window_a_id, r.window_b_id} for r in requests] == [{0, 1}]
+        assert _status(verdicts) == {(1, "low"): "apply", (1, "high"): "refused"}
+        assert "width cap" in verdicts[1].reason
+
+    def test_a_partner_that_is_not_in_the_plan_fails(self):
+        plan, peaks = _chain()
+        requests, verdicts = _select_structural_merges(
+            [_trig(5, 99, "high", 4.0)], plan, _bin_ctx(peaks)
+        )
+        assert requests == []
+        assert verdicts[0].status == "failed"
+        assert verdicts[0].reason.startswith("failed: ")
+        assert "unknown window 99" in verdicts[0].reason
+
+    def test_a_window_whose_fit_holds_no_line_is_not_merged(self):
+        """The cleanup emptied window 5: its strong edge toward 4 is no evidence
+        of a straddling line. It is not merged, and it does not take window 5
+        from window 6's merge."""
+        plan, peaks = _chain()
+        pending = [
+            _trig(5, 4, "low", 9.0, n_lines=0),
+            _trig(6, 5, "low", 2.0),
+        ]
+        requests, verdicts = _select_structural_merges(pending, plan, _bin_ctx(peaks))
+        assert [{r.window_a_id, r.window_b_id} for r in requests] == [{5, 6}]
+        assert _status(verdicts) == {(5, "low"): "not_merged", (6, "low"): "apply"}
+        assert verdicts[0].reason == (
+            "not merged: residual edge-coherence 9.00 on low side, but the "
+            "window's fit holds no line, so no fitted line straddles its boundary "
+            "with window 4"
+        )
+
+    @pytest.mark.parametrize(
+        "max_peaks, status", [(0, "apply"), (3, "apply"), (2, "refused")]
+    )
+    def test_a_merge_over_the_peak_cap_is_refused(self, max_peaks, status):
+        params = {**_STAGE4_PARAMS, "max_peaks_per_window": max_peaks}
+        plan, peaks = _bin_plan([(0, 0, 100, [80]), (1, 101, 200, [110, 120])], params)
+        reqs, (v,) = _select_structural_merges(
+            [_trig(0, 1, "high", 4.0)], plan, _bin_ctx(peaks)
+        )
+        assert v.status == status
+        if status == "refused":
+            assert reqs == []
+            assert v.reason == (
+                "refused: merging with window 1 would hold 3 promoted lines, "
+                "over the plan's max_peaks_per_window of 2"
+            )
+        else:
+            assert len(reqs) == 1
+
+    def test_a_pair_stage4_rejected_fails_and_frees_its_windows(self):
+        """With 4/5 rejected earlier in the round, 5/6 is no longer deferred
+        behind it: it is chosen, and no verdict defers to the failed merge."""
+        plan, peaks = _chain()
+        pending = [_trig(5, 4, "low", 5.0), _trig(5, 6, "high", 3.0)]
+        ctx = _bin_ctx(peaks)
+        _r, before = _select_structural_merges(pending, plan, ctx)
+        assert _status(before) == {(5, "low"): "apply", (5, "high"): "deferred"}
+        requests, verdicts = _select_structural_merges(
+            pending, plan, ctx, {(4, 5): "failed: no"}
+        )
+        assert [{r.window_a_id, r.window_b_id} for r in requests] == [{5, 6}]
+        assert _status(verdicts) == {(5, "low"): "failed", (5, "high"): "apply"}
+        assert verdicts[0].reason == "failed: no"
+
+    def test_every_reason_that_is_not_applied_starts_with_a_declared_prefix(self):
+        plan, peaks = _bin_plan(
+            [
+                (0, 0, 60, [50]),
+                (1, 61, 120, [70]),
+                (2, 121, 180, [140]),
+                (3, 181, 400, [300]),
+                (4, 700, 800, [750]),
+            ]
+        )
+        pending = [
+            _trig(0, 1, "high", 2.0, n_lines=0),
+            _trig(1, 2, "high", 5.0),
+            _trig(2, 1, "low", 4.0),
+            _trig(2, 3, "high", 3.0),
+            _trig(3, 4, "high", 8.0),
+            _trig(4, 9, "high", 1.0),
+        ]
+        _r, verdicts = _select_structural_merges(pending, plan, _bin_ctx(peaks))
+        assert sorted({v.status for v in verdicts}) == [
+            "apply",
+            "failed",
+            "not_merged",
+            "refused",
+        ]
+        for v in verdicts:
+            if v.status != "apply":
+                assert v.reason.split(": ")[0] in REPLAN_REASON_PREFIXES, v.reason
+
+    def test_the_choice_does_not_depend_on_the_order_triggers_arrive_in(self):
+        plan, peaks = _bin_plan(
+            [
+                (0, 0, 60, [50]),
+                (1, 61, 120, [70]),
+                (2, 121, 180, [140]),
+                (3, 181, 240, [200]),
+                (4, 700, 800, [750]),
+            ]
+        )
+        ctx = _bin_ctx(peaks)
+        pending = [
+            _trig(0, 1, "high", 2.0),
+            _trig(1, 0, "low", 2.0),
+            _trig(1, 2, "high", 2.0),
+            _trig(2, 1, "low", 5.0),
+            _trig(2, 3, "high", 2.0),
+            _trig(3, 2, "low", 2.0),
+            _trig(3, 4, "high", 8.0),
+        ]
+        expected = _select_structural_merges(pending, plan, ctx)
+        requests, verdicts = expected
+        # 1/2 is strongest; 0/1 and 2/3 wait behind it; 3/4 is a gap.
+        assert [{r.window_a_id, r.window_b_id} for r in requests] == [{1, 2}]
+        assert sorted(v.status for v in verdicts) == (
+            ["apply"] * 2 + ["deferred"] * 4 + ["not_merged"]
+        )
+        rng = np.random.default_rng(SEED)
+        for _ in range(12):
+            shuffled = [pending[i] for i in rng.permutation(len(pending))]
+            assert _select_structural_merges(shuffled, plan, ctx) == expected
+
+
+class TestApplyStructuralMerges:
+    """:func:`_apply_structural_merges`: the round's set goes to Stage 4 whole,
+    and a rejection names exactly the requests Stage 4 refused."""
+
+    @staticmethod
+    def _fake_replan(bad_pairs):
+        calls = []
+
+        def fake(plan, requests, ctx):
+            calls.append([(r.window_a_id, r.window_b_id) for r in requests])
+            for r in requests:
+                if _pair_of(r.window_a_id, r.window_b_id) in bad_pairs:
+                    raise ValueError(f"cannot merge {r.window_a_id}")
+            return WindowPlan(
+                windows=list(plan.windows),
+                parameters=dict(plan.parameters),
+                plan_revision=plan.plan_revision + 1,
+            )
+
+        return fake, calls
+
+    def _requests(self):
+        return [MergeRequest(0, 1, "a"), MergeRequest(2, 3, "b"), MergeRequest(4, 5)]
+
+    def test_all_requests_go_together_when_stage4_accepts_them(self, monkeypatch):
+        fake, calls = self._fake_replan(set())
+        monkeypatch.setattr(plan_execution, "_do_replan", fake)
+        plan = WindowPlan()
+        reqs = self._requests()
+        new_plan, failed = _apply_structural_merges(plan, reqs, None)
+        assert new_plan is not None and new_plan.plan_revision == 1
+        assert failed == {}
+        assert len(calls) == 1
+
+    def test_a_rejected_request_is_named_and_no_plan_returned(self, monkeypatch):
+        # The caller chooses the round's set again without it (a request that
+        # was deferred behind it may now qualify), so no partial plan comes back.
+        fake, calls = self._fake_replan({(2, 3)})
+        monkeypatch.setattr(plan_execution, "_do_replan", fake)
+        new_plan, failed = _apply_structural_merges(
+            WindowPlan(), self._requests(), None
+        )
+        assert new_plan is None
+        assert failed == {(2, 3): "failed: cannot merge 2"}
+        # Tried cumulatively: the batch, then each request on top of the ones
+        # that passed.
+        assert calls[1:] == [[(0, 1)], [(0, 1), (2, 3)], [(0, 1), (4, 5)]]
+
+    def test_every_request_rejected_names_each(self, monkeypatch):
+        fake, _calls = self._fake_replan({(0, 1), (2, 3), (4, 5)})
+        monkeypatch.setattr(plan_execution, "_do_replan", fake)
+        new_plan, failed = _apply_structural_merges(
+            WindowPlan(), self._requests(), None
+        )
+        assert new_plan is None
+        assert sorted(failed) == [(0, 1), (2, 3), (4, 5)]
+        assert all(v.startswith("failed: ") for v in failed.values())
+
+
+# ---------------------------------------------------------------------------
+# Structural replan through execute_plan: rounds, history, parallel == sequential
+# ---------------------------------------------------------------------------
+def _scripted_dispatch(by_revision, *, reverse=False):
+    """A ``_dispatch_structural_round`` that returns the triggers listed for the
+    plan's current revision (so a round's request is the test's, not the fit's
+    residual statistics)."""
+
+    def dispatch(outcomes, plan, threshold):
+        out = list(by_revision.get(plan.plan_revision, []))
+        return out[::-1] if reverse else out
+
+    return dispatch
+
+
+def _exec_fixture(windows):
+    """``(plan, ctx, active_ft, rms, line frequencies)`` for ``windows = [(id,
+    lo_bin, hi_bin, [line bin])]``: a noisy spectrum with one strong line at each
+    listed bin."""
+    plan, peaks = _bin_plan(windows, _WIDE_PARAMS)
+    rng = np.random.default_rng(SEED + 31)
+    sigma = 1.0
+    lines = [(p.frequency, _amp_for_snr(100.0, sigma), 0.3) for p in peaks]
+    spectrum = _synth_spectrum(_BIN_FREQ, lines)
+    spectrum = spectrum + _complex_noise(_BIN_FREQ.size, sigma, rng)
+    rms = np.full(_BIN_FREQ.size, sigma)
+    ctx = ReplanContext(
+        peaks=peaks,
+        active_freq_mhz=_BIN_FREQ,
+        active_complex_spectrum=spectrum,
+        active_rms_noise=rms,
+    )
+    return (
+        plan,
+        ctx,
+        _make_active_ft(_BIN_FREQ, spectrum),
+        rms,
+        [p.frequency for p in peaks],
+    )
+
+
+def _run_exec(fixture, **kwargs):
+    plan, ctx, active_ft, rms, freqs = fixture
+    return execute_plan(
+        plan,
+        active_ft,
+        rms,
+        freqs,
+        sideband=SIDEBAND,
+        acquisition_us=T_US,
+        tau0_us=TAU_US,
+        replan_context=ctx,
+        **kwargs,
+    )
+
+
+def _summary(history):
+    return [
+        (
+            e.triggering_window_id,
+            e.partner_window_id,
+            e.surviving_window_id,
+            e.edge_side,
+            e.revision_before,
+            e.revision_after,
+            e.accepted,
+            e.reason.split(":")[0],
+        )
+        for e in history
+    ]
+
+
+_CHAIN_WINDOWS = [
+    (0, 0, 400, [200]),
+    (1, 401, 800, [600]),
+    (2, 801, 1200, [1000]),
+]
+
+
+class TestStructuralReplanRounds:
+    """The structural loop in :func:`execute_plan`, with the round's triggers
+    scripted so the merge machinery (selection, Stage 4 replan, refit, history)
+    is what is under test."""
+
+    def _chain_script(self, **kw):
+        return _scripted_dispatch(
+            {
+                0: [_trig(1, 0, "low", 5.0), _trig(1, 2, "high", 3.0)],
+                1: [_trig(0, 2, "high", 2.0)],
+            },
+            **kw,
+        )
+
+    def test_a_chain_merges_one_pair_a_round_and_a_deferral_merges_next(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(
+            plan_execution, "_dispatch_structural_round", self._chain_script()
+        )
+        out = _run_exec(_exec_fixture(_CHAIN_WINDOWS))
+        first, deferred, second = out.replan_history
+        assert (first.accepted, first.revision_before, first.revision_after) == (
+            True,
+            0,
+            1,
+        )
+        assert first.surviving_window_id == 0
+        # The shared window's other request waits, with the reason on record and
+        # the plan revision untouched by it.
+        assert deferred.accepted is False
+        assert deferred.reason == "deferred: window 1 merges with window 0 this round"
+        assert deferred.revision_after == deferred.revision_before == 0
+        # The survivor's edge still flags in round 2: the deferred merge happens.
+        assert (second.accepted, second.revision_before, second.revision_after) == (
+            True,
+            1,
+            2,
+        )
+        assert out.final_plan_revision == 2
+        assert [w.window_id for w in out.final_plan.windows] == [0]
+        assert set(out.window_outcomes) == {0}
+        assert out.window_outcomes[0].fit.n_peaks == 3
+
+    def test_events_that_are_not_accepted_leave_the_revision_alone(self, monkeypatch):
+        monkeypatch.setattr(
+            plan_execution, "_dispatch_structural_round", self._chain_script()
+        )
+        out = _run_exec(_exec_fixture(_CHAIN_WINDOWS))
+        for e in out.replan_history:
+            if e.accepted:
+                assert e.revision_after == e.revision_before + 1
+            else:
+                assert e.revision_after == e.revision_before
+
+    def test_a_refusal_is_recorded_once_across_rounds(self, monkeypatch):
+        """Windows 2 and 3 are 100+ bins apart: the trigger is refused in round
+        1 and asked again in round 2 (windows 0 and 1 merged meanwhile) -- the
+        unchanged refusal is not recorded twice."""
+        windows = [
+            (0, 0, 400, [200]),
+            (1, 401, 800, [600]),
+            (2, 900, 1150, [1000]),
+            (3, 1300, 1600, [1450]),
+        ]
+        refused = _trig(2, 3, "high", 4.0)
+        monkeypatch.setattr(
+            plan_execution,
+            "_dispatch_structural_round",
+            _scripted_dispatch({0: [_trig(0, 1, "high", 5.0), refused], 1: [refused]}),
+        )
+        out = _run_exec(_exec_fixture(windows))
+        merge, refusal = out.replan_history
+        assert (merge.accepted, merge.surviving_window_id) == (True, 0)
+        assert refusal.accepted is False
+        assert "no window touches it" in refusal.reason
+        assert refusal.revision_after == refusal.revision_before == 0
+        assert out.final_plan_revision == 1
+        assert sorted(w.window_id for w in out.final_plan.windows) == [0, 2, 3]
+
+    def test_a_refusal_alone_stops_the_loop_and_changes_nothing(self, monkeypatch):
+        windows = [(0, 0, 400, [200]), (1, 600, 1000, [800])]
+        monkeypatch.setattr(
+            plan_execution,
+            "_dispatch_structural_round",
+            _scripted_dispatch({0: [_trig(0, 1, "high", 4.0)]}),
+        )
+        fixture = _exec_fixture(windows)
+        out = _run_exec(fixture)
+        (ev,) = out.replan_history
+        assert not ev.accepted
+        assert out.final_plan_revision == 0
+        assert out.final_plan is fixture[0]
+        assert set(out.window_outcomes) == {0, 1}
+
+    def test_a_request_stage4_rejects_is_dropped_and_the_round_goes_on(
+        self, monkeypatch
+    ):
+        windows = [
+            (0, 0, 400, [200]),
+            (1, 401, 800, [600]),
+            (2, 900, 1150, [1000]),
+            (3, 1151, 1600, [1450]),
+        ]
+        real = plan_execution._do_replan
+
+        def picky(plan, requests, ctx):
+            for r in requests:
+                if _pair_of(r.window_a_id, r.window_b_id) == (2, 3):
+                    raise ValueError("synthetic stage 4 rejection")
+            return real(plan, requests, ctx)
+
+        monkeypatch.setattr(plan_execution, "_do_replan", picky)
+        monkeypatch.setattr(
+            plan_execution,
+            "_dispatch_structural_round",
+            _scripted_dispatch(
+                {0: [_trig(0, 1, "high", 5.0), _trig(2, 3, "high", 4.0)]}
+            ),
+        )
+        out = _run_exec(_exec_fixture(windows))
+        good, bad = out.replan_history
+        assert good.accepted and good.surviving_window_id == 0
+        assert (good.revision_before, good.revision_after) == (0, 1)
+        assert not bad.accepted
+        assert bad.reason == "failed: synthetic stage 4 rejection"
+        assert bad.revision_after == bad.revision_before
+        assert out.final_plan_revision == 1
+        assert sorted(w.window_id for w in out.final_plan.windows) == [0, 2, 3]
+        assert set(out.window_outcomes) == {0, 2, 3}
+
+    def test_every_request_rejected_records_each_and_stops(self, monkeypatch):
+        windows = [(0, 0, 400, [200]), (1, 401, 800, [600])]
+
+        def refuse(plan, requests, ctx):
+            raise ValueError("synthetic stage 4 rejection")
+
+        monkeypatch.setattr(plan_execution, "_do_replan", refuse)
+        monkeypatch.setattr(
+            plan_execution,
+            "_dispatch_structural_round",
+            _scripted_dispatch({0: [_trig(0, 1, "high", 5.0)]}),
+        )
+        out = _run_exec(_exec_fixture(windows))
+        (ev,) = out.replan_history
+        assert not ev.accepted
+        assert ev.reason == "failed: synthetic stage 4 rejection"
+        assert out.final_plan_revision == 0
+
+    def test_a_merge_deferred_behind_a_rejected_one_goes_ahead_that_round(
+        self, monkeypatch
+    ):
+        """Window 1's stronger edge asks for 0/1, so 1/2 waits behind it; Stage 4
+        rejects 0/1, and 1/2 is merged in the same round instead of being
+        recorded as deferred behind a merge that never happened."""
+        real = plan_execution._do_replan
+
+        def picky(plan, requests, ctx):
+            for r in requests:
+                if _pair_of(r.window_a_id, r.window_b_id) == (0, 1):
+                    raise ValueError("synthetic stage 4 rejection")
+            return real(plan, requests, ctx)
+
+        monkeypatch.setattr(plan_execution, "_do_replan", picky)
+        monkeypatch.setattr(
+            plan_execution,
+            "_dispatch_structural_round",
+            _scripted_dispatch(
+                {0: [_trig(1, 0, "low", 5.0), _trig(1, 2, "high", 3.0)]}
+            ),
+        )
+        out = _run_exec(_exec_fixture(_CHAIN_WINDOWS))
+        rejected, merged = out.replan_history
+        assert (rejected.triggering_window_id, rejected.partner_window_id) == (1, 0)
+        assert not rejected.accepted
+        assert rejected.reason == "failed: synthetic stage 4 rejection"
+        assert rejected.revision_after == rejected.revision_before == 0
+        assert (merged.triggering_window_id, merged.partner_window_id) == (1, 2)
+        assert merged.accepted
+        assert (merged.revision_before, merged.revision_after) == (0, 1)
+        assert not [e for e in out.replan_history if "deferred" in e.reason]
+        assert out.final_plan_revision == 1
+        assert sorted(w.window_id for w in out.final_plan.windows) == [0, 1]
+
+    def test_a_stage4_rejection_is_recorded_once_across_rounds(self, monkeypatch):
+        windows = [
+            (0, 0, 400, [200]),
+            (1, 401, 800, [600]),
+            (2, 900, 1150, [1000]),
+            (3, 1151, 1600, [1450]),
+        ]
+        real = plan_execution._do_replan
+
+        def picky(plan, requests, ctx):
+            for r in requests:
+                if _pair_of(r.window_a_id, r.window_b_id) == (2, 3):
+                    raise ValueError("synthetic stage 4 rejection")
+            return real(plan, requests, ctx)
+
+        bad = _trig(2, 3, "high", 4.0)
+        monkeypatch.setattr(plan_execution, "_do_replan", picky)
+        monkeypatch.setattr(
+            plan_execution,
+            "_dispatch_structural_round",
+            _scripted_dispatch({0: [_trig(0, 1, "high", 5.0), bad], 1: [bad]}),
+        )
+        out = _run_exec(_exec_fixture(windows))
+        assert _summary(out.replan_history) == [
+            (0, 1, 0, "high", 0, 1, True, "edge 5 on high of 0"),
+            (2, 3, 2, "high", 0, 0, False, "failed"),
+        ]
+        assert out.final_plan_revision == 1
+
+    def test_a_merge_drops_the_records_of_the_windows_it_refits(self, monkeypatch):
+        """Thaw, rescue and cleanup records of the merged windows (the survivor
+        and the absorbed one) are dropped before the re-fit records its own;
+        an untouched window keeps its records. Each walk is tagged with
+        synthetic records so which walk wrote a record is visible."""
+        real_walk = plan_execution._walk_windows_parallel
+
+        def walk(plan, order, **kw):
+            real_walk(plan, order, **kw)
+            phase = kw["phase"]
+            for wid in order:
+                kw["thaw_history"].append(
+                    ThawEvent(wid, -1, -1, 0.0, "low", 0.0, 0.0, False, phase)
+                )
+                kw["rescue_history"].append(
+                    RescueEvent(
+                        wid, 0, 0, 0, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, False, phase
+                    )
+                )
+                kw["cleanup_history"].append({"window_id": wid, "phase": phase})
+
+        monkeypatch.setattr(plan_execution, "_walk_windows_parallel", walk)
+        monkeypatch.setattr(
+            plan_execution,
+            "_dispatch_structural_round",
+            _scripted_dispatch({0: [_trig(0, 1, "high", 5.0)]}),
+        )
+        out = _run_exec(_exec_fixture(_CHAIN_WINDOWS))
+        assert out.final_plan_revision == 1
+        expected = [(2, "initial"), (0, "replan")]
+        thaws = [(e.dependent_window_id, e.reason) for e in out.thaw_history]
+        rescues = [(e.window_id, e.reason) for e in out.rescue_history]
+        cleanups = [(r["window_id"], r["phase"]) for r in out.cleanup_history]
+        assert thaws == rescues == cleanups == expected
+
+    @needs_fork
+    def test_parallel_and_sequential_walks_record_the_same_history(self, monkeypatch):
+        # The scripted triggers arrive in opposite orders (the order a parallel
+        # walk's windows finish in is not fixed); the recorded history, merged
+        # windows and refit results are the same.
+        runs = []
+        for jobs, reverse in ((1, False), (2, True)):
+            monkeypatch.setattr(
+                plan_execution,
+                "_dispatch_structural_round",
+                self._chain_script(reverse=reverse),
+            )
+            out = _run_exec(_exec_fixture(_CHAIN_WINDOWS), jobs=jobs)
+            runs.append(out)
+        seq, par = runs
+        assert _summary(seq.replan_history) == _summary(par.replan_history)
+        assert [e.reason for e in seq.replan_history] == [
+            e.reason for e in par.replan_history
+        ]
+        assert seq.final_plan_revision == par.final_plan_revision == 2
+        assert (
+            seq.final_plan.windows[0].freq_range == par.final_plan.windows[0].freq_range
+        )
+
+    @pytest.mark.parametrize(
+        "uncovered, merged", [(1, True), (7, False)], ids=["one-bin", "seven-bins"]
+    )
+    def test_a_real_flag_merges_across_a_bin_but_not_across_a_gap(
+        self, uncovered, merged
+    ):
+        """No scripting: the fixture of
+        ``TestStructuralReplan.test_merge_fires_when_feature_crosses_boundary``
+        with window B's low edge moved up the grid so that ``uncovered`` bins lie
+        between the two windows. B holds its own line, its low edge still sees
+        the strong line's skirt, and it has no contributor to thaw. One
+        uncovered bin leaves B touching A and the merge happens; seven leave
+        spectrum neither window fits, so the flag is recorded as not merged and
+        the plan is untouched."""
+        grid = np.arange(36100.0, 36120.0 + DF_MHZ / 2, DF_MHZ)
+        top = int(np.argmin(np.abs(grid - 36105.0)))
+        out, freqs = TestStructuralReplan()._straddle_run(
+            b_low_mhz=float(grid[top + uncovered + 1])
+        )
+        np.testing.assert_array_equal(freqs, grid)
+        (ev,) = out.replan_history
+        assert (ev.triggering_window_id, ev.edge_side) == (1, "low")
+        if merged:
+            assert ev.accepted
+            assert out.final_plan_revision == 1
+            assert [w.window_id for w in out.final_plan.windows] == [0]
+        else:
+            assert not ev.accepted
+            assert ev.reason.startswith("not merged: ")
+            assert f"{uncovered} active-FT bins lie between" in ev.reason
+            assert ev.revision_after == ev.revision_before == 0
+            assert out.final_plan_revision == 0
+            assert set(out.window_outcomes) == {0, 1}
 
 
 # ---------------------------------------------------------------------------
@@ -2487,3 +3395,83 @@ def test_add_from_convergence_skips_below_threshold():
     )
     assert result.fit.n_peaks == n_peaks_before  # unchanged
     assert n_called == 0  # finalize_node was never called
+
+
+class TestReplanReanchorsMergedWindows:
+    """A merge survivor keeps its id but not its range: after each accepted
+    round its per-band tau anchor is recomputed from the merged range (the
+    anchor a refit of the merged window resolves), the absorbed id's anchor
+    drops out, and the caller's map is left as given."""
+
+    def _spy_walks(self, monkeypatch):
+        seen = []
+        real = plan_execution._walk_windows_parallel
+
+        def spy(plan, order, **kwargs):
+            seen.append(
+                (kwargs["phase"], list(order), dict(kwargs["window_tau_overrides"]))
+            )
+            return real(plan, order, **kwargs)
+
+        monkeypatch.setattr(plan_execution, "_walk_windows_parallel", spy)
+        return seen
+
+    def test_each_round_reanchors_the_survivor_at_its_merged_range(self, monkeypatch):
+        monkeypatch.setattr(
+            plan_execution,
+            "_dispatch_structural_round",
+            _scripted_dispatch(
+                {0: [_trig(1, 0, "low", 5.0)], 1: [_trig(0, 2, "high", 2.0)]}
+            ),
+        )
+        seen = self._spy_walks(monkeypatch)
+        ranges = []
+
+        def anchor(freq_range):
+            ranges.append(freq_range)
+            return (TAU_US, 1.0 + len(ranges))
+
+        fixture = _exec_fixture(_CHAIN_WINDOWS)
+        fixture[1].tau_anchor_for_range = anchor
+        given = {0: (TAU_US, 1.0), 1: (TAU_US, 1.0), 2: (TAU_US, 1.0)}
+        out = _run_exec(fixture, window_tau_overrides=dict(given))
+
+        assert out.final_plan_revision == 2
+        (merged,) = out.final_plan.windows
+        initial, round1, round2 = seen
+        assert initial[0] == "initial" and initial[2] == given
+        # Round 1 merges 0+1: 0 re-anchors at its merged range, 1 drops out.
+        assert round1[0] == "replan"
+        assert round1[2] == {0: (TAU_US, 2.0), 2: (TAU_US, 1.0)}
+        # Round 2 merges 0+2: 0 re-anchors again, 2 drops out.
+        assert round2[2] == {0: (TAU_US, 3.0)}
+        assert ranges[-1] == merged.freq_range
+        assert ranges[0][0] == merged.freq_range[0]
+        assert ranges[0][1] < merged.freq_range[1]
+
+    def test_a_survivor_no_band_holds_fits_on_the_band_wide_anchor(self, monkeypatch):
+        monkeypatch.setattr(
+            plan_execution,
+            "_dispatch_structural_round",
+            _scripted_dispatch({0: [_trig(0, 1, "high", 5.0)]}),
+        )
+        seen = self._spy_walks(monkeypatch)
+        fixture = _exec_fixture(_CHAIN_WINDOWS[:2])
+        fixture[1].tau_anchor_for_range = lambda freq_range: None
+        given = {0: (TAU_US, 1.0), 1: (TAU_US, 1.0)}
+        _run_exec(fixture, window_tau_overrides=dict(given))
+        assert seen[-1][0] == "replan"
+        assert seen[-1][2] == {}
+
+    def test_without_a_resolver_the_overrides_stay_as_given(self, monkeypatch):
+        monkeypatch.setattr(
+            plan_execution,
+            "_dispatch_structural_round",
+            _scripted_dispatch({0: [_trig(0, 1, "high", 5.0)]}),
+        )
+        seen = self._spy_walks(monkeypatch)
+        given = {0: (TAU_US, 1.0), 1: (TAU_US, 1.0)}
+        overrides = dict(given)
+        _run_exec(_exec_fixture(_CHAIN_WINDOWS[:2]), window_tau_overrides=overrides)
+        assert seen[-1][2] == given
+        assert overrides == given

@@ -208,6 +208,7 @@ SNAPSHOT_TABLES: dict = {
         "n_fitted_peaks__status",
         "live",
         "live__status",
+        "merged_from",
     },
 }
 SNAPSHOT_FIELDS: dict = {
@@ -236,6 +237,15 @@ SNAPSHOT_FIELDS: dict = {
         "fwhm_mhz",
         "detection_index",
         "fit_window_mhz",
+    },
+    "WindowStatusRow": {
+        "window_id",
+        "freq_min_mhz",
+        "freq_max_mhz",
+        "created",
+        "n_fitted_peaks",
+        "live",
+        "merged_from",
     },
     "DecisionLogEntry": {
         "order_index",
@@ -530,7 +540,7 @@ def test_manifest_sequences_are_tuples():
 
 
 def test_manifest_version_matches_package():
-    assert MANIFEST.contract_version == ftmwpipeline.CONTRACT_VERSION == 12
+    assert MANIFEST.contract_version == ftmwpipeline.CONTRACT_VERSION == 13
     assert isinstance(ftmwpipeline.CONTRACT_VERSION, int)
 
 
@@ -620,13 +630,14 @@ def _type_registry() -> dict:
         RefitWindowResult,
     )
     from ftmwpipeline._internal.tuning.settings_inspection import SettingRow
+    from ftmwpipeline.contract import EVENT_TYPES, WindowStatusRow
     from ftmwpipeline.core.calibration import CalibrationStamp
     from ftmwpipeline.core.curation import CurationAction
-    from ftmwpipeline.contract import EVENT_TYPES
     from ftmwpipeline.core.data_structures import DecisionLogEntry, FinalPeak
 
     return {
         **{cls.__name__: cls for cls in EVENT_TYPES},
+        "WindowStatusRow": WindowStatusRow,
         "CalibrationStamp": CalibrationStamp,
         "FinalPeak": FinalPeak,
         "DecisionLogEntry": DecisionLogEntry,
