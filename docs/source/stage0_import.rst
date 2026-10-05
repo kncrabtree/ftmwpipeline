@@ -80,12 +80,18 @@ Source provenance
 
 The file records where its data came from: the source path, the source
 modification time, a content hash, the import timestamp, the format name, and the
-load options. This record makes re-import deterministic. Re-importing the *same*
-source onto an existing file is recognized and is non-destructive: the existing
+load options. This record makes re-import deterministic. An import onto an
+existing file is the *same* source when the source path, the format name, and
+the load options are all equal and the source modification time agrees to
+within one second; the content hash is recorded for provenance but not
+compared. Re-importing the same source is non-destructive: the existing
 analysis is reused, so re-running an import cell in a notebook does not discard
-downstream work. Importing a *different* source onto an existing file is
-refused unless overwriting is requested explicitly (``--force``). The provenance
-record and the error conditions are detailed on :doc:`file_format`.
+downstream work. Importing anything else onto an existing file — a different
+path, a different format, or the same source with different load options — is
+refused with a ``file_exists`` error. ``--force`` (``force=True``) overwrites
+the file instead, which discards every stage it held; the import result lists
+those stages as ``invalidated``. The provenance record is detailed on
+:doc:`file_format`.
 
 .. index::
    single: chirp; start detection
@@ -124,16 +130,24 @@ runs only as a cross-check, warning if the two disagree. A declared start is the
 dependable choice on very high signal-to-noise data, where the magnitude plateau
 and floor are less cleanly separated.
 
+The import itself already records a recommended start when the source supplies
+one: an experimenter-recorded start (a Blackchirp ``FidStartUs``), or else the
+declared chirp end plus the guard margin. ``start run`` replaces that
+recommendation with its own. On the example experiment the import records
+2.35 µs (the experimenter's start) and ``start run`` recommends 2.27 µs (the
+declared 1.60 µs chirp end plus the 0.67 µs guard margin).
+
 .. _stage0-detector-settings:
 
 Tuning the detector
 -------------------
 
 The detector's knobs are ``StartDetectionSettings``. Each is reachable through
-``start run --<knob>`` and, through the whole-pipeline :doc:`run` command, as
-``run --start.<knob>``; the recommended start the sweep yields is what
-:doc:`Stage 1 <stage1_ft>` inherits as ``start_us`` (which ``run`` can also
-override outright with ``--ft.start-us``). Defaults are tuned on the Blackchirp
+``start run --<knob>`` (the integration band as ``start run --band MIN MAX``)
+and, through the whole-pipeline :doc:`run` command, as ``run --start.<knob>``.
+The recommended start is what the first :doc:`Stage 1 <stage1_ft>` run
+inherits as ``start_us`` (``run`` can also override it outright with
+``--ft.start-us``). Defaults are tuned on the Blackchirp
 2638-family instrument (LO 40960 MHz, lower sideband); the knobs are exposed for
 retuning on other instruments.
 
@@ -163,7 +177,8 @@ retuning on other instruments.
    — there is no excitation transient in the recorded FID — and the detector
    declines to recommend one.
 ``band_min_mhz`` / ``band_max_mhz``
-   Optional explicit integration band for the sweep. Unset, the detector uses
+   Optional explicit integration band for the sweep (``start run --band MIN
+   MAX``). Unset, the detector uses
    the persisted Stage 1 frequency trim, falling back to the full positive
    spectrum.
 
@@ -194,7 +209,11 @@ Start-time detection is inspected and adjusted through the ``start`` command:
    $ ftmwpipeline start show exp_2638.ftmw     # plot the sweep and the chosen start
    $ ftmwpipeline start run exp_2638.ftmw       # (re)compute the recommended start
 
-The recommended start becomes the default ``start_us`` for
-:doc:`Stage 1 <stage1_ft>`; like every stage parameter it can be overridden, and
-how those overrides resolve against the recommendation is described on
-:doc:`settings_and_presets`.
+The recommended start is the default ``start_us`` only until
+:doc:`Stage 1 <stage1_ft>` has run. The first ``ft run`` stores the start it
+used, and from then on that stored Stage 1 record is authoritative: a later
+``start run`` updates the recommendation (shown by ``start show``) but changes
+nothing Stage 1 is read as having used. To adopt a new start on a file that
+already has Stage 1, re-run it explicitly, ``ft run --start-us 2.27``, which
+discards every stage built on the old spectrum. How overrides resolve against
+the recommendation is described on :doc:`settings_and_presets`.

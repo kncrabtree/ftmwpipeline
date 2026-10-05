@@ -228,6 +228,20 @@ auto-discovery of a file named ``<source>.ftmwmeta.json`` (or ``.yaml`` /
 ``.yml``) next to the data source. Every key is optional, and an unrecognized
 key is reported as an error rather than ignored, so a typo surfaces immediately.
 
+.. _input-load-errors:
+
+Load errors
+-----------
+
+A source the chosen loader cannot read is refused at import, before any file is
+written: an unrecognized sidecar key, a CSV imported without ``spacing_us``, a
+``--column`` the CSV does not have, a malformed native HDF5 file. The refusal
+is a typed ``bad_setting`` error whose ``path`` is ``source`` and whose message
+names the problem. On the Python interfaces it is raised as
+``BadSettingError`` (also a ``ValueError``); under ``--json`` the command
+prints it on stderr as an ``ftmw/error@1`` object and exits with status 1. See
+:doc:`machine_contract` for the error vocabulary.
+
 .. _input-chirp-window:
 
 Chirp window and start time

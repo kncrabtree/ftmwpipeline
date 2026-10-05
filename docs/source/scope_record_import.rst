@@ -119,10 +119,11 @@ Alongside the science FID, Stage 0 stores the acquisition segments — the
 pre-record, the tail, the segment map, and (only under ``keep_frames``) the
 frames — plus the ADC-cleanup patterns if cleanup ran. The source provenance
 records the layout parameters, the frame selection, and the cleanup factors, so a
-re-import of the same source with the same parameters is a safe no-op, while a
-different frame selection or layout is recognized as a different import and
-re-runs the affected stages (see :doc:`Stage 0 <stage0_import>` for the
-re-import contract).
+re-import of the same source with the same parameters reuses the existing file
+and its analysis. A different frame selection or layout is a different import:
+it is refused with ``file_exists`` unless ``--force`` is given, and with
+``--force`` it overwrites the file, discarding every stage it held (see
+:doc:`Stage 0 <stage0_import>` for the re-import contract).
 
 The pre-record as a spur anchor
 -------------------------------
