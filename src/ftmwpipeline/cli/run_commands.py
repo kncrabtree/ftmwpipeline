@@ -110,8 +110,11 @@ def cmd_run(args: argparse.Namespace) -> int:
                 "n_completed_stages": len(result["completed_stages"]),
                 # Canonical stage names (contract.Stage values), one string.
                 "completed_stages": ", ".join(result["completed_stages"]),
-                # Already canonical in the result.
+                # Already canonical in the result; None for a step that is
+                # not a stage (start detection, report).
                 "failed_stage": result.get("failed_stage"),
+                # The failing step's progress label (None on success).
+                "failed_step": result.get("failed_step"),
                 # The failure's code and message; its full ftmw/error@1 dict
                 # goes to stderr below.
                 "error_code": error.get("code"),
@@ -127,7 +130,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         if json_mode(args):
             print(json.dumps(error, allow_nan=False), file=sys.stderr)
         print(
-            f"run: failed at stage '{result['failed_stage']}': "
+            f"run: failed at step '{result['failed_step']}': "
             f"{error.get('message')} [{error.get('code')}]\n"
             f"     completed: {', '.join(result['completed_stages']) or '(none)'}"
         )

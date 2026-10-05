@@ -366,7 +366,9 @@ class Pipeline:
         ``report_output_dir``, ``sigma_floor_khz``, ``force``, ``progress``, …).
 
         Returns the structured run result (``pipeline_file``, ``status``,
-        ``completed_stages``, ``failed_stage`` -- a canonical stage name --,
+        ``completed_stages`` -- canonical stages written --, ``failed_stage`` --
+        a canonical stage, ``None`` for start detection / report --, ``failed_step`` --
+        the failing step's progress label --,
         ``error`` -- the failure's ``ftmw/error@1`` dict --, ``timebase``,
         ``report``, ``elapsed_s``). Open the finished file with
         :meth:`Pipeline.open` (``result["pipeline_file"]``).

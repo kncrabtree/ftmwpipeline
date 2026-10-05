@@ -213,7 +213,11 @@ def _environment_provenance(file_path: Union[Path, str]) -> List[Tuple[str, str]
     when the file's stages disagree, because a mixed-environment result is not
     reproducible from any single version.
     """
-    from ..core.environment import EnvironmentRecord, describe_environment_drift
+    from ..core.environment import (
+        EnvironmentRecord,
+        canonical_environment_stages,
+        describe_environment_drift,
+    )
     from ..io.environment_serialization import (
         load_environment_ack,
         load_stage_environments,
@@ -235,7 +239,7 @@ def _environment_provenance(file_path: Union[Path, str]) -> List[Tuple[str, str]
         rows.append(("fit_environment", fit_env.summary()))
         if fit_env.blas:
             rows.append(("fit_blas", fit_env.blas))
-    drift = describe_environment_drift(envs)
+    drift = describe_environment_drift(canonical_environment_stages(envs))
     if drift:
         rows.append(("environment_mixed", "; ".join(drift)))
     if ack is not None:

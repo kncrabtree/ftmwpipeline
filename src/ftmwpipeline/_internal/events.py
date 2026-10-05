@@ -631,12 +631,18 @@ class OperationEvents:
             return
         try:
 
-            from ..core.environment import capture_environment, describe_runtime_drift
+            from ..core.environment import (
+                canonical_environment_stages,
+                capture_environment,
+                describe_runtime_drift,
+            )
             from ..io.environment_serialization import load_stage_environments
 
             with h5open(os.fspath(file_path), "r") as h5f:
                 envs = load_stage_environments(h5f)
-            lines = describe_runtime_drift(envs, capture_environment())
+            lines = describe_runtime_drift(
+                canonical_environment_stages(envs), capture_environment()
+            )
         except (OSError, KeyError, ValueError):
             return
         if not lines:

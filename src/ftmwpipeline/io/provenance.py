@@ -183,7 +183,14 @@ def _report_epoch_drift(
     Advisory: describing drift must never fail the stage it describes.
     """
     try:
-        from ..core.environment import describe_environment_drift
+        from ..contract import canonical_provenance_name
+        from ..core.environment import (
+            canonical_environment_stages,
+            describe_environment_drift,
+        )
+
+        # Published surfaces name stages canonically, never by storage key.
+        label = canonical_provenance_name(stage_name)
 
         if rerun and stage_name not in previous:
             logger.warning(
@@ -193,21 +200,23 @@ def _report_epoch_drift(
                 "any numerical change between the version that produced it and "
                 "%s applies silently. Compare the stage's outputs before and "
                 "after if the original values matter.",
-                stage_name,
+                label,
                 current.ftmwpipeline or "the running version",
             )
 
         # Compare against what was already on the file, excluding this stage's
         # own prior entry (re-running a stage legitimately replaces it).
         others = {k: v for k, v in previous.items() if k != stage_name}
-        drift = describe_environment_drift(others, current)
+        drift = describe_environment_drift(
+            canonical_environment_stages(others), current
+        )
         if drift:
             logger.warning(
                 "%s was written by a different environment than this file's "
                 "other stages; the file now mixes analysis environments. "
                 "Differences: %s. Run 'ftmwpipeline info' for the full "
                 "per-stage record.",
-                stage_name,
+                label,
                 "; ".join(drift),
             )
     except Exception as exc:  # pragma: no cover - the report is never fatal

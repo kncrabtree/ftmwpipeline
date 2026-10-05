@@ -1128,6 +1128,8 @@ __all__ = [
     "STAGE_KEYS",
     "stage_for_key",
     "key_for_stage",
+    "PROVENANCE_NAMES",
+    "canonical_provenance_name",
     "STAGE_SETTINGS_PREFIX",
     "STAGE_KNOB_PREFIX",
     "stage_depends_on",

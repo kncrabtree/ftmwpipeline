@@ -60,6 +60,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "ANALYSIS_EPOCH",
     "EnvironmentRecord",
+    "canonical_environment_stages",
     "capture_environment",
     "describe_environment_drift",
     "describe_runtime_drift",
@@ -309,6 +310,23 @@ def capture_environment() -> EnvironmentRecord:
         blas=_blas_description(),
         platform=f"{platform.system().lower()}-{platform.machine()}",
     )
+
+
+def canonical_environment_stages(
+    records: Mapping[str, EnvironmentRecord],
+) -> Dict[str, EnvironmentRecord]:
+    """*records* re-keyed by published name, preserving order.
+
+    The per-stage environment map is keyed by HDF5 storage key
+    (``stage5_fitting``, ``stage2b_shape_recommendation``); every surface that
+    publishes those keys -- a drift line, a report row, a log message -- names
+    them canonically instead (:func:`ftmwpipeline.contract.canonical_provenance_name`:
+    ``fit``, ``tau_shape``). A key that is not a known stage's storage key is
+    kept as recorded.
+    """
+    from ..contract import canonical_provenance_name
+
+    return {canonical_provenance_name(k): v for k, v in records.items()}
 
 
 def gating_fields_differ(

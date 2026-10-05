@@ -1343,7 +1343,11 @@ def _environment_block(file_path: Any) -> List[str]:
     quietly printed one version would be claiming more than the record supports.
     """
 
-    from ..core.environment import EnvironmentRecord, describe_environment_drift
+    from ..core.environment import (
+        EnvironmentRecord,
+        canonical_environment_stages,
+        describe_environment_drift,
+    )
     from ..io.environment_serialization import (
         load_environment_ack,
         load_stage_environments,
@@ -1364,7 +1368,8 @@ def _environment_block(file_path: Any) -> List[str]:
             "unknown.</p>",
         ]
 
-    drift = describe_environment_drift(envs)
+    named = canonical_environment_stages(envs)
+    drift = describe_environment_drift(named)
     out: List[str] = ["<h2>Analysis environment</h2>"]
 
     fit_env: Optional[EnvironmentRecord] = envs.get("stage5_fitting")
@@ -1385,7 +1390,7 @@ def _environment_block(file_path: Any) -> List[str]:
             _esc(rec.scipy or "?"),
             _esc(rec.blas or "?"),
         ]
-        for stage, rec in sorted(envs.items())
+        for stage, rec in named.items()
     ]
     out.append(
         _table(

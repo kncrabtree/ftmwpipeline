@@ -27,14 +27,12 @@ from ..file_manager import (
 from .events import OperationEvents, operation_events
 from .progress import StageProgress
 
-#: The run's progress labels as canonical stage names. "start detection" is a
-#: stamp on the data stage and "report" renders artifacts from the reviewed
-#: line list, so each is attributed to the stage that owns it: ``data`` and
-#: ``review``. The contract fields (``completed_stages``, ``failed_stage``)
-#: carry these names; only the human progress lines keep the labels.
-RUN_STAGES: Dict[str, Stage] = {
+#: The run's progress labels as canonical stages. "start detection" (a stamp
+#: on the data stage) and "report" (artifacts) are steps, not stages: they map
+#: to ``None`` and contribute nothing to ``completed_stages``.
+RUN_STAGES: Dict[str, Optional[Stage]] = {
     "import": Stage.DATA,
-    "start detection": Stage.DATA,
+    "start detection": None,
     "FT": Stage.FT,
     "timebase": Stage.TIMEBASE,
     "noise": Stage.NOISE,
@@ -43,16 +41,15 @@ RUN_STAGES: Dict[str, Stage] = {
     "windows": Stage.WINDOWS,
     "fit": Stage.FIT,
     "review": Stage.REVIEW,
-    "report": Stage.REVIEW,
+    "report": None,
 }
 
 
-def canonical_run_step(label: str) -> str:
-    """A run step's canonical stage name: the stage it is, or for a step that
-    is not a stage the stage that owns it (``"start detection"`` -> ``data``,
-    ``"report"`` -> ``review``). An unknown label comes back unchanged."""
+def canonical_run_step(label: str) -> Optional[str]:
+    """A run step's canonical stage name, or ``None`` for a step that is not a
+    stage (``"start detection"``, ``"report"``) or an unknown label."""
     stage = RUN_STAGES.get(label)
-    return label if stage is None else stage.value
+    return None if stage is None else stage.value
 
 
 # ---------------------------------------------------------------------------
@@ -152,11 +149,13 @@ def run_pipeline_impl(
     skips it deliberately.
 
     Returns a dict with ``pipeline_file``, ``status`` (``"success"`` /
-    ``"error"``), ``completed_stages`` (canonical stage names, in order, each once --
-    start detection counts toward ``data`` and the report toward ``review``),
-    ``failed_stage`` (the canonical stage name of the step that failed, else
-    ``None``; a failing start detection is ``"data"``, a failing report
-    ``"review"``),
+    ``"error"``), ``completed_stages`` (the canonical stages actually written, in order, each
+    once -- what a cancel's ``completed_stages`` holds; start detection and the
+    report are not stages and add nothing), ``failed_stage`` (the canonical
+    stage of the failing step; ``None`` on success and when the failing step is
+    start detection or the report), ``failed_step`` (the progress label of the
+    failing step -- ``"import"``, ``"start detection"``, ``"FT"``, ...,
+    ``"report"`` -- else ``None``),
     ``error`` (that failure's ``ftmw/error@1`` dict, else ``None``),
     ``timebase`` (``"calibrated"`` / ``"skipped"`` / ``"not_requested"``),
     ``report`` (the ``report_run`` paths, or ``None``), and ``elapsed_s``.
@@ -202,8 +201,15 @@ def run_pipeline_impl(
     # list a cancel reports (a step that is not a stage counts toward its owner).
     completed: List[str] = ops.completed_stages
 
-    def _done(label: str) -> None:
-        ops.mark_completed(RUN_STAGES[label])
+    def _done(label: str, shape: Optional[str] = None) -> None:
+        # A stage that reports through the shared events has already recorded
+        # itself (and a tau twin it built); this only backstops the stage the
+        # step is. A step that is not a stage records nothing.
+        stage = RUN_STAGES[label]
+        if label == "calibrate tau" and shape == "gaussian":
+            stage = Stage.TAU_G  # tau_g is written; tau only if a twin was built
+        if stage is not None:
+            ops.mark_completed(stage)
 
     result: Dict[str, Any] = {
         "source": str(source),
@@ -211,6 +217,7 @@ def run_pipeline_impl(
         "status": "success",
         "completed_stages": completed,
         "failed_stage": None,
+        "failed_step": None,
         "error": None,
         "timebase": "calibrated" if calibrate else "not_requested",
         "report": None,
@@ -283,7 +290,7 @@ def run_pipeline_impl(
             ops.check_cancel()
             with reporter.stage("calibrate tau"):
                 _call(pipe.calibrate_tau, tau_params, preset, ops)
-            _done("calibrate tau")
+            _done("calibrate tau", (tau_params or {}).get("shape"))
 
             ops.check_cancel()
             with reporter.stage("peaks"):
@@ -329,6 +336,7 @@ def run_pipeline_impl(
             raise
         except Exception as exc:
             result["status"] = "error"
+            result["failed_step"] = reporter._label or None
             result["failed_stage"] = canonical_run_step(reporter._label)
             result["error"] = _error_dict(exc)
             result["completed_stages"] = list(completed)

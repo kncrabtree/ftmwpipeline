@@ -198,23 +198,69 @@ def test_run_stops_at_first_failure(patch_pipeline):
     assert "peaks" not in res["completed_stages"]
 
 
-def test_failure_at_start_detection_names_the_data_stage(patch_pipeline):
+def test_failure_at_start_detection_has_no_stage_but_a_step(patch_pipeline):
     patch_pipeline(_FakePipe(fail_on="start"))
     res = run_pipeline_impl("src", output="x.ftmw", trim=(1, 2), progress=False)
     assert res["status"] == "error"
-    assert res["failed_stage"] == "data"
+    assert res["failed_stage"] is None  # start detection is not a stage
+    assert res["failed_step"] == "start detection"
     assert res["completed_stages"] == ["data"]  # the import finished
 
 
-def test_failure_at_report_names_the_review_stage(patch_pipeline):
+def test_failure_at_report_has_no_stage_but_a_step(patch_pipeline):
     patch_pipeline(_FakePipe(fail_on="report"))
     res = run_pipeline_impl(
         "src", output="x.ftmw", trim=(1, 2), report=True, progress=False
     )
     assert res["status"] == "error"
-    assert res["failed_stage"] == "review"
+    assert res["failed_stage"] is None  # the report is not a stage
+    assert res["failed_step"] == "report"
     assert res["completed_stages"][-1] == "review"
     assert res["completed_stages"].count("review") == 1
+
+
+def test_failed_step_is_the_progress_label_and_none_on_success(patch_pipeline):
+    patch_pipeline(_FakePipe())
+    ok = run_pipeline_impl("src", output="x.ftmw", trim=(1, 2), progress=False)
+    assert ok["failed_step"] is None and ok["failed_stage"] is None
+    for fail, step, stage in (
+        ("ft", "FT", "ft"),
+        ("tau", "calibrate tau", "tau"),
+        ("review", "review", "review"),
+    ):
+        patch_pipeline(_FakePipe(fail_on=fail))
+        bad = run_pipeline_impl("src", output="x.ftmw", trim=(1, 2), progress=False)
+        assert (bad["failed_step"], bad["failed_stage"]) == (step, stage)
+
+
+def test_gaussian_tau_without_a_twin_does_not_list_tau(patch_pipeline):
+    """calibrate_tau(shape="gaussian") writes tau_g (and tau only when it builds
+    the twin, which the stage itself records): the run must not assume tau."""
+    patch_pipeline(_FakePipe())
+    res = run_pipeline_impl(
+        "src",
+        output="x.ftmw",
+        trim=(1, 2),
+        progress=False,
+        tau_params={"shape": "gaussian"},
+    )
+    assert "tau_g" in res["completed_stages"]
+    assert "tau" not in res["completed_stages"]
+
+
+def test_completed_stages_come_from_what_the_stages_recorded(patch_pipeline):
+    """A twin the stage itself records (through the shared events) is listed."""
+
+    class _TwinPipe(_FakePipe):
+        def calibrate_tau(self, *, events=None, **k):
+            super().calibrate_tau(**k)
+            events.mark_completed("tau_g")
+
+    patch_pipeline(_TwinPipe())
+    res = run_pipeline_impl("src", output="x.ftmw", trim=(1, 2), progress=False)
+    stages = res["completed_stages"]
+    assert {"tau", "tau_g"} <= set(stages)
+    assert len(stages) == len(set(stages))
 
 
 def test_failed_and_completed_stages_are_all_canonical(patch_pipeline):
@@ -231,7 +277,7 @@ def test_failed_and_completed_stages_are_all_canonical(patch_pipeline):
         bad = run_pipeline_impl(
             "src", output="x.ftmw", trim=(1, 2), report=True, progress=False
         )
-        assert bad["failed_stage"] in valid
+        assert bad["failed_stage"] in valid | {None}
         assert set(bad["completed_stages"]) <= valid
 
 
@@ -289,7 +335,8 @@ def test_cli_json_summary_completed_stages_is_one_canonical_string(
         summary["completed_stages"]
         == "data, ft, timebase, noise, tau, peaks, windows, fit, review"
     )
-    assert summary["failed_stage"] == "review"
+    assert summary["failed_stage"] is None  # the report is not a stage
+    assert summary["failed_step"] == "report"
     assert summary["n_completed_stages"] == 9
 
 

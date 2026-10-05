@@ -1892,7 +1892,9 @@ def run_pipeline(
     it warns and skips when no clock declaration is resolvable), ``report`` /
     ``report_output_dir`` emit the report, and ``progress=False`` silences the
     display.  Returns the structured run result (``pipeline_file``, ``status``,
-    ``completed_stages``, ``failed_stage`` -- a canonical stage name --,
+    ``completed_stages`` -- canonical stages written --, ``failed_stage`` --
+    a canonical stage, ``None`` for start detection / report --, ``failed_step`` --
+    the failing step's progress label --,
     ``error`` -- the failure's ``ftmw/error@1`` dict --, ``timebase``,
     ``report``, ``elapsed_s``); stops at the first failing stage.
 

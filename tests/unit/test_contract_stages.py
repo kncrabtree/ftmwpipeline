@@ -113,3 +113,17 @@ def test_status_is_declared_with_its_schema_and_vocabulary():
     assert "ftmw/status@1" in MANIFEST.schemas
     assert set(MANIFEST.vocabularies["stage_state"]) == set(STAGE_STATES)
     assert "partial" in STAGE_STATES
+
+
+def test_provenance_naming_is_exported_with_stage_for_key():
+    import ftmwpipeline.contract as contract
+
+    for name in ("stage_for_key", "PROVENANCE_NAMES", "canonical_provenance_name"):
+        assert name in contract.__all__, name
+    assert dict(contract.PROVENANCE_NAMES) == {
+        "stage2b_shape_recommendation": "tau_shape"
+    }
+    with pytest.raises(TypeError):
+        contract.PROVENANCE_NAMES["x"] = "y"  # type: ignore[index]
+    for stage, key in STAGE_KEYS.items():
+        assert contract.canonical_provenance_name(key) == stage.value
