@@ -183,8 +183,9 @@ surface a ``review undo`` command alongside the ``review apply`` one:
    ftmwpipeline review undo exp_2638.ftmw --id 2 3
 
 ``review undo`` restores the automatic-fit baseline snapshot and replays every
-surviving decision onto it in log order, so any decisions can be undone, not
-only the latest; the ids shown in the table are the ones to pass, and the
+surviving decision onto it in log order, one user action at a time (the
+entries of one multi-line edit replay jointly), so any decisions can be undone,
+not only the latest; the ids shown in the table are the ones to pass, and the
 surviving decisions are renumbered afterwards (see :ref:`stage6-decisions`).
 
 .. _curation-frames:
@@ -661,7 +662,8 @@ The ``windows:`` block is the live apply's per-window outcome, in the shape
 their number) targeted the window, whether it was reached directly
 (``direct``) or as a cascaded dependent (``cascaded``, with ``actions=-``;
 ``exp_2638`` has no dependency edges, so nothing cascades here), the peak
-count and χ²ᵣ on each side, and a warning line if its fit did not converge. It
+count and χ²ᵣ on each side, and a warning line if its fit did not converge (a
+window left with no peak has no fit to converge, so it gets none). It
 is ``CurationApplyResult.windows`` on the Python interfaces, keyed by window
 id, so a caller can check the count arithmetic (after == before + adds −
 removes) or confirm that a preview and its apply agreed — field for field, on
@@ -787,7 +789,10 @@ describes a fit that did not happen: treat the peaks as seeds rather than
 measurements, and do not fold them into anything downstream. The flag is read
 off the same post-cascade fit ``chi2r_after`` is, and is ``Absent.NOT_RUN`` —
 like ``chi2r_after`` and for exactly the same windows — when a window carries
-no fit on the after side at all. ``Absent`` is truthy, so test the flag with
+no fit on the after side at all, and ``Absent.UNDEFINED`` when the window is
+left with no peak (created empty, or every peak removed): no solver ran, so
+there is no convergence outcome, and no warning is printed. On the wire that is
+``null`` with ``"converged_absent": "undefined"``. ``Absent`` is truthy, so test the flag with
 ``converged is False``, never ``not converged``.
 
 An ``add`` whose frequency no live window covers implies the window it needs

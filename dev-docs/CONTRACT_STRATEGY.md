@@ -227,9 +227,17 @@ These exist today; the contract freezes their names and the listed fields.
 - `review_log(path)` → `DecisionLogEntry` rows with the fields `order_index`,
   `window_id`, `frequency_mhz`, `kind`, `provenance`, `evidence`. Names, types
   and the `kind` / `provenance` vocabularies are frozen, so a client may hash
-  the log as an edit-set identity.
+  the log as an edit-set identity. Every row's `evidence` carries
+  `action_index`, the `order_index` of the first row of the same user action
+  (a one-row action, a bare accept included, carries its own); undo and a
+  log-prefix apply replay one action group at a time, and rows written before
+  the key are grouped by inference. The key is part of `evidence`, so a hash
+  taken over `evidence` changes with it (contract version 15).
 - The curation result types (`RefitWindowResult`, `PreviewWindowResult`,
-  `AppliedWindowResult`, …) and their `converged` flag.
+  `AppliedWindowResult`, …) and their `converged` flag: a bool, `Absent.NOT_RUN`
+  where `chi2r_after` is, and `Absent.UNDEFINED` for a window left with no peak
+  (no solver ran; no non-convergence warning, and the report's non-converged
+  count excludes it).
 - `get_pipeline_info(path)` / `info()`: the environment and epoch fields
   `stage_environments`, `last_written_with`, `environment_drift`,
   `runtime_environment_drift`, `current_environment`,
@@ -354,7 +362,8 @@ stage persists them). It never computes a digest over incomplete inputs.
   §FID samples), and the import selections that only choose which samples
   were stored;
 - curation decisions (the review log is public; a client hashes it if it needs
-  an edit-set identity);
+  an edit-set identity; from contract version 15 its rows' `evidence` carries
+  `action_index`, so a hash over `evidence` differs from an earlier one);
 - write timestamps, preset names, audit attributes;
 - the package version and environment stamps. Science-relevant code changes
   are marked by the analysis epoch, which *is* covered. Environment drift is
@@ -872,7 +881,17 @@ What is left in the file is the same as after a cancel at that point.
     string;
   - a failure that is not a typed error is reported with the declared fallback
     code `pipeline_error`;
-  - `failed_stage` is a canonical stage name.
+  - `failed_stage` is the canonical stage of the failing step, `None` when
+    that step is not a stage (start detection, the report) and `tau_g` for a
+    failing Gaussian tau step, matching the events and a cancel's "null for a
+    step that is not a stage";
+  - `failed_step` (additive) is the progress label of the failing step
+    (`import`, `start detection`, `FT`, ..., `report`), `None` on success;
+  - `completed_stages` is the canonical stages written, in order and
+    de-duplicated, the list a cancel's `completed_stages` holds; start
+    detection and the report add nothing. The `run --json` summary carries
+    `failed_step` as a scalar and `completed_stages` as one comma-joined
+    string.
 - **Twin calibration.** A `tau run` that also builds the twin calibration
   reports the twin inside its own stage, with no events of its own. The
   `tau_g` (or `tau`) twin still appears in `completed_stages` once it is
@@ -1014,7 +1033,12 @@ What is left in the file is the same as after a cancel at that point.
 - One canonical **stage vocabulary**, the public enum `ftmwpipeline.Stage`,
   whose values are the CLI object names: `data`, `ft`, `noise`, `tau`,
   `tau_g`, `timebase`, `peaks`, `windows`, `fit`, `review`. Every contract
-  payload that names a stage uses these values.
+  payload that names a stage uses these values. The one per-stage environment
+  entry that is not a stage, the shape recommendation, is published as
+  `tau_shape` (`contract.PROVENANCE_NAMES`, `canonical_provenance_name`); every
+  published drift or environment surface (`stage_environments`, the
+  `environment_drift` message, the report's environment rows) names its keys
+  this way, and a key that is neither is kept as recorded.
 - **Mappings.** Each spelling has one read-only mapping in `contract.py`:
   - `STAGE_KEYS`: the storage key;
   - `STAGE_SETTINGS_PREFIX`: the settings / preset prefix, such as `stage2b`

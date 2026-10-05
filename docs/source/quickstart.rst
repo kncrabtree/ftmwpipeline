@@ -68,10 +68,11 @@ Timebase calibration and start detection run by default; timebase calibration
 is non-fatal and is skipped with a warning when no instrument clock declaration
 is available. The build stops at the first stage that fails. It does not raise
 for a stage failure: it returns a result dict whose ``status`` is
-``"success"`` or ``"error"``, with ``failed_stage`` (the canonical stage name)
-and ``error`` (the failure as an ``ftmw/error@1`` dict, see
-:doc:`machine_contract`) set on failure, and ``completed_stages`` listing what
-finished. Every completed stage stays written in the file. Interrupting the
+``"success"`` or ``"error"``, with ``failed_stage`` (the canonical stage name,
+``None`` when the failing step is not a stage), ``failed_step`` (the failing
+step's progress label) and ``error`` (the failure as an ``ftmw/error@1`` dict,
+see :doc:`machine_contract`) set on failure, and ``completed_stages`` listing
+the canonical stages written. Every completed stage stays written in the file. Interrupting the
 build (Ctrl-C, or a cancel token) raises ``OperationCancelledError`` instead,
 whose ``completed_stages`` names the stages that finished.
 

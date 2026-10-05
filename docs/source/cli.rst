@@ -329,11 +329,13 @@ their span is read as a merge. ``apply`` replays a curation CSV of batched
 edits, or with ``--actions FILE`` the same batch as data: a JSON array of
 ``CurationAction`` objects (``-`` reads standard input; see
 :ref:`curation-as-data-contract`). ``log`` lists the decision log; ``undo``
-rolls decisions back by replay-from-baseline, naming them by their log ids
+rolls decisions back by replay-from-baseline (one user action at a time: the
+entries one edit logged replay jointly), naming them by their log ids
 (``--id 3 5``, or repeated, ``--id 3 --id 5``; ``--dry-run`` shows the replay
 plan without writing). ``apply --log-prefix N`` applies the file as if the
 decision log ended after its first ``N`` decisions: the later ones are
-dropped and the kept ones are replayed together with the file in one pass --
+dropped and the kept ones are replayed (a prefix cutting through one edit's
+entries replays its in-prefix entries jointly) together with the file in one pass --
 the outcome of ``undo`` of the dropped ids followed by ``apply``, at the cost
 of one replay instead of two. See :doc:`stage6_review`.
 
