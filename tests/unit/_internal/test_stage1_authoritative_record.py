@@ -211,7 +211,7 @@ def test_start_run_cli_prints_the_note_for_the_file_state(
     assert main(["start", "run", p]) == 0
     assert "will inherit it" in capsys.readouterr().out
 
-    ftmw.compute_ft(p)
+    ftmw.compute_ft(p, start_us=0.0)
     assert main(["start", "run", p]) == 0
     out = capsys.readouterr().out
     assert "will inherit it" not in out
