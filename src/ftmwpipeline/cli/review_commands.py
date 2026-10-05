@@ -1031,9 +1031,12 @@ def cmd_review_create(args: argparse.Namespace) -> int:
             "window was widened to cover the anchor."
         )
     print(f"  Fitted peaks in the window: {result.n_peaks}")
+    # The anchor is echoed in the frame it was given in, so the suggested edit
+    # carries that frame (required on a self_calibrated file).
+    frame_flag = f" --frame {frame}" if frame is not None else ""
     print(
         f"  Next: ftmwpipeline review edit {args.file_path} "
-        f"--window {result.window_id} --add {anchor:.4f}"
+        f"--window {result.window_id} --add {anchor:.4f}{frame_flag}"
     )
     return 0
 
@@ -1707,8 +1710,9 @@ def register_review_commands(subparsers: Any) -> None:
             "Rollback is replay-from-baseline: the automatic Stage 5 fit is\n"
             "restored and every surviving decision is re-applied, so decision\n"
             "ids are renumbered afterward. Use --dry-run to preview. Requires\n"
-            "the automatic-fit baseline (unavailable if the fit was re-run after\n"
-            "editing -- rebuild and re-edit in that case)."
+            "the automatic-fit baseline the first edit snapshots (missing only\n"
+            "from a file edited before 'review undo' existed -- rebuild and\n"
+            "re-edit in that case)."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

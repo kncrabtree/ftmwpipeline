@@ -61,11 +61,12 @@ undocumented behavior every caller already depends on -- except where noted
 below. On an ``rb_locked``/``uncalibrated`` file (``epsilon == 0``) the
 two frames coincide, so omitting ``frame`` is inert. On a ``self_calibrated``
 file it is not: a calibrated candidate submitted as raw still resolves, and to
-the *right* peak, but lands wrong by ``probe_freq * eps/(1+eps)`` -- under the
-snap tolerance and over the statistical sigma, so the mistake is invisible in
-the result. Omitting ``frame`` on a frequency-bearing call is therefore an
-error on a ``self_calibrated`` file rather than a silent assumption; passing
-``frame="raw"`` explicitly is never an error, on any file.
+the *right* peak, but lands wrong by ``|f - probe_freq| * eps/(1+eps)`` -- under
+the snap tolerance and over the statistical sigma, so the mistake is invisible in
+the result (``f`` is the line's frequency). Omitting ``frame`` on a
+frequency-bearing call is therefore an error on a ``self_calibrated`` file
+rather than a silent assumption; passing ``frame="raw"``
+explicitly is never an error, on any file.
 """
 
 

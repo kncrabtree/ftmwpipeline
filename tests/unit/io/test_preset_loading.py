@@ -24,6 +24,7 @@ import ftmwpipeline.core.peak_detection_settings as peak_mod
 import ftmwpipeline.core.stage_fit_settings as fit_mod
 import ftmwpipeline.core.tau_calibration_settings as tau_mod
 import ftmwpipeline.core.window_planning_settings as window_mod
+from ftmwpipeline.core.knob_metadata import iter_knob_fields
 from ftmwpipeline.core.noise_settings import load_preset as load_noise_preset
 from ftmwpipeline.core.peak_detection_settings import load_preset as load_peak_preset
 from ftmwpipeline.core.peak_shape import PeakShape
@@ -376,6 +377,47 @@ class TestDefaultsPresetIsIdentity:
 
     def test_resolve_with_defaults_equals_no_preset(self, mod) -> None:
         assert mod.resolve(preset=mod.load_preset("defaults")) == mod.resolve()
+
+
+#: Knobs the ``defaults`` preset deliberately leaves out although they have a
+#: hard default: an upstream recommendation sets them (Stage 2b's lineshape
+#: vote for ``shape``, the import's clocks recommendation for ``spur.clocks``),
+#: and a preset line would pin them over it. The preset carries both as
+#: comments.
+_RECOMMENDATION_DRIVEN = {"stage5.shape", "stage5.spur.clocks"}
+
+
+@pytest.mark.parametrize(
+    "block, mod, cls",
+    [
+        ("stage2", noise_mod, noise_mod.NoiseSettings),
+        ("stage2b", tau_mod, tau_mod.TauCalibrationSettings),
+        ("stage3", peak_mod, peak_mod.PeakDetectionSettings),
+        ("stage4", window_mod, window_mod.WindowPlanningSettings),
+        ("stage5", fit_mod, fit_mod.StageFitSettings),
+    ],
+)
+def test_defaults_preset_writes_every_knob_with_a_hard_default(block, mod, cls) -> None:
+    """The ``defaults`` preset is the all-knobs template: every settings field
+    that resolves to a concrete hard default is written in it. (A knob left out
+    still resolves to its default, so :class:`TestDefaultsPresetIsIdentity`
+    cannot see the omission.) Fields whose default is ``None`` are derived at
+    run time and stay out."""
+    preset = mod.load_preset("defaults")
+    resolved = mod.resolve()
+    missing = []
+    for sub, f in iter_knob_fields(cls):
+        path = ".".join(p for p in (block, sub, f.name) if p)
+        if path in _RECOMMENDATION_DRIVEN:
+            continue
+
+        def value(settings):
+            owner = getattr(settings, sub) if sub else settings
+            return getattr(owner, f.name)
+
+        if value(resolved) is not None and value(preset) is None:
+            missing.append(path)
+    assert missing == []
 
 
 class TestDefaultsLetsRecommendationDriveShape:

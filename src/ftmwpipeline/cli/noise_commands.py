@@ -13,7 +13,7 @@ from .._internal.stage2_impl import (
     noise_run_summary,
     visualize_noise_impl,
 )
-from ..core.noise_settings import NoiseSettings
+from ..core.noise_settings import NoiseSettings, to_yaml_dict
 
 # Import shared implementations
 from ..file_manager import PipelineFileError
@@ -65,7 +65,7 @@ def cmd_estimate_noise(args: argparse.Namespace) -> int:
 
         print(f"Estimating noise for: {file_path}")
 
-        overrides = settings.to_yaml_dict() if not settings.is_empty() else {}
+        overrides = to_yaml_dict(settings) if not settings.is_empty() else {}
         if preset is not None:
             print(f"Using preset: {preset}")
         if overrides:

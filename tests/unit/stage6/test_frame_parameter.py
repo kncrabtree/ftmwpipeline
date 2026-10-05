@@ -367,6 +367,34 @@ class TestOmittedFrameRequired:
         with pytest.raises(ValueError, match="frame is required"):
             refit_window_impl(str(sc_file), wf.window_id, add=[add_freq])
 
+    def test_refusal_quotes_the_per_line_frame_offset(self, sc_file: Path) -> None:
+        """The refusal states the raw-vs-calibrated difference as
+        ``|f - probe| * eps/(1+eps)`` -- not the constant
+        ``probe * eps/(1+eps)`` of the f_raw/(1+eps) misreading -- and quotes
+        its largest value over the fitted windows, re-derived here from the
+        windows' bounds."""
+        stamp = _current_calibration_stamp(str(sc_file))
+        assert stamp is not None
+        eps, probe = stamp[1], stamp[4]
+        bounds = [
+            b
+            for wf in _load_spectrum_fit(sc_file).window_fits
+            if wf.window is not None
+            for b in wf.window.freq_range
+        ]
+        expected_khz = max(abs(b - probe) for b in bounds) * eps / (1 + eps) * 1e3
+        constant_khz = probe * eps / (1 + eps) * 1e3
+        assert f"{expected_khz:.1f}" != f"{constant_khz:.1f}"
+        wf = _first_fitted_window(sc_file)
+        with pytest.raises(BadSettingError) as exc:
+            refit_window_impl(
+                str(sc_file), wf.window_id, remove=[wf.fitted_peaks[0].frequency_mhz]
+            )
+        message = str(exc.value)
+        assert "|f - probe_freq| * eps/(1+eps)" in message
+        assert f"up to {expected_khz:.1f} kHz" in message
+        assert f"{constant_khz:.1f} kHz" not in message
+
     def test_edit_add_explicit_raw_never_refused(self, sc_file: Path) -> None:
         wf = _first_fitted_window(sc_file)
         add_freq = float(wf.fitted_peaks[0].frequency_mhz) + 0.3
@@ -401,6 +429,28 @@ class TestOmittedFrameRequired:
         anchor = _free_anchor(sc_file)
         with pytest.raises(ValueError, match="frame is required"):
             create_window_impl(str(sc_file), anchor)
+
+    def test_create_next_command_carries_the_frame(
+        self, sc_file: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The edit 'review create' suggests repeats the anchor in the frame it
+        was given, so it carries that frame -- without it the suggestion is
+        refused on this self_calibrated file."""
+        anchor = _free_anchor(sc_file)
+        rc = cmd_review_create(
+            argparse.Namespace(
+                file_path=str(sc_file),
+                anchor=anchor,
+                frame="calibrated",
+                verbose=False,
+            )
+        )
+        assert rc == 0
+        next_lines = [
+            line for line in capsys.readouterr().out.splitlines() if "Next:" in line
+        ]
+        assert len(next_lines) == 1
+        assert next_lines[0].endswith(f"--add {anchor:.4f} --frame calibrated")
 
     def test_create_explicit_raw_never_refused(self, sc_file: Path) -> None:
         anchor = _free_anchor(sc_file)

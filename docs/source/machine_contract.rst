@@ -558,8 +558,9 @@ one action keeps its type and adds the action to the message (``curation action
          (the decisions to undo with it)
      * - ``baseline_unavailable``
        - ``review_undo``, or an apply at a ``log_prefix``, needs the
-         automatic-fit baseline and the file no longer holds it, e.g. the fit
-         was re-run after editing (``[]``)
+         automatic-fit baseline the first edit snapshots, and the file's
+         edits were recorded without one (by a version before ``review
+         undo``, or the snapshot was removed) (``[]``)
      * - ``replay_conflict``
        - replaying a recorded window creation no longer reproduces its
          window: it would widen another window, or its id is taken (the

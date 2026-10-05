@@ -132,6 +132,7 @@ stage5:
   # the Stage 2b recommendation.
   # shape: lorentzian        # or: gaussian
   tau:
+    fit_tau: true
     max_decay_factor: 5.0
     fit_tau_min_snr: 10.0
     tau_penalty_lambda: 50.0
@@ -165,6 +166,7 @@ stage5:
     structural_merge_factor: 0.5
     overfit_amp_ratio_band: 1.5
     overfit_amp_ratio_threshold: 6.0
+    final_add_snr_threshold: 10.0
   thaw:
     max_thaw_rounds: 2
     max_replan_rounds: 2

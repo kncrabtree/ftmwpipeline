@@ -1211,23 +1211,60 @@ def _resolve_frame(
     undocumented behavior -- everywhere except a ``self_calibrated`` file,
     where it is refused: that is the one regime where the choice has
     consequences (a calibrated candidate submitted as raw still resolves, and
-    to the right peak, but lands ``probe_freq * eps/(1+eps)`` off -- under the
-    snap tolerance, over the statistical sigma, invisible in the result).
+    to the right peak, but lands ``|f - probe_freq| * eps/(1+eps)`` off --
+    under the snap tolerance, over the statistical sigma, invisible in the
+    result).
     Passing ``frame=\"raw\"`` explicitly is never refused, on any file.
     """
     stamp = _current_calibration_stamp(path)
-    return _resolve_frame_against(stamp, frame), stamp
+    return _resolve_frame_against(stamp, frame, path), stamp
+
+
+def _frame_mixup_max_offset_khz(path: str, stamp: _CalibrationStamp) -> Optional[float]:
+    """Largest raw-vs-calibrated frequency difference over the file's fit.
+
+    A line at molecular frequency ``f`` reads ``|f - probe| * eps/(1+eps)``
+    apart in the two frames (the inverse of
+    ``f_corr = probe + (f_raw - probe) / (1 + eps)``), so the difference grows
+    with the line's distance from the probe; the largest value over the fitted
+    windows' span bounds what a frame mix-up costs on this file. ``None`` when
+    there is no Stage 5 fit to take the span from.
+    """
+    epsilon, probe = stamp[1], stamp[4]
+    try:
+        with h5open(path, "r") as h5f:
+            if "stage5_fitting" not in h5f:
+                return None
+            coverage = read_fit_window_coverage(h5f["stage5_fitting"])
+    except OSError:
+        return None
+    bounds = [b for c in coverage if c.freq_range is not None for b in c.freq_range]
+    if not bounds:
+        return None
+    reach = max(abs(b - probe) for b in bounds)
+    return reach * abs(epsilon) / (1.0 + epsilon) * 1e3
 
 
 def _resolve_frame_against(
-    stamp: Optional[_CalibrationStamp], frame: Optional[Frame]
+    stamp: Optional[_CalibrationStamp],
+    frame: Optional[Frame],
+    path: Optional[str] = None,
 ) -> Frame:
     """:func:`_resolve_frame`'s rule against an already-read calibration
     stamp -- the one place the rule lives, so a batch resolving many
-    actions' frames reads the stamp once."""
+    actions' frames reads the stamp once. ``path``, when given, lets the
+    refusal quote the size of a frame mix-up on this file."""
     cal_state = stamp[0] if stamp is not None else "rb_locked"
     if frame is None:
         if cal_state == "self_calibrated":
+            magnitude = ""
+            if path is not None and stamp is not None:
+                offset_khz = _frame_mixup_max_offset_khz(path, stamp)
+                if offset_khz is not None:
+                    magnitude = (
+                        f" (up to {offset_khz:.1f} kHz over this file's fitted "
+                        "range)"
+                    )
             raise BadSettingError(
                 "frame",
                 'one of: "raw", "calibrated" (required on a self_calibrated file)',
@@ -1236,9 +1273,9 @@ def _resolve_frame_against(
                 'frame="raw" or frame="calibrated" explicitly rather than '
                 "relying on the default. A calibrated frequency submitted as "
                 "raw still resolves to the right peak, but is wrong by "
-                "probe_freq * eps/(1+eps) -- under the snap tolerance and "
-                "over the statistical uncertainty, so the mistake would be "
-                "silent.",
+                f"|f - probe_freq| * eps/(1+eps){magnitude} -- under the snap "
+                "tolerance and over the statistical uncertainty, so the "
+                "mistake would be silent.",
             )
         return "raw"
     return frame
@@ -5235,7 +5272,7 @@ def _actions_to_ops(
                 )
             requested = action.frame if action.frame is not None else frame
             try:
-                resolved = _resolve_frame_against(stamp, requested)
+                resolved = _resolve_frame_against(stamp, requested, path)
             except BadSettingError as exc:
                 # No frame at all (neither the action's nor the call's): the
                 # call's frame= is what is missing, as for a file without a
@@ -6217,6 +6254,17 @@ def clear_stage5_baseline(path: Union[Path, str]) -> None:
     with h5open(str(path), "a") as h5f:
         if STAGE5_BASELINE_GROUP in h5f:
             del h5f[STAGE5_BASELINE_GROUP]
+
+
+_BASELINE_MISSING_CAUSE = (
+    "this file's edits were recorded without one: by a version that predates "
+    "'review undo', or the snapshot was removed from the file"
+)
+"""Why fit-edit decisions can exist with no baseline. The first edit of a
+session snapshots the automatic fit, and a fit re-run drops the snapshot
+together with the decision log it would serve, so a log of fit edits without
+a baseline comes only from a file edited before snapshots existed or one
+whose snapshot group was deleted."""
 
 
 def _has_stage5_baseline(path: str) -> bool:
@@ -9703,8 +9751,8 @@ def _apply_curation_at_prefix(
         raise CurationConflictError(
             "baseline_unavailable",
             message="cannot apply at a log prefix: the automatic-fit baseline "
-            "is unavailable (the fit may have been re-run after editing). "
-            "Rebuild from the source and re-edit.",
+            f"is unavailable ({_BASELINE_MISSING_CAUSE}). Rebuild from the "
+            "source and re-edit.",
         )
     prefix_plan = [a for e in kept for a in _resolve_curation_plan(_decision_to_op(e))]
     # The restore-then-replay is one unit: gate first, so a refusal leaves the
@@ -10444,8 +10492,8 @@ def review_undo_impl(
     is given, and ``curation_conflict`` when undoing would orphan a window an
     undone decision created (``orphans_created_window``, ``ids`` the
     decisions to undo with it) or the automatic-fit baseline is unavailable
-    while fit-mutating decisions exist (``baseline_unavailable``; e.g. Stage
-    5 was re-run after editing -- rebuild and re-edit instead).
+    while fit-mutating decisions exist (``baseline_unavailable``; the edits
+    predate the snapshot -- rebuild and re-edit instead).
 
     What undo promises for ``peak_uid`` is replay equivalence: the surviving
     decisions are replayed in order, each as its own action against the state
@@ -10535,9 +10583,9 @@ def review_undo_impl(
     if has_fit_edits and not baseline:
         raise CurationConflictError(
             "baseline_unavailable",
-            message="cannot undo: the automatic-fit baseline is unavailable (the "
-            "fit may have been re-run after editing). Rebuild from the source "
-            "and re-edit.",
+            message="cannot undo: the automatic-fit baseline is unavailable "
+            f"({_BASELINE_MISSING_CAUSE}). Rebuild from the source and "
+            "re-edit.",
         )
 
     # Each decision was originally applied as its own action, against the
