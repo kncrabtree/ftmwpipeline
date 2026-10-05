@@ -18,7 +18,10 @@ planned — these entries fold into the ``1.0.0`` section when it is dated.
 
 **Decision-log action groups, empty-window ``converged``, canonical ``run_pipeline`` and
 provenance names; ``CONTRACT_VERSION`` moves 14 → 15.** Four changes from the
-documentation audit; the contract additions are all additive.
+documentation audit. ``action_index`` and ``failed_step`` are additions; the
+values of ``run_pipeline``'s ``completed_stages`` and ``failed_stage``, a bare
+accept's evidence, the shape recommendation's environment key and ``converged``
+on a window with no peak change.
 
 * **Undo and log-prefix replay go one user action at a time.** Every decision-log
   row now carries ``evidence["action_index"]``: the ``order_index`` of the first
