@@ -238,7 +238,8 @@ def test_undo_replays_a_lineless_accept_with_a_fit_edit(flagged_source, tmp_path
     ftmw.review_undo(str(path), [last])
     review = ftmw.get_review_status(str(path))
     assert review.window_statuses[wid].provenance == "reviewed"
-    kinds = sorted(e.kind for e in review.decision_log)
+    # The replay runs, and re-records, the log in its own order.
+    kinds = [e.kind for e in review.decision_log]
     assert kinds == ["accept", "create_window"]
 
 

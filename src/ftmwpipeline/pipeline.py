@@ -1735,7 +1735,6 @@ class Pipeline:
         *,
         add: Sequence[Union[float, str]] = (),
         remove: Sequence[Union[float, str]] = (),
-        snap_tol_mhz: Optional[float] = None,
         frame: Optional[Frame] = None,
         events: Optional[EventCallback] = None,
         cancel: Optional[CancelToken] = None,
@@ -1762,21 +1761,15 @@ class Pipeline:
         add :
             Molecular frequencies (MHz) of peaks to add, as ``float`` or a
             numeric ``str``.  Snapped to the nearest ledger candidate within
-            ``snap_tol_mhz`` or seeded fresh at F.
+            the file's snap tolerance (:meth:`refit_snap_tol_mhz`) or seeded fresh at F.
         remove :
             Frequencies (MHz, ``float`` or numeric ``str``) or ``"uid:N"``
             peak-identifier tokens of fitted peaks to remove -- the two may
             be mixed in one call.  A frequency is snapped to the nearest
-            fitted peak within ``snap_tol_mhz``; a uid resolves to the fitted
+            fitted peak within the file's snap tolerance (:meth:`refit_snap_tol_mhz`); a uid resolves to the fitted
             peak in this window whose ``peak_uid`` equals ``N`` (see
             :attr:`~ftmwpipeline.core.data_structures.FittedPeak.peak_uid`).
             ``add`` is frequency-only and refuses a ``"uid:N"`` token.
-        snap_tol_mhz :
-            Snap tolerance for ``add``/``remove`` (MHz).  ``None`` (the
-            default) resolves this file's own
-            :data:`~ftmwpipeline.core.curation.REFIT_SNAP_TOL_BINS` active-FT
-            bins -- read the resolved value with
-            :meth:`refit_snap_tol_mhz`.
         frame :
             The frame ``add``/``remove`` are expressed in; converted to raw
             before any snapping. Omitting it is an error on a
@@ -1804,7 +1797,6 @@ class Pipeline:
             window_id,
             add=add,
             remove=remove,
-            snap_tol_mhz=snap_tol_mhz,
             frame=frame,
             events=events,
             cancel=cancel,
@@ -1843,7 +1835,6 @@ class Pipeline:
         self,
         anchor_mhz: float,
         *,
-        snap_tol_mhz: Optional[float] = None,
         frame: Optional[Frame] = None,
         events: Optional[EventCallback] = None,
         cancel: Optional[CancelToken] = None,
@@ -1866,10 +1857,6 @@ class Pipeline:
         ----------
         anchor_mhz :
             Molecular frequency (MHz) the window must cover.
-        snap_tol_mhz :
-            Snap tolerance forwarded to the fit core (MHz).  ``None`` (the
-            default) resolves this file's own tolerance -- see
-            :meth:`refit_snap_tol_mhz`.
         frame :
             The frame ``anchor_mhz`` is expressed in; converted to raw before
             installing the window. Omitting it is an error on a
@@ -1895,7 +1882,6 @@ class Pipeline:
         return create_window_impl(
             self.filepath,
             anchor_mhz,
-            snap_tol_mhz=snap_tol_mhz,
             frame=frame,
             events=events,
             cancel=cancel,
@@ -2127,7 +2113,6 @@ class Pipeline:
         window_id: int,
         *,
         candidate_freq: Optional[float] = None,
-        snap_tol_mhz: Optional[float] = None,
         frame: Optional[Frame] = None,
         events: Optional[EventCallback] = None,
         cancel: Optional[CancelToken] = None,
@@ -2150,12 +2135,7 @@ class Pipeline:
         candidate_freq :
             When given, accept by adding this molecular frequency (MHz) as a
             new peak.  Snapped to the nearest ledger candidate within
-            ``snap_tol_mhz``.
-        snap_tol_mhz :
-            Snap tolerance for ``candidate_freq`` (MHz).  ``None`` (the
-            default) resolves this file's own tolerance -- see
-            :meth:`refit_snap_tol_mhz`.  Ignored when accepting a window
-            as-is.
+            the file's snap tolerance (:meth:`refit_snap_tol_mhz`).
         frame :
             The frame ``candidate_freq`` is expressed in. Irrelevant when
             ``candidate_freq`` is ``None``. Omitting it while
@@ -2178,7 +2158,6 @@ class Pipeline:
             self.filepath,
             window_id,
             candidate_freq=candidate_freq,
-            snap_tol_mhz=snap_tol_mhz,
             frame=frame,
             events=events,
             cancel=cancel,

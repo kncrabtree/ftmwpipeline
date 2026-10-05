@@ -5,10 +5,11 @@ exactly as the pipeline does. Since ``dev-docs/SCIENCE_STRATEGY.md``
 Requirement 8 that definition is a count of active-FT bins, so the MHz value is
 a property of one *file*, and the contract has two halves:
 
-- **One definition.** No surface may carry its own copy of the tolerance. Every
-  public verb defaults to ``None``, and ``None`` resolves through the single
-  accessor -- a literal retyped into a signature would reproduce the drift the
-  published name exists to remove.
+- **One definition.** No surface may carry its own copy of the tolerance, and
+  no call takes a tolerance of its own: every verb, batch and replay resolves
+  the file's value through the single accessor. The decision log records no
+  tolerance, so a per-call value would read the same edits differently on
+  replay (contract 16).
 - **One derivation.** The accessor
   (:func:`~ftmwpipeline.api.refit_snap_tol_mhz`) derives the MHz value at call
   time from the same active region the verbs consult, so a caller reading it
@@ -66,17 +67,11 @@ def _public_surfaces() -> List[Tuple[str, Callable[..., object]]]:
 
 
 @pytest.mark.parametrize("label,func", _public_surfaces(), ids=lambda v: v)
-def test_public_default_defers_to_the_file(label, func):
-    """A per-file quantity cannot have a module-level default.
-
-    ``None`` is the only defensible default: any float here would be one
-    acquisition length's answer frozen into every other file's call.
-    """
+def test_public_verbs_take_no_tolerance(label, func):
+    """The tolerance is a property of the file, never of one call: the same
+    edits must read the same way on every replay of the decision log."""
     params = inspect.signature(func).parameters
-    assert "snap_tol_mhz" in params, f"{label} does not expose snap_tol_mhz"
-    assert (
-        params["snap_tol_mhz"].default is None
-    ), f"{label} carries a default tolerance instead of deferring to the file"
+    assert "snap_tol_mhz" not in params, f"{label} takes a per-call snap_tol_mhz"
 
 
 @pytest.mark.parametrize("label,func", _public_surfaces(), ids=lambda v: v)
@@ -87,10 +82,11 @@ def test_docstring_does_not_respell_a_value(label, func):
         assert bad not in doc, f"{label} states an absolute tolerance: {bad!r}"
 
 
-def test_boundary_impls_defer_and_engines_require():
+def test_boundary_impls_resolve_and_engines_require():
     """Resolve once at the boundary; pass the resolved float inward.
 
-    The engine functions take ``snap_tol_mhz`` with **no default** on purpose
+    The boundary impls take no tolerance at all (they read the file's). The
+    engine functions take ``snap_tol_mhz`` with **no default** on purpose
     (the discipline ``gate_spurs`` adopted for ``bin_spacing_mhz`` in phase 2):
     a default further in would be an absolute constant coming back, and a batch
     could then snap two of its actions at two tolerances.
@@ -104,7 +100,10 @@ def test_boundary_impls_defer_and_engines_require():
         "review_preview_impl",
     ):
         params = inspect.signature(getattr(stage6_impl, name)).parameters
-        assert params["snap_tol_mhz"].default is None, name
+        assert "snap_tol_mhz" not in params, name
+    for name in ("review_edit", "review_accept", "review_create"):
+        params = inspect.signature(getattr(stage6_impl.ReviewSession, name)).parameters
+        assert "snap_tol_mhz" not in params, f"ReviewSession.{name}"
 
     for name in (
         "refit_window_core",
@@ -241,34 +240,11 @@ _CLI_WIRING = {
 
 
 @pytest.mark.parametrize("verb", sorted(_CLI_WIRING))
-def test_cli_flag_reaches_the_impl(verb, monkeypatch):
-    """A parsed flag is worth nothing if the handler drops it on the floor."""
-    from ftmwpipeline.cli import review_commands
+def test_cli_verbs_take_no_tolerance_flag(verb, capsys):
+    """The third interface has no per-call tolerance either."""
     from ftmwpipeline.cli.main import create_parser
 
-    argv, impl_name = _CLI_WIRING[verb]
-    seen = {}
-
-    def spy(*args, **kwargs):
-        seen.update(kwargs)
-        raise ValueError("stop here -- the call is all we needed to observe")
-
-    monkeypatch.setattr(review_commands, impl_name, spy)
-    args = create_parser().parse_args(argv + ["--snap-tol-mhz", "0.011"])
-    assert args.func(args) == 1  # the spy's ValueError is reported, not raised
-    assert seen.get("snap_tol_mhz") == pytest.approx(0.011)
-
-
-@pytest.mark.parametrize("verb", sorted(_CLI_WIRING))
-def test_cli_flag_defaults_to_the_file(verb):
-    """The third interface defers too -- no parser-level absolute default."""
-    from ftmwpipeline.cli.main import create_parser
-
-    args = create_parser().parse_args(
-        {
-            "edit": ["review", "edit", "f.ftmw", "--window", "0"],
-            "create": ["review", "create", "f.ftmw", "--at", "26622.0"],
-            "accept": ["review", "accept", "f.ftmw", "--window", "0"],
-        }[verb]
-    )
-    assert args.snap_tol_mhz is None
+    argv, _ = _CLI_WIRING[verb]
+    with pytest.raises(SystemExit):
+        create_parser().parse_args(argv + ["--snap-tol-mhz", "0.011"])
+    assert "--snap-tol-mhz" in capsys.readouterr().err

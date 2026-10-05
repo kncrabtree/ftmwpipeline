@@ -314,8 +314,11 @@ peaks *can* both fall inside it; that is resolved nearest-wins, and
 ambiguity is visible before the batch runs. Addressing the line by
 ``uid:N`` instead sidesteps the question entirely.
 
-Every verb's ``snap_tol_mhz`` parameter defaults to the resolved value for the
-file it is called on; passing your own overrides it for that call only, in MHz.
+The tolerance is a property of the file, not of a call: no verb, batch or
+replay takes one of its own. The decision log records no tolerance, so a value
+given to one edit would read that edit differently when ``review undo`` or a
+log-prefix apply replays it. To reach a peak farther from the frequency you
+have, name it by ``uid:N`` or by the fitted frequency ``review show`` prints.
 
 Curation files
 --------------

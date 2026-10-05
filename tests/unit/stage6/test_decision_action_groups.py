@@ -660,36 +660,126 @@ def test_replay_refits_once_per_action_not_once_per_row(
     assert _fitted_by_window(path) == _saved_state(tmp_path)
 
 
+def _rewrite_rows(path: Path, fn: Any) -> None:
+    """Rewrite the persisted decision log's rows in place (``fn(rows)``), to
+    forge a row an older version recorded."""
+    with h5py.File(str(path), "a") as h5f:
+        grp = h5f["stage6_review"]["decision_log"]
+        rows = json.loads(str(grp.attrs["data"]))
+        fn(rows)
+        grp.attrs["data"] = json.dumps(rows)
+
+
+def _raw_rows(path: Path) -> List[Dict[str, Any]]:
+    return [
+        {"window_id": e.window_id, "kind": e.kind, "frequency_mhz": e.frequency_mhz}
+        for e in review_log_impl(path)
+    ]
+
+
 @pytest.mark.integration
-def test_widened_tolerance_remove_replays_at_the_resolved_peak(
-    stage5_multi_file, tmp_path
-):
-    """A remove that only a widened ``snap_tol_mhz`` resolves is logged at the
-    fitted peak it removed, so a later undo's replay -- which runs at the
-    file's own tolerance -- still finds that peak."""
+def test_remove_is_logged_at_the_peak_it_resolved_to(stage5_multi_file):
+    """A remove sent half a snap tolerance off its peak is logged at the
+    peak's fitted frequency, not at the frequency sent."""
     path = stage5_multi_file
-    wid, peaks, other = _multi_peak_window(path)
-    tol = _snap_tol(path)
-    gap = min(b - a for a, b in zip(peaks, peaks[1:]))
-    offset = min(1.5 * tol, 0.4 * gap)  # beyond the default tolerance
-    if offset <= tol:
-        pytest.skip("peaks too close to place a remove beyond the default tolerance")
+    wid, peaks, _ = _multi_peak_window(path)
     with h5py.File(str(path), "r") as h5f:
         sf = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
     wf = next(w for w in sf.window_fits if w.window_id == wid)
     target = min(float(p.frequency_mhz) for p in wf.fitted_peaks)
 
-    refit_window_impl(
-        str(path), wid, remove=[target + offset], snap_tol_mhz=2.0 * offset
-    )
-    log = review_log_impl(path)
-    assert [(e.kind, e.frequency_mhz) for e in log] == [("remove", target)]
-    after_remove = _fitted_by_window(path)
+    refit_window_impl(str(path), wid, remove=[target + 0.5 * _snap_tol(path)])
+    assert [(e.kind, e.frequency_mhz) for e in review_log_impl(path)] == [
+        ("remove", target)
+    ]
 
-    fv = _clear_add_freq(path, other)
+
+@pytest.mark.integration
+def test_replay_keeps_every_surviving_row_verbatim(stage5_multi_file, tmp_path):
+    """Undo and a log-prefix apply re-record the surviving rows with their own
+    frequencies, byte for byte -- also an older row that holds the frequency
+    sent rather than the peak it resolved to."""
+    path = stage5_multi_file
+    wid, peaks, other = _joint_then_unrelated(path, tmp_path)
+    off = 0.5 * _snap_tol(path)
+
+    def legacy(rows: List[Dict[str, Any]]) -> None:
+        rows[0]["frequency_mhz"] = float(rows[0]["frequency_mhz"]) + off
+
+    _rewrite_rows(path, legacy)
+    before = _raw_rows(path)
+    assert before[0]["frequency_mhz"] != peaks[0]
+
+    review_undo_impl(path, [2])
+    assert _raw_rows(path) == before[:2]
+
+    review_undo_impl(path, [1])  # one member of the joint group
+    assert _raw_rows(path) == before[:1]
+
+
+@pytest.mark.integration
+def test_log_prefix_apply_keeps_the_kept_rows_verbatim(stage5_multi_file, tmp_path):
+    path = stage5_multi_file
+    wid, peaks, other = _joint_then_unrelated(path, tmp_path)
+    before = _raw_rows(path)
+    cur = tmp_path / "next.csv"
+    cur.write_text(f"add,{other},{_clear_add_freq(path, other)},\n")
+    apply_curation_impl(path, cur, log_prefix=2)
+    assert _raw_rows(path)[:2] == before[:2]
+
+
+@pytest.mark.integration
+def test_a_row_that_replays_as_another_action_is_refused(stage5_multi_file, tmp_path):
+    """A split recorded under a per-call snap tolerance (before contract 16)
+    can replay at the file's tolerance as a plain add: the replay refuses
+    rather than rewrite the row, and leaves the file as it was."""
+    from ftmwpipeline.file_manager import CurationConflictError
+
+    path = stage5_multi_file
+    wid, parent, near, far, other = _split_site(path)
+    refit_window_impl(str(path), wid, add=[near])
+    assert [e.kind for e in review_log_impl(path)] == ["split"]
+    beyond = parent + 1.5 * _snap_tol(path)
+
+    def widened(rows: List[Dict[str, Any]]) -> None:
+        rows[0]["evidence"]["requested_freq_mhz"] = beyond
+
+    _rewrite_rows(path, widened)
     cur = tmp_path / "later.csv"
-    cur.write_text(f"add,{other},{fv},\n")
+    cur.write_text(f"add,{other},{_clear_add_freq(path, other)},\n")
     apply_curation_impl(path, cur)
+    before = _raw_rows(path)
+    state = _fitted_by_window(path)
 
-    review_undo_impl(path, [1])
-    assert _fitted_by_window(path) == after_remove
+    with pytest.raises(CurationConflictError) as exc:
+        review_undo_impl(path, [1])
+    assert exc.value.reason == "replay_diverged"
+    assert exc.value.ids == [0]
+    assert _raw_rows(path) == before
+    assert _fitted_by_window(path) == state
+
+
+@pytest.mark.integration
+def test_replay_keeps_the_log_order_across_windows(stage5_multi_file, tmp_path):
+    """Edits made in separate calls on a higher, then a lower window: an undo
+    of a later decision replays them in log order, not canonical (ascending
+    window) order, and re-records every surviving row as it was."""
+    path = stage5_multi_file
+    by_w = _fitted_by_window(path)
+    wids = sorted(w for w, f in by_w.items() if f)
+    if len(wids) < 3:
+        pytest.skip("Need three fitted windows")
+    lo, hi, third = wids[0], wids[-1], wids[1]
+    refit_window_impl(str(path), hi, add=[_clear_add_freq(path, hi)])
+    refit_window_impl(str(path), lo, add=[_clear_add_freq(path, lo)])
+    before = _raw_rows(path)
+    assert [r["window_id"] for r in before] == [hi, lo]
+    state = _fitted_by_window(path)
+
+    cur = tmp_path / "later.csv"
+    cur.write_text(f"add,{third},{_clear_add_freq(path, third)},\n")
+    apply_curation_impl(path, cur)
+    review_undo_impl(path, [2])
+
+    assert _raw_rows(path) == before
+    assert _fitted_by_window(path) == state

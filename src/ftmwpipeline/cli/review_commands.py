@@ -871,7 +871,6 @@ def cmd_review_edit(args: argparse.Namespace) -> int:
                 window_id,
                 add=add_freqs,
                 remove=remove_freqs,
-                snap_tol_mhz=getattr(args, "snap_tol_mhz", None),
                 frame=frame,
                 events=events,
                 cancel=cancel,
@@ -999,7 +998,6 @@ def cmd_review_create(args: argparse.Namespace) -> int:
             result = create_window_impl(
                 file_path,
                 anchor,
-                snap_tol_mhz=getattr(args, "snap_tol_mhz", None),
                 frame=frame,
                 events=events,
                 cancel=cancel,
@@ -1063,7 +1061,6 @@ def cmd_review_accept(args: argparse.Namespace) -> int:
                 file_path,
                 window_id,
                 candidate_freq=candidate_freq,
-                snap_tol_mhz=getattr(args, "snap_tol_mhz", None),
                 frame=frame,
                 events=events,
                 cancel=cancel,
@@ -1904,19 +1901,6 @@ def register_review_commands(subparsers: Any) -> None:
             "Delegates to 'review edit --add F'."
         ),
     )
-    p_accept.add_argument(
-        "--snap-tol-mhz",
-        dest="snap_tol_mhz",
-        type=float,
-        default=None,
-        metavar="MHZ",
-        help=(
-            "Tolerance for snapping a requested frequency to an existing peak "
-            f"or ledger candidate. Defaults to this file's own resolved "
-            f"tolerance ({REFIT_SNAP_TOL_BINS} active-FT bins; see "
-            f"'ftmwpipeline review snap-tolerance')."
-        ),
-    )
     _add_frame_argument(p_accept)
     p_accept.add_argument(
         "--verbose",
@@ -1990,19 +1974,6 @@ def register_review_commands(subparsers: Any) -> None:
             "Repeat the flag for several: --remove F1 --remove uid:N ..."
         ),
     )
-    p_edit.add_argument(
-        "--snap-tol-mhz",
-        dest="snap_tol_mhz",
-        type=float,
-        default=None,
-        metavar="MHZ",
-        help=(
-            "Tolerance for snapping a requested frequency to an existing peak "
-            f"or ledger candidate. Defaults to this file's own resolved "
-            f"tolerance ({REFIT_SNAP_TOL_BINS} active-FT bins; see "
-            f"'ftmwpipeline review snap-tolerance')."
-        ),
-    )
     _add_frame_argument(p_edit)
     p_edit.add_argument(
         "--verbose",
@@ -2043,19 +2014,6 @@ def register_review_commands(subparsers: Any) -> None:
         required=True,
         metavar="F",
         help="Molecular MHz frequency the new window must cover.",
-    )
-    p_create.add_argument(
-        "--snap-tol-mhz",
-        dest="snap_tol_mhz",
-        type=float,
-        default=None,
-        metavar="MHZ",
-        help=(
-            "Tolerance for snapping a requested frequency to an existing peak "
-            f"or ledger candidate. Defaults to this file's own resolved "
-            f"tolerance ({REFIT_SNAP_TOL_BINS} active-FT bins; see "
-            f"'ftmwpipeline review snap-tolerance')."
-        ),
     )
     _add_frame_argument(p_create)
     p_create.add_argument(

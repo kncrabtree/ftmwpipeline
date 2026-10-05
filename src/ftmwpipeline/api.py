@@ -1564,7 +1564,6 @@ def review_edit(
     *,
     add: Sequence[Union[float, str]] = (),
     remove: Sequence[Union[float, str]] = (),
-    snap_tol_mhz: Optional[float] = None,
     frame: Optional[Frame] = None,
     events: Optional[EventCallback] = None,
     cancel: Optional[CancelToken] = None,
@@ -1601,11 +1600,6 @@ def review_edit(
         :attr:`~ftmwpipeline.core.data_structures.FittedPeak.peak_uid` and
         :func:`~ftmwpipeline.core.curation.parse_peak_token`); ``add`` is
         frequency-only and refuses a ``"uid:N"`` token.
-    snap_tol_mhz :
-        Snap tolerance for ``add``/``remove`` (MHz).  ``None`` (the default)
-        resolves this file's own
-        :data:`~ftmwpipeline.core.curation.REFIT_SNAP_TOL_BINS` active-FT bins
-        -- read the resolved value with :func:`refit_snap_tol_mhz`.
     frame :
         The frame ``add``/``remove`` are expressed in: ``"raw"`` or
         ``"calibrated"``; converted to raw before any snapping. Omitting it
@@ -1628,7 +1622,6 @@ def review_edit(
         window_id,
         add=add,
         remove=remove,
-        snap_tol_mhz=snap_tol_mhz,
         frame=frame,
         events=events,
         cancel=cancel,
@@ -1664,7 +1657,6 @@ def review_create(
     file_path: Union[str, Path],
     anchor_mhz: float,
     *,
-    snap_tol_mhz: Optional[float] = None,
     frame: Optional[Frame] = None,
     events: Optional[EventCallback] = None,
     cancel: Optional[CancelToken] = None,
@@ -1683,10 +1675,6 @@ def review_create(
         Path to the ``.ftmw`` pipeline file (read-write).
     anchor_mhz :
         Molecular frequency (MHz) the window must cover.
-    snap_tol_mhz :
-        Snap tolerance forwarded to the fit core (MHz).  ``None`` (the
-        default) resolves this file's own tolerance -- see
-        :func:`refit_snap_tol_mhz`.
     frame :
         The frame ``anchor_mhz`` is expressed in; converted to raw before
         installing the window. Omitting it is an error on a
@@ -1706,7 +1694,6 @@ def review_create(
     """
     return Pipeline.open(file_path).review_create(
         anchor_mhz,
-        snap_tol_mhz=snap_tol_mhz,
         frame=frame,
         events=events,
         cancel=cancel,
@@ -1913,7 +1900,6 @@ def review_accept(
     window_id: int,
     *,
     candidate_freq: Optional[float] = None,
-    snap_tol_mhz: Optional[float] = None,
     frame: Optional[Frame] = None,
     events: Optional[EventCallback] = None,
     cancel: Optional[CancelToken] = None,
@@ -1931,10 +1917,6 @@ def review_accept(
     candidate_freq :
         When given, accept by adding this molecular frequency (MHz) as a
         new peak.
-    snap_tol_mhz :
-        Snap tolerance for ``candidate_freq`` (MHz).  ``None`` (the default)
-        resolves this file's own tolerance -- see :func:`refit_snap_tol_mhz`.
-        Ignored when accepting a window as-is.
     frame :
         The frame ``candidate_freq`` is expressed in. Irrelevant when
         ``candidate_freq`` is ``None``. Omitting it while ``candidate_freq``
@@ -1955,7 +1937,6 @@ def review_accept(
     return Pipeline.open(file_path).review_accept(
         window_id,
         candidate_freq=candidate_freq,
-        snap_tol_mhz=snap_tol_mhz,
         frame=frame,
         events=events,
         cancel=cancel,

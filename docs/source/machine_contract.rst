@@ -575,6 +575,11 @@ one action keeps its type and adds the action to the message (``curation action
        - replaying a recorded window creation no longer reproduces its
          window: it would widen another window, or its id is taken (the
          recorded id, then the widened window's id)
+     * - ``replay_diverged``
+       - ``review_undo``, or an apply at a ``log_prefix``, would replay a
+         surviving decision as a different action (another ``kind`` or
+         window) than the one recorded; only a decision recorded with a
+         per-call snap tolerance, before contract 16, can (that decision)
      * - ``target_outside_window``
        - an ``add`` whose seed, after snapping to a ledger candidate, falls
          outside the range of the window it names (that window)
@@ -1019,8 +1024,12 @@ Each, with its absence cases:
   the key existed have none; ``review_undo`` infers their groups (see below). A
   ``remove`` row's ``frequency_mhz``, and a merge's ``merged_from``, are the
   fitted frequencies (raw frame) of the peaks the request resolved to, not the
-  frequencies sent, so a replay finds those peaks whatever snap tolerance the
-  original call used. Rows written before contract 16 hold the frequencies sent.
+  frequencies sent; rows written before contract 16 hold the frequencies sent.
+  A replay (``review_undo``, an apply at a ``log_prefix``) re-records every
+  surviving row with its own ``frequency_mhz`` and ``merged_from`` verbatim;
+  only ``order_index`` and ``action_index`` are renumbered after an undo. The
+  snap tolerance is a property of the file (``refit_snap_tol_mhz``): from
+  contract 16 no call takes one.
 * ``get_pipeline_info`` -- the status dict. ``warnings`` is always present (an
   empty list when there are none). The environment fields hold ``Absent``
   rather than ``None`` / ``{}`` / ``[]``:

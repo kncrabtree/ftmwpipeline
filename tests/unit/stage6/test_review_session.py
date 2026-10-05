@@ -1026,7 +1026,7 @@ class TestEngineInvariantsStillHold:
         with atomic_write(str(sc_multi_file)):
             ctx = s6._open_batch(
                 str(sc_multi_file),
-                snap_tol_mhz=s6.resolve_snap_tol_mhz(str(sc_multi_file), None),
+                snap_tol_mhz=s6.refit_snap_tol_mhz_impl(str(sc_multi_file)),
                 snapshot=False,
             )
         assert ctx.baseline_taken is False
@@ -1036,7 +1036,7 @@ class TestEngineInvariantsStillHold:
                 s6._finish_batch(
                     ctx,
                     str(sc_multi_file),
-                    snap_tol_mhz=s6.resolve_snap_tol_mhz(str(sc_multi_file), None),
+                    snap_tol_mhz=s6.refit_snap_tol_mhz_impl(str(sc_multi_file)),
                     cascaded=[],
                     precomputed_review=s6.Stage6Review(),
                 )

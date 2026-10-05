@@ -1597,10 +1597,12 @@ def _make_refit_result(
 # ``REFIT_SNAP_TOL_BINS`` active-FT bins, imported from ``core.curation`` --
 # public, because an integrator that resolved "the peak at f" at a different
 # tolerance would disagree with the file about which peak that is. Being a bin
-# count it has no MHz value until a file is named, so every verb takes
-# ``snap_tol_mhz: Optional[float] = None`` and resolves it exactly once, at the
-# public boundary, through :func:`resolve_snap_tol_mhz`; everything further in
-# takes the resolved ``float`` as a required argument. That is the same
+# count it has no MHz value until a file is named, so every curation entry
+# point resolves it exactly once, at the public boundary, through
+# :func:`refit_snap_tol_mhz_impl`; everything further in takes the resolved
+# ``float`` as a required argument. No call takes a tolerance of its own: the
+# same edits must read the same way on every replay of the decision log, which
+# records no tolerance. That is the same
 # discipline the spur gate's ``gate_spurs`` adopted for ``bin_spacing_mhz``:
 # a default further in would be an absolute constant coming back.
 # ---------------------------------------------------------------------------
@@ -1637,8 +1639,8 @@ def refit_snap_tol_mhz_impl(file_path: Union[Path, str]) -> float:
 
     The public read behind ``api.refit_snap_tol_mhz`` /
     ``Pipeline.refit_snap_tol_mhz`` / ``review snap-tolerance``, and the single
-    definition every curation verb's default is taken from (see
-    :func:`resolve_snap_tol_mhz`).
+    tolerance every curation verb, batch and replay snaps with (no call takes
+    one of its own).
 
     ``REFIT_SNAP_TOL_BINS / T_active``.  The tolerance is *defined* in
     active-FT bins (``dev-docs/SCIENCE_STRATEGY.md`` Requirement 8), so its MHz
@@ -1679,19 +1681,6 @@ def refit_snap_tol_mhz_impl(file_path: Union[Path, str]) -> float:
             "review snap-tolerance", ["stage0_fid_data"], Path(path)
         )
     return REFIT_SNAP_TOL_BINS * active_ft_bin_spacing_mhz(acquisition_us)
-
-
-def resolve_snap_tol_mhz(path: str, snap_tol_mhz: Optional[float]) -> float:
-    """A caller's explicit ``snap_tol_mhz`` (MHz), or this file's resolved default.
-
-    The one place ``None`` becomes a number.  Every public curation entry point
-    calls this once and passes the resolved ``float`` inward, so a batch cannot
-    snap two of its actions at two tolerances and an integrator reading
-    :func:`refit_snap_tol_mhz_impl` gets the value that batch will actually use.
-    """
-    if snap_tol_mhz is not None:
-        return float(snap_tol_mhz)
-    return refit_snap_tol_mhz_impl(path)
 
 
 def _parse_complex_amplitude(value: object) -> complex:
@@ -3351,7 +3340,6 @@ def refit_window_impl(
     add: Sequence[Union[float, str]] = (),
     remove: Sequence[Union[float, str]] = (),
     add_seeds: Optional[List[ModelPeak]] = None,
-    snap_tol_mhz: Optional[float] = None,
     frame: Optional[Frame] = None,
     events: Optional[EventCallback] = None,
     cancel: Optional[CancelToken] = None,
@@ -3408,7 +3396,7 @@ def refit_window_impl(
     add :
         Molecular frequencies (MHz) of peaks to add, as ``float`` or a numeric
         ``str`` (the CLI passes strings).  Each is snapped to the nearest
-        ledger candidate within ``snap_tol_mhz`` (to reuse the recorded seed
+        ledger candidate within the file's snap tolerance (:func:`refit_snap_tol_mhz_impl`) (to reuse the recorded seed
         offset/amplitude) or seeded fresh at the given frequency.  User-added
         peaks carry ``origin="user"`` and are stamped with the
         ``order_index`` of the decision that added them
@@ -3423,7 +3411,7 @@ def refit_window_impl(
         Frequencies (MHz, ``float`` or numeric ``str``) or ``"uid:N"``
         identifier tokens of fitted peaks to remove; the two may be mixed in
         one call.  A frequency is matched to the nearest fitted peak within
-        ``snap_tol_mhz``.  A ``"uid:N"`` token is resolved to the fitted peak
+        the file's snap tolerance (:func:`refit_snap_tol_mhz_impl`).  A ``"uid:N"`` token is resolved to the fitted peak
         in this window whose
         :attr:`~ftmwpipeline.core.data_structures.FittedPeak.peak_uid`
         equals ``N`` -- frame-independent, and always an exact match rather
@@ -3436,11 +3424,6 @@ def refit_window_impl(
         When given, ``len(add_seeds)`` must equal ``len(add)`` and each seed
         provides the starting amplitude / offset / phase for the corresponding
         ``add`` frequency (overrides the ledger-candidate or default seed).
-    snap_tol_mhz :
-        Maximum distance (MHz) for frequency snapping to an existing peak or
-        ledger candidate.  ``None`` (the default) resolves this file's own
-        :data:`~ftmwpipeline.core.curation.REFIT_SNAP_TOL_BINS` active-FT bins
-        via :func:`refit_snap_tol_mhz_impl`.
     frame :
         The frame ``add`` and ``remove`` are expressed in: ``"raw"`` (the
         Stage 5 fit / ledger frame) or ``"calibrated"``. Converted to raw
@@ -3463,7 +3446,7 @@ def refit_window_impl(
     ValueError
         When Stage 5 has not been run, the ``window_id`` is not found,
         ``len(add_seeds) != len(add)``, any ``remove`` frequency does not
-        match a fitted peak within ``snap_tol_mhz``, any ``remove`` uid
+        match a fitted peak within the file's snap tolerance (:func:`refit_snap_tol_mhz_impl`), any ``remove`` uid
         matches no fitted peak in the window, any ``add`` token is malformed
         or names a ``"uid:N"`` identifier, any ``add`` frequency falls
         outside the named window's ``freq_range`` after snapping,
@@ -3483,7 +3466,7 @@ def refit_window_impl(
     # re-checks, since a curation row reaches it without passing through here.
     _check_add_seeds_arity(add, add_seeds)
     path = str(file_path)
-    snap_tol = resolve_snap_tol_mhz(path, snap_tol_mhz)
+    snap_tol = refit_snap_tol_mhz_impl(path)
 
     add_raw: List[float] = []
     for tok in add:
@@ -3586,7 +3569,6 @@ def merge_peaks_impl(
     window_id: int,
     peaks: Sequence[float],
     *,
-    snap_tol_mhz: Optional[float] = None,
     frame: Optional[Frame] = None,
     _shared: Optional["_SharedFitCtx"] = None,
 ) -> RefitWindowResult:
@@ -3602,7 +3584,7 @@ def merge_peaks_impl(
 
     **Doublet-alternative snap.** When the removed set matches a persisted
     ``DoubletAlternativeInfo`` pair (i.e. exactly two frequencies that
-    together map to a recorded doublet pair within ``snap_tol_mhz``), the
+    together map to a recorded doublet pair within the file's snap tolerance (:func:`refit_snap_tol_mhz_impl`)), the
     replacement seed is taken from the recorded ``merged_frequency_mhz`` and
     ``merged_amplitude`` rather than the centroid.  This reuses the
     already-converged merged-alternative optimum from the Stage 5 doublet
@@ -3624,10 +3606,7 @@ def merge_peaks_impl(
     peaks :
         Molecular frequencies (MHz) of the peaks to collapse.  At least 2
         must be provided.  Each is snapped to the nearest fitted peak within
-        ``snap_tol_mhz``.
-    snap_tol_mhz :
-        Maximum distance (MHz) for frequency snapping.  ``None`` (the default)
-        resolves this file's own tolerance -- see :func:`refit_window_impl`.
+        the file's snap tolerance (:func:`refit_snap_tol_mhz_impl`).
     frame :
         The frame ``peaks`` is expressed in (see :func:`refit_window_impl`).
         Omitting it is an error on a ``self_calibrated`` file.
@@ -3655,7 +3634,7 @@ def merge_peaks_impl(
     # One atomic write, opened before the inputs are read (joins an enclosing
     # transaction, e.g. a curation replay).
     with atomic_write(path):
-        snap_tol = resolve_snap_tol_mhz(path, snap_tol_mhz)
+        snap_tol = refit_snap_tol_mhz_impl(path)
         resolved_frame, stamp = _resolve_frame(path, frame)
         peaks_raw = [_frame_to_raw(f, frame=resolved_frame, stamp=stamp) for f in peaks]
         return _run_single_action(
@@ -3679,7 +3658,6 @@ def split_peak_impl(
     peak: float,
     *,
     into: int = 2,
-    snap_tol_mhz: Optional[float] = None,
     frame: Optional[Frame] = None,
     _shared: Optional["_SharedFitCtx"] = None,
 ) -> RefitWindowResult:
@@ -3706,12 +3684,9 @@ def split_peak_impl(
         The window containing the peak to split.
     peak :
         Molecular frequency (MHz) of the peak to split.  Snapped to the
-        nearest fitted peak within ``snap_tol_mhz``.
+        nearest fitted peak within the file's snap tolerance (:func:`refit_snap_tol_mhz_impl`).
     into :
         Number of replacement peaks (≥2).  Default is 2.
-    snap_tol_mhz :
-        Maximum distance (MHz) for frequency snapping.  ``None`` (the default)
-        resolves this file's own tolerance -- see :func:`refit_window_impl`.
     frame :
         The frame ``peak`` is expressed in (see :func:`refit_window_impl`).
         Omitting it is an error on a ``self_calibrated`` file.
@@ -3737,7 +3712,7 @@ def split_peak_impl(
     # One atomic write, opened before the inputs are read (joins an enclosing
     # transaction, e.g. a curation replay).
     with atomic_write(path):
-        snap_tol = resolve_snap_tol_mhz(path, snap_tol_mhz)
+        snap_tol = refit_snap_tol_mhz_impl(path)
         resolved_frame, stamp = _resolve_frame(path, frame)
         peak_raw = _frame_to_raw(peak, frame=resolved_frame, stamp=stamp)
         return _run_single_action(
@@ -3899,7 +3874,6 @@ def review_accept_impl(
     window_id: int,
     *,
     candidate_freq: Optional[float] = None,
-    snap_tol_mhz: Optional[float] = None,
     frame: Optional[Frame] = None,
     events: Optional[EventCallback] = None,
     cancel: Optional[CancelToken] = None,
@@ -3927,9 +3901,7 @@ def review_accept_impl(
     candidate_freq :
         When given, add this molecular frequency (MHz) as a new peak and
         accept the resulting fit.  The frequency is snapped to the nearest
-        ledger candidate within ``snap_tol_mhz``.
-    snap_tol_mhz :
-        Maximum distance (MHz) for snapping to an existing ledger candidate.
+        ledger candidate within the file's snap tolerance (:func:`refit_snap_tol_mhz_impl`).
     frame :
         The frame ``candidate_freq`` is expressed in (see
         :func:`refit_window_impl`). Irrelevant, and never validated, when
@@ -3957,7 +3929,7 @@ def review_accept_impl(
         return None
 
     path = str(file_path)
-    snap_tol = resolve_snap_tol_mhz(path, snap_tol_mhz)
+    snap_tol = refit_snap_tol_mhz_impl(path)
     resolved_frame, stamp = _resolve_frame(path, frame)
     candidate_raw = _frame_to_raw(candidate_freq, frame=resolved_frame, stamp=stamp)
     return _run_single_action(
@@ -4223,7 +4195,6 @@ def create_window_impl(
     file_path: Union[Path, str],
     anchor_mhz: float,
     *,
-    snap_tol_mhz: Optional[float] = None,
     frame: Optional[Frame] = None,
     events: Optional[EventCallback] = None,
     cancel: Optional[CancelToken] = None,
@@ -4274,9 +4245,6 @@ def create_window_impl(
         Path to the ``.ftmw`` pipeline file (read-write).
     anchor_mhz :
         Molecular frequency (MHz) the new window must cover.
-    snap_tol_mhz :
-        Frequency-snapping tolerance forwarded to the fit core (unused by the
-        empty-peak-set fit; kept for signature parity with the other verbs).
     frame :
         The frame ``anchor_mhz`` is expressed in (see
         :func:`refit_window_impl`). Omitting it is an error on a
@@ -4305,7 +4273,7 @@ def create_window_impl(
         omitted on a ``self_calibrated`` file.
     """
     path = str(file_path)
-    snap_tol = resolve_snap_tol_mhz(path, snap_tol_mhz)
+    snap_tol = refit_snap_tol_mhz_impl(path)
     resolved_frame, stamp = _resolve_frame(path, frame)
     anchor_raw = _frame_to_raw(anchor_mhz, frame=resolved_frame, stamp=stamp)
     return _run_single_action(
@@ -6404,7 +6372,9 @@ def _execute_planned_action(path: str, action: PlannedAction) -> None:
 # window, and persists ``/stage5_fitting`` and ``/stage6_review`` once each.
 #
 # Ordering: the final persisted state must not depend on the order actions
-# were listed in the curation file (or the decision log, for undo's replay).
+# were listed in the curation file. (A replay of the decision log -- undo, a
+# log-prefix apply -- is the exception: the log is a history, so it runs in
+# log order and re-records the log as it was; see _apply_batch_segment.)
 # Cross-window order is canonicalized -- creates first (in their own relative
 # order, since they install structure later rows name), then every other
 # action grouped by ascending window id -- while the intra-window sequence
@@ -6593,6 +6563,13 @@ class _BatchChangeset:
     same action recorded, set by :func:`_close_batch_action` once the action
     succeeds and turned into the ``action_index`` evidence key by
     :func:`_derive_batch_review`)."""
+    preserved: List["DecisionLogEntry"] = field(default_factory=list)
+    """The surviving log rows a replay (undo, log-prefix apply) re-records, in
+    order: the first ``len(preserved)`` pending decisions are their replay,
+    and :func:`_derive_batch_review` records each with its row's own
+    ``frequency_mhz`` (and ``merged_from``) verbatim -- a replay never rewrites
+    a surviving row's frequencies, even where the replayed fit resolves a
+    target a fraction of a bin away."""
     next_decision_index: int = 0
     lineless_reviewable: FrozenSet[int] = frozenset()
     """Windows the persisted review flagged ``empty_window_residual`` that the
@@ -8528,11 +8505,30 @@ def _derive_batch_review(ctx: _BatchCtx, path: str) -> Stage6Review:
         evidence[ACTION_INDEX_EVIDENCE_KEY] = base_index + int(
             dec.get("action_start", offset)
         )
+        frequency_mhz = float(dec["frequency_mhz"])
+        if offset < len(ctx.changeset.preserved):
+            src = ctx.changeset.preserved[offset]
+            if (int(src.window_id), str(src.kind)) != (wid, kind):
+                # Only a row recorded under a per-call snap tolerance (before
+                # contract 16) can replay as a different action at the file's.
+                raise CurationConflictError(
+                    "replay_diverged",
+                    [int(src.order_index)],
+                    message=f"cannot replay decision {src.order_index} "
+                    f"({src.kind} on window {src.window_id}): at this file's "
+                    f"snap tolerance it replays as {kind} on window {wid}. It "
+                    "was recorded with a per-call snap tolerance; undo it "
+                    "together with the decisions after it, or rebuild and "
+                    "re-edit.",
+                )
+            frequency_mhz = float(src.frequency_mhz)
+            if "merged_from" in src.evidence:
+                evidence["merged_from"] = list(src.evidence["merged_from"])
         new_entries.append(
             DecisionLogEntry(
                 order_index=base_index + offset,
                 window_id=wid,
-                frequency_mhz=float(dec["frequency_mhz"]),
+                frequency_mhz=frequency_mhz,
                 kind=kind,
                 provenance="user",
                 evidence=evidence,
@@ -9105,8 +9101,9 @@ def _apply_batch_segment(
     *,
     snap_tol_mhz: float,
     action_indices: Dict[int, List[int]],
+    log_order: bool = False,
 ) -> Tuple[int, Dict[int, CreateWindowResult]]:
-    """Run one canonicalized segment of a batch's plan against ``ctx``: the
+    """Run one segment of a batch's plan against ``ctx``: the
     action loop of :func:`_execute_curation_batch`, split out so a log-prefix
     apply can run its replayed prefix and then its own curation file as two
     segments of ONE batch (one cascade, one persist), the second resolved
@@ -9115,6 +9112,16 @@ def _apply_batch_segment(
     ``action_indices`` is filled in place (window id -> the positions in
     *plan* of the actions that targeted it). Returns the count applied and
     every create this segment ran, keyed by the real window id.
+
+    A segment runs in canonical order (:func:`_canonicalize_batch_plan`), so a
+    curation file's row order cannot change its outcome -- unless
+    ``log_order``: a replay of the decision log (undo, a log-prefix apply)
+    runs its actions in the order the log recorded them, since the log is a
+    history, not a set. The fit is the same either way (each direct edit
+    refits against its own stored skirts and the one cascade walks the
+    dependency DAG, not the plan), but a create the log recorded after an
+    edit runs after it, as it did, and the replay re-records the log in its
+    own order.
     """
     applied = 0
     # W3: created.window_id of every implied create this batch has run so
@@ -9161,7 +9168,10 @@ def _apply_batch_segment(
     # naming the window it targeted; a cancel is honoured before each action.
     fit_total = sum(1 for a in plan if a.kind != "accept" or a.candidate is not None)
     fit_index = 0
-    for original_index, action in _canonicalize_batch_plan(plan):
+    ordered = (
+        list(enumerate(plan)) if log_order else _canonicalize_batch_plan(plan)
+    )
+    for original_index, action in ordered:
         if ctx.events is not None:
             ctx.events.check_cancel()
         t_action = time.monotonic()
@@ -9322,6 +9332,7 @@ def _execute_curation_batch(
     snap_tol_mhz: float,
     shared: Optional[_SharedFitCtx] = None,
     deferred: Optional[_DeferredCuration] = None,
+    preserve: Sequence[DecisionLogEntry] = (),
 ) -> _BatchOutcome:
     """Execute a resolved curation plan as one batch: shared context, one
     combined cascade, one persist of ``/stage5_fitting`` and one of
@@ -9349,6 +9360,11 @@ def _execute_curation_batch(
     with it; the outcome then reports THAT segment (its count, its creates,
     its per-window block relative to the state after the prefix), never the
     replayed prefix, which the caller already knows.
+
+    ``preserve`` marks *plan* as a replay of these surviving log rows: it then
+    runs in log order (not canonical order) and each row is re-recorded with
+    its own ``frequency_mhz`` / ``merged_from`` (see
+    :attr:`_BatchChangeset.preserved`).
     """
     if not plan and deferred is None:
         return _BatchOutcome(applied=0)
@@ -9379,8 +9395,14 @@ def _execute_curation_batch(
     # A curation batch is one unit: a cancel (or a failing events callback)
     # before its persist discards all of it with the call's transaction.
     ctx = _open_batch(path, snap_tol_mhz=snap_tol_mhz, shared=shared)
+    ctx.changeset.preserved = list(preserve)
     return _run_curation_batch(
-        ctx, path, plan, snap_tol_mhz=snap_tol_mhz, deferred=deferred
+        ctx,
+        path,
+        plan,
+        snap_tol_mhz=snap_tol_mhz,
+        deferred=deferred,
+        log_order=bool(preserve),
     )
 
 
@@ -9391,6 +9413,7 @@ def _run_curation_batch(
     *,
     snap_tol_mhz: float,
     deferred: Optional[_DeferredCuration],
+    log_order: bool = False,
 ) -> _BatchOutcome:
     """The body of :func:`_execute_curation_batch` once its batch is open:
     apply every action in memory, then cascade and persist once
@@ -9407,7 +9430,11 @@ def _run_curation_batch(
     action_indices: Dict[int, List[int]] = {}
 
     applied, created_facts = _apply_batch_segment(
-        ctx, plan, snap_tol_mhz=snap_tol_mhz, action_indices=action_indices
+        ctx,
+        plan,
+        snap_tol_mhz=snap_tol_mhz,
+        action_indices=action_indices,
+        log_order=log_order,
     )
     resolved_deferred: Optional[Tuple[List[PlannedAction], List[str]]] = None
     prefix_wids: Set[int] = set()
@@ -9736,7 +9763,7 @@ def apply_curation_impl(
             )
     plan, raw_targets, stamp = _resolve_curation_call(path, source, frame)
 
-    snap_tol = resolve_snap_tol_mhz(path, None)
+    snap_tol = refit_snap_tol_mhz_impl(path)
     # One read of the fitted peak columns for both advisory passes: the
     # ambiguity pass needs it unconditionally, and the frame diagnostic used
     # to rebuild the identical map moments later in the same call.
@@ -9853,7 +9880,7 @@ def _apply_curation_at_prefix(
     if any(e.kind in _FIT_EDIT_KINDS for e in kept) or deferred.needs_fit():
         require_splice_compatible_environment(path)
 
-    snap_tol = resolve_snap_tol_mhz(path, None)
+    snap_tol = refit_snap_tol_mhz_impl(path)
     # The restore-then-replay is one unit: a cancel is honoured here, before
     # the restore, and never once it has begun.
     _check_cancel()
@@ -9867,6 +9894,7 @@ def _apply_curation_at_prefix(
             snap_tol_mhz=snap_tol,
             shared=shared,
             deferred=deferred,
+            preserve=kept,
         )
 
     assert outcome.resolved_deferred is not None  # a deferred segment always resolves
@@ -10072,7 +10100,6 @@ def _run_review_preview(
     source: CurationSource,
     *,
     frame: Optional[Frame] = None,
-    snap_tol_mhz: Optional[float] = None,
     shared: Optional[_SharedFitCtx] = None,
 ) -> _PreviewRun:
     """Run a curation file's resolved plan to completion in memory and report
@@ -10114,7 +10141,7 @@ def _run_review_preview(
     exactly as before.
     """
     path = str(file_path)
-    snap_tol = resolve_snap_tol_mhz(path, snap_tol_mhz)
+    snap_tol = refit_snap_tol_mhz_impl(path)
     plan, raw_targets, stamp = _resolve_curation_call(path, source, frame)
 
     warnings = _frame_mismatch_warnings(
@@ -10393,7 +10420,6 @@ def review_preview_impl(
     *,
     actions: Optional[Sequence[Union[CurationAction, Mapping[str, Any]]]] = None,
     frame: Optional[Frame] = None,
-    snap_tol_mhz: Optional[float] = None,
     events: Optional[EventCallback] = None,
     cancel: Optional[CancelToken] = None,
 ) -> ReviewPreviewResult:
@@ -10408,9 +10434,7 @@ def review_preview_impl(
     instead of ``curation_path`` (exactly one of the two).
     """
     source = curation_source(curation_path, actions)
-    return _run_review_preview(
-        file_path, source, frame=frame, snap_tol_mhz=snap_tol_mhz
-    ).result
+    return _run_review_preview(file_path, source, frame=frame).result
 
 
 @requires_pipeline_file()
@@ -10829,7 +10853,11 @@ def review_undo_impl(
     with _committing():
         _reset_to_baseline(path, restore_fit=baseline)
         outcome = _execute_curation_batch(
-            path, plan, snap_tol_mhz=resolve_snap_tol_mhz(path, None), shared=_shared
+            path,
+            plan,
+            snap_tol_mhz=refit_snap_tol_mhz_impl(path),
+            shared=_shared,
+            preserve=surviving,
         )
 
     return UndoResult(
@@ -12395,7 +12423,6 @@ class ReviewSession:
         *,
         add: Sequence[Union[float, str]] = (),
         remove: Sequence[Union[float, str]] = (),
-        snap_tol_mhz: Optional[float] = None,
         frame: Optional[Frame] = None,
     ) -> RefitWindowResult:
         """Re-fit one window with ``add`` / ``remove`` edits.
@@ -12416,7 +12443,6 @@ class ReviewSession:
                 window_id,
                 add=add,
                 remove=remove,
-                snap_tol_mhz=snap_tol_mhz,
                 frame=frame,
                 _shared=shared,
             )
@@ -12428,7 +12454,6 @@ class ReviewSession:
         window_id: int,
         *,
         candidate_freq: Optional[float] = None,
-        snap_tol_mhz: Optional[float] = None,
         frame: Optional[Frame] = None,
     ) -> Optional[RefitWindowResult]:
         """Accept a window as reviewed, or revive a named ledger candidate.
@@ -12445,7 +12470,6 @@ class ReviewSession:
                 self._path,
                 window_id,
                 candidate_freq=candidate_freq,
-                snap_tol_mhz=snap_tol_mhz,
                 frame=frame,
                 _shared=shared,
             )
@@ -12456,7 +12480,6 @@ class ReviewSession:
         self,
         anchor_mhz: float,
         *,
-        snap_tol_mhz: Optional[float] = None,
         frame: Optional[Frame] = None,
     ) -> CreateWindowResult:
         """Install a fit window for a line no window covers.
@@ -12472,7 +12495,6 @@ class ReviewSession:
             result = create_window_impl(
                 self._path,
                 anchor_mhz,
-                snap_tol_mhz=snap_tol_mhz,
                 frame=frame,
                 _shared=shared,
             )
@@ -12558,7 +12580,7 @@ class ReviewSession:
         rather than a second computation trusted to agree with the first.
         """
         # Called inside review_apply's transaction.
-        snap_tol = resolve_snap_tol_mhz(self._path, None)
+        snap_tol = refit_snap_tol_mhz_impl(self._path)
         with atomic_write(self._path):
             gate_ctx = _open_batch(
                 self._path, snap_tol_mhz=snap_tol, shared=self._shared

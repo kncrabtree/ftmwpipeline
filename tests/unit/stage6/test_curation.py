@@ -1355,7 +1355,7 @@ def test_apply_merge_via_batch_matches_direct_call(stage5_multi_file, tmp_path):
     merge_peaks_impl(str(direct), wid, freqs)
 
     plan = [PlannedAction(kind="merge", window_id=wid, peaks=list(freqs))]
-    snap_tol = s6.resolve_snap_tol_mhz(str(batched), None)
+    snap_tol = s6.refit_snap_tol_mhz_impl(str(batched))
     with atomic_write(str(batched)):
         s6._execute_curation_batch(str(batched), plan, snap_tol_mhz=snap_tol)
 
@@ -1385,7 +1385,7 @@ def test_apply_split_via_batch_matches_direct_call(stage5_multi_file, tmp_path):
     split_peak_impl(str(direct), wid, freq, into=2)
 
     plan = [PlannedAction(kind="split", window_id=wid, peak=freq, into=2)]
-    snap_tol = s6.resolve_snap_tol_mhz(str(batched), None)
+    snap_tol = s6.refit_snap_tol_mhz_impl(str(batched))
     with atomic_write(str(batched)):
         s6._execute_curation_batch(str(batched), plan, snap_tol_mhz=snap_tol)
 

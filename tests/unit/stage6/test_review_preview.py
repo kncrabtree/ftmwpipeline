@@ -446,7 +446,7 @@ class TestUnbaselinedContextCannotBePersisted:
         with atomic_write(str(sc_multi_file)):
             ctx = s6._open_batch(
                 str(sc_multi_file),
-                snap_tol_mhz=s6.resolve_snap_tol_mhz(str(sc_multi_file), None),
+                snap_tol_mhz=s6.refit_snap_tol_mhz_impl(str(sc_multi_file)),
                 snapshot=False,
             )
         assert ctx.baseline_taken is False
@@ -457,7 +457,7 @@ class TestUnbaselinedContextCannotBePersisted:
                 s6._finish_batch(
                     ctx,
                     str(sc_multi_file),
-                    snap_tol_mhz=s6.resolve_snap_tol_mhz(str(sc_multi_file), None),
+                    snap_tol_mhz=s6.refit_snap_tol_mhz_impl(str(sc_multi_file)),
                 )
         assert _digest(sc_multi_file) == before, (
             "a refused _finish_batch must not have written anything before " "raising"
@@ -473,7 +473,7 @@ class TestUnbaselinedContextCannotBePersisted:
         with atomic_write(str(sc_multi_file)):
             ctx = s6._open_batch(
                 str(sc_multi_file),
-                snap_tol_mhz=s6.resolve_snap_tol_mhz(str(sc_multi_file), None),
+                snap_tol_mhz=s6.refit_snap_tol_mhz_impl(str(sc_multi_file)),
                 snapshot=True,
             )
         assert ctx.baseline_taken is True
@@ -481,7 +481,7 @@ class TestUnbaselinedContextCannotBePersisted:
             s6._finish_batch(
                 ctx,
                 str(sc_multi_file),
-                snap_tol_mhz=s6.resolve_snap_tol_mhz(str(sc_multi_file), None),
+                snap_tol_mhz=s6.refit_snap_tol_mhz_impl(str(sc_multi_file)),
             )
         with h5py.File(sc_multi_file, "r") as f:
             assert "stage5_fitting_baseline" in f

@@ -16,16 +16,31 @@ Accumulating toward ``1.0.0``. ``0.1.0b4`` is the last published release;
 everything below is reachable only from a source checkout. No further beta is
 planned — these entries fold into the ``1.0.0`` section when it is dated.
 
-**A remove is logged at the peak it removed; ``CONTRACT_VERSION`` moves 15 → 16.**
-A ``remove`` decision-log row's ``frequency_mhz``, and a merge's ``merged_from``,
-are now the fitted frequencies (raw frame) of the peaks the request resolved to,
-not the frequencies sent. An undo or log-prefix replay runs at the file's snap
-tolerance, so a remove made with a widened ``snap_tol_mhz`` (``--snap-tol-mhz``)
-that only the wider tolerance could resolve made every later undo on the file
-fail; the replay now finds the logged peak at no distance. Rows written before
-hold the frequencies sent. A remove sent in the wrong frame still resolves to
-the same peak, and its log row now names that peak rather than the shifted
-frequency.
+**One snap tolerance per file; removes logged at the peak they removed;
+``CONTRACT_VERSION`` moves 15 → 16.**
+
+* **No per-call snap tolerance.** ``review_edit``, ``review_create`` and
+  ``review_accept`` (API, ``Pipeline``, ``ReviewSession``) lose their
+  ``snap_tol_mhz`` parameter and the CLI verbs their ``--snap-tol-mhz`` flag.
+  The tolerance is the file's (``refit_snap_tol_mhz``) everywhere, as it
+  already was for every batch and replay. The decision log records no
+  tolerance, so an edit made with a widened one could read differently on
+  replay: a remove only the wider tolerance reached made every later undo on
+  the file fail, and a split or merge inferred only under it replayed as a
+  plain edit, seeded differently. To reach a farther peak, name it by
+  ``uid:N``.
+* **A remove is logged at the peak it removed.** A ``remove`` row's
+  ``frequency_mhz``, and a merge's ``merged_from``, are the fitted frequencies
+  (raw frame) of the peaks the request resolved to, not the frequencies sent.
+  Rows written before hold the frequencies sent. A remove sent in the wrong
+  frame still resolves to the same peak, and its row now names that peak.
+* **A replay rewrites no surviving row.** ``review_undo`` and an apply at a
+  ``log_prefix`` re-record every surviving row with its own ``frequency_mhz``
+  and ``merged_from`` verbatim, even where the replayed fit resolves the
+  target a fraction of a bin away; only ``order_index`` and ``action_index``
+  are renumbered after an undo. A surviving row that would replay as a
+  different action (only a row recorded under a per-call tolerance can) is
+  refused with the new ``curation_conflict`` reason ``replay_diverged``.
 
 **Decision-log action groups, empty-window ``converged``, canonical ``run_pipeline`` and
 provenance names; ``CONTRACT_VERSION`` moves 14 → 15.** Four changes from the

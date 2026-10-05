@@ -235,8 +235,13 @@ These exist today; the contract freezes their names and the listed fields.
   taken over `evidence` changes with it (contract version 15). A `remove`
   row's `frequency_mhz` and a merge's `merged_from` are the fitted (raw-frame)
   frequencies of the peaks the request resolved to, never the frequencies
-  sent, so a replay at any snap tolerance finds them (contract version 16;
-  older rows hold the frequencies sent).
+  sent (contract version 16; older rows hold the frequencies sent). A replay
+  (undo, log-prefix apply) re-records every surviving row with its own
+  `frequency_mhz` and `merged_from` verbatim, never what the replayed fit
+  resolves; a surviving row that would replay as a different action is
+  refused (`curation_conflict`, `replay_diverged`). Only `order_index` (and
+  with it `action_index`) is renumbered after an undo. The snap tolerance is
+  a property of the file: no call takes one (contract version 16).
 - The curation result types (`RefitWindowResult`, `PreviewWindowResult`,
   `AppliedWindowResult`, …) and their `converged` flag: a bool, `Absent.NOT_RUN`
   where `chi2r_after` is, and `Absent.UNDEFINED` for a window left with no peak
@@ -297,8 +302,9 @@ under the same analysis epoch. Concretely, `@1` covers:
   Stage 6 inputs that shape the final products:
   - `review run`'s `bar`, `kappa`, `noise_floor` and
     `attention_candidate_evidence` only route attention;
-  - the snap tolerance and refit options are arguments of individual curation
-    actions, which are excluded below;
+  - the snap tolerance is a property of the file (no call takes one), and
+    refit options are arguments of individual curation actions, which are
+    excluded below;
 - the acquisition parameters the analysis used (probe frequency, sideband,
   sample spacing), including any import-time overrides;
 - the stored acquisition segments (`data.acquisition_segments`), which the
