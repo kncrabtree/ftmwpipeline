@@ -259,12 +259,15 @@ class Pipeline:
         ------
         PipelineExistsError
             If file exists with different source and force=False
-        FileNotFoundError
-            If source data does not exist
-        ValueError
-            If format detection or validation fails
+        PipelineFileNotFoundError
+            If source data does not exist (``not_found``; also a
+            ``FileNotFoundError``)
+        BadSettingError
+            ``path`` ``"format"`` if format detection fails or the format is
+            unknown; ``path`` ``"source"`` if the source does not validate or
+            its format's loader refuses it (also a ``ValueError``)
         RuntimeError
-            If data loading or file creation fails
+            If file creation fails
         """
         return cls._create(
             filepath,

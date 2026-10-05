@@ -153,3 +153,107 @@ def test_run_pipeline_reports_the_typed_code(tmp_path, missing_source):
     assert result["error"]["code"] == "not_found"
     assert result["error"]["kind"] == "file"
     assert result["completed_stages"] == []
+
+
+# ---- a source that validates but its loader refuses -------------------------
+
+
+def _csv(tmp_path: Path) -> Path:
+    path = tmp_path / "volts.csv"
+    path.write_text("v\n1.0\n0.5\n-0.25\n0.125\n")
+    return path
+
+
+def _loader_refusals(tmp_path: Path):
+    """(label, loader params, message fragment) for refusals made at load time,
+    after the source has passed validation."""
+    sidecar = tmp_path / "side.json"
+    sidecar.write_text(json.dumps({"spacing_us": 0.02, "no_such_key": 1}))
+    return [
+        ("missing spacing_us", {"probe_freq_mhz": 40960.0}, "spacing_us"),
+        (
+            "unknown column",
+            {"spacing_us": 0.02, "probe_freq_mhz": 40960.0, "column": "nosuch"},
+            "nosuch",
+        ),
+        ("unknown sidecar key", {"metadata": str(sidecar)}, "no_such_key"),
+    ]
+
+
+def test_a_loader_refusal_is_bad_setting_on_the_source_on_every_interface(
+    tmp_path,
+):
+    """Not ``RuntimeError("Failed to load FID data")``: the loader's refusal is
+    ``bad_setting`` (path ``source``) with the loader's message kept."""
+    src = _csv(tmp_path)
+    for label, params, fragment in _loader_refusals(tmp_path):
+        for name, call in _imports(tmp_path, src, format_name="csv", **params):
+            with pytest.raises(BadSettingError) as exc:
+                call()
+            err = exc.value
+            assert isinstance(err, ValueError), (label, name)
+            assert err.path == "source", (label, name)
+            assert err.value == str(src), (label, name)
+            assert "csv" in err.expected, (label, name)
+            assert fragment in str(err), (label, name)
+            assert err.to_dict()["code"] == "bad_setting", (label, name)
+    assert not list(tmp_path.glob("*.ftmw"))
+
+
+def test_the_cli_reports_a_loader_refusal_as_the_error_dict(tmp_path, capsys):
+    src = _csv(tmp_path)
+    rc, payload = _cli_error(
+        capsys,
+        "data",
+        "import",
+        tmp_path / "cli_c.ftmw",
+        src,
+        "--format",
+        "csv",
+        "--probe_freq_mhz",
+        "40960",
+    )
+    assert rc == 1
+    assert payload["schema"] == "ftmw/error@1"
+    assert payload["code"] == "bad_setting" and payload["path"] == "source"
+    assert payload["value"] == str(src)
+    assert "spacing_us" in payload["message"]
+    with pytest.raises(BadSettingError) as exc:
+        ftmw.import_data(
+            tmp_path / "api_c.ftmw",
+            source=src,
+            format_name="csv",
+            probe_freq_mhz=40960.0,
+        )
+    assert payload == exc.value.to_dict()
+    assert not list(tmp_path.glob("*.ftmw"))
+
+
+def test_the_cli_does_not_swallow_a_keyboard_interrupt(tmp_path, monkeypatch):
+    """A second Ctrl-C (a ``KeyboardInterrupt``) is not turned into exit 1 with
+    "Operation canceled by user"; it propagates like every other verb's."""
+    import ftmwpipeline.cli.data_commands as data_commands
+
+    def _interrupt(*args: Any, **kwargs: Any) -> Dict[str, Any]:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(data_commands, "import_data_impl", _interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        main(["data", "import", str(tmp_path / "k.ftmw"), str(_csv(tmp_path))])
+
+
+def test_a_cancelled_import_exits_130_with_the_cancelled_error(
+    tmp_path, capsys, monkeypatch
+):
+    import ftmwpipeline.cli.data_commands as data_commands
+    from ftmwpipeline.file_manager import OperationCancelledError
+
+    def _cancelled(*args: Any, **kwargs: Any) -> Dict[str, Any]:
+        raise OperationCancelledError("data")
+
+    monkeypatch.setattr(data_commands, "import_data_impl", _cancelled)
+    rc, payload = _cli_error(
+        capsys, "data", "import", tmp_path / "c.ftmw", _csv(tmp_path)
+    )
+    assert rc == 130
+    assert payload["code"] == "cancelled"

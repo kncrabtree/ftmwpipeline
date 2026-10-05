@@ -140,12 +140,15 @@ def import_data(
     ------
     PipelineExistsError
         If file exists with different source and force=False
-    FileNotFoundError
-        If source data does not exist
-    ValueError
-        If format detection or validation fails
+    PipelineFileNotFoundError
+        If source data does not exist (``not_found``; also a
+        ``FileNotFoundError``)
+    BadSettingError
+        ``path`` ``"format"`` if format detection fails or the format is
+        unknown; ``path`` ``"source"`` if the source does not validate or its
+        format's loader refuses it (also a ``ValueError``)
     RuntimeError
-        If data loading or file creation fails
+        If file creation fails
 
     Examples
     --------
@@ -2948,10 +2951,10 @@ def preview_source(
     ------
     PipelineFileNotFoundError
         ``source`` does not exist.
-    NotFoundError
-        ``kind == "format"``: ``format_name`` is unknown, or none was detected.
-    ValueError
-        The source is not valid for the format.
+    BadSettingError
+        ``path`` ``"format"``: ``format_name`` is unknown, or none was
+        detected. ``path`` ``"source"``: the format's loader refuses the
+        source (its message kept). Also a ``ValueError``.
     """
     return Pipeline.preview_source(source, format_name)
 

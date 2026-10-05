@@ -138,10 +138,11 @@ def cmd_data_load(args: argparse.Namespace) -> int:
         return 0
 
     except PipelineFileError:
+        # Typed refusals (a loader refusing the source is bad_setting, path
+        # "source") and cancellation go to cli.main: ftmw/error@1 under
+        # --json, the contract exit code (cancelled exits 130). A second
+        # Ctrl-C is a KeyboardInterrupt and is not caught here.
         raise
-    except KeyboardInterrupt:
-        print("\nOperation canceled by user")
-        return 1
     except Exception as e:
         print(f"Unexpected error: {e}")
         return 1

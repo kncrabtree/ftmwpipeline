@@ -26,6 +26,7 @@ from ..file_manager import (
     stages_an_import_replaces,
 )
 from ..io.data_loaders import (
+    LoaderError,
     detect_format,
     list_formats,
     load_fid,
@@ -168,6 +169,25 @@ DATA_IMPORT_SUMMARY_KEYS: Tuple[str, ...] = (
 )
 
 
+def loader_refusal(
+    source: Any, format_name: Optional[str], exc: BaseException
+) -> BadSettingError:
+    """The ``bad_setting`` (``path`` ``"source"``) for a source a loader refuses.
+
+    A loader refuses a source it cannot read with the parameters given (an
+    unknown sidecar key, a CSV with no ``spacing_us``, an unknown ``column``,
+    a directory that is not the named format). Import and ``preview_source``
+    raise this one error for it, with the loader's message unchanged.
+    """
+    loader = f"the {format_name} loader" if format_name else "a loader"
+    return BadSettingError(
+        "source",
+        f"a source {loader} can read",
+        str(source),
+        message=str(exc),
+    )
+
+
 def data_import_summary(result: Mapping[str, Any]) -> Dict[str, Any]:
     """The scalar summary of an :func:`import_data_impl` result."""
     fid_meta = result["fid_metadata"]
@@ -241,7 +261,9 @@ def import_data_impl(
     BadSettingError
         (``bad_setting``; also a ``ValueError``) ``path`` ``"format"`` if
         format detection fails or the format is unknown; ``path`` ``"source"``
-        if the source does not validate under the resolved format.
+        if the source does not validate under the resolved format, or that
+        format's loader refuses it (an unknown sidecar key, a missing
+        ``spacing_us``, an unknown ``column``; the loader's message is kept).
     """
     from .events import operation_events
 
@@ -338,10 +360,8 @@ def _import_data(
         logger.info(
             f"FID data loaded successfully: {fid.n_points:,} points, {fid.duration_us:.1f} μs"
         )
-    except (ValueError, PipelineFileError, FileNotFoundError):
-        raise
-    except Exception as e:
-        raise RuntimeError(f"Failed to load FID data: {e}") from e
+    except LoaderError as e:
+        raise loader_refusal(source_path, format_name, e) from e
 
     # Create pipeline file with source metadata
     logger.info("Creating pipeline file...")

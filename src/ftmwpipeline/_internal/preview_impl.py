@@ -13,8 +13,10 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
 from ..contract import SOURCE_PREVIEW_SCHEMA, Absent
+from ..io.data_loaders import detect_format
 from ..io.data_loaders import preview_source as _registry_preview
 from ..io.data_loaders.base import LoaderError
+from .stage0_impl import loader_refusal
 
 _CHIRP_KEYS = ("chirp_start_us", "chirp_end_us", "start_margin_us")
 
@@ -31,15 +33,16 @@ def preview_source_impl(
     ------
     PipelineFileNotFoundError
         ``source`` does not exist.
-    NotFoundError
-        ``kind == "format"``: unknown ``format_name``, or none detected.
-    ValueError
-        The source exists but is not valid for the format (a loader refusal).
+    BadSettingError
+        ``path`` ``"format"``: unknown ``format_name``, or none detected.
+        ``path`` ``"source"``: the source exists but the format's loader
+        refuses it (the loader's message is kept). Also a ``ValueError``.
     """
     try:
         preview = _registry_preview(source, format_name)
     except LoaderError as exc:
-        raise ValueError(str(exc)) from exc
+        resolved = format_name if format_name is not None else detect_format(source)
+        raise loader_refusal(source, resolved, exc) from exc
 
     window: Union[Dict[str, Any], Absent]
     if preview.chirp_window is None:

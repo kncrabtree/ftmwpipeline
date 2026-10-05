@@ -597,6 +597,11 @@ not declare is `Absent.NOT_RUN` — never the default import would apply. A
 declared value that cannot be read (a chirp window that fails to parse, a
 non-finite sidecar value) is `Absent.UNDEFINED`.
 
+A source its format's loader refuses — whether the format was named or
+detected — raises `bad_setting` (`path` `"source"`) with the loader's message,
+as `import_data` does for a source its loader refuses (an unknown sidecar key,
+a missing required value such as `spacing_us`, an unknown `column`).
+
 ### Window model
 
 `window_model(path, window_id, *, grid="active", components=False)` → the
