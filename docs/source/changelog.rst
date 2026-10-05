@@ -43,7 +43,7 @@ merged window holds window 101's four lines, which keep their ``peak_uid`` s and
 move by at most 1.5 kHz. Its reduced chi-squared is 2.20 Gaussian and 2.21
 Lorentzian, against 1.20 and 1.24 for window 101 alone, because it now fits the
 stretch window 100 covered, whose residual the dropped window had never
-reported. Every other window is bit-identical, and the fit takes no measurable
+reported. Every other window is bit-identical, and the fit takes no measurably
 longer. A file fitted under epoch 4 must be re-fit, or have the mismatch
 accepted, before Stage 6 will splice an edit into it, and a partial fit written
 under epoch 4 starts over instead of resuming.

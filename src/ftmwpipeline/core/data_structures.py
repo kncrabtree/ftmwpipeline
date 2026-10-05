@@ -1604,15 +1604,19 @@ class ReplanInfo:
 
     Persistent twin of :class:`ftmwpipeline.fitting.plan_execution.ReplanEvent`.
     Emitted when a residual edge-coherence flag has no fixed contributor to
-    thaw and a frequency-adjacent neighbor exists, prompting Stage 4 to
-    merge the two windows and bump the plan revision.
+    thaw and a neighbor exists on that side, prompting Stage 4 to merge the
+    two windows and bump the plan revision -- when the neighbor touches the
+    window and the merged window fits the plan's width cap. Otherwise the
+    record says why the merge did not happen (``accepted`` False,
+    ``revision_after == revision_before``).
 
     Attributes
     ----------
     triggering_window_id : int
         Window whose flagged edge prompted the merge.
     partner_window_id : int
-        Adjacent window the trigger asked to merge with.
+        Nearest window on the flagged side, the one the trigger asked to merge
+        with (it may be further than a touching distance; see ``reason``).
     surviving_window_id : int
         ``min(triggering_window_id, partner_window_id)`` -- the id that carries
         the merged window in the revised plan.

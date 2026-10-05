@@ -493,7 +493,11 @@ class ReplanEvent:
     Parallels :class:`ThawEvent` but captures a *plan-structural* change
     rather than a local co-fit. Emitted when the residual edge-coherence
     check flags a window edge that has no fixed contributor to thaw and a
-    frequency-adjacent neighbor exists for a :class:`MergeRequest`.
+    neighbor exists on that side. One event per flagged edge: ``accepted`` says
+    whether the merge was applied, and ``reason`` says why not when it was
+    refused (no window touches, or the merge would break the plan's width
+    cap), deferred (the pair shares a window with a merge chosen ahead of it
+    this round) or rejected by Stage 4.
 
     Attributes
     ----------
@@ -502,7 +506,8 @@ class ReplanEvent:
         ``surviving_window_id`` after the merge (the survivor is always the
         lower-id of the pair).
     partner_window_id : int
-        The adjacent window the trigger asked to merge with.
+        The nearest window on the flagged side, which the trigger asked to
+        merge with.
     surviving_window_id : int
         ``min(triggering_window_id, partner_window_id)`` -- the id that
         carries the merged window in the revised plan.
