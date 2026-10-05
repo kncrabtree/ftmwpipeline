@@ -2838,11 +2838,10 @@ def _resolve_refit_window_tau(
         and tau_source != "override"
         and persisted_cal is not None
     ):
-        from .stage5_impl import resolve_window_tau_anchor
+        from .stage5_impl import resolve_window_range_tau_anchor
 
-        center_mhz = 0.5 * (fit_win.freq_range[0] + fit_win.freq_range[1])
-        return resolve_window_tau_anchor(
-            center_mhz,
+        return resolve_window_range_tau_anchor(
+            fit_win.freq_range,
             persisted_cal.band_majorities,  # type: ignore[attr-defined]
             tau_maj_us,
             sigma_tau_us,
@@ -2977,7 +2976,10 @@ def _cascade_refit_dependents(
     cascade) and is checked for a cancel before each one.
 
     A dependent in ``unavailable_window_ids`` refuses the whole cascade before
-    any refit (:func:`_refuse_unavailable_fit_plan`).
+    any refit (:func:`_refuse_unavailable_fit_plan`); every frozen contributor
+    of such a window's fit counts as a cascade edge, edge-free or not, since
+    the plan window that would say which are edge-free is not the one the fit
+    was made on.
     """
     from ..fitting.result_conversion import sort_fitting_result_by_frequency
 
@@ -2985,7 +2987,17 @@ def _cascade_refit_dependents(
     fit_map: Dict[int, FittingResult] = {
         int(wf.window_id): wf for wf in window_fits if wf.window_id is not None
     }
-    succs = _cascade_succs(window_fits, fit_window_map)
+    # A window whose fitted geometry the file does not hold (a merged fit with
+    # no stored plan) has no plan window that says which of its fit's frozen
+    # contributors are edge-free -- its Stage 4 window is not the window its fit
+    # was made on. Every frozen contributor of its fit is then a cascade edge,
+    # so an edit any of them read reaches the refusal below instead of leaving
+    # that fit stale.
+    blocked = {int(w) for w in unavailable_window_ids}
+    graph_window_map = {
+        w: fw for w, fw in fit_window_map.items() if int(w) not in blocked
+    }
+    succs = _cascade_succs(window_fits, graph_window_map)
     closure = _cascade_closure(edited_wids, succs)
     # `_cascade_closure` strips the whole `edited_wids` set from its result, so
     # when this call batches several DIRECTLY edited windows together (the

@@ -318,8 +318,10 @@ residual leakage, and if so it renegotiates rather than shipping an under-fit wi
   windows changes, so it is recorded once, not every round.
 
   A merge leaves the fit on windows Stage 4 did not plan. The survivor keeps the
-  lower id and the merged range; the absorbed id is no longer a window. The fit
-  therefore stores the plan it was made on (``final_plan_revision`` above 0) in the
+  lower id and the merged range; the absorbed id is no longer a window. Before
+  the survivor is re-fit, its per-band :math:`\tau` anchor is resolved again
+  from the merged range, the anchor any later refit of that window resolves. The
+  fit stores the plan it was made on (``final_plan_revision`` above 0) in the
   same write as its lines. From then on everything that reads window geometry reads
   that plan: ``window_status`` (whose merged row names the absorbed ids in
   ``merged_from``), the window model, and every window :doc:`Stage 6
@@ -331,8 +333,9 @@ residual leakage, and if so it renegotiates rather than shipping an under-fit wi
   hold the merged windows' geometry. Its ``window_status`` reports the recorded
   merge (a merge's range is the union of its windows'), but Stage 6 refuses to
   refit the merged windows, or the windows that read their lines as fixed
-  contributors, with ``curation_conflict`` (reason ``fit_plan_unavailable``). It
-  also refuses to create a window inside a merged range. Re-run ``fit run`` to
+  contributors, or to carry an edit into a merged window whose fit read the
+  edited window's lines, with ``curation_conflict`` (reason
+  ``fit_plan_unavailable``). It also refuses to create a window inside a merged range. Re-run ``fit run`` to
   curate them.
 
 A window edge whose coherence statistic is undefined (an empty residual, or a band

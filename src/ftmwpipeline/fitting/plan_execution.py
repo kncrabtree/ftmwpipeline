@@ -519,6 +519,14 @@ class ReplanContext:
         Active-FT authority per-bin RMS on ``active_freq_mhz``.
     max_replan_rounds : int, default :data:`DEFAULT_MAX_REPLAN_ROUNDS`
         Cap on the structural-replan outer loop.
+    tau_anchor_for_range : callable, optional
+        Per-band tau anchor of a window from its ``freq_range``: returns
+        ``(tau_maj_us, sigma_tau_us)``, or ``None`` when no band holds the
+        window (it then fits on the band-wide anchor). Set when the fit routes
+        tau per band; after each applied merge the survivor's entry in
+        ``window_tau_overrides`` is recomputed from its merged range with it
+        (the anchor a refit of the merged window resolves), and the absorbed
+        id's entry is dropped. ``None`` leaves the overrides as given.
     """
 
     peaks: list[Peak]
@@ -526,6 +534,9 @@ class ReplanContext:
     active_complex_spectrum: np.ndarray
     active_rms_noise: np.ndarray
     max_replan_rounds: int = DEFAULT_MAX_REPLAN_ROUNDS
+    tau_anchor_for_range: Optional[
+        Callable[[Tuple[float, float]], Optional[Tuple[float, float]]]
+    ] = None
 
 
 @dataclass
@@ -2437,8 +2448,10 @@ def execute_plan(
         conservative_kwargs = {}
     conservative_kwargs = dict(conservative_kwargs)
     conservative_kwargs.setdefault("shape", shape)
-    if window_tau_overrides is None:
-        window_tau_overrides = {}
+    # A copy: a structural merge re-anchors its survivor in this map, and the
+    # caller's map (the Stage 4 plan's anchors, recorded in a partial fit's
+    # provenance) must stay as given.
+    window_tau_overrides = dict(window_tau_overrides or {})
     # Per-Stage-3-peak detection-pass label, threaded parallel to
     # ``peak_frequencies_mhz`` for pass-aware seeding (currently unused).
     # Normalize the unset case to all-"primary" so the internal chain always
@@ -2636,6 +2649,13 @@ def execute_plan(
 
             affected = _affected_after_replan(new_plan, applied)
             new_by_id = {w.window_id: w for w in new_plan.windows}
+            if replan_context.tau_anchor_for_range is not None:
+                _reanchor_merged_windows(
+                    window_tau_overrides,
+                    new_plan,
+                    applied,
+                    replan_context.tau_anchor_for_range,
+                )
             # Drop outcomes that need refit (affected) AND outcomes whose
             # window was absorbed by a merge (the partner id no longer
             # appears in the revised plan).
@@ -4970,6 +4990,38 @@ def _do_replan(
         ctx.active_rms_noise,
         **kwargs,
     )
+
+
+def _reanchor_merged_windows(
+    window_tau_overrides: dict[int, tuple[float, float]],
+    new_plan: WindowPlan,
+    requests: Sequence[MergeRequest],
+    anchor_for_range: Callable[[Tuple[float, float]], Optional[Tuple[float, float]]],
+) -> None:
+    """Re-anchor each merge survivor's per-band tau at its merged range, in place.
+
+    A survivor carries its id into the revised plan but not its range, so the
+    anchor resolved from the original window can name another band than the
+    one the merged window's centre falls in. Recomputing it here from the
+    merged ``freq_range`` makes the re-walk fit on the anchor a refit of the
+    merged window resolves. The absorbed id's entry is dropped (the window no
+    longer exists); a survivor no band holds loses its entry and fits on the
+    band-wide anchor, as an unrouted window does.
+    """
+    by_id = {w.window_id: w for w in new_plan.windows}
+    for req in requests:
+        survivor = min(req.window_a_id, req.window_b_id)
+        absorbed = max(req.window_a_id, req.window_b_id)
+        window_tau_overrides.pop(absorbed, None)
+        win = by_id.get(survivor)
+        if win is None:
+            continue
+        lo, hi = win.freq_range
+        anchor = anchor_for_range((float(lo), float(hi)))
+        if anchor is None:
+            window_tau_overrides.pop(survivor, None)
+        else:
+            window_tau_overrides[survivor] = (float(anchor[0]), float(anchor[1]))
 
 
 def _affected_after_replan(

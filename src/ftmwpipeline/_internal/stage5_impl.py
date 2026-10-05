@@ -25,6 +25,7 @@ import copy
 import logging
 import math
 from dataclasses import dataclass, replace
+from functools import partial
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -317,6 +318,38 @@ def resolve_window_tau_anchor(
         if band is not None:
             return float(band.tau_maj_us), float(band.sigma_tau_us)
     return fallback_tau_maj_us, fallback_sigma_tau_us
+
+
+def resolve_window_range_tau_anchor(
+    freq_range: Tuple[float, float],
+    band_majorities: Optional[Tuple["BandMajority", ...]],
+    fallback_tau_maj_us: Optional[float],
+    fallback_sigma_tau_us: Optional[float],
+) -> Tuple[Optional[float], Optional[float]]:
+    """A window's tau penalty anchor from its ``freq_range``.
+
+    The one window-to-anchor map every fit and refit uses: the main fit's
+    ``window_tau_overrides`` (Stage 4 windows), the re-anchoring of a merge
+    survivor at its merged range during the structural replan, and the Stage 6
+    refit of a fitted window. Resolves :func:`resolve_window_tau_anchor` at the
+    range's centre, so the same window range always gets the same anchor.
+    """
+    center_mhz = 0.5 * (float(freq_range[0]) + float(freq_range[1]))
+    return resolve_window_tau_anchor(
+        center_mhz, band_majorities, fallback_tau_maj_us, fallback_sigma_tau_us
+    )
+
+
+def _band_anchor_or_none(
+    freq_range: Tuple[float, float],
+    band_majorities: Tuple["BandMajority", ...],
+) -> Optional[Tuple[float, float]]:
+    """The per-band anchor of ``freq_range``, or ``None`` when no band holds it
+    (the replan's re-anchoring callback; module-level so it pickles)."""
+    tm, st = resolve_window_range_tau_anchor(freq_range, band_majorities, None, None)
+    if tm is None or st is None:
+        return None
+    return tm, st
 
 
 def _build_active_ft_inputs(
@@ -2368,15 +2401,21 @@ def _fit_peaks_impl(
                 sigma_tau_us if sigma_tau_us is not None else "None",
             )
         else:
+            band_majorities = tuple(persisted_cal.band_majorities)
             for win in plan.windows:
-                center_mhz = 0.5 * (win.freq_range[0] + win.freq_range[1])
-                tm, st = resolve_window_tau_anchor(
-                    center_mhz, persisted_cal.band_majorities, None, None
+                tm, st = resolve_window_range_tau_anchor(
+                    win.freq_range, band_majorities, None, None
                 )
                 if tm is None:
                     continue
                 window_tau_overrides[int(win.window_id)] = (tm, cast(float, st))
             per_band_used = True
+            if replan_ctx is not None:
+                # A merge survivor re-anchors at its merged range (the anchor a
+                # Stage 6 refit of the merged window resolves) -- same map.
+                replan_ctx.tau_anchor_for_range = partial(
+                    _band_anchor_or_none, band_majorities=band_majorities
+                )
             logger.info(
                 "Stage 5 per-band tau routing on: %d / %d windows mapped "
                 "to a band (others use band-wide tau_maj=%.3f, sigma=%.3f)",

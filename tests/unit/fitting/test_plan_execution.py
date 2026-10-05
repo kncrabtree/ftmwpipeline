@@ -3395,3 +3395,83 @@ def test_add_from_convergence_skips_below_threshold():
     )
     assert result.fit.n_peaks == n_peaks_before  # unchanged
     assert n_called == 0  # finalize_node was never called
+
+
+class TestReplanReanchorsMergedWindows:
+    """A merge survivor keeps its id but not its range: after each accepted
+    round its per-band tau anchor is recomputed from the merged range (the
+    anchor a refit of the merged window resolves), the absorbed id's anchor
+    drops out, and the caller's map is left as given."""
+
+    def _spy_walks(self, monkeypatch):
+        seen = []
+        real = plan_execution._walk_windows_parallel
+
+        def spy(plan, order, **kwargs):
+            seen.append(
+                (kwargs["phase"], list(order), dict(kwargs["window_tau_overrides"]))
+            )
+            return real(plan, order, **kwargs)
+
+        monkeypatch.setattr(plan_execution, "_walk_windows_parallel", spy)
+        return seen
+
+    def test_each_round_reanchors_the_survivor_at_its_merged_range(self, monkeypatch):
+        monkeypatch.setattr(
+            plan_execution,
+            "_dispatch_structural_round",
+            _scripted_dispatch(
+                {0: [_trig(1, 0, "low", 5.0)], 1: [_trig(0, 2, "high", 2.0)]}
+            ),
+        )
+        seen = self._spy_walks(monkeypatch)
+        ranges = []
+
+        def anchor(freq_range):
+            ranges.append(freq_range)
+            return (TAU_US, 1.0 + len(ranges))
+
+        fixture = _exec_fixture(_CHAIN_WINDOWS)
+        fixture[1].tau_anchor_for_range = anchor
+        given = {0: (TAU_US, 1.0), 1: (TAU_US, 1.0), 2: (TAU_US, 1.0)}
+        out = _run_exec(fixture, window_tau_overrides=dict(given))
+
+        assert out.final_plan_revision == 2
+        (merged,) = out.final_plan.windows
+        initial, round1, round2 = seen
+        assert initial[0] == "initial" and initial[2] == given
+        # Round 1 merges 0+1: 0 re-anchors at its merged range, 1 drops out.
+        assert round1[0] == "replan"
+        assert round1[2] == {0: (TAU_US, 2.0), 2: (TAU_US, 1.0)}
+        # Round 2 merges 0+2: 0 re-anchors again, 2 drops out.
+        assert round2[2] == {0: (TAU_US, 3.0)}
+        assert ranges[-1] == merged.freq_range
+        assert ranges[0][0] == merged.freq_range[0]
+        assert ranges[0][1] < merged.freq_range[1]
+
+    def test_a_survivor_no_band_holds_fits_on_the_band_wide_anchor(self, monkeypatch):
+        monkeypatch.setattr(
+            plan_execution,
+            "_dispatch_structural_round",
+            _scripted_dispatch({0: [_trig(0, 1, "high", 5.0)]}),
+        )
+        seen = self._spy_walks(monkeypatch)
+        fixture = _exec_fixture(_CHAIN_WINDOWS[:2])
+        fixture[1].tau_anchor_for_range = lambda freq_range: None
+        given = {0: (TAU_US, 1.0), 1: (TAU_US, 1.0)}
+        _run_exec(fixture, window_tau_overrides=dict(given))
+        assert seen[-1][0] == "replan"
+        assert seen[-1][2] == {}
+
+    def test_without_a_resolver_the_overrides_stay_as_given(self, monkeypatch):
+        monkeypatch.setattr(
+            plan_execution,
+            "_dispatch_structural_round",
+            _scripted_dispatch({0: [_trig(0, 1, "high", 5.0)]}),
+        )
+        seen = self._spy_walks(monkeypatch)
+        given = {0: (TAU_US, 1.0), 1: (TAU_US, 1.0)}
+        overrides = dict(given)
+        _run_exec(_exec_fixture(_CHAIN_WINDOWS[:2]), window_tau_overrides=overrides)
+        assert seen[-1][2] == given
+        assert overrides == given
