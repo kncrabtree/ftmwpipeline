@@ -356,7 +356,7 @@ the engine and costs nothing extra. Because the proposal is the apply's own,
 a dry run also *refuses* what the apply would refuse -- an anchor outside the
 analysis band, a create whose window cannot be placed. ``review snap-tolerance`` prints the MHz tolerance
 *this* file's curation verbs resolve to, with the bin count and bin spacing it
-came from (``--format json`` for a script); the tolerance is defined in
+came from (``--json`` for a script); the tolerance is defined in
 active-FT bins, so it is a property of the file rather than a fixed
 frequency. All three are covered in :doc:`fit_curation`.
 

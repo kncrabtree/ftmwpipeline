@@ -533,12 +533,9 @@ If the file has persisted ``shape: gaussian`` and Stage 2b later recommends
 Lorentzian, the persisted value wins. An explicit ``--shape lorentzian``
 likewise always wins, regardless of the recommendation.
 
-The *recommended* layer of the other four stages (2, 2b, 3, 4) is
-reserved but currently empty — no upstream feeder produces a hint for
-those stages yet. The layer is kept in every resolver's signature so a
-future cross-stage recommender (e.g., a Stage 1 ``T_active``-driven
-Stage 2 smoothing-window suggestion, or a Stage 2b ``τ_maj`` feeder
-into Stage 4's ``leakage.tau_us``) can land without API churn.
+The *recommended* layer of the other four stages (2, 2b, 3, 4) is empty: no
+upstream stage produces a hint for them. Their settings resolve from the
+explicit, persisted, preset and default layers alone.
 
 Where to look in the codebase
 -----------------------------
