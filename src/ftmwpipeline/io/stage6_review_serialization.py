@@ -31,7 +31,8 @@ HDF5 layout (under the caller-supplied group)::
 The window-status data is a JSON list of dicts with keys
 ``window_id``, ``provenance``, ``attention_reasons``, ``invalidated``.
 Each element of ``attention_reasons`` is a dict with keys
-``kind``, ``detail``, ``severity``.
+``kind``, ``detail``, ``severity``, ``locations`` and ``evidence`` (a JSON
+object; absent in records written before it existed, read as empty).
 
 The decision log is a JSON list (a window carries entries once a `review` edit
 records a decision against it). The final-products subgroup holds the
@@ -141,6 +142,39 @@ FINAL_PEAK_ABSENT_FIELDS: Tuple[Tuple[str, type], ...] = (
 _STATUS_KEY_SUFFIX = "__status"
 
 
+def _encode_absent(value: Any) -> Any:
+    """Store an attention reason's evidence as JSON: an :class:`Absent` value
+    of a key ``k`` becomes ``null`` with a sibling ``"k__status"`` code (the
+    columnar codes), recursively through dicts and lists."""
+    if isinstance(value, dict):
+        out: Dict[str, Any] = {}
+        for k, v in value.items():
+            if isinstance(v, Absent):
+                out[k] = None
+                out[f"{k}{_STATUS_KEY_SUFFIX}"] = v.status
+            else:
+                out[k] = _encode_absent(v)
+        return out
+    if isinstance(value, list):
+        return [_encode_absent(v) for v in value]
+    return value
+
+
+def _decode_absent(value: Any) -> Any:
+    """Inverse of :func:`_encode_absent`."""
+    if isinstance(value, dict):
+        out: Dict[str, Any] = {}
+        for k, v in value.items():
+            if k.endswith(_STATUS_KEY_SUFFIX):
+                continue
+            code = value.get(f"{k}{_STATUS_KEY_SUFFIX}")
+            out[k] = Absent.from_status(int(code)) if code else _decode_absent(v)
+        return out
+    if isinstance(value, list):
+        return [_decode_absent(v) for v in value]
+    return value
+
+
 def _status_to_dict(status: WindowReviewStatus) -> Dict[str, Any]:
     return {
         "window_id": status.window_id,
@@ -151,6 +185,7 @@ def _status_to_dict(status: WindowReviewStatus) -> Dict[str, Any]:
                 "detail": r.detail,
                 "severity": r.severity,
                 "locations": list(r.locations),
+                "evidence": _encode_absent(dict(r.evidence)),
             }
             for r in status.attention_reasons
         ],
@@ -165,6 +200,7 @@ def _status_from_dict(d: Dict[str, Any]) -> WindowReviewStatus:
             detail=str(r["detail"]),
             severity=float(r["severity"]),
             locations=[float(x) for x in r.get("locations", [])],
+            evidence=_decode_absent(dict(r.get("evidence", {}))),
         )
         for r in d.get("attention_reasons", [])
     ]

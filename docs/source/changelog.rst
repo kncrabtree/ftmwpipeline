@@ -16,6 +16,62 @@ Accumulating toward ``1.0.0``. ``0.1.0b4`` is the last published release;
 everything below is reachable only from a source checkout. No further beta is
 planned — these entries fold into the ``1.0.0`` section when it is dated.
 
+**A window the fit leaves empty while its edge stays coherent is flagged for
+review; ``CONTRACT_VERSION`` moves 13 → 14.** Stage 5 can finish a window of its
+plan with no line while the residual on the window's edge stays coherent. The
+structural replan records that flag as ``not merged`` (an empty window has no
+fitted line straddling its boundary), and until now nothing pointed the user at
+the window. ``review run`` now flags such a window: a window of the fitted plan
+the fit holds no line in, not taken over by a created window or edited, whose
+edge Stage 5's thaw or replan left flagged above the fit's own
+``residual_edge_threshold``. When at least one Stage 3 peak in the window sits
+off every gated spur, the item is ``empty_window_residual`` and queues the
+window. When every one sits on a gated spur, the residual is consistent with
+the spur's skirt beyond its mask, and the item is the advisory
+``empty_window_spur`` (shown on the window's status and in the report, not
+queued), naming the spur.
+
+* ``AttentionReason`` gains ``evidence``, a dict of the kind's declared keys.
+  The new items name the flagged ``edges`` (``side``, ``s_coh``, and the
+  distance to the nearest fitted line beyond the edge), the
+  ``residual_edge_threshold``, and the ``candidates``: the Stage 3 peaks the
+  plan put in the window, with their SNR, whether each sits on a gated spur, and
+  that spur's centre and source. Every record carries every key, with
+  ``Absent`` for a missing value (a degenerate Stage 3 SNR reads
+  ``undefined``).
+  Its ``severity`` is the strongest edge's ``S_coh`` over the threshold; its
+  ``locations`` are the candidates' frequencies.
+* The contract declares ``AttentionReason`` (``kind``, ``detail``,
+  ``severity``, ``locations``, ``evidence``) and the ``attention_kind``
+  vocabulary. ``review show --attention --json`` rows also carry every reason
+  under ``reasons``, and ``review show --window N --json`` gives each reason's
+  ``locations`` and ``evidence``.
+* The window has no Stage 5 result, so its status is one ``load_fit`` has no
+  window for. ``ReviewRunResult.n_windows`` counts it whether queued or
+  advisory; ``n_attention`` counts it only when queued. ``review show``
+  reports it (no fitted line, ``reduced_chi2`` undefined), its ``--output``
+  renders draw the data with nothing fitted, and the report gives it a page
+  (under ``--windows attention`` only when queued): the data and residual
+  (equal, since nothing is fitted) with the candidates marked **E**.
+* The item reads only records of the window's current fit: a replan record
+  measured before a structural merge re-fit the window is ignored.
+* To fit the line, create a window at it and add the line to the new window;
+  once a created window covers the flagged peak, it takes the empty one over and
+  the item (and a status left with nothing) is dropped in the same call. A
+  created window that only overlaps the empty one leaves the item.
+  ``review accept`` may now name such a window (a bare accept, marking it
+  reviewed), alone or in any batch, preview or undo replay; before, a window the
+  fit holds no line in was ``not_found``.
+
+On 2638 (cleanup-golden recipe) windows 100, 158 and 227 are flagged in both
+line shapes, edges ``S_coh`` 17.6 / 11.4, 10.8 / 10.8 and 23.5 / 18.2 against a
+threshold of 8. Each window's only Stage 3 peak (30719.94, 32960.00 and
+35839.97 MHz; SNR 35, 69 and 109) sits on a spur the fit gated as saturated, so
+all three are advisory ``empty_window_spur``; nothing is queued. ``review run``
+now reports 265 windows instead of 262 (Gaussian) and 273 instead of 270
+(Lorentzian), with ``n_attention`` unchanged (6 and 1). Fitted numbers, final products and the analysis
+fingerprint are unchanged, so ``ANALYSIS_EPOCH`` stays 5.
+
 **Stage 5 structural replan fixed, merged windows carried to the end;
 ``ANALYSIS_EPOCH`` moves 4 → 5 and ``CONTRACT_VERSION`` 12 → 13.** Stage 5's
 structural replan applies merges again (before this, a round in which any window

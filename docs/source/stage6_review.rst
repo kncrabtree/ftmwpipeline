@@ -111,7 +111,35 @@ flagged for any of:
   with strong residual evidence (gated by a stiffer bar than the display ledger, so
   the surface stays actionable);
 - **spur-adjacent** — a fitted line sits next to a masked clock/LO spur;
-- **edge/boundary** — a line sits at a window edge, where leakage coupling is hardest.
+- **edge/boundary** — a line sits at a window edge, where leakage coupling is hardest;
+- **empty window, coherent residual** (``empty_window_residual``) — the fit holds no
+  line in a window of its plan, yet Stage 5 measured a coherent residual on the
+  window's edge (its edge-coherence ``S_coh`` stayed above the fit's
+  ``residual_edge_threshold``, and neither a thaw nor a structural merge could act
+  on it), and at least one of the Stage 3 peaks the plan put in the window sits off
+  every gated spur, so a line may be missing. The flag lists the flagged edges and
+  those Stage 3 peaks.
+
+When every Stage 3 peak in such a window sits on a gated spur, the edge residual is
+consistent with the spur's skirt reaching past its mask. The window then carries the
+**advisory** ``empty_window_spur`` instead, naming the spur: it stays on the
+window's status and in the report, but does not enter the queue (like the
+auto-merge note). (``review rank`` ranks fitted windows only, so it lists neither
+kind.) On the 2638 fixture this is the case for windows 100,
+158 and 227, each holding only a saturated spur.
+
+A window flagged either way has no fit of its own, so it cannot be
+edited by its id. To fit the line, create a window at it and add the line there::
+
+   ftmwpipeline review create experiment.ftmw --at 30719.94 --frame raw
+   ftmwpipeline review edit experiment.ftmw --window <new id> --add 30719.94 --frame raw
+
+A created window takes the empty one over, and the flag clears, once it covers
+the flagged Stage 3 peak (or, with no peak, the flagged edge); a created window
+that merely overlaps the empty one leaves the flag where it is. To leave the
+window empty, ``review accept --window N`` marks it reviewed. ``review show
+--window N`` and the report show its data on the window's range; with nothing
+fitted, the residual is the data.
 
 A flag clears one of two ways: an **edit** (the window becomes ``user-edited``) or an
 explicit ``review accept`` (the window becomes ``reviewed``, recording that a human

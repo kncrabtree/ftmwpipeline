@@ -88,7 +88,7 @@ def test_contract_version_is_int():
     assert isinstance(CONTRACT_VERSION, int)
 
 
-def test_contract_version_is_thirteen():
+def test_contract_version_is_fourteen():
     # Wave 0 published 1; Wave 1's accessors raised it to 2; the final-products
     # fit fields (Wave 2) to 3; the window_model / spectrum_model accessors to 4;
     # the analysis_fingerprint accessor to 5; CurationAction (curation as data)
@@ -96,8 +96,10 @@ def test_contract_version_is_thirteen():
     # cancellation) to 9; Wave 5.1b (atomic writes, write_conflict) to 10;
     # Wave 5.2 (Stage 5 partial fits, restart_reason) to 11; the cleanup wave
     # (curation_conflict, ComplexFT.invalidated, degenerate statistics) to 12;
-    # windows after a structural merge (merged_from, fit_plan_unavailable) to 13.
-    assert CONTRACT_VERSION == 13
+    # windows after a structural merge (merged_from, fit_plan_unavailable) to 13;
+    # review attention (AttentionReason, attention_kind with
+    # empty_window_residual) to 14.
+    assert CONTRACT_VERSION == 14
 
 
 # ---- stage vocabulary -----------------------------------------------------

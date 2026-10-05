@@ -60,7 +60,7 @@ from typing import (
 from .core.absent import STATUS_NOT_RUN, STATUS_PRESENT, STATUS_UNDEFINED, Absent
 from .core.calibration import CalibrationStamp
 from .core.curation import CURATION_ACTION_SCHEMA, CurationAction
-from .core.data_structures import FinalProducts
+from .core.data_structures import ATTENTION_KINDS, FinalProducts
 from .file_manager import (
     ERROR_SCHEMA,
     AlgorithmFailedError,
@@ -85,7 +85,7 @@ from .file_manager import (
 #: The machine-contract version. The first published contract is ``1``; each
 #: release that adds (or, before 1.0.0, changes) contract elements raises it by
 #: one, so a client can gate on it as well as on :func:`capabilities`.
-CONTRACT_VERSION: int = 13
+CONTRACT_VERSION: int = 14
 
 #: Schema name of the :func:`capabilities` payload.
 CAPABILITIES_SCHEMA = "ftmw/capabilities@1"
@@ -905,6 +905,10 @@ _FIELDS: Dict[str, Tuple[str, ...]] = {
         "provenance",
         "evidence",
     ),
+    # Review attention (contract 14): a WindowReviewStatus's reasons, through
+    # get_review_status and ``review show --json``. ``detail`` is a human
+    # sentence whose text is not contract.
+    "AttentionReason": ("kind", "detail", "severity", "locations", "evidence"),
     "RefitWindowResult": ("converged",),
     "PreviewWindowResult": ("converged",),
     "AppliedWindowResult": ("converged",),
@@ -994,6 +998,9 @@ _VOCABULARIES: Dict[str, Tuple[str, ...]] = {
     "stage_state": STAGE_STATES,
     "warning_code": tuple(WARNING_FIELDS),
     "restart_reason": FIT_RESTART_REASONS,
+    # Checked against ``core.data_structures.ATTENTION_KINDS``, which
+    # ``review run`` records from.
+    "attention_kind": ATTENTION_KINDS,
 }
 
 MANIFEST = ContractManifest(

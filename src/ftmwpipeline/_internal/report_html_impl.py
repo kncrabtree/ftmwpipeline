@@ -55,6 +55,7 @@ from ..io.stage6_review_serialization import load_stage6_review_from_file
 from ..utils.parallelism import resolve_worker_count
 from .atomic import h5open
 from .catalog_xref import CatalogCrossRef, CatalogMatch, load_cross_ref
+from .empty_window_attention import EMPTY_WINDOW_KINDS, review_lineless_window_fits
 from .report_impl import (
     _CAL_STATE_PHRASE,
     _amplitude_unit,
@@ -566,6 +567,10 @@ tr.cur-flash > td { background: #fff3bf !important; transition: background 0.3s;
 .attn-svg .attn-spur_adjacent text { fill: #9a5b00; }
 .attn-svg .attn-auto_merged_review path { fill: #5b6470; }
 .attn-svg .attn-auto_merged_review text { fill: #5b6470; }
+.attn-svg .attn-empty_window_residual path { fill: #b42318; }
+.attn-svg .attn-empty_window_residual text { fill: #b42318; }
+.attn-svg .attn-empty_window_spur path { fill: #9a5b00; }
+.attn-svg .attn-empty_window_spur text { fill: #9a5b00; }
 .cur-plot-arm { position: absolute; top: 8px; right: 8px; z-index: 2;
     font-size: 0.85rem; font-weight: 600; padding: 0.3rem 0.75rem;
     border-radius: 4px; border: 1px solid #2c4a6e;
@@ -3253,13 +3258,20 @@ _WORKER_RENDER_CTX: Optional[Dict[str, Any]] = None
 
 
 def _render_one_window_figures(
-    wid: int, *, path: str, bundle: Any, dpi: int, stem: str
+    wid: int,
+    *,
+    path: str,
+    bundle: Any,
+    dpi: int,
+    stem: str,
+    window_fit: Optional[Any] = None,
 ) -> _WindowFigures:
     """Render one window's zoomed panels + correlation heatmap to PNG bytes.
 
     Pure function of the read-only ``bundle`` (and the persisted spurs it
     carries); shared by the serial and the process-pool paths so both produce
-    identical bytes.
+    identical bytes. ``window_fit`` draws that result instead of the fit's own
+    (a lineless review window, which the fit has no result for).
     """
     import matplotlib
 
@@ -3272,7 +3284,9 @@ def _render_one_window_figures(
     )
     from .stage5_impl import render_fit_panels_impl
 
-    panels = render_fit_panels_impl(path, wid, bundle=bundle, with_overview=False)
+    panels = render_fit_panels_impl(
+        path, wid, bundle=bundle, with_overview=False, window_fit=window_fit
+    )
     panel_bytes: Dict[str, bytes] = {}
     mag_geom: Optional[Dict[str, float]] = None
     for panel in _PANEL_ORDER:
@@ -3293,7 +3307,7 @@ def _render_one_window_figures(
 
     # Correlation heatmap (when a covariance was persisted) -- a divergent
     # [-1, +1] image that stays readable where the numeric matrix does not.
-    wf = bundle.fit.window_fit(wid)
+    wf = window_fit if window_fit is not None else bundle.fit.window_fit(wid)
     cov = getattr(wf, "covariance", None)
     cov_labels = getattr(wf, "covariance_param_labels", None)
     corr_bytes: Optional[bytes] = None
@@ -3323,7 +3337,12 @@ def _render_window_worker(wid: int) -> _WindowFigures:
     ctx = _WORKER_RENDER_CTX
     assert ctx is not None  # set in the parent before the pool forks
     return _render_one_window_figures(
-        wid, path=ctx["path"], bundle=ctx["bundle"], dpi=ctx["dpi"], stem=ctx["stem"]
+        wid,
+        path=ctx["path"],
+        bundle=ctx["bundle"],
+        dpi=ctx["dpi"],
+        stem=ctx["stem"],
+        window_fit=ctx["lineless"].get(wid),
     )
 
 
@@ -3336,8 +3355,12 @@ def _render_all_window_figures(
     page_ids: List[int],
     jobs: Optional[int] = None,
     events: Optional["StageScope"] = None,
+    lineless: Optional[Dict[int, Any]] = None,
 ) -> Dict[int, _WindowFigures]:
     """Render every page window's figures, in parallel when worthwhile.
+
+    ``lineless`` maps a flagged window the fit has no result for to the
+    lineless result its figures are drawn from.
 
     With ``events`` (the ``report run`` operation's scope) a cancel is checked
     between windows (the pool's workers are terminated on one), and each
@@ -3385,7 +3408,13 @@ def _render_all_window_figures(
         last[0] = now
 
     global _WORKER_RENDER_CTX
-    _WORKER_RENDER_CTX = {"path": path, "bundle": bundle, "dpi": dpi, "stem": stem}
+    _WORKER_RENDER_CTX = {
+        "path": path,
+        "bundle": bundle,
+        "dpi": dpi,
+        "stem": stem,
+        "lineless": dict(lineless or {}),
+    }
     try:
         rendered = fork_map(
             page_ids,
@@ -3469,6 +3498,8 @@ _ATTENTION_MARKERS: Dict[str, str] = {
     "candidate_bearing": "C",
     "spur_adjacent": "S",
     "auto_merged_review": "M",
+    "empty_window_residual": "E",
+    "empty_window_spur": "E",
 }
 
 
@@ -3767,6 +3798,143 @@ def _window_page(
         body.append(_WINMAP_JS)  # hover-zoom popup; the map works without it
         body.append(_SPECTRUM_TOGGLE_JS)  # "Full spectrum" header toggle
     body.append(_LIGHTBOX_JS)  # click a primary plot to view it full-size
+    return _page(f"{stem} window {window_id}", body, css_href="../assets/style.css")
+
+
+def _lineless_candidates_table(status: Optional[WindowReviewStatus]) -> List[str]:
+    """The Stage 3 peaks an empty-window reason names, as a table."""
+    rows: List[List[str]] = []
+    for r in status.attention_reasons if status is not None else []:
+        if r.kind not in EMPTY_WINDOW_KINDS:
+            continue
+        for c in r.evidence.get("candidates", []):
+            snr = c.get("snr")
+            center = c.get("spur_center_mhz")
+            source = c.get("spur_source")
+            if c.get("gated_spur") and isinstance(center, float):
+                src = f" ({source})" if isinstance(source, str) else ""
+                spur_cell = _esc(f"yes: {center:.4f} MHz{src}")
+            else:
+                spur_cell = "yes" if c.get("gated_spur") else "no"
+            rows.append(
+                [
+                    f"{float(c['frequency_mhz']):.4f}",
+                    str(int(c["detection_index"])),
+                    f"{float(snr):.1f}" if isinstance(snr, float) else "&mdash;",
+                    spur_cell,
+                ]
+            )
+    if not rows:
+        return ["<p><em>No Stage 3 peak was planned in this window.</em></p>"]
+    return [
+        _table(
+            ["frequency (MHz)", "Stage 3 index", "Stage 3 SNR", "on a gated spur"],
+            rows,
+        )
+    ]
+
+
+def _lineless_panels_block(
+    panel_files: Dict[str, str],
+    *,
+    mag_geom: Optional[Dict[str, float]],
+    attn_markers: List[Tuple[float, str, str]],
+) -> List[str]:
+    """The Re/Im/|X| panels of a lineless window, |X| with its attention
+    markers. No click-to-add surface: an add names a window the fit holds, and
+    the fit holds none here (a line is added through a created window)."""
+    figs: List[str] = []
+    for panel, alt in (
+        ("re", "real part (data)"),
+        ("im", "imaginary part (data)"),
+        ("mag", "magnitude (data)"),
+    ):
+        name = panel_files.get(panel)
+        if name is None:
+            continue
+        svg = (
+            _attention_marker_svg(mag_geom, attn_markers)
+            if panel == "mag" and mag_geom is not None and attn_markers
+            else ""
+        )
+        figs.append(
+            '  <figure class="panel"><div class="cur-plot-wrap">'
+            f'<img src="../figures/{name}" alt="{_esc(alt)}">{svg}</div></figure>'
+        )
+    if not figs:
+        return []
+    return [
+        '<div class="fit-panels">',
+        '  <div class="panel-grid">',
+        *figs,
+        "  </div>",
+        "</div>",
+    ]
+
+
+def _lineless_window_page(
+    *,
+    stem: str,
+    window_id: int,
+    wf: Any,
+    status: Optional[WindowReviewStatus],
+    decisions: List[DecisionLogEntry],
+    panel_files: Dict[str, str],
+    prev_id: Optional[int],
+    next_id: Optional[int],
+    mag_geom: Optional[Dict[str, float]] = None,
+    tags: Optional[List[str]] = None,
+) -> str:
+    """The page of a flagged window the fit holds no line in.
+
+    An ``empty_window_residual`` window has no fit to report: the panels draw
+    the data on the window's range with nothing fitted (so the residual strip
+    is the data), the Stage 3 peaks the plan put there are marked on the |X|
+    panel and listed, and the page says how to act: create a window at the
+    line and add it there, or mark this one reviewed (the header's curation
+    verbs).
+    """
+    lo, hi = wf.window.freq_range
+    range_str = f"{min(lo, hi):.4f}&ndash;{max(lo, hi):.4f} MHz"
+    attn_markers: List[Tuple[float, str, str]] = []
+    if status is not None:
+        for r in status.attention_reasons:
+            if r.kind in _ATTENTION_MARKERS:
+                attn_markers += [(float(f), r.kind, r.detail) for f in r.locations]
+    chips = ['<span class="metric-chip">no fitted line</span>']
+    if status is not None and status.attention_reasons:
+        chips.append(
+            '<a href="#attention" class="metric-chip metric-chip-attn">'
+            "&#9888; attention</a>"
+        )
+    body: List[str] = [
+        '<div class="win-header">',
+        _window_header_bar(window_id, prev_id, next_id, has_context=False),
+        f'<h1>Window {window_id} <span class="win-range">{range_str}</span></h1>',
+        '<div class="metric-chips">',
+        *chips,
+        "</div>",
+        _window_tag_chips(tags or []),
+        "</div>",
+        "<h2>Data</h2>",
+        "<p>The fit holds no line in this window. The panels show the data on "
+        "the window's range; with nothing fitted, the residual is the data. "
+        "Markers (E) point at the Stage 3 peaks the plan put here.</p>",
+        *_lineless_panels_block(
+            panel_files, mag_geom=mag_geom, attn_markers=attn_markers
+        ),
+        "<h2>Stage 3 peaks in this window</h2>",
+        *_lineless_candidates_table(status),
+        "<p>To fit a line here, create a window at it (<code>review create "
+        "&lt;MHz&gt;</code>) and add the line to the new window (<code>review "
+        "edit &lt;new id&gt; --add &lt;MHz&gt;</code>); the created window takes "
+        "this one over. To leave it empty, mark it reviewed.</p>",
+        '<div id="attention">',
+        *_attention_block(status),
+        "</div>",
+        *_decision_block(decisions),
+        _LIGHTBOX_JS,
+    ]
     return _page(f"{stem} window {window_id}", body, css_href="../assets/style.css")
 
 
@@ -4165,6 +4333,10 @@ def _assemble_report_site(
         for wf in bundle.fit.window_fits
         if wf.window is not None and wf.window_id is not None
     }
+    # A flagged window the fit holds no line in (``empty_window_residual``) has
+    # no window result; it gets a page drawn from a lineless one (display only).
+    lineless = review_lineless_window_fits(path, review, bundle.fit)
+    win_fits.update(lineless)
     all_ids = sorted(win_fits)
     attention_ids = {
         wid
@@ -4244,7 +4416,7 @@ def _assemble_report_site(
         st_t = review.window_statuses.get(wid)
         edited = wid in decisions_by_window
         cascade = False
-        if baseline_fit is not None and not edited:
+        if baseline_fit is not None and not edited and wid not in lineless:
             cascade = _diff_window(
                 wid,
                 base_by_id.get(wid),
@@ -4319,6 +4491,7 @@ def _assemble_report_site(
         page_ids=page_ids,
         jobs=jobs,
         events=events,
+        lineless=lineless,
     )
     panel_files_by_wid: Dict[int, Dict[str, str]] = {}
     mag_geom_by_wid: Dict[int, Optional[Dict[str, float]]] = {}
@@ -4348,11 +4521,27 @@ def _assemble_report_site(
         panel_files = panel_files_by_wid[wid]
         mag_geom = mag_geom_by_wid[wid]
         cov_heatmap_name = cov_heatmap_by_wid[wid]
+        prev_id = page_ids[idx - 1] if idx > 0 else None
+        next_id = page_ids[idx + 1] if idx + 1 < len(page_ids) else None
+        if wid in lineless:
+            site.page_store[f"windows/{_window_page_name(wid)}"] = (
+                _lineless_window_page(
+                    stem=stem,
+                    window_id=wid,
+                    wf=wf,
+                    status=review.window_statuses.get(wid),
+                    decisions=decisions_by_window.get(wid, []),
+                    panel_files=panel_files,
+                    prev_id=prev_id,
+                    next_id=next_id,
+                    mag_geom=mag_geom,
+                    tags=tags_by_wid.get(wid),
+                )
+            )
+            continue
         ledger = get_candidate_ledger_impl(
             path, wid, spectrum_fit=bundle.fit, sideband=bundle.sideband
         )
-        prev_id = page_ids[idx - 1] if idx > 0 else None
-        next_id = page_ids[idx + 1] if idx + 1 < len(page_ids) else None
         win_peaks = peaks_by_window.get(wid, [])
         win_matches = (
             [match_by_peak.get(id(p)) for p in win_peaks]
