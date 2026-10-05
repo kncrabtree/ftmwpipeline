@@ -20,6 +20,10 @@ import ftmwpipeline.api as ftmw
 from ftmwpipeline import Absent, Pipeline
 from ftmwpipeline.cli.main import main
 from ftmwpipeline.file_manager import StageDependencyError
+from ftmwpipeline.io.window_serialization import (
+    load_window_plan_from_hdf5,
+    save_fitted_plan_to_hdf5,
+)
 from ftmwpipeline.serialize import to_jsonable
 
 pytestmark = [pytest.mark.integration]
@@ -66,6 +70,111 @@ def stage5_with_created(baseline_2638_stage5_small, tmp_path_factory):
             [{"window_id": new_id, "freq_range": [27000.0, 27010.0]}]
         )
     return path, new_id
+
+
+def _merge_two_lowest_windows(path, *, store_plan):
+    """Pretend Stage 5 merged the two lowest-frequency windows of *path*.
+
+    The survivor takes the lower id and the union range. With *store_plan* the
+    fit carries the plan it was made on; without, only the accepted replan
+    record names the merge (a fit from before the plan was stored).
+    """
+    with h5py.File(path, "a") as h5f:
+        plan = load_window_plan_from_hdf5(h5f["stage4_windows"])
+        low, high = sorted(plan.windows, key=lambda w: w.freq_range)[:2]
+        survivor, absorbed = sorted((low, high), key=lambda w: w.window_id)
+        fit = h5f["stage5_fitting"]
+        fit.attrs["final_plan_revision"] = 1
+        fit.attrs["replan_history"] = json.dumps(
+            [
+                {
+                    "triggering_window_id": absorbed.window_id,
+                    "partner_window_id": survivor.window_id,
+                    "surviving_window_id": survivor.window_id,
+                    "edge_side": "low",
+                    "edge_coherence_before": 9.0,
+                    "revision_before": 0,
+                    "revision_after": 1,
+                    "accepted": True,
+                    "reason": "",
+                }
+            ]
+        )
+        merged_range = (
+            min(low.freq_range[0], high.freq_range[0]),
+            max(low.freq_range[1], high.freq_range[1]),
+        )
+        if store_plan:
+            survivor.freq_range = merged_range
+            survivor.diagnostics = {
+                **dict(survivor.diagnostics or {}),
+                "merged_from": [survivor.window_id, absorbed.window_id],
+            }
+            plan.windows = [w for w in plan.windows if w is not absorbed]
+            plan.topological_order = [
+                i for i in plan.topological_order if i != absorbed.window_id
+            ]
+            plan.plan_revision = 1
+            save_fitted_plan_to_hdf5(plan, fit)
+    return survivor.window_id, absorbed.window_id, merged_range
+
+
+@pytest.fixture(
+    scope="module",
+    params=["stored_plan", "replan_record_only"],
+)
+def stage5_merged(request, baseline_2638_stage5_small, tmp_path_factory):
+    """A copy of the Stage 5 baseline made to look like it applied one merge."""
+    path = tmp_path_factory.mktemp("ws_merged") / "merged.ftmw"
+    shutil.copy(baseline_2638_stage5_small, path)
+    survivor, absorbed, bounds = _merge_two_lowest_windows(
+        path, store_plan=request.param == "stored_plan"
+    )
+    return path, survivor, absorbed, bounds
+
+
+def test_merged_windows_agree_on_every_interface(stage5_merged, capsys):
+    path, survivor, absorbed, bounds = stage5_merged
+    via_api = ftmw.window_status(str(path))
+    via_pipeline = Pipeline.open(str(path)).window_status()
+    envelope = _via_cli(path, capsys)
+    table = ftmw.read_table(str(path), "window_status")
+
+    assert via_api == via_pipeline
+    assert envelope == to_jsonable(via_api)
+    rows = _rows(via_api)
+    assert absorbed not in rows
+    assert (rows[survivor].freq_min_mhz, rows[survivor].freq_max_mhz) == bounds
+    assert rows[survivor].merged_from == [absorbed]
+    assert all(w.merged_from == [] for i, w in rows.items() if i != survivor)
+
+    by_id = {w["window_id"]: w for w in envelope["windows"]}
+    assert by_id[survivor]["merged_from"] == [absorbed]
+    assert all(w["merged_from"] == [] for i, w in by_id.items() if i != survivor)
+    assert list(table["merged_from"]) == [
+        json.dumps(w.merged_from) for w in via_api["windows"]
+    ]
+    assert json.dumps([absorbed]) in list(table["merged_from"])
+
+
+def test_merged_rows_leave_the_file_byte_identical(stage5_merged, capsys):
+    path = stage5_merged[0]
+    before = _md5(path)
+    ftmw.window_status(str(path))
+    ftmw.read_table(str(path), "window_status")
+    _via_cli(path, capsys)
+    assert _md5(path) == before
+
+
+def test_an_unmerged_fit_has_empty_merged_from_everywhere(
+    baseline_2638_stage5_small, capsys
+):
+    path = baseline_2638_stage5_small
+    via_api = ftmw.window_status(str(path))
+    assert all(w.merged_from == [] for w in via_api["windows"])
+    assert all(w["merged_from"] == [] for w in _via_cli(path, capsys)["windows"])
+    table = ftmw.read_table(str(path), "window_status")
+    assert set(table["merged_from"]) == {"[]"}
 
 
 @pytest.mark.parametrize("stage", ["stage4", "stage5"])
