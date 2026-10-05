@@ -34,7 +34,7 @@ The contract version
     if ftmwpipeline.CONTRACT_VERSION < 1:
         raise RuntimeError("needs a newer ftmwpipeline")
 
-The first published contract is version ``1``; this release is version ``12``. Additions (a new accessor,
+The first published contract is version ``1``; this release is version ``14``. Additions (a new accessor,
 field or code) raise the version by one and never break an existing field. Every machine-readable payload also carries a **schema name**
 of the form ``ftmw/<payload>@<n>``; a schema name never changes meaning.
 
@@ -126,9 +126,10 @@ log``, ``settings show``, ``timebase state``, ``report table``, ``read table`` /
 is ``Pipeline.info``), ``MANIFEST.metadata_keys`` and ``MANIFEST.tables`` the
 declared ``read_metadata`` keys and ``read_table`` columns, ``MANIFEST.fields``
 the declared fields of the result types (``FinalPeak``, ``DecisionLogEntry``,
-``PipelineInfo``, ``ComplexFT`` and its ``metadata``, the ``converged`` flag of
-the curation results), and ``MANIFEST.vocabularies`` the frozen
-``DecisionLogEntry`` ``kind`` and ``provenance`` values.
+``AttentionReason``, ``PipelineInfo``, ``ComplexFT`` and its ``metadata``, the
+``converged`` flag of the curation results), and ``MANIFEST.vocabularies`` the
+frozen ``DecisionLogEntry`` ``kind`` and ``provenance`` values and the
+``attention_kind`` values (:ref:`contract-attention`).
 
 Their Python results keep their types, except that ``get_pipeline_info`` always
 carries ``warnings``. Each has a schema name, a constant in
@@ -624,8 +625,9 @@ dict of counts), never an array. A value with no measurement (an undefined
    * - ``review show``
      - n/a
      - the table of the chosen mode: ``{"windows": [...]}``, ``{"attention":
-       [...]}``, ``{"bar", "window_id", "candidates": [...]}`` or one window's
-       detail
+       [...]}`` (each row also lists every reason under ``reasons``; see
+       :ref:`contract-attention`), ``{"bar", "window_id", "candidates": [...]}``
+       or one window's detail
    * - ``review rank`` / ``log`` / ``preview`` / ``snap-tolerance`` /
        ``acknowledge-environment``
      - n/a
@@ -1556,6 +1558,78 @@ read never writes the file. The CLI prints the records inline:
 .. code-block:: console
 
    $ ftmwpipeline read window_status experiment.ftmw
+
+.. _contract-attention:
+
+Review attention: ``AttentionReason``
+-------------------------------------
+
+``review run`` routes windows to a human. ``get_review_status(path)``
+(``Pipeline.review_status()``) returns the review, whose ``window_statuses``
+map a window id to a ``WindowReviewStatus``; each status's
+``attention_reasons`` are ``AttentionReason`` records with:
+
+* ``kind``, from the frozen vocabulary ``attention_kind``: ``worst_eps``,
+  ``auto_merged_review``, ``candidate_bearing``, ``spur_adjacent``,
+  ``edge_boundary``, ``flat_decay``, ``empty_window_residual``. Kinds are only
+  ever added;
+* ``severity``, a float; higher asks for a look sooner;
+* ``locations``, the molecular frequencies (MHz) the reason points at, empty
+  for a window-wide reason;
+* ``evidence``, a dict of the kind's declared keys, empty for a kind that
+  declares none (only ``empty_window_residual`` declares any, below);
+* ``detail``, a sentence for a person. Its text is not contract.
+
+``auto_merged_review`` and ``flat_decay`` are advisory: they stay on the status
+but do not put the window in the queue (``needs_attention``) on their own.
+Attention is advice: it never changes a fitted number, a final product or the
+analysis fingerprint.
+
+On the command line, ``review show --attention --json`` prints ``{"attention":
+[...]}``, one row per queued window, worst first, with its top reason
+(``window_id``, ``label``, ``kind``, ``severity``, ``detail``) and every reason
+in ``reasons`` (``kind``, ``severity``, ``detail``, ``locations``,
+``evidence``). ``review show --window N --json`` lists the window's
+``attention_reasons`` in the same form.
+
+**A window the fit holds no line in: ``empty_window_residual``.** Stage 5 can
+finish a window of its plan with no line (its seeds rejected, gated as spurs or
+pruned) while the residual on the window's edge is still coherent. Such a
+window is flagged when:
+
+* it is a window of the fitted plan, not one Stage 6 created, and no created
+  window has taken it over (the same id, or an overlapping range);
+* the current fit holds no line in it;
+* no decision that changes the fit (``add``, ``remove``, ``merge``, ``split``,
+  ``create_window``) has been recorded on it;
+* Stage 5's residual edge-coherence handshake left one of its edges flagged: a
+  structural-replan record the window triggered, or a thaw record of the window
+  that was not accepted, with ``S_coh`` above the fit's own
+  ``residual_edge_threshold``. An edge a later accepted thaw resolved does not
+  count.
+
+The trigger reads only what Stage 5 recorded, so a fit run with the thaw and
+the replan disabled raises none. Its ``severity`` is the strongest flagged
+edge's ``S_coh`` divided by the threshold, its ``locations`` the frequencies of
+the Stage 3 peaks the plan put in the window, and its ``evidence``:
+
+* ``edges``: one ``{"side": "low" | "high", "s_coh": float}`` per flagged
+  edge, low first;
+* ``residual_edge_threshold``: the threshold the fit applied;
+* ``candidates``: one ``{"detection_index", "frequency_mhz", "snr",
+  "gated_spur"}`` per Stage 3 peak the plan put in the window, ascending in
+  frequency. ``snr`` is the Stage 3 SNR, present when Stage 3 recorded one;
+  ``gated_spur`` is true when the peak lies within the ``spur_adjacent``
+  tolerance of a spur the fit gated.
+
+The fit has no window result for such a window, so ``window_statuses`` can hold
+an id ``load_fit`` does not, and ``ReviewRunResult.n_windows`` counts it.
+``window_status`` lists it with ``live`` false. ``review show --window N``
+reports it with no fitted line and a ``reduced_chi2`` that is
+``Absent.UNDEFINED``. The item clears when a created window takes the window
+over (``review create`` at the line, then ``review edit`` on the new window to
+add it), in the batch that creates it; ``review accept`` may name the window,
+and marks it reviewed as for any kind.
 
 The fitted model: ``window_model`` and ``spectrum_model``
 ---------------------------------------------------------

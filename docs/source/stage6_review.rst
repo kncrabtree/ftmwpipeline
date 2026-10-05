@@ -111,7 +111,26 @@ flagged for any of:
   with strong residual evidence (gated by a stiffer bar than the display ledger, so
   the surface stays actionable);
 - **spur-adjacent** — a fitted line sits next to a masked clock/LO spur;
-- **edge/boundary** — a line sits at a window edge, where leakage coupling is hardest.
+- **edge/boundary** — a line sits at a window edge, where leakage coupling is hardest;
+- **empty window, coherent residual** (``empty_window_residual``) — the fit holds no
+  line in a window of its plan, yet Stage 5 measured a coherent residual on the
+  window's edge (its edge-coherence ``S_coh`` stayed above the fit's
+  ``residual_edge_threshold``, and neither a thaw nor a structural merge could act
+  on it). The flag lists the flagged edges and the Stage 3 peaks the plan put in the
+  window, and says when one sits on a gated spur: the coherent residual is either a
+  line the fit is missing or a gated spur whose skirt reaches past its mask, and only
+  a look tells which.
+
+A window flagged ``empty_window_residual`` has no fit of its own, so it cannot be
+edited by its id. To fit the line, create a window at it and add the line there::
+
+   ftmwpipeline review create experiment.ftmw --at 30719.94 --frame raw
+   ftmwpipeline review edit experiment.ftmw --window <new id> --add 30719.94 --frame raw
+
+The created window takes the empty one over and the flag clears. To leave the
+window empty, ``review accept --window N`` marks it reviewed. ``review show
+--window N`` and the report show its data on the window's range; with nothing
+fitted, the residual is the data.
 
 A flag clears one of two ways: an **edit** (the window becomes ``user-edited``) or an
 explicit ``review accept`` (the window becomes ``reviewed``, recording that a human

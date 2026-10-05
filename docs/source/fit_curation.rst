@@ -54,8 +54,17 @@ The report carries three kinds of content:
   flag with a definite locus, the magnitude panel is annotated with a small
   caret and one-letter tag at that frequency — **C** for a missed-line
   (candidate) residual, **S** for a line sitting on a gated spur, **M** for an
-  auto-merged pair — so it is obvious *where* to look; hover the caret for the
-  reason detail.
+  auto-merged pair, **E** for a Stage 3 peak in a window the fit left empty — so
+  it is obvious *where* to look; hover the caret for the reason detail.
+
+  A window the review flags ``empty_window_residual`` (the fit holds no line in
+  it, yet Stage 5 measured a coherent residual on its edge; see
+  :doc:`stage6_review`) has no fit of its own, but still gets a page: its data on
+  the window's range in the same panels (with nothing fitted, the residual strip
+  is the data), the Stage 3 peaks the plan put there with their SNR and whether
+  each sits on a gated spur, and how to act on it. The page has no add control,
+  since an add names a window the fit holds: create a window at the line and add
+  it there, or mark the window reviewed.
 
 The single-file report carries a sticky navigation bar. Besides the section
 links and the **Jump to window** picker, a **Freq MHz** box jumps to the window
