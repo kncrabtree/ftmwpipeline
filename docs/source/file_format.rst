@@ -37,7 +37,11 @@ contains some prefix of:
 * **The detected peaks, the window plan, and the fitted model** — from
   :doc:`Stages 3 <stage3_peaks>`, :doc:`4 <stage4_windows>`, and
   :doc:`5 <stage5_fitting>`, the last including the per-window fitted-parameter
-  covariance.
+  covariance and the *fitted plan*: the windows the fit was actually made on,
+  after any structural merge it made. The Stage 4 plan is kept as planned
+  beside it. A fit that was cancelled part-way is stored as a *partial fit*
+  (its finished windows only); the stage status reports it as ``partial``
+  and the next ``fit run`` resumes it.
 * **The review record and final products** — the consolidated, calibrated line
   list and the human-review decisions from :doc:`Stage 6 <stage6_review>`.
 * **The settings each stage used** and the **source provenance** record.
@@ -61,7 +65,11 @@ If the writer was killed, its copy may be left beside the file; it is
 harmless, and the next write to the file from the same host removes it (a client
 that knows no write is in progress may delete any file matching the pattern).
 Because the copy lives in the same directory, the directory must be writable
-for a write to succeed. See :doc:`machine_contract`, *Crash safety*.
+for a write to succeed. If another process wrote the file while a call was
+writing it, the call refuses with ``write_conflict`` instead of replacing the
+file: the other write stands, nothing of the refused call is kept, and
+re-running the call applies it to the file as it now is. See
+:ref:`contract-crash-safety`.
 
 The file on disk stays as small as its content. HDF5 never reclaims the
 space a rewritten attribute or a deleted variable-length dataset leaves behind
@@ -77,44 +85,62 @@ Stage tracking and dependencies
 
 The pipeline is a sequence of stages with declared dependencies. The file
 records which stages have completed, and each stage checks that its inputs are
-present before it runs. The dependency graph is:
+present before it runs. Every status report, error and result names the stages
+by their canonical names, the CLI object names in the first column below. The
+dependency graph is:
 
 .. list-table::
    :header-rows: 1
-   :widths: 30 70
+   :widths: 40 60
 
    * - Stage
      - Requires
-   * - :doc:`Stage 0 — import <stage0_import>`
+   * - ``data`` — :doc:`Stage 0, import <stage0_import>`
      - nothing (it creates the file)
-   * - :doc:`Stage 1 — FT <stage1_ft>`
-     - Stage 0
-   * - :doc:`Stage 2 — noise <stage2_noise>`
-     - Stage 1
-   * - :doc:`Stage 2b — τ calibration <stage2b_tau>`
-     - Stages 0, 1, 2
-   * - :doc:`Stage 3 — peak detection <stage3_peaks>`
-     - Stages 1, 2 (Stage 2b recommended)
-   * - :doc:`Stage 4 — window assignment <stage4_windows>`
-     - Stage 3
-   * - :doc:`Stage 5 — fitting <stage5_fitting>`
-     - Stages 0, 4 (Stage 2b recommended)
-   * - :doc:`Stage 6 — review <stage6_review>`
-     - Stage 5
+   * - ``ft`` — :doc:`Stage 1, FT <stage1_ft>`
+     - ``data``
+   * - ``noise`` — :doc:`Stage 2, noise <stage2_noise>`
+     - ``ft``
+   * - ``tau`` and ``tau_g`` — :doc:`Stage 2b, τ calibration <stage2b_tau>`
+       (the exponential and Gaussian twins)
+     - ``data``, ``ft``, ``noise``
+   * - ``timebase`` — the scope-timebase self-calibration
+       (:doc:`clock_declaration`)
+     - ``data``, ``ft``
+   * - ``peaks`` — :doc:`Stage 3, peak detection <stage3_peaks>`
+     - ``ft``, ``noise`` (``tau`` recommended)
+   * - ``windows`` — :doc:`Stage 4, window assignment <stage4_windows>`
+     - ``peaks``
+   * - ``fit`` — :doc:`Stage 5, fitting <stage5_fitting>`
+     - ``data``, ``windows`` (``tau`` recommended)
+   * - ``review`` — :doc:`Stage 6, review <stage6_review>`
+     - ``fit``
 
-Running a stage whose required predecessor has not completed fails with an error
-naming the missing dependency, rather than producing a result from incomplete
-inputs. Where Stage 2b is *recommended* but not required, the consuming stage
-runs without it and falls back to a documented default (Stage 3's gap-pass decay
-basis, Stage 5's per-window starting τ); supplying the calibration improves the
-result without being a precondition. The scope-timebase self-calibration depends
-only on the raw FID and feeds the report's frequency uncertainty rather than any
-fit.
+``ftmwpipeline read status FILE`` (``status()`` in Python) reports each stage
+as ``complete``, ``partial`` (a cancelled fit that kept finished windows) or
+``not_run``, with the stages that can run next. Running a stage whose required
+predecessor has not completed fails with ``StageDependencyError`` naming the
+missing dependency and the command that produces it, rather than producing a
+result from incomplete inputs. Where ``tau`` is *recommended* but not
+required, the consuming stage runs without it and falls back to a documented
+default (Stage 3's gap-pass decay basis, Stage 5's per-window starting τ);
+supplying the calibration improves the result without being a precondition.
+The timebase calibration measures the scale error ε; the fit reads it to
+place the clock-spur windows of its spur gate, and the final products apply
+it as the frequency calibration and its uncertainty term.
 
-Re-running a stage with new parameters is safe. Re-running an *earlier* stage
-(or changing the persisted FT settings, or re-importing the source) invalidates
-the downstream results that depended on it, so the file is never left in a
-silently inconsistent state: the invalidated stages must be re-run.
+Re-running a stage with new parameters is safe. Re-running an *earlier* stage,
+changing a persisted setting (``settings set`` or ``settings unset``, which
+invalidate the stage they configure and everything downstream), changing the
+persisted FT settings, or re-importing the source with overwriting deletes the
+downstream results that depended on it, so the file is never left in a
+silently inconsistent state: the invalidated stages must be re-run. Every
+call that does this says so: its result carries ``invalidated``, the stages
+deleted, in re-run order, and the command line prints them. Re-running the
+fit or an earlier stage deletes the review too, including its decision log.
+Re-running Stage 2b or the timebase calibration deletes nothing: the stages
+that read them record what they took (below), and a timebase change rewrites
+the final-products table in place. See :ref:`contract-invalidation`.
 
 .. _persisted-vs-reconstructed:
 
@@ -222,8 +248,10 @@ is stamped too, although it persists no computed artifact (the FT is recomputed
 on demand from the persisted settings): its epoch says which definition of the
 FT the persisted settings were chosen under. The Stage 2b shape recommendation,
 which is not a tracked stage but feeds later ones, records its own entry
-(``stage2b_shape_recommendation``), and rebuilding the Stage 6 final-products
-table under a new calibration or accuracy floor re-stamps ``stage6_review``.
+(reported under its storage name, ``stage2b_shape_recommendation``; every
+other entry is reported under its canonical stage name), and rebuilding the
+Stage 6 final-products table under a new calibration or accuracy floor
+re-stamps ``review``.
 
 Every persisted settings record carries a field-set version, and a record at
 the current version holds every field (a ``None`` is a setting resolved to
@@ -255,7 +283,7 @@ the file alone, so only it is stored; the comparison against the running
 interpreter is made fresh on every call.
 
 A Stage 6 edit deliberately does **not** re-stamp the stage it edits.
-``stage5_fitting``'s record names the environment that produced the automatic
+The ``fit`` record names the environment that produced the automatic
 fit — the artifact every edit splices into and gates against — so re-stamping
 per edit would replace that reference with the editor's own environment and the
 gate would compare each edit against the previous edit instead of against the
@@ -319,16 +347,27 @@ unrecorded environment alongside the version running now.
 Error conditions
 ----------------
 
-The file model surfaces problems explicitly rather than guessing:
+The file model surfaces problems explicitly rather than guessing. Each problem
+is a typed error with a stable ``code`` a script can route on:
 
-* Opening a file that does not exist raises ``FileNotFoundError`` with guidance
-  on how to create one.
+* Opening a file that does not exist raises ``PipelineFileNotFoundError``
+  (``not_found``; also a ``FileNotFoundError``) with guidance on how to create
+  one.
 * Opening a file that is present but not a readable pipeline file raises
-  ``PipelineCorruptionError``.
+  ``PipelineCorruptionError`` (``file_corrupt``).
+* Opening a file written by a newer, incompatible format version raises
+  ``PipelineCompatibilityError`` (``file_incompatible``).
 * Creating over a file built from a different source raises
-  ``PipelineExistsError`` with the options for proceeding.
+  ``PipelineExistsError`` (``file_exists``) with the options for proceeding.
 * Running a stage whose dependency is missing raises ``StageDependencyError``
-  naming the unmet stage.
+  (``stage_not_run``) naming the unmet stage and the command that produces it.
+* A Stage 6 edit across an analysis-epoch change raises
+  ``AnalysisEpochMismatchError`` (``epoch_mismatch``) until the fit is re-run
+  or the mixture acknowledged.
+* A write that finds the file changed by another process raises
+  ``WriteConflictError`` (``write_conflict``); a cancelled call raises
+  ``OperationCancelledError`` (``cancelled``).
 
 All of these are subclasses of a common ``PipelineFileError``, so a script can
-catch the whole family at once.
+catch the whole family at once. The complete list of codes, with each error's
+fields and the command-line exit codes, is in :ref:`contract-errors`.
