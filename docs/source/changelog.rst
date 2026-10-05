@@ -42,6 +42,13 @@ planned — these entries fold into the ``1.0.0`` section when it is dated.
   dump written with ``--output`` keep text errors.
 * ``run --help``, the top-level ``--help`` and the ``run_pipeline`` /
   ``Pipeline.build`` docstrings state the real run order and verbs.
+* ``noise run`` with any knob flag (``--window-mhz 60``) no longer crashes
+  echoing the settings it was given.
+* The ``frame`` refusal on a ``self_calibrated`` file states the frame mix-up
+  as ``|f - probe_freq| * eps/(1+eps)``, the line's own offset, and quotes its
+  largest value over the file's fitted windows (31.4 kHz on ``exp_2638``),
+  instead of the ``probe_freq * eps/(1+eps)`` constant (89.7 kHz there), which
+  no line is off by.
 
 **A window the fit leaves empty while its edge stays coherent is flagged for
 review; ``CONTRACT_VERSION`` moves 13 → 14.** Stage 5 can finish a window of its
