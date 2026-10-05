@@ -547,6 +547,8 @@ interrupts at once: the call ends with ``KeyboardInterrupt``, its uncommitted wo
 is discarded, no partial fit is kept, and the file is left exactly as it was
 before the call.
 
+.. _stage5-partial:
+
 **Partial fits and resuming.** A cancelled fit keeps the windows that had
 finished as a *partial fit*, and ``OperationCancelledError.completed_windows``
 lists them; a callback that raises keeps them the same way. Keeping them discards
@@ -554,7 +556,8 @@ the previous fit and the review built on it. While a partial fit is present the
 file behaves as if Stage 5 had not run (``status`` reports the fit as
 ``partial``), and the next ``fit run`` resumes it: it fits only the windows not
 yet kept, then finishes as usual over the whole fit, and the result equals an
-uninterrupted fit with the same settings. A resume needs the same settings and
+uninterrupted fit with the same settings (the same lines, ``peak_uid`` values and
+windows; parameters to floating-point rounding). A resume needs the same settings and
 inputs as the partial fit; when they differ, or ``--restart`` (``restart=True``)
 is passed, the fit starts over and says why in its summary's
 ``restart_reason``. Anything that discards a fit discards a partial fit too.
