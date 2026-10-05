@@ -3265,6 +3265,7 @@ def _render_one_window_figures(
     dpi: int,
     stem: str,
     window_fit: Optional[Any] = None,
+    thumb_only: bool = False,
 ) -> _WindowFigures:
     """Render one window's zoomed panels + correlation heatmap to PNG bytes.
 
@@ -3272,6 +3273,11 @@ def _render_one_window_figures(
     carries); shared by the serial and the process-pool paths so both produce
     identical bytes. ``window_fit`` draws that result instead of the fit's own
     (a lineless review window, which the fit has no result for).
+
+    ``thumb_only`` (the summary report, which has no window pages) encodes only
+    the |X| panel its hover thumbnail is cut from: the other panels and the
+    correlation heatmap are not saved. The |X| panel and its thumbnail are the
+    same bytes either way.
     """
     import matplotlib
 
@@ -3285,7 +3291,12 @@ def _render_one_window_figures(
     from .stage5_impl import render_fit_panels_impl
 
     panels = render_fit_panels_impl(
-        path, wid, bundle=bundle, with_overview=False, window_fit=window_fit
+        path,
+        wid,
+        bundle=bundle,
+        with_overview=False,
+        window_fit=window_fit,
+        only=("mag",) if thumb_only else None,
     )
     panel_bytes: Dict[str, bytes] = {}
     mag_geom: Optional[Dict[str, float]] = None
@@ -3311,7 +3322,7 @@ def _render_one_window_figures(
     cov = getattr(wf, "covariance", None)
     cov_labels = getattr(wf, "covariance_param_labels", None)
     corr_bytes: Optional[bytes] = None
-    if cov is not None and cov_labels:
+    if cov is not None and cov_labels and not thumb_only:
         peak_letters = frequency_sorted_labels(
             [float(p.frequency_mhz) for p in wf.fitted_peaks]
         )
@@ -3343,6 +3354,7 @@ def _render_window_worker(wid: int) -> _WindowFigures:
         dpi=ctx["dpi"],
         stem=ctx["stem"],
         window_fit=ctx["lineless"].get(wid),
+        thumb_only=ctx["thumb_only"],
     )
 
 
@@ -3356,11 +3368,13 @@ def _render_all_window_figures(
     jobs: Optional[int] = None,
     events: Optional["StageScope"] = None,
     lineless: Optional[Dict[int, Any]] = None,
+    thumb_only: bool = False,
 ) -> Dict[int, _WindowFigures]:
     """Render every page window's figures, in parallel when worthwhile.
 
     ``lineless`` maps a flagged window the fit has no result for to the
-    lineless result its figures are drawn from.
+    lineless result its figures are drawn from. ``thumb_only`` renders only
+    what a summary report embeds (see :func:`_render_one_window_figures`).
 
     With ``events`` (the ``report run`` operation's scope) a cancel is checked
     between windows (the pool's workers are terminated on one), and each
@@ -3414,6 +3428,7 @@ def _render_all_window_figures(
         "dpi": dpi,
         "stem": stem,
         "lineless": dict(lineless or {}),
+        "thumb_only": thumb_only,
     }
     try:
         rendered = fork_map(
@@ -4256,11 +4271,14 @@ def _assemble_report_site(
     catalog_n_sigma: float = 3.0,
     jobs: Optional[int] = None,
     events: Optional["StageScope"] = None,
+    scope: str = "full",
 ) -> _ReportModel:
     """Assemble the report into an in-memory :class:`_ReportModel`.
 
     ``events`` is the ``report run`` scope its per-window rendering reports
-    into (see :func:`_render_all_window_figures`).
+    into (see :func:`_render_all_window_figures`). ``scope="summary"`` builds
+    only what the summary document shows: no per-window page, and of each
+    window's figures only the |X| panel its index hover thumbnail comes from.
 
     Builds the index page, the methods page, and one page per window, each as an
     HTML string in the returned model alongside the per-window figures (the O(N)
@@ -4482,6 +4500,7 @@ def _assemble_report_site(
     # PNG + thumbnail bytes go into the model and the single-file path embeds
     # them straight from memory.
     n_pages = len(page_ids)
+    summary_only = scope == "summary"
     logger.info("rendering %d window figure sets", n_pages)
     rendered = _render_all_window_figures(
         path=path,
@@ -4492,6 +4511,7 @@ def _assemble_report_site(
         jobs=jobs,
         events=events,
         lineless=lineless,
+        thumb_only=summary_only,
     )
     panel_files_by_wid: Dict[int, Dict[str, str]] = {}
     mag_geom_by_wid: Dict[int, Optional[Dict[str, float]]] = {}
@@ -4516,7 +4536,8 @@ def _assemble_report_site(
         cov_heatmap_by_wid[wid] = cov_heatmap_name
 
     # --- per-window pages -----------------------------------------------
-    for idx, wid in enumerate(page_ids):
+    # The summary document folds in no window page, so none is built.
+    for idx, wid in enumerate([] if summary_only else page_ids):
         wf = win_fits[wid]
         panel_files = panel_files_by_wid[wid]
         mag_geom = mag_geom_by_wid[wid]
@@ -4779,6 +4800,7 @@ def report_full_impl(
             catalog_n_sigma=catalog_n_sigma,
             jobs=jobs,
             events=_events,
+            scope=scope,
         )
         suffix = "_summary" if scope == "summary" else ""
         single_path = final_dir / f"{site.stem}_report{suffix}.html"

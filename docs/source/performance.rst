@@ -87,15 +87,17 @@ what each produces):
   review flagged for attention, instead of every window. The index still lists
   them all.
 - ``--summary`` — emit the index and methods pages only, with no per-window detail
-  sections (no per-window figures rendered at all).
+  sections. Each window still gets the one magnitude panel its hover thumbnail
+  on the index is cut from, so a summary takes roughly half the time of the full
+  report rather than none of it.
 - ``--level1-only`` — write just the Level-1 line table (CSV/JSON/LaTeX) and skip
   the HTML report entirely; the fastest option when you only want the numbers.
 - ``--no-table`` — the converse, skipping the table; minor, since the table is
   cheap.
 
-On a large experiment ``--windows attention`` or ``--summary`` turns a
-many-minute report into a quick one while keeping the parts most runs actually
-read.
+On a large experiment ``--windows attention`` turns a many-minute report into a
+quick one while keeping the parts most runs actually read; ``--summary`` saves
+less, since it still draws a thumbnail for every window.
 
 Trading fitting thoroughness for time
 -------------------------------------

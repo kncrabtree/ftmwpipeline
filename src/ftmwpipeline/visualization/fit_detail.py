@@ -677,6 +677,7 @@ def plot_window_panels(
     overview_figsize: Tuple[float, float] = (12.0, 2.6),
     hist_figsize: Tuple[float, float] = (6.6, 4.4),
     include_overview: bool = True,
+    only: Optional[Sequence[str]] = None,
 ) -> Dict[str, plt.Figure]:
     """Render the per-window detail as separate, standalone panel figures.
 
@@ -690,6 +691,8 @@ def plot_window_panels(
     When ``include_overview`` is False the full-spectrum ``"overview"`` panel is
     not built (the HTML report discards it in favor of a single shared
     interactive overview, so building one per window is wasted work).
+    ``only`` builds just the named panels (e.g. ``("mag",)``); each panel is
+    drawn the same way whichever others are built.
     """
     data = prepare_window_panels(
         window_fit,
@@ -707,20 +710,26 @@ def plot_window_panels(
     )
     figures: Dict[str, plt.Figure] = {}
 
-    if include_overview:
+    def wanted(name: str) -> bool:
+        return only is None or name in only
+
+    if include_overview and wanted("overview"):
         fig_ov = plt.figure(figsize=overview_figsize, constrained_layout=True)
         draw_overview(fig_ov.add_subplot(111), data)
         figures["overview"] = fig_ov
 
     for component in ("re", "im", "mag"):
+        if not wanted(component):
+            continue
         fig_c = plt.figure(figsize=panel_figsize, constrained_layout=True)
         ax_res, ax_dat = _stacked_pair(fig_c)
         draw_component(ax_res, ax_dat, data, component)
         figures[component] = fig_c
 
-    fig_h = plt.figure(figsize=hist_figsize, constrained_layout=True)
-    draw_residual_hist(fig_h.add_subplot(111), data)
-    figures["hist"] = fig_h
+    if wanted("hist"):
+        fig_h = plt.figure(figsize=hist_figsize, constrained_layout=True)
+        draw_residual_hist(fig_h.add_subplot(111), data)
+        figures["hist"] = fig_h
 
     return figures
 

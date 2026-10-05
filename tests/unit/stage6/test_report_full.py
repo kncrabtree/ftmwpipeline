@@ -1240,6 +1240,28 @@ def test_report_serial_and_parallel_render_match(
 
 
 @pytest.mark.integration
+def test_summary_scope_builds_only_what_the_summary_shows(stage5_small_file, tmp_path):
+    """``scope="summary"`` skips the window pages and every per-window figure
+    but the |X| panel the index thumbnails come from, and the summary document
+    is the one the full assembly collapses to."""
+    full_root = tmp_path / "full"
+    m_full = _assemble_report_site(str(stage5_small_file), out_root=str(full_root))
+    sum_root = tmp_path / "summary"
+    m_sum = _assemble_report_site(
+        str(stage5_small_file), out_root=str(sum_root), scope="summary"
+    )
+
+    assert _window_pages(m_full) and not _window_pages(m_sum)
+    assert m_sum.thumb_store == m_full.thumb_store
+    assert set(m_sum.figure_store) == {
+        k for k in m_full.figure_store if k.endswith("_mag.png")
+    }
+    assert _collapse(m_sum, sum_root, mode="summary") == _collapse(
+        m_full, full_root, mode="summary"
+    )
+
+
+@pytest.mark.integration
 @pytest.mark.slow
 def test_full_windows_filter_attention_subset(stage5_small_file, tmp_path):
     m_all = _assemble_report_site(
