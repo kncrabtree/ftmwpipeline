@@ -633,3 +633,31 @@ class TestUndoIdArgument:
         cart = "ftmwpipeline review undo exp.ftmw --id " + " ".join(["3", "5"])
         argv = shlex.split(cart)[1:]
         assert create_parser().parse_args(argv).ids == [3, 5]
+
+
+def test_top_level_help_lists_the_real_object_verbs():
+    """The top-level ``--help`` epilog names each object's real verbs, and no
+    verb that does not exist (``review merge`` / ``split``)."""
+    import argparse
+    import re
+
+    from ftmwpipeline.cli.main import create_parser
+
+    parser = create_parser()
+    epilog = parser.epilog or ""
+    sub = next(
+        a for a in parser._actions if isinstance(a, argparse._SubParsersAction)
+    )
+    for obj in ("review", "report", "settings", "clocks", "tau", "timebase"):
+        verbs_action = next(
+            a
+            for a in sub.choices[obj]._actions
+            if isinstance(a, argparse._SubParsersAction)
+        )
+        for verb in verbs_action.choices:
+            assert re.search(rf"(^|[\s|]){re.escape(verb)}($|[\s|])", epilog), (
+                obj,
+                verb,
+            )
+    review_block = epilog[epilog.index("review (stage6)") : epilog.index("Meta")]
+    assert "merge" not in review_block and "split" not in review_block

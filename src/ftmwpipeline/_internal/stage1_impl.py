@@ -231,8 +231,11 @@ def _reject_bad_window_bounds(start_us: float, end_us: float) -> None:
 
 
 #: The ``ftmw/run_result@1`` summary keys of ``ft run`` -- also the keys of the
-#: FT stage's ``StageFinished.summary`` (``trimmed_points`` only when a trim is
-#: set). The one builder is :func:`ft_run_summary`.
+#: FT stage's ``StageFinished.summary``. The one builder is
+#: :func:`ft_run_summary`, which keeps the keys the result has: a saving run
+#: (every public path) has no ``trimmed_points`` -- its ``frequency_points`` is
+#: already the trimmed count -- and only an internal ``validate_only`` call with
+#: a trim reports it.
 FT_RUN_SUMMARY_KEYS: Tuple[str, ...] = (
     "fid_points",
     "preprocessed_points",

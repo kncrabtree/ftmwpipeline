@@ -12,7 +12,7 @@ from typing import List, Optional, cast
 from .. import __version__
 from ..file_manager import PipelineFileError
 from ..workflows import validate_installation
-from ._json_output import install_json, json_mode, record_payload
+from ._json_output import error_json_mode, install_json, json_mode, record_payload
 from .clocks_commands import register_clocks_commands
 from .contract_commands import report_contract_error
 from .data_commands import add_data_subcommands
@@ -108,20 +108,28 @@ Stage objects (synonym):
   ft (stage1)       run | show            Compute / visualize the Fourier transform
   noise (stage2)    run | show            Estimate / visualize frequency-dependent noise
   tau (stage2b)     run [--gaussian]      STFT tau calibration (--gaussian: tau_G twin)
+                    recommend             Line-shape (Lorentzian/Gaussian) vote
                     show --kind heatmap|distribution
-  timebase          run | show            Scope-clock scale-error (eps) self-calibration
+  timebase          run | show | state    Scope-clock scale-error (eps) self-calibration
   peaks (stage3)    run | show            Detect/classify peaks / overlay them
   windows (stage4)  run | show            Plan fit windows / overlay the plan
   fit (stage5)      run | show | check    Fit lines / overlay / SNR-aware assessment
-  review (stage6)   run | show | rank | edit | merge | split | accept  Curate the fit
+  review (stage6)   run | rank | show | edit | accept | create
+                    apply | preview | log | undo
+                    snap-tolerance | acknowledge-environment   Curate the fit
 
 Meta objects (cross-cutting, optional dotted selector):
+  report    run | table | diff            HTML report / line table / edit diff
   scan      list | run | all              Knob registry; sweep one / all knobs
-  settings  show | set | export           Resolved value + provenance; persist; preset
+  settings  show | defaults | set | unset | export
+                                          Resolved value + provenance; persist; preset
+  clocks    show | set | add | remove | clear
+                                          Instrument clock declaration
   read      list | table | meta           Dump persisted data (CSV/TSV/JSON), no recompute
             <accessor>                     Contract accessors as JSON (see 'read --help')
 
 Utility (bare commands):
+  run               Run the whole pipeline on a raw source
   formats           List available data formats
   info              Show provenance and stage status for a .ftmw file
   validate          Check installation and dependencies
@@ -227,7 +235,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         return cast(int, args.func(args))
     except PipelineFileError as exc:
-        fmt = "json" if json_mode(args) else getattr(args, "format", None) or "text"
+        # JSON under --json and a --format json that formats printed output;
+        # never because a written file's format happens to be json.
+        fmt = "json" if error_json_mode(args) else "text"
         return report_contract_error(exc, fmt)
 
 
