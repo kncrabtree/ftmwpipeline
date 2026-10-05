@@ -1284,6 +1284,11 @@ class Pipeline:
         via ``settings=PeakDetectionSettings(...)`` or a YAML preset's
         ``stage3:`` block.
 
+        ``events`` / ``cancel`` follow the long-operation contract: ``events``
+        is called on this thread with each event (a callback that raises
+        aborts with :class:`CallbackFailedError`); ``cancel`` is checked before
+        the stage starts (:class:`OperationCancelledError`, nothing written).
+
         Parameters
         ----------
         settings : PeakDetectionSettings, optional
@@ -1309,11 +1314,6 @@ class Pipeline:
             If Stage 1 or Stage 2 has not been completed.
         RuntimeError
             If detection fails.
-
-        ``events`` / ``cancel`` follow the long-operation contract: ``events``
-        is called on this thread with each event (a callback that raises
-        aborts with :class:`CallbackFailedError`); ``cancel`` is checked before
-        the stage starts (:class:`OperationCancelledError`, nothing written).
         """
         try:
             result = detect_peaks_impl(
@@ -1438,6 +1438,11 @@ class Pipeline:
         via ``settings=WindowPlanningSettings(...)`` or a YAML preset's
         ``stage4:`` block.
 
+        ``events`` / ``cancel`` follow the long-operation contract: ``events``
+        is called on this thread with each event (a callback that raises
+        aborts with :class:`CallbackFailedError`); ``cancel`` is checked before
+        the stage starts (:class:`OperationCancelledError`, nothing written).
+
         Parameters
         ----------
         settings : WindowPlanningSettings, optional
@@ -1460,11 +1465,6 @@ class Pipeline:
             If Stage 3 has not been completed.
         RuntimeError
             If window assignment fails.
-
-        ``events`` / ``cancel`` follow the long-operation contract: ``events``
-        is called on this thread with each event (a callback that raises
-        aborts with :class:`CallbackFailedError`); ``cancel`` is checked before
-        the stage starts (:class:`OperationCancelledError`, nothing written).
         """
         try:
             result = assign_windows_impl(
@@ -2413,6 +2413,14 @@ class Pipeline:
         values afterward are the replay's, not the pre-undo file's: replay
         equivalence, not per-peak stability, is what an undo promises.
 
+        ``events`` / ``cancel`` follow the long-operation contract: ``events``
+        is called on this thread with each event (``StageStarted``, a
+        ``WindowProgress`` per re-fit window, warnings, ``StageFinished``); a
+        callback that raises aborts with :class:`CallbackFailedError`.
+        ``cancel`` is checked before the restore (raising
+        :class:`OperationCancelledError` with nothing written); once the
+        restore-then-replay has begun it completes.
+
         Parameters
         ----------
         ids :
@@ -2429,14 +2437,6 @@ class Pipeline:
         ValueError
             If an id is unknown, there are no decisions, or the automatic-fit
             baseline is unavailable while fit-mutating decisions exist.
-
-        ``events`` / ``cancel`` follow the long-operation contract: ``events``
-        is called on this thread with each event (``StageStarted``, a
-        ``WindowProgress`` per re-fit window, warnings, ``StageFinished``); a
-        callback that raises aborts with :class:`CallbackFailedError`.
-        ``cancel`` is checked before the restore (raising
-        :class:`OperationCancelledError` with nothing written); once the
-        restore-then-replay has begun it completes.
         """
         return review_undo_impl(
             self.filepath, ids, dry_run=dry_run, events=events, cancel=cancel

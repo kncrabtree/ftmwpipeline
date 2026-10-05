@@ -277,6 +277,13 @@ class CurationAction:
     :func:`ftmwpipeline._internal.stage6_impl.actions_from_curation_file`),
     and :meth:`to_row` writes one back.
 
+    Construction validates what the curation-file parser enforces of a row:
+    one frequency (``freq_mhz``), or on ``remove`` one ``peak_uid`` in its
+    place; no frequency on ``accept``; no ``peak_uid`` outside ``remove``; no
+    ``candidate_mhz`` outside ``accept``; a ``window_id`` on ``accept``. A
+    violation raises :class:`~ftmwpipeline.BadSettingError` whose ``path`` is
+    the offending field.
+
     Attributes
     ----------
     action : {"add", "remove", "accept", "create"}
@@ -314,13 +321,6 @@ class CurationAction:
         given, it must match the file's current epsilon at apply time, else
         the action is refused as calibration drift, exactly as a stamped file
         is. ``None`` skips the check.
-
-    Construction validates what the curation-file parser enforces of a row:
-    one frequency (``freq_mhz``), or on ``remove`` one ``peak_uid`` in its
-    place; no frequency on ``accept``; no ``peak_uid`` outside ``remove``; no
-    ``candidate_mhz`` outside ``accept``; a ``window_id`` on ``accept``. A
-    violation raises :class:`~ftmwpipeline.BadSettingError` whose ``path`` is
-    the offending field.
     """
 
     __ftmw_schema__: ClassVar[str] = CURATION_ACTION_SCHEMA
