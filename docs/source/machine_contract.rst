@@ -848,8 +848,9 @@ the message (``curation action <n> (...) failed: ...``).
   * ``kind`` ``"window"``: a window id the fit does not have (every unknown
     id of a batch at once, including when the batch also creates windows:
     only an id one of the batch's ``create`` rows could mint is left to the
-    per-action check), and an omitted-window ``add`` / ``remove``
-    target that no live window covers (``ids`` the uncovered frequencies);
+    per-action check; an id a structural merge absorbed is never one), and an
+    omitted-window ``add`` / ``remove`` target that no live window covers
+    (``ids`` the uncovered frequencies);
   * ``kind`` ``"decision"``: ``review_undo`` ids the decision log does not
     hold, every one of them (on a file with no recorded decisions, every
     requested id).
@@ -883,6 +884,12 @@ the message (``curation action <n> (...) failed: ...``).
      * - ``target_outside_window``
        - an ``add`` whose seed, after snapping to a ledger candidate, falls
          outside the range of the window it names (that window)
+     * - ``fit_plan_unavailable``
+       - the edit would refit a window a Stage 5 structural merge changed, in a
+         fit made before the fit stored its plan, or create a window inside or
+         against such a merge: the windows the fit was made on are not in the
+         file (the windows the edit would have refit; for a create inside a
+         merged range, every affected window). Re-running ``fit run`` clears it
 
   Reasons are only ever added.
 
@@ -1495,13 +1502,27 @@ Window status: ``window_status``
 --------------------------------
 
 ``window_status(path)`` returns ``{"schema": "ftmw/window_status@1",
-"windows": [...]}``, one ``ftmwpipeline.WindowStatusRow`` per Stage 4 plan
-window and per window Stage 6 created, with ``window_id``, ``freq_min_mhz``,
-``freq_max_mhz``, ``created``, ``n_fitted_peaks`` and ``live``. A window is **live** when the Stage 5 fit
+"windows": [...]}``, one ``ftmwpipeline.WindowStatusRow`` per window of the
+plan the fit was made on and per window Stage 6 created, with ``window_id``,
+``freq_min_mhz``, ``freq_max_mhz``, ``created``, ``n_fitted_peaks``, ``live``
+and ``merged_from``. A window is **live** when the Stage 5 fit
 holds at least one fitted line in it. Rows ascend by ``freq_min_mhz`` and then
 ``window_id``. A created window that reuses a plan ``window_id`` (the
 narrow-gap widening case) replaces that plan row, with its own bounds and
 ``created`` true.
+
+**Windows after a structural merge.** Before a complete Stage 5 fit (a partial
+fit included), and after a fit no structural merge revised, the plan is the
+Stage 4 plan. After a merge (``final_plan_revision`` above 0) it is the plan
+the fit was made on: the survivor keeps the lower id and the merged range, its
+``merged_from`` lists the ids it absorbed (ascending), and an absorbed id has no
+row. Every other row's ``merged_from`` is ``[]``. The same plan is what the
+window model reports and what every Stage 6 call resolves, edits and refits; a
+window Stage 6 creates never takes an absorbed id, and a curation call naming
+one is ``not_found`` (kind ``"window"``). A fit made before the fit stored its
+plan reports the merges its replan record names (each survivor spanning the
+union of its windows); Stage 6 refuses to refit those windows
+(``curation_conflict``, ``fit_plan_unavailable``).
 
 Absence and refusals:
 
@@ -1516,9 +1537,11 @@ Absence and refusals:
 * A path that does not exist raises ``PipelineFileNotFoundError``.
 
 Its columnar form is the ``window_status`` table of ``read_table``, built from
-the same rows: the six columns plus ``n_fitted_peaks__status`` and
+the same rows: the seven columns plus ``n_fitted_peaks__status`` and
 ``live__status`` (``1`` before Stage 5, where the value columns hold the fill
-``0`` / ``False``, which a program must not read); column selection works.
+``0`` / ``False``, which a program must not read). ``merged_from`` is a text
+column holding each row's list as JSON (``"[]"``, ``"[101]"``). Column
+selection works.
 Before Stage 4 ``read_table`` raises the same ``StageDependencyError``. The
 read never writes the file. The CLI prints the records inline:
 

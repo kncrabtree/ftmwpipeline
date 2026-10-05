@@ -24,7 +24,10 @@ from ftmwpipeline.preprocessing.window_planning import (
     DEFAULT_MAX_WINDOW_WIDTH_POINTS,
     build_window_plan,
     merge_geometry,
+    merged_window_ids,
+    next_window_id,
     replan,
+    retired_window_ids,
 )
 
 
@@ -901,6 +904,48 @@ class TestReplanMerge:
         geom = merge_geometry(revised, a.window_id, b.window_id, peaks, freqs)
         assert (geom.cap_bins, geom.max_peaks) == (80.0, 5)
 
+    def test_a_chain_of_merges_names_every_absorbed_id(self):
+        """Round 1 folds the top window into the middle one; round 2 folds the
+        middle survivor into the bottom one. The final survivor names both
+        absorbed ids, whichever side carried them, and neither is reusable."""
+        freqs, spec, rms, peaks = _synthetic(
+            [
+                (30030.0, 0.05, PeakClassification.WEAK),
+                (30060.0, 0.05, PeakClassification.WEAK),
+                (30090.0, 0.05, PeakClassification.WEAK),
+            ],
+            n=6000,
+        )
+        plan = build_window_plan(peaks, freqs, spec, rms, acquisition_us=15.0)
+        if plan.n_windows != 3:
+            pytest.skip("setup did not produce 3 windows for this fixture")
+        lo, mid, hi = sorted(plan.windows, key=lambda w: w.freq_range[0])
+        once = replan(
+            plan,
+            [MergeRequest(mid.window_id, hi.window_id)],
+            peaks,
+            freqs,
+            spec,
+            rms,
+            acquisition_us=15.0,
+        )
+        twice = replan(
+            once,
+            [MergeRequest(lo.window_id, min(mid.window_id, hi.window_id))],
+            peaks,
+            freqs,
+            spec,
+            rms,
+            acquisition_us=15.0,
+        )
+        (survivor,) = twice.windows
+        ids = sorted(w.window_id for w in (lo, mid, hi))
+        assert survivor.window_id == ids[0]
+        assert survivor.diagnostics["merged_from"] == ids
+        assert merged_window_ids(twice) == {ids[0]: ids[1:]}
+        assert retired_window_ids(twice) == set(ids[1:])
+        assert next_window_id(twice) == ids[-1] + 1
+
     def test_revision_counter_chains_across_replans(self):
         plan, peaks, freqs, spec, rms = self._two_window_plan()
         once = replan(plan, [], peaks, freqs, spec, rms, acquisition_us=15.0)
@@ -1124,3 +1169,37 @@ class TestMergeGeometry:
             ).uncovered_bins
             > 100
         )
+
+
+# ---------------------------------------------------------------------------
+# Window ids after a structural merge: an absorbed id is never minted again.
+# ---------------------------------------------------------------------------
+
+
+def _plan_of(*windows):
+    return WindowPlan(windows=list(windows))
+
+
+def test_an_unmerged_plan_retires_nothing():
+    plan = _plan_of(FitWindow(0, (1.0, 2.0)), FitWindow(3, (4.0, 5.0)))
+    assert merged_window_ids(plan) == {}
+    assert retired_window_ids(plan) == set()
+    assert next_window_id(plan) == 4
+
+
+def test_a_new_id_goes_above_an_absorbed_top_id():
+    """Window 7 (the highest id) was folded into 5: the next id is 8, not 7."""
+    plan = _plan_of(
+        FitWindow(2, (1.0, 2.0)),
+        FitWindow(5, (3.0, 6.0), diagnostics={"merged_from": [5, 7]}),
+    )
+    assert merged_window_ids(plan) == {5: [7]}
+    assert retired_window_ids(plan) == {7}
+    assert next_window_id(plan) == 8
+    assert next_window_id(plan, reserved=[11]) == 12
+
+
+def test_a_merged_from_naming_only_itself_is_not_a_merge():
+    plan = _plan_of(FitWindow(4, (1.0, 2.0), diagnostics={"merged_from": [4]}))
+    assert merged_window_ids(plan) == {}
+    assert next_window_id(plan) == 5

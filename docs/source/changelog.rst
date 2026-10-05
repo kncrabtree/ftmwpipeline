@@ -52,6 +52,31 @@ Lorentzian); only the replan records' reasons change. A file fitted under epoch 
 must be re-fit, or have the mismatch accepted, before Stage 6 will splice an edit
 into it, and a partial fit written under epoch 4 starts over instead of resuming.
 
+**Windows after a structural merge; ``CONTRACT_VERSION`` moves 12 → 13.** A
+merge leaves the fit on windows Stage 4 did not plan: the survivor keeps the
+lower id and the merged range, and the absorbed id is gone. Stage 5 now stores
+that plan with the fit (``/stage5_fitting/fitted_plan``, only when a merge
+revised it), and everything that reads window geometry after a complete fit
+reads it. Before this, Stage 6 kept refitting a survivor on its narrow Stage 4
+range, so even an edit that changed nothing dragged the absorbed window's lines
+to the edge, and ``window_status`` reported the Stage 4 rows. Now:
+
+* ``window_status`` reports the fitted plan, and ``WindowStatusRow`` gains
+  ``merged_from``: the ids a survivor absorbed, ascending, and ``[]`` for every
+  other row. The ``window_status`` table gains the column as JSON text
+  (``"[]"``, ``"[101]"``).
+* Every Stage 6 call resolves, edits, refits and plans against the fitted plan,
+  and the undo baseline carries it. A created window never takes an absorbed
+  id; a curation call naming one is ``not_found`` (kind ``window``), and a
+  pinned create that would take one is ``replay_conflict``.
+* A fit made before this record, in which a merge was applied, keeps working:
+  ``window_status`` reports the merges its replan record names, and Stage 6
+  refuses to refit the merged windows (or the windows reading their lines as
+  fixed contributors), or to create a window inside a merged range, with the new
+  ``curation_conflict`` reason ``fit_plan_unavailable``. Re-running ``fit run``
+  clears it. Fits no merge revised, including every earlier fit of 2638, store
+  nothing extra and edit exactly as before.
+
 **``ANALYSIS_EPOCH`` moves 3 → 4.** A dependent window's frozen contributors
 now follow the window's fitted decay time *during* the fit, as the Stage 5 model
 equation already wrote them (see :doc:`stage5_fitting`). Previously their

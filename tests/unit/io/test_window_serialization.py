@@ -15,7 +15,12 @@ from ftmwpipeline.core.data_structures import (
     WindowPlan,
 )
 from ftmwpipeline.io.window_serialization import (
+    FITTED_PLAN_GROUP,
+    fitted_plan_present,
+    load_fitted_plan_from_hdf5,
     load_window_plan_from_hdf5,
+    read_fitted_plan_bounds,
+    save_fitted_plan_to_hdf5,
     save_window_plan_to_hdf5,
 )
 
@@ -226,3 +231,53 @@ class TestLoudValidation:
         with h5py.File(path, "r") as h5f:
             with pytest.raises(ValueError, match="peak_index"):
                 load_window_plan_from_hdf5(h5f["stage4_windows"])
+
+
+class TestFittedPlan:
+    """The plan a structurally merged Stage 5 fit was made on, stored as a
+    child of the fit group (``/stage5_fitting/fitted_plan``)."""
+
+    @staticmethod
+    def _merged_plan():
+        plan = _sample_plan()
+        plan.windows[0].diagnostics["merged_from"] = [0, 2]
+        plan.plan_revision = 1
+        return plan
+
+    def test_round_trips_with_its_revision_and_merges(self, tmp_path):
+        path = tmp_path / "f.h5"
+        with h5py.File(path, "w") as h5f:
+            fit = h5f.create_group("stage5_fitting")
+            assert not fitted_plan_present(fit)
+            assert load_fitted_plan_from_hdf5(fit) is None
+            assert read_fitted_plan_bounds(fit) is None
+            save_fitted_plan_to_hdf5(self._merged_plan(), fit)
+        with h5py.File(path, "r") as h5f:
+            fit = h5f["stage5_fitting"]
+            assert fitted_plan_present(fit)
+            assert fit[FITTED_PLAN_GROUP].attrs["stage_name"] == "stage5_fitted_plan"
+            loaded = load_fitted_plan_from_hdf5(fit)
+            bounds, merged = read_fitted_plan_bounds(fit)
+        assert loaded is not None
+        assert loaded.plan_revision == 1
+        assert [w.window_id for w in loaded.windows] == [0, 1]
+        assert loaded.windows[0].diagnostics["merged_from"] == [0, 2]
+        assert loaded.windows[1].fixed_contributors[0].primary_window_id == 0
+        assert bounds == {0: (26500.0, 26520.0), 1: (26530.0, 26536.0)}
+        assert merged == {0: [2]}
+
+    def test_saving_again_replaces_the_stored_plan(self, tmp_path):
+        path = tmp_path / "f.h5"
+        with h5py.File(path, "w") as h5f:
+            fit = h5f.create_group("stage5_fitting")
+            save_fitted_plan_to_hdf5(self._merged_plan(), fit)
+            plan = _sample_plan()
+            plan.windows = plan.windows[:1]
+            plan.plan_revision = 2
+            save_fitted_plan_to_hdf5(plan, fit)
+        with h5py.File(path, "r") as h5f:
+            loaded = load_fitted_plan_from_hdf5(h5f["stage5_fitting"])
+            _, merged = read_fitted_plan_bounds(h5f["stage5_fitting"])
+        assert [w.window_id for w in loaded.windows] == [0]
+        assert loaded.plan_revision == 2
+        assert merged == {}

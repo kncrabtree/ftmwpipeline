@@ -29,9 +29,11 @@ fitting it take over ten seconds.
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from typing import Any, Callable, List, Tuple
 
+import h5py
 import numpy as np
 import pytest
 
@@ -39,11 +41,13 @@ import ftmwpipeline.api as ftmw
 import ftmwpipeline.fitting.plan_execution as plan_execution
 from ftmwpipeline import Pipeline
 from ftmwpipeline._internal.atomic import atomic_write
+from ftmwpipeline._internal.fitted_plan import load_fitted_plan
 from ftmwpipeline._internal.stage4_impl import (
     load_windows_impl,
     save_window_plan_impl,
 )
 from ftmwpipeline.core.start_detection_settings import StartDetectionSettings
+from ftmwpipeline.file_manager import CurationConflictError, PipelineFileError
 from tests.integration.test_stage5_resume import assert_same_fit
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
@@ -229,3 +233,199 @@ def test_the_default_recipe_plan_refuses_every_flag_and_records_it(
         assert e.revision_after == e.revision_before == 0
         assert e.reason.startswith("not merged: "), e.reason
         assert "no window touches it" in e.reason
+
+
+# ---- Stage 6 on a merged fit ------------------------------------------------
+#
+# After a merge every window Stage 6 resolves, edits and refits is the fit's
+# own (CONTRACT_STRATEGY §Window status): the survivor 100 spans 100 and 101,
+# and 101 is no longer a window. Each test edits its own copy of the forced fit.
+
+
+def _copy(src: Path, tmp_path: Path, name: str = "edit.ftmw") -> str:
+    dest = tmp_path / name
+    shutil.copy(src, dest)
+    return str(dest)
+
+
+def _lines(fp: str, wid: int) -> List[Tuple[int, float]]:
+    (w,) = [w for w in ftmw.load_fit(fp).window_fits if w.window_id == wid]
+    return sorted(
+        ((p.peak_uid, p.frequency_mhz) for p in w.fitted_peaks), key=lambda t: t[1]
+    )
+
+
+def _fit_range(fp: str, wid: int) -> Tuple[float, float]:
+    return tuple(_windows(ftmw.load_fit(fp))[wid].window.freq_range)
+
+
+def _has_fitted_plan(fp: str, group: str = "stage5_fitting") -> bool:
+    with h5py.File(fp, "r") as h5f:
+        return group in h5f and "fitted_plan" in h5f[group]
+
+
+def _old_101_line(fp: str) -> Tuple[int, float]:
+    """A line of the survivor from the absorbed window's part of its range."""
+    stage4_hi = max(ftmw.load_windows(fp).windows[1].freq_range)
+    assert ftmw.load_windows(fp).windows[1].window_id == 100
+    uid, freq = _lines(fp, 100)[-1]
+    assert freq > stage4_hi
+    return uid, freq
+
+
+def test_the_fit_stores_the_plan_it_was_made_on(fits):
+    parallel, _seq, forced, _forced_seq = fits
+    assert _has_fitted_plan(str(forced))
+    assert not _has_fitted_plan(str(parallel))
+    plan = load_fitted_plan(forced).plan
+    assert plan.plan_revision == 1
+    assert {w.window_id for w in plan.windows} == {99, 100, 102, 103}
+    assert tuple(plan.window(100).freq_range) == _fit_range(str(forced), 100)
+    assert load_fitted_plan(forced).retired_window_ids == {101}
+
+
+def test_window_status_reports_the_merged_window(fits):
+    _par, _seq, forced, _forced_seq = fits
+    rows = {w.window_id: w for w in ftmw.window_status(str(forced))["windows"]}
+    assert set(rows) == {99, 100, 102, 103}
+    assert rows[100].merged_from == [101]
+    assert (rows[100].freq_min_mhz, rows[100].freq_max_mhz) == _fit_range(
+        str(forced), 100
+    )
+    assert all(rows[w].merged_from == [] for w in (99, 102, 103))
+
+
+def test_a_no_op_edit_of_the_survivor_keeps_its_lines(fits, tmp_path):
+    _par, _seq, forced, _forced_seq = fits
+    fp = _copy(forced, tmp_path)
+    before = _lines(fp, 100)
+    ftmw.review_edit(fp, 100)
+    after = _lines(fp, 100)
+    assert [u for u, _ in after] == [u for u, _ in before]
+    assert max(abs(a - b) for (_, a), (_, b) in zip(after, before)) < 1e-4
+    assert _fit_range(fp, 100) == _fit_range(str(forced), 100)
+    assert _has_fitted_plan(fp)
+
+
+def test_remove_and_add_work_on_the_merged_range(fits, tmp_path):
+    _par, _seq, forced, _forced_seq = fits
+    fp = _copy(forced, tmp_path)
+    before = _lines(fp, 100)
+    uid, freq = _old_101_line(fp)
+    ftmw.review_edit(fp, 100, remove=[f"uid:{uid}"], frame="raw")
+    assert [u for u, _ in _lines(fp, 100)] == [u for u, _ in before if u != uid]
+    ftmw.review_edit(fp, 100, add=[freq], frame="raw")
+    after = _lines(fp, 100)
+    assert len(after) == len(before)
+    assert min(abs(f - freq) for _, f in after) < 1e-3
+
+
+def test_accepting_a_candidate_works_on_the_merged_range(fits, tmp_path):
+    _par, _seq, forced, _forced_seq = fits
+    fp = _copy(forced, tmp_path)
+    before = _lines(fp, 100)
+    uid, freq = _old_101_line(fp)
+    ftmw.review_edit(fp, 100, remove=[f"uid:{uid}"], frame="raw")
+    ftmw.review_accept(fp, 100, candidate_freq=freq, frame="raw")
+    assert len(_lines(fp, 100)) == len(before)
+
+
+def test_undo_restores_the_automatic_fit_and_its_plan(fits, tmp_path):
+    _par, _seq, forced, _forced_seq = fits
+    fp = _copy(forced, tmp_path)
+    before = _lines(fp, 100)
+    uid, _freq = _old_101_line(fp)
+    ftmw.review_edit(fp, 100, remove=[f"uid:{uid}"], frame="raw")
+    assert _has_fitted_plan(fp, "stage5_fitting_baseline")
+    ftmw.review_undo(fp, [e.order_index for e in ftmw.review_log(fp)])
+    assert _lines(fp, 100) == before
+    assert _has_fitted_plan(fp)
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda fp: ftmw.review_edit(fp, 101),
+        lambda fp: ftmw.window_model(fp, 101),
+        lambda fp: ftmw.review_apply(
+            fp,
+            actions=[{"action": "add", "window_id": 101, "freq_mhz": 30725.0}],
+            frame="raw",
+        ),
+    ],
+    ids=["review_edit", "window_model", "review_apply"],
+)
+def test_an_absorbed_id_is_not_a_window(fits, tmp_path, call):
+    _par, _seq, forced, _forced_seq = fits
+    fp = _copy(forced, tmp_path)
+    with pytest.raises(PipelineFileError) as info:
+        call(fp)
+    payload = info.value.to_dict()
+    assert (payload["code"], payload["kind"], payload["ids"]) == (
+        "not_found",
+        "window",
+        [101],
+    )
+
+
+def test_a_pinned_create_cannot_take_an_absorbed_id(fits, tmp_path):
+    _par, _seq, forced, _forced_seq = fits
+    fp = _copy(forced, tmp_path)
+    with pytest.raises(CurationConflictError) as info:
+        ftmw.review_apply(
+            fp,
+            actions=[{"action": "create", "window_id": 101, "freq_mhz": 30688.0}],
+            frame="raw",
+        )
+    assert (info.value.reason, info.value.ids) == ("replay_conflict", [101])
+
+
+def test_a_merged_fit_without_its_stored_plan_refuses_to_refit_the_merge(
+    fits, tmp_path
+):
+    """A fit from before the plan was stored: the survivor's fitted geometry is
+    not in the file, so refitting it is refused; an untouched window edits as
+    before, and window_status still reports the recorded merge."""
+    _par, _seq, forced, _forced_seq = fits
+    fp = _copy(forced, tmp_path)
+    with h5py.File(fp, "a") as h5f:
+        del h5f["stage5_fitting/fitted_plan"]
+    rows = {w.window_id: w for w in ftmw.window_status(fp)["windows"]}
+    assert rows[100].merged_from == [101]
+    before = _lines(fp, 100)
+    with pytest.raises(CurationConflictError) as info:
+        ftmw.review_edit(fp, 100)
+    assert (info.value.reason, info.value.ids) == ("fit_plan_unavailable", [100])
+    assert _lines(fp, 100) == before
+    ftmw.review_edit(fp, 102)
+
+
+@pytest.fixture(scope="module")
+def forced_top_pair(golden_subset, tmp_path_factory):
+    """The subset cut to windows 99..101, so the absorbed id 101 is the plan's
+    highest, fitted with the forced 100/101 merge (Gaussian)."""
+    tmp = tmp_path_factory.mktemp("replan_top_pair")
+    src = tmp / "top.ftmw"
+    shutil.copy(golden_subset, src)
+    plan = load_windows_impl(str(src))["plan"]
+    keep = {99, 100, 101}
+    plan.windows = [w for w in plan.windows if w.window_id in keep]
+    plan.topological_order = [w for w in plan.topological_order if w in keep]
+    plan.dependency_edges = [
+        (a, b) for (a, b) in plan.dependency_edges if a in keep and b in keep
+    ]
+    with atomic_write(str(src)):
+        save_window_plan_impl(str(src), plan)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(plan_execution, "_dispatch_structural_round", _merge_from_101())
+        return _fit(src, tmp / "forced.ftmw", shape="gaussian")
+
+
+def test_a_created_window_never_takes_the_absorbed_id(forced_top_pair, tmp_path):
+    fp = _copy(forced_top_pair, tmp_path)
+    rows = {w.window_id: w for w in ftmw.window_status(fp)["windows"]}
+    assert set(rows) == {99, 100}
+    anchor = 0.5 * (rows[99].freq_max_mhz + rows[100].freq_min_mhz)
+    created = ftmw.review_create(fp, anchor, frame="raw")
+    assert (created.mode, created.window_id) == ("created", 102)
+    assert {w.window_id for w in ftmw.window_status(fp)["windows"]} == {99, 100, 102}

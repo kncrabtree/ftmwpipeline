@@ -48,6 +48,7 @@ from typing import (
     Callable,
     ClassVar,
     Dict,
+    List,
     Mapping,
     NamedTuple,
     Optional,
@@ -85,7 +86,7 @@ from .file_manager import (
 #: The machine-contract version. The first published contract is ``1``; each
 #: release that adds (or, before 1.0.0, changes) contract elements raises it by
 #: one, so a client can gate on it as well as on :func:`capabilities`.
-CONTRACT_VERSION: int = 12
+CONTRACT_VERSION: int = 13
 
 #: Schema name of the :func:`capabilities` payload.
 CAPABILITIES_SCHEMA = "ftmw/capabilities@1"
@@ -147,7 +148,11 @@ SCHEMA_NAME_RE = re.compile(r"^ftmw/[a-z][a-z0-9_]*@[1-9][0-9]*$")
 class WindowStatusRow:
     """One row of :func:`~ftmwpipeline.api.window_status`.
 
-    A Stage 4 plan window, or a window Stage 6 created (``created``). A window
+    A window of the plan the fit was made on, or a window Stage 6 created
+    (``created``). Before a complete Stage 5 fit, and for a fit no structural
+    merge revised, the plan is the Stage 4 plan; after a merge the survivor's
+    row carries the merged range and ``merged_from`` names the ids it absorbed
+    (``[]`` for every other row), and no row carries an absorbed id. A window
     is ``live`` when the Stage 5 fit holds at least one fitted line in it.
     Before Stage 5, ``n_fitted_peaks`` and ``live`` are :attr:`Absent.NOT_RUN`.
     """
@@ -158,6 +163,7 @@ class WindowStatusRow:
     created: bool
     n_fitted_peaks: Union[int, Absent]
     live: Union[bool, Absent]
+    merged_from: List[int] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -842,6 +848,7 @@ _TABLES: Dict[str, Tuple[str, ...]] = {
         "n_fitted_peaks__status",
         "live",
         "live__status",
+        "merged_from",
     ),
 }
 
@@ -880,6 +887,15 @@ _FIELDS: Dict[str, Tuple[str, ...]] = {
         "fwhm_mhz",
         "detection_index",
         "fit_window_mhz",
+    ),
+    "WindowStatusRow": (
+        "window_id",
+        "freq_min_mhz",
+        "freq_max_mhz",
+        "created",
+        "n_fitted_peaks",
+        "live",
+        "merged_from",
     ),
     "DecisionLogEntry": (
         "order_index",

@@ -457,9 +457,9 @@ window's bounds. On the wire a pair is a two-element array.
 
 ### Window status
 
-`window_status(path)` → one row per Stage 4 plan window and per created
-window: `window_id`, `freq_min_mhz`, `freq_max_mhz`, `created` (bool),
-`n_fitted_peaks`, and `live` (bool). A window is **live** when the Stage 5 fit
+`window_status(path)` → one row per window of the fitted plan (below) and per
+created window: `window_id`, `freq_min_mhz`, `freq_max_mhz`, `created` (bool),
+`n_fitted_peaks`, `live` (bool), and `merged_from` (list of int). A window is **live** when the Stage 5 fit
 holds at least one fitted line in it. Before Stage 5, `n_fitted_peaks` and
 `live` are `Absent.NOT_RUN`. While Stage 5 is `partial` (after a cancel), a
 window the fit has not reached reports both as `Absent.NOT_RUN`, never 0. Also available as a `read_table` table.
@@ -475,6 +475,12 @@ neighbour:
 
 Before a complete fit, while Stage 5 is `partial` included, rows follow the
 Stage 4 plan.
+
+A fit made before fits stored their plan does not hold a merged window's
+geometry. Its rows follow the merges its replan record names, and a Stage 6 call
+that would refit those windows, or create one inside a merged range, is refused
+(`curation_conflict`, reason `fit_plan_unavailable`) rather than run on geometry
+the fit was not made on.
 
 ### Source preview
 

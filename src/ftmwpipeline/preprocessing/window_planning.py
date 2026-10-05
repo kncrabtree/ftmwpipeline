@@ -1134,11 +1134,12 @@ def _apply_merge(
     # _finalize_plan overwrites the per-window fields it manages.
     base_diag = dict(by_id[survivor_id].diagnostics)
     base_diag["grid_span"] = [new_lo_idx, new_hi_idx]
-    merged_from = sorted({a.window_id, b.window_id})
-    prior = base_diag.get("merged_from")
-    if prior:
-        merged_from = sorted(set(prior) | set(merged_from))
-    base_diag["merged_from"] = merged_from
+    # Every id either side already absorbed carries over, so a chain of merges
+    # across rounds (100 absorbs 101, then 99 absorbs 100) still names 101.
+    merged_ids = {int(a.window_id), int(b.window_id)}
+    for w in (a, b):
+        merged_ids.update(int(i) for i in w.diagnostics.get("merged_from") or ())
+    base_diag["merged_from"] = sorted(merged_ids)
     if req.reason:
         base_diag["merge_reason"] = req.reason
 
@@ -1159,6 +1160,48 @@ def _apply_merge(
         else:
             out.append(w)
     return out
+
+
+def merged_window_ids(plan: WindowPlan) -> Dict[int, List[int]]:
+    """The ids a structural merge folded into each window of *plan*.
+
+    ``{survivor_id: [absorbed ids, ascending]}`` for every window whose
+    ``diagnostics["merged_from"]`` (written by :func:`replan`) names an id
+    other than its own; a window no merge touched is not a key.
+    """
+    out: Dict[int, List[int]] = {}
+    for w in plan.windows:
+        wid = int(w.window_id)
+        folded = sorted(
+            {int(i) for i in w.diagnostics.get("merged_from") or ()} - {wid}
+        )
+        if folded:
+            out[wid] = folded
+    return out
+
+
+def retired_window_ids(plan: WindowPlan) -> Set[int]:
+    """Window ids a structural merge absorbed: gone from *plan*, never reusable.
+
+    A Stage 6 create mints above these as well as above every window in the
+    plan, so an absorbed id never names a different window later.
+    """
+    present = {int(w.window_id) for w in plan.windows}
+    retired: Set[int] = set()
+    for folded in merged_window_ids(plan).values():
+        retired.update(folded)
+    return retired - present
+
+
+def next_window_id(plan: WindowPlan, reserved: Iterable[int] = ()) -> int:
+    """The id a new window takes: one above every id *plan* holds or retired.
+
+    *reserved* adds ids the caller knows are taken or retired elsewhere.
+    """
+    ids = {int(w.window_id) for w in plan.windows}
+    ids |= retired_window_ids(plan)
+    ids |= {int(i) for i in reserved}
+    return max(ids, default=-1) + 1
 
 
 @dataclass(frozen=True)
@@ -1620,6 +1663,7 @@ def plan_stage6_window(
     magnitude_attachment_threshold: float = DEFAULT_MAGNITUDE_ATTACHMENT_THRESHOLD,
     stage6_min_half_width_points: int = DEFAULT_STAGE6_MIN_WINDOW_HALF_WIDTH_POINTS,
     live_window_ids: Optional[Sequence[int]] = None,
+    reserved_window_ids: Iterable[int] = (),
 ) -> Stage6WindowProposal:
     """Propose a fit window covering ``anchor_mhz`` without disturbing the plan.
 
@@ -1690,6 +1734,10 @@ def plan_stage6_window(
         either. Passing the ids keeps both decisions honest. ``None`` (the
         default) treats every plan window as live, which is the right reading
         for a caller reasoning about the plan alone.
+    reserved_window_ids :
+        Ids a fresh window must not take besides those of ``plan`` and the ids
+        its merged windows absorbed (:func:`retired_window_ids`), which are
+        always excluded. A created window takes one above all of them.
 
     Returns
     -------
@@ -1812,7 +1860,8 @@ def plan_stage6_window(
         )
 
     # --- Build the new window ----------------------------------------------
-    new_wid = max(int(w.window_id) for w in plan.windows) + 1
+    # Above every window of the plan and every id a structural merge retired.
+    new_wid = next_window_id(plan, reserved_window_ids)
     promoted = _promoted_ppeaks(peaks, ofreqs, n)
     members = [pk for pk in promoted if lo <= pk.grid_index <= hi]
 

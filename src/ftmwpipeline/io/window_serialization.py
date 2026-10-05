@@ -34,7 +34,7 @@ silently dropping or guessing.
 """
 
 import json
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import h5py
 import numpy as np
@@ -66,6 +66,11 @@ __all__ = [
     "read_window_free_peak_columns",
     "read_window_contributor_columns",
     "read_window_plan_scalars",
+    "FITTED_PLAN_GROUP",
+    "save_fitted_plan_to_hdf5",
+    "fitted_plan_present",
+    "load_fitted_plan_from_hdf5",
+    "read_fitted_plan_bounds",
 ]
 
 _FIXED_COLUMNS = (
@@ -589,3 +594,90 @@ def read_window_plan_scalars(h5_group: h5py.Group) -> Dict[str, Any]:
         "n_dependency_edges": None if edges is None else len(edges),
         "creation_time": optional_str_attr(h5_group, "creation_time"),
     }
+
+
+# ---------------------------------------------------------------------------
+# The fitted plan: the window plan a Stage 5 fit was made on
+# ---------------------------------------------------------------------------
+#
+# A Stage 5 structural replan can merge a window into its neighbour, so the
+# plan the fit converged on can differ from ``/stage4_windows``. When it does
+# (``final_plan_revision > 0``) the fit's write stores that plan, in the same
+# flat layout as the Stage 4 plan, as a child of the fit group::
+#
+#     /stage5_fitting/fitted_plan/
+#         .attrs:  (the Stage 4 plan attrs, with stage_name
+#                  "stage5_fitted_plan"), plus
+#             plan_revision       -- equal to the fit's final_plan_revision
+#             merged_from  (JSON) -- [[survivor_id, [absorbed ids]], ...]
+#         windows/ free_peaks/ contributors/   (as in /stage4_windows)
+#
+# A fit whose plan was never revised stores no child: its plan is the Stage 4
+# plan. Living inside the fit group, the plan is copied with it by the Stage 6
+# undo baseline and dropped with it by a re-fit; a Stage 6 write updates the
+# fit's tables in place and never touches it.
+
+#: Child of ``/stage5_fitting`` holding the plan a revised fit was made on.
+FITTED_PLAN_GROUP = "fitted_plan"
+
+
+def save_fitted_plan_to_hdf5(plan: WindowPlan, fit_group: h5py.Group) -> None:
+    """Store *plan* as the fitted plan of the fit in *fit_group*.
+
+    Replaces any fitted plan already there. Records the plan's revision and,
+    per merged window, the ids it absorbed (``merged_from``).
+    """
+    from ..preprocessing.window_planning import merged_window_ids
+
+    if FITTED_PLAN_GROUP in fit_group:
+        del fit_group[FITTED_PLAN_GROUP]
+    group = fit_group.create_group(FITTED_PLAN_GROUP)
+    save_window_plan_to_hdf5(plan, group)
+    group.attrs["stage_name"] = "stage5_fitted_plan"
+    group.attrs["plan_revision"] = int(plan.plan_revision)
+    group.attrs["merged_from"] = json.dumps(
+        [[wid, folded] for wid, folded in sorted(merged_window_ids(plan).items())]
+    )
+
+
+def fitted_plan_present(fit_group: h5py.Group) -> bool:
+    """Whether *fit_group* stores the plan its fit was made on."""
+    return FITTED_PLAN_GROUP in fit_group
+
+
+def load_fitted_plan_from_hdf5(fit_group: h5py.Group) -> Optional[WindowPlan]:
+    """The plan stored with the fit in *fit_group*, or ``None`` if none is.
+
+    ``None`` means the fit stored no revised plan (see the layout note above);
+    the caller decides whether that is the Stage 4 plan or a fit predating this
+    record. Its ``plan_revision`` is the stored one.
+    """
+    if FITTED_PLAN_GROUP not in fit_group:
+        return None
+    group = fit_group[FITTED_PLAN_GROUP]
+    plan = load_window_plan_from_hdf5(group)
+    plan.plan_revision = int(group.attrs.get("plan_revision", 0))
+    return plan
+
+
+def read_fitted_plan_bounds(
+    fit_group: h5py.Group,
+) -> Optional[Tuple[Dict[int, Tuple[float, float]], Dict[int, List[int]]]]:
+    """The stored fitted plan's window bounds and merges, cheaply.
+
+    ``({window_id: (freq_min, freq_max)}, {survivor_id: [absorbed ids]})``, read
+    from three columns and one attribute; ``None`` when the fit stores no plan.
+    """
+    if FITTED_PLAN_GROUP not in fit_group:
+        return None
+    group = fit_group[FITTED_PLAN_GROUP]
+    columns = read_window_plan_columns(group, ["window_id", "freq_min", "freq_max"])
+    bounds = {
+        int(wid): (float(lo), float(hi))
+        for wid, lo, hi in zip(
+            columns["window_id"], columns["freq_min"], columns["freq_max"]
+        )
+    }
+    raw = load_json_attr(group, "merged_from", [], label="stage5_fitted_plan")
+    merged = {int(wid): [int(i) for i in folded] for wid, folded in raw}
+    return bounds, merged

@@ -1542,8 +1542,10 @@ class WindowPlan:
         :func:`~ftmwpipeline.preprocessing.window_planning.replan` applies a
         structural change. ``0`` is the initial plan from
         :func:`~ftmwpipeline.preprocessing.window_planning.build_window_plan`.
-        It tracks the live plan during Stage 5's structural-replan handshake; it
-        is not persisted (a freshly built plan is always revision 0).
+        It tracks the live plan during Stage 5's structural-replan handshake. A
+        freshly built plan is always revision 0; a Stage 5 fit whose plan a
+        merge revised stores that plan with its revision
+        (``/stage5_fitting/fitted_plan``).
     """
 
     windows: List[FitWindow] = field(default_factory=list)

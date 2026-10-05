@@ -317,6 +317,24 @@ residual leakage, and if so it renegotiates rather than shipping an under-fit wi
   A ``not merged``, ``refused`` or ``failed`` verdict holds until one of the two
   windows changes, so it is recorded once, not every round.
 
+  A merge leaves the fit on windows Stage 4 did not plan. The survivor keeps the
+  lower id and the merged range; the absorbed id is no longer a window. The fit
+  therefore stores the plan it was made on (``final_plan_revision`` above 0) in the
+  same write as its lines. From then on everything that reads window geometry reads
+  that plan: ``window_status`` (whose merged row names the absorbed ids in
+  ``merged_from``), the window model, and every window :doc:`Stage 6
+  <stage6_review>` resolves, edits or refits. A window Stage 6 creates never takes
+  an absorbed id. A fit no merge revised stores nothing extra; its plan is the
+  Stage 4 plan.
+
+  A fit made before the plan was stored, in which a merge was applied, does not
+  hold the merged windows' geometry. Its ``window_status`` reports the recorded
+  merge (a merge's range is the union of its windows'), but Stage 6 refuses to
+  refit the merged windows, or the windows that read their lines as fixed
+  contributors, with ``curation_conflict`` (reason ``fit_plan_unavailable``). It
+  also refuses to create a window inside a merged range. Re-run ``fit run`` to
+  curate them.
+
 A window edge whose coherence statistic is undefined (an empty residual, or a band
 with no positive noise) is stored as ``nan`` and never triggers either: the gates
 read it as no coherence to flag, exactly as when it was stored as ``0.0``, and a

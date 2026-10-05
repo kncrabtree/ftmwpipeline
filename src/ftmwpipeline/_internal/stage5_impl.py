@@ -111,6 +111,7 @@ from ..io.stage_fit_settings_serialization import (
 )
 from ..io.timebase_serialization import GROUP_PATH as TIMEBASE_GROUP_PATH
 from ..io.timebase_serialization import load_timebase_calibration_from_hdf5
+from ..io.window_serialization import save_fitted_plan_to_hdf5
 from ..preprocessing.peak_detection import DEFAULT_MIN_SNR as DEFAULT_PROMOTION_MIN_SNR
 from .active_ft_support import (
     build_active_grid_with_noise,
@@ -2912,7 +2913,10 @@ def _fit_peaks_impl(
         events.check_cancel()
     except OperationCancelledError as exc:
         raise _interrupted(exc)
-    save_spectrum_fit_impl(file_path, spectrum_fit)
+    # The plan the fit was made on goes in the same write: a structural merge
+    # leaves it differing from /stage4_windows, and Stage 6 must edit and refit
+    # the windows the fit has, not the ones Stage 4 planned.
+    save_spectrum_fit_impl(file_path, spectrum_fit, fitted_plan=final_plan)
     # The fit supersedes the partial fit it resumed (or discarded).
     with h5open(file_path, "a") as h5f:
         delete_stage5_partial(h5f)
@@ -2971,8 +2975,16 @@ def _fit_peaks_impl(
     }
 
 
-def save_spectrum_fit_impl(file_path: str, fit: SpectrumFit) -> None:
-    """Persist a :class:`SpectrumFit` to ``/stage5_fitting`` (overwriting)."""
+def save_spectrum_fit_impl(
+    file_path: str, fit: SpectrumFit, fitted_plan: Optional[WindowPlan] = None
+) -> None:
+    """Persist a :class:`SpectrumFit` to ``/stage5_fitting`` (overwriting).
+
+    ``fitted_plan`` is the window plan the fit was made on. When a structural
+    replan revised it (``plan_revision > 0``) it is stored with the fit
+    (``/stage5_fitting/fitted_plan``); an unrevised plan is the Stage 4 plan
+    and is not stored again.
+    """
     # The line-shape choice (lorentzian / gaussian) lives in
     # ``fit.parameters['shape']`` from the fit driver; mirror it onto the
     # group attrs so consumers can branch on shape without having to load
@@ -2984,6 +2996,8 @@ def save_spectrum_fit_impl(file_path: str, fit: SpectrumFit) -> None:
         grp = h5f.create_group("stage5_fitting")
         save_spectrum_fit_to_hdf5(fit, grp)
         grp.attrs["shape"] = shape_attr
+        if fitted_plan is not None and fitted_plan.plan_revision > 0:
+            save_fitted_plan_to_hdf5(fitted_plan, grp)
     logger.info(
         "Saved Stage 5 fit (%d windows, %d peaks, shape=%s) to %s",
         fit.n_windows,

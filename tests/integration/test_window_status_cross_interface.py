@@ -33,6 +33,7 @@ COLUMNS = (
     "n_fitted_peaks__status",
     "live",
     "live__status",
+    "merged_from",
 )
 
 

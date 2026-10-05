@@ -37,7 +37,10 @@ from ftmwpipeline.core.data_structures import (
 )
 from ftmwpipeline.file_manager import PipelineFileNotFoundError, StageDependencyError
 from ftmwpipeline.io.fitting_serialization import save_spectrum_fit_to_hdf5
-from ftmwpipeline.io.window_serialization import save_window_plan_to_hdf5
+from ftmwpipeline.io.window_serialization import (
+    save_fitted_plan_to_hdf5,
+    save_window_plan_to_hdf5,
+)
 from ftmwpipeline.serialize import to_jsonable
 
 NOT_RUN = Absent.NOT_RUN.status
@@ -51,6 +54,7 @@ COLUMNS = (
     "n_fitted_peaks__status",
     "live",
     "live__status",
+    "merged_from",
 )
 
 ROW_FIELDS = (
@@ -60,6 +64,7 @@ ROW_FIELDS = (
     "created",
     "n_fitted_peaks",
     "live",
+    "merged_from",
 )
 
 # Plan windows deliberately NOT in id order or frequency order of id.
@@ -195,6 +200,7 @@ def test_row_field_types(fitted):
         assert isinstance(w.created, bool)
         assert isinstance(w.n_fitted_peaks, int)
         assert isinstance(w.live, bool)
+        assert w.merged_from == []
 
 
 def test_table_dtypes(fitted):
@@ -207,6 +213,8 @@ def test_table_dtypes(fitted):
     assert table["live"].dtype == np.bool_
     assert table["n_fitted_peaks__status"].dtype == np.uint8
     assert table["live__status"].dtype == np.uint8
+    assert table["merged_from"].dtype == object
+    assert list(table["merged_from"]) == ["[]"] * len(table["window_id"])
 
 
 def test_table_columns_are_equal_length(plan_only):
@@ -361,6 +369,81 @@ def test_created_window_with_fitted_lines_is_live(tmp_path):
     row = {w.window_id: w for w in window_status_impl(path)["windows"]}[7]
     assert row.created and row.live
     assert row.n_fitted_peaks == 3
+
+
+# ---- after a structural merge -----------------------------------------------
+#
+# Stage 5 folded window 2 into window 1: the survivor keeps the lower id and the
+# merged range, and the absorbed id is no longer a window (CONTRACT_STRATEGY
+# §Window status, "Windows after a structural merge").
+
+_MERGED = [(0, 100.0, 110.0, []), (1, 120.0, 150.0, [2])]
+
+
+def _mark_revised(path, replan_history=None):
+    with h5py.File(path, "a") as h5f:
+        fit = h5f["stage5_fitting"]
+        fit.attrs["final_plan_revision"] = 1
+        if replan_history is not None:
+            fit.attrs["replan_history"] = json.dumps(replan_history)
+
+
+def test_a_merged_fit_reports_the_plan_it_was_made_on(tmp_path):
+    path = _build(tmp_path / "m.ftmw", fit={0: 2, 1: 3})
+    _mark_revised(path)
+    fitted_plan = WindowPlan(
+        windows=[
+            FitWindow(window_id=0, freq_range=(100.0, 110.0)),
+            FitWindow(
+                window_id=1,
+                freq_range=(120.0, 150.0),
+                diagnostics={"merged_from": [1, 2]},
+            ),
+        ],
+        topological_order=[0, 1],
+        plan_revision=1,
+    )
+    with h5py.File(path, "a") as h5f:
+        save_fitted_plan_to_hdf5(fitted_plan, h5f["stage5_fitting"])
+    rows = window_status_impl(path)["windows"]
+    assert [
+        (w.window_id, w.freq_min_mhz, w.freq_max_mhz, w.merged_from) for w in rows
+    ] == _MERGED
+    assert [w.n_fitted_peaks for w in rows] == [2, 3]
+    table = read_table_impl(path, "window_status")
+    assert list(table["merged_from"]) == ["[]", "[2]"]
+    assert to_jsonable(window_status_impl(path))["windows"][1]["merged_from"] == [2]
+
+
+def test_a_merged_fit_without_its_stored_plan_reports_the_recorded_merge(
+    tmp_path,
+):
+    """A fit from before the plan was stored: the accepted replan record names
+    the merge, and a merge's range is the union of its windows'."""
+    path = _build(tmp_path / "legacy.ftmw", fit={0: 2, 1: 3})
+    record = {
+        "triggering_window_id": 2,
+        "partner_window_id": 1,
+        "surviving_window_id": 1,
+        "edge_side": "low",
+        "edge_coherence_before": 9.0,
+        "revision_before": 0,
+        "revision_after": 1,
+        "accepted": True,
+        "reason": "",
+    }
+    refused = dict(record, accepted=False, triggering_window_id=0, revision_after=0)
+    _mark_revised(path, [refused, record])
+    rows = window_status_impl(path)["windows"]
+    assert [
+        (w.window_id, w.freq_min_mhz, w.freq_max_mhz, w.merged_from) for w in rows
+    ] == _MERGED
+
+
+def test_an_unrevised_fit_reports_the_stage4_plan(fitted):
+    rows = window_status_impl(fitted)["windows"]
+    assert [(w.window_id, w.freq_min_mhz, w.freq_max_mhz) for w in rows] == PLAN
+    assert all(w.merged_from == [] for w in rows)
 
 
 # ---- read_table form --------------------------------------------------------

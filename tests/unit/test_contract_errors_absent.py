@@ -95,8 +95,9 @@ def test_contract_version_is_twelve():
     # to 6; Wave 7 to 7; Wave 8 (full capabilities) to 8; Wave 5.1 (events and
     # cancellation) to 9; Wave 5.1b (atomic writes, write_conflict) to 10;
     # Wave 5.2 (Stage 5 partial fits, restart_reason) to 11; the cleanup wave
-    # (curation_conflict, ComplexFT.invalidated, degenerate statistics) to 12.
-    assert CONTRACT_VERSION == 12
+    # (curation_conflict, ComplexFT.invalidated, degenerate statistics) to 12;
+    # windows after a structural merge (merged_from, fit_plan_unavailable) to 13.
+    assert CONTRACT_VERSION == 13
 
 
 # ---- stage vocabulary -----------------------------------------------------

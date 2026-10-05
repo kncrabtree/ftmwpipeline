@@ -34,6 +34,10 @@ HDF5 layout (under the caller-provided group, e.g. ``/stage5_fitting``)::
         thaw_history     (JSON)  -- plan-level chronological thaw events
         replan_history   (JSON)  -- plan-level structural replans
         rescue_history   (JSON)  -- plan-level chronological rescue rounds
+    fitted_plan/     -- only when final_plan_revision > 0: the window plan the
+                        fit was made on (see window_serialization's fitted-plan
+                        note); written by Stage 5, never touched by a Stage 6
+                        write
     windows/
         window_0000/
             .attrs:
