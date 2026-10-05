@@ -39,10 +39,10 @@ The contract version
 ``__version__``::
 
     import ftmwpipeline
-    if ftmwpipeline.CONTRACT_VERSION < 14:
+    if ftmwpipeline.CONTRACT_VERSION < 15:
         raise RuntimeError("needs a newer ftmwpipeline")
 
-The first published contract is version ``1``; this release is version ``14``.
+The first published contract is version ``1``; this release is version ``15``.
 An addition (a new accessor, field or code) raises the version by one and never
 breaks an existing field. Every machine-readable payload also carries a
 **schema name** of the form ``ftmw/<payload>@<n>``; a schema name never changes
@@ -206,10 +206,15 @@ The status calls use the same vocabulary, in re-run order: the
 ``Pipeline.validate`` report, and ``read_metadata``'s
 ``file.completed_stages``. The report's ``stage_environments`` keys, the stage
 names inside its drift lines and its "Missing data for completed stage" errors
-are canonical too; an environment key that is not a known stage's storage key
-(``stage2b_shape_recommendation``) is kept as the file recorded it, and a
-completed-stage key no stage of this version owns is left out of the canonical
-lists.
+are canonical too, and so is every other published environment surface: the
+``environment_drift`` event message, the report table's ``environment_mixed``
+row, the HTML report's environment table and the re-run drift log. The one
+environment key that is not a stage is the Stage 2b shape recommendation's
+entry, published as ``tau_shape`` (it is stored under
+``processing_parameters/stage2b_shape_recommendation``, which does not change).
+An environment key that is neither a known stage's storage key nor that one is
+kept as the file recorded it, and a completed-stage key no stage of this
+version owns is left out of the canonical lists.
 
 **Re-run order** is the topological order of the stage dependencies with ties
 broken by the order of ``Stage`` (the order listed above). Every list of stages
@@ -227,6 +232,11 @@ Each spelling of a stage has one read-only mapping in
   ``stage0`` (the start-detection knobs). ``tau`` and ``tau_g`` share
   ``stage2b``: the twins run one STFT classifier recipe, so its knobs feed
   both. ``None`` for ``timebase`` and ``review``.
+
+``PROVENANCE_NAMES`` maps the one provenance key that is not a stage's storage
+key to its published name (``stage2b_shape_recommendation`` to ``tau_shape``),
+and ``canonical_provenance_name(key)`` names any per-stage provenance key: the
+canonical stage name, ``tau_shape``, or the key unchanged when it is neither.
 
 ``stage_for_key`` / ``key_for_stage`` are the one-to-one inverse; the settings
 and knob mappings are not one-to-one and have none.
@@ -715,10 +725,10 @@ with its ``"<field>_absent"`` sibling.
    * - ``run``
      - ``null``
      - run_result: ``status``, ``pipeline_file``, ``n_completed_stages``,
-       ``completed_stages`` (one comma-separated string of canonical names,
-       with ``start detection`` and ``report`` as written),
-       ``failed_stage``, ``error_code`` and ``error`` (the failure's code and
-       message), ``timebase``, ``elapsed_s``, ``report_table``,
+       ``completed_stages`` (one comma-separated string of canonical names),
+       ``failed_stage`` (null for a step that is not a stage), ``failed_step``
+       (the failing step's progress label, null on success), ``error_code`` and
+       ``error`` (the failure's code and message), ``timebase``, ``elapsed_s``, ``report_table``,
        ``report_html``. A failed run still prints its envelope, with
        ``status`` ``"error"``, writes the failure's ``ftmw/error@1`` dict to
        stderr and exits 1
@@ -1001,7 +1011,12 @@ Each, with its absence cases:
   ``user``. ``evidence`` is a free-form snapshot dict and keeps its floats in
   Python: a non-finite ``chi2r_before`` / ``chi2r_after`` (no degrees of
   freedom, a fit that did not converge) stays ``inf`` there and is written as
-  ``null`` with ``"<key>_absent": "undefined"`` on the wire.
+  ``null`` with ``"<key>_absent": "undefined"`` on the wire. Every row also
+  carries ``action_index`` in ``evidence``: the ``order_index`` of the first row
+  of the same user action (a one-row action, a bare accept included, carries its
+  own ``order_index``; a bare accept's evidence is no longer ``{}``). Rows with
+  the same ``action_index`` were applied as one joint refit. Files written before
+  the key existed have none; ``review_undo`` infers their groups (see below).
 * ``get_pipeline_info`` -- the status dict. ``warnings`` is always present (an
   empty list when there are none). The environment fields hold ``Absent``
   rather than ``None`` / ``{}`` / ``[]``:
@@ -1037,7 +1052,10 @@ Each, with its absence cases:
   ``chi2r_before`` / ``chi2r_after`` are *not run* on a side with no fit (a
   window the batch created has no "before") and *undefined* when the fit's
   value is not finite; ``converged`` is *not run* exactly where
-  ``chi2r_after`` is (``RefitWindowResult.converged`` is always a bool); the
+  ``chi2r_after`` is, and *undefined* for a window left with no peak (created
+  empty, or every peak removed): no solver ran, so there is no convergence
+  outcome (the wire form is ``null`` with ``"converged_absent": "undefined"``,
+  and no non-convergence warning is raised); the
   five ``created_window_*`` fields are all *not run* on a window the batch did
   not create or widen (an empty ``created_window_depends_on`` list is a
   present value).
@@ -1569,6 +1587,18 @@ it restores the automatic fit; once the restore has begun, the replay
 completes. A stage that has begun its final write completes, and the cancel is
 honoured at the next check point.
 
+The replay of ``review_undo`` (and of an apply with ``log_prefix``) goes one user
+action at a time, not one decision at a time: the surviving rows of one action
+group (the rows sharing an ``action_index`` in the ``review_log`` evidence)
+replay together as one joint refit, so undoing part of a group replays the rest
+jointly, and a ``log_prefix`` that cuts through a group replays the in-prefix
+rows jointly. A row without the key (a file written before it existed) is
+grouped with the row before it when both are ``add``/``remove`` rows on the
+same window with identical non-empty evidence and no ``created_window``. The
+dry-run plan lists one edit per group. Replaying each row as its own refit
+let a later undo fail after a multi-line edit, because the separate refits
+drifted the fitted peaks beyond snap tolerance of the line a later remove named.
+
 A Python client that shows progress, stops on request and routes on
 ``cancelled`` and ``callback_failed``::
 
@@ -1604,11 +1634,14 @@ had finished are on the error (``completed_stages``, canonical names), not in a
 result dict. Any other failure is a result with ``status == "error"`` whose
 ``error`` is the failure's ``ftmw/error@1`` dict (a failure that is not a typed
 error is reported under ``pipeline_error``) and whose ``failed_stage`` is the
-canonical name of the step that failed (``"start detection"`` or ``"report"``
-for those two steps, which are not stages). The result's own
-``completed_stages`` lists the run's step labels (``"import"``, ``"start
-detection"``, ``"FT"``, ``"timebase"``, ``"noise"``, ``"calibrate tau"``,
-``"peaks"``, ...), not canonical names::
+canonical stage of the step that failed (``None`` for start detection and the
+report, which are steps, not stages; ``"tau_g"`` for a failing Gaussian tau
+step). The new additive ``failed_step`` is the progress label of the failing
+step (``"import"``, ``"start detection"``, ``"FT"``, ..., ``"report"``), ``None``
+on success. The result's own ``completed_stages`` is the canonical stages
+written, in order and each once, the same list a cancel's ``err.completed_stages``
+holds; start detection and the report add nothing, and a Gaussian tau run lists
+``"tau_g"`` (``"tau"`` only if a twin was built)::
 
    try:
        result = ftmw.run_pipeline(src, "exp.ftmw", trim=(26500, 40000),

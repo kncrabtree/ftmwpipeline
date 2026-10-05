@@ -295,14 +295,26 @@ the ``.ftmw`` reproduces the curated analysis with no side channel. Each entry i
 **anchored** to a window identity and a molecular frequency, and records its kind, its
 ``user`` provenance, and an evidence snapshot (the window's reduced :math:`\chi^2` and
 peak count before and after, and for an inferred split or merge the frequency that was
-requested). A coalesced edit logs one entry per add or remove it carried. ``review
-log`` lists the history.
+requested). A coalesced edit logs one entry per add or remove it carried; every entry
+also carries ``action_index`` in its evidence, the ``order_index`` of the first entry
+the same user action recorded (an action that logged one entry, a bare accept
+included, carries its own ``order_index``). The entries sharing an ``action_index`` are
+one **action group**. ``review log`` lists the history.
 
 ``review undo --id N`` reverts the decisions it names, any of them, not only the most
 recent. The first fit-changing edit snapshots the automatic fit inside the file (the
 **undo baseline**); an undo restores that baseline and replays every surviving
-decision onto it, in log order, so the decision ids are renumbered afterwards.
-``--dry-run`` prints what would be undone and the replay plan without writing. An undo
+decision onto it, in log order, so the decision ids are renumbered afterwards. The
+replay goes one user action at a time: a group's surviving entries replay together as
+one action (one joint refit), exactly as the edit first applied them, so undoing part
+of a group replays the rest of it jointly. (Replaying each entry as its own refit made
+a later undo fail after a multi-line edit: the separate refits drifted the fitted
+peaks, and a later remove no longer snapped to the peak it named.) A file written
+before ``action_index`` existed carries no key; its groups are inferred: consecutive
+``add``/``remove`` entries on one window with the same non-empty evidence and no
+``created_window``.
+``--dry-run`` prints what would be undone and the replay plan, one edit per action
+group, without writing. An undo
 that would drop a created window surviving decisions still act on is refused
 (``curation_conflict``, ``orphans_created_window``), as is an id the log does not hold
 (``not_found``, kind ``decision``).
@@ -310,8 +322,9 @@ that would drop a created window surviving decisions still act on is refused
 A client that keeps its own position in the log (an editor whose undo steps back
 through the decisions without re-fitting) aligns the file on its next real edit with
 ``review apply --log-prefix N`` (``log_prefix=N`` on the API): the decisions after
-the first ``N`` are dropped and the kept ones are replayed together with the new batch
-as one replay -- the same outcome as an undo of the dropped ids followed by an apply,
+the first ``N`` are dropped and the kept ones are replayed (one action group at a time;
+a prefix that cuts through a group replays that group's in-prefix entries jointly)
+together with the new batch as one replay -- the same outcome as an undo of the dropped ids followed by an apply,
 one cascade and one persist instead of two. The batch's frequencies and omitted window
 ids resolve against the state the kept decisions leave, never the file as it stood.
 

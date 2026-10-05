@@ -64,13 +64,19 @@ The Python calls return a result dict:
 * ``source`` and ``pipeline_file`` -- the source given and the ``.ftmw``
   written;
 * ``status`` -- ``"success"`` or ``"error"``;
-* ``completed_stages`` -- the steps that finished, in order, by their progress
-  labels (``"import"``, ``"start detection"``, ``"FT"``, ``"timebase"``,
-  ``"noise"``, ``"calibrate tau"``, ``"peaks"``, ``"windows"``, ``"fit"``,
-  ``"review"``, ``"report"``);
-* ``failed_stage`` -- the canonical stage name of the step that failed
-  (``"ft"``, ``"tau"``, ...; ``"start detection"`` or ``"report"`` for those
-  two steps, which are not stages), else ``None``;
+* ``completed_stages`` -- the canonical stages written, in order, each once
+  (``"data"``, ``"ft"``, ``"noise"``, ``"tau"`` or ``"tau_g"``, ``"peaks"``,
+  ...): the list a cancel's ``completed_stages`` holds. Start detection and the
+  report are steps, not stages, and add nothing. A run with ``--tau-shape
+  gaussian`` lists ``"tau_g"`` (and ``"tau"`` only if a twin was built);
+* ``failed_stage`` -- the canonical stage of the step that failed (``"ft"``,
+  ``"tau"``, ``"tau_g"`` for a failing Gaussian tau step, ...), else ``None``:
+  also ``None`` when the failing step is start detection or the report, which
+  are not stages;
+* ``failed_step`` -- the progress label of the step that failed (``"import"``,
+  ``"start detection"``, ``"FT"``, ``"timebase"``, ``"noise"``,
+  ``"calibrate tau"``, ``"peaks"``, ``"windows"``, ``"fit"``, ``"review"``,
+  ``"report"``), else ``None``;
 * ``error`` -- the failure as an ``ftmw/error@1`` dict (``code``,
   ``message`` and the code's fields; a failure that is not a typed error has
   code ``pipeline_error``), else ``None``;
@@ -79,14 +85,14 @@ The Python calls return a result dict:
 * ``elapsed_s``.
 
 A failing build stops at the first step that raises; ``completed_stages`` names
-everything that finished before it. A cancel, or an ``events`` callback that
+every stage that finished before it. A cancel, or an ``events`` callback that
 raises, is not folded into the result: it raises ``OperationCancelledError``
 (or ``CallbackFailedError``), whose ``completed_stages`` holds the canonical
 names (``"data"``, ``"ft"``, ``"noise"``, ...) of the stages written. See
 :ref:`machine-contract-events`.
 
 At the command line ``run`` prints a one-line summary, and on failure the
-failing stage, the error's message and code, and the completed steps, then
+failing step, the error's message and code, and the completed stages, then
 exits 1. Under ``--json`` it prints the ``ftmw/run_result@1`` envelope (and
 the error's ``ftmw/error@1`` dict on stderr); its fields are listed in
 :ref:`machine-contract-cli-json`. ``--events`` writes each progress event to

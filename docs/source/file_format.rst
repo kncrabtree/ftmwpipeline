@@ -248,8 +248,9 @@ is stamped too, although it persists no computed artifact (the FT is recomputed
 on demand from the persisted settings): its epoch says which definition of the
 FT the persisted settings were chosen under. The Stage 2b shape recommendation,
 which is not a tracked stage but feeds later ones, records its own entry
-(reported under its storage name, ``stage2b_shape_recommendation``; every
-other entry is reported under its canonical stage name), and rebuilding the
+(stored as ``processing_parameters/stage2b_shape_recommendation``, and published
+as ``tau_shape``; every other entry is published under its canonical stage
+name), and rebuilding the
 Stage 6 final-products table under a new calibration or accuracy floor
 re-stamps ``review``.
 

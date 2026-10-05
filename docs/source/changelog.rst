@@ -16,6 +16,54 @@ Accumulating toward ``1.0.0``. ``0.1.0b4`` is the last published release;
 everything below is reachable only from a source checkout. No further beta is
 planned — these entries fold into the ``1.0.0`` section when it is dated.
 
+**Decision-log action groups, empty-window ``converged``, canonical ``run_pipeline`` and
+provenance names; ``CONTRACT_VERSION`` moves 14 → 15.** Four changes from the
+documentation audit; the contract additions are all additive.
+
+* **Undo and log-prefix replay go one user action at a time.** Every decision-log
+  row now carries ``evidence["action_index"]``: the ``order_index`` of the first
+  row of the same user action (a single-row action, a bare accept included,
+  carries its own; a bare accept's evidence is no longer ``{}``). ``review undo``
+  and ``review apply --log-prefix`` replay a group's surviving rows jointly as
+  one action, one joint refit, so undoing part of a group replays the rest
+  jointly, and a log prefix that cuts through a group replays the in-prefix rows
+  jointly. A file written before the key existed carries none; its groups are
+  inferred (consecutive ``add``/``remove`` rows on one window with identical
+  non-empty evidence and no ``created_window``). The undo dry-run plan lists one
+  edit per group. This fixes a later undo failing after a multi-line edit: each
+  row used to replay as its own refit, the separate refits drifted the fitted
+  peaks, and a later remove no longer snapped to the peak it named. The key is
+  part of ``evidence``, so a hash of the log taken over ``evidence`` differs from
+  one taken before.
+* **``converged`` is ``Absent.UNDEFINED`` for a window left with no peak.**
+  ``RefitWindowResult``, ``PreviewWindowResult`` and ``AppliedWindowResult``
+  report ``converged`` as *undefined* (wire: ``null`` with
+  ``"converged_absent": "undefined"``) when the window is created empty or has
+  every peak removed: no solver ran. No non-convergence warning is raised, and
+  the report's ``n_nonconverged`` (and its "N window(s) did not converge" line)
+  no longer counts a window with no peak, a Stage 5 window knocked down to the
+  null model included. The persisted ``success`` is unchanged.
+* **``run_pipeline`` names stages canonically.** ``completed_stages`` is now the
+  canonical stages written, in order and de-duplicated, the list a cancel's
+  ``completed_stages`` holds; start detection and the report are steps, not
+  stages, and add nothing. A Gaussian tau run lists ``tau_g`` (``tau`` only if a
+  twin was built). ``failed_stage`` is the canonical stage of the failing step,
+  ``None`` for start detection or the report, and ``tau_g`` for a failing
+  Gaussian tau step. A new additive ``failed_step`` holds the progress label of
+  the failing step (``"import"``, ``"start detection"``, ``"FT"``, ...,
+  ``"report"``), ``None`` on success; ``run --json`` carries it as a scalar
+  (``completed_stages`` stays one comma-joined string). The human failure line
+  reads ``failed at step '<label>'``.
+* **The shape recommendation is published as ``tau_shape``.** Its entry in
+  ``stage_environments`` (``get_pipeline_info``, ``validate_pipeline``) used to
+  appear under its storage name; the storage path
+  ``processing_parameters/stage2b_shape_recommendation`` is unchanged. Every
+  published drift or environment surface now names stages canonically: the
+  ``environment_drift`` event message, the report table's ``environment_mixed``
+  row, the HTML report's environment table and the re-run drift log. The
+  contract exports ``canonical_provenance_name`` and ``PROVENANCE_NAMES``
+  beside ``stage_for_key`` / ``key_for_stage``.
+
 **Fixes from the documentation audit.**
 
 * A source its format's loader refuses at import — an unknown sidecar key, a
@@ -1114,8 +1162,9 @@ engine so they cannot answer differently.
   file's ``remove`` row) now accepts one in place of a frequency -- see above;
   ``add`` and ``accept --candidate`` stay frequency-only. What
   ``review undo`` promises is replay equivalence: it replays the surviving decisions
-  from the automatic baseline, each as its own action against the state the
-  previous ones left, so the identifiers afterward are exactly those that
+  from the automatic baseline, one user action at a time (the entries one multi-line
+  edit logged replay jointly; see the Unreleased action-group entry) against the
+  state the previous ones left, so the identifiers afterward are exactly those that
   sequence produces. That is deliberately **not** the same as a fresh
   curation file naming the same surviving frequencies, which coalesces a run
   of add/remove rows into one action. Undoing everything restores the
