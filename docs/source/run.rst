@@ -6,9 +6,10 @@
 The ``run`` command
 ====================
 
-``run`` drives a raw data source through the entire pipeline — import, Fourier
-transform, noise estimation, decay-time calibration, peak detection, window
-assignment, fitting, timebase calibration, and review — in a single call, with
+``run`` drives a raw data source through the entire pipeline — import, start
+detection, Fourier transform, timebase calibration, noise estimation,
+decay-time calibration, peak detection, window assignment, fitting, and review
+— in a single call, with
 live per-stage progress. It is the primary entry point for processing an
 experiment: use it when you want a finalized, review-ready ``.ftmw`` file (and
 optionally its report) without driving each stage by hand. :doc:`quickstart`
@@ -58,21 +59,46 @@ or the functional API:
        trim=(26500, 40000),
    )
 
-All three return (or produce, at the CLI, a one-line summary of) a structured
-result: ``pipeline_file``, ``status`` (``"success"`` / ``"error"``),
-``completed_stages``, ``failed_stage`` and ``error`` (when it failed),
-``timebase`` (``"calibrated"`` / ``"skipped"`` / ``"not_requested"``),
-``report`` (the report paths, or ``None``), and ``elapsed_s``. A failing build
-stops at the first stage that raises; ``completed_stages`` names everything
-that finished before it.
+The Python calls return a result dict:
+
+* ``source`` and ``pipeline_file`` -- the source given and the ``.ftmw``
+  written;
+* ``status`` -- ``"success"`` or ``"error"``;
+* ``completed_stages`` -- the steps that finished, in order, by their progress
+  labels (``"import"``, ``"start detection"``, ``"FT"``, ``"timebase"``,
+  ``"noise"``, ``"calibrate tau"``, ``"peaks"``, ``"windows"``, ``"fit"``,
+  ``"review"``, ``"report"``);
+* ``failed_stage`` -- the canonical stage name of the step that failed
+  (``"ft"``, ``"tau"``, ...; ``"start detection"`` or ``"report"`` for those
+  two steps, which are not stages), else ``None``;
+* ``error`` -- the failure as an ``ftmw/error@1`` dict (``code``,
+  ``message`` and the code's fields; a failure that is not a typed error has
+  code ``pipeline_error``), else ``None``;
+* ``timebase`` -- ``"calibrated"``, ``"skipped"`` or ``"not_requested"``;
+* ``report`` -- the report paths, or ``None``;
+* ``elapsed_s``.
+
+A failing build stops at the first step that raises; ``completed_stages`` names
+everything that finished before it. A cancel, or an ``events`` callback that
+raises, is not folded into the result: it raises ``OperationCancelledError``
+(or ``CallbackFailedError``), whose ``completed_stages`` holds the canonical
+names (``"data"``, ``"ft"``, ``"noise"``, ...) of the stages written. See
+:ref:`machine-contract-events`.
+
+At the command line ``run`` prints a one-line summary, and on failure the
+failing stage, the error's message and code, and the completed steps, then
+exits 1. Under ``--json`` it prints the ``ftmw/run_result@1`` envelope (and
+the error's ``ftmw/error@1`` dict on stderr); its fields are listed in
+:ref:`machine-contract-cli-json`. ``--events`` writes each progress event to
+stderr as one JSON line.
 
 What it runs
 ------------
 
 .. code-block:: text
 
-   import -> [start detection] -> FT -> noise -> tau -> peaks -> windows
-     -> fit -> [timebase] -> review -> [report]
+   import -> [start detection] -> FT -> [timebase] -> noise -> tau
+     -> peaks -> windows -> fit -> review -> [report]
 
 * **Start detection** and **tau calibration** run by default. Start detection
   stamps a recommended FID ``start_us`` that the FT inherits (see
@@ -83,15 +109,20 @@ What it runs
 * **Timebase calibration** runs by default but is **non-fatal**: it resolves
   the instrument clock declaration (explicit ``--clocks`` > a preset's
   persisted ``spur.clocks`` > the clock sources auto-extracted at import) and,
-  when none is resolvable, is skipped with a warning rather than failing the
-  build — frequencies are then reported as precision-only. ``--no-cal`` skips
-  it deliberately, without the warning. See :doc:`clock_declaration`.
+  when none is resolvable, or the calibration fails, is skipped with a warning
+  rather than failing the build — frequencies are then reported as
+  precision-only, ``timebase`` in the result is ``"skipped"``, and a
+  ``timebase_skipped`` warning event is emitted. ``--no-cal`` skips it
+  deliberately, without the warning. It runs right after the FT, which is all
+  it needs. See :doc:`clock_declaration`.
 * **Review** always runs last (before an optional report) to consolidate the
   finalized line list.
 * ``--no-force`` refuses to overwrite an existing ``.ftmw`` built from a
   different source; the default is a fresh build every time, since persisted
   settings on a stale file would otherwise silently outrank the current
-  defaults (see :doc:`settings_and_presets`).
+  defaults (see :doc:`settings_and_presets`). A fresh build discards whatever
+  the file held, so ``run`` never resumes an earlier build (see
+  :ref:`run-cancel-resume`).
 
 Top-level options
 ------------------
@@ -117,6 +148,9 @@ Top-level options
   Blackchirp). See :doc:`input_formats`.
 * ``--quiet`` — suppress the live per-stage progress display (errors and
   warnings still print).
+* ``--events`` — write each progress event to stderr as one JSON line.
+* ``--json`` — print the ``ftmw/run_result@1`` envelope on stdout and nothing
+  else.
 * ``--no-start-detect`` — skip start-time detection; the FT then uses whatever
   ``start_us`` a preset, a persisted value, or the hard default supplies.
 * ``--no-cal`` — skip timebase calibration deliberately (no warning).
@@ -174,6 +208,42 @@ with YAML presets`_ demonstrates below.
 
 The full generated list is long and always available from
 ``ftmwpipeline run --help``; it is not reproduced here.
+
+.. _run-cancel-resume:
+
+Cancelling, crashes and resuming
+--------------------------------
+
+The first Ctrl-C cancels the build at its next check point (between stages, or
+between windows inside the fit) and exits ``130`` with the ``cancelled`` error;
+a second Ctrl-C interrupts at once. In Python, set the ``cancel`` token passed
+to ``run_pipeline`` / ``Pipeline.build``.
+
+Each stage is its own atomic write, so whatever stops the build -- a cancel, an
+error, a crash or a kill -- the stages that finished stay in the file, and the
+stage that was running leaves the file as it was before that stage began. The
+one exception is the fit: a cancel during ``fit`` keeps the windows that had
+finished as a *partial fit* (see :doc:`stage5_fitting`). A process killed
+mid-write can leave a temporary copy, ``.<name>.ftmw-tmp.<host>.<pid>``, beside
+the file; it is harmless, and the next write from the same host removes it.
+
+Running ``run`` again does **not** resume. It re-imports the source with
+overwriting on, which discards every stage the file held -- a partial fit and
+any review included -- and builds from scratch. To continue an interrupted
+build instead, drive the remaining stages yourself on the same file:
+
+.. code-block:: shell
+
+   ftmwpipeline fit run exp_2638.ftmw       # resumes a partial fit
+   ftmwpipeline review run exp_2638.ftmw
+   ftmwpipeline report run exp_2638.ftmw    # if you wanted the report
+
+``fit run`` fits only the windows the partial fit lacks, when its settings
+match (otherwise it starts the fit over, and its summary gives the
+reason). If the build stopped before the fit, run the stages after the last
+one completed (``ftmwpipeline read status FILE`` lists what is complete and
+what is runnable), in the order above. Because ``run`` starts over, it also discards curation: keep any edits
+as a curation file and apply them again after a rebuild.
 
 .. _run-stage0:
 
