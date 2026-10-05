@@ -79,7 +79,6 @@ from ..contract import (
     StageFinished,
     StageStarted,
     WindowProgress,
-    key_for_stage,
     rerun_order,
 )
 from ..file_manager import (
@@ -288,9 +287,10 @@ _INVALIDATION_LINE = LogLine(
     _FILE_MANAGER_LOGGER,
     logging.WARNING,
     INVALIDATION_LOG_TEMPLATE,
+    # Canonical stage names in rerun order, as the event names them.
     lambda e, d: (
         d["reason"],
-        sorted(key_for_stage(s) for s in e.stages),
+        ", ".join(Stage(s).value for s in e.stages),
     ),
 )
 

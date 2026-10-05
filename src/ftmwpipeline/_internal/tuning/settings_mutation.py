@@ -609,7 +609,10 @@ def _invalidate_inclusive(path: str, own_stages: Tuple[str, ...]) -> Tuple[str, 
             h5f,
             own_stages,
             include_roots=True,
-            reason=f"Settings of {', '.join(own_stages)} changed",
+            reason=(
+                f"Settings of {', '.join(canonical_invalidated(own_stages))} "
+                "changed"
+            ),
         )
     return canonical_invalidated(invalidated)
 
