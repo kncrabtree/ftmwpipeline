@@ -52,6 +52,12 @@ planned — these entries fold into the ``1.0.0`` section when it is dated.
 * The ``defaults`` preset carries every knob with a package default: it gained
   ``stage5.tau.fit_tau`` and ``stage5.rescue.final_add_snr_threshold``.
   Applying it still changes nothing.
+* ``review create`` suggests a ``review edit`` that carries the ``--frame`` it
+  was given, so the suggestion runs on a ``self_calibrated`` file.
+* ``timebase run --help`` says the clock declaration falls back to the one
+  recommended at import. ``review undo --help`` and the ``baseline_unavailable``
+  message name the real cause of a missing baseline (edits recorded before
+  ``review undo`` existed), not a fit re-run, which discards the decisions too.
 
 **A window the fit leaves empty while its edge stays coherent is flagged for
 review; ``CONTRACT_VERSION`` moves 13 → 14.** Stage 5 can finish a window of its

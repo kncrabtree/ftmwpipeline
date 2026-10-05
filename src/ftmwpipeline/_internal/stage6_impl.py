@@ -6256,6 +6256,17 @@ def clear_stage5_baseline(path: Union[Path, str]) -> None:
             del h5f[STAGE5_BASELINE_GROUP]
 
 
+_BASELINE_MISSING_CAUSE = (
+    "this file's edits were recorded without one: by a version that predates "
+    "'review undo', or the snapshot was removed from the file"
+)
+"""Why fit-edit decisions can exist with no baseline. The first edit of a
+session snapshots the automatic fit, and a fit re-run drops the snapshot
+together with the decision log it would serve, so a log of fit edits without
+a baseline comes only from a file edited before snapshots existed or one
+whose snapshot group was deleted."""
+
+
 def _has_stage5_baseline(path: str) -> bool:
     with h5open(path, "r") as h5f:
         return STAGE5_BASELINE_GROUP in h5f
@@ -9740,8 +9751,8 @@ def _apply_curation_at_prefix(
         raise CurationConflictError(
             "baseline_unavailable",
             message="cannot apply at a log prefix: the automatic-fit baseline "
-            "is unavailable (the fit may have been re-run after editing). "
-            "Rebuild from the source and re-edit.",
+            f"is unavailable ({_BASELINE_MISSING_CAUSE}). Rebuild from the "
+            "source and re-edit.",
         )
     prefix_plan = [a for e in kept for a in _resolve_curation_plan(_decision_to_op(e))]
     # The restore-then-replay is one unit: gate first, so a refusal leaves the
@@ -10481,8 +10492,8 @@ def review_undo_impl(
     is given, and ``curation_conflict`` when undoing would orphan a window an
     undone decision created (``orphans_created_window``, ``ids`` the
     decisions to undo with it) or the automatic-fit baseline is unavailable
-    while fit-mutating decisions exist (``baseline_unavailable``; e.g. Stage
-    5 was re-run after editing -- rebuild and re-edit instead).
+    while fit-mutating decisions exist (``baseline_unavailable``; the edits
+    predate the snapshot -- rebuild and re-edit instead).
 
     What undo promises for ``peak_uid`` is replay equivalence: the surviving
     decisions are replayed in order, each as its own action against the state
@@ -10572,9 +10583,9 @@ def review_undo_impl(
     if has_fit_edits and not baseline:
         raise CurationConflictError(
             "baseline_unavailable",
-            message="cannot undo: the automatic-fit baseline is unavailable (the "
-            "fit may have been re-run after editing). Rebuild from the source "
-            "and re-edit.",
+            message="cannot undo: the automatic-fit baseline is unavailable "
+            f"({_BASELINE_MISSING_CAUSE}). Rebuild from the source and "
+            "re-edit.",
         )
 
     # Each decision was originally applied as its own action, against the

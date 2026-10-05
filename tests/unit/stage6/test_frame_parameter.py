@@ -430,6 +430,28 @@ class TestOmittedFrameRequired:
         with pytest.raises(ValueError, match="frame is required"):
             create_window_impl(str(sc_file), anchor)
 
+    def test_create_next_command_carries_the_frame(
+        self, sc_file: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The edit 'review create' suggests repeats the anchor in the frame it
+        was given, so it carries that frame -- without it the suggestion is
+        refused on this self_calibrated file."""
+        anchor = _free_anchor(sc_file)
+        rc = cmd_review_create(
+            argparse.Namespace(
+                file_path=str(sc_file),
+                anchor=anchor,
+                frame="calibrated",
+                verbose=False,
+            )
+        )
+        assert rc == 0
+        next_lines = [
+            line for line in capsys.readouterr().out.splitlines() if "Next:" in line
+        ]
+        assert len(next_lines) == 1
+        assert next_lines[0].endswith(f"--add {anchor:.4f} --frame calibrated")
+
     def test_create_explicit_raw_never_refused(self, sc_file: Path) -> None:
         anchor = _free_anchor(sc_file)
         result = create_window_impl(str(sc_file), anchor, frame="raw")
