@@ -8,10 +8,10 @@ restate program content that lives elsewhere and would drift.
 
 `ftmwpipeline` is a Python package for FTMW (Fourier Transform Microwave)
 spectroscopy signal processing and peak fitting: it drives a raw free-induction
-decay through a sequence of stages (import → FT → noise → τ calibration → peak
-detection → window assignment → time-domain fitting → timebase → review/report)
-to a fitted line list with honest uncertainties. Each experiment is one
-self-contained, portable `.ftmw` (HDF5) file.
+decay through a sequence of stages (import → FT → timebase → noise → τ
+calibration → peak detection → window assignment → time-domain fitting →
+review/report) to a fitted line list with honest uncertainties. Each experiment
+is one self-contained, portable `.ftmw` (HDF5) file.
 
 Where the detailed truth lives — consult these rather than trusting any summary:
 
