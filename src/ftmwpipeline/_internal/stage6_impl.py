@@ -2470,8 +2470,10 @@ def refit_window_core(
                 message=f"add={float(add_freq):.4f} MHz resolves to "
                 f"{seed_freq_mhz:.4f} MHz, outside window {window_id}'s range "
                 f"[{win_lo:.4f}, {win_hi:.4f}] MHz. Name the window that covers "
-                f"the frequency, or -- if no window does -- create one with "
-                f"'review create' first.",
+                f"the frequency, or name no window: an edit whose only target "
+                f"is this add then goes to the window that covers it, or "
+                f"creates one there if none does ('review create' also makes "
+                f"one).",
             )
         # A curated add that lands on an existing seed's identity is a
         # user-input error with a meaningful answer, so it is refused here
@@ -3236,8 +3238,8 @@ def _derive_review_edit_window_id(
             uncovered_details.append(
                 f"add={float(f):.4f} MHz is not covered by any live window "
                 f"(windows are disjoint); create a window at this "
-                f"frequency first with 'review create', or name the window "
-                f"explicitly"
+                f"frequency first with 'review create', or add it in an edit "
+                f"of its own (a lone add with no window named creates one)"
             )
             continue
         resolutions.append((f"add={float(f):.4f}", wid))
