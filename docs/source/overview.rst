@@ -46,9 +46,13 @@ machines, or handing it to a collaborator, is a matter of copying one file. See
 **Staged and incremental.** The analysis is a sequence of stages with declared
 dependencies, each persisting its result before the next begins. A stage reads
 its inputs from the file, writes its output back, and records that it ran.
-Re-running a stage with new parameters is safe and cheap, and re-running an
-upstream stage invalidates the downstream results that depended on it, so the
-file is never left in a silently inconsistent state.
+Re-running a stage with new parameters is safe and cheap. Re-running an upstream
+stage discards the downstream results that depended on it (each stage page
+states exactly when), and the run reports which stages it discarded (the ``invalidated`` list of
+the result, by canonical stage name), so the file is never left in a silently
+inconsistent state. Every call that writes the file is one atomic transaction:
+it either completes or leaves the file exactly as it was (see
+:doc:`file_format`).
 
 **Unbiased spectrum, valid statistics.** The Fourier transform is computed
 without apodization, time-domain windowing, or zero-padding, and every later
@@ -122,43 +126,67 @@ output.
 
 .. list-table::
    :header-rows: 1
-   :widths: 10 26 64
+   :widths: 8 14 24 54
 
    * - Stage
-     - Name
+     - Canonical name
+     - Page
      - Role
    * - 0
+     - ``data``
      - :doc:`Data import <stage0_import>`
      - Load a raw FID from an instrument format and record its provenance.
    * - 1
+     - ``ft``
      - :doc:`Fourier transform <stage1_ft>`
      - Compute the standard, unapodized, native-length spectrum over the
        active band.
+   * - —
+     - ``timebase``
+     - :doc:`Timebase self-calibration <clock_declaration>`
+     - Measure the digitizer's fractional clock error from the locked spur
+       lattice, for calibrated reported frequencies. Optional.
    * - 2
+     - ``noise``
      - :doc:`Noise estimation <stage2_noise>`
      - Measure the per-bin noise that every later stage uses as its
        statistical reference.
    * - 2b
+     - ``tau`` / ``tau_g``
      - :doc:`Decay-time calibration <stage2b_tau>`
      - Extract the molecular decay time from the FID and recommend a line
-       shape.
+       shape (``tau_g`` is the Gaussian-shape variant).
    * - 3
+     - ``peaks``
      - :doc:`Peak detection <stage3_peaks>`
      - Locate peaks on the spectrum.
    * - 4
+     - ``windows``
      - :doc:`Window assignment <stage4_windows>`
      - Group peaks into disjoint analysis windows for the fit.
    * - 5
+     - ``fit``
      - :doc:`Peak fitting <stage5_fitting>`
      - Fit each window with a finite-duration line-shape model and accept lines
        on statistical grounds.
    * - 6
+     - ``review``
      - :doc:`Review, reports, finalization <stage6_review>`
      - Review the model, calibrate frequencies, and produce the final line list
        and reports.
 
+The canonical name is the CLI object (``ftmwpipeline noise run``) and the name
+every machine-readable result uses for a stage, for example in an
+``invalidated`` list or a ``stage_not_run`` error. The ``run`` command executes
+them in the order import, start detection, ``ft``, ``timebase``, ``noise``,
+``tau``, ``peaks``, ``windows``, ``fit``, ``review``; start detection is a
+step that stamps a recommended FID start time on the ``data`` stage rather
+than a stage of its own.
+
 Stage 2b is a calibration step rather than a transformation of the spectrum; it
-runs after noise estimation and feeds both peak detection and the fit. Several
+runs after noise estimation and feeds both peak detection and the fit. The
+timebase calibration needs only the imported FID and the Stage 1 settings, and
+nothing downstream requires it. Several
 stages have tunable parameters; how those parameters are resolved across
 keyword arguments, presets, and the values persisted in the file is described
 in :doc:`settings_and_presets`.
