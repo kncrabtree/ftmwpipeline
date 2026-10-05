@@ -119,8 +119,18 @@ def test_run_full_sequence_in_order(patch_pipeline):
         "fit",
         "review",
     ]
-    assert res["completed_stages"][0] == "import"
-    assert res["completed_stages"][-1] == "review"
+    # Canonical stage names; start detection counts toward its owner, data.
+    assert res["completed_stages"] == [
+        "data",
+        "ft",
+        "timebase",
+        "noise",
+        "tau",
+        "peaks",
+        "windows",
+        "fit",
+        "review",
+    ]
     assert res["timebase"] == "calibrated"
 
 
@@ -186,6 +196,101 @@ def test_run_stops_at_first_failure(patch_pipeline):
     # windows / fit never ran.
     assert "windows" not in pipe.calls and "fit" not in pipe.calls
     assert "peaks" not in res["completed_stages"]
+
+
+def test_failure_at_start_detection_names_the_data_stage(patch_pipeline):
+    patch_pipeline(_FakePipe(fail_on="start"))
+    res = run_pipeline_impl("src", output="x.ftmw", trim=(1, 2), progress=False)
+    assert res["status"] == "error"
+    assert res["failed_stage"] == "data"
+    assert res["completed_stages"] == ["data"]  # the import finished
+
+
+def test_failure_at_report_names_the_review_stage(patch_pipeline):
+    patch_pipeline(_FakePipe(fail_on="report"))
+    res = run_pipeline_impl(
+        "src", output="x.ftmw", trim=(1, 2), report=True, progress=False
+    )
+    assert res["status"] == "error"
+    assert res["failed_stage"] == "review"
+    assert res["completed_stages"][-1] == "review"
+    assert res["completed_stages"].count("review") == 1
+
+
+def test_failed_and_completed_stages_are_all_canonical(patch_pipeline):
+    from ftmwpipeline.contract import Stage
+
+    valid = {s.value for s in Stage}
+    patch_pipeline(_FakePipe())
+    ok = run_pipeline_impl(
+        "src", output="x.ftmw", trim=(1, 2), report=True, progress=False
+    )
+    assert set(ok["completed_stages"]) <= valid
+    for fail in ("start", "ft", "tau", "report"):
+        patch_pipeline(_FakePipe(fail_on=fail))
+        bad = run_pipeline_impl(
+            "src", output="x.ftmw", trim=(1, 2), report=True, progress=False
+        )
+        assert bad["failed_stage"] in valid
+        assert set(bad["completed_stages"]) <= valid
+
+
+def test_cancel_and_result_use_the_same_stage_names(patch_pipeline):
+    from ftmwpipeline.file_manager import OperationCancelledError
+
+    class _Tok:
+        def __init__(self):
+            self._set = False
+
+        def is_set(self):
+            return self._set
+
+        def set(self):
+            self._set = True
+
+    tok = _Tok()
+
+    class _CancelPipe(_FakePipe):
+        def estimate_noise(self, **k):
+            super().estimate_noise(**k)
+            tok.set()
+
+    patch_pipeline(_CancelPipe())
+    with pytest.raises(OperationCancelledError) as info:
+        run_pipeline_impl(
+            "src", output="x.ftmw", trim=(1, 2), progress=False, cancel=tok
+        )
+    assert info.value.completed_stages == ["data", "ft", "timebase", "noise"]
+
+
+def test_cli_json_summary_completed_stages_is_one_canonical_string(
+    patch_pipeline, capsys, tmp_path
+):
+    import json
+
+    patch_pipeline(_FakePipe(fail_on="report"))
+    rc = run_cli(
+        [
+            "run",
+            "raw.dat",
+            "--trim",
+            "8000:18000",
+            "--output",
+            str(tmp_path / "x.ftmw"),
+            "--report",
+            "--json",
+        ]
+    )
+    assert rc == 1
+    # The failure line follows the envelope on stdout; read just the envelope.
+    doc, _ = json.JSONDecoder().raw_decode(capsys.readouterr().out)
+    summary = doc["summary"]
+    assert (
+        summary["completed_stages"]
+        == "data, ft, timebase, noise, tau, peaks, windows, fit, review"
+    )
+    assert summary["failed_stage"] == "review"
+    assert summary["n_completed_stages"] == 9
 
 
 def test_timebase_failure_warns_and_skips(patch_pipeline):
@@ -684,7 +789,7 @@ def test_run_end_to_end_real(tmp_path):
         progress=False,
     )
     assert res["status"] == "success", res["error"]
-    assert res["completed_stages"][0] == "import"
+    assert res["completed_stages"][0] == "data"
     assert "review" in res["completed_stages"]
     assert out.exists()
 

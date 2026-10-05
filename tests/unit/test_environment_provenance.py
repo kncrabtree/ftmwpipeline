@@ -304,6 +304,22 @@ class TestPipelineStamping:
         assert info["environment_drift"] == []
         assert info["environment_acknowledged"] is False
 
+    def test_info_publishes_the_shape_recommendation_as_tau_shape(self, stamped_file):
+        with h5py.File(stamped_file, "a") as f:
+            g = f["pipeline_stages"]
+            blob = json.loads(str(g.attrs["stage_environments"]))
+            blob["stage2b_shape_recommendation"] = dict(blob["stage3_peaks"])
+            g.attrs["stage_environments"] = json.dumps(blob)
+        info = ftmw.get_pipeline_info(str(stamped_file))
+        envs = info["stage_environments"]
+        assert "tau_shape" in envs
+        assert "stage2b_shape_recommendation" not in envs
+        report = ftmw.validate_pipeline(str(stamped_file))
+        assert "tau_shape" in report["stage_environments"]
+        # The storage key is unchanged on disk.
+        with h5py.File(stamped_file, "r") as f:
+            assert "stage2b_shape_recommendation" in load_stage_environments(f)
+
     def test_info_on_an_unstamped_file_reports_not_run(self, stamped_file):
         """Mutation: report None / {} / [] for an unstamped file again."""
         from ftmwpipeline.contract import Absent
@@ -426,3 +442,14 @@ class TestLegacyRerunWarning:
         with caplog.at_level(logging.WARNING):
             ftmw.detect_peaks(str(stamped_file))
         assert not any("cannot be verified" in r.getMessage() for r in caplog.records)
+
+
+def test_shape_recommendation_environment_is_published_as_tau_shape():
+    from ftmwpipeline.contract import canonical_provenance_name
+    from ftmwpipeline.file_manager import _canonical_stage_label
+
+    assert canonical_provenance_name("stage2b_shape_recommendation") == "tau_shape"
+    assert _canonical_stage_label("stage2b_shape_recommendation") == "tau_shape"
+    # Stage keys still map to stages; an unknown key passes through.
+    assert canonical_provenance_name("stage3_peaks") == "peaks"
+    assert canonical_provenance_name("stage9_future") == "stage9_future"

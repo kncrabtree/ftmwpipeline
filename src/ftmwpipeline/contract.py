@@ -246,6 +246,32 @@ def stage_for_key(key: str) -> Stage:
         raise ValueError(f"no canonical stage for internal key {key!r}") from None
 
 
+#: Provenance entries that are not a stage's own storage key but are stamped in
+#: the per-stage environment map: the published name of each (read-only). The
+#: HDF5 key stays as written; only the name a report publishes differs.
+PROVENANCE_NAMES: Mapping[str, str] = MappingProxyType(
+    {"stage2b_shape_recommendation": "tau_shape"}
+)
+
+
+def canonical_provenance_name(key: str) -> str:
+    """The published name for a per-stage provenance key.
+
+    A stage's storage key gives its canonical stage name
+    (:func:`stage_for_key`); the shape recommendation's environment entry
+    (``stage2b_shape_recommendation``) is published as ``tau_shape``. A key that
+    is neither is returned unchanged (a record may carry keys from a later
+    release).
+    """
+    named = PROVENANCE_NAMES.get(key)
+    if named is not None:
+        return named
+    try:
+        return stage_for_key(key).value
+    except ValueError:
+        return key
+
+
 def key_for_stage(stage: Union[Stage, str]) -> str:
     """The internal storage key for a canonical stage (or its value string).
 

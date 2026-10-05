@@ -27,12 +27,14 @@ from ..file_manager import (
 from .events import OperationEvents, operation_events
 from .progress import StageProgress
 
-#: The run's progress labels as canonical stage names. "start detection" (a
-#: stamp on the data stage) and "report" (artifacts) are steps, not stages:
-#: they map to ``None``.
-RUN_STAGES: Dict[str, Optional[Stage]] = {
+#: The run's progress labels as canonical stage names. "start detection" is a
+#: stamp on the data stage and "report" renders artifacts from the reviewed
+#: line list, so each is attributed to the stage that owns it: ``data`` and
+#: ``review``. The contract fields (``completed_stages``, ``failed_stage``)
+#: carry these names; only the human progress lines keep the labels.
+RUN_STAGES: Dict[str, Stage] = {
     "import": Stage.DATA,
-    "start detection": None,
+    "start detection": Stage.DATA,
     "FT": Stage.FT,
     "timebase": Stage.TIMEBASE,
     "noise": Stage.NOISE,
@@ -41,13 +43,14 @@ RUN_STAGES: Dict[str, Optional[Stage]] = {
     "windows": Stage.WINDOWS,
     "fit": Stage.FIT,
     "review": Stage.REVIEW,
-    "report": None,
+    "report": Stage.REVIEW,
 }
 
 
 def canonical_run_step(label: str) -> str:
-    """A run step's canonical stage name, or its label for a step that is not
-    a stage (``"start detection"``, ``"report"``)."""
+    """A run step's canonical stage name: the stage it is, or for a step that
+    is not a stage the stage that owns it (``"start detection"`` -> ``data``,
+    ``"report"`` -> ``review``). An unknown label comes back unchanged."""
     stage = RUN_STAGES.get(label)
     return label if stage is None else stage.value
 
@@ -149,9 +152,11 @@ def run_pipeline_impl(
     skips it deliberately.
 
     Returns a dict with ``pipeline_file``, ``status`` (``"success"`` /
-    ``"error"``), ``completed_stages`` (the run's step labels, in order),
-    ``failed_stage`` (the canonical stage name of the step that failed -- or
-    the step label for ``"start detection"`` / ``"report"`` -- else ``None``),
+    ``"error"``), ``completed_stages`` (canonical stage names, in order, each once --
+    start detection counts toward ``data`` and the report toward ``review``),
+    ``failed_stage`` (the canonical stage name of the step that failed, else
+    ``None``; a failing start detection is ``"data"``, a failing report
+    ``"review"``),
     ``error`` (that failure's ``ftmw/error@1`` dict, else ``None``),
     ``timebase`` (``"calibrated"`` / ``"skipped"`` / ``"not_requested"``),
     ``report`` (the ``report_run`` paths, or ``None``), and ``elapsed_s``.
@@ -193,13 +198,12 @@ def run_pipeline_impl(
 
     ops = operation_events("run", events, cancel)
     reporter = StageProgress(len(stages), stream=progress_stream, enabled=progress)
-    completed: List[str] = []
+    # The result's completed_stages is the same canonical, ordered, de-duplicated
+    # list a cancel reports (a step that is not a stage counts toward its owner).
+    completed: List[str] = ops.completed_stages
 
     def _done(label: str) -> None:
-        completed.append(label)
-        stage = RUN_STAGES.get(label)
-        if stage is not None:
-            ops.mark_completed(stage)
+        ops.mark_completed(RUN_STAGES[label])
 
     result: Dict[str, Any] = {
         "source": str(source),
@@ -327,8 +331,10 @@ def run_pipeline_impl(
             result["status"] = "error"
             result["failed_stage"] = canonical_run_step(reporter._label)
             result["error"] = _error_dict(exc)
+            result["completed_stages"] = list(completed)
             result["elapsed_s"] = time.monotonic() - t0
             return result
 
+    result["completed_stages"] = list(completed)
     result["elapsed_s"] = time.monotonic() - t0
     return result
