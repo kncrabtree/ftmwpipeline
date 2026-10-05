@@ -135,6 +135,22 @@ def test_stage_verbs_print_run_result(capsys, exp, argv, verb, stage, summary_ke
     assert not any(isinstance(v, (list, tuple)) for v in doc["summary"].values())
 
 
+@pytest.mark.parametrize(
+    "flags, echoed",
+    [
+        (("--n-iter", "2"), "n_iter: 2"),
+        (("--line-k", "6"), "line_k: 6.0"),
+        (("--no-region-aware",), "region_aware: False"),
+    ],
+)
+def test_noise_run_knob_flags_echo_and_run(capsys, exp, flags, echoed):
+    # Regression: any noise knob flag crashed echoing the explicit settings
+    # ('NoiseSettings' object has no attribute 'to_yaml_dict').
+    rc, out, err = _cli(capsys, "noise", "run", exp, *flags)
+    assert rc == 0, err
+    assert echoed in out
+
+
 def test_invalidated_comes_from_the_result(capsys, exp):
     # Mutation: hard-code invalidated=[] -> settings set misses "noise".
     rc, out, _ = _cli(
