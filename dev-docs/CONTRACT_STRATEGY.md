@@ -464,6 +464,18 @@ holds at least one fitted line in it. Before Stage 5, `n_fitted_peaks` and
 `live` are `Absent.NOT_RUN`. While Stage 5 is `partial` (after a cancel), a
 window the fit has not reached reports both as `Absent.NOT_RUN`, never 0. Also available as a `read_table` table.
 
+**Windows after a structural merge.** Once a complete Stage 5 fit exists,
+every window geometry the contract reports is the geometry the fit was made
+on: `window_status`, the window model, and the windows every Stage 6 call
+resolves, edits and refits. A structural replan can merge a window into its
+neighbour:
+- the survivor keeps the lower id and the merged range;
+- the absorbed id no longer appears as a window and is never minted again;
+- a row gains `merged_from`, the ids folded into it, or `[]` if none were.
+
+Before a complete fit, while Stage 5 is `partial` included, rows follow the
+Stage 4 plan.
+
 ### Source preview
 
 `preview_source(source, format_name=None)` → without importing: the detected
