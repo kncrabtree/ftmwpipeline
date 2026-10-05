@@ -746,25 +746,28 @@ def test_resuming_the_full_2638_fit_equals_an_uninterrupted_fit(
     assert not _has_partial(fp)
 
 
-#: Five adjacent one-line windows of the 2638 plan: cheap to fit and to merge.
+#: Windows 100..103 of the default-recipe 2638 plan (``baseline_2638_stage4``):
+#: four small windows (1, 4, 3 and 4 promoted lines), cheap to fit and to merge.
 _REPLAN_WINDOWS = range(100, 104)
-"""Windows 100/101 and 102/103 of the 2638 plan abut (a structural merge needs a
-touching partner), and none of the four depends on a window outside the set."""
+"""100/101 and 102/103 abut (a structural merge needs a touching partner), and
+none of the four depends on a window outside the set. The cleanup empties window
+100's fit, so a merge cannot be asked for from window 100's edge: it comes from
+window 101's low edge."""
 
 
 def _one_merge() -> Callable[..., Any]:
     """``_dispatch_structural_round`` that requests exactly one structural
-    merge -- the lowest flagged window with its neighbour -- in the first
-    replan round, and none after. Every edge counts as flagged here, so the
-    merge (100 with 101, two small windows) is deterministic rather than left
-    to the fit's own edge statistics, and it runs through the same replan
-    machinery."""
+    merge -- the lowest flagged window whose fit holds a line, with its
+    neighbour -- in the first replan round, and none after. Every edge counts as
+    flagged here, so the merge (101 with 100, two small windows) is
+    deterministic rather than left to the fit's own edge statistics, and it runs
+    through the same replan machinery."""
     real = plan_execution._dispatch_structural_round
 
     def dispatch(outcomes: Any, plan: Any, threshold: float) -> Any:
         if plan.plan_revision:
             return []
-        pending = real(outcomes, plan, -np.inf)
+        pending = [p for p in real(outcomes, plan, -np.inf) if p.n_lines > 0]
         return sorted(pending, key=lambda p: (p.window_id, p.partner_id))[:1]
 
     return dispatch

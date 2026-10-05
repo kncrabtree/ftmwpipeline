@@ -244,6 +244,15 @@ Each declared accessor, with its absence cases:
   produced no usable fit (it did not converge, or returned the wrong number
   of peaks).
 
+  ``fit_replans`` carries no status columns either. A row with ``accepted``
+  false has a ``reason`` that starts with exactly one of ``not merged:``
+  (the flagged window's fit holds no line, or no window touches it),
+  ``refused:`` (the merge would break the plan's width or peak cap),
+  ``deferred:`` (the pair waited behind another merge that round) or
+  ``failed:`` (Stage 4 could not apply it); an accepted row's ``reason``
+  describes the flagged edge. ``revision_after`` equals ``revision_before`` on
+  every row that is not accepted.
+
   ``read_metadata`` has two kinds of absence. A key of a stage that has not
   run is *omitted* (read with ``.get()``). A key that is present without a
   value is ``Absent`` (``null`` plus ``"<key>_absent"`` on the wire), never

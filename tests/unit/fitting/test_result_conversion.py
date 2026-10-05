@@ -49,7 +49,7 @@ from ftmwpipeline.fitting.result_conversion import (
 
 # Reuse the synthetic builders from the plan-execution tests.
 from tests.unit.fitting.test_plan_execution import (
-    _STAGE4_PARAMS,
+    _WIDE_PARAMS,
     DF_MHZ,
     SEED,
     SIDEBAND,
@@ -581,17 +581,25 @@ class TestSpectrumFitMetadata:
         assert fit.final_plan_revision == plan_outcome.final_plan_revision == 0
 
     def test_final_plan_revision_after_structural_replan(self):
-        """A structural merge bumps the revision; SpectrumFit carries it."""
+        """A structural merge bumps the revision; SpectrumFit carries it.
+
+        Window B holds a line of its own; its low edge sees the skirt of the
+        strong line just inside window A, which no contributor accounts for, so
+        the two windows merge."""
         sigma = 1.0
-        peak_freq = 36104.9
+        lines = [(36104.9, 300.0), (36112.0, 100.0)]
         rng = np.random.default_rng(SEED + 300)
         freq_array = np.arange(36100.0, 36120.0 + DF_MHZ / 2, DF_MHZ)
-        amp = _amp_for_snr(300.0, sigma)
-        spectrum = _synth_spectrum(freq_array, [(peak_freq, amp, 0.3)])
+        spectrum = _synth_spectrum(
+            freq_array, [(f, _amp_for_snr(snr, sigma), 0.3) for f, snr in lines]
+        )
         spectrum = spectrum + _complex_noise(freq_array.size, sigma, rng)
         rms = np.full(freq_array.size, sigma)
-        gi = int(np.argmin(np.abs(freq_array - peak_freq)))
-        peaks = [_make_peak(peak_freq, 300.0, sigma, grid_index=gi)]
+        peaks = [
+            _make_peak(f, snr, sigma, grid_index=int(np.argmin(np.abs(freq_array - f))))
+            for f, snr in lines
+        ]
+        peak_freqs = [f for f, _snr in lines]
         win_a = FitWindow(
             window_id=0,
             freq_range=(36100.0, 36105.0),
@@ -600,14 +608,14 @@ class TestSpectrumFitMetadata:
         )
         win_b = FitWindow(
             window_id=1,
-            freq_range=(36105.0, 36110.0),
-            free_peak_indices=[],
+            freq_range=(36105.0, 36118.0),
+            free_peak_indices=[1],
             batch=0,
         )
         plan = WindowPlan(
             windows=[win_a, win_b],
             topological_order=[0, 1],
-            parameters=dict(_STAGE4_PARAMS),
+            parameters=dict(_WIDE_PARAMS),
         )
         ctx = ReplanContext(
             peaks=peaks,
@@ -619,7 +627,7 @@ class TestSpectrumFitMetadata:
             plan,
             _make_active_ft(freq_array, spectrum),
             rms,
-            [peak_freq],
+            peak_freqs,
             sideband=SIDEBAND,
             acquisition_us=T_US,
             tau0_us=TAU_US,
@@ -633,8 +641,8 @@ class TestSpectrumFitMetadata:
         # describing the post-merge state.
         merged_window = FitWindow(
             window_id=0,
-            freq_range=(36100.0, 36110.0),
-            free_peak_indices=[0],
+            freq_range=(36100.0, 36118.0),
+            free_peak_indices=[0, 1],
             batch=0,
         )
         merged_plan = WindowPlan(
@@ -646,7 +654,7 @@ class TestSpectrumFitMetadata:
             plan_outcome,
             merged_plan,
             sideband=SIDEBAND,
-            peak_frequencies_mhz=[peak_freq],
+            peak_frequencies_mhz=peak_freqs,
             acquisition_us=T_US,
         )
         assert fit.final_plan_revision == 1

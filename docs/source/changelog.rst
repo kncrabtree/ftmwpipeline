@@ -16,37 +16,41 @@ Accumulating toward ``1.0.0``. ``0.1.0b4`` is the last published release;
 everything below is reachable only from a source checkout. No further beta is
 planned — these entries fold into the ``1.0.0`` section when it is dated.
 
-**``ANALYSIS_EPOCH`` moves 4 → 5.** Stage 5's structural replan applies merges
-again; before this it never applied one. When a window edge still carried a
-coherent residual with no contributor to thaw, the fit asked to merge the window
-with the nearest window on that side *at any distance* and sent every request to
-Stage 4 at once. A window flagged on both edges was named in two requests, Stage
-4 rejected the second (it named a window the first had absorbed), and the whole
-round was recorded as failed. On the 2638 fixture that happened in every fit,
-Gaussian and Lorentzian, and most of the requested partners were 5 to 114 MHz
-away, so applying them as asked would have built windows far wider than the
-plan allows. Now a merge partner must **touch** the flagged window (at most one
-active-FT bin between them, as the planner leaves windows it split or whose
-margins just miss), the merged window must fit the plan's width cap, and each
-round applies a disjoint set of pairs, strongest flagged edge first. A trigger
-with no touching neighbour, or whose merge would break the cap, is recorded as
-not merged with the reason; one that shares a window with a merge already
-chosen is recorded as deferred and asked again next round if the merged
-window's edge still flags; a request Stage 4 rejects is dropped without sinking
-the rest of the round. Parallel and sequential fits choose the same merges. On
-2638 one pair touches and merges, windows 100 and 101 (30717.4–30728.8 MHz), in
-both fits; the other triggers (8 Gaussian, 5 Lorentzian) are recorded as not
-merged, with 64 to 1454 bins between them and their nearest neighbour. Window
-and line counts are unchanged (262 windows and 511 lines Gaussian, 270 and 644
-Lorentzian): window 100's one line had been pruned before and still is, so the
-merged window holds window 101's four lines, which keep their ``peak_uid`` s and
-move by at most 1.5 kHz. Its reduced chi-squared is 2.20 Gaussian and 2.21
-Lorentzian, against 1.20 and 1.24 for window 101 alone, because it now fits the
-stretch window 100 covered, whose residual the dropped window had never
-reported. Every other window is bit-identical, and the fit takes no measurably
-longer. A file fitted under epoch 4 must be re-fit, or have the mismatch
-accepted, before Stage 6 will splice an edit into it, and a partial fit written
-under epoch 4 starts over instead of resuming.
+**``ANALYSIS_EPOCH`` moves 4 → 5.** Stage 5's structural replan can apply
+merges again; before this it never applied one. When a window edge still carried
+a coherent residual with no contributor to thaw, the fit asked to merge the
+window with the nearest window on that side *at any distance* and sent every
+request to Stage 4 at once. A window flagged on both edges was named in two
+requests, Stage 4 rejected the second (it named a window the first had
+absorbed), and the whole round was recorded as failed. On the 2638 fixture that
+happened in every fit, Gaussian and Lorentzian, and most of the requested
+partners were 5 to 114 MHz away, so applying them as asked would have built
+windows far wider than the plan allows. Now a merge is asked for only from a
+window whose fit holds at least one line (a window the cleanup emptied has no
+fitted line straddling its boundary); the partner must **touch** the flagged
+window (at most one active-FT bin between them, as the planner leaves windows it
+split or whose margins just miss); the merged window must fit the plan's width
+cap and, when the plan sets one, its ``max_peaks_per_window``; and each round
+applies a disjoint set of pairs, strongest flagged edge first. A request that
+shares a window with a merge already chosen is deferred; next round the
+triggering window's current fit is scanned again against the revised plan and
+the request is judged afresh. A request Stage 4 rejects is recorded as failed and
+the round's set is chosen again without it, so a request that waited behind it
+gets its turn. A merge drops the thaw, rescue and cleanup records of every window
+it re-fits or absorbs. Parallel and sequential fits choose the same merges. Every
+replan record that is not accepted now gives its reason under one of four
+prefixes, ``not merged:``, ``refused:``, ``deferred:`` or ``failed:`` (a Stage 4
+rejection read ``replan failed:`` before). On 2638 no merge qualifies, in either
+recipe or line shape. On the cleanup-golden plan the flags come from windows 100,
+158 and 227, whose fits the cleanup emptied, and (Gaussian only) from windows 59
+and 179, which no window touches: 9 records Gaussian and 6 Lorentzian, all ``not
+merged``. Window 100's high-edge flag toward the touching window 101 was the one
+merge the touching rule alone admitted; it is not evidence of a straddling line,
+because window 100 fits none. The fitted windows and lines are bit-identical to
+epoch 4 in both shapes (262 windows and 511 lines Gaussian, 270 and 644
+Lorentzian); only the replan records' reasons change. A file fitted under epoch 4
+must be re-fit, or have the mismatch accepted, before Stage 6 will splice an edit
+into it, and a partial fit written under epoch 4 starts over instead of resuming.
 
 **``ANALYSIS_EPOCH`` moves 3 → 4.** A dependent window's frozen contributors
 now follow the window's fitted decay time *during* the fit, as the Stage 5 model

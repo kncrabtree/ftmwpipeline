@@ -285,17 +285,37 @@ residual leakage, and if so it renegotiates rather than shipping an under-fit wi
 - **Structural replan.** When no contributor accounts for the coherent edge, because
   a real line straddles the boundary, Stage 5 asks Stage 4 to **merge** the two
   windows through its :doc:`re-plan entry point <stage4_windows>`, bumping the plan
-  revision, and refits the affected batches. Only a neighbour that **touches** the
-  window qualifies: at most one active-FT bin may lie between them, which is how the
-  Stage 4 planner places windows it split or whose margins just miss. A wider gap holds
-  spectrum no window fits, so a coherent edge beside it is a feature in the gap, not one
-  straddling a boundary; the trigger is recorded as not merged. A merge whose window
+  revision, and refits the affected batches. The flagged window's own fit must hold at
+  least one line: a window whose lines the cleanup pruned has no fitted line to
+  straddle its boundary, so its edge residual is not evidence for a merge. Only a
+  neighbour that **touches** the window qualifies: at most one active-FT bin may lie
+  between them, which is how the Stage 4 planner places windows it split or whose
+  margins just miss. A wider gap holds spectrum no window fits, so a coherent edge
+  beside it is a feature in the gap, not one straddling a boundary. A merge whose window
   would exceed the plan's width cap (the same bound on line content the planner applies)
-  is refused and recorded the same way. Each round applies a **disjoint** set of merges,
-  strongest flagged edge first: a request that shares a window with one already taken is
-  recorded as deferred, and is asked again in the next round if the merged window's
-  edge still flags. A request Stage 4 rejects costs only itself; the rest of the round
-  goes ahead.
+  or, when the plan sets one, its ``max_peaks_per_window`` is refused. Each round
+  applies a **disjoint** set of merges, strongest flagged edge first: a request that
+  shares a window with one already taken is deferred. In the next round the triggering
+  window's current fit is scanned again against the revised plan, and the request is
+  judged afresh from it. A request Stage 4 rejects costs only itself: the round's set is
+  chosen again without it, so a request that waited behind it gets its turn, and the
+  loop stops early only when no qualifying pair is left. A merge drops the thaw, rescue
+  and cleanup records of every window it re-fits or absorbs before the re-fit records
+  its own.
+
+  Every replan attempt is recorded (``fit_replans``). An accepted merge's ``reason`` is
+  the flagged edge it answered; any other ``reason`` starts with one of four prefixes:
+
+  - ``not merged:`` -- the flagged edge is no evidence for a merge: the window's fit
+    holds no line, or no window touches it;
+  - ``refused:`` -- the windows touch, but the merged window would break the plan's
+    width cap or peak cap;
+  - ``deferred:`` -- the pair shares a window with a merge chosen ahead of it this
+    round;
+  - ``failed:`` -- Stage 4 could not apply the merge (its message follows).
+
+  A ``not merged``, ``refused`` or ``failed`` verdict holds until one of the two
+  windows changes, so it is recorded once, not every round.
 
 A window edge whose coherence statistic is undefined (an empty residual, or a band
 with no positive noise) is stored as ``nan`` and never triggers either: the gates

@@ -1605,10 +1605,10 @@ class ReplanInfo:
     Persistent twin of :class:`ftmwpipeline.fitting.plan_execution.ReplanEvent`.
     Emitted when a residual edge-coherence flag has no fixed contributor to
     thaw and a neighbor exists on that side, prompting Stage 4 to merge the
-    two windows and bump the plan revision -- when the neighbor touches the
-    window and the merged window fits the plan's width cap. Otherwise the
-    record says why the merge did not happen (``accepted`` False,
-    ``revision_after == revision_before``).
+    two windows and bump the plan revision -- when the flagged window's fit
+    holds a line, the neighbor touches the window and the merged window fits
+    the plan's width and peak caps. Otherwise the record says why the merge did
+    not happen (``accepted`` False, ``revision_after == revision_before``).
 
     Attributes
     ----------
@@ -1630,7 +1630,10 @@ class ReplanInfo:
     accepted : bool
         Whether the merge was applied and the refit completed.
     reason : str
-        Free-text annotation.
+        For an accepted merge, the trigger's description. Otherwise it starts
+        with one of ``not merged``, ``refused``, ``deferred`` or ``failed``
+        and ``": "``
+        (:data:`ftmwpipeline.fitting.plan_execution.REPLAN_REASON_PREFIXES`).
     """
 
     triggering_window_id: int

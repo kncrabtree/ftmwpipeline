@@ -62,7 +62,7 @@ import logging
 import math
 import os
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, List, Optional, Tuple, Union, cast
 
@@ -145,6 +145,12 @@ __all__ = [
     "DEFAULT_RESIDUAL_EDGE_M",
     "DEFAULT_MAX_THAW_ROUNDS",
     "DEFAULT_MAX_REPLAN_ROUNDS",
+    "STRUCTURAL_MERGE_MAX_UNCOVERED_BINS",
+    "REPLAN_NOT_MERGED",
+    "REPLAN_REFUSED",
+    "REPLAN_DEFERRED",
+    "REPLAN_FAILED",
+    "REPLAN_REASON_PREFIXES",
     "DEFAULT_BASELINE_ENABLED",
     "DEFAULT_BASELINE_ORDER",
     "DEFAULT_BASELINE_EDGE_THRESHOLD",
@@ -185,10 +191,12 @@ DEFAULT_MAX_REPLAN_ROUNDS = 2
 applies a *disjoint* set of merges -- no window takes part in two -- chosen by
 :func:`_select_structural_merges` (strongest flagged edge first, the window pair
 as tie-break). A request that shares a window with a merge already chosen is
-deferred: it is recorded as such and, if the merged survivor's edge still flags,
-asked again next round. A chain of N touching windows that all keep flagging
-therefore pairs off in about log2(N) rounds; requests still deferred when the
-cap is reached stay recorded as deferred."""
+deferred: it is recorded as such, and next round its triggering window's current
+outcome is scanned again against the revised plan -- if that window's edge still
+flags (and it still holds a fitted line), the request is re-evaluated like any
+other. A chain of N touching windows that all keep flagging therefore pairs off
+in about log2(N) rounds; requests still deferred when the cap is reached stay
+recorded as deferred."""
 
 STRUCTURAL_MERGE_MAX_UNCOVERED_BINS = 1
 """How far apart two windows may be and still *touch* for a structural merge:
@@ -208,7 +216,8 @@ split. On the 2638 reference plan (297 windows) 8 neighbour pairs abut, 3 sit
 one bin apart (windows 100/101 among them, 0.157 MHz) and the next-closest
 pair has 4 bins between. Of the pairs a structural merge requested there
 before this bound, 100/101 is the only one that touches; the others had 64 to
-1454 bins between them (5.1 to 114.3 MHz).
+1454 bins between them (5.1 to 114.3 MHz). (100/101 is not merged either: the
+flag is window 100's, and the cleanup empties window 100's fit.)
 
 A single uncovered bin is the largest gap with no spectrum of its own: both of
 its neighbours are edge bins of the two windows, so a line centred in it puts
@@ -217,6 +226,39 @@ spectrum. With two or more, a line can sit with its main lobe partly in bins
 no window has fit; merging across it would put spectrum into the fit that the
 planner left out, and a coherent edge beside such a gap is a feature in that
 gap, not one straddling a boundary."""
+
+# Structural-replan reason vocabulary. Every :class:`ReplanEvent` that is not
+# accepted has a ``reason`` that starts with exactly one of these prefixes and
+# ``": "``; an accepted event's reason is the trigger's own description (the
+# flagged edge and the window it merged with), with no prefix.
+REPLAN_NOT_MERGED = "not merged"
+"""The flagged edge is no evidence for a merge: the triggering window's fit holds
+no line (the per-node cleanup pruned every one, so the edge residual is not a
+fitted line straddling the boundary), or no window touches it (more than
+:data:`STRUCTURAL_MERGE_MAX_UNCOVERED_BINS` bins lie between it and the nearest
+one)."""
+
+REPLAN_REFUSED = "refused"
+"""The two windows touch, but the merged window would break a cap the Stage 4
+planner enforces: its width cap or, when set, its ``max_peaks_per_window``."""
+
+REPLAN_DEFERRED = "deferred"
+"""The merge qualifies but shares a window with a merge chosen ahead of it this
+round; the triggering window is scanned again next round, on the revised plan."""
+
+REPLAN_FAILED = "failed"
+"""Stage 4 could not apply the merge (:func:`~ftmwpipeline.preprocessing.
+window_planning.replan` or :func:`~ftmwpipeline.preprocessing.window_planning.
+merge_geometry` raised); the message follows. The rest of the round goes on
+without it."""
+
+REPLAN_REASON_PREFIXES = (
+    REPLAN_NOT_MERGED,
+    REPLAN_REFUSED,
+    REPLAN_DEFERRED,
+    REPLAN_FAILED,
+)
+"""Every prefix a not-accepted :class:`ReplanEvent` reason can start with."""
 
 DEFAULT_BASELINE_ENABLED = True
 """Whether the evidence-triggered leakage-wing baseline term is applied."""
@@ -457,7 +499,7 @@ class ReplanContext:
     through; tests can pass ``None`` to disable structural renegotiation.
 
     Stage 4 parameters (``edge_m``, ``edge_threshold``, ``max_window_width_mhz``,
-    ``min_freeze_snr``, ``acquisition_us``, ``tau_us``, ``start_us``,
+    ``max_window_width_points``, ``max_peaks_per_window``, ``min_freeze_snr``, ``acquisition_us``, ``tau_us``, ``start_us``,
     ``probe_freq_mhz``, ``min_window_half_width_mhz``, ``trim_m``) are read
     from :attr:`WindowPlan.parameters` automatically -- they are persisted as
     part of the plan and need not be threaded again.
@@ -494,10 +536,11 @@ class ReplanEvent:
     rather than a local co-fit. Emitted when the residual edge-coherence
     check flags a window edge that has no fixed contributor to thaw and a
     neighbor exists on that side. One event per flagged edge: ``accepted`` says
-    whether the merge was applied, and ``reason`` says why not when it was
-    refused (no window touches, or the merge would break the plan's width
-    cap), deferred (the pair shares a window with a merge chosen ahead of it
-    this round) or rejected by Stage 4.
+    whether the merge was applied, and a not-accepted ``reason`` starts with
+    one of :data:`REPLAN_REASON_PREFIXES` -- ``not merged`` (the window holds
+    no fitted line, or no window touches it), ``refused`` (the merge would
+    break a plan cap), ``deferred`` (the pair shares a window with a merge
+    chosen ahead of it this round) or ``failed`` (Stage 4 rejected it).
 
     Attributes
     ----------
@@ -525,7 +568,8 @@ class ReplanEvent:
         Whether the merge was applied and the refit completed (so the
         revised plan stands).
     reason : str
-        Free-text annotation.
+        For an accepted merge, the trigger's description; otherwise one of
+        :data:`REPLAN_REASON_PREFIXES`, ``": "`` and why.
     """
 
     triggering_window_id: int
@@ -2236,18 +2280,21 @@ def execute_plan(
        After the main walk, scan every outcome for flagged residual edges
        that have *no* fixed contributor on that side -- thaw cannot help
        them; a real feature crosses the boundary. Such an edge asks to merge
-       its window with the neighbour on that side, which must *touch* it (at
-       most :data:`STRUCTURAL_MERGE_MAX_UNCOVERED_BINS` bins between) and
-       leave a window within the plan's width cap; otherwise the trigger is
-       recorded as not merged. Each round applies a disjoint set of the
-       qualifying pairs (:func:`_select_structural_merges`; the rest are
-       recorded as deferred) as
-       :class:`~ftmwpipeline.core.data_structures.MergeRequest` s through
+       its window with the neighbour on that side when the window's fit holds
+       at least one line; the neighbour must *touch* it (at most
+       :data:`STRUCTURAL_MERGE_MAX_UNCOVERED_BINS` bins between) and the
+       merged window must fit the plan's width and peak caps. Each round
+       applies a disjoint set of the qualifying pairs
+       (:func:`_select_structural_merges`; the rest are recorded as deferred)
+       as :class:`~ftmwpipeline.core.data_structures.MergeRequest` s through
        :func:`~ftmwpipeline.preprocessing.window_planning.replan`; a request
-       Stage 4 rejects is dropped and recorded without costing the others.
-       Drop outcomes for the affected windows (mergers + transitive
-       downstream), re-walk them in topo order on the revised plan. Bounded
-       by ``replan_context.max_replan_rounds``.
+       Stage 4 rejects is recorded as failed and the round's set is chosen
+       again without it, so a request deferred behind it gets its turn.
+       Drop outcomes and thaw / rescue / cleanup records for the affected
+       windows (mergers + transitive downstream) and the absorbed ones,
+       re-walk the affected set in topo order on the revised plan. Bounded by
+       ``replan_context.max_replan_rounds``; the loop stops early when no
+       qualifying pair remains.
 
     The full plan-level outcome is returned; this function does **no file IO**.
     Pure inputs in, pure outputs out.
@@ -2559,9 +2606,9 @@ def execute_plan(
     if replan_context is not None:
         # Replan rounds are numbered from 1 (the initial walk is round 0): the
         # ``round`` of the WindowProgress pass that re-fits each round's set.
-        # A refusal (no touching partner, over the width cap) holds until one of
-        # the two windows changes, so it is recorded once, not every round.
-        refusals_seen: set[tuple[Any, ...]] = set()
+        # A not-merged, refused or failed verdict holds until one of the two
+        # windows changes, so it is recorded once, not every round.
+        settled_seen: set[tuple[Any, ...]] = set()
         for replan_round in range(1, replan_context.max_replan_rounds + 1):
             events.check_cancel()
             pending = _dispatch_structural_round(
@@ -2569,28 +2616,20 @@ def execute_plan(
             )
             if not pending:
                 break
-            requests, verdicts = _select_structural_merges(
+            new_plan, applied, verdicts = _choose_and_apply_structural_merges(
                 pending, plan, replan_context
             )
-            new_plan: Optional[WindowPlan] = None
-            applied: list[MergeRequest] = []
-            failed: dict[tuple[int, int], str] = {}
-            if requests:
-                new_plan, applied, failed = _apply_structural_merges(
-                    plan, requests, replan_context
-                )
             if new_plan is None:
-                # Nothing to apply (every trigger refused) or Stage 4 rejected
-                # all of it: record each verdict and stop -- the plan stays.
+                # No qualifying pair is left (every trigger refused, not merged
+                # or rejected by Stage 4): record each verdict and stop -- the
+                # plan stays.
                 for v in verdicts:
-                    pair = _pair_of(v.trigger.window_id, v.trigger.partner_id)
                     _record_replan_verdict(
                         replan_history,
-                        refusals_seen,
+                        settled_seen,
                         v,
                         plan,
                         accepted=False,
-                        reason=failed.get(pair, v.reason),
                         revision_after=plan.plan_revision,
                     )
                 break
@@ -2603,14 +2642,16 @@ def execute_plan(
             for wid in list(outcomes.keys()):
                 if wid not in new_by_id or wid in affected:
                     outcomes.pop(wid, None)
-            # Drop stale cleanup provenance for the windows about to be re-fit
-            # (and for any window the merge absorbed) so the re-walk's fresh
-            # records are the only ones the aggregation sees.
-            cleanup_history[:] = [
-                r
-                for r in cleanup_history
-                if r["window_id"] in new_by_id and r["window_id"] not in affected
-            ]
+            # Drop stale cleanup, thaw and rescue records for the windows about
+            # to be re-fit (and for any window the merge absorbed) so the
+            # re-walk's fresh records are the only ones the aggregation sees.
+            # Each record belongs to the window whose fit it changed (a thaw to
+            # the dependent whose edge flagged); that fit is about to be
+            # replaced, or no longer exists.
+            kept = set(new_by_id) - affected
+            cleanup_history[:] = [r for r in cleanup_history if r["window_id"] in kept]
+            thaw_history[:] = [e for e in thaw_history if e.dependent_window_id in kept]
+            rescue_history[:] = [e for e in rescue_history if e.window_id in kept]
             affected_order = [
                 wid for wid in new_plan.topological_order if wid in affected
             ]
@@ -2637,26 +2678,17 @@ def execute_plan(
             applied_pairs = {_pair_of(r.window_a_id, r.window_b_id) for r in applied}
             for v in verdicts:
                 pair = _pair_of(v.trigger.window_id, v.trigger.partner_id)
-                if v.status == "apply" and pair in applied_pairs:
-                    _record_replan_verdict(
-                        replan_history,
-                        refusals_seen,
-                        v,
-                        plan,
-                        accepted=min(pair) in new_by_id,
-                        reason=v.reason,
-                        revision_after=new_plan.plan_revision,
-                    )
-                else:
-                    _record_replan_verdict(
-                        replan_history,
-                        refusals_seen,
-                        v,
-                        plan,
-                        accepted=False,
-                        reason=failed.get(pair, v.reason),
-                        revision_after=plan.plan_revision,
-                    )
+                merged = v.status == "apply" and pair in applied_pairs
+                _record_replan_verdict(
+                    replan_history,
+                    settled_seen,
+                    v,
+                    plan,
+                    accepted=merged and min(pair) in new_by_id,
+                    revision_after=(
+                        new_plan.plan_revision if merged else plan.plan_revision
+                    ),
+                )
             plan = new_plan
     if replan_context is not None and replan_history:
         logger.info(
@@ -4519,13 +4551,15 @@ def _walk_windows_parallel(
 class _PendingMerge:
     """Internal dispatcher record: one window's flagged edge and the nearest
     window on that side (the merge it would ask for, if the pair qualifies --
-    see :func:`_select_structural_merges`)."""
+    see :func:`_select_structural_merges`). ``n_lines`` is how many lines the
+    window's current (post-cleanup) fit holds."""
 
     window_id: int
     partner_id: int
     edge_side: str
     edge_coherence: float
     reason: str
+    n_lines: int
 
 
 def _find_adjacent_window(
@@ -4569,8 +4603,9 @@ def _dispatch_structural_round(
     * **a window exists** in that direction in the current plan (the nearest
       one is named as the partner, at any distance).
 
-    Whether the pair may merge -- it must touch and the result must fit the
-    width cap -- and which of several overlapping requests go first is
+    Whether the pair may merge -- the window's fit must hold a line, the two
+    must touch and the result must fit the plan's caps -- and which of several
+    overlapping requests go first is
     :func:`_select_structural_merges`'s call. Returned in ``(window_id,
     edge_side)`` order, independent of the order the walk finished windows in.
     """
@@ -4618,6 +4653,7 @@ def _dispatch_structural_round(
                     edge_side=edge_side,
                     edge_coherence=float(edge_coh),
                     reason=reason,
+                    n_lines=int(outcome.fit.n_peaks),
                 )
             )
     return pending
@@ -4628,14 +4664,26 @@ def _pair_of(window_a_id: int, window_b_id: int) -> tuple[int, int]:
     return (min(window_a_id, window_b_id), max(window_a_id, window_b_id))
 
 
+#: Verdict statuses that hold until one of the two windows changes, so a repeat
+#: in a later round is not recorded again; each maps to its reason prefix.
+_SETTLED_STATUSES = {
+    "not_merged": REPLAN_NOT_MERGED,
+    "refused": REPLAN_REFUSED,
+    "failed": REPLAN_FAILED,
+}
+
+
 @dataclass
 class _MergeVerdict:
     """What one replan round decided for one trigger.
 
     ``status`` is ``"apply"`` (its pair is in the round's disjoint set),
-    ``"deferred"`` (its pair shares a window with a merge chosen ahead of it)
-    or ``"refused"`` (no touching partner, or the merge would break the width
-    cap -- a verdict that holds until either window changes).
+    ``"deferred"`` (its pair shares a window with a merge chosen ahead of it),
+    ``"not_merged"`` (the window holds no fitted line, or no window touches it),
+    ``"refused"`` (the merge would break a plan cap) or ``"failed"`` (Stage 4
+    could not apply it). ``reason`` is what the :class:`ReplanEvent` records:
+    the trigger's description for ``"apply"``, else the status's prefix from
+    :data:`REPLAN_REASON_PREFIXES`, ``": "`` and why.
     """
 
     trigger: _PendingMerge
@@ -4647,30 +4695,56 @@ def _select_structural_merges(
     pending: Sequence[_PendingMerge],
     plan: WindowPlan,
     ctx: ReplanContext,
+    rejected: Optional[Mapping[tuple[int, int], str]] = None,
 ) -> tuple[list[MergeRequest], list[_MergeVerdict]]:
     """Choose the merges one replan round applies.
 
-    A trigger qualifies when its partner **touches** it -- at most
-    :data:`STRUCTURAL_MERGE_MAX_UNCOVERED_BINS` active-FT bins lie between them
-    -- and the merged window's promoted peaks fit the plan's own width cap
-    (``max_window_width_points``, else ``max_window_width_mhz``: the resolved
-    Stage 4 settings recorded on the plan, bounding the same peak-content span
-    the planner bounds). Qualifying pairs are then taken greedily into a
-    **disjoint** set, strongest flagged edge first (a pair's strength is its
-    triggers' highest ``S_coh``) with the pair ``(lower id, higher id)`` as
-    tie-break; a pair sharing a window with one already taken is deferred.
-    The choice depends only on the plan and the edge values, never on the
-    order the walk finished windows in, so parallel and sequential fits agree.
+    A trigger qualifies when its window's fit holds at least one line (a window
+    the cleanup emptied has no fitted line to straddle the boundary), its
+    partner **touches** it -- at most :data:`STRUCTURAL_MERGE_MAX_UNCOVERED_BINS`
+    active-FT bins lie between them -- and the merged window fits the plan's own
+    caps: its promoted peaks span no more than the width cap
+    (``max_window_width_points``, else ``max_window_width_mhz``) and, when the
+    plan sets ``max_peaks_per_window``, it holds no more promoted peaks than
+    that (the resolved Stage 4 settings recorded on the plan, bounding what the
+    planner bounds; :func:`~ftmwpipeline.preprocessing.window_planning.
+    merge_geometry`). A pair in ``rejected`` (``pair -> reason``: Stage 4 could
+    not apply it earlier this round) does not qualify. Qualifying pairs are then
+    taken greedily into a **disjoint** set, strongest flagged edge first (a
+    pair's strength is its triggers' highest ``S_coh``) with the pair ``(lower
+    id, higher id)`` as tie-break; a pair sharing a window with one already
+    taken is deferred. The choice depends only on the plan, the edge values and
+    ``rejected``, never on the order the walk finished windows in, so parallel
+    and sequential fits agree.
 
     Returns the requests to apply (one per chosen pair, carrying the strongest
-    trigger's reason) and one verdict per trigger, in trigger order.
+    trigger's reason) and one verdict per trigger, in ``(window_id,
+    edge_side)`` order.
     """
+    rejected = rejected or {}
     ordered = sorted(
         pending, key=lambda t: (t.window_id, t.edge_side != "low", t.partner_id)
     )
     verdicts: list[Optional[_MergeVerdict]] = [None] * len(ordered)
     candidates: dict[tuple[int, int], list[int]] = {}
     for i, trig in enumerate(ordered):
+        pair = _pair_of(trig.window_id, trig.partner_id)
+        flag = (
+            f"residual edge-coherence {trig.edge_coherence:.2f} on "
+            f"{trig.edge_side} side"
+        )
+        if trig.n_lines < 1:
+            verdicts[i] = _MergeVerdict(
+                trig,
+                "not_merged",
+                f"{REPLAN_NOT_MERGED}: {flag}, but the window's fit holds no "
+                f"line, so no fitted line straddles its boundary with window "
+                f"{trig.partner_id}",
+            )
+            continue
+        if pair in rejected:
+            verdicts[i] = _MergeVerdict(trig, "failed", rejected[pair])
+            continue
         try:
             geom = merge_geometry(
                 plan,
@@ -4680,29 +4754,37 @@ def _select_structural_merges(
                 ctx.active_freq_mhz,
             )
         except ValueError as exc:
-            verdicts[i] = _MergeVerdict(trig, "refused", f"refused: {exc}")
+            verdicts[i] = _MergeVerdict(trig, "failed", f"{REPLAN_FAILED}: {exc}")
             continue
         if geom.uncovered_bins > STRUCTURAL_MERGE_MAX_UNCOVERED_BINS:
             verdicts[i] = _MergeVerdict(
                 trig,
-                "refused",
-                f"not merged: residual edge-coherence {trig.edge_coherence:.2f} "
-                f"on {trig.edge_side} side, but no window touches it: "
+                "not_merged",
+                f"{REPLAN_NOT_MERGED}: {flag}, but no window touches it: "
                 f"{geom.uncovered_bins} active-FT bins lie between it and the "
                 f"nearest, window {trig.partner_id} (a touching neighbour "
                 f"leaves at most {STRUCTURAL_MERGE_MAX_UNCOVERED_BINS})",
             )
             continue
-        if not geom.within_cap:
+        if not geom.within_width_cap:
             verdicts[i] = _MergeVerdict(
                 trig,
                 "refused",
-                f"refused: merging with window {trig.partner_id} would span "
-                f"{geom.content_bins} active-FT bins between the outermost "
+                f"{REPLAN_REFUSED}: merging with window {trig.partner_id} would "
+                f"span {geom.content_bins} active-FT bins between the outermost "
                 f"lines, over the plan's width cap of {geom.cap_bins:g}",
             )
             continue
-        candidates.setdefault(_pair_of(trig.window_id, trig.partner_id), []).append(i)
+        if not geom.within_peak_cap:
+            verdicts[i] = _MergeVerdict(
+                trig,
+                "refused",
+                f"{REPLAN_REFUSED}: merging with window {trig.partner_id} would "
+                f"hold {geom.n_peaks} promoted lines, over the plan's "
+                f"max_peaks_per_window of {geom.max_peaks}",
+            )
+            continue
+        candidates.setdefault(pair, []).append(i)
 
     def strength(pair: tuple[int, int]) -> float:
         return max(ordered[i].edge_coherence for i in candidates[pair])
@@ -4718,7 +4800,7 @@ def _select_structural_merges(
                 verdicts[i] = _MergeVerdict(
                     ordered[i],
                     "deferred",
-                    f"deferred: window {busy} merges with window "
+                    f"{REPLAN_DEFERRED}: window {busy} merges with window "
                     f"{merged_with[busy]} this round",
                 )
             continue
@@ -4740,21 +4822,23 @@ def _select_structural_merges(
 
 def _record_replan_verdict(
     history: list[ReplanEvent],
-    refusals_seen: set[tuple[Any, ...]],
+    settled_seen: set[tuple[Any, ...]],
     verdict: _MergeVerdict,
     plan: WindowPlan,
     *,
     accepted: bool,
-    reason: str,
     revision_after: int,
 ) -> None:
     """Append one trigger's :class:`ReplanEvent` for a round run on ``plan``.
 
-    A refusal holds until one of the two windows changes, so a refusal already
-    recorded for the same windows (same ids and ranges) is not recorded again.
+    A verdict that holds until one of the two windows changes (not merged,
+    refused, failed) is not recorded again while it does not: a repeat for the
+    same windows (same ids and ranges) and the same reason is skipped. The
+    reason is part of the key because a not-merged window can be re-fit as the
+    dependent of a merge and hold a line afterwards.
     """
     trig = verdict.trigger
-    if verdict.status == "refused":
+    if verdict.status in _SETTLED_STATUSES:
         by_id = {w.window_id: w for w in plan.windows}
         key = (
             trig.window_id,
@@ -4766,10 +4850,11 @@ def _record_replan_verdict(
                 if trig.partner_id in by_id
                 else None
             ),
+            verdict.reason,
         )
-        if key in refusals_seen:
+        if key in settled_seen:
             return
-        refusals_seen.add(key)
+        settled_seen.add(key)
     history.append(
         ReplanEvent(
             triggering_window_id=trig.window_id,
@@ -4780,7 +4865,7 @@ def _record_replan_verdict(
             revision_before=plan.plan_revision,
             revision_after=revision_after,
             accepted=accepted,
-            reason=reason,
+            reason=verdict.reason,
         )
     )
 
@@ -4789,36 +4874,62 @@ def _apply_structural_merges(
     plan: WindowPlan,
     requests: list[MergeRequest],
     ctx: ReplanContext,
-) -> tuple[Optional[WindowPlan], list[MergeRequest], dict[tuple[int, int], str]]:
-    """Hand a round's disjoint requests to Stage 4, dropping any it rejects.
+) -> tuple[Optional[WindowPlan], dict[tuple[int, int], str]]:
+    """Hand a round's disjoint requests to Stage 4.
 
-    Returns the revised plan (``None`` when nothing could be applied), the
-    requests it holds, and a ``pair -> reason`` map of the ones Stage 4
-    refused. One bad request costs only itself: on a rejection each request is
-    tried alone and the round goes ahead with the ones that pass.
+    Returns ``(revised plan, {})`` when Stage 4 applies them all. Otherwise
+    returns ``(None, failed)``: the requests are tried cumulatively in order and
+    ``failed`` maps each pair whose addition Stage 4 rejected to its
+    ``failed: ...`` reason, so the caller can choose the round's set again
+    without them (:func:`_choose_and_apply_structural_merges`) -- a request
+    that was deferred behind a rejected one then gets its turn.
     """
     try:
-        return _do_replan(plan, requests, ctx), list(requests), {}
+        return _do_replan(plan, requests, ctx), {}
     except ValueError:
         pass
     good: list[MergeRequest] = []
     failed: dict[tuple[int, int], str] = {}
+    new_plan: Optional[WindowPlan] = None
     for req in requests:
         try:
-            _do_replan(plan, [req], ctx)
+            candidate = _do_replan(plan, good + [req], ctx)
         except ValueError as exc:
-            failed[_pair_of(req.window_a_id, req.window_b_id)] = f"replan failed: {exc}"
+            failed[_pair_of(req.window_a_id, req.window_b_id)] = (
+                f"{REPLAN_FAILED}: {exc}"
+            )
         else:
             good.append(req)
-    if good:
-        try:
-            return _do_replan(plan, good, ctx), good, failed
-        except ValueError as exc:
-            for req in good:
-                failed[_pair_of(req.window_a_id, req.window_b_id)] = (
-                    f"replan failed: {exc}"
-                )
-    return None, [], failed
+            new_plan = candidate
+    if failed:
+        return None, failed
+    # Nothing failed once retried (the last try was the whole set).
+    return new_plan, {}
+
+
+def _choose_and_apply_structural_merges(
+    pending: Sequence[_PendingMerge],
+    plan: WindowPlan,
+    ctx: ReplanContext,
+) -> tuple[Optional[WindowPlan], list[MergeRequest], list[_MergeVerdict]]:
+    """One replan round's merges: select a disjoint set, apply it, and when
+    Stage 4 rejects part of it select again without the rejected pairs.
+
+    Repeats until a selected set applies whole or no qualifying pair is left
+    (each pass rejects at least one more pair, so it ends). Returns the revised
+    plan (``None`` when nothing qualifies), the requests it holds and the final
+    verdicts -- a trigger that was deferred behind a rejected merge is judged
+    again on the next pass, so no verdict defers to a merge that failed.
+    """
+    rejected: dict[tuple[int, int], str] = {}
+    while True:
+        requests, verdicts = _select_structural_merges(pending, plan, ctx, rejected)
+        if not requests:
+            return None, [], verdicts
+        new_plan, failed = _apply_structural_merges(plan, requests, ctx)
+        if new_plan is not None:
+            return new_plan, requests, verdicts
+        rejected.update(failed)
 
 
 _REPLAN_PARAM_KEYS = (
@@ -4827,6 +4938,7 @@ _REPLAN_PARAM_KEYS = (
     "edge_threshold",
     "max_window_width_mhz",
     "max_window_width_points",
+    "max_peaks_per_window",
     "min_freeze_snr",
     "min_window_half_width_mhz",
     "min_window_half_width_points",

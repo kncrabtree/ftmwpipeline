@@ -19,6 +19,7 @@ from ftmwpipeline.core.data_structures import (
     WindowPlan,
 )
 from ftmwpipeline.preprocessing.window_planning import (
+    DEFAULT_MAX_PEAKS_PER_WINDOW,
     DEFAULT_MAX_WINDOW_WIDTH_MHZ,
     DEFAULT_MAX_WINDOW_WIDTH_POINTS,
     build_window_plan,
@@ -879,6 +880,27 @@ class TestReplanMerge:
             assert pos[parent] < pos[child]
         _assert_invariants(revised)
 
+    def test_the_revised_plan_records_the_caps_merge_geometry_reads(self):
+        """A revised plan carries both caps, so a later round's
+        :func:`merge_geometry` judges a merge by the settings Stage 4 used."""
+        plan, peaks, freqs, spec, rms = self._two_window_plan()
+        revised = replan(
+            plan,
+            [],
+            peaks,
+            freqs,
+            spec,
+            rms,
+            acquisition_us=15.0,
+            max_window_width_points=80,
+            max_peaks_per_window=5,
+        )
+        assert revised.parameters["max_window_width_points"] == 80
+        assert revised.parameters["max_peaks_per_window"] == 5
+        a, b = revised.windows
+        geom = merge_geometry(revised, a.window_id, b.window_id, peaks, freqs)
+        assert (geom.cap_bins, geom.max_peaks) == (80.0, 5)
+
     def test_revision_counter_chains_across_replans(self):
         plan, peaks, freqs, spec, rms = self._two_window_plan()
         once = replan(plan, [], peaks, freqs, spec, rms, acquisition_us=15.0)
@@ -1037,6 +1059,23 @@ class TestMergeGeometry:
         assert geom.cap_bins == 20.0
         assert not geom.within_cap
 
+    @pytest.mark.parametrize(
+        "max_peaks, within", [(0, True), (4, True), (3, True), (2, False)]
+    )
+    def test_the_peak_cap_bounds_the_merged_line_count(self, max_peaks, within):
+        """``max_peaks_per_window`` (when positive) bounds the promoted peaks
+        the merged window holds, as the planner's cap split does; ``0`` is no
+        cap."""
+        plan, peaks, freqs = _geom_plan(
+            [(0, 0, 100, [60, 90]), (1, 101, 200, [110])],
+            {"max_peaks_per_window": max_peaks},
+        )
+        geom = merge_geometry(plan, 0, 1, peaks, freqs)
+        assert (geom.n_peaks, geom.max_peaks) == (3, max_peaks)
+        assert geom.within_width_cap
+        assert geom.within_peak_cap is within
+        assert geom.within_cap is within
+
     def test_a_plan_without_width_parameters_uses_the_stage4_defaults(self):
         plan, peaks, freqs = _geom_plan([(0, 0, 100, [10]), (1, 101, 200, [60])])
         geom = merge_geometry(plan, 0, 1, peaks, freqs)
@@ -1046,6 +1085,7 @@ class TestMergeGeometry:
             else DEFAULT_MAX_WINDOW_WIDTH_MHZ / _GEOM_STEP
         )
         assert geom.cap_bins == pytest.approx(expected)
+        assert geom.max_peaks == DEFAULT_MAX_PEAKS_PER_WINDOW
 
     def test_windows_with_fewer_than_two_peaks_have_no_content_span(self):
         plan, peaks, freqs = _geom_plan([(0, 0, 100, [10]), (1, 101, 200, [])])

@@ -1183,6 +1183,12 @@ class MergeGeometry:
         The plan's width cap in grid steps (``max_window_width_points`` when
         positive, else ``max_window_width_mhz`` over the grid step) -- the
         resolved Stage 4 setting recorded on the plan.
+    n_peaks : int
+        Promoted free peaks the merged window would hold (both windows'
+        ``free_peak_indices``): the quantity the planner's peak cap bounds.
+    max_peaks : int
+        The plan's ``max_peaks_per_window``; ``0`` (the default) means no peak
+        cap.
     """
 
     lower_window_id: int
@@ -1190,11 +1196,27 @@ class MergeGeometry:
     uncovered_bins: int
     content_bins: int
     cap_bins: float
+    n_peaks: int = 0
+    max_peaks: int = DEFAULT_MAX_PEAKS_PER_WINDOW
+
+    @property
+    def within_width_cap(self) -> bool:
+        """Whether the merged window's peak content fits the planner's width
+        cap."""
+        return self.content_bins <= self.cap_bins
+
+    @property
+    def within_peak_cap(self) -> bool:
+        """Whether the merged window holds no more promoted peaks than the
+        planner's peak cap (always true when the plan sets none)."""
+        return self.max_peaks <= 0 or self.n_peaks <= self.max_peaks
 
     @property
     def within_cap(self) -> bool:
-        """Whether the merged window's peak content fits the planner's cap."""
-        return self.content_bins <= self.cap_bins
+        """Whether the merged window fits every cap the planner enforces: the
+        width cap and, when set, the peak cap -- the two bounds
+        :func:`_split_span_to_caps` splits a span to satisfy."""
+        return self.within_width_cap and self.within_peak_cap
 
 
 def merge_geometry(
@@ -1213,8 +1235,9 @@ def merge_geometry(
     Parameters
     ----------
     plan : WindowPlan
-        The plan both windows belong to; its ``parameters`` supply the width cap
-        (falling back to the Stage 4 defaults for a plan that predates them).
+        The plan both windows belong to; its ``parameters`` supply the width and
+        peak caps (falling back to the Stage 4 defaults for a plan that predates
+        them).
     window_a_id, window_b_id : int
         The two windows, in either order.
     peaks : sequence of Peak
@@ -1244,12 +1267,10 @@ def merge_geometry(
     top = _nearest_grid_index(ofreqs, lo_w.freq_range[1])
     bottom = _nearest_grid_index(ofreqs, hi_w.freq_range[0])
     uncovered = max(bottom - top - 1, 0)
-    gidx = [
-        _nearest_grid_index(ofreqs, float(peaks[li].frequency))
-        for w in (lo_w, hi_w)
-        for li in w.free_peak_indices
-        if 0 <= li < len(peaks)
-    ]
+    members = sorted(
+        {li for w in (lo_w, hi_w) for li in w.free_peak_indices if 0 <= li < len(peaks)}
+    )
+    gidx = [_nearest_grid_index(ofreqs, float(peaks[li].frequency)) for li in members]
     content = (max(gidx) - min(gidx)) if len(gidx) >= 2 else 0
     params = plan.parameters
     cap = _width_cap_bins(
@@ -1263,6 +1284,8 @@ def merge_geometry(
         uncovered_bins=int(uncovered),
         content_bins=int(content),
         cap_bins=cap,
+        n_peaks=len(members),
+        max_peaks=int(params.get("max_peaks_per_window", DEFAULT_MAX_PEAKS_PER_WINDOW)),
     )
 
 
@@ -1287,6 +1310,7 @@ def replan(
     skirt_level_keep: float = DEFAULT_SKIRT_LEVEL_KEEP,
     curvature_keep_sigma: float = DEFAULT_CURVATURE_KEEP_SIGMA,
     max_window_width_points: int = DEFAULT_MAX_WINDOW_WIDTH_POINTS,
+    max_peaks_per_window: int = DEFAULT_MAX_PEAKS_PER_WINDOW,
 ) -> WindowPlan:
     """Re-plan: apply structural change requests to an existing window plan.
 
@@ -1318,13 +1342,15 @@ def replan(
         window absorbed by an earlier request cannot be named again (it raises
         ``unknown window``); Stage 5 hands a disjoint set. Any two adjacent
         windows may be merged here -- the gap or width of the result is not
-        policed; :func:`merge_geometry` measures both for a caller that needs
-        to (Stage 5's structural renegotiation).
+        policed; :func:`merge_geometry` measures both, and the peak count, for
+        a caller that needs to (Stage 5's structural renegotiation).
     peaks, freqs, complex_spectrum, rms_noise : ...
         Same inputs the plan was built from.
     acquisition_us, tau_us, edge_m, trim_m, edge_threshold,
-    max_window_width_mhz, min_freeze_snr, min_window_half_width_mhz : ...
-        Stage 4 parameters; see :func:`build_window_plan`.
+    max_window_width_mhz, min_freeze_snr, min_window_half_width_mhz,
+    max_window_width_points, max_peaks_per_window : ...
+        Stage 4 parameters; see :func:`build_window_plan`. Recorded on the
+        revised plan, so a later :func:`merge_geometry` reads the same caps.
 
     Returns
     -------
@@ -1357,6 +1383,7 @@ def replan(
         "skirt_level_keep": float(skirt_level_keep),
         "curvature_keep_sigma": float(curvature_keep_sigma),
         "max_window_width_points": int(max_window_width_points),
+        "max_peaks_per_window": int(max_peaks_per_window),
         "acquisition_us": float(acquisition_us),
         "tau_us": tau_us,
     }
