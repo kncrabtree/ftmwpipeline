@@ -3626,14 +3626,21 @@ def select_window_ids(
     return sorted(selected)
 
 
-def _detail_title(bundle: _DetailBundle, window_id: int) -> str:
-    wf = bundle.fit.window_fit(window_id)
+def _detail_title(
+    bundle: _DetailBundle, window_id: int, window_fit: Optional[FittingResult] = None
+) -> str:
+    wf = window_fit if window_fit is not None else bundle.fit.window_fit(window_id)
     lo, hi = wf.window.freq_range  # type: ignore[union-attr]
-    tau = float(wf.shared_parameters.get("tau_us", {}).get("value", 0.0))
-    return (
+    head = (
         f"{bundle.file_stem}  window {window_id}  "
         f"[{min(lo, hi):.2f}, {max(lo, hi):.2f}] MHz  "
-        f"K={len(wf.fitted_peaks)}  chi2_r={float(wf.reduced_chi2):.2f}  "
+    )
+    if window_fit is not None and not wf.fitted_peaks:
+        # A lineless review window: nothing was fitted, the residual is the data.
+        return head + "no fitted line (residual = data)"
+    tau = float(wf.shared_parameters.get("tau_us", {}).get("value", 0.0))
+    return (
+        head + f"K={len(wf.fitted_peaks)}  chi2_r={float(wf.reduced_chi2):.2f}  "
         f"tau={tau:.3g} us  shape={getattr(wf, 'shape', 'lorentzian')}"
     )
 
@@ -3645,12 +3652,19 @@ def render_fit_detail_impl(
     bundle: Optional[_DetailBundle] = None,
     figsize: Optional[Tuple[float, float]] = None,
     title: Optional[str] = None,
+    window_fit: Optional[FittingResult] = None,
 ) -> Any:
-    """Render the consolidated per-window detail figure for one window."""
+    """Render the consolidated per-window detail figure for one window.
+
+    ``window_fit`` draws that result instead of the fit's own for
+    ``window_id``: the review surfaces pass a lineless one
+    (:func:`~ftmwpipeline._internal.empty_window_attention.lineless_window_fit`)
+    for a flagged window the fit holds no line in.
+    """
     from ..visualization.fit_detail import DEFAULT_FIGSIZE, plot_consolidated_detail
 
     bundle = bundle if bundle is not None else _resolve_detail_bundle(file_path)
-    wf = bundle.fit.window_fit(window_id)
+    wf = window_fit if window_fit is not None else bundle.fit.window_fit(window_id)
     grading = grading_thresholds_from_diagnostics(file_path, bundle.fit.diagnostics)
     return plot_consolidated_detail(
         wf,
@@ -3659,7 +3673,7 @@ def render_fit_detail_impl(
         rms_noise=bundle.rms_noise,
         sideband=bundle.sideband,
         acquisition_us=bundle.acquisition_us,
-        title=title if title is not None else _detail_title(bundle, window_id),
+        title=title if title is not None else _detail_title(bundle, window_id, wf),
         amplitude_scale=bundle.amplitude_scale,
         units_label=bundle.units_label,
         trim_mhz=bundle.trim_mhz,
@@ -3732,6 +3746,7 @@ def render_fit_panels_impl(
     *,
     bundle: Optional[_DetailBundle] = None,
     with_overview: bool = True,
+    window_fit: Optional[FittingResult] = None,
 ) -> Dict[str, Any]:
     """Render one window's detail as separate, standalone panel figures.
 
@@ -3743,12 +3758,13 @@ def render_fit_panels_impl(
 
     ``with_overview=False`` skips the full-spectrum ``"overview"`` panel; the
     HTML report discards it (it embeds one shared interactive overview), so
-    building one per window is wasted work.
+    building one per window is wasted work. ``window_fit`` draws that result
+    instead of the fit's own, as for :func:`render_fit_detail_impl`.
     """
     from ..visualization.fit_detail import plot_window_panels
 
     bundle = bundle if bundle is not None else _resolve_detail_bundle(file_path)
-    wf = bundle.fit.window_fit(window_id)
+    wf = window_fit if window_fit is not None else bundle.fit.window_fit(window_id)
     return plot_window_panels(
         wf,
         frequencies=bundle.frequencies,

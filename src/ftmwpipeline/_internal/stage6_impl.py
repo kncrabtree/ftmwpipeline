@@ -135,6 +135,12 @@ from .absence_rules import (
 from .atomic import atomic_write
 from .atomic import exists as pipeline_exists
 from .atomic import h5open, resolve
+from .empty_window_attention import (
+    EMPTY_WINDOW_RESIDUAL,
+    empty_window_reasons,
+    flagged_lineless_ids,
+    superseded_window_ids,
+)
 from .events import StageScope, detached_scope, operation_events
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage2_impl import _update_stage_completion
@@ -3902,7 +3908,9 @@ def _require_complete_fit(path: str, verb: str) -> None:
 
 def _known_window_ids(path: str) -> Tuple[Set[int], str]:
     """The window ids a bare accept may name (the Stage 5 fit's, which include
-    every created window), and where they were read from.
+    every created window, plus the windows the review flagged
+    ``empty_window_residual``, which the fit holds no line in), and where they
+    were read from.
 
     A bare accept changes no fitted number, but it is a curation decision on
     the fit: with no complete fit (never run, or only a partial fit) it is
@@ -3911,6 +3919,14 @@ def _known_window_ids(path: str) -> Tuple[Set[int], str]:
     _require_complete_fit(path, "review accept")
     with h5open(path, "r") as h5f:
         known = {c.window_id for c in read_fit_window_coverage(h5f["stage5_fitting"])}
+        review = (
+            load_stage6_review_from_hdf5(h5f["stage6_review"])
+            if "stage6_review" in h5f
+            else Stage6Review()
+        )
+    # A window the review flagged although the fit holds no line in it
+    # (``empty_window_residual``) can be marked reviewed too.
+    known |= flagged_lineless_ids(review, known)
     return known, "Stage 5 fit"
 
 
@@ -3928,6 +3944,17 @@ def _require_known_window(path: str, window_id: int) -> None:
             [window_id],
             message=f"window_id={window_id} not found in the {where}",
         )
+
+
+def _plan_window_center(path: str, window_id: int, default: float) -> float:
+    """The centre of ``window_id``'s fitted-plan range, or ``default`` when the
+    fitted plan has no such window (a lineless flagged window's accept anchor)."""
+    from .fitted_plan import load_fitted_plan
+
+    for w in load_fitted_plan(path).plan.windows:
+        if int(w.window_id) == int(window_id):
+            return 0.5 * (float(w.freq_range[0]) + float(w.freq_range[1]))
+    return default
 
 
 def _record_bare_accept(path: str, window_id: int) -> None:
@@ -3956,6 +3983,8 @@ def _record_bare_accept(path: str, window_id: int) -> None:
                                 ),
                             ).frequency_mhz
                         )
+                else:
+                    anchor_freq = _plan_window_center(path, window_id, anchor_freq)
     except Exception:
         pass
 
@@ -6447,6 +6476,10 @@ class _BatchChangeset:
     """Pending decision-log entries, in the order they will be recorded
     (``window_id`` / ``frequency_mhz`` / ``kind`` / ``evidence`` / ``bare``)."""
     next_decision_index: int = 0
+    lineless_reviewable: FrozenSet[int] = frozenset()
+    """Windows the persisted review flagged ``empty_window_residual`` that the
+    fit has no result for: a bare accept may name one (it records a decision
+    and changes no fit)."""
 
 
 @dataclass
@@ -6733,11 +6766,15 @@ def _build_batch_changeset(
     effective_plan = _overlay_created_windows(shared.base_plan, created_windows)
     fit_window_map = {w.window_id: w for w in effective_plan.windows}
 
+    fit_ids = {
+        int(wf.window_id) for wf in spectrum_fit.window_fits if wf.window_id is not None
+    }
     return _BatchChangeset(
         spectrum_fit=spectrum_fit,
         created_windows=created_windows,
         fit_window_map=fit_window_map,
         next_decision_index=len(review.decision_log),
+        lineless_reviewable=frozenset(flagged_lineless_ids(review, fit_ids)),
     )
 
 
@@ -7653,6 +7690,25 @@ def _batch_apply_accept(
     wf_list = [
         wf for wf in ctx.changeset.spectrum_fit.window_fits if wf.window_id == window_id
     ]
+    if not wf_list and window_id in ctx.changeset.lineless_reviewable:
+        # A flagged window the fit holds no line in: marked reviewed, anchored
+        # at the centre of its planned range.
+        plan_win = ctx.changeset.fit_window_map.get(window_id)
+        if plan_win is not None:
+            anchor_freq = 0.5 * (
+                float(plan_win.freq_range[0]) + float(plan_win.freq_range[1])
+            )
+        ctx.changeset.decisions.append(
+            {
+                "window_id": window_id,
+                "frequency_mhz": anchor_freq,
+                "kind": "accept",
+                "evidence": {},
+                "bare": True,
+            }
+        )
+        ctx.changeset.next_decision_index += 1
+        return None
     if not wf_list:
         # The batch's own fit, so a window created earlier in this batch counts.
         raise NotFoundError(
@@ -8351,12 +8407,72 @@ def _derive_batch_review(ctx: _BatchCtx, path: str) -> Stage6Review:
                 invalidated=False,
             )
 
+    _settle_empty_window_reasons(
+        statuses,
+        ctx.changeset.spectrum_fit,
+        ctx.changeset.created_windows,
+        base_plan_windows=ctx.shared.base_plan.windows,
+        edited_window_ids={
+            int(d["window_id"])
+            for d in ctx.changeset.decisions
+            if str(d["kind"]) in _FIT_EDIT_KINDS
+        },
+    )
+
     return Stage6Review(
         window_statuses=statuses,
         decision_log=list(existing_review.decision_log) + new_entries,
         final_products=final_products,
         created_windows=list(ctx.changeset.created_windows),
     )
+
+
+def _settle_empty_window_reasons(
+    statuses: Dict[int, WindowReviewStatus],
+    spectrum_fit: SpectrumFit,
+    created_windows: Sequence["FitWindow"],
+    *,
+    base_plan_windows: Sequence["FitWindow"],
+    edited_window_ids: Set[int],
+) -> None:
+    """Drop the ``empty_window_residual`` reason the batch resolved, in place.
+
+    The reason stops describing a window once the fit holds a line in it, a
+    fit-changing decision was recorded on it, or a created window took it over
+    (:func:`~ftmwpipeline._internal.empty_window_attention.superseded_window_ids`)
+    -- the same conditions :func:`review_run_impl` leaves it out under. A
+    lineless window whose status then carries nothing and was never reviewed has
+    no status left to keep.
+    """
+    flagged = [
+        wid
+        for wid, st in statuses.items()
+        if any(r.kind == EMPTY_WINDOW_RESIDUAL for r in st.attention_reasons)
+    ]
+    if not flagged:
+        return
+    fit_ids = {
+        int(wf.window_id) for wf in spectrum_fit.window_fits if wf.window_id is not None
+    }
+    live = {
+        int(wf.window_id)
+        for wf in spectrum_fit.window_fits
+        if wf.window_id is not None and wf.fitted_peaks
+    }
+    gone = (
+        live
+        | edited_window_ids
+        | superseded_window_ids(base_plan_windows, created_windows)
+    )
+    for wid in flagged:
+        if wid not in gone:
+            continue
+        st = statuses[wid]
+        kept = [r for r in st.attention_reasons if r.kind != EMPTY_WINDOW_RESIDUAL]
+        if not kept and st.provenance == "auto" and wid not in fit_ids:
+            del statuses[wid]
+        else:
+            statuses[wid] = replace(st, attention_reasons=kept)
 
 
 def _write_stage6_review_only(review: Stage6Review, path: str) -> None:
@@ -10457,7 +10573,9 @@ class ReviewRunResult:
     Attributes
     ----------
     n_windows : int
-        Total number of fit windows processed.
+        Number of windows the review holds a status for: every window the
+        fit has a result for, plus each window flagged
+        ``empty_window_residual`` (the fit holds no line in it).
     n_attention : int
         Number of windows with at least one attention reason.
     reason_counts : dict
@@ -10712,6 +10830,44 @@ def _compute_attention_reasons(
             )
 
     return reasons
+
+
+def _empty_window_attention(
+    path: str,
+    spectrum_fit: SpectrumFit,
+    review: Stage6Review,
+    *,
+    acquisition_us: float,
+) -> Dict[int, AttentionReason]:
+    """The ``empty_window_residual`` reasons of ``path``'s fitted-plan windows.
+
+    Reads the fitted plan and the Stage 3 peak list only when Stage 5 recorded
+    an edge handshake at all. Windows Stage 6 created, and windows a
+    fit-changing decision was recorded on, are left out: the Stage 5 records do
+    not describe their current fit. See
+    :func:`~ftmwpipeline._internal.empty_window_attention.empty_window_reasons`.
+    """
+    from ..io.peak_serialization import load_peaks_from_hdf5
+    from .fitted_plan import load_fitted_plan
+
+    if not spectrum_fit.thaw_history and not spectrum_fit.replan_history:
+        return {}
+    with h5open(path, "r") as h5f:
+        if "stage3_peaks" not in h5f or "stage4_windows" not in h5f:
+            return {}
+        stage3_peaks = load_peaks_from_hdf5(h5f["stage3_peaks"])
+    plan_windows = load_fitted_plan(path).plan.windows
+    excluded = superseded_window_ids(plan_windows, review.created_windows) | {
+        int(e.window_id) for e in review.decision_log if e.kind in _FIT_EDIT_KINDS
+    }
+    resolution_mhz = 1.0 / acquisition_us if acquisition_us > 0.0 else 0.1
+    return empty_window_reasons(
+        spectrum_fit,
+        plan_windows,
+        stage3_peaks,
+        excluded_window_ids=excluded,
+        spur_tol_mhz=SPUR_ADJACENT_MAX_SEP_RES * resolution_mhz,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -11518,6 +11674,26 @@ def _review_run(
             window_id=wid,
             provenance=provenance,
             attention_reasons=reasons,
+            invalidated=invalidated,
+        )
+
+    # A window of the fitted plan the fit holds no line in, whose edge Stage 5
+    # still flagged: it has no window result above, so it gets its status here.
+    for wid, empty_reason in _empty_window_attention(
+        path, spectrum_fit, existing_review, acquisition_us=acquisition_us
+    ).items():
+        if wid in new_statuses:
+            new_statuses[wid].attention_reasons.append(empty_reason)
+            continue
+        prior = existing_review.window_statuses.get(wid)
+        if prior is not None and prior.provenance != "auto":
+            provenance, invalidated = prior.provenance, prior.invalidated
+        else:
+            provenance, invalidated = "auto", False
+        new_statuses[wid] = WindowReviewStatus(
+            window_id=wid,
+            provenance=provenance,
+            attention_reasons=[empty_reason],
             invalidated=invalidated,
         )
 

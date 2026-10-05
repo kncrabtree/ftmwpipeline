@@ -31,7 +31,8 @@ HDF5 layout (under the caller-supplied group)::
 The window-status data is a JSON list of dicts with keys
 ``window_id``, ``provenance``, ``attention_reasons``, ``invalidated``.
 Each element of ``attention_reasons`` is a dict with keys
-``kind``, ``detail``, ``severity``.
+``kind``, ``detail``, ``severity``, ``locations`` and ``evidence`` (a JSON
+object; absent in records written before it existed, read as empty).
 
 The decision log is a JSON list (a window carries entries once a `review` edit
 records a decision against it). The final-products subgroup holds the
@@ -151,6 +152,7 @@ def _status_to_dict(status: WindowReviewStatus) -> Dict[str, Any]:
                 "detail": r.detail,
                 "severity": r.severity,
                 "locations": list(r.locations),
+                "evidence": dict(r.evidence),
             }
             for r in status.attention_reasons
         ],
@@ -165,6 +167,7 @@ def _status_from_dict(d: Dict[str, Any]) -> WindowReviewStatus:
             detail=str(r["detail"]),
             severity=float(r["severity"]),
             locations=[float(x) for x in r.get("locations", [])],
+            evidence=dict(r.get("evidence", {})),
         )
         for r in d.get("attention_reasons", [])
     ]

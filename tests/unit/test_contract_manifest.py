@@ -255,6 +255,7 @@ SNAPSHOT_FIELDS: dict = {
         "provenance",
         "evidence",
     },
+    "AttentionReason": {"kind", "detail", "severity", "locations", "evidence"},
     "RefitWindowResult": {"converged"},
     "PreviewWindowResult": {"converged"},
     "AppliedWindowResult": {"converged"},
@@ -314,6 +315,15 @@ SNAPSHOT_VOCABULARIES = {
         "settings_changed",
         "incomplete_provenance",
         "thaw_refit",
+    },
+    "attention_kind": {
+        "worst_eps",
+        "auto_merged_review",
+        "candidate_bearing",
+        "spur_adjacent",
+        "edge_boundary",
+        "flat_decay",
+        "empty_window_residual",
     },
 }
 
@@ -540,7 +550,7 @@ def test_manifest_sequences_are_tuples():
 
 
 def test_manifest_version_matches_package():
-    assert MANIFEST.contract_version == ftmwpipeline.CONTRACT_VERSION == 13
+    assert MANIFEST.contract_version == ftmwpipeline.CONTRACT_VERSION == 14
     assert isinstance(ftmwpipeline.CONTRACT_VERSION, int)
 
 
@@ -633,7 +643,11 @@ def _type_registry() -> dict:
     from ftmwpipeline.contract import EVENT_TYPES, WindowStatusRow
     from ftmwpipeline.core.calibration import CalibrationStamp
     from ftmwpipeline.core.curation import CurationAction
-    from ftmwpipeline.core.data_structures import DecisionLogEntry, FinalPeak
+    from ftmwpipeline.core.data_structures import (
+        AttentionReason,
+        DecisionLogEntry,
+        FinalPeak,
+    )
 
     return {
         **{cls.__name__: cls for cls in EVENT_TYPES},
@@ -641,6 +655,7 @@ def _type_registry() -> dict:
         "CalibrationStamp": CalibrationStamp,
         "FinalPeak": FinalPeak,
         "DecisionLogEntry": DecisionLogEntry,
+        "AttentionReason": AttentionReason,
         "RefitWindowResult": RefitWindowResult,
         "PreviewWindowResult": PreviewWindowResult,
         "AppliedWindowResult": AppliedWindowResult,
@@ -723,6 +738,26 @@ def test_decision_kinds_recorded_by_the_code_are_declared():
     }
     assert decision_like <= declared
     assert {"add", "remove", "merge", "split", "accept", "create_window"} <= recorded
+
+
+def test_attention_vocabulary_matches_the_code():
+    from ftmwpipeline.core.data_structures import ATTENTION_KINDS
+
+    assert MANIFEST.vocabularies["attention_kind"] == ATTENTION_KINDS
+
+
+def test_attention_kinds_recorded_by_the_code_are_declared():
+    """Every literal ``kind=`` an attention reason is built with is declared."""
+    import re
+
+    from ftmwpipeline._internal import empty_window_attention, stage6_impl
+
+    declared = set(MANIFEST.vocabularies["attention_kind"])
+    source = inspect.getsource(stage6_impl)
+    recorded = set(re.findall(r'AttentionReason\(\s*kind="([a-z_]+)"', source))
+    recorded.add(empty_window_attention.EMPTY_WINDOW_RESIDUAL)
+    assert recorded <= declared
+    assert {"worst_eps", "candidate_bearing", "spur_adjacent"} <= recorded
 
 
 def test_manifest_rejects_pipeline_names_for_non_accessors():

@@ -453,15 +453,16 @@ def test_stage_order_is_started_other_invalidated_finished():
 # ---- manifest and capabilities ---------------------------------------------------
 
 
-def test_contract_version_is_thirteen():
+def test_contract_version_is_fourteen():
     # 9: events and cancellation (Wave 5.1); 10: write_conflict and atomic
     # writes (Wave 5.1b); 11: Stage 5 partial fits and resume (Wave 5.2);
     # 12: the cleanup wave (curation_conflict, ComplexFT.invalidated,
     # degenerate statistics read UNDEFINED); 13: windows after a structural
-    # merge (WindowStatusRow.merged_from, fit_plan_unavailable).
-    assert ftmwpipeline.CONTRACT_VERSION == 13
-    assert MANIFEST.contract_version == 13
-    assert capabilities()["contract_version"] == 13
+    # merge (WindowStatusRow.merged_from, fit_plan_unavailable); 14: review
+    # attention (AttentionReason, the attention_kind vocabulary).
+    assert ftmwpipeline.CONTRACT_VERSION == 14
+    assert MANIFEST.contract_version == 14
+    assert capabilities()["contract_version"] == 14
 
 
 def test_event_schemas_are_in_the_manifest_and_capabilities():

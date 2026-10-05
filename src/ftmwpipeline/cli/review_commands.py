@@ -15,9 +15,10 @@ span, is read as one -- see ``review edit``'s description and
 import argparse
 import json
 import sys
-from typing import Any, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 from .._internal.atomic import h5open
+from .._internal.empty_window_attention import review_lineless_window_fits
 from .._internal.stage6_impl import (
     DEFAULT_ATTENTION_CANDIDATE_EVIDENCE,
     DEFAULT_DISPLAY_BAR,
@@ -50,6 +51,7 @@ from .._internal.stage6_impl import (
 from ..core.absent import Absent
 from ..core.curation import REFIT_SNAP_TOL_BINS, Frame
 from ..core.data_structures import (
+    AttentionReason,
     FittingResult,
     LedgerCandidate,
     Stage6Review,
@@ -151,14 +153,31 @@ def _add_actions_argument(parser: argparse.ArgumentParser, verb: str) -> None:
     )
 
 
-def _load_window_fits(file_path: str) -> List[FittingResult]:
-    """Return per-window FittingResult objects from the persisted Stage 5 fit."""
+def _load_review_window_fits(
+    file_path: str, review: Stage6Review
+) -> Tuple[List[FittingResult], Dict[int, FittingResult]]:
+    """The windows ``review show`` reports: every Stage 5 window result, plus a
+    lineless result for each flagged window the fit holds no line in
+    (``empty_window_residual``). Returns ``(window_fits, lineless)``, the
+    second keyed by window id (a subset of the first)."""
     require_pipeline_file(file_path)
     with h5open(file_path, "r") as h5f:
         if "stage5_fitting" not in h5f:
             raise ValueError("No Stage 5 fit found. Run 'fit run' first.")
         spectrum_fit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
-    return list(spectrum_fit.window_fits)
+    lineless = review_lineless_window_fits(file_path, review, spectrum_fit)
+    return list(spectrum_fit.window_fits) + list(lineless.values()), lineless
+
+
+def _attention_reason_json(r: AttentionReason) -> dict:
+    """One attention reason, as ``review show --json`` reports it."""
+    return {
+        "kind": r.kind,
+        "severity": r.severity,
+        "detail": r.detail,
+        "locations": list(r.locations),
+        "evidence": dict(r.evidence),
+    }
 
 
 def _fmt_mhz(v: float) -> str:
@@ -348,15 +367,20 @@ def cmd_review_show(args: argparse.Namespace) -> int:
     output_path: Optional[str] = getattr(args, "output", None)
     output_dir: Optional[str] = getattr(args, "output_dir", None)
 
+    review: Stage6Review = get_review_status_impl(file_path)
     try:
-        window_fits = _load_window_fits(file_path)
+        window_fits, lineless = _load_review_window_fits(file_path, review)
     except PipelineFileError:
         raise
     except ValueError as exc:
         print(f"Error: {exc}")
         return 1
 
-    review: Stage6Review = get_review_status_impl(file_path)
+    def _ledger(wid: Optional[int]) -> List[LedgerCandidate]:
+        # A lineless window has no Stage 5 result, so no ledger.
+        if wid is not None and wid in lineless:
+            return []
+        return get_candidate_ledger_impl(file_path, window_id=wid, bar=bar)
 
     if window_filter is not None:
         wf_filtered = [wf for wf in window_fits if wf.window_id == window_filter]
@@ -374,7 +398,12 @@ def cmd_review_show(args: argparse.Namespace) -> int:
     # under ``--window N``, otherwise every fitted window.
     if output_dir is not None:
         return _render_windows_to_dir(
-            file_path, window_fits, review, output_dir, attention_only=show_attention
+            file_path,
+            window_fits,
+            review,
+            output_dir,
+            attention_only=show_attention,
+            lineless=lineless,
         )
 
     # ---- render window fit to file (--window N --output PATH) ----------------
@@ -385,7 +414,9 @@ def cmd_review_show(args: argparse.Namespace) -> int:
             from .._internal.stage5_impl import render_fit_detail_impl
 
             matplotlib.use("Agg")
-            fig = render_fit_detail_impl(file_path, window_filter)
+            fig = render_fit_detail_impl(
+                file_path, window_filter, window_fit=lineless.get(window_filter)
+            )
             if fig is None:
                 print(
                     f"Error: render_fit_detail_impl returned None for window {window_filter}."
@@ -414,10 +445,11 @@ def cmd_review_show(args: argparse.Namespace) -> int:
     # ---- machine-readable tables (--json) ------------------------------------
     if json_mode(args):
         return _review_show_json(
-            file_path,
             args,
             window_fits,
             review,
+            ledger=_ledger,
+            lineless=set(lineless),
             bar=bar,
             window_filter=window_filter,
             show_candidates=show_candidates,
@@ -440,12 +472,13 @@ def cmd_review_show(args: argparse.Namespace) -> int:
             print("No windows flagged for attention.")
             return 0
 
-        print(f"{'win':>5}  {'label':<30}  {'top reason':<18}  detail")
+        print(f"{'win':>5}  {'label':<30}  {'top reason':<21}  detail")
         print("-" * 90)
         for _, wid, status, top_reason in attention_rows:
             label = _combined_label(status)
             print(
-                f"{wid:>5}  {label:<30}  {top_reason.kind:<18}  {top_reason.detail[:60]}"
+                f"{wid:>5}  {label:<30}  {top_reason.kind:<21}  "
+                f"{top_reason.detail[:60]}"
             )
         return 0
 
@@ -458,7 +491,7 @@ def cmd_review_show(args: argparse.Namespace) -> int:
         print("-" * 74)
         for wf in sorted(window_fits, key=lambda w: w.window_id or 0):
             wid = wf.window_id if wf.window_id is not None else -1
-            cands = get_candidate_ledger_impl(file_path, window_id=wid, bar=bar)
+            cands = _ledger(wid)
             flo = fhi = float("nan")
             if wf.window is not None and wf.window.freq_range is not None:
                 flo, fhi = wf.window.freq_range
@@ -477,10 +510,10 @@ def cmd_review_show(args: argparse.Namespace) -> int:
         flo = fhi = float("nan")
         if wf.window is not None and wf.window.freq_range is not None:
             flo, fhi = wf.window.freq_range
-        print(
-            f"Window {wid}  [{_fmt_mhz(flo)}, {_fmt_mhz(fhi)}] MHz  "
-            f"chi2r={wf.reduced_chi2:.3f}"
+        fit_txt = (
+            "no fitted line" if wid in lineless else f"chi2r={wf.reduced_chi2:.3f}"
         )
+        print(f"Window {wid}  [{_fmt_mhz(flo)}, {_fmt_mhz(fhi)}] MHz  {fit_txt}")
 
         # Review status block
         status = review.window_statuses.get(wid)
@@ -551,7 +584,7 @@ def cmd_review_show(args: argparse.Namespace) -> int:
                 )
 
         print()
-        cands = get_candidate_ledger_impl(file_path, window_id=wid, bar=bar)
+        cands = _ledger(wid)
         print(f"  Candidates ({len(cands)}, bar={bar:.1f}):")
         if cands:
             _print_candidate_table(cands, indent=2)
@@ -561,7 +594,7 @@ def cmd_review_show(args: argparse.Namespace) -> int:
 
     # ---- candidate table (--candidates [--window N]) -------------------------
     try:
-        cands = get_candidate_ledger_impl(file_path, window_id=window_filter, bar=bar)
+        cands = _ledger(window_filter)
     except PipelineFileError:
         raise
     except (ValueError, KeyError) as exc:
@@ -577,17 +610,23 @@ def cmd_review_show(args: argparse.Namespace) -> int:
 
 
 def _review_show_json(
-    file_path: str,
     args: argparse.Namespace,
     window_fits: List[FittingResult],
     review: Stage6Review,
     *,
+    ledger: Callable[[Optional[int]], List[LedgerCandidate]],
+    lineless: Set[int],
     bar: float,
     window_filter: Optional[int],
     show_candidates: bool,
     show_attention: bool,
 ) -> int:
-    """The ``review show`` table of the selected mode, as one JSON payload."""
+    """The ``review show`` table of the selected mode, as one JSON payload.
+
+    ``ledger`` gives a window's (or, for ``None``, every window's) candidate
+    ledger; ``lineless`` names the flagged windows the fit holds no line in,
+    whose ``reduced_chi2`` is undefined.
+    """
 
     def _bounds(wf: FittingResult) -> Tuple[float, float]:
         if wf.window is not None and wf.window.freq_range is not None:
@@ -598,7 +637,7 @@ def _review_show_json(
         return wf.window_id if wf.window_id is not None else -1
 
     if show_candidates:
-        cands = get_candidate_ledger_impl(file_path, window_id=window_filter, bar=bar)
+        cands = ledger(window_filter)
         record_payload(
             args,
             {
@@ -623,6 +662,9 @@ def _review_show_json(
                     "kind": top.kind,
                     "severity": top.severity,
                     "detail": top.detail,
+                    "reasons": [
+                        _attention_reason_json(r) for r in status.attention_reasons
+                    ],
                 }
             )
         rows.sort(key=lambda r: (-r["severity"], r["window_id"]))
@@ -640,9 +682,7 @@ def _review_show_json(
                     "freq_lo_mhz": lo,
                     "freq_hi_mhz": hi,
                     "n_peaks": wf.n_peaks_fitted,
-                    "n_candidates": len(
-                        get_candidate_ledger_impl(file_path, window_id=wid, bar=bar)
-                    ),
+                    "n_candidates": len(ledger(wid)),
                     "label": _combined_label(review.window_statuses.get(wid)),
                 }
             )
@@ -659,10 +699,10 @@ def _review_show_json(
             "window_id": wid,
             "freq_lo_mhz": lo,
             "freq_hi_mhz": hi,
-            "reduced_chi2": wf.reduced_chi2,
+            "reduced_chi2": (Absent.UNDEFINED if wid in lineless else wf.reduced_chi2),
             "label": _combined_label(status),
             "attention_reasons": [
-                {"kind": r.kind, "severity": r.severity, "detail": r.detail}
+                _attention_reason_json(r)
                 for r in (status.attention_reasons if status is not None else [])
             ],
             "decision_log": [
@@ -678,10 +718,7 @@ def _review_show_json(
                 }
                 for p in sorted(wf.fitted_peaks, key=lambda pk: pk.frequency_mhz)
             ],
-            "candidates": [
-                _candidate_json(c)
-                for c in get_candidate_ledger_impl(file_path, window_id=wid, bar=bar)
-            ],
+            "candidates": [_candidate_json(c) for c in ledger(wid)],
         },
     )
     return 0
@@ -694,6 +731,7 @@ def _render_windows_to_dir(
     output_dir: str,
     *,
     attention_only: bool,
+    lineless: Optional[Dict[int, FittingResult]] = None,
 ) -> int:
     """Render a set of window detail figures into ``output_dir`` (one bundle).
 
@@ -749,7 +787,12 @@ def _render_windows_to_dir(
     for wid, fname in targets:
         out = os.path.join(output_dir, fname)
         try:
-            fig = render_fit_detail_impl(file_path, wid, bundle=bundle)
+            fig = render_fit_detail_impl(
+                file_path,
+                wid,
+                bundle=bundle,
+                window_fit=(lineless or {}).get(wid),
+            )
         except PipelineFileError:
             raise
         except (ValueError, KeyError) as exc:
