@@ -224,8 +224,10 @@ dataclass uses (for example ``stage5`` has ``tau``, ``seeder``,
 ``baseline``, ``doublet_alternative``, ``peak_survival``; ``stage2`` is
 flat, with no sub-blocks). Every field is optional: omit a knob and it
 falls through the resolver; write it and it is pinned at the preset layer.
-An unknown stage block, sub-block, or field name is rejected with an error
-so typos surface loudly rather than silently doing nothing.
+An unknown stage block, sub-block, or field name is rejected with
+``BadSettingError`` (code ``bad_setting``, whose ``path`` names the preset,
+the block, or ``block.field``) so typos surface loudly rather than silently
+doing nothing.
 
 .. code-block:: yaml
 
@@ -338,6 +340,40 @@ the ``settings=`` fields win per field and the preset seeds the rest:
    s.rescue.max_rounds = 3
    ftmw.fit_peaks("exp.ftmw", preset="./my_lab_recipe.yaml", settings=s)
 
+.. _settings-allowed-values:
+
+Allowed values
+--------------
+
+Every setting has a declared type, and some also declare the values they
+accept: ``choices`` (a closed list of strings) or ``bounds`` (a numeric range).
+``ftmwpipeline settings show <file> --json`` (or ``settings defaults --json``)
+reports both per setting, with the type, units and whether it may be unset; a
+``None`` there means the setting declares none. At present
+``stage5.conservative.n_eff_kind`` is the one setting with ``choices``, and no
+setting declares ``bounds``.
+
+The declaration is enforced wherever a value enters, before any work starts:
+
+* ``settings set`` refuses a value that does not parse as the field's type or
+  lies outside its ``choices`` or ``bounds``, and leaves the file untouched;
+* every stage checks the value it resolved, whichever layer supplied it -- an
+  explicit ``settings=`` object or flag, a preset, or a persisted value (for
+  example one edited by hand). Only the value that wins is checked: a bad value
+  in a layer a higher one overrides is never used and never refused.
+
+A refusal is a ``BadSettingError`` (code ``bad_setting``, also a
+``ValueError``) whose ``path`` is the setting's dotted path, ``value`` what was
+given, and ``expected`` what would have been accepted (``one of 'a', 'b'`` for
+choices, ``a value in [lo, hi)`` for bounds)::
+
+   $ ftmwpipeline settings set exp.ftmw stage5.conservative.n_eff_kind bogus
+   Error: stage5.conservative.n_eff_kind: 'bogus' is not one of 'perplexity_log1p_snr', 'kish_mag_sq', 'kish_mag', 'hard_radius'
+
+``settings show`` still displays a bad persisted value, so it can be found and
+repaired with ``settings set``. The full list of refusals is in
+:ref:`contract-bad-settings`.
+
 Persistence and auto-inheritance
 --------------------------------
 
@@ -357,35 +393,40 @@ a sequence like:
 behaves as expected: the second fit keeps the settings from the first call's
 preset and only tightens the rescue; the prior recipe need not be re-supplied.
 
-The persisted block is structured to be inspectable on disk::
+Inspecting and changing persisted settings
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-   $ h5dump -A exp.ftmw | head -40
-   /processing_parameters/stage5_fit
-     @creation_time = "2026-05-27T17:42:11..."
-     @preset_name = "my_lab_recipe"
-     shape/
-       @kind = "gaussian"
-     tau/
-       @max_decay_factor = 5.0
-       @per_band_tau = TRUE
-       @tau_penalty_lambda = 500.0
-       ...
-     conservative/
-       @significance = 0.05
-       @max_peaks = 8
-       ...
-     rescue/
-       @max_rounds = 5
-       ...
+The ``settings`` command reads and edits the persisted layer without running a
+stage, by dotted path (``stage5.tau.max_decay_factor``):
 
-Every sub-block of every stage is its own HDF5 group so you can grep one
-block in isolation. Unset fields use the ``__None__`` sentinel string
-(the same convention Stage 1's ``FTSettings`` uses).
+.. code-block:: shell
 
-The ``preset_name`` attribute records the bare name (or path) you
-supplied to ``--preset`` for that run. The reproducibility recipe is
-straightforward: the resolved values plus that name describe the run
-exactly.
+   # What each setting resolves to for this file, and which layer supplied it
+   ftmwpipeline settings show exp.ftmw stage5.tau       # --all adds advanced knobs
+   # The same table at the hard defaults, with no file
+   ftmwpipeline settings defaults stage5.tau
+   # Persist a value; the stage it configures and everything downstream is
+   # invalidated, so re-run them
+   ftmwpipeline settings set exp.ftmw stage5.tau.max_decay_factor 3.0
+   # Clear a persisted value so the preset / recommended / default layers decide
+   ftmwpipeline settings unset exp.ftmw stage5.tau.max_decay_factor
+   # Capture the file's chosen Stage 2-5 values as a reusable preset
+   ftmwpipeline settings export exp.ftmw my_lab_recipe.yaml
+
+``settings show`` prints, per setting, the value in effect and its source:
+``.ftmw`` (persisted in the file), ``.yml:<name>`` (a preset, with
+``--preset``), ``recommended`` or ``default``. ``--json`` gives the same rows
+as typed records (:ref:`contract-settings-rows`), and ``settings set`` accepts
+a row's ``value`` back unchanged. The Python equivalents are
+``ftmw.settings_show`` / ``settings_defaults`` / ``settings_set`` /
+``settings_unset``, and the same methods on ``Pipeline``.
+
+A ``settings set`` or ``settings unset`` deletes the results of the stage it
+configures and of every stage downstream, and reports them as invalidated, so
+the file never holds a result computed under different settings than it
+records. There is no value that means "unset": use ``settings unset``. The
+persisted record also notes the preset name (or path) a run was given, so the
+resolved values plus that name describe the run exactly.
 
 Writing your own preset
 -----------------------
@@ -458,8 +499,9 @@ A few rules:
 * Only set fields you care about. Anything omitted stays ``None`` so
   the resolver falls through to the next layer (probably the hard
   defaults).
-* Unknown keys raise ``ValueError`` at load time, so typos surface
-  immediately rather than silently doing the wrong thing.
+* Unknown keys raise ``BadSettingError`` (``bad_setting``, also a
+  ``ValueError``) at load time, so typos surface immediately rather than
+  silently doing the wrong thing.
 * ``name`` and ``description`` at the top level are documentation —
   the parser preserves them but the stages don't use them.
 
@@ -480,23 +522,20 @@ hands a hint to a later stage. The Stage 2b → Stage 5 path is the
 standard example: Stage 2b's τ calibration writes a
 ``recommended_shape`` attribute on its output group (``lorentzian``,
 ``gaussian``, or ``voigt``), and Stage 5's resolver reads it as the
-*recommended* layer of the shape field. The attribute carries the
-``__None__`` sentinel until Stage 2b's 3-way L/G/V discriminator runs;
-once it does, Stage 5 picks the recommendation up automatically — one
-step weaker than the file's persisted value, two steps weaker than an
-explicit argument or preset. The pipeline recommends a line shape, but an
-explicit or persisted choice always overrides it.
+*recommended* layer of the shape field. The recommendation is empty until
+Stage 2b's 3-way L/G/V discriminator runs; once it does, Stage 5 picks it up
+automatically — one step weaker than a preset, two steps weaker than the
+file's persisted value, three steps weaker than an explicit argument. The
+pipeline recommends a line shape, but an explicit, persisted or preset choice
+always overrides it.
 
 If the file has persisted ``shape: gaussian`` and Stage 2b later recommends
 Lorentzian, the persisted value wins. An explicit ``--shape lorentzian``
 likewise always wins, regardless of the recommendation.
 
-The *recommended* layer of the other four stages (2, 2b, 3, 4) is
-reserved but currently empty — no upstream feeder produces a hint for
-those stages yet. The layer is kept in every resolver's signature so a
-future cross-stage recommender (e.g., a Stage 1 ``T_active``-driven
-Stage 2 smoothing-window suggestion, or a Stage 2b ``τ_maj`` feeder
-into Stage 4's ``leakage.tau_us``) can land without API churn.
+The *recommended* layer of the other four stages (2, 2b, 3, 4) is empty: no
+upstream stage produces a hint for them. Their settings resolve from the
+explicit, persisted, preset and default layers alone.
 
 Where to look in the codebase
 -----------------------------
