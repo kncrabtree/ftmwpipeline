@@ -1489,9 +1489,10 @@ class RefitWindowResult:
         Window ids the window reads frozen leakage from. ``Absent.NOT_RUN``
         iff ``created_window_mode`` is (``[]`` is a legitimate value -- a
         created window with no dependencies -- and distinct from that).
-    converged : bool
+    converged : bool or Absent
         Whether the joint NLS behind this refit converged
-        (:attr:`FittingResult.success`). ``False`` means the solver bailed and
+        (:attr:`FittingResult.success`); ``Absent.UNDEFINED`` when the window
+        has no fitted peaks, since no solver ran. ``False`` means the solver bailed and
         the window kept its seeds verbatim with an infinite chi-squared, so
         every number reported here describes a fit that did not happen --
         ``chi2r_after`` will be wild and the peak positions are the seeds, not
@@ -1515,10 +1516,23 @@ class RefitWindowResult:
     created_window_n_points: Union[int, Absent] = Absent.NOT_RUN
     created_window_n_contributors: Union[int, Absent] = Absent.NOT_RUN
     created_window_depends_on: Union[List[int], Absent] = Absent.NOT_RUN
-    converged: bool = True
+    converged: Union[bool, Absent] = True
     #: The stages the call invalidated (canonical names, ``rerun_order``):
     #: always ``()``, since Stage 6 invalidates no stage.
     invalidated: Tuple[str, ...] = field(default=(), compare=False)
+
+
+def _converged_or_absent(wf: Any) -> Union[bool, Absent]:
+    """A window fit's ``converged`` as a contract value.
+
+    A window with no fitted peaks ran no solver (the null model reports
+    ``success=False`` although its chi-squared is real), so it has no
+    convergence outcome: ``Absent.UNDEFINED``. Otherwise ``bool(wf.success)``.
+    ``Absent`` is truthy, so readers must test ``is False``.
+    """
+    if not wf.fitted_peaks:
+        return Absent.UNDEFINED
+    return bool(wf.success)
 
 
 def _chi2r_or_absent(value: Union[float, Absent]) -> Union[float, Absent]:
@@ -1546,7 +1560,7 @@ def _make_refit_result(
     chi2r_before: Union[float, Absent],
     chi2r_after: Union[float, Absent],
     fitted_peaks: List[FittedPeak],
-    converged: bool,
+    converged: Union[bool, Absent],
 ) -> RefitWindowResult:
     """Build one :class:`RefitWindowResult`, labeled with both frames (A6) and
     stamped with the calibration actually applied -- shared by every applier
@@ -4601,7 +4615,8 @@ class AppliedWindowResult:
         Whether this window's post-cascade fit converged. ``False`` means the
         solver bailed and the window kept its seeds, so the numbers here
         describe a fit that did not happen. ``Absent.NOT_RUN`` on a window
-        with no fit on the after side, exactly where ``chi2r_after`` is.
+        with no fit on the after side, exactly where ``chi2r_after`` is;
+        ``Absent.UNDEFINED`` for a window left with no peaks (no solver ran).
     """
 
     window_id: int
@@ -4631,11 +4646,11 @@ def _applied_windows_block(
     report. Costs no file read and no extra fit: every input is already in
     hand when a batch closes.
     """
-    after_by_wid: Dict[int, Tuple[int, float, bool]] = {
+    after_by_wid: Dict[int, Tuple[int, float, Union[bool, Absent]]] = {
         int(wf.window_id): (
             len(wf.fitted_peaks),
             float(wf.reduced_chi2),
-            bool(wf.success),
+            _converged_or_absent(wf),
         )
         for wf in ctx.changeset.spectrum_fit.window_fits
         if wf.window_id is not None
@@ -7371,7 +7386,7 @@ def _batch_apply_edit_plain(
         chi2r_before=chi2r_before,
         chi2r_after=chi2r_after,
         fitted_peaks=list(new_wf.fitted_peaks),
-        converged=bool(new_wf.success),
+        converged=_converged_or_absent(new_wf),
     )
 
 
@@ -7547,7 +7562,7 @@ def _batch_apply_merge(
         chi2r_before=chi2r_before,
         chi2r_after=chi2r_after,
         fitted_peaks=list(new_wf.fitted_peaks),
-        converged=bool(new_wf.success),
+        converged=_converged_or_absent(new_wf),
     )
 
 
@@ -7696,7 +7711,7 @@ def _batch_apply_split(
         chi2r_before=chi2r_before,
         chi2r_after=chi2r_after,
         fitted_peaks=list(new_wf.fitted_peaks),
-        converged=bool(new_wf.success),
+        converged=_converged_or_absent(new_wf),
     )
 
 
@@ -7749,7 +7764,7 @@ def _batch_apply_accept(
             chi2r_before=chi2r_before,
             chi2r_after=chi2r_after,
             fitted_peaks=list(new_wf.fitted_peaks),
-            converged=bool(new_wf.success),
+            converged=_converged_or_absent(new_wf),
         )
 
     anchor_freq = 0.0
@@ -9892,7 +9907,8 @@ class PreviewWindowResult:
         ``Absent.NOT_RUN`` when the window carries no fit on the after side
         at all -- the same absence-vs-plausible-value discipline
         ``chi2r_after`` documents, and ``NOT_RUN`` for exactly the same
-        windows.
+        windows. ``Absent.UNDEFINED`` for a window left with no peaks: no
+        solver ran, so there is no convergence outcome.
     """
 
     window_id: int
@@ -10205,11 +10221,11 @@ def _run_review_preview(
             if not isinstance(peak.window_id, Absent):
                 peaks_by_window.setdefault(int(peak.window_id), []).append(peak)
 
-    after_by_wid: Dict[int, Tuple[int, float, bool]] = {
+    after_by_wid: Dict[int, Tuple[int, float, Union[bool, Absent]]] = {
         int(wf.window_id): (
             len(wf.fitted_peaks),
             float(wf.reduced_chi2),
-            bool(wf.success),
+            _converged_or_absent(wf),
         )
         for wf in ctx.changeset.spectrum_fit.window_fits
         if wf.window_id is not None

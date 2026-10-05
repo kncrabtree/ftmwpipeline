@@ -987,6 +987,16 @@ def _decode_vote_rates(attr: Any) -> Dict[str, float]:
     return {_VOTE_DISPLAY_SHAPE.get(str(k), str(k)): float(v) for k, v in rates.items()}
 
 
+def _count_nonconverged(window_fits: Any) -> int:
+    """Windows whose joint fit failed to converge.
+
+    A window with no fitted peaks ran no solver (the null model reports
+    ``success=False``), so it has no convergence outcome to fail: it is
+    decided from the peak list, not from ``success``.
+    """
+    return sum(1 for wf in window_fits if wf.fitted_peaks and not wf.success)
+
+
 def _assemble_summary(file_path: Union[Path, str]) -> _SummaryModel:
     """Gather the per-stage numbers for the L2 report from the persisted file.
 
@@ -1248,7 +1258,7 @@ def _assemble_summary(file_path: Union[Path, str]) -> _SummaryModel:
     chi_min = min(chi) if chi else None
     chi_max = max(chi) if chi else None
     shape = str(fit.parameters.get("shape")) if fit.parameters.get("shape") else None
-    n_nonconverged = sum(1 for wf in fit.window_fits if not wf.success)
+    n_nonconverged = _count_nonconverged(fit.window_fits)
 
     # Per-window SNR_max from the consolidated final lines, keyed by window.
     snr_by_window: Dict[int, float] = {}
