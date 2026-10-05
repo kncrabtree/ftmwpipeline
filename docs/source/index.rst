@@ -66,9 +66,9 @@ ftmwpipeline Documentation
 ``ftmwpipeline`` processes Fourier transform microwave (FTMW) spectroscopy
 data, from a raw free-induction decay to a calibrated table of fitted spectral
 lines. Each experiment is one self-contained, portable ``.ftmw`` file that
-progresses through a sequence of stages — import, Fourier transform, noise
-estimation, decay-time calibration, peak detection, window assignment, peak
-fitting, and review — with every stage's result and its provenance recorded in
+progresses through a sequence of stages — import, Fourier transform,
+timebase calibration, noise estimation, decay-time calibration, peak
+detection, window assignment, peak fitting, and review — with every stage's result and its provenance recorded in
 the file.
 
 The pipeline is built for spectroscopists who need to know not only how to run
@@ -83,11 +83,16 @@ Where to start
   model, the three user-facing interfaces, and the stage pipeline at a glance.
 * :doc:`installation` — install the package and its dependencies.
 * :doc:`quickstart` — process an experiment end to end.
+* :doc:`run` — the ``run`` command: one call from raw source to a reviewed
+  ``.ftmw`` file, its options, and how to cancel and continue a build.
 * :doc:`settings_and_presets` — how stage parameters are resolved across
   keyword arguments, presets, and the values persisted in the file.
 * :doc:`input_formats` — bring data from any instrument into the pipeline: the
   native HDF5 and CSV input formats, the metadata sidecar, and declaring
   instrument clock sources.
+* :doc:`cli` — the command-line reference: every object, verb and convention.
+* :doc:`machine_contract` — for scripts and front ends: the stable names,
+  JSON payloads, error codes and exit codes a program can rely on.
 
 The pipeline stages, in the order an experiment moves through them:
 
