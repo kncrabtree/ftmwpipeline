@@ -459,19 +459,26 @@ window's bounds. On the wire a pair is a two-element array.
 
 `window_status(path)` → one row per window of the fitted plan (below) and per
 created window: `window_id`, `freq_min_mhz`, `freq_max_mhz`, `created` (bool),
-`n_fitted_peaks`, `live` (bool), and `merged_from` (list of int). A window is **live** when the Stage 5 fit
+`n_fitted_peaks`, `live` (bool), and `merged_from` (ids, ascending: a tuple in
+Python, an array on the wire). A window is **live** when the Stage 5 fit
 holds at least one fitted line in it. Before Stage 5, `n_fitted_peaks` and
 `live` are `Absent.NOT_RUN`. While Stage 5 is `partial` (after a cancel), a
 window the fit has not reached reports both as `Absent.NOT_RUN`, never 0. Also available as a `read_table` table.
 
 **Windows after a structural merge.** Once a complete Stage 5 fit exists,
-every window geometry the contract reports is the geometry the fit was made
-on: `window_status`, the window model, and the windows every Stage 6 call
-resolves, edits and refits. A structural replan can merge a window into its
+every window geometry the contract reports for the fit is the geometry the fit
+was made on: `window_status`, the window model, and the windows every Stage 6
+call resolves, edits and refits. A structural replan can merge a window into its
 neighbour:
 - the survivor keeps the lower id and the merged range;
 - the absorbed id no longer appears as a window and is never minted again;
-- a row gains `merged_from`, the ids folded into it, or `[]` if none were.
+- a row gains `merged_from`, the ids folded into it, empty if none were.
+
+The Stage 4 product stays the plan as planned: `load_windows` and the
+`read_table` tables `windows`, `window_free_peaks` and `window_contributors`
+report the Stage 4 windows whatever a fit later merged. The windows a fit was
+made on are reported by `window_status` (and by the fit's own tables); a client
+that joins fit rows to windows joins them to `window_status`.
 
 Before a complete fit, while Stage 5 is `partial` included, rows follow the
 Stage 4 plan.

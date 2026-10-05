@@ -48,7 +48,6 @@ from typing import (
     Callable,
     ClassVar,
     Dict,
-    List,
     Mapping,
     NamedTuple,
     Optional,
@@ -151,8 +150,9 @@ class WindowStatusRow:
     A window of the plan the fit was made on, or a window Stage 6 created
     (``created``). Before a complete Stage 5 fit, and for a fit no structural
     merge revised, the plan is the Stage 4 plan; after a merge the survivor's
-    row carries the merged range and ``merged_from`` names the ids it absorbed
-    (``[]`` for every other row), and no row carries an absorbed id. A window
+    row carries the merged range and ``merged_from`` names the ids it absorbed,
+    ascending (empty for every other row; a JSON list), and no row carries an
+    absorbed id. A window
     is ``live`` when the Stage 5 fit holds at least one fitted line in it.
     Before Stage 5, ``n_fitted_peaks`` and ``live`` are :attr:`Absent.NOT_RUN`.
     """
@@ -163,7 +163,7 @@ class WindowStatusRow:
     created: bool
     n_fitted_peaks: Union[int, Absent]
     live: Union[bool, Absent]
-    merged_from: List[int] = field(default_factory=list)
+    merged_from: Tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -288,11 +288,11 @@ def test_window_status_reports_the_merged_window(fits):
     _par, _seq, forced, _forced_seq = fits
     rows = {w.window_id: w for w in ftmw.window_status(str(forced))["windows"]}
     assert set(rows) == {99, 100, 102, 103}
-    assert rows[100].merged_from == [101]
+    assert rows[100].merged_from == (101,)
     assert (rows[100].freq_min_mhz, rows[100].freq_max_mhz) == _fit_range(
         str(forced), 100
     )
-    assert all(rows[w].merged_from == [] for w in (99, 102, 103))
+    assert all(rows[w].merged_from == () for w in (99, 102, 103))
 
 
 def test_a_no_op_edit_of_the_survivor_keeps_its_lines(fits, tmp_path):
@@ -391,7 +391,7 @@ def test_a_merged_fit_without_its_stored_plan_refuses_to_refit_the_merge(
     with h5py.File(fp, "a") as h5f:
         del h5f["stage5_fitting/fitted_plan"]
     rows = {w.window_id: w for w in ftmw.window_status(fp)["windows"]}
-    assert rows[100].merged_from == [101]
+    assert rows[100].merged_from == (101,)
     before = _lines(fp, 100)
     with pytest.raises(CurationConflictError) as info:
         ftmw.review_edit(fp, 100)

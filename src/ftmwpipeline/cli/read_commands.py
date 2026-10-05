@@ -429,7 +429,7 @@ def register_contract_accessors(read_sub: Any) -> None:
         "window_status",
         opened("window_status"),
         WINDOW_STATUS_SCHEMA,
-        "Per-window status: plan, created windows, Stage 5 coverage",
+        "Per-window status: fitted plan, created windows, Stage 5 coverage",
     )
     register(
         "preview_source",

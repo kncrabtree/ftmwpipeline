@@ -18,16 +18,18 @@ planned — these entries fold into the ``1.0.0`` section when it is dated.
 
 **Stage 5 structural replan fixed, merged windows carried to the end;
 ``ANALYSIS_EPOCH`` moves 4 → 5 and ``CONTRACT_VERSION`` 12 → 13.** Stage 5's
-structural replan can apply merges again (before this it never applied one), and
-a fit that applied one now reports and edits the windows it was made on.
+structural replan applies merges again (before this, a round in which any window
+was named twice was rejected whole, which on 2638 happened in every fit), and a
+fit that applied one now reports and edits the windows it was made on.
 
 *The replan.* When a window edge still carried a coherent residual with no
 contributor to thaw, the fit asked to merge the window with the nearest window
 on that side *at any distance* and sent every request to Stage 4 at once. A
 window flagged on both edges was named in two requests, Stage 4 rejected the
 second (it named a window the first had absorbed), and the whole round was
-recorded as failed. On the 2638 fixture that happened in every fit, Gaussian and
-Lorentzian, and most of the requested partners were 5 to 114 MHz away, so
+recorded as failed. A round whose requests named disjoint windows did apply,
+which is why fits with merged windows exist from before this change. On the 2638
+fixture a window was named twice in every fit, Gaussian and Lorentzian, and most of the requested partners were 5 to 114 MHz away, so
 applying them as asked would have built windows far wider than the plan allows.
 Now:
 
@@ -46,6 +48,10 @@ Now:
   again without it, so a request that waited behind it gets its turn.
 * A merge drops the thaw, rescue and cleanup records of every window it re-fits
   or absorbs.
+* A survivor's per-band decay-time anchor is resolved again from its merged
+  range before it is re-fit, so the merged window is fit on the anchor a Stage 6
+  refit of it resolves (before, it kept its Stage 4 window's band, and a no-op
+  edit of a survivor whose merged centre lay in another band moved its lines).
 * Parallel and sequential fits choose the same merges.
 * Every replan record that is not accepted gives its reason under one of four
   prefixes, ``not merged:``, ``refused:``, ``deferred:`` or ``failed:`` (a
@@ -72,9 +78,13 @@ window's lines to the edge, and ``window_status`` reported the Stage 4 rows.
 Now:
 
 * ``window_status`` reports the fitted plan, and ``WindowStatusRow`` gains
-  ``merged_from``: the ids a survivor absorbed, ascending, and ``[]`` for every
-  other row. The ``window_status`` table gains the column as JSON text
-  (``"[]"``, ``"[101]"``).
+  ``merged_from``: the ids a survivor absorbed, ascending, and empty for every
+  other row (a tuple, so rows stay hashable; an array on the wire). The
+  ``window_status`` table gains the column as JSON text (``"[]"``,
+  ``"[101]"``).
+* ``load_windows`` and the ``windows``, ``window_free_peaks`` and
+  ``window_contributors`` tables stay the Stage 4 plan as planned; a program
+  joining fit rows to windows joins them to ``window_status``.
 * Every Stage 6 call resolves, edits, refits and plans against the fitted plan,
   and the undo baseline carries it. A created window never takes an absorbed
   id; a curation call naming one is ``not_found`` (kind ``window``), and a
@@ -82,7 +92,9 @@ Now:
 * A fit made before this record, in which a merge was applied, keeps working:
   ``window_status`` reports the merges its replan record names, and Stage 6
   refuses to refit the merged windows (or the windows reading their lines as
-  fixed contributors), or to create a window inside a merged range, with the new
+  fixed contributors), to cascade an edit into a merged window whose fit read
+  the edited window's lines, or to create a window inside a merged range, with
+  the new
   ``curation_conflict`` reason ``fit_plan_unavailable``. Re-running ``fit run``
   clears it. Fits no merge revised, including every earlier fit of 2638, store
   nothing extra and edit exactly as before.

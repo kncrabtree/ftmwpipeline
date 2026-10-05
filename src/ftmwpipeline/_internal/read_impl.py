@@ -1095,7 +1095,7 @@ def _window_status_rows(h5f: h5py.File) -> List[WindowStatusRow]:
             created=wid in created_ids,
             n_fitted_peaks=n,
             live=live,
-            merged_from=list(merged_from.get(wid, [])),
+            merged_from=tuple(merged_from.get(wid, ())),
         )
 
     return [row(w) for w in sorted(bounds, key=lambda w: (bounds[w][0], w))]

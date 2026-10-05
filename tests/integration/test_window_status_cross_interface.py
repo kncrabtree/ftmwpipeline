@@ -145,8 +145,8 @@ def test_merged_windows_agree_on_every_interface(stage5_merged, capsys):
     rows = _rows(via_api)
     assert absorbed not in rows
     assert (rows[survivor].freq_min_mhz, rows[survivor].freq_max_mhz) == bounds
-    assert rows[survivor].merged_from == [absorbed]
-    assert all(w.merged_from == [] for i, w in rows.items() if i != survivor)
+    assert rows[survivor].merged_from == (absorbed,)
+    assert all(w.merged_from == () for i, w in rows.items() if i != survivor)
 
     by_id = {w["window_id"]: w for w in envelope["windows"]}
     assert by_id[survivor]["merged_from"] == [absorbed]
@@ -171,7 +171,7 @@ def test_an_unmerged_fit_has_empty_merged_from_everywhere(
 ):
     path = baseline_2638_stage5_small
     via_api = ftmw.window_status(str(path))
-    assert all(w.merged_from == [] for w in via_api["windows"])
+    assert all(w.merged_from == () for w in via_api["windows"])
     assert all(w["merged_from"] == [] for w in _via_cli(path, capsys)["windows"])
     table = ftmw.read_table(str(path), "window_status")
     assert set(table["merged_from"]) == {"[]"}

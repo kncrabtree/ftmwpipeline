@@ -200,7 +200,9 @@ def test_row_field_types(fitted):
         assert isinstance(w.created, bool)
         assert isinstance(w.n_fitted_peaks, int)
         assert isinstance(w.live, bool)
-        assert w.merged_from == []
+        assert w.merged_from == ()
+        assert isinstance(w.merged_from, tuple)
+        hash(w)
 
 
 def test_table_dtypes(fitted):
@@ -377,7 +379,7 @@ def test_created_window_with_fitted_lines_is_live(tmp_path):
 # merged range, and the absorbed id is no longer a window (CONTRACT_STRATEGY
 # §Window status, "Windows after a structural merge").
 
-_MERGED = [(0, 100.0, 110.0, []), (1, 120.0, 150.0, [2])]
+_MERGED = [(0, 100.0, 110.0, ()), (1, 120.0, 150.0, (2,))]
 
 
 def _mark_revised(path, replan_history=None):
@@ -413,6 +415,8 @@ def test_a_merged_fit_reports_the_plan_it_was_made_on(tmp_path):
     table = read_table_impl(path, "window_status")
     assert list(table["merged_from"]) == ["[]", "[2]"]
     assert to_jsonable(window_status_impl(path))["windows"][1]["merged_from"] == [2]
+    # A frozen row with a tuple ``merged_from`` hashes: rows can key a set.
+    assert len(set(rows)) == len(rows)
 
 
 def test_a_merged_fit_without_its_stored_plan_reports_the_recorded_merge(
@@ -443,7 +447,7 @@ def test_a_merged_fit_without_its_stored_plan_reports_the_recorded_merge(
 def test_an_unrevised_fit_reports_the_stage4_plan(fitted):
     rows = window_status_impl(fitted)["windows"]
     assert [(w.window_id, w.freq_min_mhz, w.freq_max_mhz) for w in rows] == PLAN
-    assert all(w.merged_from == [] for w in rows)
+    assert all(w.merged_from == () for w in rows)
 
 
 # ---- read_table form --------------------------------------------------------

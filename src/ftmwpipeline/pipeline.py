@@ -2948,11 +2948,14 @@ class Pipeline:
         return display_units_impl(str(self.filepath))
 
     def window_status(self) -> Dict[str, Any]:
-        """One record per Stage 4 plan window and per created window.
+        """One record per window of the plan the fit was made on (the Stage 4
+        plan before a complete fit or when no merge revised it) and per created
+        window.
 
         Equivalent to :func:`ftmwpipeline.api.window_status`; the payload is
         ``ftmw/window_status@1``, ``{"schema", "windows": [WindowStatusRow,
-        ...]}``. Raises :class:`~ftmwpipeline.StageDependencyError` before
+        ...]}``, each row with ``window_id``, ``freq_min_mhz``, ``freq_max_mhz``,
+        ``created``, ``n_fitted_peaks``, ``live`` and ``merged_from``. Raises :class:`~ftmwpipeline.StageDependencyError` before
         Stage 4.
         """
         from ._internal.read_impl import window_status_impl

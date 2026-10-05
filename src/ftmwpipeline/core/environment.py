@@ -132,16 +132,19 @@ Epoch history
     whose ``tau`` is held is bit-identical; a free-``tau`` window with any
     frozen term is not.
 5
-    2026-10-04. Stage 5's structural replan can apply merges again. It had
+    2026-10-04. Stage 5's structural replan applies merges again. It had
     asked to merge every flagged window edge with the nearest window at any
     distance and sent all requests to Stage 4 at once; a window flagged on both
     edges named in two requests made Stage 4 reject the batch, and the whole
-    round was recorded as failed, so no structural merge was ever applied.
+    round was recorded as failed (on 2638, in every fit). A round whose
+    requests named disjoint windows did apply, so merged fits from earlier
+    epochs exist.
     A merge is now asked for only from a window whose fit holds a line, the
     partner must *touch* the flagged window (at most one active-FT bin between
     them), the merged window must fit the plan's width and peak caps, and each
     round applies a disjoint set of pairs. Wherever such a pair flags, the two
-    windows are now fit as one. On the 2638 reference plans no pair qualifies
+    windows are now fit as one, and the survivor's per-band ``tau`` anchor is
+    resolved from the merged range. On the 2638 reference plans no pair qualifies
     (the touching pair 100/101 flags only from window 100, whose fit the
     cleanup empties), so their fitted windows and lines are bit-identical to
     epoch 4 and only the replan records' reasons differ. A partial Stage 5 fit

@@ -1516,13 +1516,21 @@ fit included), and after a fit no structural merge revised, the plan is the
 Stage 4 plan. After a merge (``final_plan_revision`` above 0) it is the plan
 the fit was made on: the survivor keeps the lower id and the merged range, its
 ``merged_from`` lists the ids it absorbed (ascending), and an absorbed id has no
-row. Every other row's ``merged_from`` is ``[]``. The same plan is what the
+row. Every other row's ``merged_from`` is empty (``()``; ``[]`` on the wire).
+The same plan is what the
 window model reports and what every Stage 6 call resolves, edits and refits; a
 window Stage 6 creates never takes an absorbed id, and a curation call naming
 one is ``not_found`` (kind ``"window"``). A fit made before the fit stored its
 plan reports the merges its replan record names (each survivor spanning the
 union of its windows); Stage 6 refuses to refit those windows
 (``curation_conflict``, ``fit_plan_unavailable``).
+
+The Stage 4 product stays the plan as planned: ``load_windows`` and the
+``read_table`` tables ``windows``, ``window_free_peaks`` and
+``window_contributors`` report the Stage 4 windows whatever a fit later merged.
+The windows a fit was made on are reported by ``window_status`` (and by the
+fit's own tables); a program that joins fit rows to windows joins them to
+``window_status``.
 
 Absence and refusals:
 
