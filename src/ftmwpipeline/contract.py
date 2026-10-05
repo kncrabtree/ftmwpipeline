@@ -7,7 +7,10 @@ program may rely on (normative spec: ``dev-docs/CONTRACT_STRATEGY.md``):
   ``__version__``).
 - :class:`Stage` -- the canonical stage vocabulary every contract payload
   uses to name a stage, with :func:`stage_for_key` / :func:`key_for_stage`
-  mapping to and from the internal storage keys.
+  mapping to and from the internal storage keys, and
+  :func:`canonical_provenance_name` naming every environment-record key a
+  contract payload publishes (a stage's canonical name, or ``tau_shape`` for
+  the shape recommendation, which is not a stage).
 - :class:`Absent` -- the two meanings of "no value" (``NOT_RUN`` and
   ``UNDEFINED``) every contract field uses instead of ``None`` / ``nan`` /
   ``-1``. Its wire and columnar forms are applied by

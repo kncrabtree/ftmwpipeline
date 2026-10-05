@@ -45,10 +45,16 @@ RUN_STAGES: Dict[str, Optional[Stage]] = {
 }
 
 
-def canonical_run_step(label: str) -> Optional[str]:
+def canonical_run_step(label: str, tau_shape: Optional[str] = None) -> Optional[str]:
     """A run step's canonical stage name, or ``None`` for a step that is not a
-    stage (``"start detection"``, ``"report"``) or an unknown label."""
+    stage (``"start detection"``, ``"report"``) or an unknown label.
+
+    ``tau_shape`` is the run's requested tau shape: a ``"gaussian"`` tau step
+    is the ``tau_g`` stage (the scope the stage itself opens), not ``tau``.
+    """
     stage = RUN_STAGES.get(label)
+    if label == "calibrate tau" and tau_shape == "gaussian":
+        stage = Stage.TAU_G
     return None if stage is None else stage.value
 
 
@@ -198,18 +204,19 @@ def run_pipeline_impl(
     ops = operation_events("run", events, cancel)
     reporter = StageProgress(len(stages), stream=progress_stream, enabled=progress)
     # The result's completed_stages is the same canonical, ordered, de-duplicated
-    # list a cancel reports (a step that is not a stage counts toward its owner).
+    # list a cancel reports; a step that is not a stage contributes nothing.
     completed: List[str] = ops.completed_stages
 
-    def _done(label: str, shape: Optional[str] = None) -> None:
+    tau_shape = (tau_params or {}).get("shape")
+
+    def _done(label: str) -> None:
         # A stage that reports through the shared events has already recorded
         # itself (and a tau twin it built); this only backstops the stage the
-        # step is. A step that is not a stage records nothing.
-        stage = RUN_STAGES[label]
-        if label == "calibrate tau" and shape == "gaussian":
-            stage = Stage.TAU_G  # tau_g is written; tau only if a twin was built
-        if stage is not None:
-            ops.mark_completed(stage)
+        # step is (tau_g for a gaussian run: tau only if a twin was built). A
+        # step that is not a stage records nothing.
+        name = canonical_run_step(label, tau_shape)
+        if name is not None:
+            ops.mark_completed(Stage(name))
 
     result: Dict[str, Any] = {
         "source": str(source),
@@ -290,7 +297,7 @@ def run_pipeline_impl(
             ops.check_cancel()
             with reporter.stage("calibrate tau"):
                 _call(pipe.calibrate_tau, tau_params, preset, ops)
-            _done("calibrate tau", (tau_params or {}).get("shape"))
+            _done("calibrate tau")
 
             ops.check_cancel()
             with reporter.stage("peaks"):
@@ -337,7 +344,7 @@ def run_pipeline_impl(
         except Exception as exc:
             result["status"] = "error"
             result["failed_step"] = reporter._label or None
-            result["failed_stage"] = canonical_run_step(reporter._label)
+            result["failed_stage"] = canonical_run_step(reporter._label, tau_shape)
             result["error"] = _error_dict(exc)
             result["completed_stages"] = list(completed)
             result["elapsed_s"] = time.monotonic() - t0

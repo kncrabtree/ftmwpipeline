@@ -119,7 +119,7 @@ def test_run_full_sequence_in_order(patch_pipeline):
         "fit",
         "review",
     ]
-    # Canonical stage names; start detection counts toward its owner, data.
+    # Canonical stages written; start detection (a step, not a stage) adds none.
     assert res["completed_stages"] == [
         "data",
         "ft",
@@ -246,6 +246,19 @@ def test_gaussian_tau_without_a_twin_does_not_list_tau(patch_pipeline):
     )
     assert "tau_g" in res["completed_stages"]
     assert "tau" not in res["completed_stages"]
+
+
+def test_gaussian_tau_failure_names_tau_g(patch_pipeline):
+    """A gaussian tau step is the tau_g stage, as its events and a cancel name it."""
+    patch_pipeline(_FakePipe(fail_on="tau"))
+    res = run_pipeline_impl(
+        "src",
+        output="x.ftmw",
+        trim=(1, 2),
+        progress=False,
+        tau_params={"shape": "gaussian"},
+    )
+    assert (res["failed_step"], res["failed_stage"]) == ("calibrate tau", "tau_g")
 
 
 def test_completed_stages_come_from_what_the_stages_recorded(patch_pipeline):
