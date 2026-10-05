@@ -105,7 +105,19 @@ def test_review_run_flags_the_window_on_every_interface(three_copies, capsys):
     status = statuses[0][wid]
     assert status.provenance == "auto" and status.needs_attention
     (reason,) = [r for r in status.attention_reasons if r.kind == KIND]
-    assert reason.evidence["edges"] == [{"side": "low", "s_coh": S_COH}]
+    (edge,) = reason.evidence["edges"]
+    assert (edge["side"], edge["s_coh"]) == ("low", S_COH)
+    assert "neighbour_line_distance_mhz" in edge
+    # Every candidate carries every declared key.
+    for cand in reason.evidence["candidates"]:
+        assert set(cand) == {
+            "detection_index",
+            "frequency_mhz",
+            "snr",
+            "gated_spur",
+            "spur_center_mhz",
+            "spur_source",
+        }
     assert reason.severity == pytest.approx(
         S_COH / reason.evidence["residual_edge_threshold"]
     )
@@ -167,6 +179,67 @@ def test_accept_marks_it_reviewed_on_every_interface(three_copies, capsys):
         for p in three_copies[0]
     ]
     assert logs[0] == logs[1] == logs[2] == [(wid, "accept")]
+
+
+def _gap_anchors(path, n=2):
+    """``n`` strong Stage 3 peaks no plan window covers, far apart: anchors a
+    create can install a new window at without touching the flagged one."""
+    plan = ftmw.load_windows(str(path))
+    spans = [(min(w.freq_range), max(w.freq_range)) for w in plan.windows]
+    free = sorted(
+        (
+            p
+            for p in ftmw.load_peaks(str(path))
+            if p.snr is not None
+            and all(not (lo - 5.0 <= p.frequency <= hi + 5.0) for lo, hi in spans)
+        ),
+        key=lambda p: -float(p.snr),
+    )
+    out = []
+    for p in free:
+        if all(abs(p.frequency - q) > 50.0 for q in out):
+            out.append(float(p.frequency))
+        if len(out) == n:
+            return out
+    pytest.skip("no free Stage 3 peaks to create windows at")
+
+
+def test_a_bare_accept_rides_in_a_fit_needing_batch(flagged_source, tmp_path):
+    """A bare accept of the flagged lineless window, batched with a create (a
+    batch that opens the fit), is applied and previewed rather than refused."""
+    src, wid = flagged_source
+    path = tmp_path / "mixed.ftmw"
+    shutil.copy(src, path)
+    ftmw.review_run(str(path))
+    (anchor,) = _gap_anchors(path, 1)
+    actions = [
+        {"action": "accept", "window_id": wid},
+        {"action": "create", "freq_mhz": anchor},
+    ]
+    ftmw.review_preview(str(path), actions=actions, frame="raw")
+    ftmw.review_apply(str(path), actions=actions, frame="raw")
+    review = ftmw.get_review_status(str(path))
+    assert review.window_statuses[wid].provenance == "reviewed"
+    assert [e.kind for e in review.decision_log if e.window_id == wid] == ["accept"]
+
+
+def test_undo_replays_a_lineless_accept_with_a_fit_edit(flagged_source, tmp_path):
+    """review_undo restores and replays the surviving log in one batch; a
+    lineless bare accept in it must survive the replay."""
+    src, wid = flagged_source
+    path = tmp_path / "undo.ftmw"
+    shutil.copy(src, path)
+    ftmw.review_run(str(path))
+    first, second = _gap_anchors(path, 2)
+    ftmw.review_accept(str(path), wid)
+    ftmw.review_create(str(path), first, frame="raw")
+    ftmw.review_create(str(path), second, frame="raw")
+    last = ftmw.review_log(str(path))[-1].order_index
+    ftmw.review_undo(str(path), [last])
+    review = ftmw.get_review_status(str(path))
+    assert review.window_statuses[wid].provenance == "reviewed"
+    kinds = sorted(e.kind for e in review.decision_log)
+    assert kinds == ["accept", "create_window"]
 
 
 def test_a_window_created_over_it_resolves_the_item(flagged_source, tmp_path):

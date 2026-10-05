@@ -3802,26 +3802,26 @@ def _window_page(
 
 
 def _lineless_candidates_table(status: Optional[WindowReviewStatus]) -> List[str]:
-    """The Stage 3 peaks an ``empty_window_residual`` reason names, as a table."""
+    """The Stage 3 peaks an empty-window reason names, as a table."""
     rows: List[List[str]] = []
     for r in status.attention_reasons if status is not None else []:
         if r.kind not in EMPTY_WINDOW_KINDS:
             continue
         for c in r.evidence.get("candidates", []):
             snr = c.get("snr")
+            center = c.get("spur_center_mhz")
+            source = c.get("spur_source")
+            if c.get("gated_spur") and isinstance(center, float):
+                src = f" ({source})" if isinstance(source, str) else ""
+                spur_cell = _esc(f"yes: {center:.4f} MHz{src}")
+            else:
+                spur_cell = "yes" if c.get("gated_spur") else "no"
             rows.append(
                 [
                     f"{float(c['frequency_mhz']):.4f}",
                     str(int(c["detection_index"])),
-                    "&mdash;" if snr is None else f"{float(snr):.1f}",
-                    (
-                        _esc(
-                            f"yes: {float(c['spur_center_mhz']):.4f} MHz"
-                            + (f" ({c['spur_source']})" if c.get("spur_source") else "")
-                        )
-                        if c.get("gated_spur") and "spur_center_mhz" in c
-                        else ("yes" if c.get("gated_spur") else "no")
-                    ),
+                    f"{float(snr):.1f}" if isinstance(snr, float) else "&mdash;",
+                    spur_cell,
                 ]
             )
     if not rows:

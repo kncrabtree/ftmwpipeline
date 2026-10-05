@@ -140,6 +140,7 @@ from .empty_window_attention import (
     empty_window_reasons,
     flagged_lineless_ids,
     superseded_window_ids,
+    takeover_points,
 )
 from .events import StageScope, detached_scope, operation_events
 from .stage0_impl import load_fid_from_pipeline_impl
@@ -5528,6 +5529,21 @@ def _require_known_plan_windows(
         )
 
 
+def _batch_known_window_ids(
+    ctx: "_BatchCtx", plan: Sequence[PlannedAction], fit_ids: Set[int]
+) -> Set[int]:
+    """The ids a batch's plan may name: the fit's windows, plus every flagged
+    lineless window (``ctx.changeset.lineless_reviewable``) a *bare* accept of
+    the plan names -- the one action such a window takes, since the fit holds
+    nothing there to edit."""
+    lineless = ctx.changeset.lineless_reviewable
+    return set(fit_ids) | {
+        int(a.window_id)
+        for a in plan
+        if a.kind == "accept" and a.candidate is None and int(a.window_id) in lineless
+    }
+
+
 def _raise_curation_failure(
     index: int, action: PlannedAction, exc: Exception
 ) -> NoReturn:
@@ -8441,8 +8457,10 @@ def _settle_empty_window_reasons(
     fit-changing decision was recorded on it, or a created window took it over
     (:func:`~ftmwpipeline._internal.empty_window_attention.superseded_window_ids`)
     -- the same conditions :func:`review_run_impl` leaves it out under. A
-    lineless window whose status then carries nothing and was never reviewed has
-    no status left to keep.
+    created window takes the window over only when it covers what was flagged
+    there (:func:`~ftmwpipeline._internal.empty_window_attention.takeover_points`).
+    A window the fit has no result for and whose status then carries nothing
+    has no status left to keep, reviewed or not: its review was of the item.
     """
     flagged = [
         wid
@@ -8459,17 +8477,27 @@ def _settle_empty_window_reasons(
         for wf in spectrum_fit.window_fits
         if wf.window_id is not None and wf.fitted_peaks
     }
+    points: Dict[int, List[float]] = {}
+    plan_by_id = {int(w.window_id): w for w in base_plan_windows}
+    for wid in flagged:
+        win = plan_by_id.get(wid)
+        if win is None:
+            continue
+        for r in statuses[wid].attention_reasons:
+            if r.kind in EMPTY_WINDOW_KINDS:
+                sides = [str(e.get("side")) for e in r.evidence.get("edges", [])]
+                points[wid] = takeover_points(win, r.locations, sides)
     gone = (
         live
         | edited_window_ids
-        | superseded_window_ids(base_plan_windows, created_windows)
+        | superseded_window_ids(base_plan_windows, created_windows, points)
     )
     for wid in flagged:
         if wid not in gone:
             continue
         st = statuses[wid]
         kept = [r for r in st.attention_reasons if r.kind not in EMPTY_WINDOW_KINDS]
-        if not kept and st.provenance == "auto" and wid not in fit_ids:
+        if not kept and wid not in fit_ids:
             del statuses[wid]
         else:
             statuses[wid] = replace(st, attention_reasons=kept)
@@ -8977,11 +9005,15 @@ def _apply_batch_segment(
     # this is what the caller's report reads.
     created_facts: Dict[int, CreateWindowResult] = {}
     _require_known_plan_windows(
-        {
-            int(wf.window_id)
-            for wf in ctx.changeset.spectrum_fit.window_fits
-            if wf.window_id is not None
-        },
+        _batch_known_window_ids(
+            ctx,
+            plan,
+            {
+                int(wf.window_id)
+                for wf in ctx.changeset.spectrum_fit.window_fits
+                if wf.window_id is not None
+            },
+        ),
         plan,
         "Stage 5 fit",
         _batch_plan_window_ids(ctx, plan),
@@ -9987,7 +10019,10 @@ def _run_review_preview(
     # appears here -- one window, not two.
     created_facts: Dict[int, CreateWindowResult] = {}
     _require_known_plan_windows(
-        set(before_stats), plan, "Stage 5 fit", _batch_plan_window_ids(ctx, plan)
+        _batch_known_window_ids(ctx, plan, set(before_stats)),
+        plan,
+        "Stage 5 fit",
+        _batch_plan_window_ids(ctx, plan),
     )
     # One WindowProgress per action that fits (every kind but a bare accept),
     # naming the window it targeted; a cancel is honoured before each action.
@@ -10856,17 +10891,19 @@ def _empty_window_attention(
         if "stage3_peaks" not in h5f or "stage4_windows" not in h5f:
             return {}
         stage3_peaks = load_peaks_from_hdf5(h5f["stage3_peaks"])
-    plan_windows = load_fitted_plan(path).plan.windows
-    excluded = superseded_window_ids(plan_windows, review.created_windows) | {
+    fitted_plan = load_fitted_plan(path).plan
+    excluded = {
         int(e.window_id) for e in review.decision_log if e.kind in _FIT_EDIT_KINDS
     }
     resolution_mhz = 1.0 / acquisition_us if acquisition_us > 0.0 else 0.1
     return empty_window_reasons(
         spectrum_fit,
-        plan_windows,
+        fitted_plan.windows,
         stage3_peaks,
         excluded_window_ids=excluded,
         spur_tol_mhz=SPUR_ADJACENT_MAX_SEP_RES * resolution_mhz,
+        created_windows=review.created_windows,
+        dependency_edges=fitted_plan.dependency_edges,
     )
 
 
