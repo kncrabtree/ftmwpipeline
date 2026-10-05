@@ -149,12 +149,13 @@ no randomness:
    mutually coupled (the statistic stays above threshold all the way between them), so
    none can be a frozen background for the others. Their proposals are merged into a
    single joint window. The reference experiment's tight cluster near 36350 MHz is the
-   archetypal case: the strong doublet at 36349.95/36350.11 MHz and its half-dozen near
+   archetypal case: the strong doublet at 36349.95/36350.11 MHz and three weaker
    neighbors fall inside one contiguous leakage-touched run, so they fit together in a
-   single window. Lines far enough apart that the statistic drops below threshold in the
-   gap are *not* joined: the same experiment's 36350 and 36389 MHz lines (39 MHz apart)
-   land in separate windows, each carried into the other's neighborhood as a fixed
-   contributor rather than by widening one window to span both.
+   single window (36346.4–36355.0 MHz). Lines far enough apart that the statistic drops
+   below threshold in the gap are *not* joined: the same experiment's lines near
+   36389 MHz, 39 MHz away, land in a separate window. Any coupling between the two is
+   carried by a fixed contributor (next section), never by widening one window to span
+   both.
 #. **Merge and cap.** Overlapping proposals merge to a fixpoint, giving disjoint spans.
    A span whose **peak content** exceeds the width cap is split at its sparsest interior
    peak gap, so a genuinely over-wide cluster is broken into within-cap windows while a
@@ -253,6 +254,15 @@ far, smooth giant skirt is absorbed by the baseline (high but smooth, so low
 earns an explicit, ordered contributor. This keeps the dependency graph sparse on a
 dense spectrum without losing the leakage the baseline cannot represent.
 
+On the reference experiment the gate removes every edge: the plan carries no fixed
+contributors and fits in a single parallel batch. The 36350/36389 MHz pair above shows
+the three steps at work. With the gate disabled (``--skirt-level-keep 0
+--curvature-keep-sigma 0``) the strong doublet at 36349.95/36350.11 MHz is attached to
+the 36385.0–36392.8 MHz window, and orientation keeps that edge only in the direction
+*weaker depends on stronger*: the 36389 MHz window depends on the doublet's window, never
+the reverse. At the default gate that skirt is smooth enough for the dependent's
+baseline to absorb, and the edge is dropped.
+
 Each surviving contributor is the source line's frozen damped-cosine term, evaluated in
 the dependent window's model (**added to the model, never subtracted from the data**,
 consistent with the Stage 5 least-squares contract); the surviving oriented edges are the
@@ -341,8 +351,10 @@ The same operations on the Python interfaces:
    for w in plan.windows:
        print(w.window_id, w.freq_range, w.n_free_peaks, len(w.fixed_contributors))
 
-Re-running assignment supersedes any Stage 5 fit built on the old plan. The plan is
-deterministic, so a re-run on the same inputs reproduces it exactly.
+Every ``windows run`` replaces the plan and discards the stages built on it — ``fit``
+(with any partial fit) and ``review``, including every curation decision — and the
+result's ``invalidated`` list names them. The plan is deterministic, so a re-run on the
+same inputs reproduces it exactly.
 
 The defaults are calibrated for the reference instrument and need no adjustment for routine
 use. The behavior is controlled by the knobs below, set with per-knob flags on
@@ -392,11 +404,12 @@ described on :doc:`settings_and_presets`.
      - The window margin: the noise budget kept on each side of a window's outermost peak.
        Superseded form ``min_window_half_width_mhz`` applies when this is ``0``.
 
-Advanced knobs flow through a preset or a settings bundle: the coherence band widths
-(``edge_m``, ``trim_m``), the per-window peak cap (``max_peaks_per_window``, ``0`` =
-width-bounded), and the assumed leakage decay constant (``leakage.tau_us``, ``None`` = the
-boxcar limit). These rarely need touching; the Stage 2b decay time is not auto-fed into
-``tau_us``, so set it explicitly if a damped envelope is wanted.
+Four further knobs rarely need touching, each with its own flag: the coherence band
+widths (``edge_m``, ``trim_m``; ``--edge-m``, ``--trim-m``), the per-window peak cap
+(``max_peaks_per_window``, ``0`` = width-bounded; ``--max-peaks-per-window``), and the
+assumed leakage decay constant (``leakage.tau_us``, unset = the boxcar limit;
+``--tau-us``). The Stage 2b decay time is not auto-fed into ``tau_us``, so set it
+explicitly if a damped envelope is wanted.
 
 Inspecting the plan
 -------------------
@@ -415,32 +428,36 @@ detection there.
 
 .. _stage4-handedit:
 
-Curation and renegotiation
---------------------------
+Renegotiation during the fit
+----------------------------
 
-The plan can still change after Stage 4 produces it, in two ways: an analyst edits it
-before the fit, or Stage 5 renegotiates it during the fit.
+The plan is persisted as three flat tables — the windows (range, batch, and offsets into
+the other two), the free-peak indices, and the fixed-contributor columns — plus the
+dependency edges and fit order. The loader validates the structure loudly: a missing
+column or mismatched lengths raises an error rather than silently dropping data. There
+is no public path for editing a stored plan; the plan is changed by re-running
+``windows run`` with different settings, and individual lines are curated after the fit
+(:doc:`fit_curation`).
 
-Like the peak list, the window plan is a curation point. It is persisted as a flat,
-obvious structure — one group per window with its frequency range, free-peak indices, and
-fixed-contributor columns — so an analyst can load it, merge or split windows, re-scope the
-free set, and re-save before fitting. The loader validates the structure loudly: a missing
-attribute or dataset, or mismatched contributor columns, raises an error rather than
-silently dropping data, so a malformed edit fails immediately instead of corrupting the fit.
+Some coupling is only visible once the lines are actually fit, so Stage 4 deliberately
+does not over-provision its windows up front; instead it exposes a **re-plan** entry
+point. When a Stage 5 fit finds a window edge still carrying a coherent feature with no
+contributor to account for it (a real line crossing the boundary), it requests a merge of
+the two adjacent windows. The re-plan applies the merge and returns a *new* plan with its
+revision counter bumped: the survivor keeps the lower window id and the merged range, and
+the absorbed id is gone. The re-plan also measures, for a proposed pair, how many
+active-FT bins lie between the two windows, how wide the merged window's line content
+would be against the plan's width cap, and how many promoted lines it would hold against
+the plan's ``max_peaks_per_window`` (when set), so Stage 5 can keep its structural merges
+to neighbours that genuinely touch and to windows the planner itself could have built
+(see :doc:`stage5_fitting`). The boundary-trim resolution is fine enough that this fires
+on genuine coupling, not on routine edge error, so renegotiation is rare in practice.
 
-Some coupling is only visible once the lines are actually fit, so Stage 4 deliberately does
-not over-provision its windows up front; instead it exposes a **re-plan** entry point. When
-a Stage 5 fit finds a window edge still carrying a coherent feature with no contributor to
-account for it (a real line crossing the boundary), it emits a request to merge the two
-adjacent windows, and the plan is revised in place with its revision counter bumped. The
-re-plan entry point applies any merge it is handed; it also measures, for a proposed pair,
-how many active-FT bins lie between the two windows, how wide the merged window's line
-content would be against the plan's width cap, and how many promoted lines it would hold
-against the plan's ``max_peaks_per_window`` (when set), so Stage 5 can keep its structural
-merges to neighbours that genuinely touch and to windows the planner itself could have built
-(see :doc:`stage5_fitting`). The boundary-trim resolution is
-fine enough that this fires on genuine coupling, not on routine edge error, so renegotiation
-is rare in practice.
+The stored Stage 4 record is never rewritten by a re-plan. When a fit's plan was revised,
+the plan the fit was actually made on (the **fitted plan**) is stored with the fit.
+``load_windows`` and the Stage 4 tables of ``read`` keep returning the plan as Stage 4
+built it; ``window_status`` reports the fitted plan, with ``merged_from`` on each merge
+survivor naming the ids it absorbed. For a fit no merge revised, the two are the same.
 
 What the later stages consume
 -----------------------------
@@ -448,8 +465,11 @@ What the later stages consume
 - :doc:`Stage 5 <stage5_fitting>` fits each window's free peaks against the active
   spectrum, drawing each fixed contributor's frozen skirt into the model, and walks the
   parallel batches in dependency order. It may emit the re-plan requests above.
-- The final review and reports (:doc:`Stage 6 <stage6_review>`) read the plan's shape — its
-  window widths and per-window peak counts, alongside the fit results.
+- The final review and reports (:doc:`Stage 6 <stage6_review>`) read the fitted plan's
+  window ranges and per-window peak counts, alongside the fit results. A program
+  joining fit results to windows after a merge should join to ``window_status`` (the
+  fitted plan), not to the Stage 4 tables, in which an absorbed window id still
+  appears.
 
 Limitations
 -----------
