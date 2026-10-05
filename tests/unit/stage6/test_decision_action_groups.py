@@ -32,7 +32,7 @@ from ftmwpipeline._internal.stage6_impl import (
     review_log_impl,
     review_undo_impl,
 )
-from ftmwpipeline.cli.review_commands import cmd_review_undo
+from ftmwpipeline.cli.review_commands import cmd_review_apply, cmd_review_undo
 from ftmwpipeline.core.data_structures import DecisionLogEntry, Stage6Review
 from ftmwpipeline.io.fitting_serialization import load_spectrum_fit_from_hdf5
 from ftmwpipeline.io.stage6_review_serialization import (
@@ -421,3 +421,232 @@ def test_group_undo_cross_interface(stage5_multi_source, tmp_path):
     for k in ("pipe", "cli"):
         assert _fitted_by_window(paths[k]) == ref_fit, k
         assert _log_shape(paths[k]) == ref_log, k
+
+
+# ---------------------------------------------------------------------------
+# Integration: inferred merge + residual rows in one keyed group
+# ---------------------------------------------------------------------------
+
+
+def _uids(path: Path, wid: int) -> List[str]:
+    with h5py.File(str(path), "r") as h5f:
+        sf = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+    wf = next(w for w in sf.window_fits if w.window_id == wid)
+    return sorted(str(p.peak_uid) for p in wf.fitted_peaks)
+
+
+def _split_site(path: Path) -> Tuple[int, float, float, float, int]:
+    """``(wid, parent, near, far, other)``: a window peak, an add frequency
+    half a snap tolerance beside it (an inferred split) and one far from every
+    peak (a residual plain add), and another window."""
+    by_w = _fitted_by_window(path)
+    tol = _snap_tol(path)
+    for wid, freqs in by_w.items():
+        other = next((w for w in by_w if w != wid), None)
+        if other is None:
+            continue
+        far = _clear_add_freq(path, wid)
+        for parent in freqs:
+            near = parent + 0.5 * tol
+            if all(abs(near - f) > tol for f in freqs if f != parent) and all(
+                abs(far - f) > tol for f in freqs + [near]
+            ):
+                return wid, parent, near, far, other
+    pytest.skip("Need a window with room for a split add and a clear add")
+
+
+def _undo_later_unrelated(path: Path, tmp_path: Path, other: int) -> None:
+    cur = tmp_path / "later.csv"
+    cur.write_text(f"add,{other},{_clear_add_freq(path, other)},\n")
+    apply_curation_impl(path, cur)
+    review_undo_impl(path, [len(review_log_impl(path)) - 1])
+
+
+@pytest.mark.integration
+def test_undo_keyed_inferred_split_with_residual_rows(stage5_multi_file, tmp_path):
+    """A keyed group holding an inferred split plus a residual add replays,
+    after undoing a later unrelated decision, to the same fitted state, the
+    same peak uids and the same inferred split."""
+    path = stage5_multi_file
+    wid, parent, near, far, other = _split_site(path)
+
+    refit_window_impl(str(path), wid, add=[near, far])
+    log = review_log_impl(path)
+    assert sorted(e.kind for e in log) == ["add", "split"]
+    assert {e.evidence.get(ACTION_INDEX_EVIDENCE_KEY) for e in log} == {0}
+    assert next(e for e in log if e.kind == "split").evidence["inferred"] is True
+    state, shape, uids = _fitted_by_window(path), _log_shape(path), _uids(path, wid)
+
+    _undo_later_unrelated(path, tmp_path, other)
+
+    assert _fitted_by_window(path) == state
+    assert _log_shape(path) == shape
+    assert _uids(path, wid) == uids
+    split = next(e for e in review_log_impl(path) if e.kind == "split")
+    assert split.evidence["inferred"] is True
+    assert split.evidence["requested_freq_mhz"] == pytest.approx(near)
+
+
+@pytest.mark.integration
+def test_undo_keyed_inferred_merge_with_residual_rows(stage5_multi_file, tmp_path):
+    """Same for an inferred merge: a split first makes a blend inside snap
+    tolerance, then one edit removes both products, adds between and adds
+    a far line."""
+    path = stage5_multi_file
+    wid, parent, near, far, other = _split_site(path)
+    refit_window_impl(str(path), wid, add=[near])
+    blend = sorted(
+        f for f in _fitted_by_window(path)[wid] if abs(f - parent) < _snap_tol(path)
+    )
+    assert len(blend) == 2, blend
+    refit_window_impl(
+        str(path), wid, add=[0.5 * (blend[0] + blend[1]), far], remove=blend
+    )
+    log = review_log_impl(path)
+    assert [(e.kind, e.evidence[ACTION_INDEX_EVIDENCE_KEY]) for e in log] == [
+        ("split", 0),
+        ("merge", 1),
+        ("add", 1),
+    ]
+    assert log[1].evidence["inferred"] is True
+    state, shape, uids = _fitted_by_window(path), _log_shape(path), _uids(path, wid)
+
+    _undo_later_unrelated(path, tmp_path, other)
+
+    assert _fitted_by_window(path) == state
+    assert _log_shape(path) == shape
+    assert _uids(path, wid) == uids
+
+
+# ---------------------------------------------------------------------------
+# Integration: stamping through the preview-then-apply session path
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_session_preview_then_apply_stamps_one_index_per_action(
+    stage5_multi_file, tmp_path
+):
+    """``ReviewSession`` persists the preview's own decisions: they must be
+    grouped by action exactly as a direct apply groups them (the
+    ``_close_batch_action`` call in ``_run_review_preview``)."""
+    path = stage5_multi_file
+    wid, peaks, other = _multi_peak_window(path)
+    fv = _clear_add_freq(path, other)
+    cur = tmp_path / "c.csv"
+    cur.write_text(
+        f"remove,{wid},{peaks[0]},\nremove,{wid},{peaks[1]},\nadd,{other},{fv},\n"
+    )
+
+    with Pipeline.open(path).review_session() as session:
+        session.review_preview(cur)
+        session.review_apply(cur)
+
+    # The plan runs windows in canonical order, so the add may precede the
+    # removes; either way each action's rows carry its first row's index.
+    shape = _log_shape(path)
+    assert [(w, k) for _, w, k, _ in shape if w == wid] == [
+        (wid, "remove"),
+        (wid, "remove"),
+    ]
+    first = {w: min(o for o, ww, _, _ in shape if ww == w) for w in (wid, other)}
+    assert [(o, ai) for o, w, _, ai in shape] == [(o, first[w]) for o, w, _, _ in shape]
+    assert first[wid] != first[other]
+
+
+# ---------------------------------------------------------------------------
+# Integration: log-prefix apply
+# ---------------------------------------------------------------------------
+
+
+def _prefix_setup(source: Path, tmp_path: Path, name: str) -> Tuple[Path, Path, int]:
+    """A copy holding a joint two-remove edit then an unrelated add, and the
+    curation file that repeats that add."""
+    path = tmp_path / f"{name}.ftmw"
+    shutil.copy(source, path)
+    wid, peaks, other = _multi_peak_window(path)
+    cur = tmp_path / "later.csv"
+    cur.write_text(f"add,{other},{_clear_add_freq(path, other)},\n")
+    refit_window_impl(str(path), wid, remove=[peaks[0], peaks[1]])
+    apply_curation_impl(path, cur)
+    return path, cur, wid
+
+
+@pytest.mark.integration
+def test_log_prefix_on_legacy_log_groups_by_inference(stage5_multi_source, tmp_path):
+    """A log written before the key existed, applied at a prefix that keeps
+    the joint edit, replays it as one action and reproduces the state."""
+    path, cur, wid = _prefix_setup(stage5_multi_source, tmp_path, "legacy")
+    expected_fit, expected_log = _fitted_by_window(path), _log_shape(path)
+    _strip_action_index(path)
+    assert all(ai is None for *_, ai in _log_shape(path))
+
+    apply_curation_impl(path, cur, log_prefix=2)
+
+    assert _fitted_by_window(path) == expected_fit
+    assert _log_shape(path) == expected_log
+
+
+@pytest.mark.integration
+def test_group_log_prefix_apply_cross_interface(stage5_multi_source, tmp_path):
+    """api / Pipeline / CLI ``review apply --log-prefix`` agree, fit and log
+    alike, for a prefix that keeps a joint edit."""
+    paths: Dict[str, Path] = {}
+    for k in ("api", "pipe", "cli"):
+        paths[k], cur, wid = _prefix_setup(stage5_multi_source, tmp_path, k)
+
+    ftmw.review_apply(str(paths["api"]), cur, log_prefix=2)
+    Pipeline.open(paths["pipe"]).review_apply(cur, log_prefix=2)
+    rc = cmd_review_apply(
+        argparse.Namespace(
+            file_path=str(paths["cli"]),
+            curation_file=str(cur),
+            actions=None,
+            dry_run=False,
+            log_prefix=2,
+        )
+    )
+    assert rc == 0
+
+    ref_fit, ref_log = _fitted_by_window(paths["api"]), _log_shape(paths["api"])
+    assert [(k, ai) for _, _, k, ai in ref_log] == [
+        ("remove", 0),
+        ("remove", 0),
+        ("add", 2),
+    ]
+    for k in ("pipe", "cli"):
+        assert _fitted_by_window(paths[k]) == ref_fit, k
+        assert _log_shape(paths[k]) == ref_log, k
+
+
+# ---------------------------------------------------------------------------
+# Regression: a joint action must not replay as per-row refits
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_replay_refits_once_per_action_not_once_per_row(
+    stage5_multi_file, tmp_path, monkeypatch
+):
+    """The old per-row replay resolved each log row on its own: two refits
+    for a two-remove edit, a different (sequential) fit. Count the refits an
+    undo performs and pin the plan's shape."""
+    from ftmwpipeline._internal import stage6_impl as s6
+
+    path = stage5_multi_file
+    wid, peaks, other = _joint_then_unrelated(path, tmp_path)
+    log = review_log_impl(path)
+    assert len(_replay_plan(log[:2])) == 1  # one edit for the two rows
+
+    calls: List[Tuple[int, Tuple[float, ...]]] = []
+    real = s6._batch_apply_edit_action
+
+    def counting(ctx: Any, window_id: int, add: Any, remove: Any, **kw: Any) -> Any:
+        calls.append((window_id, tuple(remove)))
+        return real(ctx, window_id, add, remove, **kw)
+
+    monkeypatch.setattr(s6, "_batch_apply_edit_action", counting)
+    review_undo_impl(path, [2])
+
+    assert calls == [(wid, (peaks[0], peaks[1]))]
+    assert _fitted_by_window(path) == _saved_state(tmp_path)
