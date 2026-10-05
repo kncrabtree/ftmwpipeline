@@ -1,8 +1,8 @@
 """End-to-end pipeline orchestration for the ``run`` command.
 
-Drives a raw source through every stage in sequence (import -> FT -> timebase
--> noise -> tau -> peaks -> windows -> fit -> review, then optionally the
-report) by calling the existing :class:`~ftmwpipeline.pipeline.Pipeline` stage
+Drives a raw source through every stage in sequence (import -> start detection
+-> FT -> timebase -> noise -> tau -> peaks -> windows -> fit -> review, then
+optionally the report) by calling the existing :class:`~ftmwpipeline.pipeline.Pipeline` stage
 methods. It adds no analysis -- each stage's logic stays in its own
 ``_internal/stage*_impl``. The orchestrator owns the stage ordering, the
 non-fatal timebase handling, the structured result, and the live per-stage
@@ -132,8 +132,8 @@ def run_pipeline_impl(
 ) -> Dict[str, Any]:
     """Drive *source* through every pipeline stage and return a structured result.
 
-    Runs import -> FT -> timebase -> noise -> tau -> peaks -> windows -> fit ->
-    review (and, with ``report=True``, the report) in order, by calling the
+    Runs import -> start detection -> FT -> timebase -> noise -> tau -> peaks ->
+    windows -> fit -> review (and, with ``report=True``, the report) in order, by calling the
     existing :class:`~ftmwpipeline.pipeline.Pipeline` stage methods. *trim* (the
     active-band FT range, MHz) is required -- there is no active-band
     auto-detector. Each ``*_params`` dict is forwarded to the matching stage; an

@@ -356,11 +356,11 @@ class Pipeline:
         """Drive *source* through every stage end-to-end and return the result.
 
         Convenience classmethod over :func:`run_pipeline_impl`: imports the raw
-        *source*, then runs FT -> noise -> tau -> peaks -> windows -> fit ->
-        timebase -> review (and, with ``report=True``, the report), with live
-        per-stage progress. *trim* (the active-band FT range, MHz) is required.
-        ``output`` is the destination ``.ftmw`` (derived from *source* if
-        omitted). Remaining keyword arguments are forwarded to
+        *source*, then runs start detection -> FT -> timebase -> noise -> tau ->
+        peaks -> windows -> fit -> review (and, with ``report=True``, the
+        report), with live per-stage progress. *trim* (the active-band FT
+        range, MHz) is required. ``output`` is the destination ``.ftmw``
+        (derived from *source* if omitted). Remaining keyword arguments are forwarded to
         :func:`run_pipeline_impl` (per-stage ``*_params`` override dicts,
         ``detect_start`` / ``calibrate`` / ``clocks``, ``report`` /
         ``report_output_dir``, ``sigma_floor_khz``, ``force``, ``progress``, …).

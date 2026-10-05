@@ -1879,11 +1879,11 @@ def run_pipeline(
 ) -> Dict[str, Any]:
     """Drive a raw *source* through every pipeline stage end-to-end.
 
-    Equivalent to :meth:`Pipeline.build`.  Imports *source*, then runs FT ->
-    noise -> tau -> peaks -> windows -> fit -> timebase -> review (and, with
-    ``report=True``, the report) in order, showing live per-stage progress.
-    *trim* (the active-band FT range, MHz) is required; ``output`` is the
-    destination ``.ftmw`` (derived from *source* if omitted).
+    Equivalent to :meth:`Pipeline.build`.  Imports *source*, then runs start
+    detection -> FT -> timebase -> noise -> tau -> peaks -> windows -> fit ->
+    review (and, with ``report=True``, the report) in order, showing live
+    per-stage progress. *trim* (the active-band FT range, MHz) is required;
+    ``output`` is the destination ``.ftmw`` (derived from *source* if omitted).
 
     Per-stage behavior is tuned with override dicts forwarded to each stage
     (``ft_params``, ``noise_params``, ``tau_params``, ``peak_params``,
