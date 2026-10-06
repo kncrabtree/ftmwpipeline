@@ -1454,14 +1454,27 @@ re-run order (:ref:`contract-stage-names`); it does not depend on the file.
 Window status: ``window_status``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``window_status(path)`` returns ``{"schema": "ftmw/window_status@1",
-"windows": [...]}``, one ``ftmwpipeline.WindowStatusRow`` per window of the
-plan the fit was made on and per window Stage 6 created, with ``window_id``,
-``freq_min_mhz``, ``freq_max_mhz``, ``created``, ``n_fitted_peaks``, ``live``
-and ``merged_from``. A window is **live** when the Stage 5 fit holds at least
-one fitted line in it. Rows ascend by ``freq_min_mhz`` and then ``window_id``.
+``window_status(path, frame="raw")`` returns ``{"schema":
+"ftmw/window_status@1", "frame", "windows": [...]}``, one
+``ftmwpipeline.WindowStatusRow`` per window of the plan the fit was made on and
+per window Stage 6 created, with ``window_id``, ``freq_min_mhz``,
+``freq_max_mhz``, ``created``, ``n_fitted_peaks``, ``live`` and
+``merged_from``. A window is **live** when the Stage 5 fit holds at least one
+fitted line in it. Rows ascend by ``freq_min_mhz`` and then ``window_id``.
 A created window that reuses a plan ``window_id`` (the narrow-gap widening
 case) replaces that plan row, with its own bounds and ``created`` true.
+
+**Frame of the bounds (contract 17).** ``freq_min_mhz`` and ``freq_max_mhz`` are
+in the frame ``frame`` names, and the payload's ``frame`` echoes it. ``"raw"``
+(the default) is the frame of the fit, the window model and every stored value;
+``"calibrated"`` is the frame of the final products, so a window's calibrated
+bounds equal the ``fit_window_mhz`` of each of its lines. The conversion is the
+one the final products apply, against the file's current calibration; where
+that calibration has ``epsilon == 0``, or the file has none to convert against,
+the two frames coincide, as for a curation verb's ``frame="calibrated"``. Any
+other value is refused (``bad_setting``, ``path`` ``"frame"``), whatever stage
+the file is at. On the command line the argument is ``--frame {raw,calibrated}``.
+A program does not convert frequencies itself; it asks for the frame it needs.
 
 **Windows after a structural merge.** Before a complete Stage 5 fit (a partial
 fit included), and after a fit no structural merge revised, the plan is the
@@ -1494,7 +1507,8 @@ Absence and refusals:
   ``command`` ``windows run``.
 
 Its columnar form is the ``window_status`` table of ``read_table`` (and of
-``read table``), built from the same rows: the seven columns plus
+``read table``), built from the same rows, with raw bounds: the seven columns
+plus
 ``n_fitted_peaks__status`` and ``live__status`` (``1`` before Stage 5, where
 the value columns hold the fill ``0`` / ``False``, which a program must not
 read). ``merged_from`` is a text column holding each row's list as JSON
@@ -1504,6 +1518,7 @@ raises the same ``StageDependencyError``. The CLI prints the records inline:
 .. code-block:: console
 
    $ ftmwpipeline read window_status experiment.ftmw
+   $ ftmwpipeline read window_status experiment.ftmw --frame calibrated
 
 The fitted model: ``window_model`` and ``spectrum_model``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -2075,7 +2090,10 @@ map a window id to a ``WindowReviewStatus``; each status's
   ``empty_window_spur``. Kinds are only ever added;
 * ``severity``, a float; higher asks for a look sooner;
 * ``locations``, the molecular frequencies (MHz) the reason points at, empty
-  for a window-wide reason;
+  for a window-wide reason. They are in the raw frame, like every frequency in
+  ``evidence`` (a candidate's ``frequency_mhz``, a spur's
+  ``spur_center_mhz``); ``window_status(path, frame="raw")`` reports window
+  bounds in the same frame;
 * ``evidence``, a dict of the kind's declared keys, empty for a kind that
   declares none (only the two empty-window kinds declare any, below);
 * ``detail``, a sentence for a person. Its text is not contract.

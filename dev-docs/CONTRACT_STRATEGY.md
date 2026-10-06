@@ -559,6 +559,14 @@ holds at least one fitted line in it. Before Stage 5, `n_fitted_peaks` and
 `live` are `Absent.NOT_RUN`. While Stage 5 is `partial` (after a cancel), a
 window the fit has not reached reports both as `Absent.NOT_RUN`, never 0. Also available as a `read_table` table.
 
+`window_status(path, frame="raw")`: `frame` (`"raw"` | `"calibrated"`, CLI
+`--frame`) is the frame of `freq_min_mhz` / `freq_max_mhz`, echoed as the
+payload's `frame`. Calibrated bounds use the final products' own conversion, so
+they equal the window's `fit_window_mhz`; with `epsilon == 0` or no calibration
+the frames coincide (as for a curation verb's `frame="calibrated"`). Any other
+value is `bad_setting` (`path` `"frame"`). The `read_table` form is raw. A
+client never converts frequencies itself.
+
 **Windows after a structural merge.** Once a complete Stage 5 fit exists,
 every window geometry the contract reports for the fit is the geometry the fit
 was made on: `window_status`, the window model, and the windows every Stage 6
@@ -588,7 +596,8 @@ Stage 4 plan.
   `flat_decay`, `empty_window_residual`, `empty_window_spur`. Kinds are only
   ever added.
 - `severity` (float; higher asks for a look sooner);
-- `locations`: the molecular frequencies (MHz) the reason points at, empty for
+- `locations`: the molecular frequencies (MHz) the reason points at (raw frame,
+  like every frequency in `evidence`), empty for
   a window-wide reason;
 - `evidence`: a dict of the kind's declared keys (below), empty for a kind that
   declares none;

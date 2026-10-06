@@ -11,15 +11,27 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+from dataclasses import replace
 
 import h5py
 import numpy as np
 import pytest
 
 import ftmwpipeline.api as ftmw
-from ftmwpipeline import Absent, Pipeline
+from ftmwpipeline import Absent, BadSettingError, Pipeline
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline.cli.main import main
+from ftmwpipeline.core.stage_fit_settings import ClockSource
 from ftmwpipeline.file_manager import StageDependencyError
+from ftmwpipeline.fitting.timebase_calibration import TimebaseCalibrationResult
+from ftmwpipeline.io.stage_fit_settings_serialization import (
+    load_stage_fit_settings_from_h5,
+    save_stage_fit_settings_to_h5,
+)
+from ftmwpipeline.io.timebase_serialization import (
+    GROUP_PATH,
+    save_timebase_calibration_to_hdf5,
+)
 from ftmwpipeline.io.window_serialization import (
     load_window_plan_from_hdf5,
     save_fitted_plan_to_hdf5,
@@ -45,9 +57,9 @@ def _md5(path):
     return hashlib.md5(open(path, "rb").read()).hexdigest()
 
 
-def _via_cli(path, capsys):
+def _via_cli(path, capsys, *extra):
     """Run ``read window_status``: the envelope (rows are records, no arrays)."""
-    rc = main(["read", "window_status", str(path), "--format", "json"])
+    rc = main(["read", "window_status", str(path), "--format", "json", *extra])
     cap = capsys.readouterr()
     assert rc == 0, cap.err
     return json.loads(cap.out)
@@ -313,3 +325,101 @@ def test_read_table_before_stage4_is_typed_on_api_and_pipeline(baseline_2638_sta
         errors.append(info.value.to_dict())
     assert errors[0] == errors[1]
     assert errors[0]["command"] == "windows run"
+
+
+# ---- frame="raw" | "calibrated" ---------------------------------------------
+
+
+def _make_self_calibrated(path, epsilon=2.2e-6):
+    """Declare an unlocked digitizer and stamp a passing timebase result, so
+    the raw and calibrated frames differ (``test_frame_parameter.py``'s
+    recipe)."""
+    persisted = load_stage_fit_settings_from_h5(str(path))
+    clocks = (ClockSource(5120.0, locked=True), ClockSource(6250.0, locked=False))
+    settings = replace(persisted, spur=replace(persisted.spur, clocks=clocks))
+    with atomic_write(str(path)):
+        save_stage_fit_settings_to_h5(str(path), settings)
+    result = TimebaseCalibrationResult(
+        epsilon=epsilon,
+        sigma_epsilon=0.1e-6,
+        n_used=5,
+        n_detected=5,
+        lattice_g_mhz=320.0,
+        tone_reads=(),
+        kappa_sys=0.0,
+        snr_min=10.0,
+        sample_dt_us=0.02,
+        start_us=0.0,
+        end_us=13.0,
+        span_us=13.0,
+        preconditions_passed=True,
+    )
+    with h5py.File(str(path), "a") as h5f:
+        if GROUP_PATH in h5f:
+            del h5f[GROUP_PATH]
+        save_timebase_calibration_to_hdf5(result, h5f.create_group(GROUP_PATH))
+
+
+@pytest.fixture(scope="module")
+def stage5_self_calibrated(baseline_2638_stage5_small, tmp_path_factory):
+    path = tmp_path_factory.mktemp("ws_frame") / "sc.ftmw"
+    shutil.copy(baseline_2638_stage5_small, path)
+    _make_self_calibrated(path)
+    return path
+
+
+@pytest.mark.parametrize("frame", ["raw", "calibrated"])
+def test_each_frame_agrees_on_every_interface(stage5_self_calibrated, frame, capsys):
+    path = stage5_self_calibrated
+    via_api = ftmw.window_status(str(path), frame=frame)
+    via_pipeline = Pipeline.open(str(path)).window_status(frame=frame)
+    envelope = _via_cli(path, capsys, "--frame", frame)
+    assert via_api == via_pipeline
+    assert envelope == to_jsonable(via_api)
+    assert envelope["frame"] == via_api["frame"] == frame
+
+
+def test_cli_default_frame_is_raw(stage5_self_calibrated, capsys):
+    path = stage5_self_calibrated
+    envelope = _via_cli(path, capsys)
+    assert envelope == to_jsonable(ftmw.window_status(str(path), frame="raw"))
+    calibrated = _via_cli(path, capsys, "--frame", "calibrated")
+    assert [w["freq_min_mhz"] for w in envelope["windows"]] != [
+        w["freq_min_mhz"] for w in calibrated["windows"]
+    ]
+
+
+def test_an_unknown_frame_is_refused_alike(stage5_self_calibrated, capsys):
+    path = stage5_self_calibrated
+    errors = []
+    for call in (
+        lambda: ftmw.window_status(str(path), frame="molecular"),
+        lambda: Pipeline.open(str(path)).window_status(frame="molecular"),
+    ):
+        with pytest.raises(BadSettingError) as info:
+            call()
+        errors.append(info.value.to_dict())
+    assert errors[0] == errors[1]
+    assert errors[0]["code"] == "bad_setting" and errors[0]["path"] == "frame"
+    # The CLI's parser refuses it as the curation verbs' --frame does.
+    with pytest.raises(SystemExit) as exit_info:
+        main(["read", "window_status", str(path), "--frame", "molecular"])
+    assert exit_info.value.code == 2
+    capsys.readouterr()
+
+
+def test_an_unknown_frame_is_refused_before_the_stage_dependency(
+    baseline_2638_stage3,
+):
+    with pytest.raises(BadSettingError):
+        ftmw.window_status(str(baseline_2638_stage3), frame="molecular")
+    with pytest.raises(StageDependencyError):
+        ftmw.window_status(str(baseline_2638_stage3), frame="calibrated")
+
+
+def test_every_frame_leaves_the_file_byte_identical(stage5_self_calibrated, capsys):
+    path = stage5_self_calibrated
+    before = _md5(path)
+    ftmw.window_status(str(path), frame="calibrated")
+    _via_cli(path, capsys, "--frame", "calibrated")
+    assert _md5(path) == before

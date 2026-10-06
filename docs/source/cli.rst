@@ -490,7 +490,8 @@ one has. ``read table <file> <name>`` dumps one of them:
   (after any structural merge) and per window Stage 6 created: bounds,
   ``created``, ``n_fitted_peaks``, ``live`` and ``merged_from``. This is the
   table to join fit rows to; ``windows`` stays the Stage 4 plan as planned.
-  See :ref:`contract-window-status`.
+  Its bounds are raw; ``read window_status --frame calibrated`` gives them in
+  the frame of the final products. See :ref:`contract-window-status`.
 
 Stages 1 and 2 have no table: the canonical FT is recomputed from the FID
 rather than persisted, and the Stage 2 noise model is a reconstruction over the

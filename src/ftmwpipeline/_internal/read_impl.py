@@ -98,6 +98,7 @@ from ..contract import (
     WindowStatusRow,
 )
 from ..core.absent import STATUS_NOT_RUN, STATUS_PRESENT, STATUS_UNDEFINED
+from ..core.curation import Frame, check_frame
 from ..core.settings_framework import NONE as NONE_SENTINEL
 from ..file_manager import (
     BadSettingError,
@@ -1134,23 +1135,70 @@ def _window_status_columns(
     return {name: table[name] for name in requested}
 
 
-def window_status_impl(file_path: Union[str, Path]) -> Dict[str, Any]:
-    """The ``ftmw/window_status@1`` payload: ``{"schema", "windows": [row, ...]}``.
+def window_status_impl(
+    file_path: Union[str, Path], frame: Frame = "raw"
+) -> Dict[str, Any]:
+    """The ``ftmw/window_status@1`` payload: ``{"schema", "frame", "windows":
+    [row, ...]}``.
 
     One :class:`~ftmwpipeline.contract.WindowStatusRow` per window. A window is
     live when the Stage 5 fit holds at least one fitted line in it. Before
     Stage 5 each row's ``n_fitted_peaks`` and ``live`` are ``Absent.NOT_RUN``.
     Read-only. The columnar form is the ``window_status`` table of
-    :func:`read_table_impl`.
+    :func:`read_table_impl` (always raw).
+
+    ``frame`` is the frame of ``freq_min_mhz`` / ``freq_max_mhz``: ``"raw"``
+    (the stored, fit frame) or ``"calibrated"`` (the frame of
+    ``FinalPeak.fit_window_mhz``), converted by the same correction the final
+    products apply. On a file with no calibration to convert against the two
+    frames coincide, as for a curation verb's ``frame="calibrated"``.
 
     Raises
     ------
+    BadSettingError
+        ``frame`` is not ``"raw"`` or ``"calibrated"`` (checked before the
+        stage dependency).
     StageDependencyError
         Stage 4 has not been run (``command`` is ``"windows run"``).
     """
+    resolved = check_frame(frame)
     with _open(file_path) as h5f:
         rows = _window_status_rows(h5f)
-    return {"schema": WINDOW_STATUS_SCHEMA, "windows": rows}
+    if resolved == "calibrated":
+        rows = _calibrated_window_rows(str(file_path), rows)
+    return {"schema": WINDOW_STATUS_SCHEMA, "frame": resolved, "windows": rows}
+
+
+def _calibrated_window_rows(
+    path: str, rows: List[WindowStatusRow]
+) -> List[WindowStatusRow]:
+    """``rows`` with their bounds in the calibrated frame.
+
+    The stamp and the conversion are Stage 6's own
+    (:func:`~._internal.stage6_impl._current_calibration_stamp`,
+    :func:`~._internal.stage6_impl._frame_to_calibrated`), so a bound equals
+    the ``fit_window_mhz`` the final products report for the window. With no
+    stamp (no FID header) the rows are returned as they are, as
+    :func:`~._internal.stage6_impl._frame_to_raw` leaves a frequency.
+    """
+    from dataclasses import replace
+
+    from .stage6_impl import _current_calibration_stamp, _frame_to_calibrated
+
+    stamp = _current_calibration_stamp(path)
+    if stamp is None:
+        return rows
+    epsilon, probe = stamp[1], stamp[4]
+
+    def convert(row: WindowStatusRow) -> WindowStatusRow:
+        lo, hi = sorted(
+            _frame_to_calibrated(v, probe_freq_mhz=probe, epsilon=epsilon)
+            for v in (row.freq_min_mhz, row.freq_max_mhz)
+        )
+        return replace(row, freq_min_mhz=lo, freq_max_mhz=hi)
+
+    # The correction is monotonic, so the frequency order of the rows holds.
+    return [convert(r) for r in rows]
 
 
 def _row_count(stage_group: h5py.Group, count_path: str) -> Optional[int]:

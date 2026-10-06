@@ -70,6 +70,15 @@ and blank lines not counted); ``null`` with ``action_indices_absent:
 --json``; the ``frame_mismatch`` event's ``actions`` are the same request
 positions (they were plan positions).
 
+**``window_status`` reports bounds in either frame.** Its window bounds are
+raw, while ``FinalPeak.fit_window_mhz`` is calibrated, and a program may not
+convert between them. ``window_status`` takes ``frame="raw" | "calibrated"``
+(``--frame`` on ``read window_status``; default ``"raw"``, refused
+``bad_setting`` otherwise), converts with the final products' own correction,
+and the payload gains ``frame`` naming the frame of its bounds. The machine
+contract also states that ``AttentionReason.locations`` and the frequencies in
+its ``evidence`` are raw.
+
 **``settings_set`` accepts the JSON a settings row reports for a shape.**
 ``stage5.shape`` given as ``'{"kind": "gaussian"}'`` is parsed as the mapping
 form instead of being refused as an unknown shape name.
