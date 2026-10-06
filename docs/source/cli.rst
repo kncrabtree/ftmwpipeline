@@ -344,7 +344,8 @@ the outcome of ``undo`` of the dropped ids followed by ``apply``, at the cost
 of one replay instead of two. Every one of these writes (and ``review run``)
 leaves the file holding exactly the replay of its decision log from the
 automatic fit under the recorded review parameters; a write that changes no
-fit-changing decision refits nothing. See :doc:`stage6_review`.
+fit-changing decision refits nothing, and one that does refits only the
+windows its change can reach. See :doc:`stage6_review`.
 
 On a file Stage 6 cannot curate -- a fit with a peak that has no ``peak_uid``, or
 curation written before the replay engine -- every editing verb, ``apply``,

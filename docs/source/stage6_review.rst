@@ -373,6 +373,15 @@ it. Three things follow, and are worth knowing:
   accept, ``review run``, an undo of bare accepts -- refits nothing and keeps the fits
   as they are. A write that leaves the log with no fit-changing entry restores the
   automatic fit.
+- A write that changes the log does not redo the whole replay: it refits only the
+  windows whose result the change can reach -- a window whose own entries or geometry
+  changed, and every window an edited window reaches through the cascade -- and keeps
+  every other window's fit and final-product fields as they are, which is what the
+  replay gives them anyway (every status is still recomputed). A window left with no
+  entry and no edited window upstream gets its automatic fit back by copy. An edit
+  of a window nothing else reads therefore costs one refit per action recorded on
+  that window, replayed from its automatic fit; an edit of a window with many
+  dependents (655's window 429 has 32) refits them all.
 
 Two replays are bit-identical within one software environment; across numpy, SciPy or
 BLAS versions they are not promised to be (a change of the fitting model itself is

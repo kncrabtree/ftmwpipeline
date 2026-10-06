@@ -1127,7 +1127,11 @@ Each, with its absence cases:
   own rows, and the rows' grouping into actions); and a write whose
   fit-changing rows are the ones the log already held (a bare accept,
   ``review_run``, an undo of bare accepts) refits nothing and keeps the fits it
-  finds. Not promised: identical bits across numpy, SciPy or BLAS versions
+  finds. A write that changes them refits only the windows the change can
+  reach (a window's own decisions, its geometry, or an edited window upstream
+  of it in the cascade) and keeps every other window's fit, which is the
+  replay's already; the epoch gate applies only when it refits one. Not
+  promised: identical bits across numpy, SciPy or BLAS versions
   (within one environment two replays are identical; a fitting-model change is
   marked by ``ANALYSIS_EPOCH``); that kept fits are what the running code
   would replay -- after a new ``ANALYSIS_EPOCH``, or a change to a Stage 5

@@ -94,6 +94,15 @@ class TestEngineIsSingleSourced:
             f"(_finish_batch); found writers: {sorted(writers)}"
         )
 
+    def test_only_finish_batch_writes_the_engine_keys(self):
+        """The engine's keys describe the persisted fits, so they are written
+        in the same place the fits are, and nowhere else."""
+        writers = set(_functions_calling({"save_stage6_engine_state"}))
+        assert writers == {"_finish_batch"}, (
+            "Stage 6 must write /stage6_engine in exactly one place "
+            f"(_finish_batch); found writers: {sorted(writers)}"
+        )
+
     def test_only_open_batch_takes_the_undo_baseline(self):
         """The baseline snapshot is the engine's, so it cannot be forgotten."""
         snappers = set(_functions_calling({"_snapshot_stage5_baseline"}))

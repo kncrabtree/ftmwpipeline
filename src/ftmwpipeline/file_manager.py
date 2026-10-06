@@ -1614,6 +1614,9 @@ _RECORDS_DESCRIBING_STAGES: Dict[str, Tuple[str, ...]] = {
         "stage2b_tau_calibration",
         "stage2b_tau_G_calibration",
     ),
+    # The Stage 6 replay engine's keys describe the curated fits the review
+    # records.
+    "stage6_engine": ("stage6_review",),
 }
 
 

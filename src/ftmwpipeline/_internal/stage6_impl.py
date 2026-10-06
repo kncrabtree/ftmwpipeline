@@ -23,7 +23,9 @@ Wrapped identically by the CLI, Pipeline class, and functional API.
 
 from __future__ import annotations
 
+import copy
 import functools
+import hashlib
 import inspect
 import json
 import logging
@@ -125,7 +127,16 @@ from ..io.frequency_calibration_serialization import (
     save_frequency_calibration_to_hdf5,
 )
 from ..io.provenance import stamp_stage_epoch_in_file
+from ..io.stage6_engine_serialization import (
+    STAGE6_ENGINE_GROUP,
+    EngineWindowKey,
+    Stage6EngineState,
+    load_stage6_engine_state,
+    save_stage6_engine_state,
+)
 from ..io.stage6_review_serialization import (
+    _fit_window_from_dict,
+    _fit_window_to_dict,
     final_products_predate_fit_fields,
     fit_declares_clocks,
     load_stage6_review_from_file,
@@ -1787,11 +1798,12 @@ def require_splice_compatible_environment(path: str) -> None:
     That is why this is the one operation class the environment policy blocks,
     and it guards splicing only: the write path (:func:`_curate`) calls it
     only when the write refits something. A write that refits nothing -- a
-    bare accept, ``review run``, an undo that drops only bare accepts or every
-    fit-changing decision (which restores the automatic fit by copy) -- keeps
-    the fits it finds and is not gated; neither is a preview of one. The first
-    write that refits is gated, and once acknowledged it replays the whole
-    decision log under the running code. Extending a file forward is fine (a new
+    bare accept, ``review run``, an undo that drops only bare accepts, or one
+    whose only fit changes restore windows to the automatic fit by copy (every
+    fit-changing decision undone, or a window's last one) -- keeps the fits it
+    finds and is not gated; neither is a preview of one. The first write that
+    refits is gated, and once acknowledged it recomputes every window under
+    the running code (the engine's context key changed, :func:`_engine_plan`). Extending a file forward is fine (a new
     stage is self-consistently produced by the current environment, and only
     warns); reading is never gated.
 
@@ -3269,6 +3281,7 @@ def _cascade_refit_dependents(
     events: Optional[StageScope] = None,
     unavailable_window_ids: Collection[int] = (),
     reached: Collection[int] = (),
+    only: Optional[Collection[int]] = None,
 ) -> List[int]:
     """Refresh + identity-refit every dependent in the transitive closure of
     ``edited_wids`` (window-level), in dependency order; splice the results back
@@ -3284,6 +3297,10 @@ def _cascade_refit_dependents(
     ordered source list. Both the closure and each dependent's refresh read it,
     never the frozen entries of the fits being cascaded, so an edge an earlier
     edit emptied still carries the next one.
+
+    ``only``, when given, replaces the closure: exactly those windows are
+    refreshed and refit, in dependency order (the incremental engine's
+    reached windows whose keys changed, :func:`_engine_run`).
 
     The refit is identity (no add/remove): a directly-edited dependent already
     carries its own edit in its peak set, so the identity refit honors both the edit
@@ -3306,7 +3323,11 @@ def _cascade_refit_dependents(
         int(wf.window_id): wf for wf in window_fits if wf.window_id is not None
     }
     succs = _cascade_succs(sources)
-    closure = _cascade_closure_set(edited_wids, sources, reached)
+    closure = (
+        _cascade_closure_set(edited_wids, sources, reached)
+        if only is None
+        else {int(w) for w in only}
+    )
     if not closure:
         return []
     preds: Dict[int, set] = {w: set() for w in succs}
@@ -6379,13 +6400,15 @@ def _check_created_ids_monotone(path: str, entries: Sequence[DecisionLogEntry]) 
 LINEAGE_ID_ATTR = "lineage_id"
 
 
-def _snapshot_stage5_baseline(path: str) -> None:
+def _snapshot_stage5_baseline(path: str, lineage_id: Optional[str] = None) -> None:
     """Copy ``/stage5_fitting`` to the baseline group if not already
-    snapshotted, stamping a fresh lineage id on it."""
+    snapshotted, stamping *lineage_id* on it (a fresh one when ``None``)."""
     with h5open(path, "a") as h5f:
         if "stage5_fitting" in h5f and STAGE5_BASELINE_GROUP not in h5f:
             h5f.copy("stage5_fitting", STAGE5_BASELINE_GROUP)
-            h5f[STAGE5_BASELINE_GROUP].attrs[LINEAGE_ID_ATTR] = uuid.uuid4().hex
+            h5f[STAGE5_BASELINE_GROUP].attrs[LINEAGE_ID_ATTR] = (
+                lineage_id if lineage_id is not None else uuid.uuid4().hex
+            )
 
 
 _REFIT_INSTRUCTION = (
@@ -6481,10 +6504,12 @@ def _require_engine_file(path: str) -> None:
 
 
 def clear_stage5_baseline(path: Union[Path, str]) -> None:
-    """Drop the automatic-fit baseline snapshot (a fresh fit supersedes it)."""
+    """Drop the automatic-fit baseline snapshot (a fresh fit supersedes it),
+    and with it the engine keys computed from it (``/stage6_engine``)."""
     with h5open(str(path), "a") as h5f:
-        if STAGE5_BASELINE_GROUP in h5f:
-            del h5f[STAGE5_BASELINE_GROUP]
+        for group in (STAGE5_BASELINE_GROUP, STAGE6_ENGINE_GROUP):
+            if group in h5f:
+                del h5f[group]
 
 
 def _has_stage5_baseline(path: str) -> bool:
@@ -7234,7 +7259,7 @@ def _batch_apply_edit_core(
 # peaks the user removed and births every peak under the uid it was born with,
 # however far the cascade has moved the window's lines in between.
 #
-# A write then appends the rows to the log and curates the whole log from the
+# A write then appends the rows to the log and curates the log from the
 # automatic fit (:func:`_curate`). Every refusal is raised by the resolution
 # or by the symbolic pass over the new log (:func:`_walk_log_rows`), before
 # the first fit -- except that an apply at a ``log_prefix`` resolves the
@@ -7271,6 +7296,9 @@ class _PendingRow:
     seeds_mhz: Tuple[float, ...] = ()
     born_uids: Tuple[int, ...] = ()
     evidence: Dict[str, Any] = field(default_factory=dict)
+    serial: Optional[int] = None
+    """The recorded row's serial, on a row a replay re-applies (a request's
+    rows take theirs when they are recorded)."""
 
 
 @dataclass
@@ -8957,6 +8985,12 @@ def _replayed_rows(ctx: _BatchCtx, recorded: int) -> List[DecisionLogEntry]:
         if k < recorded:
             out.append(replace(src, order_index=k))
         else:
+            if dec["evidence"] is None:
+                # A new row's window is always refit: its rows changed.
+                raise RuntimeError(
+                    f"internal: the replay skipped decision {_serial_id(src)}, "
+                    "which is new to the log and must be fit to be recorded"
+                )
             out.append(
                 replace(
                     src, order_index=k, evidence={**dec["evidence"], **src.evidence}
@@ -9078,24 +9112,29 @@ def _check_split_arity(into: int) -> None:
 # resolved into decision rows against the displayed state (the persisted
 # curated fit, :func:`_build_batch_ctx`), fitting nothing; an undo drops rows
 # by serial; ``review run`` changes only P. :func:`_curate` then validates
-# L' structurally (:func:`_walk_log_rows`, before any fit), gates on the
-# analysis epoch only when it refits, and replays L' from the automatic fit
-# in one batch (:func:`_replay_log`: the rows in log order, one combined
-# cascade). A write whose fit-changing rows are the persisted log's (a bare
-# accept, ``review run``, an undo of bare accepts) refits nothing and keeps
-# the persisted fits; one that leaves no fit-changing row restores the
+# L' structurally (:func:`_walk_log_rows`, before any fit), keys every window
+# by what its fit is computed from, gates on the analysis epoch only when it
+# refits, and recomputes the windows whose keys changed as a replay of L' from
+# the automatic fit in one batch computes them (the incremental engine,
+# :func:`_engine_plan` / :func:`_engine_run`), keeping every other window's
+# persisted fit. A write whose fit-changing rows are the persisted log's (a
+# bare accept, ``review run``, an undo of bare accepts) refits nothing and
+# keeps the persisted fits; one that leaves no fit-changing row restores the
 # automatic fit. Every refusal is raised before the first fit; a failure
 # after it (a cancel, a numerical error) discards the whole call with its
 # transaction (``atomic_write``).
 #
-# The reference oracle (:func:`~.replay_reference.replay_full`) is
-# :func:`_reference` itself, so after every write the persisted state is,
-# bit for bit, the reference replay of the persisted log under the persisted
-# parameters.
+# The reference oracle (:func:`~.replay_reference.replay_full`) is the
+# one-batch replay itself (:func:`_reference`), with nothing persisted read;
+# after every write the persisted state is, bit for bit, the reference replay
+# of the persisted log under the persisted parameters (design G1/G2, which the
+# engine's property tests check).
 # ---------------------------------------------------------------------------
 
 
-def _open_batch(path: str, *, snapshot: bool = True) -> bool:
+def _open_batch(
+    path: str, *, snapshot: bool = True, lineage_id: Optional[str] = None
+) -> bool:
     """Admit a Stage 6 write and take the undo baseline (design §6.1 step 1).
     Returns whether the baseline is in place for the write to persist.
 
@@ -9110,7 +9149,9 @@ def _open_batch(path: str, *, snapshot: bool = True) -> bool:
     baseline, since that is a write, and their result must never be
     persisted (:func:`_finish_batch` refuses it). The call stays textually
     inside this function either way, so the baseline is taken in exactly one
-    place.
+    place. *lineage_id* is the lineage a staged preview computed its engine
+    keys under (:attr:`_Curated.pending_lineage`), stamped when this write
+    takes the baseline so the persisted keys stay valid.
     """
     if not snapshot:
         return False
@@ -9122,7 +9163,7 @@ def _open_batch(path: str, *, snapshot: bool = True) -> bool:
         # A write abandoned before its persist (a refusal, a cancel, a failing
         # events callback) takes the snapshot back with everything else: the
         # whole call is one transaction (atomic_write).
-        _snapshot_stage5_baseline(path)
+        _snapshot_stage5_baseline(path, lineage_id)
     return True
 
 
@@ -9195,15 +9236,66 @@ def _cascade_batch(ctx: _BatchCtx, *, snap_tol_mhz: float) -> List[int]:
     return cascaded
 
 
+def _skip_resolved_action(ctx: _BatchCtx, ra: _ResolvedAction) -> None:
+    """Record the rows of a replay's action without fitting it: one
+    placeholder per row it would have recorded (``evidence`` ``None``), so
+    every later row's serial and record stay aligned with the log. The
+    engine skips the actions of a window whose fit it keeps."""
+    rows: List[Tuple[int, str]] = []
+    if ra.create is not None:
+        if ra.create.record:
+            rows.append((int(ra.create.proposal.window.window_id), "create_window"))
+    else:
+        rows.extend((st.window_id, r.kind) for st in ra.steps for r in st.rows)
+    ctx.changeset.decisions.extend(
+        {"window_id": wid, "kind": kind, "evidence": None} for wid, kind in rows
+    )
+
+
+def _resolved_action_window(ra: _ResolvedAction) -> Optional[int]:
+    """The window a replay's action fits (``None`` for a bare accept)."""
+    if ra.create is not None:
+        return int(ra.create.proposal.window.window_id)
+    if ra.steps:
+        return int(ra.steps[0].window_id)
+    return None
+
+
 def _run_resolved_actions(
-    ctx: _BatchCtx, resolved: Sequence[_ResolvedAction], *, snap_tol_mhz: float
+    ctx: _BatchCtx,
+    resolved: Sequence[_ResolvedAction],
+    *,
+    snap_tol_mhz: float,
+    only: Optional[Collection[int]] = None,
 ) -> None:
     """Fit and record a replay's *resolved* actions in order, reporting a
     ``WindowProgress`` per action that targets a window and honouring a
-    cancel before each."""
-    fit_total = sum(1 for ra in resolved if ra.target_wid is not None)
+    cancel before each.
+
+    *only*, when given, names the windows whose actions are fit (the
+    engine's: the windows whose direct phase it recomputes); every other
+    window's actions are recorded as placeholders and not fit
+    (:func:`_skip_resolved_action`). A replay's actions are each one
+    window's, and a window's fit before the cascade depends on its own
+    actions alone, so the windows it fits come out as a whole replay would
+    leave them."""
+    if only is not None:
+        keep = {int(w) for w in only}
+        run = [
+            ra
+            for ra in resolved
+            if _resolved_action_window(ra) is None
+            or _resolved_action_window(ra) in keep
+        ]
+    else:
+        run = list(resolved)
+    running = {id(ra) for ra in run}
+    fit_total = sum(1 for ra in run if ra.target_wid is not None)
     fit_index = 0
     for ra in resolved:
+        if id(ra) not in running:
+            _skip_resolved_action(ctx, ra)
+            continue
         if ctx.events is not None:
             ctx.events.check_cancel()
         t_action = time.monotonic()
@@ -9277,6 +9369,17 @@ class _Curated:
     shared: Optional[_SharedFitCtx] = None
     """The shared fit context the state was computed with, if one was
     needed (its fit cache is handed the persisted fit)."""
+    engine: Optional[Stage6EngineState] = None
+    """The engine keys the state was computed under, which
+    :func:`_finish_batch` writes to ``/stage6_engine`` when
+    :attr:`write_engine` is set (``None`` then empties the store)."""
+    write_engine: bool = False
+    """Whether the write replaces ``/stage6_engine``; a write that keeps the
+    persisted fits leaves the keys that describe them as they are."""
+    pending_lineage: Optional[str] = None
+    """The lineage id :attr:`engine` was keyed under when no baseline had
+    been taken yet (a preview on a file no write has curated): the baseline
+    a later persist of this state takes is stamped with it."""
 
 
 def _fit_row_serials(log: Sequence[DecisionLogEntry]) -> List[int]:
@@ -9317,19 +9420,32 @@ def _curated_review(
     *,
     fit_group: str,
     prior: Optional[Stage6Review] = None,
+    unchanged: Collection[int] = (),
 ) -> Stage6Review:
     """The review a curated state carries: *log* (positions recomputed by
     the caller), the overlay, *params*, every window's status computed from
-    scratch from the fits, the log and *params* (:func:`_curated_statuses`),
-    and the final-products table built from the fits. The serial and
-    window-id high-water marks never fall below *prior*'s (the file's
-    review), so a serial or an undone create's id is never reused."""
+    the fits, the log and *params* (:func:`_curated_statuses`), and the
+    final-products table built from the fits. The serial and window-id
+    high-water marks never fall below *prior*'s (the file's review), so a
+    serial or an undone create's id is never reused.
+
+    *unchanged* names the windows whose fit is the one *prior* was computed
+    from (the engine kept it): their per-line fit fields are read from
+    *prior*'s final products when the calibration they depend on is
+    unchanged -- the same values, without recomputing them. Every other part
+    of the review, every status included, is computed afresh."""
     fid = load_fid_from_pipeline_impl(path)
     serials = [int(e.serial) for e in log if not isinstance(e.serial, Absent)]
     created = [int(e.window_id) for e in log if _create_row_mode(e) == "created"]
     review = Stage6Review(
         decision_log=list(log),
-        final_products=_final_products_for_fit(path, spectrum_fit, fid),
+        final_products=_final_products_for_fit(
+            path,
+            spectrum_fit,
+            fid,
+            prior=None if prior is None else prior.final_products,
+            unchanged=unchanged,
+        ),
         created_windows=list(created_windows),
         next_serial=max(
             [0 if prior is None else int(prior.next_serial)] + [s + 1 for s in serials]
@@ -9381,6 +9497,7 @@ def _reference(
             path, shared, log, fit_group=group, snap_tol_mhz=snap_tol_mhz, walk=walk
         )
         spectrum_fit = ctx.changeset.spectrum_fit
+        _canonical_peak_order(spectrum_fit)
         overlay: List["FitWindow"] = list(ctx.changeset.created_windows)
         rows = _replayed_rows(ctx, recorded)
         refit = True
@@ -9424,11 +9541,12 @@ def _curate(
     they stand -- a write that refits nothing never rebuilds a fit under
     another analysis environment -- and only the review is recomputed from
     them. A log left with no fit-changing row restores the automatic fit, by
-    copy. Any other log is the full reference replay (:func:`_reference`),
-    after the symbolic pass over it (:func:`_walk_log_rows`, every refusal
-    before any fit) and the epoch gate
-    (:func:`require_splice_compatible_environment`), which applies only to a
-    write that refits.
+    copy. Any other log goes through the incremental engine: the symbolic
+    pass over it and every window's keys (:func:`_engine_plan`, every refusal
+    before any fit), the epoch gate
+    (:func:`require_splice_compatible_environment`) when the write refits
+    anything, then the windows whose keys changed recomputed as the reference
+    (:func:`_reference`) computes them, the rest kept (:func:`_engine_run`).
 
     The first *recorded* rows of *log* are the file's (kept verbatim); the
     rest are new rows the replay records the evidence of.
@@ -9443,48 +9561,595 @@ def _curate(
     if fit_rows and fit_rows != prior_rows:
         if shared is None:
             shared = _build_shared_fit_ctx(path)
-        walk = _walk_log_rows(path, shared, log, min_new_window_id=0)
-        require_splice_compatible_environment(path)
-        curated = _reference(
-            path,
-            log,
-            params,
-            recorded=recorded,
-            shared=shared,
-            snap_tol_mhz=snap_tol_mhz,
-            prior=prior,
-            walk=walk,
+        # A preview with no baseline yet keys under the lineage id the
+        # baseline its persist takes will carry (:func:`_open_batch`).
+        pending = None if group == STAGE5_BASELINE_GROUP else uuid.uuid4().hex
+        plan = _engine_plan(
+            path, shared, log, snap_tol_mhz=snap_tol_mhz, pending_lineage=pending
         )
-        return replace(curated, baseline_taken=baseline_taken)
+        if plan.refit:
+            require_splice_compatible_environment(path)
+        curated = _engine_run(
+            path, plan, prior, params, recorded=recorded, snap_tol_mhz=snap_tol_mhz
+        )
+        return replace(curated, baseline_taken=baseline_taken, pending_lineage=pending)
 
     # Nothing to refit: the persisted fits stand (the same fit-changing rows),
-    # or the automatic fit is restored (none left).
+    # or the automatic fit is restored (none left). Only the automatic fit
+    # takes the load-time spread recovery (the reference applies it there,
+    # before any row); a curated fit already carries what it recovered.
     restore = not fit_rows and bool(prior_rows)
     with h5open(path, "r") as h5f:
         spectrum_fit = load_spectrum_fit_from_hdf5(
             h5f[group if restore else "stage5_fitting"]
         )
-    seeded = _seed_unresolved_spreads_from_diagnostics(
-        spectrum_fit, snap_tol_mhz=snap_tol_mhz
+    seeded = (
+        _seed_unresolved_spreads_from_diagnostics(
+            spectrum_fit, snap_tol_mhz=snap_tol_mhz
+        )
+        if not fit_rows
+        else 0
     )
     overlay = [] if restore else list(prior.created_windows)
     rows = [replace(e, order_index=k) for k, e in enumerate(log)]
     return _Curated(
         spectrum_fit=spectrum_fit,
         review=_curated_review(
-            path, spectrum_fit, rows, overlay, params, fit_group=group, prior=prior
+            path,
+            spectrum_fit,
+            rows,
+            overlay,
+            params,
+            fit_group=group,
+            prior=prior,
+            unchanged=() if restore or seeded else _fit_by_window(spectrum_fit),
         ),
         fit_changed=restore or bool(seeded),
         refit=False,
         baseline_taken=baseline_taken,
         shared=shared,
+        # The automatic fit restored: no window holds a key worth keeping (the
+        # next refitting write recomputes or restores every window).
+        write_engine=restore,
+    )
+
+
+# ---------------------------------------------------------------------------
+# The incremental engine (design §5.3-5.5).
+#
+# A refitting write computes the same state as the reference
+# (:func:`_reference`) but refits only the windows whose inputs changed. Each
+# window is keyed by what its final fit is a function of: ``K_d`` covers its
+# direct phase (the shared analysis context ``E_key``, its geometry sequence,
+# its seed and its own rows), ``K_f`` adds whether a dirty ancestor reaches it
+# and, when one does, its sources' ``K_f`` (:func:`_engine_window_keys`). The
+# keys are persisted in ``/stage6_engine`` beside the fits they describe, so a
+# window whose ``K_f`` a write leaves unchanged keeps its persisted fit
+# bit for bit: by induction over the cascade graph, the same deterministic
+# functions run on the same inputs. A window that changed and has rows (or is
+# reached) is recomputed from its seed as the reference computes it -- its
+# own actions replayed (:func:`_run_resolved_actions` with ``only``), then
+# the cascade's refresh and identity refit (:func:`_cascade_refit_dependents`
+# with ``only``) -- a changed window with neither is the automatic fit,
+# restored by copy, and a window the log no longer installs is dropped.
+# ---------------------------------------------------------------------------
+
+#: The groups whose content stands in for the shared analysis context when the
+#: file cannot account for every input its stages used (``E_key``'s degraded
+#: form): the soft Stage 5 inputs that can change without invalidating Stage 5
+#: (``file_manager.py``: Stage 2b and the timebase are recommended, not
+#: required), and the shape recommendation Stage 2b leaves beside them.
+_ENGINE_SOFT_CONTEXT = (
+    "stage2b_tau_calibration",
+    "stage2b_tau_G_calibration",
+    "timebase_calibration",
+    "processing_parameters/stage2b_shape_recommendation",
+)
+
+
+def _engine_digest(*parts: Any) -> str:
+    """SHA-256 over the canonical JSON of *parts* (floats exact)."""
+    from .fingerprint_impl import canonical_json
+
+    return hashlib.sha256(canonical_json(list(parts))).hexdigest()
+
+
+def _hdf5_value_bytes(value: Any) -> bytes:
+    """One stored attribute or dataset value, exactly."""
+    arr = np.asarray(value)
+    if arr.dtype.kind in "OSU":
+        return repr(arr.tolist()).encode("utf-8") + b"\0"
+    head = f"{arr.dtype.str}{arr.shape!r}".encode()
+    raw: bytes = arr.tobytes()
+    return head + raw + b"\0"
+
+
+def _hdf5_content_digest(path: str, names: Sequence[str]) -> str:
+    """SHA-256 over every attribute and dataset under the groups *names* of
+    *path* (an absent group hashes as absent)."""
+    import h5py
+
+    out = hashlib.sha256()
+
+    def feed(name: str, obj: Any) -> None:
+        out.update(name.encode("utf-8") + b"\0")
+        for key in sorted(obj.attrs):
+            out.update(str(key).encode("utf-8") + b"=")
+            out.update(_hdf5_value_bytes(obj.attrs[key]))
+        if isinstance(obj, h5py.Dataset):
+            out.update(_hdf5_value_bytes(obj[()]))
+
+    with h5open(path, "r") as h5f:
+        for name in names:
+            obj = h5f.get(name)
+            if obj is None:
+                out.update(f"{name}: absent\0".encode("utf-8"))
+                continue
+            feed(name, obj)
+            if isinstance(obj, h5py.Group):
+                members: List[str] = []
+                obj.visit(members.append)
+                for member in sorted(members):
+                    feed(f"{name}/{member}", obj[member])
+    return out.hexdigest()
+
+
+def _engine_context_key(
+    path: str,
+    shared: _SharedFitCtx,
+    snap_tol_mhz: float,
+    pending_lineage: Optional[str] = None,
+) -> str:
+    """``E_key``: the digest of the shared analysis context every window's fit
+    is computed in (design §5.5).
+
+    The running code's ``ANALYSIS_EPOCH``; the lineage id of the automatic
+    fit (which covers everything the baseline holds: its fits, the fitted
+    plan, the spur catalog it replays and ``min_freeze_snr``); the per-file
+    snap tolerance; the retired and unavailable window ids; and the inputs
+    the file's completed stages record (:func:`~.fingerprint_impl.canonical_fingerprint_inputs`:
+    settings, consumed blocks and stamped epochs, which carry the tau
+    calibration, the band anchors, the timebase and the active-FT identity),
+    without the review stage, whose sigma floor and clock declaration feed
+    only the final products. With no baseline taken yet, the lineage is
+    *pending_lineage*, the one the baseline will be stamped with. A file whose stages cannot account for every
+    input they used degrades to a content digest of the soft Stage 5 inputs
+    (:data:`_ENGINE_SOFT_CONTEXT`); its hard inputs need none, since re-running
+    one deletes the fit and the review.
+    """
+    from ..core.environment import capture_environment
+    from ..file_manager import IncompleteProvenanceError
+    from .fingerprint_impl import canonical_fingerprint_inputs
+
+    with h5open(path, "r") as h5f:
+        raw = h5f[_automatic_fit_group(path)].attrs.get(LINEAGE_ID_ATTR)
+    lineage = pending_lineage if raw is None else str(raw)
+    context: Dict[str, Any]
+    try:
+        inputs = canonical_fingerprint_inputs(path)
+        for key in ("review", "review_absent"):
+            inputs.pop(key, None)
+        context = {"fingerprint": inputs}
+    except IncompleteProvenanceError:
+        context = {"soft_inputs": _hdf5_content_digest(path, _ENGINE_SOFT_CONTEXT)}
+    return _engine_digest(
+        "E",
+        capture_environment().analysis_epoch,
+        lineage,
+        float(snap_tol_mhz),
+        sorted(int(w) for w in shared.retired_window_ids),
+        sorted(int(w) for w in shared.unavailable_window_ids),
+        context,
+    )
+
+
+def _window_json(fit_win: "FitWindow") -> str:
+    """A window's geometry as one exact string: the overlay's serialized form
+    (floats exact), keys sorted."""
+    return json.dumps(_fit_window_to_dict(fit_win), sort_keys=True, default=str)
+
+
+class _CreateChain:
+    """The create-prefix cache (design §4.4): the digest chain
+    ``c_k = H(c_{k-1}, anchor_k, id_k)`` over a log's create rows, rooted at
+    ``E_key``, and the proposal each create installed. A create whose chain
+    digest matches the persisted chain's at the same position reuses the
+    persisted proposal instead of replanning it: planning reads the static
+    inputs and the creates before it, nothing else, so a shared prefix plans
+    to the same windows. The first mismatch replans that create and every
+    later one."""
+
+    def __init__(self, e_key: str, cached: Sequence[Mapping[str, Any]]) -> None:
+        self.digest = _engine_digest("creates", e_key)
+        self.cached = list(cached)
+        self.entries: List[Dict[str, Any]] = []
+        self.reused = 0
+
+    def plan(
+        self,
+        shared: _SharedFitCtx,
+        created_windows: Sequence["FitWindow"],
+        anchor_mhz: float,
+        *,
+        replay_window_id: Optional[int],
+        min_new_window_id: int = 0,
+    ) -> "Stage6WindowProposal":
+        """:func:`_plan_create`, or the cached proposal of this create."""
+        from ..preprocessing.window_planning import Stage6WindowProposal
+
+        k = len(self.entries)
+        self.digest = _engine_digest(self.digest, float(anchor_mhz), replay_window_id)
+        hit = (
+            self.reused == k
+            and k < len(self.cached)
+            and self.cached[k].get("digest") == self.digest
+        )
+        if hit:
+            entry = self.cached[k]
+            window = _fit_window_from_dict(entry["window"])
+            proposal = Stage6WindowProposal(
+                window=window,
+                mode=str(entry["mode"]),
+                depends_on=[int(d) for d in entry.get("depends_on", [])],
+                diagnostics=window.diagnostics,
+            )
+            self.reused += 1
+        else:
+            proposal = _plan_create(
+                shared,
+                created_windows,
+                anchor_mhz,
+                replay_window_id=replay_window_id,
+                min_new_window_id=min_new_window_id,
+            )
+        self.entries.append(
+            json.loads(
+                json.dumps(
+                    {
+                        "digest": self.digest,
+                        "window": _fit_window_to_dict(proposal.window),
+                        "mode": proposal.mode,
+                        "depends_on": [int(d) for d in proposal.depends_on],
+                    },
+                    default=str,
+                )
+            )
+        )
+        return proposal
+
+
+@dataclass
+class _EnginePlan:
+    """What a refitting write will do, decided before any fit
+    (:func:`_engine_plan`)."""
+
+    ctx: _BatchCtx
+    """The replay batch, the log's structure installed and no fit loaded."""
+    resolved: List[_ResolvedAction]
+    walk: _LogWalk
+    sources: Dict[int, Tuple[int, ...]]
+    """The cascade graph: every window of the curated state, each with its
+    ordered sources."""
+    reached: Set[int]
+    state: Stage6EngineState
+    """The keys the write leaves, and the ``E_key`` they are computed under."""
+    direct: Set[int]
+    """Windows whose direct phase is recomputed: changed, with rows."""
+    cascade: Set[int]
+    """Windows the cascade refits: changed and reached."""
+    restore: Set[int]
+    """Windows restored from the automatic fit by copy: changed, with no
+    rows, not reached."""
+    persisted: Optional[SpectrumFit]
+    """The persisted fit, when a window keeps its persisted fit."""
+
+    @property
+    def refit(self) -> Set[int]:
+        """The refit set (design §6.1 step 3): what the epoch gate guards."""
+        return self.direct | self.cascade
+
+
+def _engine_window_rows(
+    resolved: Sequence[_ResolvedAction],
+    base_live: Collection[int],
+    created_ids: Collection[int],
+) -> Tuple[Dict[int, List[Any]], Dict[int, Any]]:
+    """Each window's fit-relevant rows and its seed, as ``K_d`` hashes them.
+
+    The rows are the window's replayed actions in log order, as the replay
+    runs them: a create (its serial, anchor, mode, whether it records a row,
+    and the geometry it installs) or a refit step (its kind and each row's
+    serial, kind, targets, seeds and born uids; the step partition is the
+    replay's own, so the action grouping is in it). A step's geometry is the
+    last install before it, so the sequence carries every geometry the window
+    is fit on. A bare accept fits nothing and is left out. The seed is
+    ``("baseline", w)`` for a base window and ``("create", sources)`` for a
+    created one (the sources its starting skirt is read from,
+    :func:`_created_window_seed`)."""
+    rows: Dict[int, List[Any]] = {}
+    seeds: Dict[int, Any] = {}
+    for ra in resolved:
+        if ra.create is not None:
+            proposal = ra.create.proposal
+            w = int(proposal.window.window_id)
+            rows.setdefault(w, []).append(
+                [
+                    "create",
+                    float(ra.create.anchor),
+                    proposal.mode,
+                    bool(ra.create.record),
+                    _window_json(proposal.window),
+                ]
+            )
+            if proposal.mode == "created":
+                seeds[w] = [
+                    "create",
+                    list(
+                        _created_window_sources(proposal.window, base_live, created_ids)
+                    ),
+                ]
+            continue
+        for step in ra.steps:
+            rows.setdefault(int(step.window_id), []).append(
+                [
+                    "step",
+                    step.kind,
+                    [
+                        [
+                            r.serial,
+                            r.kind,
+                            list(r.targets),
+                            [float(f) for f in r.seeds_mhz],
+                            list(r.born_uids),
+                        ]
+                        for r in step.rows
+                    ],
+                ]
+            )
+    return rows, seeds
+
+
+def _engine_window_keys(
+    e_key: str,
+    sources: Mapping[int, Sequence[int]],
+    rows: Mapping[int, List[Any]],
+    seeds: Mapping[int, Any],
+    dirty: Collection[int],
+    reached: Collection[int],
+) -> Dict[int, EngineWindowKey]:
+    """Every window's ``K_d`` and ``K_f`` under *e_key* (design §5.3)::
+
+        K_d(w) = H("d", E_key, seed(w), rows(w))
+        K_f(w) = H("f", K_d(w), reached(w),
+                   [(p, K_f(p)) for p in sources(w)] if reached(w) else [])
+
+    All of a reached window's sources enter its ``K_f``, untouched ones
+    included: its refresh reads every one of them."""
+    order = _cascade_topo(set(sources), {w: set(ps) for w, ps in sources.items()})
+    keys: Dict[int, EngineWindowKey] = {}
+    for w in order:
+        seed = seeds.get(w, ["baseline", w])
+        kd = _engine_digest("d", e_key, seed, rows.get(w, []))
+        hit = w in reached
+        preds = [[int(p), keys[int(p)].kf] for p in sources[w]] if hit else []
+        keys[w] = EngineWindowKey(
+            kd=kd,
+            kf=_engine_digest("f", kd, hit, preds),
+            reached=hit,
+            dirty=w in dirty,
+        )
+    return keys
+
+
+def _engine_plan(
+    path: str,
+    shared: _SharedFitCtx,
+    log: Sequence[DecisionLogEntry],
+    *,
+    snap_tol_mhz: float,
+    pending_lineage: Optional[str] = None,
+) -> _EnginePlan:
+    """Decide, before any fit, what a refitting write of *log* recomputes
+    (design §6.1 steps 2-3).
+
+    The symbolic pass over the log (:func:`_walk_log_rows`, every refusal;
+    its creates through the create-prefix cache, :class:`_CreateChain`), the
+    replay's actions (:func:`_resolve_replay_rows`), the cascade graph, the
+    dirty and reached windows, and every window's keys. The keys are computed
+    under the stored ``E_key``, so the windows whose ``K_f`` changed reflect
+    the log and the structure alone; when that refits anything and the
+    analysis context changed since the keys were stored, every window is
+    recomputed instead, keyed under the new context. With no stored keys,
+    every window is recomputed or restored. A window whose ``K_f`` is
+    unchanged keeps its persisted fit, unless the persisted fit has no entry
+    for it. *pending_lineage* is :func:`_engine_context_key`'s."""
+    with h5open(path, "r") as h5f:
+        stored = load_stage6_engine_state(h5f)
+    e_now = _engine_context_key(path, shared, snap_tol_mhz, pending_lineage)
+    chain = _CreateChain(e_now, [] if stored is None else stored.create_chain)
+    walk = _walk_log_rows(path, shared, log, min_new_window_id=0, creates=chain)
+    ctx = _BatchCtx(
+        shared=shared,
+        changeset=_BatchChangeset(
+            spectrum_fit=SpectrumFit(),
+            created_windows=[],
+            fit_window_map={
+                w.window_id: w
+                for w in _overlay_created_windows(shared.base_plan, []).windows
+            },
+            replayed=list(log),
+        ),
+        events=_REVIEW_SCOPE.get(),
+    )
+    resolved = _resolve_replay_rows(ctx, path, log, walk=walk)
+
+    base_live = set(shared.base_cascade_sources)
+    sources = _cascade_sources(shared.base_cascade_sources, walk.overlay)
+    created_ids = set(sources) - base_live
+    dirty = {int(e.window_id) for e in log if e.kind in _PEAK_ROW_KINDS} | {
+        int(p.window.window_id) for p in walk.proposals.values() if p.mode == "widened"
+    }
+    reached = _cascade_closure_set(sorted(dirty), sources)
+    rows, seeds = _engine_window_rows(resolved, base_live, created_ids)
+
+    persisted: Optional[SpectrumFit] = None
+    held: Set[int] = set()
+    if stored is not None:
+        with h5open(path, "r") as h5f:
+            persisted = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+        held = set(_fit_by_window(persisted))
+
+    def decide(
+        e_key: str, old: Mapping[int, EngineWindowKey]
+    ) -> Tuple[Dict[int, EngineWindowKey], Set[int], Set[int]]:
+        keys = _engine_window_keys(e_key, sources, rows, seeds, dirty, reached)
+        changed = {
+            w
+            for w in sources
+            if w not in held or w not in old or old[w].kf != keys[w].kf
+        }
+        recompute = {w for w in changed if w in rows or w in reached}
+        return keys, changed, recompute
+
+    basis = e_now if stored is None else stored.e_key
+    keys, changed, recompute = decide(basis, {} if stored is None else stored.keys)
+    if recompute and basis != e_now:
+        basis = e_now
+        keys, changed, recompute = decide(basis, {})
+    if set(sources) <= changed:
+        persisted = None  # no window keeps its persisted fit
+    return _EnginePlan(
+        ctx=ctx,
+        resolved=resolved,
+        walk=walk,
+        sources=sources,
+        reached=reached,
+        state=Stage6EngineState(e_key=basis, create_chain=chain.entries, keys=keys),
+        direct={w for w in recompute if w in rows},
+        cascade={w for w in recompute if w in reached},
+        restore=changed - recompute,
+        persisted=persisted,
+    )
+
+
+def _canonical_peak_order(spectrum_fit: SpectrumFit) -> None:
+    """Order *spectrum_fit* as a load from the file orders it: window fits by
+    ascending id, and the global line list each window's lines in that order,
+    stably sorted by frequency. The final products follow the line list, so
+    lines at the same frequency must not be ordered by how the state was
+    computed."""
+    spectrum_fit.window_fits.sort(
+        key=lambda wf: (wf.window_id if wf.window_id is not None else -1)
+    )
+    peaks: List[FittedPeak] = []
+    for wf in spectrum_fit.window_fits:
+        peaks.extend(wf.fitted_peaks)
+    peaks.sort(key=lambda p: p.frequency_mhz)
+    spectrum_fit.fitted_peaks = peaks
+
+
+def _engine_run(
+    path: str,
+    plan: _EnginePlan,
+    prior: Stage6Review,
+    params: ReviewParams,
+    *,
+    recorded: int,
+    snap_tol_mhz: float,
+) -> _Curated:
+    """Compute the state *plan* decided (design §6.1 steps 4-5): the direct
+    phase of every window whose rows it replays, from the automatic fit (the
+    load-time spread recovery applied, as the reference applies it); the
+    cascade over the changed reached windows, in dependency order, each
+    refreshed from its sources' final fits (recomputed, or persisted); every
+    other changed window restored from the automatic fit; every unchanged
+    one kept as persisted. The review is computed from the result as the
+    reference computes it. Touches no file."""
+    ctx = plan.ctx
+    group = _automatic_fit_group(path)
+    fits: Dict[int, FittingResult] = {}
+    recomputed = plan.direct | plan.cascade | plan.restore
+    container: SpectrumFit
+    if plan.persisted is None:
+        with h5open(path, "r") as h5f:
+            container = load_spectrum_fit_from_hdf5(h5f[group])
+        start = container
+    else:
+        # The windows to recompute start from copies of the automatic fit the
+        # shared context holds (it is never mutated), in a fit carrying the
+        # header the persisted one shares with it: the spread recovery reads
+        # its diagnostics, window by window.
+        container = plan.persisted
+        base = ctx.shared.baseline_fits
+        start = SpectrumFit(
+            window_fits=[
+                copy.deepcopy(base[w]) for w in sorted(recomputed) if w in base
+            ],
+            diagnostics=container.diagnostics,
+        )
+        _canonical_peak_order(start)
+    _seed_unresolved_spreads_from_diagnostics(start, snap_tol_mhz=snap_tol_mhz)
+    ctx.changeset.spectrum_fit = start
+    _run_resolved_actions(
+        ctx, plan.resolved, snap_tol_mhz=snap_tol_mhz, only=plan.direct
+    )
+    computed = _fit_by_window(ctx.changeset.spectrum_fit)
+    kept = {} if plan.persisted is None else _fit_by_window(plan.persisted)
+    for w in sorted(plan.sources):
+        fits[w] = computed[w] if w in recomputed else kept[w]
+    container.window_fits = [fits[w] for w in sorted(fits)]
+    _canonical_peak_order(container)
+    if plan.cascade:
+        shared = ctx.shared
+        _cascade_refit_dependents(
+            spectrum_fit=container,
+            edited_wids=[],
+            sources=plan.sources,
+            fit_window_map=ctx.changeset.fit_window_map,
+            fit_ctx=shared.fit_ctx,
+            resolved=shared.resolved,
+            shape_enum=shared.shape_enum,
+            persisted_cal=shared.persisted_cal,
+            tau_maj_us=shared.tau_maj_global,
+            sigma_tau_us=shared.sigma_tau_global,
+            tau_source=shared.tau_source,
+            peak_frequencies_mhz=shared.peak_frequencies_mhz,
+            min_freeze_snr=shared.min_freeze_snr,
+            snap_tol_mhz=snap_tol_mhz,
+            events=ctx.events,
+            unavailable_window_ids=shared.unavailable_window_ids,
+            only=plan.cascade,
+        )
+        _canonical_peak_order(container)
+    held = set(kept) if plan.persisted is not None else None
+    fit_changed = bool(recomputed) or held is None or held != set(fits)
+    return _Curated(
+        spectrum_fit=container,
+        review=_curated_review(
+            path,
+            container,
+            _replayed_rows(ctx, recorded),
+            list(ctx.changeset.created_windows),
+            params,
+            fit_group=group,
+            prior=prior,
+            unchanged=set(fits) - recomputed if held is not None else (),
+        ),
+        fit_changed=fit_changed,
+        refit=bool(plan.refit),
+        shared=ctx.shared,
+        engine=plan.state,
+        write_engine=True,
     )
 
 
 def _finish_batch(curated: _Curated, path: str) -> None:
     """Persist a write's curated state (design §6.1 step 6): the window fits,
     rewritten whole in their canonical order when they changed, then the
-    review. The engine's one and only writer of ``/stage5_fitting`` -- see
+    review, then the engine keys the fits were computed under
+    (``/stage6_engine``, when the write replaces them; resized in place, as
+    the fit tables are). The engine's one and only writer of
+    ``/stage5_fitting`` -- see
     ``test_only_finish_batch_persists_the_fit``. Runs inside the call's
     ``atomic_write`` transaction.
 
@@ -9531,6 +10196,9 @@ def _finish_batch(curated: _Curated, path: str) -> None:
                 )
             grp.attrs["shape"] = shape_attr
     _write_stage6_review_only(curated.review, path)
+    if curated.write_engine:
+        with h5open(path, "a") as h5f:
+            save_stage6_engine_state(h5f, curated.engine)
     # S5: publish the just-persisted fit for the next write in this same
     # session, stamped with the fit group's write stamp so the next write can
     # tell whether anything has rewritten it since.
@@ -10927,13 +11595,15 @@ def _walk_log_rows(
     rows: Sequence[DecisionLogEntry],
     *,
     min_new_window_id: int,
+    creates: Optional["_CreateChain"] = None,
 ) -> _LogWalk:
     """The symbolic pass over a decision log replayed from the automatic
     fit: every refusal the replay has, raised before any fit.
 
     Replans the log's creates in log order, each pinned to its recorded id
     (:func:`_plan_create`: the analysis-band refusal, ``replay_conflict``,
-    ``fit_plan_unavailable``), and follows each window's uid set from the
+    ``fit_plan_unavailable``; through *creates*, the engine's create-prefix
+    cache, when given), and follows each window's uid set from the
     automatic fit through the rows: a window's uids at any log position are
     its automatic fit's, minus the targets and plus the born uids of the rows
     before it, since no refit, cascade or not, adds or drops a peak. A row
@@ -10964,7 +11634,8 @@ def _walk_log_rows(
     for k, e in enumerate(rows):
         w = int(e.window_id)
         if _installs_window(e):
-            proposal = _plan_create(
+            plan = _plan_create if creates is None else creates.plan
+            proposal = plan(
                 shared,
                 overlay,
                 float(e.frequency_mhz),
@@ -11246,6 +11917,7 @@ def _resolve_replay_rows(
                     targets=targets,
                     seeds_mhz=seeds,
                     born_uids=born,
+                    serial=_serial_id(e),
                 )
                 last = ra.steps[-1] if ra.steps else None
                 if (
@@ -11294,7 +11966,11 @@ def review_undo_impl(
     batch, and every status is recomputed under the recorded review
     parameters. An undo that leaves the fit-changing rows as they were (it
     drops bare accepts only) refits nothing; one that leaves none restores
-    the automatic fit. The surviving rows are kept verbatim -- their serials,
+    the automatic fit. Otherwise only the windows the undo can reach are
+    refit (the incremental engine, :func:`_curate`): a window left with no
+    decision and no edited window upstream gets its automatic fit back by
+    copy, and every other window keeps its fit. The surviving rows are kept
+    verbatim -- their serials,
     evidence and every peak ``derivation`` naming them unchanged -- and only
     their ``order_index`` positions are recomputed.
 
@@ -12002,25 +12678,76 @@ def _persisted_table_predates_fit_fields(path: str) -> bool:
 
 
 def _final_products_for_fit(
-    path: str, spectrum_fit: SpectrumFit, fid: Any
+    path: str,
+    spectrum_fit: SpectrumFit,
+    fid: Any,
+    *,
+    prior: Optional[FinalProducts] = None,
+    unchanged: Collection[int] = (),
 ) -> FinalProducts:
     """The final-products table of *spectrum_fit* under the file's current
     calibration: the declared sigma floor, the clock declaration and the
-    derived calibration state, all read from ``path``. Read-only."""
+    derived calibration state, all read from ``path``. Read-only.
+
+    *prior* is the table the file holds and *unchanged* the windows whose
+    fit it was built from; their per-line fit fields are read off it rather
+    than recomputed (:func:`_known_window_fit_fields`)."""
     with h5open(path, "r") as h5f:
         floor_khz = load_frequency_calibration_from_hdf5(h5f).sigma_floor_khz
         clocks_declared = fit_declares_clocks(h5f)
     cal_state, epsilon, sigma_eps = _derive_frequency_calibration(path)
+    probe = float(fid.probe_freq_mhz)
+    known: Dict[int, Dict[str, Any]] = {}
+    if (
+        prior is not None
+        and unchanged
+        and not _persisted_table_predates_fit_fields(path)
+    ):
+        known = _known_window_fit_fields(prior, unchanged, probe, epsilon)
     return _build_final_products(
         spectrum_fit,
-        probe_freq_mhz=float(fid.probe_freq_mhz),
+        probe_freq_mhz=probe,
         sideband=Sideband.coerce(fid.sideband),
         calibration_state=cal_state,
         epsilon=epsilon,
         sigma_epsilon=sigma_eps,
         sigma_floor_khz=floor_khz,
         clocks_declared=clocks_declared,
+        known_window_fields=known,
     )
+
+
+def _known_window_fit_fields(
+    prior: FinalProducts,
+    windows: Collection[int],
+    probe_freq_mhz: float,
+    epsilon: float,
+) -> Dict[int, Dict[str, Any]]:
+    """The per-line fit fields (:func:`_window_fit_fields`) of each window of
+    *windows* that has a line in *prior*, read off its first line there. A
+    window's fields are a function of its fit, the record length, the probe
+    and ``epsilon`` alone, so they are reused only when *prior* was built
+    under the same probe and ``epsilon`` (the record length is the fit's
+    own). Empty otherwise."""
+    if float(prior.probe_freq_mhz) != float(probe_freq_mhz) or float(
+        prior.epsilon
+    ) != float(epsilon):
+        return {}
+    wanted = {int(w) for w in windows}
+    out: Dict[int, Dict[str, Any]] = {}
+    for pk in prior.peaks:
+        if isinstance(pk.window_id, Absent):
+            continue
+        w = int(pk.window_id)
+        if w in wanted and w not in out:
+            out[w] = {
+                "decay_time_us": pk.decay_time_us,
+                "decay_time_error_us": pk.decay_time_error_us,
+                "shape": pk.shape,
+                "fwhm_mhz": pk.fwhm_mhz,
+                "fit_window_mhz": pk.fit_window_mhz,
+            }
+    return out
 
 
 def _rebuild_final_products(path: str) -> Optional[FinalProducts]:
@@ -12330,8 +13057,13 @@ def _build_final_products(
     sigma_epsilon: float,
     sigma_floor_khz: float,
     clocks_declared: bool,
+    known_window_fields: Optional[Mapping[int, Dict[str, Any]]] = None,
 ) -> FinalProducts:
     """Consolidate the Stage 5 line list into the calibrated final-products table.
+
+    ``known_window_fields`` holds windows' per-line fit fields a caller
+    already has under this calibration (:func:`_known_window_fit_fields`);
+    they are used as computed.
 
     ``clocks_declared`` says whether the fit recorded a clock declaration
     (:func:`~ftmwpipeline.io.stage6_review_serialization.fit_declares_clocks`):
@@ -12347,7 +13079,7 @@ def _build_final_products(
     """
     floor_khz = float(sigma_floor_khz)
     acquisition_us = _recorded_acquisition_us(spectrum_fit)
-    window_fields: Dict[int, Dict[str, Any]] = {}
+    window_fields: Dict[int, Dict[str, Any]] = dict(known_window_fields or {})
     for wf in spectrum_fit.window_fits:
         if wf.window_id is not None and int(wf.window_id) not in window_fields:
             window_fields[int(wf.window_id)] = _window_fit_fields(
@@ -13297,7 +14029,12 @@ class ReviewSession:
         _require_engine_file(self._path)
         with atomic_write(self._path):
             _finish_batch(
-                replace(staged.curated, baseline_taken=_open_batch(self._path)),
+                replace(
+                    staged.curated,
+                    baseline_taken=_open_batch(
+                        self._path, lineage_id=staged.curated.pending_lineage
+                    ),
+                ),
                 self._path,
             )
 

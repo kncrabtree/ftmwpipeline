@@ -106,6 +106,15 @@ design).
   (`window_id_high_water`, read as `-1` when absent), which a fresh create
   mints above and an undo never lowers, so a window id is never reused within
   the lineage.
+- The replay engine's keys live in `/stage6_engine`, a top-level group a write
+  never deletes (its key table is resized in place, as the fit tables are):
+  the context digest `e_key` the keys were computed under, the create chain
+  (`create_chain`, JSON: each create row's chain digest and the window it
+  installed), and one row per window of the curated fit (`window_id`, `kd`,
+  `kf`, `reached`, `dirty`). It is a cache with no meaning of its own: a file
+  without it, or with keys computed under another context, is curated by
+  recomputing every window it changes. `fit run` drops it with the undo
+  baseline, and an upstream invalidation with `/stage6_review`.
 
 ## Multi-format input
 

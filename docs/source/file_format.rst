@@ -43,7 +43,9 @@ contains some prefix of:
   (its finished windows only); the stage status reports it as ``partial``
   and the next ``fit run`` resumes it.
 * **The review record and final products** — the consolidated, calibrated line
-  list and the human-review decisions from :doc:`Stage 6 <stage6_review>`.
+  list and the human-review decisions from :doc:`Stage 6 <stage6_review>`, with
+  the automatic fit the decisions replay from and the keys that let a curation
+  write refit only the windows it changes.
 * **The settings each stage used** and the **source provenance** record.
 
 The exact HDF5 group and attribute names are an implementation detail; the file

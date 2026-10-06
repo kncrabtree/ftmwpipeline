@@ -274,7 +274,10 @@ These exist today; the contract freezes their names and the listed fields.
   fit-changing rows are the persisted log's (a bare accept, `review_run`, an
   undo of bare accepts) refits nothing, keeps the fits it finds and is not
   epoch-gated; one that leaves no fit-changing row restores the automatic fit;
-  only a write that refits is gated (`epoch_mismatch`). Every write takes the
+  any other write refits only the windows its change can reach (their own
+  rows or geometry changed, or an edited window upstream reaches them through
+  the cascade) and keeps every other window's fit, which is the replay's
+  already; only a write that refits is gated (`epoch_mismatch`). Every write takes the
   undo baseline if none exists yet. Every write is one unit for cancellation:
   a cancel before its persist discards it, an undo's included. A log with no
   automatic-fit baseline is `file_corrupt` on every write (an engine write

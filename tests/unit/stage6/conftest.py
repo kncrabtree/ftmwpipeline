@@ -230,6 +230,65 @@ def stage5_multi_file(_stage5_multi_built, tmp_path) -> Path:
     return fp
 
 
+# ---------------------------------------------------------------------------
+# A cascade fixture: 655 cut to the 500 MHz around its densest hub, so a
+# window's edit reaches thirty-odd dependents through a two-level graph (the hub
+# and two secondary hubs that themselves read it) in a build of seconds. Every
+# 2638 build has no cascade edge at all. For the engine's property tests.
+# ---------------------------------------------------------------------------
+
+_DATA_655 = Path("examples/blackchirp_data/655")
+
+#: The active band of the cascade fixture (MHz): 655's 429 hub and its
+#: dependents, with gaps for creates on both sides of it.
+CASCADE_TRIM = (37650.0, 38150.0)
+
+
+def _build_stage5_cascade(dest: Path) -> None:
+    ftmw.import_data(dest, source=str(_DATA_655))
+    ftmw.detect_start_time(dest)
+    ftmw.compute_ft(dest, trim=CASCADE_TRIM)
+    ftmw.calibrate_timebase(dest)
+    ftmw.estimate_noise(dest)
+    ftmw.detect_peaks(dest)
+    ftmw.assign_windows(dest)
+    ftmw.fit_peaks(str(dest))
+
+
+@pytest.fixture(scope="session")
+def stage5_cascade_source(tmp_path_factory) -> Path:
+    """The cascade fixture's post-fit build, built once. Read-only: copy it
+    (:func:`stage5_cascade_file`)."""
+    if not _DATA_655.exists():
+        pytest.skip("Experiment 655 data not available")
+    fp = tmp_path_factory.mktemp("stage6_cascade") / "stage5_cascade.ftmw"
+    _build_stage5_cascade(fp)
+    return fp
+
+
+@pytest.fixture
+def stage5_cascade_file(stage5_cascade_source, tmp_path) -> Path:
+    """A fresh writable copy of the cascade fixture."""
+    fp = tmp_path / "stage5_cascade.ftmw"
+    shutil.copy(stage5_cascade_source, fp)
+    return fp
+
+
+@pytest.fixture(scope="session")
+def built_655(tmp_path_factory) -> Path:
+    """The full 655 build (slow: a few minutes), the dense cascade hub every
+    pinned 655 scenario runs on. Read-only: copy it."""
+    if not _DATA_655.exists():
+        pytest.skip("Experiment 655 data not available")
+    out = tmp_path_factory.mktemp("stage6_655") / "655.ftmw"
+    result = ftmw.run_pipeline(
+        _DATA_655, output=out, trim=(26500.0, 40000.0), detect_start=True
+    )
+    if result.get("status") != "success":
+        pytest.skip(f"655 build stopped: {result.get('error')}")
+    return out
+
+
 @pytest.fixture
 def every_write_is_reference(monkeypatch) -> WriteChecks:
     """Assert, after every Stage 6 write the test makes, that the persisted

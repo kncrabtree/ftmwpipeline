@@ -599,9 +599,11 @@ Applying a curation file
 ``review apply`` executes a curation file's resolved plan as a single write. It
 builds the active-FT fit context once, resolves every action into decision-log
 entries against the fit as it stands, before anything is fit, appends them to
-the log, and replays the log from the automatic fit in one batch -- every
-entry applied as recorded, then one combined cascade over the dependents of
-every edited window -- and persists the result once. Nothing is written until
+the log, and curates the log as a replay from the automatic fit in one batch
+-- every entry applied as recorded, then one combined cascade over the
+dependents of every edited window -- refitting only the windows the plan's
+entries can reach and keeping every other window's fit (see
+:ref:`stage6-decisions`), and persists the result once. Nothing is written until
 the whole plan has succeeded, so a plan that fails partway through leaves the
 file untouched. As for every Stage 6 write, the file then holds exactly the
 replay of its decision log (see :ref:`stage6-decisions`).

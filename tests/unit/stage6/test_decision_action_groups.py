@@ -588,15 +588,22 @@ def test_replay_refits_once_per_action_not_once_per_row(
 ):
     """The old per-row replay resolved each log row on its own: two refits
     for a two-remove edit, a different (sequential) fit. Count the refits an
-    undo performs and pin the plan's shape."""
+    undo performs and pin the plan's shape. The engine's keys are dropped
+    first, so the undo recomputes the joint edit's window from its rows
+    rather than keeping its persisted fit."""
     # This counts work, which the G1 check's own replays would add to.
     every_write_is_reference.enabled = False
     from ftmwpipeline._internal import stage6_impl as s6
+    from ftmwpipeline.io.stage6_engine_serialization import (
+        save_stage6_engine_state,
+    )
 
     path = stage5_multi_file
     wid, peaks, other = _joint_then_unrelated(path, tmp_path)
     log = review_log_impl(path)
     assert len(_replay_plan(log[:2])) == 1  # one edit for the two rows
+    with h5py.File(path, "a") as h5f:
+        save_stage6_engine_state(h5f, None)
 
     calls: List[Tuple[int, Tuple[int, ...]]] = []
     real = s6._apply_refit_step

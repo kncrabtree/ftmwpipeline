@@ -55,6 +55,15 @@ states are likewise what the suite verifies.
   refits) or deliberately persists a state that is not the reference turns the
   check off, with its reason stated. The check is never part of a production
   write path.
+- The incremental engine (a write refits only the windows whose keys changed)
+  is checked by property tests over seeded random sequences of writes (edits,
+  merges, splits, accepts, creates, undos, log-prefix applies, `review run`,
+  session previews): after every write the persisted state is the reference
+  replay bit for bit, every refusal leaves the file byte-identical before any
+  fit, and a valid permutation of a log replays to the same state. A fast tier
+  runs on a cascade fixture (655 cut to its densest hub); a slow tier on the
+  full 655 build, with the scenarios a random walk rarely draws pinned
+  (`tests/unit/stage6/test_replay_engine.py`).
 - Tests must not write artifacts into the working tree or repository; outputs
   go to a temporary location.
 - Tests run in the project dev environment

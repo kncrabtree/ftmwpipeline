@@ -8,8 +8,9 @@ persisted decision log under the persisted review parameters.
 :func:`check_every_write` wraps the write path's one persist
 (``_finish_batch``) so a test asserts it after each of its writes, sessions and
 staged previews included. Test-only: the production write path never calls it.
-While a refitting write runs the reference itself, the check pins the persist
-round trip and determinism for it, not the replay's semantics (see
+A write computes its state incrementally (it refits only the windows whose
+keys changed), so the check is independent of it; it does not pin the
+replay's semantics, which both share (see
 :mod:`ftmwpipeline._internal.replay_reference`).
 """
 

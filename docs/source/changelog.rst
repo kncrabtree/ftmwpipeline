@@ -83,10 +83,26 @@ file; decisions name peaks by uid; decision serials; ``CONTRACT_VERSION`` moves
     write: a cancel or a failing events callback before its persist discards
     it and leaves the file as it was. An undo used to restore the automatic fit
     first and then complete regardless.
-  - A write that refits replays the whole log, so its cost grows with the log.
-    Measured on 655 (511 windows) with a short log: an edit of window 429 (32
-    dependents) 2.0 s, an undo of a create 1.9 s, a bare accept 0.35 s,
-    ``review_run`` 0.3 s.
+  - A write refits only what its change can reach: each window's fit is keyed
+    by what it is computed from (its own decisions, its geometry, its seed,
+    and, when an edited window upstream reaches it through the cascade, its
+    sources' fits), and a window whose key is unchanged keeps its persisted
+    fit and its final-product fields, bit for bit what the replay would
+    produce; every status is still recomputed. An edit of a window that no
+    edit reaches and that has no dependents refits that window alone,
+    replaying its own decisions from the automatic fit (one refit per action
+    it holds, so the cost grows with that window's own decisions); an undo
+    that leaves a window with no decision restores its automatic fit by copy
+    and is not epoch-gated if it refits nothing else. Measured on 655 (511
+    windows; window 429 has 32 dependents) after an edit of 429, sessionless
+    (in a ``ReviewSession``): an edit of an isolated window 0.58 s (0.30 s),
+    against 1.96 s (1.69 s) when every refitting write replayed the whole log;
+    an edit of a dependent of 429 0.59 s (0.28 s); an undo of an isolated
+    window's edit 0.47 s (0.22 s); a bare accept 0.24 s (0.26 s). A write that
+    edits 429 itself still refits its 32 dependents: 1.9 s (1.6 s). After a
+    new ``ANALYSIS_EPOCH`` or a change to a soft Stage 5 input (the tau or
+    timebase calibration), the first write that refits recomputes every
+    window.
 
   - A file that records decisions but holds no automatic-fit baseline (the
     snapshot was removed from it) is ``file_corrupt`` on every write. An undo

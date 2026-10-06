@@ -5,22 +5,22 @@ The full-replay reference for Stage 6 curation, and its bitwise state digest.
 scratch and in memory: the automatic-fit baseline, the file's static analysis
 inputs and the log, nothing else. It persists nothing, keeps no cache and reads
 no curated state (no ``/stage5_fitting`` curated fit, no ``/stage6_review``).
-It is the computation the write path runs whenever a write refits
-(:func:`~.stage6_impl._reference`: the replay of the log in one batch, the one
-combined cascade, the statuses and the final-products build), called with
-nothing persisted, so it is the oracle a write is checked against: after every
-write, the persisted state's :func:`persisted_state_digest` must equal
-:func:`state_digest` of :func:`replay_full` of the log the write left, under
-the review parameters it recorded.
+It is the one-batch replay (:func:`~.stage6_impl._reference`: the replay of
+the log in one batch, the one combined cascade, the statuses and the
+final-products build), called with nothing persisted, so it is the oracle a
+write is checked against: after every write, the persisted state's
+:func:`persisted_state_digest` must equal :func:`state_digest` of
+:func:`replay_full` of the log the write left, under the review parameters it
+recorded.
 
-Because a refitting write *is* this computation, the check of such a write
-pins what lies around it -- that the write reads no curated state, that it is
-deterministic, and that the persist round-trips the state bit for bit -- not
-the replay's semantics: a change to the replay or the cascade moves both
-sides alike. The check is independent for a write that refits nothing (the
-persisted fits kept, or the automatic fit restored by copy), and for any
-write path that stops recomputing the whole log. The replay's semantics are
-pinned by the scenario tests.
+A write does not run this computation: the incremental engine
+(:func:`~.stage6_impl._engine_plan` / :func:`~.stage6_impl._engine_run`)
+recomputes only the windows whose keys changed, from the same per-window
+functions, and keeps every other window's persisted fit, status reasons and
+final-product fields. The check is therefore independent of the write
+(design G2, the engine's property tests); it shares the per-window functions
+with it, so a change to the replay's semantics moves both sides alike, and
+those semantics are pinned by the scenario tests.
 
 :func:`state_digest` covers what Stage 6 persists of a curated state: the fit
 tables exactly as :func:`~ftmwpipeline.io.fitting_serialization.save_spectrum_fit_to_hdf5`

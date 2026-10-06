@@ -11,11 +11,9 @@ was, which also shows the reference reads only the baseline and the static
 inputs.
 
 These tests first pinned the reference against the sequential undo replay it
-replaced. Now that every refitting write runs the reference itself, a
-refitting undo here checks that the reference reads no curated state, is
-deterministic and round-trips through the persist; the keep (bare accepts
-only) and restore (no fit-changing row left) paths are still independent of
-it.
+replaced. A write now computes its state incrementally (the engine refits only
+the windows whose keys changed, ``test_replay_engine.py``), so every check
+here is independent of the write it checks.
 """
 
 from __future__ import annotations
@@ -246,21 +244,23 @@ def test_an_edit_reports_its_window_before_and_after_the_write(stage5_multi_file
 def test_every_write_path_and_the_reference_cascade_over_the_same_graph(
     stage5_multi_file, monkeypatch
 ):
-    """The interactive verbs, ``apply``, the undo's replay and the reference
-    all reach the cascade through ``_cascade_batch``, which hands it the one
-    plan-derived graph: with no creates, the base graph itself."""
+    """The interactive verbs, ``apply``, the undo and the reference all take
+    their cascade graph from ``_cascade_sources``, the one plan-derived graph
+    (the engine's keys and cascade, :func:`_engine_plan`; the reference's
+    cascade, ``_cascade_batch``): with no creates, the base graph itself."""
     fp = stage5_multi_file
     w1, w2 = _multi_window_ids(fp, 2, 2)
     expected = dict(s6._build_shared_fit_ctx(str(fp)).base_cascade_sources)
     seen: Dict[str, List[Dict[int, Tuple[int, ...]]]] = {}
     where = ["edit"]
-    orig = s6._cascade_refit_dependents
+    orig = s6._cascade_sources
 
-    def spy(**kwargs):
-        seen.setdefault(where[0], []).append(dict(kwargs["sources"]))
-        return orig(**kwargs)
+    def spy(*args, **kwargs):
+        graph = orig(*args, **kwargs)
+        seen.setdefault(where[0], []).append(dict(graph))
+        return graph
 
-    monkeypatch.setattr(s6, "_cascade_refit_dependents", spy)
+    monkeypatch.setattr(s6, "_cascade_sources", spy)
     ftmw.review_edit(fp, w1, add=[_clear(fp, w1)], frame="raw")
     where[0] = "apply"
     ftmw.review_apply(
@@ -302,20 +302,7 @@ def test_the_base_graph_is_a_lineage_constant(stage5_multi_file):
 # 655, the dense cascade hub (slow: a full fixture build)
 # ---------------------------------------------------------------------------
 
-_SOURCE_655 = Path("examples/blackchirp_data/655")
-
-
-@pytest.fixture(scope="module")
-def built_655(tmp_path_factory) -> Path:
-    if not _SOURCE_655.exists():
-        pytest.skip("Experiment 655 data not available")
-    out = tmp_path_factory.mktemp("replay_reference_655") / "655.ftmw"
-    result = ftmw.run_pipeline(
-        _SOURCE_655, output=out, trim=(26500.0, 40000.0), detect_start=True
-    )
-    if result.get("status") != "success":
-        pytest.skip(f"655 build stopped: {result.get('error')}")
-    return out
+# ``built_655`` is the shared session build (``conftest.py``).
 
 
 @pytest.mark.slow
