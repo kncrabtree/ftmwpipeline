@@ -432,8 +432,8 @@ class TestNarrowGapWidens:
 # ---------------------------------------------------------------------------
 # 6a. A widened window cascades; a created one still doesn't (W1)
 #
-# 2638 (the fixture this whole file builds from) has zero ``frozen_peak_``
-# entries, so no window is ever a real freeze source for another and
+# 2638 (the fixture this whole file builds from) has no plan contributor
+# edges, so no window is ever a real cascade source for another and
 # ``_cascade_succs`` returns an empty graph -- a cascade edge cannot occur
 # naturally here. Both tests below fake one, exactly as
 # ``test_curation.py::test_cascade_downstream_of_two_edits_refit_once`` does:
@@ -473,8 +473,8 @@ class TestWidenedWindowCascades:
 
         orig_succs = s6._cascade_succs
 
-        def fake_succs(window_fits, fit_window_map):
-            d = orig_succs(window_fits, fit_window_map)
+        def fake_succs(sources):
+            d = orig_succs(sources)
             d.setdefault(wid, set()).add(dep_wid)
             return d
 
@@ -510,13 +510,12 @@ class TestWidenedWindowCascades:
 
         orig_succs = s6._cascade_succs
 
-        def fake_succs(window_fits, fit_window_map):
-            d = orig_succs(window_fits, fit_window_map)
+        def fake_succs(sources):
+            d = orig_succs(sources)
             # The new window's id isn't known ahead of time, so point EVERY
             # live window (including whatever the create mints) at dep_wid.
-            for wf in window_fits:
-                if wf.window_id is not None:
-                    d.setdefault(int(wf.window_id), set()).add(dep_wid)
+            for w in sources:
+                d.setdefault(int(w), set()).add(dep_wid)
             return d
 
         monkeypatch.setattr(s6, "_cascade_succs", fake_succs)

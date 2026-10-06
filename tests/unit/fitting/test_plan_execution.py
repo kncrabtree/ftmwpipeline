@@ -1377,8 +1377,8 @@ class TestAcceptedThawRepresentation:
         dep = fit.window_fit(1)
         lo, hi = dep.window.freq_range
         assert all(lo <= p.frequency_mhz <= hi for p in dep.fitted_peaks)
-        # The frozen entry names the primary: the fit-derived cascade edge 0->1
-        # survives the thaw (Stage 6 reads it from these entries).
+        # The frozen entry names the primary: Stage 6's refresh of the 0->1 skirt
+        # (an edge the plan gives it) still finds the thawed line through it.
         frozen = [
             (e["primary_window_id"], e["peak_uid"])
             for k, e in dep.fixed_parameters.items()

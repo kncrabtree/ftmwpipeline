@@ -111,6 +111,7 @@ from ..io.fitting_serialization import (
     fit_has_peak_identity,
     load_spectrum_fit_from_hdf5,
     read_fit_diagnostics,
+    read_fit_frozen_primaries_by_window,
     read_fit_parameters,
     read_fit_peak_freqs_and_uids_by_window,
     read_fit_peak_frequencies_by_window,
@@ -2789,6 +2790,8 @@ def refit_window_core(
 # cascade re-evaluates each dependent's frozen background from its sources' CURRENT
 # fits (window-level resolution: "all source peaks >= min_freeze_snr", the same
 # rule the in-walk path uses via ``evaluate_ancestor_leakage``) and re-fits it.
+# Which windows are a dependent's sources is read from the plan, never from the
+# fits being curated (``_base_cascade_sources``, ``_cascade_sources``).
 #
 # It is internal to the edit verbs -- not a user verb. The persisted truth stays
 # (automatic baseline, decision_log); the curated fit is derived by replaying the
@@ -2820,28 +2823,107 @@ def _non_edge_free_primaries(fit_win: Optional["FitWindow"]) -> Optional[set]:
     }
 
 
-def _cascade_succs(
-    window_fits: Sequence[FittingResult],
-    fit_window_map: Dict[int, "FitWindow"],
-) -> Dict[int, set]:
-    """Reverse dependency map ``primary -> {dependent}`` over the fitted windows,
-    from each window's NON-edge-free frozen contributors (the cascade edges)."""
-    fitted = {int(wf.window_id) for wf in window_fits if wf.window_id is not None}
-    succs: Dict[int, set] = {w: set() for w in fitted}
-    for wf in window_fits:
-        if wf.window_id is None:
+def _base_cascade_sources(
+    base_plan: "WindowPlan",
+    baseline_frozen_primaries: Mapping[int, Sequence[int]],
+    unavailable_window_ids: Collection[int] = (),
+) -> Dict[int, Tuple[int, ...]]:
+    """``E_base``: every baseline-live window's cascade sources, in refresh order.
+
+    *baseline_frozen_primaries* maps each window the automatic fit (the undo
+    baseline) holds to its frozen contributors' primaries, in order of first
+    appearance (``read_fit_frozen_primaries_by_window``); its keys are the
+    baseline-live windows. A window's sources are the non-edge-free
+    ``fixed_contributors`` primaries of its FitWindow in the fitted plan,
+    restricted to baseline-live windows: plan-derived, so an edit that leaves a
+    source with no line above ``min_freeze_snr`` does not drop the edge, and a
+    later edit that restores one is propagated again. The order is the baseline
+    fit's first appearance, then any further plan sources in
+    ``fixed_contributors`` order: the frozen background is a floating-point
+    sum, and this keeps a one-batch replay's sum unchanged.
+
+    A window whose fitted geometry the file does not hold (*unavailable*), or
+    that has no plan entry, keeps the fit-derived rule: every frozen primary
+    of its baseline fit is a source, edge-free or not, since no plan window
+    says which are. Reaching one is refused (:func:`_refuse_unavailable_fit_plan`).
+
+    A function of the fitted plan and the baseline only, never of a curated
+    fit; no Stage 6 write changes either within a lineage.
+    """
+    live = {int(w) for w in baseline_frozen_primaries}
+    blocked = {int(w) for w in unavailable_window_ids}
+    plan_map = {int(w.window_id): w for w in base_plan.windows}
+    out: Dict[int, Tuple[int, ...]] = {}
+    for wid, frozen in baseline_frozen_primaries.items():
+        w = int(wid)
+        fit_win = None if w in blocked else plan_map.get(w)
+        if fit_win is None:
+            out[w] = tuple(
+                dict.fromkeys(int(p) for p in frozen if int(p) in live and int(p) != w)
+            )
             continue
-        d = int(wf.window_id)
-        nonef = _non_edge_free_primaries(fit_window_map.get(d))
-        for key, entry in wf.fixed_parameters.items():
-            if not key.startswith("frozen_peak_"):
-                continue
-            p = int(entry["primary_window_id"])
-            if p not in fitted or p == d:
-                continue
-            if nonef is not None and p not in nonef:
-                continue  # edge-free contributor: no cascade edge
-            succs[p].add(d)
+        plan_sources = [
+            int(c.primary_window_id)
+            for c in fit_win.fixed_contributors
+            if not c.edge_free
+            and int(c.primary_window_id) in live
+            and int(c.primary_window_id) != w
+        ]
+        allowed = set(plan_sources)
+        ordered = dict.fromkeys(int(p) for p in frozen if int(p) in allowed)
+        ordered.update(dict.fromkeys(plan_sources))
+        out[w] = tuple(ordered)
+    return out
+
+
+def _cascade_sources(
+    base_sources: Mapping[int, Tuple[int, ...]],
+    created_windows: Sequence["FitWindow"],
+) -> Dict[int, Tuple[int, ...]]:
+    """The cascade graph ``G = E_base ∪ E_create`` as each window's ordered
+    source list.
+
+    *base_sources* is :func:`_base_cascade_sources` (its keys are the
+    baseline-live windows); *created_windows* is the review's overlay. A
+    created window's sources are its FitWindow's non-edge-free
+    ``fixed_contributors`` primaries, deduplicated in that order and
+    restricted to windows live when it was made: baseline-live windows and
+    earlier (lower-id) created ones. An overlay entry with a base id (a
+    widening) carries its window's base contributors verbatim and adds no
+    edge. No edge enters a base window from a created one, and created ids
+    only grow, so the graph stays acyclic.
+    """
+    sources: Dict[int, Tuple[int, ...]] = dict(base_sources)
+    created = sorted(
+        (int(w.window_id), w)
+        for w in created_windows
+        if int(w.window_id) not in base_sources
+    )
+    created_ids = {wid for wid, _ in created}
+    for wid, fit_win in created:
+        sources[wid] = tuple(
+            dict.fromkeys(
+                int(c.primary_window_id)
+                for c in fit_win.fixed_contributors
+                if not c.edge_free
+                and (
+                    int(c.primary_window_id) in base_sources
+                    or (
+                        int(c.primary_window_id) in created_ids
+                        and int(c.primary_window_id) < wid
+                    )
+                )
+            )
+        )
+    return sources
+
+
+def _cascade_succs(sources: Mapping[int, Sequence[int]]) -> Dict[int, set]:
+    """Reverse dependency map ``source -> {dependent}`` of a source-list graph."""
+    succs: Dict[int, set] = {int(w): set() for w in sources}
+    for d, ps in sources.items():
+        for p in ps:
+            succs.setdefault(int(p), set()).add(int(d))
     return succs
 
 
@@ -2918,28 +3000,33 @@ def _resolve_refit_window_tau(
     return tau_maj_us, sigma_tau_us
 
 
-def _refresh_frozen_window_level(
+def _refresh_frozen_from_sources(
     wf: FittingResult,
+    sources: Sequence[int],
     fit_window_map: Dict[int, "FitWindow"],
     fit_map: Dict[int, FittingResult],
     min_freeze_snr: float,
 ) -> None:
-    """Rebuild ``wf``'s non-edge-free frozen contributors from its source windows'
-    **current** fitted peaks clearing ``min_freeze_snr`` (window-level resolution).
+    """Rebuild ``wf``'s non-edge-free frozen contributors from its *sources*'
+    **current** fitted peaks clearing ``min_freeze_snr`` (window-level
+    resolution).
 
     This is the one piece the cascade adds: a plain refit reconstructs the frozen
     background from ``wf``'s own persisted snapshot (a fixed point -- a no-op), so a
     dependent only tracks its source's edit once its background is re-read from the
-    source's live fit. Edge-free contributors (read from data, cascade-immune) and
-    any non-``frozen_peak_*`` entries are preserved verbatim. Add / remove / split /
-    delete are handled uniformly: the source simply has more or fewer peaks above
+    source's live fit. *sources* is the window's source list in the cascade graph
+    (:func:`_cascade_sources`), in its canonical order, so a source that an
+    earlier edit left with no line above threshold, and which ``wf`` therefore
+    holds no entry from, contributes again once its fit has one. Edge-free
+    contributors (read from data, cascade-immune) and any non-``frozen_peak_*``
+    entries are preserved verbatim; every other frozen entry is dropped, and
+    rebuilt only if its primary is a source. Add / remove / split / delete are
+    handled uniformly: the source simply has more or fewer peaks above
     threshold.
 
-    Thawed peaks (co-fit lines owned by a primary, held in ``fitted_peaks``, design
-    §5) are not refreshed here: they remain at their persisted values, which
-    ``refit_window_core`` holds frozen. Every fixture measured carries Stage 5 thaw
-    events (15-116 per fixture), so this is a live gap, not a theoretical one: a
-    thawed pair's edge and refresh semantics are still to be defined.
+    An accepted Stage 5 thaw leaves the thawed line a frozen contributor of the
+    dependent, addressed through its primary (``ANALYSIS_EPOCH`` 6), so it is
+    rebuilt here from the primary's current fit like any other frozen line.
     """
     wid = wf.window_id
     assert wid is not None
@@ -2951,21 +3038,17 @@ def _refresh_frozen_window_level(
 
     non_frozen: Dict[str, Dict] = {}
     preserved_edge_free: List[Dict] = []
-    src_wids: List[int] = []
     for key, entry in wf.fixed_parameters.items():
         if not key.startswith("frozen_peak_"):
             non_frozen[key] = entry
             continue
         primary = int(entry["primary_window_id"])
-        if _is_dep(primary):
-            if primary not in src_wids:
-                src_wids.append(primary)
-        else:
+        if not _is_dep(primary):
             preserved_edge_free.append(entry)
 
     rebuilt: List[Dict] = []
-    for primary in src_wids:
-        pwf = fit_map.get(primary)
+    for primary in sources:
+        pwf = fit_map.get(int(primary))
         if pwf is None:
             continue  # source dropped/merged away -> contributes no skirt
         for pk in sorted(pwf.fitted_peaks, key=lambda q: float(q.frequency_mhz)):
@@ -2974,7 +3057,7 @@ def _refresh_frozen_window_level(
             rebuilt.append(
                 {
                     "peak_index": -1,
-                    "primary_window_id": primary,
+                    "primary_window_id": int(primary),
                     "frequency_mhz": float(pk.frequency_mhz),
                     "amplitude": float(pk.amplitude),
                     "phase": float(pk.phase) if pk.phase is not None else 0.0,
@@ -3018,6 +3101,7 @@ def _cascade_refit_dependents(
     *,
     spectrum_fit: SpectrumFit,
     edited_wids: Sequence[int],
+    sources: Mapping[int, Sequence[int]],
     fit_window_map: Dict[int, "FitWindow"],
     fit_ctx: "Stage5FitContext",
     resolved: "StageFitSettings",
@@ -3037,6 +3121,11 @@ def _cascade_refit_dependents(
     into ``spectrum_fit``. ``tau_maj_us`` / ``sigma_tau_us`` are the **global**
     anchors -- each dependent is re-anchored per band. Returns the cascaded ids.
 
+    ``sources`` is the cascade graph (:func:`_cascade_sources`): each window's
+    ordered source list. Both the closure and each dependent's refresh read it,
+    never the frozen entries of the fits being cascaded, so an edge an earlier
+    edit emptied still carries the next one.
+
     The refit is identity (no add/remove): a directly-edited dependent already
     carries its own edit in its peak set, so the identity refit honors both the edit
     and the refreshed skirt in one fit (design §3). Mutates ``spectrum_fit``.
@@ -3046,10 +3135,10 @@ def _cascade_refit_dependents(
     cascade) and is checked for a cancel before each one.
 
     A dependent in ``unavailable_window_ids`` refuses the whole cascade before
-    any refit (:func:`_refuse_unavailable_fit_plan`); every frozen contributor
-    of such a window's fit counts as a cascade edge, edge-free or not, since
-    the plan window that would say which are edge-free is not the one the fit
-    was made on.
+    any refit (:func:`_refuse_unavailable_fit_plan`); its sources are every
+    frozen contributor of its baseline fit, edge-free or not
+    (:func:`_base_cascade_sources`), since the plan window that would say which
+    are edge-free is not the one the fit was made on.
     """
     from ..fitting.result_conversion import sort_fitting_result_by_frequency
 
@@ -3057,17 +3146,7 @@ def _cascade_refit_dependents(
     fit_map: Dict[int, FittingResult] = {
         int(wf.window_id): wf for wf in window_fits if wf.window_id is not None
     }
-    # A window whose fitted geometry the file does not hold (a merged fit with
-    # no stored plan) has no plan window that says which of its fit's frozen
-    # contributors are edge-free -- its Stage 4 window is not the window its fit
-    # was made on. Every frozen contributor of its fit is then a cascade edge,
-    # so an edit any of them read reaches the refusal below instead of leaving
-    # that fit stale.
-    blocked = {int(w) for w in unavailable_window_ids}
-    graph_window_map = {
-        w: fw for w, fw in fit_window_map.items() if int(w) not in blocked
-    }
-    succs = _cascade_succs(window_fits, graph_window_map)
+    succs = _cascade_succs(sources)
     closure = _cascade_closure(edited_wids, succs)
     # `_cascade_closure` strips the whole `edited_wids` set from its result, so
     # when this call batches several DIRECTLY edited windows together (the
@@ -3087,10 +3166,10 @@ def _cascade_refit_dependents(
             closure.add(w)
     if not closure:
         return []
-    preds: Dict[int, set] = {w: set() for w in fit_map}
+    preds: Dict[int, set] = {w: set() for w in succs}
     for primary, deps in succs.items():
         for dep in deps:
-            preds[dep].add(primary)
+            preds.setdefault(dep, set()).add(primary)
     ordered = _cascade_topo(closure, preds)
     _refuse_unavailable_fit_plan(
         unavailable_window_ids,
@@ -3110,7 +3189,9 @@ def _cascade_refit_dependents(
         if events is not None:
             events.check_cancel()
         t_window = time.monotonic()
-        _refresh_frozen_window_level(wf, fit_window_map, fit_map, min_freeze_snr)
+        _refresh_frozen_from_sources(
+            wf, sources.get(d, ()), fit_window_map, fit_map, min_freeze_snr
+        )
         tm, st = _resolve_refit_window_tau(
             fit_win, resolved, persisted_cal, tau_maj_us, sigma_tau_us, tau_source
         )
@@ -4076,7 +4157,7 @@ def _frozen_parameters_from_sources(
 ) -> Dict[str, Dict]:
     """``fixed_parameters`` for a new window, read off its sources' current fits.
 
-    Same window-level resolution the cascade uses (``_refresh_frozen_window_level``):
+    Same window-level resolution the cascade uses (``_refresh_frozen_from_sources``):
     every source-window line clearing ``min_freeze_snr``, at its *fitted*
     parameters. Reading the fit rather than the Stage 3 detections is what keeps
     a source whose fit collapsed several detections into one line from being
@@ -6542,6 +6623,11 @@ class _SharedFitCtx:
     (``fit_plan_unavailable``). Empty for every other fit."""
     unavailable_spans_mhz: Tuple[Tuple[float, float], ...] = ()
     """The merged ranges of such a fit; a create overlapping one is refused."""
+    base_cascade_sources: Mapping[int, Tuple[int, ...]] = field(default_factory=dict)
+    """``E_base``, the cascade graph over the baseline-live windows, as each
+    one's ordered source list (:func:`_base_cascade_sources`): read from the
+    fitted plan and the undo baseline, so it is fixed for the lineage. Its
+    keys are the windows the automatic fit holds."""
 
 
 @dataclass
@@ -6763,6 +6849,19 @@ def _build_shared_fit_ctx(
         base_plan.parameters.get("min_freeze_snr", DEFAULT_MIN_FREEZE_SNR)
     )
 
+    # The cascade graph's base edges come from the fitted plan, and their
+    # refresh order and the baseline-live set from the automatic fit: the undo
+    # baseline once a curation has taken it, else the fit group, which no
+    # curation has touched yet.
+    with h5open(path, "r") as h5f:
+        auto_group = (
+            STAGE5_BASELINE_GROUP if STAGE5_BASELINE_GROUP in h5f else fit_group
+        )
+        baseline_frozen = read_fit_frozen_primaries_by_window(h5f[auto_group])
+    base_cascade_sources = _base_cascade_sources(
+        base_plan, baseline_frozen, fitted.unavailable_window_ids
+    )
+
     # The calibration actually in force, read once via the same cheap
     # attrs-only stamp the final-products staleness check uses (A7) -- never a
     # full FID load. Stamped on every RefitWindowResult / CreateWindowResult
@@ -6790,6 +6889,7 @@ def _build_shared_fit_ctx(
         retired_window_ids=fitted.retired_window_ids,
         unavailable_window_ids=fitted.unavailable_window_ids,
         unavailable_spans_mhz=fitted.unavailable_spans_mhz,
+        base_cascade_sources=base_cascade_sources,
     )
 
 
@@ -8810,6 +8910,9 @@ def _cascade_batch(ctx: _BatchCtx, *, snap_tol_mhz: float) -> List[int]:
         cascaded = _cascade_refit_dependents(
             spectrum_fit=ctx.changeset.spectrum_fit,
             edited_wids=sorted(ctx.changeset.dirty_wids),
+            sources=_cascade_sources(
+                ctx.shared.base_cascade_sources, ctx.changeset.created_windows
+            ),
             fit_window_map=ctx.changeset.fit_window_map,
             fit_ctx=ctx.shared.fit_ctx,
             resolved=ctx.shared.resolved,

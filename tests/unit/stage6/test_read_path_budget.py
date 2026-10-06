@@ -47,6 +47,7 @@ from ftmwpipeline._internal.stage6_impl import (
 )
 from ftmwpipeline.io.fitting_serialization import (
     load_spectrum_fit_from_hdf5,
+    read_fit_frozen_primaries_by_window,
     read_fit_parameters,
     read_fit_peak_frequencies_by_window,
     read_fit_peak_uids_by_window,
@@ -227,6 +228,17 @@ def test_cheap_readers_match_the_full_load(stage5_multi_file):
         if wf.window_id is not None
     ]
     expected_coverage.sort(key=lambda row: row[0])
+    expected_frozen = {
+        int(wf.window_id): tuple(
+            dict.fromkeys(
+                int(entry["primary_window_id"])
+                for key, entry in wf.fixed_parameters.items()
+                if key.startswith("frozen_peak_")
+            )
+        )
+        for wf in sf.window_fits
+        if wf.window_id is not None
+    }
 
     with h5py.File(str(stage5_multi_file), "r") as h5f:
         group = h5f["stage5_fitting"]
@@ -235,6 +247,7 @@ def test_cheap_readers_match_the_full_load(stage5_multi_file):
         # per-window row order matching the full loader's.
         assert read_fit_peak_frequencies_by_window(group) == expected_freqs
         assert read_fit_peak_uids_by_window(group) == expected_uids
+        assert read_fit_frozen_primaries_by_window(group) == expected_frozen
         coverage = [
             (row.window_id, row.freq_range, row.peak_uids)
             for row in read_fit_window_coverage(group)

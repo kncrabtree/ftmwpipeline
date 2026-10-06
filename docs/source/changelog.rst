@@ -100,6 +100,25 @@ serials; ``CONTRACT_VERSION`` moves 15 → 16.**
   the functional API and ``ReviewSession``, whether or not ``window_id`` is
   given, and writes nothing. ``window_id`` is no longer described as required
   for one, and the CLI no longer prints "identity refit (no-op edit)".
+* **The cascade's dependencies come from the fitted plan.** An edit reaches
+  every window that reads the edited one in the fitted plan (a fixed
+  contributor that is not edge-free, among the windows Stage 5 fit; for a
+  created window, the contributors its creation attached), and each one's
+  frozen background is rebuilt from every window it reads. The dependencies
+  were read from the curated fits' frozen lines, so an edit that left a
+  window with no line above ``min_freeze_snr`` removed its skirt from its
+  dependents and the dependency with it: a later edit that restored a strong
+  line reached none of them. On 655, removing window 429's strong lines and
+  re-adding its strongest left 108 of the 140 dependencies in effect; now all
+  140 are. An undo or a ``log_prefix`` apply of a log without creates writes
+  the same values as before on every reference fixture. Values change where
+  an edit follows such a loss, and where an edit reaches a created window
+  through a contributor that had no line above ``min_freeze_snr`` when the
+  window was created. They also change, at rounding level, where a cascade
+  refits a created window whose contributors are not in ascending window id
+  (as when it reads an earlier created window): its frozen background is now
+  summed in contributor order, where it was summed in the ascending-id order
+  its creation froze it in.
 
 **Decision-log action groups, empty-window ``converged``, canonical ``run_pipeline`` and
 provenance names; ``CONTRACT_VERSION`` moves 14 → 15.** Four changes from the

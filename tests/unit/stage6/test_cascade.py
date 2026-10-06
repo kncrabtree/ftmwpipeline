@@ -1,7 +1,7 @@
 """Unit tests for the contributor-edit cascade graph + refresh helpers.
 
 These exercise the pure machinery in isolation (no fit context, no fixture
-build): the reverse dependency map, the transitive closure, the topological
+build): the plan-derived source graph, the transitive closure, the topological
 order, and the window-level frozen-background refresh. The end-to-end propagation
 (refit fires the cascade, identity is a no-op, undo returns to the automatic
 baseline) is validated against the dense 655 hub in
@@ -14,12 +14,14 @@ from __future__ import annotations
 import pytest
 
 from ftmwpipeline._internal.stage6_impl import (
+    _base_cascade_sources,
     _cascade_closure,
     _cascade_refit_dependents,
+    _cascade_sources,
     _cascade_succs,
     _cascade_topo,
     _non_edge_free_primaries,
-    _refresh_frozen_window_level,
+    _refresh_frozen_from_sources,
 )
 from ftmwpipeline.core.data_structures import (
     FittedPeak,
@@ -27,6 +29,7 @@ from ftmwpipeline.core.data_structures import (
     FitWindow,
     FixedContributor,
     SpectrumFit,
+    WindowPlan,
 )
 from ftmwpipeline.file_manager import CurationConflictError
 
@@ -92,34 +95,71 @@ class TestNonEdgeFreePrimaries:
         assert _non_edge_free_primaries(_fw(5)) == set()
 
 
-class TestCascadeSuccs:
-    def test_reverse_map_from_frozen_parameters(self):
-        # 2 and 3 depend on 1; 3 also depends on 2.
-        wfs = [
-            _wf(1, peaks=[(100.0, 1.0, 0.0, 5000.0)]),
-            _wf(2, frozen=[(1, 100.0, 1.0, 0.0)]),
-            _wf(3, frozen=[(1, 100.0, 1.0, 0.0), (2, 100.5, 0.5, 0.0)]),
-        ]
-        fwm = {
-            1: _fw(1),
-            2: _fw(2, [(1, 100.0, False)]),
-            3: _fw(3, [(1, 100.0, False), (2, 100.5, False)]),
-        }
-        succs = _cascade_succs(wfs, fwm)
-        assert succs[1] == {2, 3}
-        assert succs[2] == {3}
-        assert succs[3] == set()
+def _plan(*windows):
+    return WindowPlan(windows=list(windows))
+
+
+class TestCascadeSources:
+    """The cascade graph is plan-derived: each window's non-edge-free
+    ``fixed_contributors`` primaries, restricted to the windows the automatic
+    fit holds, ordered as the baseline fit froze them."""
+
+    def test_sources_are_the_plan_contributors(self):
+        # 2 and 3 read 1; 3 also reads 2.
+        plan = _plan(
+            _fw(1),
+            _fw(2, [(1, 100.0, False)]),
+            _fw(3, [(1, 100.0, False), (2, 100.5, False)]),
+        )
+        frozen = {1: (), 2: (1,), 3: (1, 2)}
+        sources = _base_cascade_sources(plan, frozen)
+        assert sources == {1: (), 2: (1,), 3: (1, 2)}
+        succs = _cascade_succs(sources)
+        assert succs == {1: {2, 3}, 2: {3}, 3: set()}
+
+    def test_a_source_the_baseline_fit_froze_nothing_from_is_still_an_edge(self):
+        # Window 2's baseline fit froze no line of 1 (none above threshold),
+        # but the plan says 2 reads 1: the edge is there, after the frozen
+        # ones, so a later edit that gives 1 a strong line reaches 2.
+        plan = _plan(_fw(1), _fw(3), _fw(2, [(1, 100.0, False), (3, 99.0, False)]))
+        sources = _base_cascade_sources(plan, {1: (), 3: (), 2: (3,)})
+        assert sources[2] == (3, 1)
+
+    def test_refresh_order_follows_the_baseline_fit(self):
+        plan = _plan(_fw(1), _fw(2), _fw(3, [(1, 100.0, False), (2, 100.5, False)]))
+        assert _base_cascade_sources(plan, {1: (), 2: (), 3: (2, 1)})[3] == (2, 1)
 
     def test_edge_free_contributor_is_not_an_edge(self):
-        # 2 reads 1 only via an edge-free contributor -> cascade-immune.
-        wfs = [_wf(1), _wf(2, frozen=[(1, 100.0, 1.0, 0.0)])]
-        fwm = {1: _fw(1), 2: _fw(2, [(1, 100.0, True)])}
-        assert _cascade_succs(wfs, fwm)[1] == set()
+        plan = _plan(_fw(1), _fw(2, [(1, 100.0, True)]))
+        sources = _base_cascade_sources(plan, {1: (), 2: (1,)})
+        assert sources[2] == ()
+        assert _cascade_succs(sources)[1] == set()
 
-    def test_unknown_plan_window_treats_all_as_edges(self):
-        # No plan FitWindow for 2 -> conservative: the contributor is an edge.
-        wfs = [_wf(1), _wf(2, frozen=[(1, 100.0, 1.0, 0.0)])]
-        assert _cascade_succs(wfs, {})[1] == {2}
+    def test_a_window_the_fit_dropped_is_no_source(self):
+        # Stage 5 dropped window 4: it is in the plan but not in the fit.
+        plan = _plan(_fw(1), _fw(4), _fw(2, [(1, 100.0, False), (4, 101.0, False)]))
+        assert _base_cascade_sources(plan, {1: (), 2: (1,)})[2] == (1,)
+
+    def test_unavailable_window_keeps_its_fit_edges(self):
+        # No plan window says which of 2's frozen primaries are edge-free.
+        plan = _plan(_fw(1), _fw(2, [(1, 100.0, True)]))
+        assert _base_cascade_sources(plan, {1: (), 2: (1,)}, {2})[2] == (1,)
+        # Nor for a fitted window with no plan entry at all.
+        assert _base_cascade_sources(_plan(_fw(1)), {1: (), 2: (1,)})[2] == (1,)
+
+    def test_created_window_reads_live_and_earlier_created_windows(self):
+        base = {1: (), 2: (1,)}
+        created = [
+            _fw(11, [(1, 100.0, False), (12, 101.0, False), (10, 99.0, False)]),
+            _fw(10, [(2, 100.0, False), (1, 100.2, False), (2, 100.4, False)]),
+            # A widened base window: its base contributors, no new edge.
+            _fw(2, [(1, 100.0, False)]),
+        ]
+        sources = _cascade_sources(base, created)
+        assert sources[10] == (2, 1)
+        assert sources[11] == (1, 10)  # 12 is not earlier than 11
+        assert sources[2] == (1,)
+        assert _cascade_succs(sources)[10] == {11}
 
 
 class TestClosureAndTopo:
@@ -148,20 +188,27 @@ class TestClosureAndTopo:
         assert _cascade_topo({2, 3}, {2: {1}, 3: {2}, 1: {3}}) == [2, 3]
 
 
-class TestRefreshFrozenWindowLevel:
+class TestRefreshFrozenFromSources:
     def _src(self, wid, peaks):
         return _wf(wid, peaks=peaks)
+
+    def _frozen(self, wf):
+        return [
+            v for k, v in wf.fixed_parameters.items() if k.startswith("frozen_peak_")
+        ]
 
     def test_rebuilds_from_current_source_above_threshold(self):
         # Source 1 currently fits two peaks; one is below min_freeze_snr.
         src = self._src(1, [(100.0, 1.0, 0.0, 5000.0), (100.5, 0.2, 0.0, 10.0)])
         dep = _wf(2, frozen=[(1, 100.0, 0.9, 0.0)])  # stale snapshot
-        _refresh_frozen_window_level(
-            dep, {2: _fw(2, [(1, 100.0, False)])}, {1: src, 2: dep}, min_freeze_snr=50.0
+        _refresh_frozen_from_sources(
+            dep,
+            (1,),
+            {2: _fw(2, [(1, 100.0, False)])},
+            {1: src, 2: dep},
+            min_freeze_snr=50.0,
         )
-        froz = [
-            v for k, v in dep.fixed_parameters.items() if k.startswith("frozen_peak_")
-        ]
+        froz = self._frozen(dep)
         assert len(froz) == 1  # the snr=10 peak is dropped
         assert froz[0]["frequency_mhz"] == 100.0
         assert froz[0]["amplitude"] == 1.0  # refreshed from the current fit
@@ -170,32 +217,66 @@ class TestRefreshFrozenWindowLevel:
         # Source 1 now fits ONE peak; the dependent had two frozen from it.
         src = self._src(1, [(100.0, 1.0, 0.0, 5000.0)])
         dep = _wf(2, frozen=[(1, 100.0, 1.0, 0.0), (1, 106.0, 0.5, 0.0)])
-        _refresh_frozen_window_level(
-            dep, {2: _fw(2, [(1, 100.0, False)])}, {1: src, 2: dep}, min_freeze_snr=50.0
+        _refresh_frozen_from_sources(
+            dep,
+            (1,),
+            {2: _fw(2, [(1, 100.0, False)])},
+            {1: src, 2: dep},
+            min_freeze_snr=50.0,
         )
-        froz = [k for k in dep.fixed_parameters if k.startswith("frozen_peak_")]
-        assert len(froz) == 1
+        assert len(self._frozen(dep)) == 1
 
     def test_split_source_adds_contributor(self):
         # Source 1 split one line into two children; both above threshold.
         src = self._src(1, [(99.98, 0.5, 0.0, 3000.0), (100.02, 0.5, 0.0, 3000.0)])
         dep = _wf(2, frozen=[(1, 100.0, 1.0, 0.0)])
-        _refresh_frozen_window_level(
-            dep, {2: _fw(2, [(1, 100.0, False)])}, {1: src, 2: dep}, min_freeze_snr=50.0
+        _refresh_frozen_from_sources(
+            dep,
+            (1,),
+            {2: _fw(2, [(1, 100.0, False)])},
+            {1: src, 2: dep},
+            min_freeze_snr=50.0,
         )
-        froz = [k for k in dep.fixed_parameters if k.startswith("frozen_peak_")]
-        assert len(froz) == 2
+        assert len(self._frozen(dep)) == 2
+
+    def test_a_source_the_dependent_holds_nothing_from_contributes_again(self):
+        # An earlier edit left source 1 with no line above threshold, so the
+        # dependent's refreshed background holds no entry from it. Once 1 has
+        # a strong line again the refresh rebuilds it from the source list,
+        # not from the entries the dependent happens to hold.
+        src = self._src(1, [(100.0, 1.0, 0.0, 5000.0)])
+        dep = _wf(2)
+        _refresh_frozen_from_sources(
+            dep,
+            (1,),
+            {2: _fw(2, [(1, 100.0, False)])},
+            {1: src, 2: dep},
+            min_freeze_snr=50.0,
+        )
+        froz = self._frozen(dep)
+        assert [(e["primary_window_id"], e["frequency_mhz"]) for e in froz] == [
+            (1, 100.0)
+        ]
+
+    def test_sources_are_rebuilt_in_source_list_order(self):
+        src1 = self._src(1, [(100.0, 1.0, 0.0, 5000.0)])
+        src3 = self._src(3, [(90.0, 1.0, 0.0, 5000.0)])
+        dep = _wf(2, frozen=[(1, 100.0, 1.0, 0.0)])
+        fwm = {2: _fw(2, [(1, 100.0, False), (3, 90.0, False)])}
+        _refresh_frozen_from_sources(
+            dep, (3, 1), fwm, {1: src1, 3: src3, 2: dep}, min_freeze_snr=50.0
+        )
+        assert [e["primary_window_id"] for e in self._frozen(dep)] == [3, 1]
 
     def test_edge_free_contributor_preserved_verbatim(self):
         # Dependent 2 reads source 1 (cascade edge) and source 9 (edge-free).
         src1 = self._src(1, [(100.0, 1.0, 0.0, 5000.0)])
         dep = _wf(2, frozen=[(1, 100.0, 0.9, 0.0), (9, 200.0, 0.3, 1.23)])
         fwm = {2: _fw(2, [(1, 100.0, False), (9, 200.0, True)])}
-        _refresh_frozen_window_level(dep, fwm, {1: src1, 2: dep}, min_freeze_snr=50.0)
-        froz = [
-            v for k, v in dep.fixed_parameters.items() if k.startswith("frozen_peak_")
-        ]
-        ef = [e for e in froz if e["primary_window_id"] == 9]
+        _refresh_frozen_from_sources(
+            dep, (1,), fwm, {1: src1, 2: dep}, min_freeze_snr=50.0
+        )
+        ef = [e for e in self._frozen(dep) if e["primary_window_id"] == 9]
         assert len(ef) == 1
         assert ef[0]["amplitude"] == 0.3  # untouched (read from data, not the fit)
         assert ef[0]["phase"] == 1.23
@@ -203,18 +284,25 @@ class TestRefreshFrozenWindowLevel:
     def test_dropped_source_contributes_nothing(self):
         # Source 1 is absent from fit_map (merged away) -> no skirt.
         dep = _wf(2, frozen=[(1, 100.0, 1.0, 0.0)])
-        _refresh_frozen_window_level(
-            dep, {2: _fw(2, [(1, 100.0, False)])}, {2: dep}, min_freeze_snr=50.0
+        _refresh_frozen_from_sources(
+            dep,
+            (1,),
+            {2: _fw(2, [(1, 100.0, False)])},
+            {2: dep},
+            min_freeze_snr=50.0,
         )
-        froz = [k for k in dep.fixed_parameters if k.startswith("frozen_peak_")]
-        assert froz == []
+        assert self._frozen(dep) == []
 
     def test_non_frozen_entries_preserved(self):
         src = self._src(1, [(100.0, 1.0, 0.0, 5000.0)])
         dep = _wf(2, frozen=[(1, 100.0, 0.9, 0.0)])
         dep.fixed_parameters["other_meta"] = {"keep": 1}
-        _refresh_frozen_window_level(
-            dep, {2: _fw(2, [(1, 100.0, False)])}, {1: src, 2: dep}, min_freeze_snr=50.0
+        _refresh_frozen_from_sources(
+            dep,
+            (1,),
+            {2: _fw(2, [(1, 100.0, False)])},
+            {1: src, 2: dep},
+            min_freeze_snr=50.0,
         )
         assert dep.fixed_parameters["other_meta"] == {"keep": 1}
 
@@ -230,9 +318,13 @@ class TestCascadeIntoAnUnavailableWindow:
             _wf(1, frozen=[(3, 100.0, 1.0, 0.0)]),
             _wf(3, peaks=[(100.0, 1.0, 0.0, 5000.0)]),
         ]
+        sources = _base_cascade_sources(
+            _plan(stage4_window_1, _fw(3)), {1: (3,), 3: ()}, unavailable
+        )
         return _cascade_refit_dependents(
             spectrum_fit=SpectrumFit(window_fits=fits),
             edited_wids=[3],
+            sources=sources,
             fit_window_map={1: stage4_window_1, 3: _fw(3)},
             fit_ctx=None,
             resolved=None,

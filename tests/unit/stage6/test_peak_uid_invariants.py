@@ -90,11 +90,12 @@ def test_cascade_refit_preserves_dependent_peak_uid(
     (closure, topological order, the refit itself) stays real.
 
     The faked edge carries no frozen background with it -- ``w2`` has no
-    ``frozen_peak_*`` entries naming ``w0``, so ``_refresh_frozen_window_level``
-    rebuilds nothing and the cascade reduces to an identity refit. That is the
-    case this pins: a window refit purely because something upstream changed
-    keeps its identifiers. A refit whose frozen background genuinely moved is
-    the same ``refit_window_core`` call with a different fixed model.
+    ``frozen_peak_*`` entries naming ``w0``, and ``w0`` is not among its sources,
+    so ``_refresh_frozen_from_sources`` rebuilds nothing and the cascade reduces
+    to an identity refit. That is the case this pins: a window refit purely
+    because something upstream changed keeps its identifiers. A refit whose
+    frozen background genuinely moved is the same ``refit_window_core`` call
+    with a different fixed model.
 
     The edit is a ``remove``, not an ``add``: a window's center is the birth
     position of the peak Stage 4 built the window around, so an ill-chosen
@@ -122,8 +123,8 @@ def test_cascade_refit_preserves_dependent_peak_uid(
 
     orig_succs = s6._cascade_succs
 
-    def fake_succs(window_fits, fit_window_map):
-        d = orig_succs(window_fits, fit_window_map)
+    def fake_succs(sources):
+        d = orig_succs(sources)
         d.setdefault(w0, set()).add(w2)
         return d
 

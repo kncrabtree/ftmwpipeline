@@ -183,17 +183,22 @@ edited window re-seeds from its own persisted state (its fitted peaks as seeds, 
 frozen contributors reconstructed from its own record), applies the add or remove, runs
 one joint nonlinear least-squares fit with the production fitting primitive, and replaces
 that window's entry in the stored fit. Because a strong line contributes its frozen
-leakage skirt to neighboring windows, the edit then **cascades**: every window that froze
-a skirt from the edited one has its frozen background rebuilt from the edited window's
-*current* fit and is refit, in dependency order, so the file never carries a neighbor's
-stale model of an edited line. The cascade refits are fit-only — no conservative
-discovery, no rescue, no Stage 4 renegotiation — and are a deterministic consequence of
-the edit rather than logged decisions of their own. The propagation is usually far below
-the reported precision: a split or merge that preserves a line's total power and centroid
-leaves its far-field skirt unchanged, so most edits move their dependents by
-:math:`\ll\sigma_f`, and the case that matters is an edit that changes a strong line's
-amplitude or position by a large amount. (Contrast ``review run``, which builds the
-worklist and products but refits nothing.)
+leakage skirt to neighboring windows, the edit then **cascades**: every window that reads
+the edited one has its frozen background rebuilt from the *current* fits of all the
+windows it reads and is refit, in dependency order, so the file never carries a
+neighbor's stale model of an edited line. Which windows a window reads is fixed by the
+fitted plan (its fixed contributors that are not edge-free, among the windows Stage 5
+fit) and, for a created window, by the plan that created it — never by the curated fits.
+So an edit that leaves a window with no line strong enough to freeze takes its skirt out
+of its dependents but not the dependency, and a later edit that gives it a strong line
+again puts the skirt back in every one of them. The cascade refits are fit-only — no
+conservative discovery, no rescue, no Stage 4 renegotiation — and are a deterministic
+consequence of the edit rather than logged decisions of their own. The propagation is
+usually far below the reported precision: a split or merge that preserves a line's total
+power and centroid leaves its far-field skirt unchanged, so most edits move their
+dependents by :math:`\ll\sigma_f`, and the case that matters is an edit that changes a
+strong line's amplitude or position by a large amount. (Contrast ``review run``, which
+builds the worklist and products but refits nothing.)
 
 - ``review edit --window N --add F`` / ``--remove F`` — add or remove a line. ``--add``
   snaps to the nearest ledger candidate within tolerance (reviving its recorded seed)
@@ -255,10 +260,13 @@ chose, not a decision, so the log records the one ``add`` (into the new window).
 
 Three properties make the operation safe to build on:
 
-- **Additive.** The new window reads its neighbors' frozen leakage skirts inward and
-  contributes no outward dependency edge, so no existing window is re-fit or thawed —
-  a window created for a line the automatic pass missed holds, by construction, a line
-  below the freeze bar, whose own leakage into its neighbors is negligible.
+- **Additive.** The new window reads its neighbors' frozen leakage skirts inward, and no
+  window that existed before the review ever reads a created one, so no existing window
+  is re-fit or thawed — a window created for a line the automatic pass missed holds, by
+  construction, a line below the freeze bar, whose own leakage into its neighbors is
+  negligible. A later created window does read an earlier one it neighbors, whether or
+  not that window holds a line above the freeze bar, so a line later added to the
+  earlier window cascades into it.
 - **Ids are only appended.** No existing window is ever renumbered, so a consumer that
   partitions peaks on ``window_id`` sees exactly the windows an edit touched rather
   than the whole spectrum.

@@ -1222,8 +1222,8 @@ def test_cascade_downstream_of_two_edits_refit_once(
 
     orig_succs = s6._cascade_succs
 
-    def fake_succs(window_fits, fit_window_map):
-        d = orig_succs(window_fits, fit_window_map)
+    def fake_succs(sources):
+        d = orig_succs(sources)
         d.setdefault(w0, set()).add(w2)
         d.setdefault(w1, set()).add(w2)
         return d
