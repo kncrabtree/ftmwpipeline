@@ -8,13 +8,19 @@ Changelog
 Notable changes to ``ftmwpipeline``, newest first. Versions follow
 `semantic versioning <https://semver.org/>`_.
 
-Unreleased
-----------
+Version 0.1.0b5 (2026-10-06)
+----------------------------
 
-Accumulating toward ``1.0.0``. ``0.1.0b4`` is the last published release;
-``0.1.0b5`` and ``0.1.0b6`` are development versions that were never cut, so
-everything below is reachable only from a source checkout. No further beta is
-planned — these entries fold into the ``1.0.0`` section when it is dated.
+The machine-contract and curation-replay beta over 0.1.0b4, cut so a
+front end can be tested against a published build. As a pre-release it still
+installs only when explicitly requested: ``pip install --pre ftmwpipeline``.
+``1.0.0`` is the next planned release.
+
+It carries the machine contract at ``CONTRACT_VERSION`` 18 and
+``ANALYSIS_EPOCH`` 7. Several changes below are not additive and move fitted
+numbers, so a file fitted under 0.1.0b4 must be re-fit (``fit run``) before
+it can be curated. The in-tree development version was numbered ``0.1.0b6``
+before this release was cut; nothing was ever published under that number.
 
 **Contract 18: a created window's anchor and extent come in the calibrated
 frame too; ``CONTRACT_VERSION`` moves 17 → 18.** ``PlannedWindowResult`` (a
@@ -1635,7 +1641,7 @@ engine so they cannot answer differently.
   ``add`` and ``accept --candidate`` stay frequency-only. What
   ``review undo`` promises is replay equivalence: it replays the surviving decisions
   from the automatic baseline, one user action at a time (the entries one multi-line
-  edit logged replay jointly; see the Unreleased action-group entry) against the
+  edit logged replay jointly; see the action-group entry above) against the
   state the previous ones left, so the identifiers afterward are exactly those that
   sequence produces. That is deliberately **not** the same as a fresh
   curation file naming the same surviving frequencies, which coalesces a run

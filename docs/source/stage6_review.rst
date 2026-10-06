@@ -791,7 +791,7 @@ an empty cell. With
    # sideband: lower
    # amplitude_unit: uV
    # n_peaks: 512
-   # fit_environment: ftmwpipeline 0.1.0b6 (epoch 6), python 3.11.15, numpy 2.4.6, scipy 1.17.1
+   # fit_environment: ftmwpipeline 0.1.0b5 (epoch 7), python 3.11.15, numpy 2.4.6, scipy 1.17.1
    # fit_blas: openblas 0.3.33 (1 threads)
    frequency_mhz,sigma_f_khz,sigma_stat_khz,sigma_eps_khz,sigma_floor_khz,frequency_raw_mhz,f_baseband_mhz,amplitude,amplitude_err,phase_rad,phase_err_rad,snr,snr_err,origin,window_id,clock_lattice,derivation,peak_uid,decay_time_us,decay_time_error_us,shape,fwhm_mhz,detection_index,fit_window_low_mhz,fit_window_high_mhz
    26613.613007,1.571,1.158,1.063,0,26613.581576,14346.418424,1.905,0.03924,-1.084,0.0306,34.58,0.7123,auto,1,,,18263000,8.50794,0.165,gaussian,0.118106,7,26611.091924,26616.747842
