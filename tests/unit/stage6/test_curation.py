@@ -40,7 +40,7 @@ from ftmwpipeline.cli.review_commands import (
     cmd_review_undo,
 )
 from ftmwpipeline.core.data_structures import DecisionLogEntry
-from ftmwpipeline.file_manager import PipelineCorruptionError
+from ftmwpipeline.file_manager import NotFoundValueError, PipelineCorruptionError
 from ftmwpipeline.io.fitting_serialization import load_spectrum_fit_from_hdf5
 from ftmwpipeline.pipeline import Pipeline
 
@@ -428,9 +428,10 @@ def test_apply_dry_run_flags_bad_add_targets(stage5_small_source, tmp_path):
     # A window id that does not exist (what a stale decision-log CSV writes).
     cur = tmp_path / "nowindow.csv"
     cur.write_text(f"add,9999,{freq},\n")
-    dry = apply_curation_impl(fp, cur, dry_run=True)
-    assert any("no window 9999 exists" in w for w in dry.warnings)
-    with pytest.raises(ValueError):
+    # Refused outright, dry run included, exactly as the apply refuses it.
+    with pytest.raises(NotFoundValueError):
+        apply_curation_impl(fp, cur, dry_run=True)
+    with pytest.raises(NotFoundValueError):
         apply_curation_impl(fp, cur)
 
     # A frequency the named window does not cover (a re-plan moved the ids).

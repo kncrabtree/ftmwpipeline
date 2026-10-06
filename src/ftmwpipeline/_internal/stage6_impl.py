@@ -10868,6 +10868,10 @@ def apply_curation_impl(
     # No epoch pre-check here: the write gates itself (_curate), and only
     # when it refits -- a plan of bare accepts refits nothing.
     if dry_run:
+        # The apply refuses an unknown window id (not_found); a dry run that
+        # accepted it would promise an apply that cannot happen.
+        known, where = _known_window_ids(path)
+        _require_known_plan_windows(known, plan, where)
         return CurationApplyResult(
             plan=plan,
             warnings=warnings,
@@ -11226,6 +11230,8 @@ def _run_review_preview(
         # report -- and refused, as an apply is, on a file with no complete
         # fit.
         _require_complete_fit(path, "review preview")
+        known, where = _known_window_ids(path)
+        _require_known_plan_windows(known, plan, where)
         return _PreviewRun(
             result=ReviewPreviewResult(windows={}, plan=plan, warnings=warnings)
         )

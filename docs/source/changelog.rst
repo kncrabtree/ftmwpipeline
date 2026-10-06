@@ -29,6 +29,15 @@ stored in the fit's replan history and read as a JSON list in the
 set. A file written before it was stored loads the field as ``None`` (the
 column reads ``""``) and the trigger falls back to the dependency closure.
 
+**Dry run and preview refuse an unknown window like the apply.** A bare
+``accept`` naming a window the fit does not have is refused ``not_found`` by the
+apply; ``review apply --dry-run`` and the preview (including a review session's)
+accepted it. They now refuse every unknown window id the same way.
+
+**``settings_set`` accepts the JSON a settings row reports for a shape.**
+``stage5.shape`` given as ``'{"kind": "gaussian"}'`` is parsed as the mapping
+form instead of being refused as an unknown shape name.
+
 **What an accepted thaw rewrites is re-derived or re-fit.** An accepted thaw
 rewrites its primary window in place, after that window's own pass derived its
 doublet adjudications and its rescue-candidate ledger from the fit the thaw

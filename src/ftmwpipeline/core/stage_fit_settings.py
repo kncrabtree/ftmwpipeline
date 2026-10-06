@@ -180,7 +180,7 @@ class ShapeSpec:
         """Coerce a shape-like value into a :class:`ShapeSpec` (or ``None``).
 
         Accepts the dataclass itself, a :class:`PeakShape`, a string member
-        (``"gaussian"``), a mapping like ``{"kind": "gaussian"}``, or ``None``.
+        (``"gaussian"``), a mapping like ``{"kind": "gaussian"}`` (or its JSON string), or ``None``.
         Other inputs raise ``ValueError``.
         """
         if value is None:
@@ -190,7 +190,14 @@ class ShapeSpec:
         if isinstance(value, PeakShape):
             return cls(kind=value)
         if isinstance(value, str):
-            return cls(kind=cls._coerce_kind(value))
+            if value.lstrip().startswith("{"):
+                # The JSON a settings row reports for a shape.
+                try:
+                    value = json.loads(value)
+                except json.JSONDecodeError as e:
+                    raise _bad_shape(value, f"cannot parse shape from {value!r}") from e
+            else:
+                return cls(kind=cls._coerce_kind(value))
         if isinstance(value, Mapping):
             if "kind" not in value:
                 raise _bad_shape(
