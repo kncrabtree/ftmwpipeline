@@ -127,3 +127,15 @@ class TestPackageMetadata:
         assert "version" in info
         assert "description" in info
         assert info["name"] == "ftmwpipeline"
+
+    def test_start_detection_settings_is_exported(self):
+        """``detect_start_time``'s ``settings=`` type is public and nameable."""
+        import inspect
+
+        import ftmwpipeline
+        from ftmwpipeline import StartDetectionSettings, api
+
+        assert "StartDetectionSettings" in ftmwpipeline.__all__
+        assert StartDetectionSettings is api.StartDetectionSettings
+        hints = inspect.signature(api.detect_start_time).parameters
+        assert "StartDetectionSettings" in str(hints["settings"].annotation)

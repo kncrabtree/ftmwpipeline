@@ -16,6 +16,31 @@ Accumulating toward ``1.0.0``. ``0.1.0b4`` is the last published release;
 everything below is reachable only from a source checkout. No further beta is
 planned — these entries fold into the ``1.0.0`` section when it is dated.
 
+**Contract 18: a created window's anchor and extent come in the calibrated
+frame too; ``CONTRACT_VERSION`` moves 17 → 18.** ``PlannedWindowResult`` (a
+curation's ``created_windows``) gains ``anchor_calibrated_mhz`` and
+``freq_range_calibrated`` beside its raw ``anchor_mhz`` / ``freq_range``,
+converted exactly as ``window_status(frame="calibrated")`` converts a window's
+bounds, so the extent equals the installed window's calibrated
+``window_status`` bounds. ``CreateWindowResult`` already carried the pair, and
+``RefitWindowResult`` / ``PreviewWindowResult`` gain
+``created_window_freq_range_calibrated``. With ``epsilon == 0`` a companion
+equals its raw value; it is ``Absent.NOT_RUN`` only where its raw sibling is.
+``review preview --json``'s ``created_windows`` entries carry both frames (and
+the raw ``anchor_mhz``, previously missing), ``review apply --json`` (dry run
+and live) now carries the same ``created_windows`` beside its summary, and
+``review create --json``'s summary adds ``anchor_calibrated_mhz``,
+``freq_lo_calibrated_mhz`` and ``freq_hi_calibrated_mhz``. A dry run, a preview
+and the live apply of one plan report equal structure. The ``created_window``
+decision evidence is unchanged. ``StartDetectionSettings``, the type of
+``detect_start_time(settings=...)``, is exported as
+``ftmwpipeline.StartDetectionSettings``.
+
+**The log templates, the drift-line prefix and direct HDF5 reads are retired
+as client paths.** BlackQuill confirmed its migration off them has shipped, so
+they carry no compatibility promise; like all log text and the HDF5 layout,
+they are not contract.
+
 **Contract 17: each accepted structural merge records the windows its round
 re-fit; ``CONTRACT_VERSION`` moves 16 → 17 and ``ANALYSIS_EPOCH`` 6 → 7.** A
 merge round re-fits, besides its survivor and the windows that depend on it, the

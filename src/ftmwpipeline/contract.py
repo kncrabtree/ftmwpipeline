@@ -88,7 +88,7 @@ from .file_manager import (
 #: The machine-contract version. The first published contract is ``1``; each
 #: release that adds (or, before 1.0.0, changes) contract elements raises it by
 #: one, so a client can gate on it as well as on :func:`capabilities`.
-CONTRACT_VERSION: int = 17
+CONTRACT_VERSION: int = 18
 
 #: Schema name of the :func:`capabilities` payload.
 CAPABILITIES_SCHEMA = "ftmw/capabilities@1"
@@ -966,9 +966,31 @@ _FIELDS: Dict[str, Tuple[str, ...]] = {
     # get_review_status and ``review show --json``. ``detail`` is a human
     # sentence whose text is not contract.
     "AttentionReason": ("kind", "detail", "severity", "locations", "evidence"),
-    "RefitWindowResult": ("converged",),
-    "PreviewWindowResult": ("converged",),
+    # Contract 18: a created window's extent in both frames (the calibrated
+    # one is the frame window_status(frame="calibrated") reports).
+    "RefitWindowResult": (
+        "converged",
+        "created_window_freq_range",
+        "created_window_freq_range_calibrated",
+    ),
+    "PreviewWindowResult": (
+        "converged",
+        "created_window_freq_range",
+        "created_window_freq_range_calibrated",
+    ),
     "AppliedWindowResult": ("converged",),
+    "PlannedWindowResult": (
+        "anchor_mhz",
+        "anchor_calibrated_mhz",
+        "freq_range",
+        "freq_range_calibrated",
+    ),
+    "CreateWindowResult": (
+        "anchor_mhz",
+        "anchor_calibrated_mhz",
+        "freq_range",
+        "freq_range_calibrated",
+    ),
     # Contract 17: the request actions behind a batch's plan and advisories
     # (0-based positions in the request, as ``actions[<i>]`` numbers them).
     "PlannedAction": ("action_indices",),
@@ -1231,6 +1253,10 @@ SUMMARY_KEYS: Dict[str, Dict[str, Tuple[str, ...]]] = {
             "n_points",
             "n_contributors",
             "n_peaks",
+            # Contract 18: the anchor and extent in the calibrated frame.
+            "anchor_calibrated_mhz",
+            "freq_lo_calibrated_mhz",
+            "freq_hi_calibrated_mhz",
         ),
         "conditional": (),
     },
