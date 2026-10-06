@@ -42,6 +42,11 @@ states are likewise what the suite verifies.
   tests; it is the reference for scientific correctness.
 - A stage is not "complete" until it has unit tests *and* a cross-interface
   consistency test.
+- Stage 6 refusals are cross-interface tests that also assert the refused file
+  is byte-identical afterwards and that no window was refit: a bare
+  `review edit`, and every write of a file the replay engine cannot curate (a
+  fit without `peak_uid`, or curation without the engine's stamps), on the CLI,
+  the Pipeline class, the functional API and a `ReviewSession`.
 - Tests must not write artifacts into the working tree or repository; outputs
   go to a temporary location.
 - Tests run in the project dev environment

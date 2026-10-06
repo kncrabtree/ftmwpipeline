@@ -9,6 +9,12 @@ HDF5 layout (under the caller-supplied group)::
     .attrs:
         creation_time (ISO8601)
         n_windows     (int)
+        next_serial   (int; the serial the next decision takes -- a high-water
+                       mark an undo never lowers; absent before serials, read
+                       as 0)
+        engine_version (int; the replay-engine version that wrote the review,
+                       ``core.data_structures.ENGINE_VERSION``; absent on a
+                       review a pre-engine build wrote)
     window_statuses/ (JSON, per-window serialization)
         .attrs:
             data  (JSON string)
@@ -35,7 +41,8 @@ Each element of ``attention_reasons`` is a dict with keys
 object; absent in records written before it existed, read as empty).
 
 The decision log is a JSON list (a window carries entries once a `review` edit
-records a decision against it). The final-products subgroup holds the
+records a decision against it). Each row carries its ``serial`` (absent on a
+row a pre-engine build recorded, read as ``Absent.NOT_RUN``). The final-products subgroup holds the
 consolidated, frequency-calibrated line list `review run` builds. Its per-line
 fit fields (``decay_time_us``, ``decay_time_error_us``, ``shape``,
 ``fwhm_mhz``, ``detection_index``, ``fit_window_mhz``) can be
@@ -213,7 +220,7 @@ def _status_from_dict(d: Dict[str, Any]) -> WindowReviewStatus:
 
 
 def _entry_to_dict(entry: DecisionLogEntry) -> Dict[str, Any]:
-    return {
+    out: Dict[str, Any] = {
         "order_index": entry.order_index,
         "window_id": entry.window_id,
         "frequency_mhz": entry.frequency_mhz,
@@ -221,6 +228,9 @@ def _entry_to_dict(entry: DecisionLogEntry) -> Dict[str, Any]:
         "provenance": entry.provenance,
         "evidence": entry.evidence,
     }
+    if not isinstance(entry.serial, Absent):
+        out["serial"] = int(entry.serial)
+    return out
 
 
 def _entry_from_dict(d: Dict[str, Any]) -> DecisionLogEntry:
@@ -231,6 +241,7 @@ def _entry_from_dict(d: Dict[str, Any]) -> DecisionLogEntry:
         kind=str(d["kind"]),
         provenance=str(d.get("provenance", "user")),
         evidence=dict(d.get("evidence", {})),
+        serial=int(d["serial"]) if d.get("serial") is not None else Absent.NOT_RUN,
     )
 
 
@@ -452,6 +463,11 @@ def save_stage6_review_to_hdf5(
     """
     group.attrs["creation_time"] = datetime.now().isoformat()
     group.attrs["n_windows"] = len(review.window_statuses)
+    group.attrs["next_serial"] = int(review.next_serial)
+    if review.engine_version is not None:
+        group.attrs["engine_version"] = int(review.engine_version)
+    elif "engine_version" in group.attrs:
+        del group.attrs["engine_version"]
 
     statuses_list = [_status_to_dict(s) for s in review.window_statuses.values()]
     ws_grp = group.require_group("window_statuses")
@@ -521,11 +537,14 @@ def load_stage6_review_from_hdf5(group: h5py.Group) -> Stage6Review:
         for d in json.loads(str(raw)):
             created_windows.append(_fit_window_from_dict(d))
 
+    engine_version = group.attrs.get("engine_version")
     return Stage6Review(
         window_statuses=window_statuses,
         decision_log=decision_log,
         final_products=final_products,
         created_windows=created_windows,
+        next_serial=int(group.attrs.get("next_serial", 0)),
+        engine_version=None if engine_version is None else int(engine_version),
     )
 
 

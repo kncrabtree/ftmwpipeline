@@ -254,6 +254,7 @@ SNAPSHOT_FIELDS: dict = {
         "kind",
         "provenance",
         "evidence",
+        "serial",
     },
     "AttentionReason": {"kind", "detail", "severity", "locations", "evidence"},
     "RefitWindowResult": {"converged"},

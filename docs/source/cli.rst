@@ -318,26 +318,33 @@ narrow), records it and the add as ONE decision, and applies -- this only
 fires when ``--window`` was omitted; naming ``--window`` and having it not
 cover the frequency is still an error. When this happens, the printed
 result also reports the window's extent, grid points, and frozen-contributor
-count, exactly as ``review create`` would. A bare ``edit`` (no ``--add``/
-``--remove`` -- an identity refit) still requires ``--window`` explicitly, and
-naming ``--window`` explicitly on any edit is still checked -- naming the
-wrong one is still an error. There is no separate ``merge`` or ``split``
-verb -- an ``--add``
-within snap tolerance of a fitted peak is read as a split of it, and removing
-the mutually-close components of one feature while adding one frequency in
-their span is read as a merge. ``apply`` replays a curation CSV of batched
+count, exactly as ``review create`` would. An ``edit`` needs at least one
+``--add`` or ``--remove``: a bare one would refit the window without recording
+a decision, and is refused (``bad_setting``, path ``add``) whether or not
+``--window`` is given. Naming ``--window`` explicitly on any edit is still
+checked -- naming the wrong one is still an error. There is no separate
+``merge`` or ``split`` verb -- an ``--add`` within snap tolerance of a fitted
+peak is read as a split of it, and removing the mutually-close components of
+one feature while adding one frequency in their span is read as a merge. ``apply`` replays a curation CSV of batched
 edits, or with ``--actions FILE`` the same batch as data: a JSON array of
 ``CurationAction`` objects (``-`` reads standard input; see
 :ref:`curation-as-data-contract`). ``log`` lists the decision log; ``undo``
 rolls decisions back by replay-from-baseline (one user action at a time: the
-entries one edit logged replay jointly), naming them by their log ids
-(``--id 3 5``, or repeated, ``--id 3 --id 5``; ``--dry-run`` shows the replay
+entries one edit logged replay jointly), naming them by their ids, the
+serials ``log`` lists (an id is never renumbered or reused; ``--id 3 5``, or repeated, ``--id 3 --id 5``; ``--dry-run`` shows the replay
 plan without writing). ``apply --log-prefix N`` applies the file as if the
 decision log ended after its first ``N`` decisions: the later ones are
 dropped and the kept ones are replayed (a prefix cutting through one edit's
 entries replays its in-prefix entries jointly) together with the file in one pass --
 the outcome of ``undo`` of the dropped ids followed by ``apply``, at the cost
 of one replay instead of two. See :doc:`stage6_review`.
+
+On a file Stage 6 cannot curate -- a fit with a peak that has no ``peak_uid``, or
+curation written before the replay engine -- every editing verb, ``apply``,
+``undo`` and ``run`` is refused (``curation_conflict``, reason
+``predates_peak_identity`` or ``predates_replay_engine``) and writes nothing;
+``log`` and ``show`` still read it and say on standard error that ``fit run`` is
+the fix (it discards the file's curation). See :doc:`stage6_review`.
 
 Two read-only verbs support the editing ones. ``review preview`` runs a
 curation file's plan to completion in memory and reports the fitted outcome

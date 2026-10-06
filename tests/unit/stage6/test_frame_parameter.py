@@ -185,6 +185,18 @@ def _first_fitted_window(path: Path) -> FittingResult:
     raise AssertionError("fixture has no fitted window")
 
 
+def _clear_in_window(wf: FittingResult) -> float:
+    """An in-window frequency far from every fitted peak: an ``add`` there is
+    a plain add, never read as a split."""
+    assert wf.window is not None
+    lo, hi = sorted(float(v) for v in wf.window.freq_range)
+    peaks = [float(p.frequency_mhz) for p in wf.fitted_peaks]
+    return max(
+        (lo + (hi - lo) * t / 40 for t in range(4, 37)),
+        key=lambda x: min(abs(x - q) for q in peaks),
+    )
+
+
 def _ref_calibrated(f_raw: float, *, probe: float, eps: float) -> float:
     """Independent re-derivation of ``f_corr = probe + (f_raw-probe)/(1+eps)``
     -- used to compute expected test values without calling the
@@ -399,12 +411,13 @@ class TestOmittedFrameRequired:
         )
         assert result is not None
 
-    def test_edit_no_frequencies_omitted_frame_is_inert(self, sc_file: Path) -> None:
-        """No add/remove carries no frequency at all, so frame is moot even
-        on a self_calibrated file -- an identity refit must not raise."""
+    def test_edit_no_frequencies_is_refused_as_a_bare_edit(self, sc_file: Path) -> None:
+        """No add/remove carries no frequency at all: on a self_calibrated
+        file the refusal is the bare edit's (``add``), never a missing frame."""
         wf = _first_fitted_window(sc_file)
-        result = refit_window_impl(str(sc_file), wf.window_id)
-        assert result is not None
+        with pytest.raises(BadSettingError) as exc:
+            refit_window_impl(str(sc_file), wf.window_id)
+        assert exc.value.path == "add"
 
     def test_omitted_frame_is_inert_on_rb_locked_file(
         self, stage5_small_source: Path, tmp_path: Path
@@ -636,7 +649,9 @@ class TestReturnedFrequenciesLabeled:
         assert stamp is not None
         cal_state, eps, sigma_eps, _, probe, _ = stamp
         wf = _first_fitted_window(sc_file)
-        result = refit_window_impl(str(sc_file), wf.window_id, frame="raw")
+        result = refit_window_impl(
+            str(sc_file), wf.window_id, add=[_clear_in_window(wf)], frame="raw"
+        )
 
         assert result.calibration_state == "self_calibrated" == cal_state
         assert result.epsilon == pytest.approx(eps)
@@ -689,7 +704,7 @@ class TestReturnedFrequenciesLabeled:
         fp = tmp_path / "rb.ftmw"
         shutil.copy(stage5_small_source, fp)
         wf = _first_fitted_window(fp)
-        result = refit_window_impl(str(fp), wf.window_id)
+        result = refit_window_impl(str(fp), wf.window_id, add=[_clear_in_window(wf)])
         assert result.calibration_state in ("rb_locked", "uncalibrated")
         assert result.epsilon == 0.0
         for p, f_cal in zip(result.fitted_peaks, result.fitted_peaks_calibrated_mhz):

@@ -288,33 +288,18 @@ def test_an_empty_window_still_reports_no_fitted_peaks(stage5_multi_file, tmp_pa
     assert "has no fitted peaks" in advisory, advisory
 
 
-def test_uid_target_against_a_file_without_the_column_is_unmatched(
-    stage5_multi_file, tmp_path
-):
-    """A ``uid:N`` remove on such a file reports the uid unmatched.
+def test_a_file_without_the_column_is_refused(stage5_multi_file, tmp_path):
+    """A fit without the ``peak_uid`` column predates peak identity: no
+    decision can address its peaks, so Stage 6 refuses to write it -- the
+    dry run and the live apply alike, before anything resolves -- rather
+    than resolving a ``uid:N`` to some other peak or to nothing."""
+    from ftmwpipeline.file_manager import CurationConflictError
 
-    Both rungs are pinned, because the missing column must not change
-    either one: the dry run *advises* that the edit will fail (it advises,
-    it never refuses), and the live apply *raises* naming the uid. What must
-    never happen is the third outcome -- resolving to some other peak
-    because the window's uid set came back empty.
-    """
     wid, _freq, uid = _a_fitted_peak(stage5_multi_file)
     _strip_peak_uid_column(stage5_multi_file)
     curation = _write_curation(tmp_path, f"remove,{wid},uid:{uid},\n")
 
-    preview = apply_curation_impl(stage5_multi_file, curation, dry_run=True)
-
-    assert preview.applied == 0
-    # The advisory must say what is actually wrong: the window is full of
-    # fitted peaks, they just carry no identifiers. An empty uid set alone
-    # cannot distinguish that from an empty window, and reporting "no fitted
-    # peaks" here sends the reader after the wrong problem.
-    (advisory,) = [w for w in preview.warnings if f"uid:{uid}" in w]
-    assert "carry no peak_uid" in advisory, advisory
-    assert "has no fitted peaks" not in advisory, advisory
-
-    with pytest.raises(ValueError) as excinfo:
-        apply_curation_impl(stage5_multi_file, curation)
-
-    assert str(uid) in str(excinfo.value)
+    for dry_run in (True, False):
+        with pytest.raises(CurationConflictError) as excinfo:
+            apply_curation_impl(stage5_multi_file, curation, dry_run=dry_run)
+        assert excinfo.value.reason == "predates_peak_identity"

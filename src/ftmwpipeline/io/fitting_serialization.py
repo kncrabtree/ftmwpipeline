@@ -191,6 +191,7 @@ __all__ = [
     "read_fit_diagnostics",
     "read_fit_peak_frequencies_by_window",
     "read_fit_peak_uids_by_window",
+    "fit_has_peak_identity",
     "read_fit_peak_freqs_and_uids_by_window",
     "LEGACY_FIT_LAYOUT_MESSAGE",
     "FitWindowCoverage",
@@ -1595,6 +1596,16 @@ def _uid_column(h5_group: h5py.Group) -> Optional[np.ndarray]:
     if "peak_uid" not in peaks_group:
         return None
     return np.asarray(peaks_group["peak_uid"][:], dtype="i8")
+
+
+def fit_has_peak_identity(h5_group: h5py.Group) -> bool:
+    """Whether every fitted peak in the ``stage5_fitting`` group carries a
+    ``peak_uid``. ``False`` for a fit that predates peak identity (no column,
+    or a row stored as ``-1``) -- one column read, no fit load."""
+    if "peaks" not in h5_group:
+        return False
+    uids = _uid_column(h5_group)
+    return uids is not None and not bool(np.any(uids < 0))
 
 
 def read_fit_peak_uids_by_window(h5_group: h5py.Group) -> Dict[int, Set[int]]:

@@ -655,7 +655,7 @@ def test_undo_single_returns_to_baseline(stage5_small_source, tmp_path):
     log = review_log_impl(fp)
     assert len(log) == 1
 
-    result = review_undo_impl(fp, [log[0].order_index])
+    result = review_undo_impl(fp, [log[0].serial])
     assert result.applied == 0 and len(result.removed) == 1
     assert _fitted_by_window(fp) == baseline  # restored exactly
     assert review_log_impl(fp) == []  # decision log cleared
@@ -683,7 +683,7 @@ def test_undo_one_of_two_replays_other(stage5_multi_file, tmp_path):
     cur.write_text(f"add,{wa},{fa},\nadd,{wb},{fb},\n")
     apply_curation_impl(both, cur)
     log = review_log_impl(both)
-    wa_id = next(e.order_index for e in log if e.window_id == wa and e.kind == "add")
+    wa_id = next(e.serial for e in log if e.window_id == wa and e.kind == "add")
     review_undo_impl(both, [wa_id])
 
     assert _fitted_by_window(both) == _fitted_by_window(ref)
@@ -729,7 +729,7 @@ def test_undo_all_restores_baseline_identifiers(stage5_small_source, tmp_path):
     assert _uids_by_window(fp) != baseline  # the add changed the window
 
     log = review_log_impl(fp)
-    review_undo_impl(fp, [e.order_index for e in log])
+    review_undo_impl(fp, [e.serial for e in log])
     assert _uids_by_window(fp) == baseline  # identifiers restored exactly
 
 
@@ -764,7 +764,7 @@ def test_undo_one_of_two_replays_other_identifiers(stage5_multi_file, tmp_path):
     cur.write_text(f"add,{wa},{fa},\nadd,{wb},{fb},\n")
     apply_curation_impl(both, cur)
     log = review_log_impl(both)
-    wa_id = next(e.order_index for e in log if e.window_id == wa and e.kind == "add")
+    wa_id = next(e.serial for e in log if e.window_id == wa and e.kind == "add")
     review_undo_impl(both, [wa_id])
 
     assert _uids_by_window(both) == ref_uids
@@ -803,7 +803,7 @@ def test_undo_replays_inferred_split_identifiers_exactly(stage5_multi_file, tmp_
     apply_curation_impl(both, cur)
     log = review_log_impl(both)
     assert any(e.window_id == wa and e.kind == "split" for e in log)
-    wb_id = next(e.order_index for e in log if e.window_id == wb and e.kind == "add")
+    wb_id = next(e.serial for e in log if e.window_id == wb and e.kind == "add")
     review_undo_impl(both, [wb_id])
 
     assert _uids_by_window(both)[wa] == ref_uids_a
@@ -863,7 +863,7 @@ def test_undo_replays_inferred_merge_identifiers_exactly(stage5_multi_file, tmp_
     _split_then_merge(both)
     apply_curation_impl(both, _write_curation(tmp_path, f"add,{wb},{fb_clear},\n"))
     log = review_log_impl(both)
-    wb_id = next(e.order_index for e in log if e.window_id == wb and e.kind == "add")
+    wb_id = next(e.serial for e in log if e.window_id == wb and e.kind == "add")
     review_undo_impl(both, [wb_id])
 
     assert _uids_by_window(both)[wa] == ref_uids_a
@@ -912,7 +912,7 @@ def test_undo_replays_two_dependent_inferred_decisions_without_coalescing(
     apply_curation_impl(both, _write_curation(tmp_path, f"add,{wb},{fb_clear},\n"))
     log = review_log_impl(both)
     assert [e.kind for e in log if e.window_id == wa] == ["split", "merge"]
-    wb_id = next(e.order_index for e in log if e.window_id == wb and e.kind == "add")
+    wb_id = next(e.serial for e in log if e.window_id == wb and e.kind == "add")
 
     review_undo_impl(both, [wb_id])  # must not raise
 
@@ -943,7 +943,7 @@ def test_undo_replays_verb_split_via_straddle_unchanged(stage5_multi_file, tmp_p
     split_entries = [e for e in log if e.window_id == wa and e.kind == "split"]
     assert len(split_entries) == 1
     assert "inferred" not in split_entries[0].evidence
-    wb_id = next(e.order_index for e in log if e.window_id == wb and e.kind == "add")
+    wb_id = next(e.serial for e in log if e.window_id == wb and e.kind == "add")
     review_undo_impl(both, [wb_id])
 
     assert _uids_by_window(both)[wa] == ref_uids_a
@@ -979,7 +979,7 @@ def test_undo_replayed_add_reissues_identifier(stage5_multi_file, tmp_path):
 
     # Undo the OTHER window's add; wa's add survives and is replayed.
     log = review_log_impl(fp)
-    wb_id = next(e.order_index for e in log if e.window_id == wb and e.kind == "add")
+    wb_id = next(e.serial for e in log if e.window_id == wb and e.kind == "add")
     review_undo_impl(fp, [wb_id])
 
     after = _uids_by_window(fp)
@@ -999,7 +999,7 @@ def test_undo_dry_run_no_mutation(stage5_small_source, tmp_path):
     log = review_log_impl(fp)
 
     before = hashlib.md5(fp.read_bytes()).hexdigest()
-    result = review_undo_impl(fp, [log[0].order_index], dry_run=True)
+    result = review_undo_impl(fp, [log[0].serial], dry_run=True)
     assert hashlib.md5(fp.read_bytes()).hexdigest() == before
     assert result.dry_run and len(result.removed) == 1
 
@@ -1044,7 +1044,7 @@ def test_undo_refused_when_baseline_missing(stage5_small_source, tmp_path):
     with atomic_write(fp):
         clear_stage5_baseline(fp)  # simulate the snapshot becoming unavailable
     with pytest.raises(ValueError, match="baseline is unavailable"):
-        review_undo_impl(fp, [log[0].order_index])
+        review_undo_impl(fp, [log[0].serial])
 
 
 @pytest.mark.integration
@@ -1059,7 +1059,7 @@ def test_undo_cross_interface(stage5_small_source, tmp_path):
     ids = {}
     for k, p in paths.items():
         apply_curation_impl(p, cur)
-        ids[k] = review_log_impl(p)[0].order_index  # undo the first (the add)
+        ids[k] = review_log_impl(p)[0].serial  # undo the first (the add)
 
     ftmw.review_undo(str(paths["api"]), [ids["api"]])
     Pipeline.open(paths["pipe"]).review_undo([ids["pipe"]])
@@ -1273,7 +1273,7 @@ def test_undo_one_of_several_replays_batch_once(
     cur.write_text(f"add,{wa},{fa},\nadd,{wb},{fb},\n")
     apply_curation_impl(both, cur)
     log = review_log_impl(both)
-    wa_id = next(e.order_index for e in log if e.window_id == wa and e.kind == "add")
+    wa_id = next(e.serial for e in log if e.window_id == wa and e.kind == "add")
 
     calls: List[int] = []
     orig = stage5_impl.build_stage5_fit_context

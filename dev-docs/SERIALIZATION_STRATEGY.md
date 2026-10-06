@@ -90,6 +90,15 @@ design).
   across all interfaces (this is asserted by cross-interface tests).
 - Any persisted stage result reconstructs to scientific equivalence with the
   value originally computed.
+- The Stage 6 review (`/stage6_review`) stamps the replay-engine version that
+  wrote it (`engine_version`) and the decision serial high-water mark
+  (`next_serial`); each decision-log row carries its `serial`, and the undo
+  baseline (`/stage5_fitting_baseline`) a `lineage_id`. A review or baseline
+  without the stamps was written by a pre-engine build, and a fit whose peaks
+  lack `peak_uid` predates peak identity: the file is read as stored, never
+  migrated, and every Stage 6 write of it is refused until `fit run` starts a
+  new lineage. A review from a newer engine is a newer format
+  (`PipelineCompatibilityError`).
 
 ## Multi-format input
 

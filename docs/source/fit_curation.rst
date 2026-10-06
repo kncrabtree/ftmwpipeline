@@ -186,7 +186,7 @@ surface a ``review undo`` command alongside the ``review apply`` one:
 surviving decision onto it in log order, one user action at a time (the
 entries of one multi-line edit replay jointly), so any decisions can be undone,
 not only the latest; the ids shown in the table are the ones to pass, and the
-surviving decisions are renumbered afterwards (see :ref:`stage6-decisions`).
+surviving decisions keep their ids (see :ref:`stage6-decisions`).
 
 .. _curation-frames:
 

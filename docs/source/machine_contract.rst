@@ -529,7 +529,10 @@ one action keeps its type and adds the action to the message (``curation action
     create an uncovered ``add`` implies. ``review_create`` names its argument,
     ``anchor_mhz``, and ``review_edit``'s implied create names ``add``;
   * ``review_edit``'s tokens are ``add`` / ``remove`` (a malformed token, or
-    a ``uid:N`` given to ``add``).
+    a ``uid:N`` given to ``add``). An edit with neither (a bare edit, which
+    would refit the window and record no decision) is ``add`` with ``value``
+    ``[]``, whether or not a window is given; it is refused on every
+    interface before anything is resolved, fitted or written (contract 16).
 
 * ``not_found``. Every frequency in ``ids`` is the one the caller wrote, in the
   frame it was written in (a calibrated request is answered in calibrated
@@ -546,7 +549,9 @@ one action keeps its type and adds the action to the message (``curation action
     (``ids`` the uncovered frequencies);
   * ``kind`` ``"decision"``: ``review_undo`` ids the decision log does not
     hold, every one of them (on a file with no recorded decisions, every
-    requested id).
+    requested id). An id is a decision's ``serial`` (contract 16), so the
+    position of a row, or the serial of one an earlier undo dropped, is not
+    one.
 
 * ``curation_conflict`` (``CurationConflictError``), a valid request that
   conflicts with the file's review state. ``reason`` is one of:
@@ -578,8 +583,10 @@ one action keeps its type and adds the action to the message (``curation action
      * - ``replay_diverged``
        - ``review_undo``, or an apply at a ``log_prefix``, would replay a
          surviving decision as a different action (another ``kind`` or
-         window) than the one recorded; only a decision recorded with a
-         per-call snap tolerance, before contract 16, can (that decision)
+         window) than the one recorded, or would not record it at all. The
+         replay runs from the automatic fit, so a merge or split that was
+         inferred against the fit as it was when the decision was recorded
+         can be inferred differently there (that decision)
      * - ``target_outside_window``
        - an ``add`` whose seed, after snapping to a ledger candidate, falls
          outside the range of the window it names (that window)
@@ -589,6 +596,19 @@ one action keeps its type and adds the action to the message (``curation action
          against such a merge: the windows the fit was made on are not in the
          file (the windows the edit would have refit; for a create inside a
          merged range, every affected window). Re-running ``fit run`` clears it
+     * - ``predates_peak_identity``
+       - any Stage 6 write (``review_edit``, ``review_accept``,
+         ``review_create``, ``review_apply``, ``review_undo``, ``review_run``,
+         a ``ReviewSession`` persist) of a file whose Stage 5 fit has a peak
+         without a ``peak_uid`` (a fit written before peak identity was
+         persisted). Re-running ``fit run`` clears it and discards the file's
+         curation (``[]``)
+     * - ``predates_replay_engine``
+       - any Stage 6 write of a file curated by a build that predates the
+         replay engine (its review carries no ``engine_version``, or an older
+         one, or its undo baseline no lineage id). Re-running ``fit run``
+         clears it and discards the file's curation; ``get_review_status``
+         reports the reason as ``refit_required`` (``[]``)
 
   Reasons are only ever added.
 
@@ -608,7 +628,12 @@ the same way, from its first read:
   (``file_corrupt``; also a ``RuntimeError`` and an ``OSError``, chained from
   the underlying error; exit 2);
 * a file from a newer MAJOR format raises ``PipelineCompatibilityError``
-  (``file_incompatible``; exit 1).
+  (``file_incompatible``; exit 1);
+* a Stage 6 write (``review_edit``, ``review_accept``, ``review_create``,
+  ``review_apply``, ``review_undo``, ``review_run``) of a file whose
+  ``/stage6_review`` a newer Stage 6 replay engine wrote raises the same error
+  (``supported_version`` names the engine this build has), before it writes
+  anything. Reads are unaffected.
 
 A permission failure, or HDF5's refusal while another process holds the file
 open for writing, is not corruption: it propagates as the original ``OSError``
@@ -749,13 +774,14 @@ with its ``"<field>_absent"`` sibling.
      - n/a
      - the table of the chosen mode: ``{"windows": [...]}``, ``{"attention":
        [...]}`` (:ref:`contract-attention`), ``{"bar", "window_id",
-       "candidates": [...]}`` or one window's detail
+       "candidates": [...]}`` or one window's detail; each also carries
+       ``refit_required``
    * - ``review rank`` / ``log`` / ``preview`` / ``snap-tolerance`` /
        ``acknowledge-environment``
      - n/a
-     - ``{"windows": [...]}`` / ``{"entries": [...]}`` / ``{"warnings",
-       "created_windows", "windows"}`` / the snap tolerance / the
-       acknowledgement
+     - ``{"windows": [...]}`` / ``{"entries": [...], "refit_required"}`` /
+       ``{"warnings", "created_windows", "windows"}`` / the snap tolerance /
+       the acknowledgement
    * - ``settings show`` / ``defaults``
      - n/a
      - ``{"settings": [...]}``, the rows of the table
@@ -1016,18 +1042,24 @@ Each, with its absence cases:
   ``user``. ``evidence`` is a free-form snapshot dict and keeps its floats in
   Python: a non-finite ``chi2r_before`` / ``chi2r_after`` (no degrees of
   freedom, a fit that did not converge) stays ``inf`` there and is written as
-  ``null`` with ``"<key>_absent": "undefined"`` on the wire. Every row also
-  carries ``action_index`` in ``evidence``: the ``order_index`` of the first row
-  of the same user action (a one-row action, a bare accept included, carries its
-  own ``order_index``; a bare accept's evidence is no longer ``{}``). Rows with
-  the same ``action_index`` were applied as one joint refit. Files written before
-  the key existed have none; ``review_undo`` infers their groups (see below). A
+  ``null`` with ``"<key>_absent": "undefined"`` on the wire. ``serial`` is the
+  row's id (contract 16): minted when the row is recorded, never reused or
+  renumbered within the fit's lineage (``fit run`` starts a new one); it is
+  what ``review_undo`` takes and what a peak's ``derivation`` holds, and it is
+  *not run* on a row a pre-engine build recorded (``null`` with
+  ``"serial_absent": "not_run"`` in ``review log --json``). ``order_index`` is
+  the row's position only. Every row also carries ``action_index`` in
+  ``evidence``: the ``serial`` of the first row of the same user action (a
+  one-row action, a bare accept included, carries its own; a bare accept's
+  evidence is no longer ``{}``). Rows with the same ``action_index`` were
+  applied as one joint refit. A row a pre-engine build recorded may have none:
+  the file is refused for every write (see ``predates_replay_engine`` above),
+  so no replay reads it. A
   ``remove`` row's ``frequency_mhz``, and a merge's ``merged_from``, are the
   fitted frequencies (raw frame) of the peaks the request resolved to, not the
   frequencies sent; rows written before contract 16 hold the frequencies sent.
-  A replay (``review_undo``, an apply at a ``log_prefix``) re-records every
-  surviving row with its own ``frequency_mhz`` and ``merged_from`` verbatim;
-  only ``order_index`` and ``action_index`` are renumbered after an undo. The
+  Rows are immutable: a replay (``review_undo``, an apply at a ``log_prefix``)
+  keeps every surviving row verbatim, and only ``order_index`` changes. The
   snap tolerance is a property of the file (``refit_snap_tol_mhz``): from
   contract 16 no call takes one.
 * ``get_pipeline_info`` -- the status dict. ``warnings`` is always present (an
@@ -1605,10 +1637,7 @@ action at a time, not one decision at a time: the surviving rows of one action
 group (the rows sharing an ``action_index`` in the ``review_log`` evidence)
 replay together as one joint refit, so undoing part of a group replays the rest
 jointly, and a ``log_prefix`` that cuts through a group replays the in-prefix
-rows jointly. A row without the key (a file written before it existed) is
-grouped with the row before it when both are ``add``/``remove`` rows on the
-same window with identical non-empty evidence and no ``created_window``. The
-dry-run plan lists one edit per group. Replaying each row as its own refit
+rows jointly. The dry-run plan lists one edit per group. Replaying each row as its own refit
 let a later undo fail after a multi-line edit, because the separate refits
 drifted the fitted peaks beyond snap tolerance of the line a later remove named.
 
@@ -1908,6 +1937,27 @@ On the command line, ``review show --attention --json`` prints ``{"attention":
 in ``reasons`` (``kind``, ``severity``, ``detail``, ``locations``,
 ``evidence``). ``review show --window N --json`` lists the window's
 ``attention_reasons`` in the same form.
+
+**A file Stage 6 cannot write (contract 16).** A file whose Stage 5 fit has a
+peak without a ``peak_uid``, or whose curation a build without the replay engine
+wrote, is refused by every Stage 6 write (``curation_conflict``,
+``predates_peak_identity`` / ``predates_replay_engine``, ``ids`` ``[]``) and
+flagged on read: the review ``get_review_status`` returns carries
+``refit_required``, the reason slug a write would raise, or ``None`` when writes
+are accepted (never stored); a review a newer engine wrote reads as
+``file_incompatible``, the error a write raises, whose remedy is upgrading
+rather than ``fit run``. ``review show --json`` (every mode) and ``review log
+--json`` carry the same value as ``refit_required`` (``null`` when writes are
+accepted). Reads work and write nothing: ``review_log`` returns
+the stored rows (a pre-engine row's ``serial`` is *not run*) and logs the
+re-run instruction as a warning, ``review show`` prints it on standard error,
+and the HTML report shows a banner with it and no Undo controls. The one fix is
+``fit run``: it writes a fit with peak identities and discards the file's
+curation (``review run`` included), and the next write starts a new lineage
+whose serials restart at 0. The review also carries ``engine_version`` (the
+replay-engine version that wrote it, ``None`` on a review a pre-engine build
+wrote) and ``next_serial`` (the serial the next decision takes: a high-water
+mark an undo never lowers); a client does not set either.
 
 **A window the fit holds no line in.** The kinds ``empty_window_residual``
 and ``empty_window_spur`` cover one case. Stage 5 can finish a window of its plan with no line

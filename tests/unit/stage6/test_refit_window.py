@@ -17,19 +17,24 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
+from typing import Union
 
 import h5py
 import pytest
 
 import ftmwpipeline.api as ftmw
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline._internal.stage5_impl import (
     Stage5FitContext,
     build_stage5_fit_context,
 )
 from ftmwpipeline._internal.stage6_impl import (
     RefitWindowResult,
+    _batch_apply_edit_plain,
     _parse_complex_amplitude,
     _reconstruct_frozen_peaks,
+    _run_single_action,
+    refit_snap_tol_mhz_impl,
     refit_window_impl,
 )
 from ftmwpipeline.core.data_structures import SpectrumFit
@@ -62,6 +67,26 @@ def _load_spectrum_fit(path: Path) -> SpectrumFit:
         return load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
 
 
+def _identity_refit(path: Union[str, Path], window_id: int) -> RefitWindowResult:
+    """Refit one window with no edit and persist it, recording no decision.
+
+    This is the identity refit the cascade runs on a window it reaches -- an
+    engine mechanic, not a user verb (a bare ``review edit`` is refused) --
+    driven through the engine's own single-action path so the fidelity of
+    ``refit_window_core`` stays pinned end to end.
+    """
+    p = str(path)
+    snap = refit_snap_tol_mhz_impl(p)
+    with atomic_write(p):
+        return _run_single_action(
+            p,
+            lambda ctx: _batch_apply_edit_plain(
+                ctx, window_id, [], [], snap_tol_mhz=snap
+            ),
+            snap_tol_mhz=snap,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Convergence visibility on the single-window verb
 # ---------------------------------------------------------------------------
@@ -78,7 +103,7 @@ class TestRefitReportsConvergence:
 
     def test_identity_refit_converges(self, writable_stage5_file):
         wid = _load_spectrum_fit(writable_stage5_file).window_fits[0].window_id
-        result = refit_window_impl(str(writable_stage5_file), wid)
+        result = _identity_refit(str(writable_stage5_file), wid)
         assert result.converged is True
 
     def test_failed_fit_is_reported(self, writable_stage5_file, monkeypatch):
@@ -94,7 +119,7 @@ class TestRefitReportsConvergence:
         monkeypatch.setattr(s6, "refit_window_core", failing_core)
 
         wid = _load_spectrum_fit(writable_stage5_file).window_fits[0].window_id
-        result = refit_window_impl(str(writable_stage5_file), wid)
+        result = _identity_refit(str(writable_stage5_file), wid)
         assert result.converged is False
 
 
@@ -315,7 +340,7 @@ class TestIdentityRefitFidelity:
             path = tmp_path / f"w{wid}.ftmw"
             shutil.copy(stage5_small_file, path)
 
-            result = refit_window_impl(str(path), wid)
+            result = _identity_refit(str(path), wid)
             assert isinstance(result, RefitWindowResult)
             assert result.window_id == wid
 
@@ -367,7 +392,7 @@ class TestIdentityRefitFidelity:
         peaks_before = sorted(wf.fitted_peaks, key=lambda p: p.frequency_mhz)
         chi2r_before = float(wf.reduced_chi2)
 
-        result = refit_window_impl(str(path), wid)
+        result = _identity_refit(str(path), wid)
 
         assert result.n_peaks_before == len(peaks_before)
         assert result.n_peaks_after == len(peaks_before)
@@ -408,7 +433,7 @@ class TestIdentityRefitPerWindow:
             pytest.skip("No windows with peaks")
         wf = self.windows_with_peaks[0]
         n_before = len(wf.fitted_peaks)
-        result = refit_window_impl(str(self.path), wf.window_id)
+        result = _identity_refit(str(self.path), wf.window_id)
         assert result.n_peaks_after == n_before
 
     def test_first_window_frequencies_within_tolerance(self):
@@ -416,7 +441,7 @@ class TestIdentityRefitPerWindow:
             pytest.skip("No windows with peaks")
         wf = self.windows_with_peaks[0]
         peaks_before = sorted(wf.fitted_peaks, key=lambda p: p.frequency_mhz)
-        refit_window_impl(str(self.path), wf.window_id)
+        _identity_refit(str(self.path), wf.window_id)
         sf_after = _load_spectrum_fit(self.path)
         wf_after = next(w for w in sf_after.window_fits if w.window_id == wf.window_id)
         peaks_after = sorted(wf_after.fitted_peaks, key=lambda p: p.frequency_mhz)
@@ -433,7 +458,7 @@ class TestIdentityRefitPerWindow:
             pytest.skip("No windows with peaks")
         wf = self.windows_with_peaks[0]
         peaks_before = sorted(wf.fitted_peaks, key=lambda p: p.frequency_mhz)
-        refit_window_impl(str(self.path), wf.window_id)
+        _identity_refit(str(self.path), wf.window_id)
         sf_after = _load_spectrum_fit(self.path)
         wf_after = next(w for w in sf_after.window_fits if w.window_id == wf.window_id)
         peaks_after = sorted(wf_after.fitted_peaks, key=lambda p: p.frequency_mhz)
@@ -451,7 +476,7 @@ class TestIdentityRefitPerWindow:
         for wf in self.windows_with_peaks:
             n_before = len(wf.fitted_peaks)
             # Each refit mutates the file; reload for the next window.
-            result = refit_window_impl(str(self.path), wf.window_id)
+            result = _identity_refit(str(self.path), wf.window_id)
             assert (
                 result.n_peaks_before == n_before
             ), f"window {wf.window_id}: n_peaks_before mismatch"
@@ -464,7 +489,7 @@ class TestIdentityRefitPerWindow:
         if not self.windows_with_peaks:
             pytest.skip("No windows with peaks")
         wf = self.windows_with_peaks[0]
-        result = refit_window_impl(str(self.path), wf.window_id)
+        result = _identity_refit(str(self.path), wf.window_id)
         assert abs(result.chi2r_before - float(wf.reduced_chi2)) < 1e-6
 
     def test_other_windows_unchanged(self):
@@ -476,7 +501,7 @@ class TestIdentityRefitPerWindow:
         if not other_wfs:
             pytest.skip("Only one window with peaks; cannot test isolation")
 
-        refit_window_impl(str(self.path), wf0.window_id)
+        _identity_refit(str(self.path), wf0.window_id)
         sf_after = _load_spectrum_fit(self.path)
 
         for other_wf in other_wfs:
@@ -864,13 +889,13 @@ class TestRefitWindowErrors:
         fp = tmp_path / "no_stage5.ftmw"
         ftmw.import_data(fp, source=exp_2638_data_path)
         with pytest.raises(ValueError, match="No Stage 5 fit"):
-            refit_window_impl(str(fp), 0)
+            refit_window_impl(str(fp), 0, remove=[30000.0])
 
     def test_invalid_window_raises(self, stage5_small_source, tmp_path):
         dst = tmp_path / "copy.ftmw"
         shutil.copy(stage5_small_source, dst)
         with pytest.raises(KeyError):
-            refit_window_impl(str(dst), 99999)
+            refit_window_impl(str(dst), 99999, remove=[30000.0])
 
 
 # ---------------------------------------------------------------------------
@@ -971,7 +996,7 @@ class TestThawedLineFreeze:
         _inject_synthetic_thaw(self.path, wid, thawed_freq)
 
         # No-edit refit.
-        result = refit_window_impl(str(self.path), wid)
+        result = _identity_refit(str(self.path), wid)
         assert isinstance(result, RefitWindowResult)
 
         # Load the updated fit.
@@ -1105,7 +1130,7 @@ class TestThawedPeakUidRoundTrip:
         path = tmp_path / "thaw_uid.ftmw"
         shutil.copy(stage5_small_source, path)
         _inject_synthetic_thaw(path, wf.window_id, thawed_freq)
-        refit_window_impl(str(path), wf.window_id)
+        _identity_refit(str(path), wf.window_id)
 
         sf_after = _load_spectrum_fit(path)
         wf_after = next(w for w in sf_after.window_fits if w.window_id == wf.window_id)
@@ -1185,7 +1210,7 @@ class TestPeakUidSurvivesRefit:
             # Fresh copy per window so one refit cannot bleed into the next.
             path = tmp_path / f"w{wid}.ftmw"
             shutil.copy(stage5_small_source, path)
-            refit_window_impl(str(path), wid)
+            _identity_refit(str(path), wid)
             sf_after = _load_spectrum_fit(path)
             wf_after = next(w for w in sf_after.window_fits if w.window_id == wid)
 

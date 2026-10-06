@@ -10,12 +10,12 @@ derivation instead of reconstructing it by pairing peak sets across an edit.
 The contract these tests pin down:
 
 - an automatic fit tags nothing (every peak is identity-preserved);
-- an ``add`` tags exactly the created peak with the ``order_index`` of the
+- an ``add`` tags exactly the created peak with the ``serial`` of the
   decision that created it, and leaves its neighbors in the window untagged;
 - merge / split products carry the coarser decision's id;
 - the tag survives the HDF5 round trip and reaches ``FinalProducts``;
-- ``review undo`` renumbers the log and the tags together, so a tag always
-  indexes a decision that is actually in the log.
+- ``review undo`` renumbers neither the surviving decisions nor the tags
+  naming them, so a tag always names a decision that is actually in the log.
 """
 
 from __future__ import annotations
@@ -37,6 +37,7 @@ from ftmwpipeline._internal.stage6_impl import (
 )
 from ftmwpipeline.contract import Absent
 from ftmwpipeline.core.data_structures import SpectrumFit
+from ftmwpipeline.file_manager import BadSettingError
 from ftmwpipeline.io.fitting_serialization import load_spectrum_fit_from_hdf5
 
 pytestmark = [pytest.mark.integration]
@@ -73,11 +74,12 @@ class TestAutomaticFitCarriesNoTag:
         assert sf.fitted_peaks, "fixture has no fitted peaks"
         assert all(p.derivation is None for p in sf.fitted_peaks)
 
-    def test_identity_refit_tags_nothing(self, working_file):
+    def test_a_bare_edit_is_refused_and_tags_nothing(self, working_file):
         sf = _load_spectrum_fit(working_file)
         wf = _window_with_range(sf)
         assert wf is not None
-        refit_window_impl(str(working_file), wf.window_id, add=[], remove=[])
+        with pytest.raises(BadSettingError):
+            refit_window_impl(str(working_file), wf.window_id, add=[], remove=[])
         after = _load_spectrum_fit(working_file)
         assert all(p.derivation is None for p in after.fitted_peaks)
 
@@ -94,7 +96,7 @@ class TestAddTagsOnlyTheCreatedPeak:
 
         log = review_log_impl(str(working_file))
         assert len(log) == 1 and log[0].kind == "add"
-        expected = log[0].order_index
+        expected = log[0].serial
 
         tagged = [p for p in result.fitted_peaks if p.derivation is not None]
         assert len(tagged) == 1, (
@@ -133,7 +135,7 @@ class TestAddTagsOnlyTheCreatedPeak:
         tags = sorted(
             p.derivation for p in result.fitted_peaks if p.derivation is not None
         )
-        assert tags == [e.order_index for e in log]
+        assert tags == [e.serial for e in log]
 
     def test_tag_survives_the_hdf5_round_trip(self, working_file):
         sf = _load_spectrum_fit(working_file)
@@ -182,7 +184,7 @@ class TestSplitProductsCarryTheSplitDecision:
         assert len(log) == 1 and log[0].kind == "split"
         tagged = [p for p in result.fitted_peaks if p.derivation is not None]
         assert len(tagged) == 2
-        assert {p.derivation for p in tagged} == {log[0].order_index}
+        assert {p.derivation for p in tagged} == {log[0].serial}
 
 
 class TestMergeProductCarriesTheMergeDecision:
@@ -206,7 +208,7 @@ class TestMergeProductCarriesTheMergeDecision:
         assert len(log) == 1 and log[0].kind == "merge"
         tagged = [p for p in result.fitted_peaks if p.derivation is not None]
         assert len(tagged) == 1
-        assert tagged[0].derivation == log[0].order_index
+        assert tagged[0].derivation == log[0].serial
 
 
 class TestFinalProductsCarryTheTag:
@@ -226,7 +228,7 @@ class TestFinalProductsCarryTheTag:
 
         # And the tag indexes a real decision.
         log = review_log_impl(str(working_file))
-        assert any(e.order_index == tagged[0].derivation for e in log)
+        assert any(e.serial == tagged[0].derivation for e in log)
 
     def test_pre_curation_table_is_all_not_run(self, working_file):
         review_run_impl(str(working_file))
@@ -235,8 +237,8 @@ class TestFinalProductsCarryTheTag:
         assert all(p.derivation is Absent.NOT_RUN for p in products.peaks)
 
 
-class TestUndoRenumbersTagsWithTheLog:
-    def test_tag_still_indexes_a_live_decision_after_undo(self, working_file):
+class TestUndoKeepsTheTags:
+    def test_tag_still_names_its_decision_after_undo(self, working_file):
         review_run_impl(str(working_file))
         sf = _load_spectrum_fit(working_file)
         wf = _window_with_range(sf)
@@ -247,17 +249,15 @@ class TestUndoRenumbersTagsWithTheLog:
         refit_window_impl(str(working_file), wf.window_id, add=[lo + 0.7 * span])
         assert len(review_log_impl(str(working_file))) == 2
 
-        # Drop the FIRST decision; the second survives and is replayed, so it
-        # renumbers from 1 to 0 -- and its peak's tag must follow.
+        # Drop the FIRST decision; the second survives and is replayed. It
+        # moves to position 0 but keeps its serial, and its peak's tag with it.
         review_undo_impl(str(working_file), [0])
 
         log = review_log_impl(str(working_file))
-        assert len(log) == 1
-        live_ids = {e.order_index for e in log}
+        assert [(e.order_index, e.serial) for e in log] == [(0, 1)]
         after = _load_spectrum_fit(working_file)
         tags = [p.derivation for p in after.fitted_peaks if p.derivation is not None]
-        assert tags, "the surviving decision's peak lost its tag on replay"
-        assert set(tags) <= live_ids
+        assert tags == [1], "the surviving decision's peak lost its tag on replay"
 
     def test_undoing_everything_clears_all_tags(self, working_file):
         review_run_impl(str(working_file))

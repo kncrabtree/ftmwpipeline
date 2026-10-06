@@ -139,6 +139,14 @@ class TestClosureAndTopo:
         order = _cascade_topo({2, 3}, preds)
         assert order.index(2) < order.index(3)
 
+    def test_topo_raises_on_a_cycle(self):
+        """The graph is acyclic by construction; a cycle is an invariant
+        violation, never walked in some arbitrary order."""
+        with pytest.raises(RuntimeError, match="cycle"):
+            _cascade_topo({1, 2, 3}, {2: {1}, 3: {2}, 1: {3}})
+        # A cycle through a window outside the set does not count.
+        assert _cascade_topo({2, 3}, {2: {1}, 3: {2}, 1: {3}}) == [2, 3]
+
 
 class TestRefreshFrozenWindowLevel:
     def _src(self, wid, peaks):

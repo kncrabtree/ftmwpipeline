@@ -225,23 +225,39 @@ These exist today; the contract freezes their names and the listed fields.
   `knockout_p_value`, `knockout_supported`, `knockout_aicc_delta`. Fields that
   encode absence with `None` today move to `Absent` (each with a notice).
 - `review_log(path)` → `DecisionLogEntry` rows with the fields `order_index`,
-  `window_id`, `frequency_mhz`, `kind`, `provenance`, `evidence`. Names, types
-  and the `kind` / `provenance` vocabularies are frozen, so a client may hash
-  the log as an edit-set identity. Every row's `evidence` carries
-  `action_index`, the `order_index` of the first row of the same user action
-  (a one-row action, a bare accept included, carries its own); undo and a
-  log-prefix apply replay one action group at a time, and rows written before
-  the key are grouped by inference. The key is part of `evidence`, so a hash
-  taken over `evidence` changes with it (contract version 15). A `remove`
-  row's `frequency_mhz` and a merge's `merged_from` are the fitted (raw-frame)
+  `window_id`, `frequency_mhz`, `kind`, `provenance`, `evidence`, `serial`.
+  Names, types and the `kind` / `provenance` vocabularies are frozen, so a
+  client may hash the log as an edit-set identity. `serial` (contract version
+  16) is the decision's stable id: minted when the row is recorded, never
+  reused or renumbered within the fit's lineage (`fit run` starts a new one),
+  `Absent.NOT_RUN` on a row a pre-engine build recorded. It is what
+  `review_undo` takes and what a peak's `derivation` holds; `order_index` is
+  the row's position only. Every row's `evidence` carries `action_index`, the
+  `serial` of the first row of the same user action (a one-row action, a bare
+  accept included, carries its own); undo and a log-prefix apply replay one
+  action group at a time. The key is part of `evidence`, so a hash taken over
+  `evidence` changes with it (contract version 15). A `remove` row's
+  `frequency_mhz` and a merge's `merged_from` are the fitted (raw-frame)
   frequencies of the peaks the request resolved to, never the frequencies
-  sent (contract version 16; older rows hold the frequencies sent). A replay
-  (undo, log-prefix apply) re-records every surviving row with its own
-  `frequency_mhz` and `merged_from` verbatim, never what the replayed fit
-  resolves; a surviving row that would replay as a different action is
-  refused (`curation_conflict`, `replay_diverged`). Only `order_index` (and
-  with it `action_index`) is renumbered after an undo. The snap tolerance is
-  a property of the file: no call takes one (contract version 16).
+  sent (contract version 16; older rows hold the frequencies sent). Rows are
+  immutable: a replay (undo, log-prefix apply) keeps every surviving row
+  verbatim, never what the replayed fit resolves, and only `order_index` is
+  recomputed; a surviving row that would replay as a different action, or
+  that the replay would not record, is refused (`curation_conflict`,
+  `replay_diverged`). The snap tolerance is a
+  property of the file: no call takes one (contract version 16).
+- Stage 6 writes refuse a file the replay engine cannot curate (contract
+  version 16): `curation_conflict` with `predates_peak_identity` (a fitted
+  peak has no `peak_uid`) or `predates_replay_engine` (the review or the undo
+  baseline was written without it), `ids` `[]`, before anything is resolved,
+  fitted or written; nothing is converted. `Stage6Review.refit_required`
+  carries the reason on `get_review_status` (and `review show --json` /
+  `review log --json` carry it as `refit_required`), and `review_log` and the
+  HTML report flag the file without writing. `fit run` is the one remedy and
+  discards the curation. A review from a newer engine raises
+  `PipelineCompatibilityError` on a write, and `refit_required` is then
+  `file_incompatible` (the remedy is upgrading). A bare `review_edit` (neither `add` nor
+  `remove`) is `bad_setting`, `path` `add`, on every interface.
 - The curation result types (`RefitWindowResult`, `PreviewWindowResult`,
   `AppliedWindowResult`, …) and their `converged` flag: a bool, `Absent.NOT_RUN`
   where `chi2r_after` is, and `Absent.UNDEFINED` for a window left with no peak

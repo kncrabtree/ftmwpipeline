@@ -47,7 +47,7 @@ from ftmwpipeline._internal.stage6_impl import (
 )
 from ftmwpipeline.cli.review_commands import cmd_review_edit
 from ftmwpipeline.core.data_structures import FittedPeak, FittingResult
-from ftmwpipeline.file_manager import NotFoundError
+from ftmwpipeline.file_manager import BadSettingError, NotFoundError
 from ftmwpipeline.io.fitting_serialization import load_spectrum_fit_from_hdf5
 from ftmwpipeline.pipeline import Pipeline
 
@@ -333,14 +333,15 @@ def test_review_edit_targets_different_windows_errors(stage5_multi_file):
 
 
 @pytest.mark.integration
-def test_bare_edit_omitted_window_requires_explicit(stage5_multi_file):
-    """A bare edit (no add/remove -- an identity refit) is the SUBJECT, not a
-    coordinate: window_id stays REQUIRED there, unaffected by W2."""
+def test_bare_edit_is_refused_with_or_without_a_window(stage5_multi_file):
+    """A bare edit (no add/remove) would refit without recording a decision:
+    it is refused (``add``), whether the window is omitted or named."""
     path = stage5_multi_file
     before = _fitted_by_window(path)
 
-    with pytest.raises(ValueError, match="window_id is required"):
-        refit_window_impl(str(path), None)
+    for wid in (None, next(iter(before))):
+        with pytest.raises(BadSettingError, match="at least one add or remove"):
+            refit_window_impl(str(path), wid)
 
     assert _fitted_by_window(path) == before
 
@@ -499,7 +500,7 @@ def test_undo_replay_unaffected_by_derived_window_edit(stage5_multi_file):
     assert entry.window_id == wid
     assert entry.window_id != _DERIVE_WINDOW_SENTINEL
 
-    undo_result = review_undo_impl(str(path), [entry.order_index])
+    undo_result = review_undo_impl(str(path), [entry.serial])
     assert undo_result.applied == 0
     assert _fitted_by_window(path) == baseline
     assert review_log_impl(path) == []

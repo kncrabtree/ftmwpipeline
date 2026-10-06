@@ -1750,14 +1750,15 @@ class Pipeline:
         Parameters
         ----------
         window_id :
-            The window to refit. Optional (``None``, the default) when
-            ``add`` or ``remove`` is non-empty: the window is then derived
-            from the target frequencies (or ``"uid:N"`` identifiers) by
-            live-window coverage -- a frequency no live window covers is an
-            error. A bare edit (``add`` and ``remove`` both empty -- an
-            identity refit) still REQUIRES ``window_id`` explicitly; a
-            *named* window is still checked (naming the wrong one is still
-            an error).
+            The window to refit. Optional (``None``, the default): the
+            window is then derived from the target frequencies (or
+            ``"uid:N"`` identifiers) by live-window coverage -- a frequency
+            no live window covers is an error. A *named* window is still
+            checked (naming the wrong one is still an error). At least one
+            ``add`` or ``remove`` target is required whether or not the
+            window is named: an edit with neither is refused with
+            :class:`BadSettingError` (``path`` ``"add"``) before anything is
+            resolved, fitted or written.
         add :
             Molecular frequencies (MHz) of peaks to add, as ``float`` or a
             numeric ``str``.  Snapped to the nearest ledger candidate within
@@ -2373,7 +2374,8 @@ class Pipeline:
         Returns
         -------
         list of DecisionLogEntry
-            Every recorded user decision, keyed by ``order_index``.
+            Every recorded user decision, in execution order. A decision's id
+            is its ``serial`` (``order_index`` is only its position).
         """
         return review_log_impl(self.filepath)
 
@@ -2388,8 +2390,10 @@ class Pipeline:
         """Undo recorded decisions by id, replaying the rest from baseline.
 
         Restores the automatic Stage 5 fit (snapshotted before the first edit),
-        rebuilds the review from it, and re-applies every surviving decision, so
-        decision ids are renumbered afterward.  ``dry_run`` previews the removed/
+        rebuilds the review from it, and re-applies every surviving decision.
+        The surviving rows are kept verbatim: their ids (serials) and every
+        ``derivation`` naming them are unchanged, and only their positions
+        (``order_index``) are recomputed.  ``dry_run`` previews the removed/
         surviving split and the replay plan without writing.  The ``peak_uid``
         values afterward are the replay's, not the pre-undo file's: replay
         equivalence, not per-peak stability, is what an undo promises.
@@ -2405,7 +2409,7 @@ class Pipeline:
         Parameters
         ----------
         ids :
-            Decision ids (``order_index`` values from :meth:`review_log`) to undo.
+            Decision ids (``serial`` values from :meth:`review_log`) to undo.
         dry_run :
             Preview without mutating (default ``False``).
 
@@ -2432,6 +2436,12 @@ class Pipeline:
         -------
         Stage6Review
             The persisted per-window statuses and decision log.
+            ``refit_required`` names the reason every Stage 6 write of the
+            file is refused (``"predates_peak_identity"`` /
+            ``"predates_replay_engine"``: re-run ``fit run``, which discards
+            the file's curation; ``"file_incompatible"``: a newer engine
+            wrote the review, upgrade ftmwpipeline), or is ``None`` when
+            writes are accepted.
         """
         return get_review_status_impl(self.filepath)
 

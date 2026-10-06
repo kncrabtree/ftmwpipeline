@@ -49,7 +49,7 @@ def test_edit_undo_churn_does_not_grow_the_file(stage5_small_file):
     sizes = []
     for _ in range(5):
         ftmw.review_edit(str(stage5_small_file), wid, remove=[freq])
-        last = ftmw.review_log(str(stage5_small_file))[-1].order_index
+        last = ftmw.review_log(str(stage5_small_file))[-1].serial
         review_undo_impl(stage5_small_file, [last])
         sizes.append(os.path.getsize(stage5_small_file))
     steady = sizes[1:]

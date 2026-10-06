@@ -244,7 +244,7 @@ def test_undo_removes_the_peak_and_the_window_leaves_no_stray_window(
     wid = result.window_id
     entry = review_log_impl(path)[0]
 
-    undo_result = review_undo_impl(str(path), [entry.order_index])
+    undo_result = review_undo_impl(str(path), [entry.serial])
 
     assert undo_result.applied == 0  # nothing survives to replay
     assert review_log_impl(path) == []
@@ -286,7 +286,7 @@ def test_orphan_guard_refuses_undo_of_implying_add_with_a_dependent(
 
     log = review_log_impl(path)
     assert len(log) == 2
-    entry1_id, entry2_id = log[0].order_index, log[1].order_index
+    entry1_id, entry2_id = log[0].serial, log[1].serial
 
     with pytest.raises(ValueError, match="cannot undo") as excinfo:
         review_undo_impl(str(path), [entry1_id])
@@ -315,7 +315,7 @@ def test_replay_after_unrelated_undo_keeps_the_implied_windows_id(stage5_multi_f
 
     log = review_log_impl(path)
     assert len(log) == 2
-    unrelated_id = log[1].order_index
+    unrelated_id = log[1].serial
 
     review_undo_impl(str(path), [unrelated_id])
 

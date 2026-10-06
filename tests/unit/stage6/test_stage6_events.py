@@ -178,7 +178,7 @@ def test_a_callback_failing_mid_replay_lets_the_undo_land(stage5_small_file):
             raise RuntimeError("listener broke")
 
     with pytest.raises(CallbackFailedError) as info:
-        ftmw.review_undo(path, [log[0].order_index], events=fail_on_window)
+        ftmw.review_undo(path, [log[0].serial], events=fail_on_window)
     assert info.value.event_schema == "ftmw/window_progress@1"
     assert WindowProgress in seen and StageFinished not in seen
     # The undo landed: the first decision is gone, the rest were replayed.

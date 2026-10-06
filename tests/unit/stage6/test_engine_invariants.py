@@ -130,6 +130,62 @@ class TestEngineIsSingleSourced:
         )
 
 
+#: Every Stage 6 write: the engine entry points that are public verbs, plus
+#: ``review run`` and a ReviewSession's persist of a staged preview.
+WRITE_ENTRY_POINTS: Set[str] = (ENGINE_ENTRY_POINTS - {"_apply_curation_at_prefix"}) | {
+    "review_run_impl",
+    "_persist_staged",
+    "_apply",
+}
+
+
+class TestEveryWriteRefusesAPreEngineFile:
+    def test_every_write_entry_point_calls_the_engine_gate(self):
+        """Refuse-and-flag is structural: each write checks the file before it
+        resolves, fits or writes anything. (A log-prefix apply is reached
+        only through ``apply_curation_impl``, which checks first.)"""
+        tree = _module_ast()
+        callers: Set[str] = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if any(
+                isinstance(sub, ast.Call)
+                and isinstance(sub.func, ast.Name)
+                and sub.func.id == "_require_engine_file"
+                for sub in ast.walk(node)
+            ):
+                callers.add(node.name)
+        missing = WRITE_ENTRY_POINTS - callers
+        assert not missing, (
+            "these Stage 6 writes do not call _require_engine_file, so a "
+            f"pre-engine file could be written: {sorted(missing)}"
+        )
+
+    def test_a_session_apply_gates_before_it_resolves(self):
+        """``ReviewSession._apply`` resolves the request on its staged-reuse
+        path, so the gate must be its first statement, not only the
+        ``_persist_staged`` it reaches after resolving."""
+        session = next(
+            node
+            for node in _module_ast().body
+            if isinstance(node, ast.ClassDef) and node.name == "ReviewSession"
+        )
+        apply = next(
+            node
+            for node in session.body
+            if isinstance(node, ast.FunctionDef) and node.name == "_apply"
+        )
+        body = apply.body[1:] if ast.get_docstring(apply) else apply.body
+        first = body[0]
+        assert (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Call)
+            and isinstance(first.value.func, ast.Name)
+            and first.value.func.id == "_require_engine_file"
+        ), "ReviewSession._apply must call _require_engine_file first"
+
+
 def _force_fit_epoch(path: Path, epoch: int) -> None:
     """Rewrite the recorded Stage 5 epoch, simulating a fit from another epoch."""
     with h5py.File(path, "a") as f:

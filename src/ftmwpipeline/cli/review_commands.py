@@ -34,6 +34,8 @@ from .._internal.stage6_impl import (
     get_final_products_impl,
     get_review_status_impl,
     rank_windows_impl,
+    refit_required_impl,
+    refit_required_instruction,
     refit_snap_tol_mhz_impl,
     refit_window_impl,
     review_accept_impl,
@@ -228,12 +230,19 @@ def _created_window_json(pw: Any) -> dict:
 
 def _log_entry_json(e: Any) -> dict:
     return {
+        "serial": e.serial,
         "order_index": e.order_index,
         "kind": e.kind,
         "window_id": e.window_id,
         "frequency_mhz": e.frequency_mhz,
         "provenance": e.provenance,
     }
+
+
+def _decision_id(e: Any) -> str:
+    """A decision's id as the listings show it: its serial (``-`` on a row a
+    pre-engine build recorded, which has none)."""
+    return "-" if isinstance(e.serial, Absent) else str(e.serial)
 
 
 def _print_not_converged(indent: str = "  ") -> None:
@@ -368,6 +377,13 @@ def cmd_review_show(args: argparse.Namespace) -> int:
     output_dir: Optional[str] = getattr(args, "output_dir", None)
 
     review: Stage6Review = get_review_status_impl(file_path)
+    if review.refit_required is not None:
+        print(
+            f"Warning: this file's Stage 6 curation cannot be changed "
+            f"({review.refit_required}). "
+            f"{refit_required_instruction(review.refit_required)}",
+            file=sys.stderr,
+        )
     try:
         window_fits, lineless = _load_review_window_fits(file_path, review)
     except PipelineFileError:
@@ -538,7 +554,7 @@ def cmd_review_show(args: argparse.Namespace) -> int:
                     else ""
                 )
                 print(
-                    f"    #{entry.order_index}  kind={entry.kind}  "
+                    f"    #{_decision_id(entry)}  kind={entry.kind}  "
                     f"freq={_fmt_mhz(entry.frequency_mhz)}  {ev_str}"
                 )
 
@@ -625,8 +641,10 @@ def _review_show_json(
 
     ``ledger`` gives a window's (or, for ``None``, every window's) candidate
     ledger; ``lineless`` names the flagged windows the fit holds no line in,
-    whose ``reduced_chi2`` is undefined.
+    whose ``reduced_chi2`` is undefined. Every payload also carries the
+    review's ``refit_required`` (null when Stage 6 writes are accepted).
     """
+    refit: Dict[str, Any] = {"refit_required": review.refit_required}
 
     def _bounds(wf: FittingResult) -> Tuple[float, float]:
         if wf.window is not None and wf.window.freq_range is not None:
@@ -644,6 +662,7 @@ def _review_show_json(
                 "bar": bar,
                 "window_id": window_filter,
                 "candidates": [_candidate_json(c) for c in cands],
+                **refit,
             },
         )
         return 0
@@ -668,7 +687,7 @@ def _review_show_json(
                 }
             )
         rows.sort(key=lambda r: (-r["severity"], r["window_id"]))
-        record_payload(args, {"attention": rows})
+        record_payload(args, {"attention": rows, **refit})
         return 0
 
     if window_filter is None:
@@ -686,7 +705,7 @@ def _review_show_json(
                     "label": _combined_label(review.window_statuses.get(wid)),
                 }
             )
-        record_payload(args, {"windows": windows})
+        record_payload(args, {"windows": windows, **refit})
         return 0
 
     wf = window_fits[0]
@@ -719,6 +738,7 @@ def _review_show_json(
                 for p in sorted(wf.fitted_peaks, key=lambda pk: pk.frequency_mhz)
             ],
             "candidates": [_candidate_json(c) for c in ledger(wid)],
+            **refit,
         },
     )
     return 0
@@ -842,10 +862,10 @@ def _fmt_edit_token(token: str) -> str:
 def cmd_review_edit(args: argparse.Namespace) -> int:
     """Re-fit one window with user-directed add/remove edits.
 
-    ``--window`` is optional when ``--add``/``--remove`` is given: the window
-    is then derived from the target frequencies (or ``uid:N`` identifiers) by
-    live-window coverage. A bare edit (no ``--add``/``--remove`` -- an
-    identity refit) still requires ``--window`` explicitly.
+    At least one ``--add`` or ``--remove`` is required: an edit with neither
+    is refused (``bad_setting``, path ``add``). ``--window`` is optional: the
+    window is then derived from the target frequencies (or ``uid:N``
+    identifiers) by live-window coverage.
 
     Prints a before/after summary: peak counts, χ²ᵣ, which peaks were added
     or removed, and the origin of each resulting peak.
@@ -855,12 +875,6 @@ def cmd_review_edit(args: argparse.Namespace) -> int:
     window_id: Optional[int] = args.window
     add_freqs: List[Union[float, str]] = list(args.add or [])
     remove_freqs: List[Union[float, str]] = list(args.remove or [])
-
-    if not add_freqs and not remove_freqs and window_id is not None:
-        print(
-            "Warning: no --add or --remove frequencies given; "
-            "performing identity refit (no-op edit)."
-        )
 
     frame: Optional[Frame] = getattr(args, "frame", None)
 
@@ -1325,7 +1339,13 @@ def cmd_review_log(args: argparse.Namespace) -> int:
         return 1
 
     if json_mode(args):
-        record_payload(args, {"entries": [_log_entry_json(e) for e in entries]})
+        record_payload(
+            args,
+            {
+                "entries": [_log_entry_json(e) for e in entries],
+                "refit_required": refit_required_impl(file_path),
+            },
+        )
         return 0
     print("review log (user decisions, execution order):")
     if not entries:
@@ -1338,7 +1358,7 @@ def cmd_review_log(args: argparse.Namespace) -> int:
     print("  " + "-" * (kw + 29))
     for e in entries:
         print(
-            f"  {e.order_index:>4}  {e.kind:>{kw}}  {e.window_id:>6}  "
+            f"  {_decision_id(e):>4}  {e.kind:>{kw}}  {e.window_id:>6}  "
             f"{e.frequency_mhz:>12.4f}"
         )
     return 0
@@ -1377,7 +1397,7 @@ def cmd_review_undo(args: argparse.Namespace) -> int:
     print("removing:")
     for e in result.removed:
         print(
-            f"  id {e.order_index}: {e.kind} window {e.window_id} "
+            f"  id {_decision_id(e)}: {e.kind} window {e.window_id} "
             f"@ {e.frequency_mhz:.4f} MHz"
         )
     print("replay of surviving decisions:")
@@ -1684,7 +1704,8 @@ def register_review_commands(subparsers: Any) -> None:
         help="List the persisted decision log (read-only)",
         description=(
             "List the Stage 6 decision log -- every recorded user edit in\n"
-            "execution order, keyed by id (order_index). Read only."
+            "execution order, keyed by id (the decision's serial, which\n"
+            "'review undo --id' takes and an undo never renumbers). Read only."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1707,11 +1728,10 @@ def register_review_commands(subparsers: Any) -> None:
         description=(
             "Undo one or more decisions (by the id from 'review log').\n\n"
             "Rollback is replay-from-baseline: the automatic Stage 5 fit is\n"
-            "restored and every surviving decision is re-applied, so decision\n"
-            "ids are renumbered afterward. Use --dry-run to preview. Requires\n"
-            "the automatic-fit baseline the first edit snapshots (missing only\n"
-            "from a file edited before 'review undo' existed -- rebuild and\n"
-            "re-edit in that case)."
+            "restored and every surviving decision is re-applied. A decision's\n"
+            "id is its serial: the surviving decisions keep their ids, and no\n"
+            "id is ever reused until 'fit run' starts a new curation lineage.\n"
+            "Use --dry-run to preview."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1941,10 +1961,9 @@ def register_review_commands(subparsers: Any) -> None:
         default=None,
         metavar="N",
         help=(
-            "window_id to refit. Optional when --add/--remove is given: the "
-            "window is then derived from the target frequency (or 'uid:N') "
-            "by live-window coverage. Required for a bare edit (no --add/"
-            "--remove -- an identity refit)."
+            "window_id to refit. Optional: the window is then derived from "
+            "the target frequency (or 'uid:N') by live-window coverage. An "
+            "edit needs at least one --add or --remove."
         ),
     )
     p_edit.add_argument(

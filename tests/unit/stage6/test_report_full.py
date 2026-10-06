@@ -571,18 +571,29 @@ def test_applied_edits_section():
 
     decisions = [
         DecisionLogEntry(
-            order_index=0, window_id=24, frequency_mhz=38450.123, kind="remove"
+            order_index=0,
+            window_id=24,
+            frequency_mhz=38450.123,
+            kind="remove",
+            serial=3,
         ),
-        DecisionLogEntry(order_index=1, window_id=7, frequency_mhz=0.0, kind="accept"),
+        DecisionLogEntry(
+            order_index=1, window_id=7, frequency_mhz=0.0, kind="accept", serial=5
+        ),
     ]
     html_block = "\n".join(_applied_edits_section(decisions))
     assert 'id="applied-edits"' in html_block
-    # Each decision lists with an undo control carrying its id + window.
+    # Each decision lists with an undo control carrying its id (the serial,
+    # which 'review undo' takes, not its position) + window.
     assert 'data-act="undo"' in html_block
-    assert 'data-edit-id="0"' in html_block and 'data-window="24"' in html_block
+    assert 'data-edit-id="3"' in html_block and 'data-window="24"' in html_block
+    assert 'data-edit-id="0"' not in html_block
     assert "38450.1230" in html_block  # the remove anchor
     # The undo control is curate-only (never alters the read-only view).
     assert 'class="cur-only cur-btn cur-undo"' in html_block
+    # A file Stage 6 refuses to write lists its decisions with no Undo.
+    frozen = "\n".join(_applied_edits_section(decisions, undoable=False))
+    assert 'id="applied-edits"' in frozen and 'data-act="undo"' not in frozen
 
 
 def test_mag_axes_geometry_and_click_inversion():

@@ -1581,13 +1581,13 @@ def review_edit(
     file_path :
         Path to the ``.ftmw`` pipeline file (read-write).
     window_id :
-        The window to refit. Optional (``None``, the default) when ``add``
-        or ``remove`` is non-empty: the window is then derived from the
-        target frequencies (or ``"uid:N"`` identifiers) by live-window
-        coverage -- a frequency no live window covers is an error. A bare
-        edit (``add`` and ``remove`` both empty -- an identity refit) still
-        REQUIRES ``window_id`` explicitly; a *named* window is still
-        checked (naming the wrong one is still an error).
+        The window to refit. Optional (``None``, the default): the window is
+        then derived from the target frequencies (or ``"uid:N"``
+        identifiers) by live-window coverage -- a frequency no live window
+        covers is an error. A *named* window is still checked (naming the
+        wrong one is still an error). At least one ``add`` or ``remove``
+        target is required: an edit with neither is refused with
+        ``BadSettingError`` (``path`` ``"add"``).
     add :
         Molecular frequencies (MHz) of peaks to add, as ``float`` or a
         numeric ``str``.
@@ -2103,17 +2103,16 @@ def review_undo(
     """Undo recorded decisions by id, replaying the rest from baseline.
 
     Equivalent to :meth:`Pipeline.review_undo`.  Restores the automatic Stage 5
-    fit and re-applies every surviving decision (ids are renumbered afterward);
-    ``dry_run`` previews without writing.  The ``peak_uid`` values afterward
-    are the replay's, not the pre-undo file's -- re-read them, as you would a
-    decision id.
+    fit and re-applies every surviving decision, which keep their ids
+    (serials); ``dry_run`` previews without writing.  The ``peak_uid`` values
+    afterward are the replay's, not the pre-undo file's -- re-read them.
 
     Parameters
     ----------
     file_path :
         Path to the ``.ftmw`` pipeline file.
     ids :
-        Decision ids (from :func:`review_log`) to undo.
+        Decision ids (``serial`` values from :func:`review_log`) to undo.
     dry_run :
         Preview without mutating (default ``False``).
 
@@ -2143,7 +2142,8 @@ def get_review_status(file_path: Union[str, Path]) -> Stage6Review:
     Returns
     -------
     Stage6Review
-        The persisted per-window statuses and decision log.
+        The persisted per-window statuses and decision log, and
+        ``refit_required`` (see :meth:`Pipeline.review_status`).
     """
     return Pipeline.open(file_path).review_status()
 

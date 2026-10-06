@@ -16,8 +16,8 @@ Accumulating toward ``1.0.0``. ``0.1.0b4`` is the last published release;
 everything below is reachable only from a source checkout. No further beta is
 planned — these entries fold into the ``1.0.0`` section when it is dated.
 
-**One snap tolerance per file; removes logged at the peak they removed;
-``CONTRACT_VERSION`` moves 15 → 16.**
+**One snap tolerance per file; removes logged at the peak they removed; decision
+serials; ``CONTRACT_VERSION`` moves 15 → 16.**
 
 * **No per-call snap tolerance.** ``review_edit``, ``review_create`` and
   ``review_accept`` (API, ``Pipeline``, ``ReviewSession``) lose their
@@ -35,12 +35,53 @@ planned — these entries fold into the ``1.0.0`` section when it is dated.
   Rows written before hold the frequencies sent. A remove sent in the wrong
   frame still resolves to the same peak, and its row now names that peak.
 * **A replay rewrites no surviving row.** ``review_undo`` and an apply at a
-  ``log_prefix`` re-record every surviving row with its own ``frequency_mhz``
-  and ``merged_from`` verbatim, even where the replayed fit resolves the
-  target a fraction of a bin away; only ``order_index`` and ``action_index``
-  are renumbered after an undo. A surviving row that would replay as a
-  different action (only a row recorded under a per-call tolerance can) is
-  refused with the new ``curation_conflict`` reason ``replay_diverged``.
+  ``log_prefix`` keep every surviving row exactly as it was recorded (its
+  ``frequency_mhz``, ``merged_from``, ``evidence`` and ``action_index``), even
+  where the replayed fit resolves the target a fraction of a bin away; only
+  ``order_index``, which is now a position and nothing else, is recomputed. A
+  surviving row that would replay as a different action, or that a replay
+  would drop, is refused with the new ``curation_conflict`` reason
+  ``replay_diverged``: the replay runs from the automatic fit, where a merge
+  or split inferred against the fit as edited can be inferred differently.
+* **Decisions have a stable id, the serial.** ``DecisionLogEntry.serial`` is
+  minted when a row is recorded and is never reused or renumbered until
+  ``fit run`` starts a new curation lineage. ``review_undo`` (and ``review
+  undo --id``) takes serials, not positions; the surviving rows of an undo keep
+  theirs, so an id a client holds stays valid. ``FittedPeak.derivation`` /
+  ``FinalPeak.derivation`` and ``evidence["action_index"]`` now hold a serial
+  (they were ``order_index`` values, renumbered by every undo): undoing a
+  decision no longer changes the ``derivation`` tag of a peak another decision
+  made, or any surviving decision's id. The fits an undo leaves are still
+  those of a one-batch replay of the surviving decisions from the automatic
+  fit, which can differ from the fits the decisions left one at a time where
+  an edited window feeds another's frozen background, so an undo of even an
+  unrelated bare accept can move such a window's fit.
+  ``review log --json`` gains ``serial`` beside ``order_index``; the text
+  listings, the undo output and the HTML report's Undo buttons show the serial
+  as the id. ``serial`` is *not run* on a row a pre-engine build recorded.
+* **A file Stage 6 cannot curate is refused, and flagged on read.** Every Stage
+  6 write (``review_edit``, ``review_accept``, ``review_create``,
+  ``review_apply``, ``review_undo``, ``review_run``, a ``ReviewSession``
+  persist) of a file whose Stage 5 fit has a peak without a ``peak_uid``, or
+  whose review or undo baseline a build without the replay engine wrote, raises
+  ``curation_conflict`` with the new reason ``predates_peak_identity`` or
+  ``predates_replay_engine`` (``ids`` ``[]``) before it resolves, fits or
+  writes anything. Nothing is converted. ``Stage6Review.refit_required``
+  carries the reason on ``get_review_status``, and ``review show --json`` and
+  ``review log --json`` carry it as ``refit_required``; ``review log`` and
+  ``review show`` print the re-run instruction on standard error; the HTML
+  report shows a banner and no Undo buttons. ``fit run`` is the fix: it
+  discards the file's curation, and the next write starts a new lineage with
+  serials from 0. A review a newer engine wrote raises ``file_incompatible``
+  on a write, and ``refit_required`` reads ``file_incompatible`` (upgrade
+  instead). The review gains ``engine_version`` and ``next_serial``
+  attributes.
+* **A bare ``review edit`` is refused.** An edit with neither ``add`` nor
+  ``remove`` (an identity refit, which re-converged a fit and recorded no
+  decision) is ``bad_setting`` with ``path`` ``"add"`` on the CLI, ``Pipeline``,
+  the functional API and ``ReviewSession``, whether or not ``window_id`` is
+  given, and writes nothing. ``window_id`` is no longer described as required
+  for one, and the CLI no longer prints "identity refit (no-op edit)".
 
 **Decision-log action groups, empty-window ``converged``, canonical ``run_pipeline`` and
 provenance names; ``CONTRACT_VERSION`` moves 14 → 15.** Four changes from the

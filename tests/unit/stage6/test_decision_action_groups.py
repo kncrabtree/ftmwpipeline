@@ -4,7 +4,7 @@ Decision-log action groups: one user action's rows replay as one action.
 A ``review edit`` with several ``--add``/``--remove`` (or a run of add/remove
 rows on one window in a curation file) is ONE joint refit that logs one row
 per frequency. Every row carries the ``action_index`` evidence key -- the
-``order_index`` of the action's first row -- and ``review undo`` /
+``serial`` of the action's first row -- and ``review undo`` /
 ``review apply --log-prefix`` replay each group as one joint action, exactly
 like the original, instead of one refit per row (a different fit, after
 which a later remove target can drift beyond snap tolerance). Rows recorded
@@ -299,9 +299,10 @@ def test_undo_later_decision_after_joint_edit(stage5_multi_file, tmp_path):
 
 
 @pytest.mark.integration
-def test_undo_restamps_action_index_after_renumbering(stage5_multi_file, tmp_path):
-    """(5) Replay re-records the log: a group behind an undone row takes the
-    renumbered ``order_index`` of its first row as its ``action_index``."""
+def test_undo_keeps_action_index_when_positions_move(stage5_multi_file, tmp_path):
+    """(5) Rows are immutable: a group behind an undone row moves up in the
+    log (its ``order_index`` changes) but keeps its ``action_index``, the
+    serial of its first row."""
     path = stage5_multi_file
     wid, peaks, other = _multi_peak_window(path)
     fv = _clear_add_freq(path, other)
@@ -316,7 +317,8 @@ def test_undo_restamps_action_index_after_renumbering(stage5_multi_file, tmp_pat
     ]
 
     review_undo_impl(path, [0])
-    assert _log_shape(path) == [(0, wid, "remove", 0), (1, wid, "remove", 0)]
+    assert _log_shape(path) == [(0, wid, "remove", 1), (1, wid, "remove", 1)]
+    assert [e.serial for e in review_log_impl(path)] == [1, 2]
 
 
 @pytest.mark.integration
@@ -372,10 +374,12 @@ def test_log_prefix_mid_group_replays_in_prefix_rows_jointly(
     apply_curation_impl(path, cur, log_prefix=2)  # keeps the add + first remove
 
     assert _close(_fitted_by_window(path), _fitted_by_window(ref))
+    # The new row takes the next serial above every one ever recorded (the
+    # dropped remove held 2), never a reused one.
     assert _log_shape(path) == [
         (0, wid, "add", 0),
         (1, wid, "remove", 0),
-        (2, other, "add", 2),
+        (2, other, "add", 3),
     ]
 
 
@@ -397,8 +401,8 @@ def test_legacy_log_without_action_index_is_grouped_by_inference(
     review_undo_impl(path, [2])
 
     assert _fitted_by_window(path) == _saved_state(tmp_path)
-    # The replay re-records the log, stamping the key from then on.
-    assert _log_shape(path) == [(0, wid, "remove", 0), (1, wid, "remove", 0)]
+    # Rows are immutable: the replay keeps them verbatim, key-less as they were.
+    assert _log_shape(path) == [(0, wid, "remove", None), (1, wid, "remove", None)]
 
 
 @pytest.mark.integration
@@ -592,7 +596,11 @@ def test_log_prefix_on_legacy_log_groups_by_inference(stage5_multi_source, tmp_p
     apply_curation_impl(path, cur, log_prefix=2)
 
     assert _fitted_by_window(path) == expected_fit
-    assert _log_shape(path) == expected_log
+    # The kept rows verbatim (key-less as they were); the new row takes the
+    # next serial, above the dropped row's.
+    assert _log_shape(path) == [(o, w, k, None) for o, w, k, _ in expected_log[:2]] + [
+        (2, expected_log[2][1], "add", 3)
+    ]
 
 
 @pytest.mark.integration
@@ -620,7 +628,7 @@ def test_group_log_prefix_apply_cross_interface(stage5_multi_source, tmp_path):
     assert [(k, ai) for _, _, k, ai in ref_log] == [
         ("remove", 0),
         ("remove", 0),
-        ("add", 2),
+        ("add", 3),
     ]
     for k in ("pipe", "cli"):
         assert _fitted_by_window(paths[k]) == ref_fit, k

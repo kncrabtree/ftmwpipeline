@@ -296,24 +296,24 @@ the ``.ftmw`` reproduces the curated analysis with no side channel. Each entry i
 ``user`` provenance, and an evidence snapshot (the window's reduced :math:`\chi^2` and
 peak count before and after, and for an inferred split or merge the frequency that was
 requested). A remove is logged at the fitted peak it removed, not at the frequency you
-typed. A replay re-records every surviving entry exactly as it was written. A coalesced edit logs one entry per add or remove it carried; every entry
-also carries ``action_index`` in its evidence, the ``order_index`` of the first entry
-the same user action recorded (an action that logged one entry, a bare accept
-included, carries its own ``order_index``). The entries sharing an ``action_index`` are
-one **action group**. ``review log`` lists the history.
+typed. Each entry gets a **serial** when it is recorded: its id, never reused or
+renumbered until ``fit run`` starts a new curation lineage. Entries are immutable: an
+undo keeps every surviving entry exactly as it was written, and only its position
+(``order_index``) changes. A coalesced edit logs one entry per add or remove it
+carried; every entry also carries ``action_index`` in its evidence, the serial of the
+first entry the same user action recorded (an action that logged one entry, a bare
+accept included, carries its own serial). The entries sharing an ``action_index`` are
+one **action group**. ``review log`` lists the history, by id.
 
-``review undo --id N`` reverts the decisions it names, any of them, not only the most
-recent. The first fit-changing edit snapshots the automatic fit inside the file (the
+``review undo --id N`` reverts the decisions it names (the ids ``review log`` lists:
+serials), any of them, not only the most recent. The first fit-changing edit snapshots the automatic fit inside the file (the
 **undo baseline**); an undo restores that baseline and replays every surviving
-decision onto it, in log order, so the decision ids are renumbered afterwards. The
+decision onto it, in log order; the surviving decisions keep their ids. The
 replay goes one user action at a time: a group's surviving entries replay together as
 one action (one joint refit), exactly as the edit first applied them, so undoing part
 of a group replays the rest of it jointly. (Replaying each entry as its own refit made
 a later undo fail after a multi-line edit: the separate refits drifted the fitted
-peaks, and a later remove no longer snapped to the peak it named.) A file written
-before ``action_index`` existed carries no key; its groups are inferred: consecutive
-``add``/``remove`` entries on one window with the same non-empty evidence and no
-``created_window``.
+peaks, and a later remove no longer snapped to the peak it named.)
 ``--dry-run`` prints what would be undone and the replay plan, one edit per action
 group, without writing. An undo
 that would drop a created window surviving decisions still act on is refused
@@ -343,6 +343,30 @@ a re-analysis, keep it in a :doc:`curation file <fit_curation>` (the report's
 in-browser cart writes one) and apply that file to the new fit with ``review
 apply``. Throughout, the curated result stays separable from the automatic one, so a
 curated fixture never silently masquerades as an automatic benchmark.
+
+**An edit changes the fit by adding or removing a line.** ``review edit`` needs at
+least one ``--add`` or ``--remove``: an edit with neither would refit the window and
+record no decision, so a later replay could not reproduce the file. It is refused
+(``bad_setting``, path ``add``), on the command line, the ``Pipeline`` class and the
+functional API alike, whether or not a window is named.
+
+**Files curated before the replay engine.** A decision log is replayed from the
+undo baseline, which needs every decision to carry a serial and every peak a
+``peak_uid`` to address it by. A file whose Stage 5 fit has a peak without a
+``peak_uid`` (a fit written before peak identity was persisted), or whose review or
+undo baseline a build without the engine wrote, therefore cannot be curated: every
+Stage 6 write is refused with ``curation_conflict`` and the reason
+``predates_peak_identity`` or ``predates_replay_engine``, and nothing is converted or
+carried over. Reading still works (``review log``, ``review show``, the report), and
+the file is flagged: ``review show`` and ``review log`` print the instruction, the
+report shows a banner and no Undo buttons, and the review ``get_review_status``
+returns has ``refit_required`` set. Re-run ``fit run``: it writes a fit that carries
+peak identities and discards the file's curation, which then has to be redone (a
+:doc:`curation file <fit_curation>` carries it over). The next edit starts a new
+lineage, and serials start again at 0. A file whose review a *newer* engine wrote
+is refused as ``file_incompatible`` instead, and ``refit_required`` reads
+``file_incompatible``: upgrade ftmwpipeline rather than re-running ``fit run``,
+which would discard that curation.
 
 .. _stage6-merged-windows:
 
@@ -422,8 +446,8 @@ to individual lines (a line assignment, say) has to decide across an edit which 
 are the *same line remeasured* and which are *replaced*. The tag answers that
 directly — an untagged line survived the refit with its identity intact, while a
 tagged one was added, or is a merge or split product, and must not silently inherit
-the old binding. ``review undo`` renumbers the tags together with the log, so a tag
-always indexes a decision that is actually in it.
+the old binding. The tag is the decision's serial, which an undo of other decisions
+never renumbers, so a tag always names a decision that is actually in the log.
 
 Each row also carries the line's **knockout statistics**, the significance test
 every window fit runs per peak: ``knockout_p_value`` (the F-test p-value of the

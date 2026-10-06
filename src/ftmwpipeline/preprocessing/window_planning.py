@@ -1511,12 +1511,13 @@ def replan(
 # * it never renumbers an existing window (a consumer partitions peaks on
 #   window_id to decide what an edit touched; renumbering would flag every peak
 #   in the spectrum on every window addition),
-# * its extent is a function of the anchor and the base plan alone -- never of
-#   the current curated state -- so replaying an edit set in order reproduces
-#   the same geometry, and
-# * it carries only *inbound* dependency edges: the base plan's strong lines
-#   leak into it, it leaks into nothing. That is what keeps it a leaf in the
-#   fit DAG and lets it be added without re-fitting anything already fit.
+# * its extent is a function of the anchor, the base plan and earlier
+#   creates -- never of any fit -- so replaying the creates in order
+#   reproduces the same geometry, and
+# * its dependency edges come only from windows that already exist: the base
+#   plan's strong lines (and earlier created windows) leak into it, and no
+#   base window ever reads it. A later create can read it, so it is not a leaf
+#   in the fit DAG, but it is added without re-fitting anything already fit.
 #
 # The one case where "additive" is not achievable is a gap too narrow to hold a
 # fittable window at all. Rather than create a starved one, the adjacent window
@@ -1695,11 +1696,10 @@ def plan_stage6_window(
     Tier-1 magnitude rule Stage 4 uses (predicted mean |skirt| at least
     ``magnitude_attachment_threshold * sigma_c`` on this window's grid), reading
     the primaries straight off ``plan``. Every attachment is edge-bearing and
-    inbound; the new window is a leaf, so no existing window acquires a
-    dependency on it and none needs re-fitting. That is deliberate: a window
-    created for a detection the automatic pass missed holds, by construction, a
-    line too weak to clear the freeze bar, whose own leakage into its neighbors
-    is negligible.
+    inbound, so no existing window acquires a dependency on it and none needs
+    re-fitting. ``plan`` is the effective plan, earlier created windows
+    included, so a later create can attach to this one: the new window is not
+    a leaf of the fit DAG, but every edge into it comes from an older window.
 
     Parameters
     ----------
@@ -1892,7 +1892,7 @@ def plan_stage6_window(
         min_freeze_snr=min_freeze_snr,
         magnitude_attachment_threshold=magnitude_attachment_threshold,
     )
-    # A leaf's batch only has to follow the windows it reads.
+    # A created window's batch only has to follow the windows it reads.
     by_wid = {int(w.window_id): w for w in candidates}
     dep_batches = [by_wid[p].batch for p in depends_on if p in by_wid]
     window.batch = (max(dep_batches) + 1) if dep_batches else 0
