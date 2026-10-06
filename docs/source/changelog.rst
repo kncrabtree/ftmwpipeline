@@ -16,6 +16,128 @@ Accumulating toward ``1.0.0``. ``0.1.0b4`` is the last published release;
 everything below is reachable only from a source checkout. No further beta is
 planned — these entries fold into the ``1.0.0`` section when it is dated.
 
+**Contract 17: each accepted structural merge records the windows its round
+re-fit; ``CONTRACT_VERSION`` moves 16 → 17 and ``ANALYSIS_EPOCH`` 6 → 7.** A
+merge round re-fits, besides its survivor and the windows that depend on it, the
+primary of every accepted thaw whose record it dropped (below). The
+``empty_window_residual`` / ``empty_window_spur`` trigger rebuilt the re-fit set
+from the survivor and the plan's dependency edges alone, so it could keep a
+stale flag from a thawed primary's earlier fit. ``ReplanInfo`` now carries
+``refit_window_ids``, the round's re-fit set (empty on a record not applied),
+stored in the fit's replan history and read as a JSON list in the
+``fit_replans`` table's new ``refit_window_ids`` column; the trigger reads that
+set. A file written before it was stored loads the field as
+``Absent.NOT_RUN`` (the column reads ``""`` with ``refit_window_ids__status``
+``1``; ``fit_replans`` gains that status column) and the trigger falls back to
+the dependency closure.
+
+**The machine contract states what a replay reads and how a host cancels safely.**
+A replay reads a decision row's ``kind``, ``window_id``, ``serial``,
+``targets``, ``seeds_mhz``, ``born_uids``, a create row's ``frequency_mhz`` (the
+planning anchor, so not display only on that row) and the ``action_index``,
+``mode`` and ``created_window`` evidence; every other evidence key is a
+snapshot. The advice for an edit-set identity is to hash those fields rather
+than the whole ``review_log``, and every ``review_log`` frequency is raw-frame.
+The contract also says that the parallel Stage 5 walk and the HTML report fork
+the process, so a host must not block a thread in a ``sys.stdin`` read while a
+long call runs (read cancel messages with ``os.read`` on a duplicated fd 0);
+that the attention queue is ``needs_attention`` whatever the provenance;
+that ``write_conflict`` compares against the file's state recorded when the
+call begins; and that ``preview_source`` is the contract's source probe.
+
+**``capabilities()`` declares the ``StageFinished.summary`` keys per
+operation.** The new ``summary_keys`` group maps each operation (the CLI verb)
+to ``{"required": [...], "conditional": [...]}``: the keys of its
+``StageFinished.summary`` and ``ftmw/run_result@1`` summary, with the keys that
+appear only in one case (``tau run`` without ``--gaussian``, ``review run``
+with a final-products table, ``review accept``'s bare and candidate forms,
+``ft run``'s internal ``trimmed_points``) marked conditional. A client no
+longer has to read the prose to know which keys to expect.
+
+**``incomplete_provenance`` separates a newer file from an old one.**
+``IncompleteProvenanceError`` gains ``newer``, the inputs whose records a newer
+engine wrote; ``missing`` keeps the inputs the file never persisted. The message
+for a newer file says to upgrade ftmwpipeline instead of re-running stages,
+which would not help.
+
+**The ``stage5.shape`` settings row reports its ``choices``.** A ``shape_spec``
+row's ``choices`` were ``null``; they are now the accepted shape kinds, derived
+from ``PeakShape``.
+
+**Dry run and preview refuse an unknown window like the apply.** A bare
+``accept`` naming a window the fit does not have is refused ``not_found`` by the
+apply; ``review apply --dry-run`` and the preview (including a review session's)
+accepted it. They now refuse every unknown window id the same way, before and
+without adding to the dry run's analysis-epoch gate, which still applies only
+to a plan with a create.
+
+**A batch refusal and a dry-run advisory name the request's actions.** A
+``not_found`` or ``curation_conflict`` raised for one action of a curation batch
+(``review_apply`` / ``review_preview`` with a file or ``actions=``) numbered the
+action by its place in the resolved plan, which runs creates first and then
+edits by ascending window, and coalesces a window's add/remove rows into one
+edit; the request's first action could be reported as "curation action 2". The
+message now numbers the action from the request ("curation actions 1, 3" for a
+coalesced edit), and both errors gain ``action_indices``: the 0-based request
+positions, numbered as ``actions[<i>]`` (a file's action rows in order, comment
+and blank lines not counted); ``null`` with ``action_indices_absent:
+"undefined"`` for a refusal of the whole batch at once (every unknown window or
+``peak_uid``, every uncovered ``remove``), and with ``action_indices_absent:
+"not_run"`` outside any batch. ``PlannedAction`` carries the same
+``action_indices``. ``CurationApplyResult`` and ``ReviewPreviewResult`` gain
+``warning_details``, one ``CurationWarningDetail`` (``message``,
+``action_indices``) per entry of ``warnings``, also in ``review preview
+--json`` and, beside the ``ftmw/run_result@1`` summary, in ``review apply
+--json`` (dry run included); the ``frame_mismatch`` event's ``actions`` and the
+per-window ``action_indices`` of ``AppliedWindowResult`` and
+``PreviewWindowResult`` are the same request positions (they were plan
+positions, and 1-based in ``review preview --json``'s ``windows``).
+
+**``window_status`` reports bounds in either frame.** Its window bounds are
+raw, while ``FinalPeak.fit_window_mhz`` is calibrated, and a program may not
+convert between them. ``window_status`` takes ``frame="raw" | "calibrated"``
+(``--frame`` on ``read window_status``; default ``"raw"``, refused
+``bad_setting`` otherwise), converts with the final products' own correction,
+and the payload gains ``frame`` naming the frame of its bounds. The machine
+contract also states that ``AttentionReason.locations`` and the frequencies in
+its ``evidence`` are raw.
+
+**``settings_set`` accepts the JSON a settings row reports for a shape.**
+``stage5.shape`` given as ``'{"kind": "gaussian"}'`` is parsed as the mapping
+form instead of being refused as an unknown shape name.
+
+**``ReviewSession`` verbs take ``events`` and ``cancel``.** Each session verb
+(``review_edit``, ``review_accept``, ``review_create``, ``review_undo``,
+``review_preview``, ``review_apply``) takes the arguments of its ``Pipeline``
+method and reports as the same operation. The session's own transaction now
+sits inside the operation, so ``Invalidated`` and ``StageFinished`` arrive
+after the write is durable; before, the entry point the session called
+finished its stage inside the session's still-open transaction. A cancelled
+or refused session verb leaves the file and the session as they were, a staged
+preview and a pending ``base_changed`` note included, so the session carries
+on.
+
+**What an accepted thaw rewrites is re-derived or re-fit.** An accepted thaw
+rewrites its primary window in place, after that window's own pass derived its
+doublet adjudications and its rescue-candidate ledger from the fit the thaw
+replaces, and the primary kept both. Both are now derived again from the
+installed fit, under the primary's own fit conditions, in the sequential and
+the parallel fit and on a resume; neither pass changes the fit. The installed
+fit is the primary's final one, after the cleanup and the convergence adds its
+own pass derived both records before. The ledger is derived from the
+candidates the rescue detected, so a candidate the earlier pass dropped is
+listed when the installed residual carries a peak there. When
+a structural merge re-fits the dependent of an accepted thaw, it drops the
+thaw's record, but the primary kept the co-fit's rewrite with no record of it;
+that primary is now re-fit from scratch with the merged windows, with every
+window that depends on it. These change numerical output only on files with an
+accepted thaw (none of the reference fixtures has one) and ship under
+``ANALYSIS_EPOCH`` 7: the epoch moves 6 → 7.
+
+A Stage 6 cascade rebuilt a dependent's frozen contributors without their
+``peak_uid``; each now carries its source line's, in the entry Stage 5 writes.
+No number changes.
+
 **An accepted Stage 5 thaw keeps the thawed line; ``ANALYSIS_EPOCH`` moves
 5 → 6.** When a thaw was accepted, the dependent window took the thawed line as
 one of its own free peaks and dropped every line it had frozen from the line's

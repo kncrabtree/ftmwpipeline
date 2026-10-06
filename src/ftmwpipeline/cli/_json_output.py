@@ -102,12 +102,16 @@ def record_run_result(
     summary: Mapping[str, Any],
     result: Any = None,
     invalidated: Optional[Sequence[str]] = None,
+    extra: Optional[Mapping[str, Any]] = None,
 ) -> None:
     """Record the ``ftmw/run_result@1`` for the running verb.
 
     ``stage`` is the canonical stage name (a ``contract.Stage`` value) or
     ``None``; ``summary`` the scalars the human output reports (no arrays);
-    ``invalidated`` is taken from ``result`` unless given.
+    ``invalidated`` is taken from ``result`` unless given. ``extra`` holds a
+    verb's own top-level keys beside ``summary`` (``review apply``'s
+    ``warnings`` and ``warning_details``), which the summary, being scalars,
+    cannot carry.
     """
     names = list(invalidated) if invalidated is not None else invalidated_of(result)
     setattr(
@@ -118,6 +122,7 @@ def record_run_result(
             "stage": getattr(stage, "value", stage),
             "invalidated": names,
             "summary": dict(summary),
+            "extra": dict(extra or {}),
         },
     )
 
@@ -138,6 +143,7 @@ def _render(args: argparse.Namespace, slot: Dict[str, Any]) -> str:
             "stage": slot["stage"],
             "invalidated": slot["invalidated"],
             "summary": slot["summary"],
+            **slot["extra"],
         }
         return _dumps(to_jsonable(body, schema=RUN_RESULT_SCHEMA))
     return _dumps(to_jsonable(slot["payload"]))

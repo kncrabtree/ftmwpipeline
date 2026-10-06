@@ -586,6 +586,10 @@ class ReplanEvent:
     reason : str
         For an accepted merge, the trigger's description; otherwise one of
         :data:`REPLAN_REASON_PREFIXES`, ``": "`` and why.
+    refit_window_ids : tuple of int
+        For an accepted merge, every window the round re-fit, ascending
+        (:func:`_affected_after_replan`; the same set on every merge the round
+        applied). Empty when the merge was not applied.
     """
 
     triggering_window_id: int
@@ -597,6 +601,7 @@ class ReplanEvent:
     revision_after: int
     accepted: bool
     reason: str = ""
+    refit_window_ids: tuple[int, ...] = ()
 
 
 @dataclass
@@ -2698,8 +2703,10 @@ def execute_plan(
        Stage 4 rejects is recorded as failed and the round's set is chosen
        again without it, so a request deferred behind it gets its turn.
        Drop outcomes and thaw / rescue / cleanup records for the affected
-       windows (mergers + transitive downstream) and the absorbed ones,
-       re-walk the affected set in topo order on the revised plan. Bounded by
+       windows (mergers + transitive downstream, and the primary of every
+       accepted thaw whose record is dropped, with its own downstream) and
+       the absorbed ones, re-walk the affected set in topo order on the
+       revised plan. Bounded by
        ``replan_context.max_replan_rounds``; the loop stops early when no
        qualifying pair remains.
 
@@ -3042,7 +3049,7 @@ def execute_plan(
                     )
                 break
 
-            affected = _affected_after_replan(new_plan, applied)
+            affected = _affected_after_replan(new_plan, applied, thaw_history)
             new_by_id = {w.window_id: w for w in new_plan.windows}
             if replan_context.tau_anchor_for_range is not None:
                 _reanchor_merged_windows(
@@ -3062,7 +3069,10 @@ def execute_plan(
             # re-walk's fresh records are the only ones the aggregation sees.
             # Each record belongs to the window whose fit it changed (a thaw to
             # the dependent whose edge flagged); that fit is about to be
-            # replaced, or no longer exists.
+            # replaced, or no longer exists. An accepted thaw also rewrote its
+            # primary, so ``affected`` re-fits that primary too
+            # (:func:`_affected_after_replan`): no fit keeps a rewrite whose
+            # record is dropped.
             kept = set(new_by_id) - affected
             cleanup_history[:] = [r for r in cleanup_history if r["window_id"] in kept]
             thaw_history[:] = [e for e in thaw_history if e.dependent_window_id in kept]
@@ -3091,6 +3101,7 @@ def execute_plan(
             )
 
             applied_pairs = {_pair_of(r.window_a_id, r.window_b_id) for r in applied}
+            refit_ids = tuple(sorted(affected))
             for v in verdicts:
                 pair = _pair_of(v.trigger.window_id, v.trigger.partner_id)
                 merged = v.status == "apply" and pair in applied_pairs
@@ -3103,6 +3114,7 @@ def execute_plan(
                     revision_after=(
                         new_plan.plan_revision if merged else plan.plan_revision
                     ),
+                    refit_window_ids=refit_ids,
                 )
             plan = new_plan
     if replan_context is not None and replan_history:
@@ -3180,6 +3192,108 @@ def _build_doublet_refit_kwargs(
     return refit_kwargs
 
 
+def _adjudicate_doublets(
+    outcome: WindowOutcome,
+    *,
+    ck_for_window: dict[str, Any],
+    acquisition_us: float,
+    doublet_kwargs: dict[str, Any],
+) -> list[DoubletAdjudication]:
+    """The doublet-alternative adjudications of ``outcome``'s current fit.
+
+    Observation only: the pass does not change the fit. Its merged refit
+    reproduces the production fit's conditions: the same
+    tau-penalty, phase/amp-penalty and ``fit_window``-level kwargs
+    ``conservative_fit`` derives (:func:`_build_doublet_refit_kwargs`, from
+    ``ck_for_window``, which carries the per-window tau overrides). A pass that
+    fails is logged and leaves no records.
+    """
+    try:
+        return adjudicate_close_pairs(
+            offset_grid_mhz=outcome.offset_grid_mhz,
+            complex_spectrum=outcome.complex_spectrum - outcome.background,
+            rms_noise=outcome.rms_noise,
+            fit=outcome.fit.fit,
+            acquisition_us=acquisition_us,
+            shape=ck_for_window.get("shape", "lorentzian"),
+            k_res=doublet_kwargs["k_res"],
+            r_min=doublet_kwargs["r_min"],
+            frozen_background=outcome.background,
+            spur_mask=getattr(outcome, "_spur_mask", None),
+            refit_kwargs=_build_doublet_refit_kwargs(
+                ck_for_window, outcome, acquisition_us
+            ),
+        )
+    except Exception:
+        logger.warning(
+            "doublet-alternative pass failed on window %d; skipping",
+            outcome.window_id,
+            exc_info=False,
+        )
+        return []
+
+
+def _refresh_thawed_primary(
+    outcome: WindowOutcome,
+    *,
+    doublet_kwargs: Optional[dict[str, Any]],
+) -> None:
+    """Re-derive a thaw-rewritten primary's records from its installed fit.
+
+    An accepted thaw rewrites its primary in place (:func:`_install_cofit_outcome`)
+    after the primary's own per-window tail derived two records from the fit
+    it replaces: the doublet adjudications and the rescue-candidate ledger
+    (:func:`_refresh_rescue_candidates`). Both are computed again here, from
+    the installed fit and under the primary's own fit conditions (stashed by
+    :func:`stash_refit_context`), and replace the stale ones in place, so a
+    consumer reads the final values. Neither pass changes the fit. The records
+    of what happened to the fit (audit trail, knockouts, cleanup record, F-2
+    add steps, the :class:`ThawEvent`) stay as they are.
+
+    The installed fit is the primary's final one, so both records are derived
+    on it, not on the tail's intermediate fits: the tail adjudicates doublets
+    before the per-node cleanup and refreshes the ledger before the F-2 adds.
+    So the adjudications index the installed fit's peaks, and a candidate F-2
+    fitted as a line, which the installed residual no longer carries, leaves
+    the ledger (Stage 6's ledger drops a candidate at a fitted line either way).
+
+    ``doublet_kwargs`` is the run's doublet setting; ``None`` (the pass off)
+    leaves the adjudications alone, as the tail did.
+    """
+    ck = getattr(outcome, "_ck_for_window", None)
+    acquisition_us = getattr(outcome, "_acquisition_us", None)
+    if ck is None or acquisition_us is None:
+        raise ValueError(
+            f"window {outcome.window_id}: a thaw rewrote a primary with no fit "
+            "conditions stashed (see stash_refit_context)"
+        )
+    if doublet_kwargs is not None:
+        outcome.doublet_adjudications = _adjudicate_doublets(
+            outcome,
+            ck_for_window=ck,
+            acquisition_us=acquisition_us,
+            doublet_kwargs=doublet_kwargs,
+        )
+    _refresh_rescue_candidates(
+        outcome, acquisition_us=acquisition_us, conservative_kwargs=ck
+    )
+
+
+def _detected_candidates(ev: RescueEvent) -> list[Any]:
+    """The candidates ``ev``'s rescue round detected, before any refresh.
+
+    The first :func:`_refresh_rescue_candidates` of an event keeps them on it
+    (a private stash beside ``ev.candidates``, which holds the refreshed
+    ledger), so a later refresh re-derives the ledger from what the rescue
+    detected rather than from an earlier refresh's survivors.
+    """
+    detected: Optional[list[Any]] = getattr(ev, "_detected_candidates", None)
+    if detected is None:
+        detected = list(ev.candidates)
+        ev._detected_candidates = detected  # type: ignore[attr-defined]
+    return detected
+
+
 def _refresh_rescue_candidates(
     outcome: WindowOutcome,
     *,
@@ -3202,8 +3316,14 @@ def _refresh_rescue_candidates(
     ``outcome.rescue_events`` and the plan-level ``rescue_history``, the
     de-staled list is what the Stage 6 candidate ledger then reads -- the stale
     rescue SNR never leaves Stage 5. No-op when rescue produced no candidates.
+
+    The ledger is always derived from the candidates the rescue detected
+    (:func:`_detected_candidates`), so a refresh after an accepted thaw rewrote
+    the window (:func:`_refresh_thawed_primary`) matches every one of them on
+    the installed fit's residual: a candidate an earlier refresh dropped is
+    kept when that residual carries a peak there.
     """
-    events = [ev for ev in outcome.rescue_events if ev.candidates]
+    events = [ev for ev in outcome.rescue_events if _detected_candidates(ev)]
     if not events:
         return
     grid = np.asarray(outcome.offset_grid_mhz, dtype=float)
@@ -3239,7 +3359,7 @@ def _refresh_rescue_candidates(
 
     for ev in events:
         refreshed: list[Any] = []
-        for cand in ev.candidates:
+        for cand in _detected_candidates(ev):
             if final_freqs.size == 0:
                 continue
             seps = np.abs(final_freqs - cand.frequency_mhz)
@@ -3704,12 +3824,18 @@ def _process_one_window(
     final_add_snr_threshold: Optional[float] = None,
     probe_freq_mhz: Optional[float] = None,
     sample_dt_us: Optional[float] = None,
+    refresh_thawed_primaries: bool = True,
 ) -> _WindowReport:
     """Process one window end to end: conservative fit -> bounded thaw loop ->
     residual-rescue B-loop -> leakage-wing baseline -> doublet adjudication.
 
     Mutates ``outcomes[wid]`` (and, only on an accepted thaw, the contributor's
-    primary outcome) and appends to ``thaw_history`` / ``rescue_history``.
+    primary outcome, whose fit-derived records it then re-derives:
+    :func:`_refresh_thawed_primary`) and appends to ``thaw_history`` /
+    ``rescue_history``. A parallel walk's worker passes
+    ``refresh_thawed_primaries=False``: the parent discards a worker's fit of a
+    window that accepted a thaw, with the worker's copy of the primary, and
+    re-fits the window itself, which re-derives the primary's records then.
     Extracted verbatim from :func:`_walk_windows_in_order` so the one per-window
     unit drives both the sequential walk and the per-level parallel pool.
 
@@ -3777,6 +3903,7 @@ def _process_one_window(
     outcomes[wid] = outcome
     _debug_phase(wid, "conservative", outcome)
 
+    rewritten: list[int] = []
     for _ in range(max_thaw_rounds):
         edge_events = attempt_thaw_round(
             win,
@@ -3797,9 +3924,21 @@ def _process_one_window(
             break
         for event in edge_events:
             thaw_history.append(event)
+            if event.accepted and event.primary_window_id not in rewritten:
+                rewritten.append(event.primary_window_id)
         outcome = outcomes[wid]
         if not any(e.accepted for e in edge_events):
             break
+    # An accepted thaw rewrote its primary in place, after the primary's own
+    # tail derived its doublet adjudications and rescue-candidate ledger from
+    # the fit the thaw replaced: derive them again from the installed fit. (This
+    # window's own tail has yet to run, and derives its own below.)
+    if refresh_thawed_primaries:
+        for primary_id in rewritten:
+            if primary_id != wid and primary_id in outcomes:
+                _refresh_thawed_primary(
+                    outcomes[primary_id], doublet_kwargs=doublet_kwargs
+                )
     _debug_phase(wid, "post-thaw", outcome)
 
     if max_residual_rescue_rounds > 0:
@@ -3833,37 +3972,12 @@ def _process_one_window(
     _debug_phase(wid, "post-baseline", outcome)
 
     if doublet_kwargs is not None:
-        try:
-            inner = outcome.fit.fit
-            spur_mask_for_doublet = getattr(outcome, "_spur_mask", None)
-            # Derive refit_kwargs that reproduce the production fit conditions:
-            # the same tau-penalty, phase/amp-penalty, and fit_window-level
-            # kwargs that conservative_fit uses via derive_window_fit_constraints.
-            # Build from ck_for_window (includes per-window tau overrides).
-            refit_kwargs_for_doublet = _build_doublet_refit_kwargs(
-                ck_for_window, outcome, acquisition_us
-            )
-            adjudications: list[DoubletAdjudication] = adjudicate_close_pairs(
-                offset_grid_mhz=outcome.offset_grid_mhz,
-                complex_spectrum=outcome.complex_spectrum - outcome.background,
-                rms_noise=outcome.rms_noise,
-                fit=inner,
-                acquisition_us=acquisition_us,
-                shape=ck_for_window.get("shape", "lorentzian"),
-                k_res=doublet_kwargs["k_res"],
-                r_min=doublet_kwargs["r_min"],
-                frozen_background=outcome.background,
-                spur_mask=spur_mask_for_doublet,
-                refit_kwargs=refit_kwargs_for_doublet,
-            )
-            outcome.doublet_adjudications = adjudications
-        except Exception:
-            logger.warning(
-                "doublet-alternative pass failed on window %d; skipping",
-                wid,
-                exc_info=False,
-            )
-            outcome.doublet_adjudications = []
+        outcome.doublet_adjudications = _adjudicate_doublets(
+            outcome,
+            ck_for_window=ck_for_window,
+            acquisition_us=acquisition_us,
+            doublet_kwargs=doublet_kwargs,
+        )
 
     # Cache the per-window fit conditions on the outcome so the per-node cleanup
     # tail (and any post-fit refit) re-derives this node's exact fit_window
@@ -4218,6 +4332,7 @@ def _fit_window_worker(task: int) -> _WorkerResult:
         thaw_history=thaw_local,
         rescue_history=rescue_local,
         cleanup_history=cleanup_local,
+        refresh_thawed_primaries=False,
         **ctx["shared"],
     )
     return (
@@ -4261,6 +4376,7 @@ def _fit_window_worker_dag(
         thaw_history=thaw_local,
         rescue_history=rescue_local,
         cleanup_history=cleanup_local,
+        refresh_thawed_primaries=False,
         **ctx["shared"],
     )
     return (
@@ -4271,74 +4387,6 @@ def _fit_window_worker_dag(
         cleanup_local,
         report,
     )
-
-
-# Set in the parent before a refit-map pool forks; read by the worker entry via
-# fork inheritance. The heavy per-window ``work`` closure (which captures the live
-# fit context, plan, and resolved settings) and the window list ride the fork;
-# only the small integer index goes out per task.
-_WORKER_REFIT_CTX: Optional[dict[str, Any]] = None
-
-
-def _refit_map_worker(index: int) -> Any:
-    """Process-pool entry: run one item of the fork-inherited per-window work.
-
-    BLAS runs single-threaded per process (the per-window refit solve is
-    single-threaded; this avoids N-workers x M-BLAS-threads oversubscription,
-    matching :func:`_fit_window_worker`), inherited on fork from the parent's
-    ``threadpool_limits(1)`` rather than a fork-unsafe per-worker threadpoolctl
-    call. The ``work`` callable and item list ride the fork in
-    :data:`_WORKER_REFIT_CTX`; only the integer ``index`` is pickled per task.
-    """
-    ctx = _WORKER_REFIT_CTX
-    assert ctx is not None  # set in the parent before the pool forks
-    # BLAS at one thread: inherited on fork from the parent's threadpool_limits(1)
-    # (fit_peaks_impl). Do NOT call threadpoolctl here -- not fork-safe under fork.
-    return ctx["work"](ctx["items"][index])
-
-
-def parallel_window_refit_map(
-    items: Sequence[Any],
-    work: Any,
-    *,
-    jobs: Optional[int] = None,
-) -> list[Any]:
-    """Map ``work`` over ``items`` across the window fork pool, preserving order.
-
-    The post-fit cleanup passes (SNR-survival prune, VIF collapse) each loop over
-    independent windows doing a per-window NLS refit -- the serial tail of a full
-    fit. Each window's work is self-contained (its refit reconstructs that
-    window's own frozen background from the persisted fixed parameters), so the
-    items fan across the same forking process pool the window walk uses. Results
-    are returned in input order (``ProcessPoolExecutor.map`` preserves it), so the
-    caller's reassembly is deterministic regardless of completion order.
-
-    Falls back to an in-process serial map -- byte-identical to the pre-parallel
-    behavior, with no BLAS pinning -- when the pool is unavailable (forced off,
-    single worker, or no ``fork``) or there are fewer than two items.
-    """
-    n = len(items)
-    max_workers = resolve_worker_count(jobs, override=_FIT_WINDOW_WORKERS)
-    import multiprocessing
-
-    pool_available = (
-        max_workers >= 2 and "fork" in multiprocessing.get_all_start_methods()
-    )
-    if not pool_available or n < 2:
-        return [work(it) for it in items]
-
-    global _WORKER_REFIT_CTX
-    _WORKER_REFIT_CTX = {"work": work, "items": list(items)}
-    try:
-        from concurrent.futures import ProcessPoolExecutor
-
-        ctx_mp = multiprocessing.get_context("fork")
-        with ProcessPoolExecutor(
-            max_workers=min(max_workers, n), mp_context=ctx_mp
-        ) as ex:
-            return list(ex.map(_refit_map_worker, range(n)))
-    finally:
-        _WORKER_REFIT_CTX = None
 
 
 #: How long :func:`_abort_pool` waits for a terminated worker before killing it.
@@ -5380,6 +5428,7 @@ def _record_replan_verdict(
     *,
     accepted: bool,
     revision_after: int,
+    refit_window_ids: tuple[int, ...] = (),
 ) -> None:
     """Append one trigger's :class:`ReplanEvent` for a round run on ``plan``.
 
@@ -5418,6 +5467,7 @@ def _record_replan_verdict(
             revision_after=revision_after,
             accepted=accepted,
             reason=verdict.reason,
+            refit_window_ids=refit_window_ids if accepted else (),
         )
     )
 
@@ -5559,11 +5609,17 @@ def _reanchor_merged_windows(
 def _affected_after_replan(
     new_plan: WindowPlan,
     requests: Sequence[MergeRequest],
+    thaw_history: Sequence[ThawEvent] = (),
 ) -> set[int]:
     """Set of ``window_id`` s whose outcomes must be re-fit after a replan.
 
     Includes every merge survivor plus any window in ``new_plan`` that
-    transitively depends on one of them.
+    transitively depends on one of them. The replan drops the thaw records of
+    the windows it re-fits or absorbs, and an accepted thaw rewrote its primary
+    in place (:func:`_perform_thaw`): such a primary is re-fit too, from
+    scratch, so no fit keeps a rewrite whose record is gone, with every window
+    that transitively depends on it. That can drop further accepted thaws, so
+    the set grows to a fixed point.
     """
     affected: set[int] = set()
     new_ids = {w.window_id for w in new_plan.windows}
@@ -5571,14 +5627,25 @@ def _affected_after_replan(
         survivor = min(req.window_a_id, req.window_b_id)
         if survivor in new_ids:
             affected.add(survivor)
-    changed = True
-    while changed:
-        changed = False
-        for child, parent in new_plan.dependency_edges:
-            if parent in affected and child not in affected:
-                affected.add(child)
-                changed = True
-    return affected
+    while True:
+        changed = True
+        while changed:
+            changed = False
+            for child, parent in new_plan.dependency_edges:
+                if parent in affected and child not in affected:
+                    affected.add(child)
+                    changed = True
+        kept = new_ids - affected
+        rewritten = {
+            e.primary_window_id
+            for e in thaw_history
+            if e.accepted
+            and e.dependent_window_id not in kept
+            and e.primary_window_id in kept
+        }
+        if not rewritten:
+            return affected
+        affected |= rewritten
 
 
 def _fit_one_window(

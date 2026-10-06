@@ -26,6 +26,7 @@ import h5py
 import numpy as np
 import pytest
 
+from ftmwpipeline.core.absent import Absent
 from ftmwpipeline.core.data_structures import (
     AuditStep,
     DoubletAlternativeInfo,
@@ -202,6 +203,7 @@ def _sample_spectrum_fit() -> SpectrumFit:
                 revision_after=1,
                 accepted=True,
                 reason="boundary cut a real feature",
+                refit_window_ids=(1, 3),
             )
         ],
         final_plan_revision=1,
@@ -241,6 +243,7 @@ class TestRoundTrip:
             assert got.accepted == want.accepted
         assert len(loaded.replan_history) == len(fit.replan_history)
         assert loaded.replan_history[0].surviving_window_id == 1
+        assert loaded.replan_history[0].refit_window_ids == (1, 3)
 
         # Per-window fits in window_id order.
         assert [w.window_id for w in loaded.window_fits] == [0, 1]
@@ -377,6 +380,21 @@ class TestRoundTrip:
             loaded = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
         assert loaded.n_windows == 1
         assert [w.window_id for w in loaded.window_fits] == [0]
+
+    def test_a_replan_record_without_the_refit_set_reads_as_not_run(self, tmp_path):
+        path = tmp_path / "fit.h5"
+        with h5py.File(path, "w") as h5f:
+            g = h5f.create_group("stage5_fitting")
+            save_spectrum_fit_to_hdf5(_sample_spectrum_fit(), g)
+            blobs = json.loads(g.attrs["replan_history"])
+            del blobs[0]["refit_window_ids"]
+            g.attrs["replan_history"] = json.dumps(blobs)
+        with h5py.File(path, "r") as h5f:
+            loaded = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+        assert loaded.replan_history[0].refit_window_ids is Absent.NOT_RUN
+        # Saved again, the absence is kept rather than written as an empty set.
+        again = _roundtrip(loaded, tmp_path / "again.h5")
+        assert again.replan_history[0].refit_window_ids is Absent.NOT_RUN
 
 
 # ---------------------------------------------------------------------------

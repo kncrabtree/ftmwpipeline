@@ -40,6 +40,7 @@ __all__ = [
     "CurationAction",
     "Frame",
     "PeakUidToken",
+    "check_frame",
     "parse_peak_token",
 ]
 
@@ -230,6 +231,23 @@ def _bad(path: str, expected: str, value: Any, message: str) -> Exception:
     from ..file_manager import BadSettingError
 
     return BadSettingError(path, expected, value, message=message)
+
+
+def check_frame(value: Any, *, path: str = "frame") -> Frame:
+    """Return ``value`` as a :data:`Frame`, or refuse it (``bad_setting``).
+
+    The rule :class:`CurationAction` applies to its ``frame`` field, for an
+    argument that must name a frame (``None`` is not accepted).
+    """
+    if value not in _FRAMES:
+        raise _bad(
+            path,
+            'one of: "raw", "calibrated"',
+            value,
+            f'{path} must be "raw" or "calibrated", got {value!r}',
+        )
+    frame: Frame = value
+    return frame
 
 
 def _check_id(path: str, value: Any) -> Optional[int]:

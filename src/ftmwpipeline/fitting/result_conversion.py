@@ -333,6 +333,7 @@ def _convert_replan_event(event: ReplanEvent) -> ReplanInfo:
         revision_after=event.revision_after,
         accepted=event.accepted,
         reason=event.reason,
+        refit_window_ids=tuple(int(w) for w in event.refit_window_ids),
     )
 
 

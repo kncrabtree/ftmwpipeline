@@ -2935,27 +2935,35 @@ def fit_thresholds(file_path: Union[str, Path]) -> Dict[str, Any]:
     return Pipeline.open(file_path).fit_thresholds()
 
 
-def window_status(file_path: Union[str, Path]) -> Dict[str, Any]:
+def window_status(file_path: Union[str, Path], frame: Frame = "raw") -> Dict[str, Any]:
     """Per-window status: the fitted plan, created windows and Stage 5 coverage.
 
-    Returns the ``ftmw/window_status@1`` payload ``{"schema", "windows":
-    [WindowStatusRow, ...]}``: one :class:`~ftmwpipeline.contract.WindowStatusRow`
-    per window of the plan the fit was made on (the Stage 4 plan before a
-    complete fit or when no merge revised it) and per created window, with
-    ``window_id``, ``freq_min_mhz``, ``freq_max_mhz``, ``created``,
-    ``n_fitted_peaks``, ``live`` (true when the Stage 5 fit holds at least one
-    fitted line in the window) and ``merged_from`` (the ids a merge survivor
-    absorbed, ascending; empty otherwise). Before Stage 5, each row's
-    ``n_fitted_peaks`` and ``live`` are ``Absent.NOT_RUN``. The columnar form,
-    with ``<column>__status`` columns, is the ``window_status`` table of
-    :func:`read_table`.
+    Returns the ``ftmw/window_status@1`` payload ``{"schema", "frame",
+    "windows": [WindowStatusRow, ...]}``: one
+    :class:`~ftmwpipeline.contract.WindowStatusRow` per window of the plan the
+    fit was made on (the Stage 4 plan before a complete fit or when no merge
+    revised it) and per created window, with ``window_id``, ``freq_min_mhz``,
+    ``freq_max_mhz``, ``created``, ``n_fitted_peaks``, ``live`` (true when the
+    Stage 5 fit holds at least one fitted line in the window) and
+    ``merged_from`` (the ids a merge survivor absorbed, ascending; empty
+    otherwise). Before Stage 5, each row's ``n_fitted_peaks`` and ``live`` are
+    ``Absent.NOT_RUN``. The columnar form, with ``<column>__status`` columns,
+    is the ``window_status`` table of :func:`read_table` (raw bounds).
+
+    ``frame`` is the frame of the bounds: ``"raw"`` (default; the frame of the
+    fit, the ledger and every stored value) or ``"calibrated"`` (the frame of
+    ``FinalPeak.fit_window_mhz``). The payload's ``frame`` echoes it. On a file
+    whose calibration has ``epsilon == 0``, or none at all, the frames
+    coincide.
 
     Raises
     ------
+    BadSettingError
+        ``frame`` is not ``"raw"`` or ``"calibrated"``.
     StageDependencyError
         Stage 4 has not been run.
     """
-    return Pipeline.open(file_path).window_status()
+    return Pipeline.open(file_path).window_status(frame=frame)
 
 
 def window_model(

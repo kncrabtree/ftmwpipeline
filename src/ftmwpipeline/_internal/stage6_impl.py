@@ -43,6 +43,7 @@ from typing import (
     Any,
     Callable,
     Collection,
+    ContextManager,
     Dict,
     FrozenSet,
     Iterable,
@@ -98,6 +99,7 @@ from ..file_manager import (
     PipelineCorruptionError,
     PipelineFileError,
     StageDependencyError,
+    _refusing_whole_batch,
     requires_pipeline_file,
 )
 from ..fitting.active_ft import active_ft_bin_spacing_mhz, peak_uid_from_offset
@@ -180,12 +182,12 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 #: The ``review`` stage scope of the Stage 6 long operation running now, or
-#: ``None``. Set by :func:`_review_operation` for the duration of one public
-#: call, so the engine (:func:`_open_batch`, the action loops, the cascade, the
-#: epoch gate, the frame advisory) reports into it without every internal
-#: signature carrying it. A call made with no scope set (a ``ReviewSession``
-#: step, a replay helper) reports nothing beyond its log lines and is never
-#: cancelled.
+#: ``None``. Set by :func:`_review_body` for the duration of one public call
+#: (a :func:`_review_operation` entry point or a ``ReviewSession`` verb), so
+#: the engine (:func:`_open_batch`, the action loops, the cascade, the epoch
+#: gate, the frame advisory) reports into it without every internal signature
+#: carrying it. A call made with no scope set (a replay helper) reports nothing
+#: beyond its log lines and is never cancelled.
 _REVIEW_SCOPE: ContextVar[Optional[StageScope]] = ContextVar(
     "ftmw_review_scope", default=None
 )
@@ -229,24 +231,54 @@ def _review_operation(
             if _REVIEW_SCOPE.get() is not None and events is None and cancel is None:
                 with _caller_frame_ids():
                     return fn(*args, **kwargs)
-            ops = operation_events(verb, events, cancel)
             path = str(call["file_path"])
-            with ops.stage(Stage.REVIEW, verb=verb, file_path=path) as scope:
-                token = _REVIEW_SCOPE.set(scope)
-                try:
-                    # The whole call -- resolving, curating and persisting a
-                    # write, an undo's included -- is one atomic write;
-                    # StageFinished follows the replace.
-                    with atomic_write(path), _caller_frame_ids():
-                        result = fn(*args, **kwargs)
-                finally:
-                    _REVIEW_SCOPE.reset(token)
+            with _review_stage(verb, path, events, cancel) as scope:
+                with _review_body(scope, path):
+                    result = fn(*args, **kwargs)
                 scope.finish(summary(result, call), wrote=wrote(result, call))
             return result
 
         return wrapper  # type: ignore[return-value]
 
     return decorate
+
+
+def _review_stage(
+    verb: str,
+    file_path: str,
+    events: Optional[EventCallback],
+    cancel: Optional[CancelToken],
+) -> ContextManager[StageScope]:
+    """The ``review`` stage of one Stage 6 long operation (``verb``): cancel
+    check, ``StageStarted`` and the operation's ``environment_drift`` check on
+    entry. The caller runs its body in :func:`_review_body` and calls
+    ``finish`` after that block -- after the replace."""
+    ops = operation_events(verb, events, cancel)
+    return ops.stage(Stage.REVIEW, verb=verb, file_path=file_path)
+
+
+@contextmanager
+def _review_body(
+    scope: StageScope, file_path: str, *, write: bool = True
+) -> Iterator[None]:
+    """Run a Stage 6 operation's body with *scope* current
+    (:data:`_REVIEW_SCOPE`), its ``not_found`` ids in the caller's frame, and
+    -- with *write* -- inside one atomic write of *file_path*: resolving,
+    curating and persisting a write, an undo's included, is one transaction
+    that a cancel or any other exception discards whole. A ``ReviewSession``
+    verb opens it before its freshness check, so the transaction's
+    ``write_conflict`` stat predates every input the call is built from; the
+    entry point it then calls joins it (no ``events`` / ``cancel`` of its
+    own)."""
+    token = _REVIEW_SCOPE.set(scope)
+    try:
+        with ExitStack() as stack:
+            if write:
+                stack.enter_context(atomic_write(file_path))
+            stack.enter_context(_caller_frame_ids())
+            yield
+    finally:
+        _REVIEW_SCOPE.reset(token)
 
 
 def _review_scope() -> StageScope:
@@ -3099,7 +3131,9 @@ def _refresh_frozen_from_sources(
     entries are preserved verbatim; every other frozen entry is dropped, and
     rebuilt only if its primary is a source. Add / remove / split / delete are
     handled uniformly: the source simply has more or fewer peaks above
-    threshold.
+    threshold. A rebuilt entry has Stage 5's schema
+    (:func:`~ftmwpipeline.fitting.result_conversion.window_outcome_to_fitting_result`),
+    the source line's ``peak_uid`` included.
 
     An accepted Stage 5 thaw leaves the thawed line a frozen contributor of the
     dependent, addressed through its primary (``ANALYSIS_EPOCH`` 6), so it is
@@ -3139,6 +3173,7 @@ def _refresh_frozen_from_sources(
                     "amplitude": float(pk.amplitude),
                     "phase": float(pk.phase) if pk.phase is not None else 0.0,
                     "freeze_eligible": True,
+                    "peak_uid": None if pk.peak_uid is None else int(pk.peak_uid),
                 }
             )
 
@@ -4034,18 +4069,28 @@ def _known_window_ids(path: str) -> Tuple[Set[int], str]:
     the fit: with no complete fit (never run, or only a partial fit) it is
     refused with ``stage_not_run`` like every other curation call.
     """
+    fit_ids, lineless = _fit_and_lineless_window_ids(path)
+    # A window the review flagged although the fit holds no line in it
+    # (``empty_window_residual``) can be marked reviewed too.
+    return fit_ids | lineless, "Stage 5 fit"
+
+
+def _fit_and_lineless_window_ids(path: str) -> Tuple[Set[int], Set[int]]:
+    """``(fit_ids, lineless)``: the Stage 5 fit's window ids, and the windows
+    the review flagged ``empty_window_residual`` that the fit holds no line
+    in. Refused ``stage_not_run`` without a complete fit, as
+    :func:`_known_window_ids` documents."""
     _require_complete_fit(path, "review accept")
     with h5open(path, "r") as h5f:
-        known = {c.window_id for c in read_fit_window_coverage(h5f["stage5_fitting"])}
+        fit_ids = {
+            c.window_id for c in read_fit_window_coverage(h5f["stage5_fitting"])
+        }
         review = (
             load_stage6_review_from_hdf5(h5f["stage6_review"])
             if "stage6_review" in h5f
             else Stage6Review()
         )
-    # A window the review flagged although the fit holds no line in it
-    # (``empty_window_residual``) can be marked reviewed too.
-    known |= flagged_lineless_ids(review, known)
-    return known, "Stage 5 fit"
+    return fit_ids, flagged_lineless_ids(review, fit_ids)
 
 
 def _require_known_window(path: str, window_id: int) -> None:
@@ -4398,6 +4443,14 @@ class CurationOp:
         it (``curation[line <n>].freqs``, or ``actions[<i>].freq_mhz`` for a
         batch of actions), which a refused ``create`` anchor is reported at;
         ``None`` for an op replayed from the decision log.
+    action_index : int or None
+        The 0-based position of the action in the request: its index in an
+        ``actions=`` batch, or for a curation file the row's position among
+        the file's action rows (blank, comment and header lines are not
+        counted, so row *i* of a file and ``actions[i]`` of the same request
+        given as data agree). Both halves of an implied create/add pair carry
+        their one row's index. ``None`` for an op that is not part of a
+        request.
     """
 
     action: str
@@ -4407,6 +4460,7 @@ class CurationOp:
     line_no: int
     implied_create: bool = False
     freq_cell: Optional[str] = field(default=None, compare=False, repr=False)
+    action_index: Optional[int] = field(default=None, compare=False, repr=False)
 
 
 @dataclass
@@ -4516,6 +4570,14 @@ class PlannedAction:
     """``create`` only: the ``bad_setting`` path of the anchor as the caller
     wrote it (:attr:`CurationOp.freq_cell`), where a refused anchor is
     reported inside a batch (:func:`_raise_curation_failure`)."""
+    action_indices: List[int] = field(default_factory=list)
+    """The 0-based request positions (:attr:`CurationOp.action_index`) of the
+    action(s) this one was resolved from, ascending: several for an ``edit``
+    that coalesced several rows, one otherwise. A batch refusal
+    (:func:`_raise_curation_failure`) and a dry-run advisory
+    (:class:`CurationWarningDetail`) name the request by these, not by this
+    action's position in the plan, which coalescing and canonical ordering
+    renumber. Empty for an action not resolved from a request."""
 
 
 @dataclass
@@ -4596,8 +4658,11 @@ class AppliedWindowResult:
         window that is both is ``"direct"``, exactly as in
         :class:`PreviewWindowResult`.
     action_indices : list of int
-        0-based indices into :attr:`CurationApplyResult.plan` of every action
-        that directly targeted this window. Empty for a purely-cascaded one.
+        The 0-based request positions (:attr:`PlannedAction.action_indices`)
+        of every action that directly targeted this window, ascending -- the
+        numbering of a batch refusal and of :class:`CurationWarningDetail`,
+        not positions in :attr:`CurationApplyResult.plan`. Empty for a
+        purely-cascaded one.
     n_peaks_before, n_peaks_after : int
         Peak count in this window before the batch / after the cascade.
     chi2r_before, chi2r_after : float or Absent
@@ -4656,7 +4721,7 @@ def _applied_windows_block(
         windows[wid] = AppliedWindowResult(
             window_id=wid,
             origin="direct" if wid in direct_wids else "cascaded",
-            action_indices=sorted(action_indices.get(wid, [])),
+            action_indices=sorted(set(action_indices.get(wid, []))),
             n_peaks_before=len(b.fitted_peaks) if b is not None else 0,
             n_peaks_after=len(a.fitted_peaks) if a is not None else 0,
             chi2r_before=(
@@ -4691,6 +4756,30 @@ def _applied_window_from_preview(pw: "PreviewWindowResult") -> AppliedWindowResu
 
 
 @dataclass
+class CurationWarningDetail:
+    """One curation advisory, with the request actions it is about.
+
+    Attributes
+    ----------
+    message : str
+        The advisory, exactly as it appears in the result's ``warnings``.
+    action_indices : list of int
+        The 0-based request positions of the actions it concerns (the
+        numbering of ``actions[<i>]``; a file's action rows in order),
+        ascending -- several when coalesced rows share one edit, or for the
+        frame-mismatch advisory, every action whose candidate matched.
+    """
+
+    message: str
+    action_indices: List[int] = field(default_factory=list)
+
+
+def _warning_messages(details: Sequence[CurationWarningDetail]) -> List[str]:
+    """The ``warnings`` string list a result carries beside its details."""
+    return [d.message for d in details]
+
+
+@dataclass
 class CurationApplyResult:
     """Outcome of :func:`apply_curation_impl`.
 
@@ -4703,6 +4792,9 @@ class CurationApplyResult:
         advisories (ambiguous or unmatched targets) plus the A5
         frame-mismatch diagnostic (:func:`_frame_mismatch_warnings`) when the
         batch's own signature suggests it.
+    warning_details : list of CurationWarningDetail
+        The same advisories, in the same order, each with the request
+        actions it concerns.
     applied : int
         Number of actions executed (``0`` for a dry run).
     dry_run : bool
@@ -4741,6 +4833,7 @@ class CurationApplyResult:
     created_windows: List[PlannedWindowResult] = field(default_factory=list)
     windows: Dict[int, AppliedWindowResult] = field(default_factory=dict)
     base_changed: bool = False
+    warning_details: List[CurationWarningDetail] = field(default_factory=list)
     #: The stages the call invalidated (canonical names, ``rerun_order``):
     #: always ``()``, since Stage 6 invalidates no stage.
     invalidated: Tuple[str, ...] = field(default=(), compare=False)
@@ -5052,6 +5145,7 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                 params=params,
                 line_no=line_no,
                 freq_cell=_curation_cell(line_no, "freqs"),
+                action_index=len(ops),
             )
         )
 
@@ -5239,6 +5333,7 @@ def _action_to_op(
         params=params,
         line_no=index + 1,
         freq_cell=f"actions[{index}].freq_mhz",
+        action_index=index,
     )
 
 
@@ -5470,16 +5565,20 @@ def _resolve_curation_window_ids(
                     line_no=op.line_no,
                     implied_create=True,
                     freq_cell=op.freq_cell,
+                    action_index=op.action_index,
                 )
             )
             resolved.append(replace(op, window_id=correlation_id, implied_create=True))
             continue
         resolved.append(replace(op, window_id=wid))
+    # Refusals of the whole batch: they name ids, not one action.
     if unknown_uids:
-        raise _unknown_peak_uids_error(unknown_uids)
+        raise _refusing_whole_batch(_unknown_peak_uids_error(unknown_uids))
     if uncovered:
-        raise NotFoundValueError(
-            "window", uncovered, message="; ".join(uncovered_details)
+        raise _refusing_whole_batch(
+            NotFoundValueError(
+                "window", uncovered, message="; ".join(uncovered_details)
+            )
         )
     return resolved
 
@@ -5565,17 +5664,22 @@ def _require_known_plan_windows(
     plan: Sequence[PlannedAction],
     where: str,
     plan_window_ids: Optional[Collection[int]] = None,
+    *,
+    whole_batch: bool = True,
 ) -> None:
     """Refuse a plan naming windows the fit does not have, all of them at once
-    (see :func:`_unknown_plan_window_ids`)."""
+    (see :func:`_unknown_plan_window_ids`): a refusal of the whole batch
+    (:func:`_refusing_whole_batch`) unless *whole_batch* is False, for a
+    one-action verb's plan."""
     unknown = _unknown_plan_window_ids(known, plan, plan_window_ids)
     if unknown:
         listed = ", ".join(str(w) for w in unknown)
-        raise NotFoundValueError(
+        exc = NotFoundValueError(
             "window",
             unknown,
             message=f"window_id={listed} not found in the {where}",
         )
+        raise _refusing_whole_batch(exc) if whole_batch else exc
 
 
 def _batch_known_window_ids(
@@ -5585,12 +5689,61 @@ def _batch_known_window_ids(
     lineless window (``ctx.changeset.lineless_reviewable``) a *bare* accept of
     the plan names -- the one action such a window takes, since the fit holds
     nothing there to edit."""
-    lineless = ctx.changeset.lineless_reviewable
+    return _plan_known_window_ids(fit_ids, ctx.changeset.lineless_reviewable, plan)
+
+
+def _plan_known_window_ids(
+    fit_ids: Collection[int], lineless: Collection[int], plan: Sequence[PlannedAction]
+) -> Set[int]:
+    """:func:`_batch_known_window_ids` from the two id sets alone, so a dry
+    run admits exactly what the apply does without building a batch."""
     return set(fit_ids) | {
         int(a.window_id)
         for a in plan
         if a.kind == "accept" and a.candidate is None and int(a.window_id) in lineless
     }
+
+
+def _require_known_dry_run_windows(
+    path: str,
+    plan: Sequence[PlannedAction],
+    *,
+    snap_tol_mhz: float,
+    shared: Optional["_SharedFitCtx"],
+) -> Optional["_SharedFitCtx"]:
+    """Refuse the unknown window ids the apply of *plan* would refuse, the
+    way it refuses them (:func:`_curate_request`): a flagged lineless window
+    only for a bare accept, and a forward reference only to an id an unpinned
+    create can mint (:func:`_batch_plan_window_ids`; that bound needs the
+    batch context, so it is built only for a plan with such a create).
+    Returns *shared*, or the shared context built for that bound, for the
+    caller to reuse."""
+    fit_ids, lineless = _fit_and_lineless_window_ids(path)
+    plan_window_ids: Optional[Set[int]] = None
+    if any(a.kind == "create" and a.window_id == _NEW_WINDOW_SENTINEL for a in plan):
+        # Not epoch-gated here: the apply refuses unknown ids before its gate
+        # (:func:`_curate`), and a dry run gates only where it always has, in
+        # the create's structural report (:func:`_resolve_created_window_structure`).
+        ctx = _build_batch_ctx(path, snap_tol_mhz=snap_tol_mhz, shared=shared)
+        shared = ctx.shared
+        plan_window_ids = _batch_plan_window_ids(ctx, plan)
+    _require_known_plan_windows(
+        _plan_known_window_ids(fit_ids, lineless, plan),
+        plan,
+        "Stage 5 fit",
+        plan_window_ids,
+    )
+    return shared
+
+
+def _curation_failure_tag(index: int, action: PlannedAction) -> str:
+    """The message prefix naming the failed action: by its 1-based request
+    position(s) (:attr:`PlannedAction.action_indices`), or by its plan
+    position *index* for an action not resolved from a request."""
+    sources = action.action_indices or [index]
+    which = "action" if len(sources) == 1 else "actions"
+    numbers = ", ".join(str(i + 1) for i in sources)
+    return f"curation {which} {numbers} ({describe_planned_action(action)}) failed"
 
 
 def _raise_curation_failure(
@@ -5600,12 +5753,14 @@ def _raise_curation_failure(
 
     A typed :class:`PipelineFileError` keeps its type (a program routes on
     it); a ``not_found`` or ``curation_conflict`` is re-issued with the tag in
-    its message and the same attributes, and a create's refused anchor
+    its message, the same attributes, and ``action_indices`` -- the request
+    positions the action was resolved from -- and a create's refused anchor
     (``bad_setting`` ``anchor_mhz``) with the tag and the path of the cell or
     action field the anchor came from. Anything else becomes the historical
     tagged :class:`ValueError`.
     """
-    tag = f"curation action {index + 1} ({describe_planned_action(action)}) failed"
+    tag = _curation_failure_tag(index, action)
+    sources = list(action.action_indices) or None
     if (
         isinstance(exc, BadSettingError)
         and exc.path == "anchor_mhz"
@@ -5619,10 +5774,12 @@ def _raise_curation_failure(
         ) from exc
     if isinstance(exc, NotFoundError):
         # The batch refused with ValueError before it was typed.
-        raise NotFoundValueError(exc.kind, exc.ids, message=f"{tag}: {exc}") from exc
+        raise NotFoundValueError(
+            exc.kind, exc.ids, action_indices=sources, message=f"{tag}: {exc}"
+        ) from exc
     if isinstance(exc, CurationConflictError):
         raise CurationConflictError(
-            exc.reason, exc.ids, message=f"{tag}: {exc}"
+            exc.reason, exc.ids, action_indices=sources, message=f"{tag}: {exc}"
         ) from exc
     if isinstance(exc, PipelineFileError):
         raise exc
@@ -5677,6 +5834,7 @@ def _resolve_curation_plan(ops: Sequence[CurationOp]) -> List[PlannedAction]:
 
     for op in ops:
         wid = op.window_id
+        sources = [] if op.action_index is None else [op.action_index]
         if op.action == "create":
             plan.append(
                 PlannedAction(
@@ -5685,6 +5843,7 @@ def _resolve_curation_plan(ops: Sequence[CurationOp]) -> List[PlannedAction]:
                     anchor=_assert_plain_freq(op.freqs[0]),
                     implied_create=op.implied_create,
                     anchor_cell=op.freq_cell,
+                    action_indices=sources,
                 )
             )
             continue
@@ -5696,6 +5855,7 @@ def _resolve_curation_plan(ops: Sequence[CurationOp]) -> List[PlannedAction]:
                 )
                 pending[wid] = pa
                 pending_order.append(wid)
+            pa.action_indices.extend(sources)
             if op.action == "add":
                 pa.add.append(_assert_plain_freq(op.freqs[0]))
             else:
@@ -5712,6 +5872,7 @@ def _resolve_curation_plan(ops: Sequence[CurationOp]) -> List[PlannedAction]:
                     kind="merge",
                     window_id=wid,
                     peaks=[_assert_plain_freq(f) for f in op.freqs],
+                    action_indices=sources,
                 )
             )
         elif op.action == "split":
@@ -5721,6 +5882,7 @@ def _resolve_curation_plan(ops: Sequence[CurationOp]) -> List[PlannedAction]:
                     window_id=wid,
                     peak=_assert_plain_freq(op.freqs[0]),
                     into=int(op.params.get("into", 2)),
+                    action_indices=sources,
                 )
             )
         elif op.action == "accept":
@@ -5730,6 +5892,7 @@ def _resolve_curation_plan(ops: Sequence[CurationOp]) -> List[PlannedAction]:
                     kind="accept",
                     window_id=wid,
                     candidate=float(cand) if cand is not None else None,
+                    action_indices=sources,
                 )
             )
     for wid in list(pending_order):
@@ -5900,7 +6063,28 @@ def _curation_ambiguity_warnings(
     index: Optional[Tuple[Dict[int, List[float]], Dict[int, Set[int]]]] = None,
     planned_ranges: Optional[Dict[int, Tuple[float, float]]] = None,
 ) -> List[str]:
-    """Advisories where a curation action will not resolve against the file.
+    """The messages of :func:`_curation_ambiguity_details`."""
+    return _warning_messages(
+        _curation_ambiguity_details(
+            path,
+            plan,
+            snap_tol_mhz=snap_tol_mhz,
+            index=index,
+            planned_ranges=planned_ranges,
+        )
+    )
+
+
+def _curation_ambiguity_details(
+    path: str,
+    plan: Sequence[PlannedAction],
+    *,
+    snap_tol_mhz: float,
+    index: Optional[Tuple[Dict[int, List[float]], Dict[int, Set[int]]]] = None,
+    planned_ranges: Optional[Dict[int, Tuple[float, float]]] = None,
+) -> List[CurationWarningDetail]:
+    """Advisories where a curation action will not resolve against the file,
+    each naming the request actions of the plan action it came from.
 
     ``remove`` / ``split`` / ``merge`` match an *existing* fitted peak by nearest
     frequency within ``snap_tol_mhz``; if two peaks sit within tolerance the
@@ -6009,7 +6193,9 @@ def _curation_ambiguity_warnings(
                 f"(the edit will fail)"
             )
 
+    details: List[CurationWarningDetail] = []
     for action in plan:
+        first = len(warnings)
         wid = action.window_id
         if action.kind == "edit":
             for f in action.remove:
@@ -6027,7 +6213,11 @@ def _curation_ambiguity_warnings(
                 check(wid, f, f"merge {f:.4f}")
         elif action.kind == "split" and action.peak is not None:
             check(wid, action.peak, f"split {action.peak:.4f}")
-    return warnings
+        details.extend(
+            CurationWarningDetail(m, list(action.action_indices))
+            for m in warnings[first:]
+        )
+    return details
 
 
 # ---------------------------------------------------------------------------
@@ -6099,6 +6289,26 @@ def _frame_mismatch_warnings(
     stamp: Optional[_CalibrationStamp],
     fitted_freqs: Optional[Dict[int, List[float]]] = None,
 ) -> List[str]:
+    """The messages of :func:`_frame_mismatch_details`."""
+    return _warning_messages(
+        _frame_mismatch_details(
+            path,
+            plan,
+            raw_targets=raw_targets,
+            stamp=stamp,
+            fitted_freqs=fitted_freqs,
+        )
+    )
+
+
+def _frame_mismatch_details(
+    path: str,
+    plan: Sequence[PlannedAction],
+    *,
+    raw_targets: Optional[FrozenSet[float]],
+    stamp: Optional[_CalibrationStamp],
+    fitted_freqs: Optional[Dict[int, List[float]]] = None,
+) -> List[CurationWarningDetail]:
     """Advisory-only diagnostic (A5): flag a batch whose candidates all
     resolve with a residual consistent with a calibrated-frame curation file
     that was declared (or defaulted to) raw.
@@ -6166,8 +6376,8 @@ def _frame_mismatch_warnings(
 
     residuals: List[float] = []
     predicted: List[float] = []
-    flagged: List[int] = []
-    for action_index, action in enumerate(plan):
+    flagged: Set[int] = set()
+    for action in plan:
         wid = action.window_id
         targets: List[float] = []
         if action.kind == "edit":
@@ -6189,8 +6399,7 @@ def _frame_mismatch_warnings(
                 continue
             residuals.append(f - match)
             predicted.append((probe_freq_mhz - match) * epsilon / (1.0 + epsilon))
-            if action_index not in flagged:
-                flagged.append(action_index)
+            flagged.update(action.action_indices)
 
     if len(residuals) < _FRAME_MISMATCH_MIN_CANDIDATES:
         return []
@@ -6215,12 +6424,13 @@ def _frame_mismatch_warnings(
         f"raw; double check its frame before trusting this batch."
     )
     # The same advisory as a frame_mismatch event of the running operation
-    # (``actions``: the 0-based plan positions whose candidates matched). It
-    # stays in the result's warnings too; it has no log line.
+    # (``actions``: the 0-based request positions whose candidates matched,
+    # as in its warning detail). It stays in the result's warnings too; it has
+    # no log line.
     scope = _REVIEW_SCOPE.get()
     if scope is not None:
         scope.warn("frame_mismatch", advisory, actions=sorted(flagged))
-    return [advisory]
+    return [CurationWarningDetail(advisory, sorted(flagged))]
 
 
 # --- the automatic-fit baseline (for undo replay) --------------------------
@@ -10341,7 +10551,7 @@ def _curate_request(
         rows = _request_rows(display, resolved, one_action=one_action)
     else:
         known, where = _known_window_ids(path)
-        _require_known_plan_windows(known, plan, where)
+        _require_known_plan_windows(known, plan, where, whole_batch=not one_action)
         rows = _bare_accept_rows(path, prior, [a.window_id for a in plan])
     curated = _curate(
         path,
@@ -10418,8 +10628,9 @@ def _request_outcome(
 ) -> Tuple[Dict[int, List[int]], Set[int], Set[int], Dict[int, _PlannedCreate]]:
     """How a curation request touched the windows: ``(action_indices,
     direct, cascaded, creates)``. ``action_indices`` maps each window an
-    action targeted to the plan positions of those actions (an implied
-    create's two halves both name the window built); ``direct`` is those
+    action targeted to the request positions those actions were resolved from
+    (:attr:`PlannedAction.action_indices`, deduplicated -- an implied create's
+    two halves both name the window built); ``direct`` is those
     windows; ``cascaded`` is every other window whose fit the write changed
     (a dependent the cascade refit, bit for bit different from what was
     displayed); ``creates`` is every create the request ran, by window id
@@ -10430,7 +10641,9 @@ def _request_outcome(
         return action_indices, set(), set(), creates  # bare accepts fit nothing
     for ra in req.resolved:
         if ra.target_wid is not None:
-            action_indices.setdefault(int(ra.target_wid), []).append(ra.original_index)
+            action_indices.setdefault(int(ra.target_wid), []).extend(
+                ra.action.action_indices
+            )
         if ra.create is not None:
             creates[int(ra.create.proposal.window.window_id)] = ra.create
     direct = set(action_indices)
@@ -10515,7 +10728,7 @@ def _resolve_ops_against(
     raw_targets: Optional[FrozenSet[float]],
     ctx: _BatchCtx,
     snap_tol_mhz: float,
-) -> Tuple[List[PlannedAction], List[str]]:
+) -> Tuple[List[PlannedAction], List[CurationWarningDetail]]:
     """A parsed, frame-resolved curation file's plan and advisories, resolved
     against the curated state *ctx* displays -- its in-memory fit and
     effective window plan -- rather than against the file: a log-prefix
@@ -10530,7 +10743,7 @@ def _resolve_ops_against(
         ops, path, frame=frame, stamp=stamp, coverage=_coverage_from_fit(fit)
     )
     index = _peak_index_from_fit(fit, plan)
-    warnings = _curation_ambiguity_warnings(
+    warnings = _curation_ambiguity_details(
         path,
         plan,
         snap_tol_mhz=snap_tol_mhz,
@@ -10541,14 +10754,16 @@ def _resolve_ops_against(
             )
         ),
     )
-    warnings += _frame_mismatch_warnings(
+    warnings += _frame_mismatch_details(
         path, plan, raw_targets=raw_targets, stamp=stamp, fitted_freqs=index[0]
     )
     return plan, warnings
 
 
 def _applied_curation(
-    plan: List[PlannedAction], warnings: List[str], req: _CuratedRequest
+    plan: List[PlannedAction],
+    warnings: List[CurationWarningDetail],
+    req: _CuratedRequest,
 ) -> "CurationApplyResult":
     """A live apply's result, read off the request it curated: the windows
     its actions targeted and the ones the write otherwise changed
@@ -10557,7 +10772,8 @@ def _applied_curation(
     action_indices, direct, cascaded, creates = _request_outcome(req)
     return CurationApplyResult(
         plan=plan,
-        warnings=warnings,
+        warnings=_warning_messages(warnings),
+        warning_details=warnings,
         applied=len(plan),
         dry_run=False,
         created_windows=[_planned_window_result(c) for _, c in sorted(creates.items())],
@@ -10847,14 +11063,21 @@ def apply_curation_impl(
     plan, raw_targets, stamp = _resolve_curation_call(path, source, frame)
 
     snap_tol = refit_snap_tol_mhz_impl(path)
+    if dry_run:
+        # The apply refuses an unknown window id (not_found); a dry run that
+        # accepted it would promise an apply that cannot happen. Refused
+        # before the advisories, so a refused dry run emits no event.
+        _shared = _require_known_dry_run_windows(
+            path, plan, snap_tol_mhz=snap_tol, shared=_shared
+        )
     # One read of the fitted peak columns for both advisory passes: the
     # ambiguity pass needs it unconditionally, and the frame diagnostic used
     # to rebuild the identical map moments later in the same call.
     peak_index = _fitted_peak_index(path, plan)
-    warnings = _curation_ambiguity_warnings(
+    warnings = _curation_ambiguity_details(
         path, plan, snap_tol_mhz=snap_tol, index=peak_index
     )
-    warnings += _frame_mismatch_warnings(
+    warnings += _frame_mismatch_details(
         path,
         plan,
         raw_targets=raw_targets,
@@ -10867,7 +11090,8 @@ def apply_curation_impl(
     if dry_run:
         return CurationApplyResult(
             plan=plan,
-            warnings=warnings,
+            warnings=_warning_messages(warnings),
+            warning_details=warnings,
             applied=0,
             dry_run=True,
             created_windows=_resolve_created_window_structure(
@@ -10876,7 +11100,11 @@ def apply_curation_impl(
         )
     if not plan:
         return CurationApplyResult(
-            plan=plan, warnings=warnings, applied=0, dry_run=False
+            plan=plan,
+            warnings=_warning_messages(warnings),
+            warning_details=warnings,
+            applied=0,
+            dry_run=False,
         )
 
     req = _curate_request(
@@ -11021,9 +11249,11 @@ class PreviewWindowResult:
         ``"direct"``: it has an originating action, even though the cascade
         re-fits it again to pick up the refreshed background.
     action_indices : list of int
-        0-based indices into ``ReviewPreviewResult.plan`` of every action
-        that directly targeted this window. Empty for a purely-cascaded
-        window.
+        The 0-based request positions (:attr:`PlannedAction.action_indices`)
+        of every action that directly targeted this window, ascending -- the
+        numbering of a batch refusal and of :class:`CurationWarningDetail`,
+        not positions in ``ReviewPreviewResult.plan``. Empty for a
+        purely-cascaded window.
     n_peaks_before, n_peaks_after : int
         Peak count in this window as displayed before the batch (the
         persisted fit) / in the curated fit after it, post-cascade.
@@ -11121,13 +11351,15 @@ class ReviewPreviewResult:
         that touches no fit (e.g. entirely bare ``accept`` rows).
     plan : list of PlannedAction
         The resolved, frame-converted, coalesced action sequence -- the same
-        shape ``apply_curation_impl`` would execute. ``action_indices`` on
-        each :class:`PreviewWindowResult` index into this list.
+        shape ``apply_curation_impl`` would execute.
     warnings : list of str
         Advisories that do not block the preview -- currently just the A5
         frame-mismatch diagnostic (:func:`_frame_mismatch_warnings`). Empty
         for a plan that touches no fit, since the diagnostic needs matched
         candidates to compare.
+    warning_details : list of CurationWarningDetail
+        The same advisories, in the same order, each with the request
+        actions it concerns.
     created_windows : list of PlannedWindowResult
         Every window this preview's batch installed or grew, ascending by
         window id -- the same list, in the same shape, that
@@ -11150,6 +11382,7 @@ class ReviewPreviewResult:
     plan: List["PlannedAction"] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
     created_windows: List[PlannedWindowResult] = field(default_factory=list)
+    warning_details: List[CurationWarningDetail] = field(default_factory=list)
 
 
 @dataclass
@@ -11214,17 +11447,22 @@ def _run_review_preview(
     snap_tol = refit_snap_tol_mhz_impl(path)
     plan, raw_targets, stamp = _resolve_curation_call(path, source, frame)
 
-    warnings = _frame_mismatch_warnings(
-        path, plan, raw_targets=raw_targets, stamp=stamp
-    )
+    warnings = _frame_mismatch_details(path, plan, raw_targets=raw_targets, stamp=stamp)
 
     if not _plan_needs_fit(plan):
         # C5: bare-accept-only (or empty) plan -- no fits, no gate, nothing to
         # report -- and refused, as an apply is, on a file with no complete
         # fit.
         _require_complete_fit(path, "review preview")
+        known, where = _known_window_ids(path)
+        _require_known_plan_windows(known, plan, where)
         return _PreviewRun(
-            result=ReviewPreviewResult(windows={}, plan=plan, warnings=warnings)
+            result=ReviewPreviewResult(
+                windows={},
+                plan=plan,
+                warnings=_warning_messages(warnings),
+                warning_details=warnings,
+            )
         )
 
     req = _curate_request(
@@ -11261,7 +11499,7 @@ def _run_review_preview(
         windows[wid] = PreviewWindowResult(
             window_id=wid,
             origin="direct" if wid in direct_wids else "cascaded",
-            action_indices=sorted(action_indices.get(wid, [])),
+            action_indices=sorted(set(action_indices.get(wid, []))),
             n_peaks_before=0 if before is None else len(before.fitted_peaks),
             n_peaks_after=0 if after is None else len(after.fitted_peaks),
             chi2r_before=(
@@ -11298,7 +11536,8 @@ def _run_review_preview(
     result = ReviewPreviewResult(
         windows=windows,
         plan=plan,
-        warnings=warnings,
+        warnings=_warning_messages(warnings),
+        warning_details=warnings,
         # Published on the result rather than kept internal: a session
         # staging this preview as an apply, and a caller reading it directly,
         # must see the SAME list -- deriving it twice is how two rungs of the
@@ -13615,7 +13854,7 @@ class _StagedPreview:
     the tuple of actions (:func:`_session_source_key`)."""
     frame: Optional[Frame]
     resolved_plan: List["PlannedAction"]
-    warnings: List[str]
+    warning_details: List[CurationWarningDetail]
     curated: _Curated
     created_windows: List[PlannedWindowResult] = field(default_factory=list)
     """The structure this preview's batch installed, carried so that
@@ -13668,6 +13907,14 @@ class ReviewSession:
     from disk, never predicted, so a foreign writer landing in the very same
     instant is still caught on the session's next use. Results are identical
     with or without a session; only latency differs.
+
+    Every verb takes the ``events`` / ``cancel`` keyword arguments of its
+    :class:`~ftmwpipeline.pipeline.Pipeline` method and is the same long
+    operation (the same ``operation`` verb, events, check points and
+    ``StageFinished.summary``): ``Invalidated`` and ``StageFinished`` follow
+    the replace, and a cancelled call persists nothing and leaves the session
+    as it was -- the shared context, a staged preview and a pending
+    ``base_changed`` note included -- so it can carry on.
 
     The session retains roughly 26 MB of active-FT arrays for its lifetime,
     and that lifetime is entirely caller-controlled -- the ``with`` block, or
@@ -13770,6 +14017,15 @@ class ReviewSession:
         self._fingerprint = _compute_fit_ctx_fingerprint(self._path)
 
     # -- single-window verbs --------------------------------------------------
+    #
+    # Each verb is one long operation, exactly as its Pipeline method is: it
+    # opens the ``review`` stage (_review_stage), runs its freshness check and
+    # the entry point inside one transaction with that stage current
+    # (_review_body; the entry point, called without events or cancel, joins
+    # both), and only after the replace refreshes its own bookkeeping and
+    # finishes the stage. An interrupted call -- a cancel, a refusal, a
+    # callback failure before the replace -- leaves the file and the session
+    # as they were.
 
     def review_edit(
         self,
@@ -13778,30 +14034,30 @@ class ReviewSession:
         add: Sequence[Union[float, str]] = (),
         remove: Sequence[Union[float, str]] = (),
         frame: Optional[Frame] = None,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
     ) -> RefitWindowResult:
         """Re-fit one window with ``add`` / ``remove`` edits.
 
-        Identical in arguments, return value and persisted effect to
+        Identical in arguments, return value, events and persisted effect to
         :meth:`Pipeline.review_edit
         <ftmwpipeline.pipeline.Pipeline.review_edit>`, which documents the
         full contract; the only difference is that this session's shared fit
         context is reused -- validated fresh first -- rather than rebuilt.
         """
-        _refuse_bare_edit(add, remove)
-        # The verb's transaction opens before the freshness check, so its
-        # write_conflict stat predates every input the edit is built from.
-        with atomic_write(self._path):
-            shared = self._sync()
-            self._drop_staged(base_changed=True)
-            result = refit_window_impl(
-                self._path,
-                window_id,
-                add=add,
-                remove=remove,
-                frame=frame,
-                _shared=shared,
-            )
-        self._resync_after_write()
+        with _review_stage("review edit", self._path, events, cancel) as scope:
+            _refuse_bare_edit(add, remove)
+            with _review_body(scope, self._path):
+                result = refit_window_impl(
+                    self._path,
+                    window_id,
+                    add=add,
+                    remove=remove,
+                    frame=frame,
+                    _shared=self._sync(),
+                )
+            self._committed()
+            scope.finish(review_edit_summary(result, add, remove))
         return result
 
     def review_accept(
@@ -13810,25 +14066,27 @@ class ReviewSession:
         *,
         candidate_freq: Optional[float] = None,
         frame: Optional[Frame] = None,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
     ) -> Optional[RefitWindowResult]:
         """Accept a window as reviewed, or revive a named ledger candidate.
 
-        Identical in arguments, return value and persisted effect to
+        Identical in arguments, return value, events and persisted effect to
         :meth:`Pipeline.review_accept
         <ftmwpipeline.pipeline.Pipeline.review_accept>`, reusing this
         session's shared fit context.
         """
-        with atomic_write(self._path):  # before the check: see review_edit
-            shared = self._sync()
-            self._drop_staged(base_changed=True)
-            result = review_accept_impl(
-                self._path,
-                window_id,
-                candidate_freq=candidate_freq,
-                frame=frame,
-                _shared=shared,
-            )
-        self._resync_after_write()
+        with _review_stage("review accept", self._path, events, cancel) as scope:
+            with _review_body(scope, self._path):
+                result = review_accept_impl(
+                    self._path,
+                    window_id,
+                    candidate_freq=candidate_freq,
+                    frame=frame,
+                    _shared=self._sync(),
+                )
+            self._committed()
+            scope.finish(review_accept_summary(result, window_id))
         return result
 
     def review_create(
@@ -13836,24 +14094,26 @@ class ReviewSession:
         anchor_mhz: float,
         *,
         frame: Optional[Frame] = None,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
     ) -> CreateWindowResult:
         """Install a fit window for a line no window covers.
 
-        Identical in arguments, return value and persisted effect to
+        Identical in arguments, return value, events and persisted effect to
         :meth:`Pipeline.review_create
         <ftmwpipeline.pipeline.Pipeline.review_create>`, reusing this
         session's shared fit context.
         """
-        with atomic_write(self._path):  # before the check: see review_edit
-            shared = self._sync()
-            self._drop_staged(base_changed=True)
-            result = create_window_impl(
-                self._path,
-                anchor_mhz,
-                frame=frame,
-                _shared=shared,
-            )
-        self._resync_after_write()
+        with _review_stage("review create", self._path, events, cancel) as scope:
+            with _review_body(scope, self._path):
+                result = create_window_impl(
+                    self._path,
+                    anchor_mhz,
+                    frame=frame,
+                    _shared=self._sync(),
+                )
+            self._committed()
+            scope.finish(review_create_summary(result))
         return result
 
     def review_undo(
@@ -13861,22 +14121,35 @@ class ReviewSession:
         ids: Sequence[int],
         *,
         dry_run: bool = False,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
     ) -> UndoResult:
         """Roll recorded decisions back by id, replaying the survivors.
 
-        Identical in arguments, return value and persisted effect to
+        Identical in arguments, return value, events and persisted effect to
         :meth:`Pipeline.review_undo
         <ftmwpipeline.pipeline.Pipeline.review_undo>`, reusing this
         session's shared fit context.
         """
-        with atomic_write(self._path):  # before the check: see review_edit
-            shared = self._sync()
+        with _review_stage("review undo", self._path, events, cancel) as scope:
+            with _review_body(scope, self._path):
+                result = review_undo_impl(
+                    self._path, ids, dry_run=dry_run, _shared=self._sync()
+                )
             if not dry_run:
-                self._drop_staged(base_changed=True)
-            result = review_undo_impl(self._path, ids, dry_run=dry_run, _shared=shared)
-        if not dry_run:
-            self._resync_after_write()
+                self._committed()
+            scope.finish(review_undo_summary(result, dry_run), wrote=not dry_run)
         return result
+
+    def _committed(self) -> None:
+        """This session's bookkeeping after one of its own writes has been
+        replaced into place: the write moved the base any staged preview was
+        computed against, so the preview is dropped (and the next apply told
+        so), and the fingerprint is re-read (:meth:`_resync_after_write`).
+        Never called for a write that did not land, so an interrupted verb
+        leaves the staged preview usable."""
+        self._drop_staged(base_changed=True)
+        self._resync_after_write()
 
     # -- batch door: preview / apply, with D4's staged reuse -----------------
 
@@ -13886,44 +14159,58 @@ class ReviewSession:
         *,
         actions: Optional[Sequence[Union[CurationAction, Mapping[str, Any]]]] = None,
         frame: Optional[Frame] = None,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
     ) -> ReviewPreviewResult:
         """Run a curation file's plan to completion in memory and report the
         fitted outcome, writing nothing.
 
-        Identical in arguments and return value to
+        Identical in arguments, return value and events to
         :meth:`Pipeline.review_preview
         <ftmwpipeline.pipeline.Pipeline.review_preview>`, with one addition:
         the finished, cascaded, never-persisted outcome is *staged* on this
         session, so an immediately-following :meth:`review_apply` of the
         identical plan against an unchanged base can persist it directly
-        rather than computing it a second time. See that method.
+        rather than computing it a second time. See that method. A cancelled
+        preview stages nothing and keeps the earlier staged preview, if any.
         """
-        source = curation_source(curation_path, actions)
-        # Refused before the session builds anything, as its apply is.
-        _require_engine_file(self._path)
-        shared = self._sync()
-        # A fresh preview supersedes any earlier drift note.
-        self._pending_base_changed = False
-        with _caller_frame_ids():
-            run = _run_review_preview(self._path, source, frame=frame, shared=shared)
-        if run.curated is not None:
-            assert self._fingerprint is not None
-            self._staged = _StagedPreview(
-                fingerprint=self._fingerprint,
-                source_key=_session_source_key(source),
-                frame=frame,
-                resolved_plan=list(run.result.plan),
-                warnings=list(run.result.warnings),
-                curated=run.curated,
-                created_windows=list(run.result.created_windows),
-                windows={
-                    wid: _applied_window_from_preview(pw)
-                    for wid, pw in run.result.windows.items()
-                },
-            )
-        else:
-            self._staged = None
+        with _review_stage("review preview", self._path, events, cancel) as scope:
+            # A preview writes nothing: no transaction.
+            with _review_body(scope, self._path, write=False):
+                source = curation_source(curation_path, actions)
+                # Refused before the session builds anything, as its apply is.
+                _require_engine_file(self._path)
+                shared = self._sync()
+                run = _run_review_preview(
+                    self._path, source, frame=frame, shared=shared
+                )
+            # A fresh preview supersedes any earlier drift note.
+            self._pending_base_changed = False
+            self._staged = self._staging(run, source, frame)
+            scope.finish(review_preview_summary(run.result), wrote=False)
         return run.result
+
+    def _staging(
+        self, run: _PreviewRun, source: CurationSource, frame: Optional[Frame]
+    ) -> Optional[_StagedPreview]:
+        """The staged form of a finished preview *run* (``None`` when it has
+        no curated state to persist)."""
+        if run.curated is None:
+            return None
+        assert self._fingerprint is not None
+        return _StagedPreview(
+            fingerprint=self._fingerprint,
+            source_key=_session_source_key(source),
+            frame=frame,
+            resolved_plan=list(run.result.plan),
+            warning_details=list(run.result.warning_details),
+            curated=run.curated,
+            created_windows=list(run.result.created_windows),
+            windows={
+                wid: _applied_window_from_preview(pw)
+                for wid, pw in run.result.windows.items()
+            },
+        )
 
     def _persist_staged(self, staged: _StagedPreview) -> None:
         """The write half of D4's staged-reuse apply: admit the write and
@@ -13936,19 +14223,22 @@ class ReviewSession:
         by the same :func:`_curate` the apply runs, epoch gate included, so
         a refitting preview was gated when it was made, against the same
         base.
+
+        Runs inside :meth:`review_apply`'s transaction and stage: the cancel
+        check points are the stage's entry and :func:`_finish_batch`'s last
+        one (there is no fit, so no window between them), and nothing
+        persisted lands unless the whole apply commits.
         """
-        # Called inside review_apply's transaction.
         _require_engine_file(self._path)
-        with atomic_write(self._path):
-            _finish_batch(
-                replace(
-                    staged.curated,
-                    baseline_taken=_open_batch(
-                        self._path, lineage_id=staged.curated.pending_lineage
-                    ),
+        _finish_batch(
+            replace(
+                staged.curated,
+                baseline_taken=_open_batch(
+                    self._path, lineage_id=staged.curated.pending_lineage
                 ),
-                self._path,
-            )
+            ),
+            self._path,
+        )
 
     def review_apply(
         self,
@@ -13957,21 +14247,25 @@ class ReviewSession:
         actions: Optional[Sequence[Union[CurationAction, Mapping[str, Any]]]] = None,
         frame: Optional[Frame] = None,
         log_prefix: Optional[int] = None,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
     ) -> CurationApplyResult:
         """Apply a curation file as one batch.
 
-        Identical in arguments, return value and persisted effect to
+        Identical in arguments, return value, events and persisted effect to
         :meth:`Pipeline.review_apply
-        <ftmwpipeline.pipeline.Pipeline.review_apply>`, with one addition:
-        when an immediately-preceding :meth:`review_preview` staged the
-        identical plan -- same curation file, same ``frame``, same resolved
-        actions -- against a base that has not moved since, this persists
-        that already-computed result directly instead of re-running the
-        appliers, the cascade and the review derivation. The bytes persisted
-        are then guaranteed to be exactly the ones the preview showed rather
-        than a second computation trusted to agree with the first. Any
-        mismatch -- a different plan, or a base that moved -- falls back to a
-        full, ordinary apply, identical to the sessionless one.
+        <ftmwpipeline.pipeline.Pipeline.review_apply>` (without its
+        ``dry_run``), with one addition: when an immediately-preceding
+        :meth:`review_preview` staged the identical plan -- same curation
+        file, same ``frame``, same resolved actions -- against a base that has
+        not moved since, this persists that already-computed result directly
+        instead of re-running the appliers, the cascade and the review
+        derivation. The bytes persisted are then guaranteed to be exactly the
+        ones the preview showed rather than a second computation trusted to
+        agree with the first; such an apply re-fits nothing, so it emits no
+        ``WindowProgress``. Any mismatch -- a different plan, or a base that
+        moved -- falls back to a full, ordinary apply, identical to the
+        sessionless one.
 
         ``base_changed`` on the result is ``True`` only when a staged preview
         existed but had to be dropped because the base moved out from under
@@ -13982,14 +14276,24 @@ class ReviewSession:
         <ftmwpipeline.pipeline.Pipeline.review_apply>`'s: a staged preview
         was computed against the log as it stood, so none is reused when a
         prefix is given.
+
+        An interrupted apply (a cancel, a refusal) persists nothing and keeps
+        the staged preview and the drift note, so a retry of the same call
+        behaves as this one would have.
         """
-        source = curation_source(curation_path, actions)
-        # The transaction opens before the freshness check, so its
-        # write_conflict stat predates every input this apply is built from
-        # (the fingerprint, the staged preview, the shared context).
-        with _caller_frame_ids(), atomic_write(self._path):
-            result = self._apply(source, frame=frame, log_prefix=log_prefix)
-        self._resync_after_write()
+        with _review_stage("review apply", self._path, events, cancel) as scope:
+            with _review_body(scope, self._path):
+                result = self._apply(
+                    curation_source(curation_path, actions),
+                    frame=frame,
+                    log_prefix=log_prefix,
+                )
+            # The staged preview was persisted, or did not match this call:
+            # either way it is spent; and the drift note has been reported.
+            self._staged = None
+            self._pending_base_changed = False
+            self._resync_after_write()
+            scope.finish(review_apply_summary(result, False))
         return result
 
     def _apply(
@@ -13999,38 +14303,36 @@ class ReviewSession:
         frame: Optional[Frame],
         log_prefix: Optional[int],
     ) -> CurationApplyResult:
-        """The body of :meth:`review_apply`, inside its transaction."""
+        """The body of :meth:`review_apply`, inside its transaction. Leaves
+        the session's staging bookkeeping to :meth:`review_apply`, after the
+        commit."""
         # Before the staged-reuse path resolves the request: a pre-engine file
         # is refused before anything is resolved, fitted or written.
         _require_engine_file(self._path)
         shared = self._sync()
         base_changed = self._pending_base_changed
-        self._pending_base_changed = False
 
         staged = self._staged
-        if staged is not None:
-            same_request = (
-                log_prefix is None
-                and staged.source_key == _session_source_key(source)
-                and staged.frame == frame
-                and staged.fingerprint == self._fingerprint
-            )
-            if same_request:
-                plan, _, _ = _resolve_curation_call(self._path, source, frame)
-                if plan == staged.resolved_plan:
-                    self._persist_staged(staged)
-                    self._staged = None
-                    return CurationApplyResult(
-                        plan=plan,
-                        warnings=staged.warnings,
-                        applied=len(plan),
-                        dry_run=False,
-                        created_windows=list(staged.created_windows),
-                        windows=dict(staged.windows),
-                        base_changed=base_changed,
-                    )
-            # Staged, but it does not match this call -- irrelevant now.
-            self._staged = None
+        if (
+            staged is not None
+            and log_prefix is None
+            and staged.source_key == _session_source_key(source)
+            and staged.frame == frame
+            and staged.fingerprint == self._fingerprint
+        ):
+            plan, _, _ = _resolve_curation_call(self._path, source, frame)
+            if plan == staged.resolved_plan:
+                self._persist_staged(staged)
+                return CurationApplyResult(
+                    plan=plan,
+                    warnings=_warning_messages(staged.warning_details),
+                    warning_details=list(staged.warning_details),
+                    applied=len(plan),
+                    dry_run=False,
+                    created_windows=list(staged.created_windows),
+                    windows=dict(staged.windows),
+                    base_changed=base_changed,
+                )
 
         result = apply_curation_impl(
             self._path,

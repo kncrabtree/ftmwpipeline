@@ -227,8 +227,10 @@ These exist today; the contract freezes their names and the listed fields.
 - `review_log(path)` → `DecisionLogEntry` rows with the fields `order_index`,
   `window_id`, `frequency_mhz`, `kind`, `provenance`, `evidence`, `serial`,
   `targets`, `seeds_mhz`, `born_uids`.
-  Names, types and the `kind` / `provenance` vocabularies are frozen, so a
-  client may hash the log as an edit-set identity. `serial` (contract version
+  Names, types and the `kind` / `provenance` vocabularies are frozen. A client
+  that wants an edit-set identity hashes only the fields a replay reads (below),
+  not the floats and snapshots in the rest of a row, which need not agree
+  across platforms. `serial` (contract version
   16) is the decision's stable id: minted when the row is recorded, never
   reused or renumbered within the fit's lineage (`fit run` starts a new one),
   `Absent.NOT_RUN` on a row a pre-engine build recorded. It is what
@@ -247,9 +249,14 @@ These exist today; the contract freezes their names and the listed fields.
   anything is fit (in one batch, a later action on a window resolves against
   an earlier one's newborns at their seeds); a replay applies the rows as
   recorded, by uid, and never resolves a frequency or re-infers a merge or
-  split. `frequency_mhz` is display only (a `remove` row's, like a merge's
-  `merged_from`, is the fitted raw-frame frequency of the peak the request
-  resolved to). Rows are immutable: a replay (undo, log-prefix apply) keeps
+  split. Every frequency in a row, `merged_from` included, is raw-frame.
+  `frequency_mhz` is display only except on a create row, where it is the
+  planning anchor (a `remove` row's, like a merge's `merged_from`, is the fitted
+  frequency of the peak the request resolved to). A replay reads exactly:
+  `kind`, `window_id`, `serial`, `targets`, `seeds_mhz`, `born_uids`, a create
+  row's `frequency_mhz`, and from `evidence` `action_index`, `mode` and the
+  presence and `mode` of `created_window`; every other `evidence` key is a
+  recorded snapshot. Rows are immutable: a replay (undo, log-prefix apply) keeps
   every surviving row verbatim and only `order_index` is recomputed; a
   surviving row the replay cannot apply (a target gone, a birth on a held
   uid) is refused (`curation_conflict`, `replay_diverged`), an undo that would
@@ -411,7 +418,9 @@ stage persists them). It never computes a digest over incomplete inputs.
   - it has no analysis-epoch stamp;
   - one of its records is absent, has no field-set version, or is at an older
     version (`is_pre_provenance`);
-  - one of its records is at a **newer** version than this build knows;
+  - one of its records is at a **newer** version than this build knows (its
+    keys go in the error's `newer` list, not `missing`, and the remedy is to
+    upgrade ftmwpipeline rather than re-run);
   - a field its current version requires is missing (e.g. a version-2 timebase
     record without `clock_sources`).
 
@@ -557,6 +566,14 @@ holds at least one fitted line in it. Before Stage 5, `n_fitted_peaks` and
 `live` are `Absent.NOT_RUN`. While Stage 5 is `partial` (after a cancel), a
 window the fit has not reached reports both as `Absent.NOT_RUN`, never 0. Also available as a `read_table` table.
 
+`window_status(path, frame="raw")`: `frame` (`"raw"` | `"calibrated"`, CLI
+`--frame`) is the frame of `freq_min_mhz` / `freq_max_mhz`, echoed as the
+payload's `frame`. Calibrated bounds use the final products' own conversion, so
+they equal the window's `fit_window_mhz`; with `epsilon == 0` or no calibration
+the frames coincide (as for a curation verb's `frame="calibrated"`). Any other
+value is `bad_setting` (`path` `"frame"`). The `read_table` form is raw. A
+client never converts frequencies itself.
+
 **Windows after a structural merge.** Once a complete Stage 5 fit exists,
 every window geometry the contract reports for the fit is the geometry the fit
 was made on: `window_status`, the window model, and the windows every Stage 6
@@ -586,7 +603,8 @@ Stage 4 plan.
   `flat_decay`, `empty_window_residual`, `empty_window_spur`. Kinds are only
   ever added.
 - `severity` (float; higher asks for a look sooner);
-- `locations`: the molecular frequencies (MHz) the reason points at, empty for
+- `locations`: the molecular frequencies (MHz) the reason points at (raw frame,
+  like every frequency in `evidence`), empty for
   a window-wide reason;
 - `evidence`: a dict of the kind's declared keys (below), empty for a kind that
   declares none;
@@ -594,7 +612,8 @@ Stage 4 plan.
 
 `auto_merged_review`, `flat_decay` and `empty_window_spur` are advisory: they
 stay on the status but do not by themselves put the window in the queue
-(`needs_attention`).
+(`needs_attention`). The attention queue is `needs_attention` regardless of
+`provenance`; "left to review" is `needs_attention` and `provenance == "auto"`.
 Attention is advice. It never changes a fitted number, a final product or the
 analysis fingerprint.
 
@@ -630,10 +649,15 @@ its edge. One of the two flags a window when all of these hold:
   triggered that was not applied, or a thaw record of the window that was not
   accepted, with `S_coh` above the fit's own `residual_edge_threshold`. An edge
   a later accepted thaw resolved does not count. A replan record measured
-  before the window was last re-fit does not count either: a merge re-fits its
-  survivor and every window that transitively depends on it (the fitted plan's
-  dependency edges), so a record whose `revision_before` precedes the last such
-  merge's `revision_after` describes a fit that no longer exists. The records
+  before the window was last re-fit does not count either: a merge round
+  re-fits its survivor, every window that transitively depends on it, and the
+  primary of every accepted thaw whose record the round dropped, with that
+  primary's dependents, so a record whose `revision_before` precedes the
+  `revision_after` of the last merge that re-fit the window describes a fit
+  that no longer exists. Each accepted replan record stores its round's re-fit
+  set (`refit_window_ids`, contract version 17), and that set is what is read;
+  on a file written before it was stored, the set is the survivor and its
+  transitive dependents under the fitted plan's dependency edges. The records
   that remain are read in the order Stage 5 measured them, the current fit's
   thaws before the replan rounds that scanned it.
 
@@ -784,12 +808,19 @@ under `--output`.
   `value`), `not_found` (`kind` — `window`, `peak`, `file` or `decision` — and
 `ids`: every id a request named that does not exist, e.g. all unknown window
 ids of a curation batch),
-`incomplete_provenance` (`missing`), `file_exists`, `file_incompatible`
+`incomplete_provenance` (`missing`, `newer`), `file_exists`, `file_incompatible`
   (`file_version`, `supported_version`), `file_corrupt`, `epoch_mismatch` (`file_epoch`, `current_epoch`),
   `cancelled` (`stage`, `completed_stages`, `completed_windows`;
   §Events and cancellation), `callback_failed` (`event_schema`, `completed_windows`),
   `algorithm_failed` (`stage`), `write_conflict` (§Crash safety),
-  `curation_conflict` (`reason`, `ids`).
+  `curation_conflict` (`reason`, `ids`). Contract 17: `not_found` and
+  `curation_conflict` also carry `action_indices`, the 0-based request
+  positions (numbered as `actions[<i>]`; a curation file's action rows in
+  order) of the curation-batch action that failed, several for a coalesced
+  edit; absent `undefined` for a refusal of the whole batch at once (every
+  unknown window or `peak_uid` it names, every uncovered `remove`), and
+  absent `not_run` outside any batch. A batch refusal's message numbers
+  the action from the request, never from the resolved plan.
 - Each typed error remains a subclass of the built-in it replaced (most are
   `ValueError`), so existing `except` clauses keep working.
 - A `.ftmw` path that does not exist raises `not_found` (`kind: "file"`),
@@ -859,7 +890,8 @@ Until 5.2, cancelling Stage 5 leaves nothing behind, like any other stage.
     `estimate_noise`, `calibrate_tau`, `recommend_shape`, `calibrate_timebase`,
     `detect_peaks`, `assign_windows`, `fit_peaks`, `review_run`;
   - the curation and refit calls: `review_apply`, `review_preview`,
-    `review_accept`, `review_edit`, `review_create`, `review_undo`;
+    `review_accept`, `review_edit`, `review_create`, `review_undo`, on the
+    functional API, on `Pipeline`, and as `ReviewSession` verbs;
   - `report_run`, `scan_run`, `scan_all` and `run_pipeline`.
 
   `scan_run`'s existing `progress` callback keeps working, and passing `events`
@@ -887,6 +919,14 @@ Every event has `schema`, `operation` (the CLI verb, such as `"fit run"`) and
 
 - **`StageFinished.summary`** has exactly the keys of the same verb's
   `ftmw/run_result@1` summary. The two come from one builder.
+  `capabilities()["summary_keys"]` declares them per operation (the verb) as
+  `{"required": [...], "conditional": [...]}`: every required key is present,
+  a conditional key only in the case its declaration notes (`tau run`'s
+  `n_spur_*` except under `--gaussian`; `review run`'s final-products keys;
+  `review accept`'s bare-versus-candidate keys), and no other key appears.
+  Under `run_pipeline` each stage's `StageFinished` carries its own verb's
+  keys; `scan all` emits one `scan run` summary per knob. A test runs the
+  stage verbs and checks the emitted keys against the declaration.
 - **`WindowProgress`:**
   - Events come in **passes**. A pass is identified by its `(phase, round)`
     pair.
@@ -924,7 +964,7 @@ Every event has `schema`, `operation` (the CLI verb, such as `"fit run"`) and
   | `slow_window` | `window_id`, `elapsed_s`, `threshold_s` | a window takes longer than the threshold |
   | `epoch_acknowledged` | `file_epoch`, `current_epoch` | a call edits a fit under an epoch acknowledgement |
   | `environment_drift` | `fields` | a long operation opens a file whose recorded environment differs from the running one (once per operation) |
-  | `frame_mismatch` | `actions` (indices) | the existing curation advisory |
+  | `frame_mismatch` | `actions` (0-based request positions) | the existing curation advisory |
   | `walk_fallback` | `reason`, `n_windows` | the fit walk falls back to the sequential walk |
   | `timebase_skipped` | — | `run_pipeline` continues past a failed timebase calibration |
 
@@ -964,6 +1004,23 @@ What is left in the file is the same as after a cancel at that point.
 - Every Stage 6 write (`review_apply`, a refit with its replay and cascade,
   `review_undo`, an apply with `log_prefix`) is one unit: a cancel before its
   persist discards the whole write.
+- A `ReviewSession` verb is the same operation as its `Pipeline` method: one
+  `review` stage that owns the session's transaction, with `StageStarted` at
+  entry, the same check points, and `Invalidated` / `StageFinished` only after
+  the replace. The entry point it calls joins that stage and transaction; it
+  never opens its own. A cancelled verb leaves the file unchanged and the
+  session as it was (shared context, staged preview, pending `base_changed`),
+  and the session can continue. An apply that persists a staged preview
+  re-fits nothing: its check points are the stage's entry and the persist's
+  last one, and it emits no `WindowProgress`.
+- **A host's own threads.** On POSIX the parallel Stage 5 walk and the HTML
+  report fork the process, and `multiprocessing` closes `sys.stdin` in each
+  child, which waits on the lock a blocked `sys.stdin` read holds. While a long
+  call runs, no host thread may block in a `sys.stdin` read or hold another
+  Python-level lock a forked child touches. A host that reads cancel messages
+  from its standard input reads them with `os.read` on a duplicated fd 0, with
+  fd 0 and `sys.stdin` pointed at `os.devnull`. A walk that does not fork is
+  unaffected.
 - **Stage 5 in parallel.** A cancel stops the walk without waiting for windows
   that are still fitting:
   - the workers are terminated;
@@ -1034,7 +1091,9 @@ What is left in the file is the same as after a cancel at that point.
   holds open.
 - Within `run_pipeline`, each stage is its own atomic write, so a kill keeps
   every stage that finished before it.
-- **Concurrent writers.** A call's copy is taken when its write begins. If the
+- **Concurrent writers.** A call's copy is taken when its write begins, and the
+  file's state `write_conflict` compares against is recorded then, before the
+  call reads its inputs (a review verb records it at entry). If the
   file on disk changed after that, because another process wrote it, the call
   raises `write_conflict` (`WriteConflictError`, exit 1) instead of replacing
   the file, and the other write stands. Writes from one process to one file
@@ -1246,6 +1305,16 @@ curation-file row:
     curation CSV.
 - **Results are identical.** The same actions given as a file and as data give
   equal results, decision logs and files.
+- **Results name the request's actions** (contract 17). Each action of a
+  result's resolved `plan` carries `action_indices`, the 0-based request
+  positions it was resolved from (several for a coalesced edit), and each
+  per-window entry of the result's `windows` carries the request positions of
+  the actions that targeted that window, never plan positions. The
+  advisories are `warnings` (strings) and, entry for entry, `warning_details`
+  (`message`, `action_indices`), in the Python results, in
+  `review preview --json`, and beside the run_result `summary` of
+  `review apply --json` (dry run included). A batch refusal carries the same
+  indices (§Errors).
 
 **Frames are explicit.** Every curation action and every review call that
 takes a frequency declares its frame (`"raw"` or `"calibrated"`) as a typed,
@@ -1285,7 +1354,9 @@ Under
   human output reports (counts, chosen values, paths written), and at most
   flat objects of counts, never arrays. `stage` is `null` for a write that is
   not one stage (`settings`, `clocks`, `start run`, `run`, `report run`), and
-  stage names inside `summary` are canonical;
+  stage names inside `summary` are canonical. `review apply` adds top-level
+  `warnings` and `warning_details` beside `summary` (§Curation as data), since
+  `summary` holds no arrays;
 - any other verb prints its natural payload through `to_jsonable`;
 - an error prints its `ftmw/error@1` dict on stderr, as `--format json` does
   today.
@@ -1301,7 +1372,8 @@ refuses to run without `--output`.
 "schemas": [...], "accessors": [...], "codes": [...], "stages": [...],
 "metadata_keys": [...], "tables": {name: [columns]}, "fields": {type: [fields]},
 "vocabularies": {name: [values]}, "file_bound": {accessor: bool},
-"pipeline_names": {accessor: name}}`. Every group of the manifest the contract
+"pipeline_names": {accessor: name}, "summary_keys": {operation: {"required":
+[...], "conditional": [...]}}}`. Every group of the manifest the contract
 tests check appears, so a client can discover the surface without importing the
 package. `read capabilities` prints it, and no file is needed.
 

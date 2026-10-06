@@ -756,8 +756,8 @@ class TestCrossInterfaceConsistency:
 
 
 # ---------------------------------------------------------------------------
-# The plan field: a client can join action_indices back through it, and it
-# agrees with what a dry-run apply of the identical curation file resolves.
+# The plan field agrees with what a dry-run apply of the identical curation
+# file resolves; per-window action_indices name request rows, not plan slots.
 # ---------------------------------------------------------------------------
 
 
@@ -776,6 +776,30 @@ class TestPlanField:
         assert len(preview.plan) == len(dry.plan)
         for pa, pb in zip(preview.plan, dry.plan):
             assert pa == pb
+
+    def test_window_action_indices_are_request_positions(
+        self, sc_multi_file: Path, tmp_path: Path
+    ) -> None:
+        """The plan coalesces a window's add/remove rows into one edit, which
+        renumbers every later action; each window still reports the request
+        rows that targeted it."""
+        lo, hi = _fitted_window_ids(sc_multi_file)[:2]
+        with h5py.File(str(sc_multi_file), "r") as h5f:
+            sf = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+        (lo_fit,) = [wf for wf in sf.window_fits if wf.window_id == lo]
+        f_remove = float(lo_fit.fitted_peaks[0].frequency_mhz)
+        f_lo = _clear_add_freq(sc_multi_file, lo)
+        f_hi = _clear_add_freq(sc_multi_file, hi)
+        cur = tmp_path / "cur.csv"
+        cur.write_text(f"add,{lo},{f_lo},\nremove,{lo},{f_remove},\nadd,{hi},{f_hi},\n")
+
+        preview = review_preview_impl(sc_multi_file, cur, frame="raw")
+
+        # Plan positions: lo's edit is 0, hi's is 1.
+        assert [int(a.window_id) for a in preview.plan] == [lo, hi]
+        assert [a.action_indices for a in preview.plan] == [[0, 1], [2]]
+        assert preview.windows[lo].action_indices == [0, 1]
+        assert preview.windows[hi].action_indices == [2]
 
 
 # ---------------------------------------------------------------------------

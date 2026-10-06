@@ -25,7 +25,9 @@ from .._internal.stage6_impl import (
     DEFAULT_DISPLAY_BAR,
     DEFAULT_REVIEW_PARAMS,
     RANK_METRICS,
+    CurationApplyResult,
     RefitWindowResult,
+    ReviewPreviewResult,
     _active_acquisition_us_for_snap,
     _normalize_metric,
     acknowledge_environment_impl,
@@ -206,7 +208,9 @@ def _window_outcome_json(w: Any) -> dict:
     out = {
         "window_id": w.window_id,
         "origin": w.origin,
-        "action_indices": [i + 1 for i in w.action_indices],
+        # 0-based request positions, as warning_details and a batch refusal's
+        # action_indices number them.
+        "action_indices": list(w.action_indices),
         "n_peaks_before": w.n_peaks_before,
         "n_peaks_after": w.n_peaks_after,
         "chi2r_before": w.chi2r_before,
@@ -1195,6 +1199,21 @@ def cmd_review_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _warnings_json(
+    result: Union[CurationApplyResult, ReviewPreviewResult],
+) -> Dict[str, Any]:
+    """A batch result's advisories under ``--json``: ``warnings`` and, entry
+    for entry, ``warning_details``, numbered by 0-based request position as
+    the Python result and a batch refusal's ``action_indices`` number them."""
+    return {
+        "warnings": list(result.warnings),
+        "warning_details": [
+            {"message": d.message, "action_indices": list(d.action_indices)}
+            for d in result.warning_details
+        ],
+    }
+
+
 def cmd_review_apply(args: argparse.Namespace) -> int:
     """Apply a curation file of batched review edits (with optional dry-run)."""
     setup_logging(getattr(args, "verbose", False))
@@ -1223,12 +1242,14 @@ def cmd_review_apply(args: argparse.Namespace) -> int:
         return 1
 
     if json_mode(args):
-        # One builder for this summary and the operation's StageFinished.
+        # One builder for this summary and the operation's StageFinished. The
+        # advisories are lists, so they sit beside the scalar summary.
         record_run_result(
             args,
             stage="review",
             result=result,
             summary=review_apply_summary(result, dry_run),
+            extra=_warnings_json(result),
         )
     header = (
         "review apply (dry run): resolved plan" if dry_run else "review apply: plan"
@@ -1311,7 +1332,7 @@ def cmd_review_preview(args: argparse.Namespace) -> int:
         record_payload(
             args,
             {
-                "warnings": list(result.warnings),
+                **_warnings_json(result),
                 "created_windows": [
                     _created_window_json(pw) for pw in result.created_windows
                 ],

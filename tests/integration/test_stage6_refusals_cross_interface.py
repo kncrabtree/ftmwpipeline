@@ -40,6 +40,7 @@ from ftmwpipeline.core.data_structures import ENGINE_VERSION
 from ftmwpipeline.file_manager import (
     BadSettingError,
     CurationConflictError,
+    NotFoundValueError,
     PipelineCompatibilityError,
 )
 from ftmwpipeline.io.fitting_serialization import load_spectrum_fit_from_hdf5
@@ -389,6 +390,39 @@ def test_a_preview_is_refused_like_its_apply(
         )
         assert rc == 1
         assert (payload["code"], payload["reason"]) == ("curation_conflict", reason)
+    assert _sha(path) == before
+
+
+def test_an_unknown_window_accept_is_refused_by_dry_run_and_preview(
+    curated, tmp_path, capsys
+):
+    """A bare accept of a window the fit does not have is refused as not_found
+    by the apply, so its dry run and preview refuse it too."""
+    path = tmp_path / "f.ftmw"
+    shutil.copy(curated, path)
+    accept = tmp_path / "accept.csv"
+    accept.write_text("accept,987654,,\n")
+    before = _sha(path)
+
+    calls: List[Callable[[], Any]] = [
+        lambda: ftmw.review_apply(str(path), accept, dry_run=True, frame="raw"),
+        lambda: ftmw.review_apply(str(path), accept, frame="raw"),
+        lambda: ftmw.review_preview(str(path), accept, frame="raw"),
+        lambda: Pipeline.open(path).review_preview(accept, frame="raw"),
+    ]
+    for call in calls:
+        with pytest.raises(NotFoundValueError):
+            call()
+    with Pipeline.open(path).review_session() as session:
+        with pytest.raises(NotFoundValueError):
+            session.review_preview(accept, frame="raw")
+    for argv in (
+        ["review", "apply", str(path), str(accept), "--dry-run", "--frame", "raw"],
+        ["review", "preview", str(path), str(accept), "--frame", "raw"],
+    ):
+        rc, payload = _cli_error(argv, capsys)
+        assert rc == 1
+        assert payload["code"] == "not_found"
     assert _sha(path) == before
 
 

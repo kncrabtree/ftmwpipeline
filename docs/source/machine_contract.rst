@@ -39,10 +39,10 @@ The contract version
 ``__version__``::
 
     import ftmwpipeline
-    if ftmwpipeline.CONTRACT_VERSION < 16:
+    if ftmwpipeline.CONTRACT_VERSION < 17:
         raise RuntimeError("needs a newer ftmwpipeline")
 
-The first published contract is version ``1``; this release is version ``16``.
+The first published contract is version ``1``; this release is version ``17``.
 An addition (a new accessor, field or code) raises the version by one and never
 breaks an existing field. Every machine-readable payload also carries a
 **schema name** of the form ``ftmw/<payload>@<n>``; a schema name never changes
@@ -72,7 +72,8 @@ The payload is ``{"schema": "ftmw/capabilities@1", "contract_version": int,
 "schemas": [...], "accessors": [...], "codes": [...], "stages": [...],
 "metadata_keys": [...], "tables": {name: [columns]}, "fields": {type: [fields]},
 "vocabularies": {name: [values]}, "file_bound": {accessor: bool},
-"pipeline_names": {accessor: name}}``. Every group of the manifest
+"pipeline_names": {accessor: name}, "summary_keys": {operation: {"required":
+[...], "conditional": [...]}}}``. Every group of the manifest
 (``ftmwpipeline.contract.MANIFEST``) is present, in manifest order, so a client
 can discover the whole surface without importing the package:
 
@@ -96,6 +97,14 @@ can discover the whole surface without importing the package:
   ``decision_provenance`` (the ``DecisionLogEntry`` ``kind`` and
   ``provenance``), ``stage_state``, ``warning_code``, ``restart_reason`` and
   ``attention_kind`` (:ref:`contract-attention`).
+* ``summary_keys`` -- per operation (the CLI verb, such as ``"fit run"``), the
+  keys of its ``StageFinished.summary`` and ``ftmw/run_result@1`` summary:
+  ``required`` keys are always present, ``conditional`` ones only in the case
+  the declaration notes (``tau run`` has
+  ``n_spur_bins`` and ``n_spur_clusters`` except for ``--gaussian``;
+  ``review run`` has its final-products keys when the file has that table;
+  ``review accept`` has ``provenance`` for a bare accept and the before / after
+  keys for an accepted candidate).
 
 .. _contract-rules:
 
@@ -141,8 +150,9 @@ Rules every accessor follows
   (``PeakShape.LORENTZIAN`` is ``"lorentzian"``, also as a mapping key); a
   complex number is ``{"real": x, "imag": y}``; a non-finite float with no field
   or list to hold it (the top level) is an error rather than a silent ``null``.
-  Python code produces the same JSON with :func:`ftmwpipeline.to_jsonable`,
-  which applies the ``Absent`` rule (:ref:`contract-absent`), stamps a
+  Python code produces the same JSON with :func:`ftmwpipeline.to_jsonable`
+  (taken from the top-level package, ``from ftmwpipeline import to_jsonable``;
+  ``ftmwpipeline.serialize.to_jsonable`` is the same function), which applies the ``Absent`` rule (:ref:`contract-absent`), stamps a
   ``schema=`` name, and can hand arrays to a sink instead of inlining them.
 
 .. _contract-absent:
@@ -272,13 +282,17 @@ carries a stable ``code`` and typed attributes, and ``to_dict()`` returns::
      - ``NotFoundError``
      - ``kind`` (``"window"``, ``"peak"``, ``"file"`` or ``"decision"``),
        ``ids`` (every id the request named that does not exist; a peak or
-       window named by frequency is reported by that frequency in MHz)
+       window named by frequency is reported by that frequency in MHz),
+       ``action_indices`` (the failed curation-batch actions; see
+       :ref:`contract-curation-refusals`)
    * - ``not_found``
      - ``PipelineFileNotFoundError`` (a path that does not exist)
      - ``kind`` (``"file"``), ``ids`` (the path)
    * - ``incomplete_provenance``
      - ``IncompleteProvenanceError``
-     - ``missing``
+     - ``missing`` (inputs the file does not persist; re-run the stages that
+       own them), ``newer`` (inputs whose records a newer engine wrote;
+       upgrade ftmwpipeline, re-running cannot help)
    * - ``file_incompatible``
      - ``PipelineCompatibilityError``
      - ``file_version``, ``supported_version``
@@ -321,7 +335,7 @@ carries a stable ``code`` and typed attributes, and ``to_dict()`` returns::
      - ``CurationConflictError`` (a ``ValueError``)
      - ``reason`` (a stable slug, see :ref:`contract-curation-refusals`),
        ``ids`` (the windows, peaks or decisions involved, per ``reason``;
-       ``[]`` when it names none)
+       ``[]`` when it names none), ``action_indices`` (as for ``not_found``)
    * - ``pipeline_error``
      - ``PipelineFileError`` (the base class)
      - none. The declared fallback: a direct raise of the base class carries
@@ -500,7 +514,37 @@ The review calls (``review_edit``, ``review_apply``, ``review_preview``,
 ``review_create``, ``review_accept``, ``review_undo`` and their ``Pipeline``,
 session and CLI spellings) refuse with typed errors. A batch refusal that names
 one action keeps its type and adds the action to the message (``curation action
-<n> (...) failed: ...``).
+<n> (...) failed: ...``; ``curation actions <n>, <m> (...)`` for an edit that
+coalesced several add/remove rows). ``<n>`` is the action's 1-based position in
+the request, not in the resolved plan, which runs creates first and then the
+edits by ascending window.
+
+A ``not_found`` or ``curation_conflict`` raised this way (contract 17) carries
+``action_indices``: the 0-based request positions of the failed action, several
+for a coalesced edit, ascending. They are numbered as ``actions[<i>]`` is; in a
+curation file, the action rows are numbered in order, without comment, blank
+or header lines, so a file and the same actions given as data agree. For a
+refusal of the whole batch at once (every unknown window or ``peak_uid`` it
+names, every uncovered ``remove``), which names ids rather than one action,
+``action_indices`` is ``None``: on the wire ``null`` with
+``action_indices_absent: "undefined"``. Outside any batch it is ``None`` with
+``action_indices_absent: "not_run"``. Each
+``PlannedAction`` of a result's ``plan`` carries the same ``action_indices``,
+and so does each per-window entry of a result's ``windows``
+(``AppliedWindowResult``, ``PreviewWindowResult``; ``windows[]`` of ``review
+preview --json``): the request positions of the actions that targeted the
+window, ``[]`` for a window only the cascade re-fit. Before contract 17 the
+per-window field held plan positions (1-based in ``review preview --json``).
+
+The advisories of ``review_apply`` (including ``dry_run``) and
+``review_preview`` are ``warnings``, a list of strings, and, entry for entry,
+``warning_details``: a ``CurationWarningDetail`` of ``message`` (the string)
+and ``action_indices`` (the request positions the advisory is about; for the
+frame-mismatch advisory, the actions whose candidates matched, a coalesced
+edit's rows together). ``review preview --json`` carries both keys, and so
+does ``review apply --json`` (with or without ``--dry-run``), beside its
+``ftmw/run_result@1`` envelope's ``summary``, which stays scalars only. The
+``frame_mismatch`` event's ``actions`` are the same request positions.
 
 * ``bad_setting``, with ``path`` naming what the caller wrote:
 
@@ -736,7 +780,14 @@ result's own ``invalidated`` (canonical names, in re-run order; ``[]`` when
 none; :ref:`contract-invalidation`). ``summary`` holds the scalars the human
 output reports (counts, chosen values, paths written, a dict of counts), never
 an array. A value with no measurement (an undefined ``epsilon``) is ``null``
-with its ``"<field>_absent"`` sibling.
+with its ``"<field>_absent"`` sibling. ``review apply`` adds two top-level keys
+beside ``summary`` (contract 17), its result's ``warnings`` and
+``warning_details`` (:ref:`contract-curation-refusals`).
+
+The table below describes each verb's summary in prose; the exact keys, with
+the conditional ones marked, are ``capabilities()["summary_keys"]`` (also the
+keys of the verb's ``StageFinished.summary``,
+:ref:`machine-contract-events`).
 
 .. list-table::
    :header-rows: 1
@@ -773,7 +824,7 @@ with its ``"<field>_absent"`` sibling.
    * - ``peaks run``, ``windows run``, ``fit run``
      - ``peaks``, ``windows``, ``fit``
      - run_result: the counts the human output reports (``fit run`` adds the
-       resume fields of :ref:`contract-partial-fits`)
+       resume fields of :ref:`contract-partial-fits`, always present)
    * - ``review run`` / ``apply`` / ``edit`` / ``create`` / ``accept`` /
        ``undo``
      - ``review``
@@ -813,7 +864,8 @@ with its ``"<field>_absent"`` sibling.
        ``acknowledge-environment``
      - n/a
      - ``{"windows": [...]}`` / ``{"entries": [...], "refit_required"}`` /
-       ``{"warnings", "created_windows", "windows"}`` / the snap tolerance /
+       ``{"warnings", "warning_details", "created_windows", "windows"}`` /
+       the snap tolerance /
        the acknowledgement
    * - ``settings show`` / ``defaults``
      - n/a
@@ -899,7 +951,7 @@ Each, with its absence cases:
   includes every ``<column>__status`` companion.
 
   **Status columns.** The ``fit_peaks``, ``fit_windows``, ``fit_audit``,
-  ``fit_doublets`` and ``peaks`` tables carry a ``uint8``
+  ``fit_doublets``, ``fit_replans`` and ``peaks`` tables carry a ``uint8``
   ``<column>__status`` companion (``0`` present, ``1`` not run, ``2``
   undefined) for each column below, inserted right after it; column selection
   accepts them. The value column keeps its stored fill (``nan``, ``inf``,
@@ -978,14 +1030,22 @@ Each, with its absence cases:
   produced no usable fit (it did not converge, or returned the wrong number
   of peaks).
 
-  ``fit_replans`` carries no status columns either. A row with ``accepted``
-  false has a ``reason`` that starts with exactly one of ``not merged:``
+  ``fit_replans`` carries one status column, ``refit_window_ids__status``
+  (contract 17), ``1`` on a row written before the re-fit set was stored. A
+  row with ``accepted`` false has a ``reason`` that starts with exactly one of
+  ``not merged:``
   (the flagged window's fit holds no line, or no window touches it),
   ``refused:`` (the merge would break the plan's width or peak cap),
   ``deferred:`` (the pair waited behind another merge that round) or
   ``failed:`` (Stage 4 could not apply it); an accepted row's ``reason``
   describes the flagged edge. ``revision_after`` equals ``revision_before`` on
-  every row that is not accepted.
+  every row that is not accepted. ``refit_window_ids`` (contract 17) is a JSON
+  list of the window ids the row's merge round re-fit, ascending: the survivor,
+  the windows that transitively depend on it, and the primary of every accepted
+  thaw whose record the round dropped, with that primary's dependents. It is
+  ``"[]"`` on a row that is not accepted, and the fill ``""`` with status ``1``
+  on a file written before the set was stored (``ReplanInfo.refit_window_ids``
+  is ``Absent.NOT_RUN`` there).
 
   The ``window_status`` table is described under :ref:`contract-window-status`.
 
@@ -1098,10 +1158,23 @@ Each, with its absence cases:
   when it was made (in one curation file or ``actions`` batch, an action after
   another on the same window resolves against the other's newborns at their
   seeds); a replay applies the rows as recorded, by uid, and never resolves a
-  frequency again. ``frequency_mhz`` is display only: the frequency sent for
-  an add, the anchor for a create, a merge's seed, a split's parent, and for a
-  remove the fitted frequency (raw frame) of the peak it resolved to; a
-  merge's ``merged_from`` likewise holds its parents' fitted frequencies.
+  frequency again. Every frequency in a row is in the raw frame, and
+  ``frequency_mhz`` is the frequency sent for an add, the anchor for a create,
+  a merge's seed, a split's parent, and for a remove the fitted frequency of
+  the peak it resolved to; a merge's ``merged_from`` likewise holds its
+  parents' fitted frequencies, raw. ``frequency_mhz`` is display only on every
+  row but a create row, where it is the planning anchor the replay plans the
+  window from.
+
+  **What a replay reads.** Exactly these fields of a row: ``kind``,
+  ``window_id``, ``serial``, ``targets``, ``seeds_mhz``, ``born_uids``, a
+  create row's ``frequency_mhz`` (a ``create_window`` row, or an ``add`` row
+  carrying ``created_window`` evidence), and from ``evidence`` the
+  ``action_index`` (which rows were one action), ``mode`` (a ``create_window``
+  row's), and ``created_window`` (its presence marks an implied create, and its
+  ``mode``). Every other ``evidence`` key (``chi2r_before``, ``n_peaks_before``,
+  ``merged_from``, ``inferred``, ``requested_freq_mhz``, ``split_into``, ...)
+  is a recorded snapshot that no replay reads.
   Rows are immutable: a replay (``review_undo``, an apply at a ``log_prefix``)
   keeps every surviving row verbatim, and only ``order_index`` changes. A
   row's ``evidence`` (``chi2r_before`` / ``chi2r_after``, ``n_peaks_before`` /
@@ -1346,7 +1419,9 @@ path that does not exist is ``not_found`` with kind ``"file"``; an unknown
 ``path`` ``"format"`` (``value`` the name given, or ``null`` when detection
 found none); a source that does not fit the named or detected format is
 ``bad_setting`` with ``path`` ``"source"``. The accessor reads only the source
-and creates no ``.ftmw`` file. ``validate_source`` describes FID 0 alone.
+and creates no ``.ftmw`` file. ``preview_source`` is the contract-level probe of
+a source, with these typed refusals; the loader-level ``validate_source``
+describes FID 0 alone and is not part of the contract.
 
 .. _contract-settings-rows:
 
@@ -1371,11 +1446,12 @@ Each ``SettingRow`` (and each item of ``settings show`` / ``settings defaults``
 
 ``units``, ``choices`` and ``bounds`` are reported only where the setting's
 declaration states them; ``None`` means "not stated", never "unrestricted". At
-present ``stage5.conservative.n_eff_kind`` is the one ``choice``, and no setting
-states bounds. ``settings_set`` / ``settings set`` enforces whatever a row
-states, and so does every stage when it resolves its settings from a
+present ``stage5.conservative.n_eff_kind`` is the one ``choice``; the
+``shape_spec`` row ``stage5.shape`` also reports ``choices``, the shape kinds it
+accepts (``["lorentzian", "gaussian"]``). No setting states bounds.
+``settings_set`` / ``settings set`` enforces whatever a row states, and so does every stage when it resolves its settings from a
 ``settings=`` object, a preset or the file (:ref:`contract-bad-settings`), so a
-``choice`` row's ``choices`` are exactly the strings a run accepts.
+row's ``choices`` are exactly the strings a run accepts.
 
 ``value`` and ``hard_default`` are typed JSON: a pair or list is an array, a
 ``ShapeSpec`` is ``{"kind": "gaussian"}``, and clock sources are an array of
@@ -1408,14 +1484,27 @@ re-run order (:ref:`contract-stage-names`); it does not depend on the file.
 Window status: ``window_status``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``window_status(path)`` returns ``{"schema": "ftmw/window_status@1",
-"windows": [...]}``, one ``ftmwpipeline.WindowStatusRow`` per window of the
-plan the fit was made on and per window Stage 6 created, with ``window_id``,
-``freq_min_mhz``, ``freq_max_mhz``, ``created``, ``n_fitted_peaks``, ``live``
-and ``merged_from``. A window is **live** when the Stage 5 fit holds at least
-one fitted line in it. Rows ascend by ``freq_min_mhz`` and then ``window_id``.
+``window_status(path, frame="raw")`` returns ``{"schema":
+"ftmw/window_status@1", "frame", "windows": [...]}``, one
+``ftmwpipeline.WindowStatusRow`` per window of the plan the fit was made on and
+per window Stage 6 created, with ``window_id``, ``freq_min_mhz``,
+``freq_max_mhz``, ``created``, ``n_fitted_peaks``, ``live`` and
+``merged_from``. A window is **live** when the Stage 5 fit holds at least one
+fitted line in it. Rows ascend by ``freq_min_mhz`` and then ``window_id``.
 A created window that reuses a plan ``window_id`` (the narrow-gap widening
 case) replaces that plan row, with its own bounds and ``created`` true.
+
+**Frame of the bounds (contract 17).** ``freq_min_mhz`` and ``freq_max_mhz`` are
+in the frame ``frame`` names, and the payload's ``frame`` echoes it. ``"raw"``
+(the default) is the frame of the fit, the window model and every stored value;
+``"calibrated"`` is the frame of the final products, so a window's calibrated
+bounds equal the ``fit_window_mhz`` of each of its lines. The conversion is the
+one the final products apply, against the file's current calibration; where
+that calibration has ``epsilon == 0``, or the file has none to convert against,
+the two frames coincide, as for a curation verb's ``frame="calibrated"``. Any
+other value is refused (``bad_setting``, ``path`` ``"frame"``), whatever stage
+the file is at. On the command line the argument is ``--frame {raw,calibrated}``.
+A program does not convert frequencies itself; it asks for the frame it needs.
 
 **Windows after a structural merge.** Before a complete Stage 5 fit (a partial
 fit included), and after a fit no structural merge revised, the plan is the
@@ -1448,7 +1537,8 @@ Absence and refusals:
   ``command`` ``windows run``.
 
 Its columnar form is the ``window_status`` table of ``read_table`` (and of
-``read table``), built from the same rows: the seven columns plus
+``read table``), built from the same rows, with raw bounds: the seven columns
+plus
 ``n_fitted_peaks__status`` and ``live__status`` (``1`` before Stage 5, where
 the value columns hold the fill ``0`` / ``False``, which a program must not
 read). ``merged_from`` is a text column holding each row's list as JSON
@@ -1458,6 +1548,7 @@ raises the same ``StageDependencyError``. The CLI prints the records inline:
 .. code-block:: console
 
    $ ftmwpipeline read window_status experiment.ftmw
+   $ ftmwpipeline read window_status experiment.ftmw --frame calibrated
 
 The fitted model: ``window_model`` and ``spectrum_model``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1552,8 +1643,9 @@ Stage 2b shape recommendation is not hashed itself; its verdict is covered
 where it was used (the Stage 3 gap-pass shape and the Stage 5 fit shape).
 
 Not covered: the FID samples themselves (hash ``fid_samples`` if you need a
-spectrum identity), curation decisions (hash ``review_log`` if you need an
-edit-set identity), the attention-routing arguments of ``review run``, write
+spectrum identity), curation decisions (hash the fields a replay reads, listed
+under ``review_log``, if you need an edit-set identity: the other fields
+include floats and evidence snapshots that need not agree across platforms), the attention-routing arguments of ``review run``, write
 timestamps, preset names, and the package version and environment (code
 changes that move results are marked by the analysis epoch, which is covered).
 
@@ -1570,7 +1662,10 @@ cannot be fingerprinted. The call then raises ``IncompleteProvenanceError``
 (code ``incomplete_provenance``) instead of hashing incomplete inputs. Its
 ``missing`` attribute lists every gap, across all stages, as dotted keys such as
 ``ft.analysis_epoch``, ``tau.stft``, ``peaks.consumed`` or
-``timebase.clock_sources``. Re-running the stages named records them.
+``timebase.clock_sources``. Re-running the stages named records them. A record
+written by a newer engine than this one is not a gap: its keys are listed in
+``newer`` instead, and the remedy is to upgrade ftmwpipeline; re-running
+cannot make an older engine read them.
 
 Writing a file
 --------------
@@ -1657,11 +1752,32 @@ operations are every stage run (``import_data`` / ``Pipeline.create``,
 ``assign_windows``, ``fit_peaks``, ``review_run``), the curation calls
 (``review_apply``, ``review_preview``, ``review_accept``, ``review_edit``,
 ``review_create``, ``review_undo``), ``report_run``, ``scan_run``,
-``scan_all`` and ``run_pipeline`` (``Pipeline.build``).
+``scan_all`` and ``run_pipeline`` (``Pipeline.build``). A ``ReviewSession``'s
+verbs (``review_edit``, ``review_accept``, ``review_create``, ``review_undo``,
+``review_preview``, ``review_apply``) take the same two arguments and are the
+same operations as their ``Pipeline`` methods: the same events, check points
+and summaries, with ``Invalidated`` and ``StageFinished`` after the session's
+write is durable. A cancelled session verb leaves the file and the session as
+they were (a staged preview stays staged), and the session stays usable. An
+apply that persists a staged preview re-fits nothing, so it emits no
+``WindowProgress``.
+
+**A host that reads cancel messages while a long call runs.** On POSIX the
+parallel Stage 5 walk and the HTML report fork the process. Python's
+``multiprocessing`` closes ``sys.stdin`` in every forked child, and that close
+waits on the lock a blocked ``sys.stdin`` read holds. While a long call runs,
+therefore, no host thread may block in a ``sys.stdin`` read, or hold any other
+Python-level lock that a forked child touches. A host that takes cancel
+messages on its standard input should read them with ``os.read`` on a
+duplicated file descriptor 0, and point descriptor 0 and ``sys.stdin`` at
+``os.devnull`` for the duration, so the child's close has nothing to wait for.
+A walk that does not fork (``jobs=1``, or no ``fork`` on the platform) is
+unaffected. A cancel is checked between windows, and the parallel walk
+polls about every 0.2 s; no check is made inside one window's fit.
 
 The callback runs on the calling thread, never in a worker process. Each event
 is a frozen dataclass exported from ``ftmwpipeline`` and serializes through
-``to_jsonable``; every one carries ``schema``, ``operation`` (the CLI verb,
+``to_jsonable`` (imported from the top-level package, as in the example below); every one carries ``schema``, ``operation`` (the CLI verb,
 such as ``"fit run"``, or ``"run"`` for ``run_pipeline``) and ``stage`` (a
 canonical stage name, or ``null`` for a step that is not a stage: start
 detection, the report, a scan):
@@ -1670,7 +1786,12 @@ detection, the report, a scan):
   check.
 * ``StageFinished`` (``ftmw/stage_finished@1``: ``elapsed_s``, ``summary``)
   closes it once its results are written. ``summary`` has the keys of the same
-  verb's ``ftmw/run_result@1`` summary.
+  verb's ``ftmw/run_result@1`` summary, declared per operation in
+  ``capabilities()["summary_keys"]``: every ``required`` key is present and no
+  key outside ``required`` and ``conditional`` is. Under ``run_pipeline`` each
+  stage's ``StageFinished`` carries its own verb's keys; ``scan all`` emits one
+  ``scan run`` summary per knob. The scan verbs and ``review preview`` have no
+  ``run_result``; their summaries are the declared keys alone.
 * ``WindowProgress`` (``ftmw/window_progress@1``: ``phase``, ``round``,
   ``index``, ``total``, ``window_id``, ``n_peaks``, ``chi2r``, ``elapsed_s``,
   ``dropped``) follows each window the Stage 5 walk fits, each window a Stage 6
@@ -1833,7 +1954,9 @@ with that copy in one ``os.replace`` when it finishes.
   call's write.
 * *Pipelines.* Within ``run_pipeline`` each stage is its own atomic write, so a
   kill keeps every stage that finished before it.
-* *Concurrent writers.* The copy is taken when the call's write begins. If
+* *Concurrent writers.* The copy is taken when the call's write begins, and the
+  file's state that ``write_conflict`` compares against is recorded then too,
+  before the call reads its inputs (a review verb records it at entry). If
   another process wrote the file after that, the call raises ``write_conflict``
   (``WriteConflictError``, attribute ``path``, exit ``1``) instead of replacing
   it; the other write stands and nothing of this call is kept. Re-run the call
@@ -2021,14 +2144,20 @@ map a window id to a ``WindowReviewStatus``; each status's
   ``empty_window_spur``. Kinds are only ever added;
 * ``severity``, a float; higher asks for a look sooner;
 * ``locations``, the molecular frequencies (MHz) the reason points at, empty
-  for a window-wide reason;
+  for a window-wide reason. They are in the raw frame, like every frequency in
+  ``evidence`` (a candidate's ``frequency_mhz``, a spur's
+  ``spur_center_mhz``); ``window_status(path, frame="raw")`` reports window
+  bounds in the same frame;
 * ``evidence``, a dict of the kind's declared keys, empty for a kind that
   declares none (only the two empty-window kinds declare any, below);
 * ``detail``, a sentence for a person. Its text is not contract.
 
 ``auto_merged_review``, ``flat_decay`` and ``empty_window_spur`` are advisory:
 they stay on the status but do not put the window in the queue
-(``needs_attention``) on their own. Attention is advice: it never changes a
+(``needs_attention``) on their own. The attention queue is every window whose
+status has ``needs_attention``, whatever its ``provenance``; the windows *left
+to review* are the narrower set with ``needs_attention`` and ``provenance ==
+"auto"`` (not yet edited or accepted). Attention is advice: it never changes a
 fitted number, a final product or the analysis fingerprint.
 
 **Statuses are recomputed on every write (contract 16).** Every Stage 6 write
@@ -2098,9 +2227,14 @@ window's edge is still coherent. Such a window is flagged when:
   that was not accepted, with ``S_coh`` above the fit's own
   ``residual_edge_threshold``. An edge a later accepted thaw resolved does not
   count, nor does a replan record measured before the window was last re-fit:
-  a structural merge re-fits its survivor and every window that transitively
-  depends on it, so a record whose ``revision_before`` precedes that merge's
-  ``revision_after`` describes a fit that is gone. The current fit's thaws are
+  a structural merge round re-fits its survivor, every window that
+  transitively depends on it, and the primary of every accepted thaw whose
+  record the round dropped, with that primary's dependents; an accepted replan
+  record stores that set as ``refit_window_ids`` (contract 17). A record whose
+  ``revision_before`` precedes the ``revision_after`` of a merge that re-fit
+  the window describes a fit that is gone. On a file written before the set
+  was stored, the re-fit set is read as the survivor and the windows that
+  transitively depend on it in the fitted plan. The current fit's thaws are
   read before the replan rounds that scanned it.
 
 The kind depends on the Stage 3 peaks the plan put in the window. When every

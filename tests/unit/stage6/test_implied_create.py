@@ -469,7 +469,8 @@ def test_review_preview_implied_create_executes_in_memory(stage5_multi_file, tmp
     win = preview.windows[wid]
     assert win.n_peaks_before == 0
     assert win.n_peaks_after == 1
-    assert win.action_indices == [0, 1]  # both the create and the edit
+    # Both the create and the edit halves come from the one request row.
+    assert win.action_indices == [0]
     # A preview never persists.
     assert review_log_impl(path) == []
 

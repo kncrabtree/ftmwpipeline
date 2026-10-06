@@ -306,6 +306,65 @@ class TestRefreshFrozenFromSources:
         )
         assert dep.fixed_parameters["other_meta"] == {"keep": 1}
 
+    def test_a_rebuilt_entry_carries_the_source_line_s_peak_uid(self):
+        src = self._src(1, [(100.0, 1.0, 0.0, 5000.0), (100.4, 0.8, 0.0, 4000.0)])
+        src.fitted_peaks[0].peak_uid = 4242
+        dep = _wf(2, frozen=[(1, 100.0, 0.9, 0.0)])
+        _refresh_frozen_from_sources(
+            dep,
+            (1,),
+            {2: _fw(2, [(1, 100.0, False)])},
+            {1: src, 2: dep},
+            min_freeze_snr=50.0,
+        )
+        # An unstamped line stays unstamped: None, never a derived value.
+        assert [e["peak_uid"] for e in self._frozen(dep)] == [4242, None]
+
+    def test_a_rebuilt_entry_is_the_entry_stage5_writes(self):
+        """The refresh of an unedited fit rebuilds each frozen entry exactly as
+        Stage 5 wrote it: the same keys, in the same order, the same values."""
+        from ftmwpipeline.fitting.plan_execution import DEFAULT_MIN_FREEZE_SNR
+        from ftmwpipeline.fitting.result_conversion import (
+            window_outcome_to_fitting_result,
+        )
+        from tests.unit.fitting.test_plan_execution import SIDEBAND, T_US
+        from tests.unit.fitting.test_result_conversion import (
+            _two_window_plan_outcome,
+        )
+
+        out, plan, freqs, *_ = _two_window_plan_outcome()
+        # As a stamped walk leaves them: the line and its frozen copy share it.
+        out.window_outcomes[0].fit.fit.peaks[0].peak_uid = 909090
+        (frozen,) = out.window_outcomes[1].fixed_peaks
+        frozen.model_peak.peak_uid = 909090
+        fits = {
+            wid: window_outcome_to_fitting_result(
+                out.window_outcomes[wid],
+                plan.window(wid),
+                sideband=SIDEBAND,
+                peak_frequencies_mhz=freqs,
+                acquisition_us=T_US,
+            )
+            for wid in (0, 1)
+        }
+        written = self._frozen(fits[1])
+        assert [e["peak_uid"] for e in written] == [909090]
+        _refresh_frozen_from_sources(
+            fits[1],
+            (0,),
+            {1: plan.window(1)},
+            fits,
+            min_freeze_snr=DEFAULT_MIN_FREEZE_SNR,
+        )
+        rebuilt = self._frozen(fits[1])
+        assert [list(e) for e in rebuilt] == [list(e) for e in written]
+        assert [
+            {k: v for k, v in e.items() if k != "frequency_mhz"} for e in rebuilt
+        ] == [{k: v for k, v in e.items() if k != "frequency_mhz"} for e in written]
+        assert [e["frequency_mhz"] for e in rebuilt] == pytest.approx(
+            [e["frequency_mhz"] for e in written], abs=1e-9
+        )
+
 
 class TestCascadeIntoAnUnavailableWindow:
     """A merged fit with no stored plan: survivor 1's fit holds window 3's line

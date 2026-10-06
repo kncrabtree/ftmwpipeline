@@ -490,6 +490,7 @@ def _step1_refresh(
                     "amplitude": float(pk.amplitude),
                     "phase": float(pk.phase) if pk.phase is not None else 0.0,
                     "freeze_eligible": True,
+                    "peak_uid": None if pk.peak_uid is None else int(pk.peak_uid),
                 }
             )
     frozen = preserved_edge_free + rebuilt

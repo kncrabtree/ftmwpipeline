@@ -17,6 +17,7 @@ from ftmwpipeline._internal.tuning.settings_inspection import (
 )
 from ftmwpipeline._internal.tuning.settings_mutation import set_setting
 from ftmwpipeline.cli.main import main
+from ftmwpipeline.core.peak_shape import PeakShape
 from ftmwpipeline.serialize import to_jsonable
 
 
@@ -41,7 +42,10 @@ def test_every_row_has_a_contract_type(rows):
 def test_choices_units_bounds_only_where_stated(rows):
     n_eff = rows["stage5.conservative.n_eff_kind"]
     assert n_eff.type == "choice" and "kish_mag" in (n_eff.choices or [])
-    assert [p for p, r in rows.items() if r.choices] == [n_eff.path]
+    shape = rows["stage5.shape"]
+    assert shape.type == "shape_spec"
+    assert shape.choices == [m.value for m in PeakShape]
+    assert {p for p, r in rows.items() if r.choices} == {n_eff.path, shape.path}
     assert rows["stage2.window_mhz"].units == "MHz"
     assert rows["stage1.start_us"].units == "us"
     assert rows["stage1.trim"].units == "MHz"

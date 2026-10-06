@@ -64,14 +64,15 @@ class TestCaptureEnvironment:
         assert rec.scipy
         assert rec.h5py
 
-    def test_the_epoch_is_six_after_the_thaw_fix(self):
-        """An accepted Stage 5 thaw now keeps the thawed line frozen in the
-        dependent, re-frozen from the co-fit primary (before epoch 6 it became
-        a free peak there and was lost), so a fit made under epoch 5 is not
-        comparable with one made now. Raising the epoch again is a deliberate
-        act: update this pin with it."""
-        assert ANALYSIS_EPOCH == 6
-        assert capture_environment().analysis_epoch == 6
+    def test_the_epoch_is_seven_after_the_thaw_follow_ups(self):
+        """An accepted thaw's primary re-derives its doublet adjudications and
+        rescue ledger from the installed fit, and a structural merge that drops
+        an accepted thaw's record re-fits its primary (epoch 7); before that an
+        accepted thaw stopped losing the thawed line (epoch 6). A fit made under
+        an earlier epoch is not comparable with one made now. Raising the epoch
+        again is a deliberate act: update this pin with it."""
+        assert ANALYSIS_EPOCH == 7
+        assert capture_environment().analysis_epoch == 7
 
     def test_blas_is_identified(self):
         """threadpoolctl is a hard dependency, so the runtime BLAS is knowable."""

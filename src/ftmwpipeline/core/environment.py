@@ -68,7 +68,7 @@ __all__ = [
 ]
 
 
-ANALYSIS_EPOCH = 6
+ANALYSIS_EPOCH = 7
 """Declared analysis-compatibility epoch of this package.
 
 Bump this **only** when a change alters the numerical output of a stage --

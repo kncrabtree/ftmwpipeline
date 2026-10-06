@@ -301,7 +301,17 @@ residual leakage, and if so it renegotiates rather than shipping an under-fit wi
   carries coherent leakage. An accepted co-fit refines the line in its
   primary window, which owns it, and the dependent re-freezes everything it reads
   from that primary from the refined fit, by the same rule that froze it. The line
-  stays out of the dependent's free peaks, and so out of its line list. It is the
+  stays out of the dependent's free peaks, and so out of its line list. The
+  primary's doublet adjudications and rescue-candidate ledger, derived by its own
+  pass from the fit the thaw replaced, are derived again from the installed fit,
+  under the primary's own fit conditions, without changing it. That fit is the
+  primary's final one, after its cleanup and its convergence adds, which its own
+  pass derives the two records before; the ledger is derived from the candidates
+  its rescue detected, so a candidate an earlier pass dropped is listed when the
+  installed residual carries a peak there, and one an add fitted as a line is
+  not. The records
+  of what happened to the fit (audit trail, knockouts, cleanup record, add steps,
+  the thaw event) stay as they were. It is the
   cheaper of the two remedies, but it needs a fixed contributor on
   the flagged side: on the reference experiment no window carries one at the default
   :doc:`materiality gate <stage4_windows>`, so its nine flagged edges record thaw
@@ -310,7 +320,9 @@ residual leakage, and if so it renegotiates rather than shipping an under-fit wi
 - **Structural replan.** When no contributor accounts for the coherent edge, because
   a real line straddles the boundary, Stage 5 asks Stage 4 to **merge** the two
   windows through its :doc:`re-plan entry point <stage4_windows>`, bumping the plan
-  revision, and refits the merged survivor and every window that depends on it. The flagged window's own fit must hold at
+  revision, and refits the merged survivor and every window that depends on it,
+  with the primary of every accepted thaw the merge's re-fit discards (below). The
+  flagged window's own fit must hold at
   least one line: a window whose lines the cleanup pruned has no fitted line to
   straddle its boundary, so its edge residual is not evidence for a merge. Only a
   neighbour that **touches** the window qualifies: at most one active-FT bin may lie
@@ -326,7 +338,8 @@ residual leakage, and if so it renegotiates rather than shipping an under-fit wi
   chosen again without it, so a request that waited behind it gets its turn, and the
   loop stops early only when no qualifying pair is left. A merge drops the thaw, rescue
   and cleanup records of every window it re-fits or absorbs before the re-fit records
-  its own.
+  its own. An accepted thaw whose record is dropped had rewritten its primary, so that
+  primary is re-fit from scratch too, with every window that depends on it.
 
   Every replan attempt is recorded (``fit_replans``). An accepted merge's ``reason`` is
   the flagged edge it answered; any other ``reason`` starts with one of four prefixes:

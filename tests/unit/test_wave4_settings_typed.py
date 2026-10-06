@@ -76,6 +76,16 @@ def test_bad_clocks_and_shape_are_typed():
         ShapeSpec.coerce("triangle")
 
 
+def test_shape_coerces_the_json_a_settings_row_reports():
+    from ftmwpipeline.core.peak_shape import PeakShape
+
+    assert ShapeSpec.coerce('{"kind": "gaussian"}').kind is PeakShape.GAUSSIAN
+    with pytest.raises(BadSettingError):
+        ShapeSpec.coerce('{"kind": ')
+    with pytest.raises(BadSettingError):
+        ShapeSpec.coerce('{"kind": "triangle"}')
+
+
 def test_bad_trim_is_typed():
     with pytest.raises(BadSettingError) as ei:
         _parse_trim("40000:26500")

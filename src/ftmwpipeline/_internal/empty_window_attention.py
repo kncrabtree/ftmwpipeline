@@ -91,13 +91,19 @@ def last_refit_revision(
     """The plan revision after which Stage 5 last re-fit ``window_id``; ``0``
     when no structural merge re-fit it.
 
-    A merge re-fits its survivor and every window that transitively depends on
-    it (``plan_execution._affected_after_replan``). The fit keeps the replan
-    records of earlier rounds even for a window re-fit later, so a reader has
-    to know which of them still describe the current fit. The dependency edges
-    are the fitted plan's ``(window_id, depends_on)`` pairs -- the plan the last
-    merge produced, which every earlier round's dependency set is contained in
-    for the windows it did not merge.
+    A merge round re-fits its survivor, every window that transitively depends
+    on it, and the primary of every accepted thaw whose record it dropped, with
+    that primary's dependents (``plan_execution._affected_after_replan``). The
+    fit keeps the replan records of earlier rounds even for a window re-fit
+    later, so a reader has to know which of them still describe the current
+    fit. An accepted record stores the round's re-fit set
+    (``refit_window_ids``), which is read as is. A record from a file written
+    before the set was stored falls back to the survivor and its dependency
+    closure: the dependency edges are the fitted plan's ``(window_id,
+    depends_on)`` pairs -- the plan the last merge produced, which every
+    earlier round's dependency set is contained in for the windows it did not
+    merge. That fallback misses a re-fit thawed primary that does not depend on
+    the survivor.
     """
     children: Dict[int, List[int]] = {}
     for child, parent in dependency_edges:
@@ -105,6 +111,10 @@ def last_refit_revision(
     last = 0
     for r in spectrum_fit.replan_history:
         if not r.accepted:
+            continue
+        if not isinstance(r.refit_window_ids, Absent):
+            if window_id in r.refit_window_ids:
+                last = max(last, int(r.revision_after))
             continue
         affected = {int(r.surviving_window_id)}
         frontier = [int(r.surviving_window_id)]

@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, get_args
 
 from .._internal.read_impl import (
     READ_TABLES,
@@ -63,6 +63,7 @@ from ..contract import (
     WINDOW_STATUS_SCHEMA,
     Absent,
 )
+from ..core.curation import Frame
 from ..file_manager import PipelineFileError
 from ._json_output import error_json_mode, json_mode, record_payload
 from .contract_commands import exit_code_for, register_accessor, report_contract_error
@@ -298,6 +299,18 @@ def _window_model_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _window_status_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--frame",
+        dest="frame",
+        choices=get_args(Frame),
+        default="raw",
+        metavar="FRAME",
+        help="Frame of the window bounds: 'raw' (default; the fit frame) or "
+        "'calibrated' (the frame of the final products' fit_window_mhz)",
+    )
+
+
 def register_contract_accessors(read_sub: Any) -> None:
     """Register ``read <name>`` for every manifest accessor (JSON envelopes).
 
@@ -430,6 +443,8 @@ def register_contract_accessors(read_sub: Any) -> None:
         opened("window_status"),
         WINDOW_STATUS_SCHEMA,
         "Per-window status: fitted plan, created windows, Stage 5 coverage",
+        add_args=_window_status_args,
+        call_kwargs=lambda a: {"frame": a.frame},
     )
     register(
         "preview_source",

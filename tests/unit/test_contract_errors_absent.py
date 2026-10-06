@@ -99,7 +99,7 @@ def test_contract_version_is_fourteen():
     # windows after a structural merge (merged_from, fit_plan_unavailable) to 13;
     # review attention (AttentionReason, attention_kind with
     # empty_window_residual) to 14.
-    assert CONTRACT_VERSION == 16
+    assert CONTRACT_VERSION == 17
 
 
 # ---- stage vocabulary -----------------------------------------------------
@@ -192,6 +192,11 @@ class _Env:
         return f"epoch {self.analysis_epoch}"
 
 
+#: The wire form of ``action_indices`` on a refusal raised outside a curation
+#: batch.
+_NO_BATCH = {"action_indices": None, "action_indices_absent": "not_run"}
+
+
 def _errors():
     p = Path("x.ftmw")
     return [
@@ -225,25 +230,25 @@ def _errors():
         (
             NotFoundError("window", [4, 9]),
             "not_found",
-            {"kind": "window", "ids": [4, 9]},
+            {"kind": "window", "ids": [4, 9], **_NO_BATCH},
             (KeyError,),
         ),
         (
             PipelineFileNotFoundError(p),
             "not_found",
-            {"kind": "file", "ids": ["x.ftmw"]},
+            {"kind": "file", "ids": ["x.ftmw"], **_NO_BATCH},
             (NotFoundError, FileNotFoundError, KeyError),
         ),
         (
             IncompleteProvenanceError(["stage2b.shape"]),
             "incomplete_provenance",
-            {"missing": ["stage2b.shape"]},
+            {"missing": ["stage2b.shape"], "newer": []},
             (ValueError,),
         ),
         (
             NotFoundValueError("peak", [7, 8]),
             "not_found",
-            {"kind": "peak", "ids": [7, 8]},
+            {"kind": "peak", "ids": [7, 8], **_NO_BATCH},
             (KeyError, ValueError),
         ),
         (
@@ -289,7 +294,7 @@ def _errors():
         (
             CurationConflictError("orphans_created_window", [4, 7]),
             "curation_conflict",
-            {"reason": "orphans_created_window", "ids": [4, 7]},
+            {"reason": "orphans_created_window", "ids": [4, 7], **_NO_BATCH},
             (ValueError,),
         ),
     ]
@@ -311,6 +316,45 @@ def test_error_contract(err, code, fields, bases):
     json.dumps(d, allow_nan=False)
     for base in bases:
         assert isinstance(err, base)
+
+
+@pytest.mark.parametrize(
+    "err",
+    [
+        NotFoundValueError("peak", [7], action_indices=(0, 2)),
+        CurationConflictError("line_already_fitted", [3], action_indices=[1]),
+    ],
+    ids=lambda e: type(e).__name__,
+)
+def test_batch_refusal_carries_its_request_action_indices(err):
+    d = json.loads(json.dumps(err.to_dict(), allow_nan=False))
+    assert d["action_indices"] == list(err.action_indices)
+    assert "action_indices_absent" not in d
+    assert isinstance(err.action_indices, list)
+
+
+@pytest.mark.parametrize(
+    "err",
+    [
+        NotFoundValueError("window", [7, 9]),
+        CurationConflictError("line_already_fitted", [3]),
+    ],
+    ids=lambda e: type(e).__name__,
+)
+def test_a_whole_batch_refusal_is_undefined_not_not_run(err):
+    """A refusal of a whole batch names ids, not one action: its
+    ``action_indices`` is absent ``undefined``; ``not_run`` stays for an error
+    raised outside any batch."""
+    from ftmwpipeline.file_manager import _refusing_whole_batch
+
+    assert err.to_dict()["action_indices_absent"] == "not_run"
+    assert _refusing_whole_batch(err) is err
+    d = json.loads(json.dumps(err.to_dict(), allow_nan=False))
+    assert d["action_indices"] is None
+    assert d["action_indices_absent"] == "undefined"
+    assert err.action_indices is None
+    clone = pickle.loads(pickle.dumps(err))
+    assert clone.to_dict()["action_indices_absent"] == "undefined"
 
 
 def test_epoch_mismatch_none_epoch_is_null_with_absent_sibling():
@@ -464,6 +508,17 @@ def test_not_found_rejects_bare_string_ids():
 def test_incomplete_provenance_rejects_bare_string():
     with pytest.raises(TypeError):
         IncompleteProvenanceError("stage2b.shape")  # type: ignore[arg-type]
+
+
+def test_incomplete_provenance_names_newer_records_with_their_own_remedy():
+    err = IncompleteProvenanceError([], newer=["fit.shape"])
+    assert err.to_dict()["newer"] == ["fit.shape"]
+    assert err.to_dict()["missing"] == []
+    assert "Upgrade ftmwpipeline" in str(err) and "Re-run" not in str(err)
+    both = IncompleteProvenanceError(["a"], newer=["b"])
+    assert "Re-run" in str(both) and "Upgrade" in str(both)
+    with pytest.raises(TypeError):
+        IncompleteProvenanceError([], newer="b")  # type: ignore[arg-type]
 
 
 def test_valueerror_clauses_keep_working():

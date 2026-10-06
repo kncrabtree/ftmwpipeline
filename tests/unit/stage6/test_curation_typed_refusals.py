@@ -247,7 +247,10 @@ def test_a_batch_keeps_the_type_and_tags_the_action(two_misses):
         with pytest.raises(ValueError) as exc:
             call(f, actions=actions)
         err = _assert_not_found(exc, "peak", misses, approx=True)
-        assert str(err).startswith("curation action 1 (")
+        # The two rows coalesce into one edit: both are named, by request
+        # position.
+        assert str(err).startswith("curation actions 1, 2 (")
+        assert err.action_indices == [0, 1]
         assert "failed:" in str(err)
     assert content_digest(f) == before
 
@@ -946,3 +949,228 @@ def test_review_edit_implied_create_anchor_is_named_add(stage5_multi_file):
         ftmw.review_create(f, OFF_BAND_MHZ)
     assert exc.value.path == "anchor_mhz"
     assert content_digest(f) == before
+
+
+# ---------------------------------------------------------------------------
+# A batch refusal and a dry-run advisory name the request's actions by their
+# 0-based request positions -- not by the plan, which coalescing and canonical
+# ordering renumber
+# ---------------------------------------------------------------------------
+
+
+def _session_apply(f: Path, **kw: Any) -> Any:
+    with Pipeline.open(f).review_session() as session:
+        return session.review_apply(**kw)
+
+
+_BATCH_CALLS = {
+    "api": lambda f, **kw: ftmw.review_apply(f, **kw),
+    "pipeline": lambda f, **kw: Pipeline.open(f).review_apply(**kw),
+    "session": _session_apply,
+    "preview": lambda f, **kw: ftmw.review_preview(f, **kw),
+}
+
+
+@pytest.fixture
+def split_coalesced(stage5_multi_file) -> Tuple[Path, int, List[float], List[Any]]:
+    """Two misses on one window, with an accept of another window between
+    them: the misses coalesce into one edit from request actions 0 and 2."""
+    f = stage5_multi_file
+    wa, wb = _two_window_ids(f)
+    far = _far_from_peaks(f, wa)
+    misses = [far, far + 0.001]
+    actions = [
+        CurationAction("remove", window_id=wa, freq_mhz=misses[0], frame="raw"),
+        CurationAction("accept", window_id=wb),
+        CurationAction("remove", window_id=wa, freq_mhz=misses[1], frame="raw"),
+    ]
+    return f, wa, misses, actions
+
+
+@pytest.mark.parametrize("via", sorted(_BATCH_CALLS))
+def test_a_coalesced_edit_names_every_request_action(split_coalesced, via):
+    f, _wa, misses, actions = split_coalesced
+    before = content_digest(f)
+    with pytest.raises(ValueError) as exc:
+        _BATCH_CALLS[via](f, actions=actions)
+    err = _assert_not_found(exc, "peak", misses, approx=True)
+    assert err.action_indices == [0, 2]
+    assert err.to_dict()["action_indices"] == [0, 2]
+    assert str(err).startswith("curation actions 1, 3 (")
+    assert content_digest(f) == before
+
+
+def test_a_curation_file_numbers_its_action_rows(split_coalesced, tmp_path):
+    """A file's comment and blank lines are not actions: row i of the file
+    and actions[i] of the same request agree."""
+    f, wa, misses, actions = split_coalesced
+    wb = actions[1].window_id
+    cur = _write(
+        tmp_path,
+        f"# a comment\nremove,{wa},{misses[0]!r},\n\naccept,{wb},,\n"
+        f"remove,{wa},{misses[1]!r},\n",
+    )
+    with pytest.raises(ValueError) as exc:
+        ftmw.review_apply(f, cur)
+    assert exc.value.action_indices == [0, 2]
+
+
+def test_a_reordered_batch_names_the_request_position(stage5_multi_file):
+    """A create runs first whatever its position, so a refused create after
+    an edit is request action 1, though plan action 0."""
+    f = stage5_multi_file
+    step = _bin_width_mhz(f)
+    wid, peak = _first_peak(f)
+    _w, _lo, hi = _live_ranges(f)[-1]
+    fresh = max(_plan_ranges(f)) + 1
+    actions = [
+        CurationAction(
+            "remove", window_id=wid, freq_mhz=float(peak.frequency_mhz), frame="raw"
+        ),
+        CurationAction("create", window_id=fresh, freq_mhz=hi + 2 * step, frame="raw"),
+    ]
+    for call in _BATCH_CALLS.values():
+        with pytest.raises(ValueError) as exc:
+            call(f, actions=actions)
+        assert isinstance(exc.value, CurationConflictError)
+        assert exc.value.reason == "replay_conflict"
+        assert exc.value.action_indices == [1]
+        assert str(exc.value).startswith("curation action 2 (create window")
+
+
+def test_a_window_sorted_batch_names_the_request_position(stage5_multi_file):
+    """Edits run by ascending window: the later request action, on the lower
+    window, fails first and is named as itself."""
+    f = stage5_multi_file
+    wa, wb = _two_window_ids(f)
+    miss_a, miss_b = _far_from_peaks(f, wa), _far_from_peaks(f, wb)
+    actions = [
+        CurationAction("remove", window_id=wb, freq_mhz=miss_b, frame="raw"),
+        CurationAction("remove", window_id=wa, freq_mhz=miss_a, frame="raw"),
+    ]
+    with pytest.raises(ValueError) as exc:
+        ftmw.review_apply(f, actions=actions)
+    err = _assert_not_found(exc, "peak", [miss_a], approx=True)
+    assert err.action_indices == [1]
+    assert str(err).startswith("curation action 2 (")
+
+
+def test_a_batch_refusal_through_the_cli_names_the_request(
+    split_coalesced, tmp_path, capsys
+):
+    f, _wa, _misses, actions = split_coalesced
+    spec = tmp_path / "actions.json"
+    spec.write_text(json.dumps([a.to_dict() for a in actions]))
+    for verb in ("apply", "preview"):
+        rc, payload = _cli_error(capsys, "review", verb, f, "--actions", spec)
+        assert rc == 1
+        assert payload["code"] == "not_found"
+        assert payload["action_indices"] == [0, 2]
+
+
+def test_a_single_verb_refusal_carries_no_action_indices(two_misses):
+    f, wid, misses = two_misses
+    with pytest.raises(ValueError) as exc:
+        ftmw.review_edit(f, wid, remove=misses)
+    err = _assert_not_found(exc, "peak", misses, approx=True)
+    assert err.action_indices is None
+    d = err.to_dict()
+    assert d["action_indices"] is None and d["action_indices_absent"] == "not_run"
+
+
+def test_dry_run_warnings_name_their_request_actions(split_coalesced, tmp_path):
+    f, _wa, _misses, actions = split_coalesced
+    for result in (
+        ftmw.review_apply(f, actions=actions, dry_run=True),
+        Pipeline.open(f).review_apply(actions=actions, dry_run=True),
+    ):
+        assert [d.message for d in result.warning_details] == result.warnings
+        assert len(result.warning_details) == 2  # one per missed target
+        for detail in result.warning_details:
+            assert detail.action_indices == [0, 2]
+
+
+def _cli_doc(capsys, *argv: Any) -> Dict[str, Any]:
+    capsys.readouterr()
+    assert main([str(a) for a in argv] + ["--json"]) == 0
+    return json.loads(capsys.readouterr().out)
+
+
+def test_review_apply_json_carries_the_results_advisories(
+    split_coalesced, tmp_path, capsys
+):
+    """``review apply --json`` (dry run or not) carries ``warnings`` and
+    ``warning_details`` beside the run_result summary, as the Python result
+    does; the summary stays scalar-only."""
+    f, _wa, _misses, actions = split_coalesced
+    spec = tmp_path / "actions.json"
+    spec.write_text(json.dumps([a.to_dict() for a in actions]))
+    result = ftmw.review_apply(f, actions=actions, dry_run=True)
+    doc = _cli_doc(capsys, "review", "apply", f, "--actions", spec, "--dry-run")
+    assert doc["schema"] == "ftmw/run_result@1"
+    assert doc["warnings"] == result.warnings and len(doc["warnings"]) == 2
+    assert doc["warning_details"] == [
+        {"message": d.message, "action_indices": list(d.action_indices)}
+        for d in result.warning_details
+    ]
+    assert not any(isinstance(v, list) for v in doc["summary"].values())
+
+    accept = tmp_path / "accept.json"
+    accept.write_text(json.dumps([actions[1].to_dict()]))
+    doc = _cli_doc(capsys, "review", "apply", f, "--actions", accept)
+    assert doc["warnings"] == [] and doc["warning_details"] == []
+    assert doc["summary"]["dry_run"] is False
+
+
+# ---------------------------------------------------------------------------
+# A refusal of the whole batch names no action: action_indices is undefined
+# ---------------------------------------------------------------------------
+
+
+def _assert_whole_batch(err: Any) -> None:
+    assert err.action_indices is None
+    d = err.to_dict()
+    assert d["action_indices"] is None
+    assert d["action_indices_absent"] == "undefined"
+
+
+def test_unknown_windows_refuse_the_whole_batch(create_batch, tmp_path, capsys):
+    b = create_batch
+    actions = [
+        CurationAction("create", freq_mhz=b["anchor"], frame="raw"),
+        CurationAction("accept", window_id=b["far"]),
+    ]
+    bare = [CurationAction("accept", window_id=b["far"])]
+    for plan in (actions, bare):
+        for call in (
+            ftmw.review_apply,
+            ftmw.review_preview,
+            lambda p, actions: ftmw.review_apply(p, actions=actions, dry_run=True),
+        ):
+            with pytest.raises(ValueError) as exc:
+                call(b["path"], actions=plan)
+            _assert_whole_batch(exc.value)
+    spec = tmp_path / "actions.json"
+    spec.write_text(json.dumps([a.to_dict() for a in actions]))
+    for argv in (("apply",), ("apply", "--dry-run"), ("preview",)):
+        rc, payload = _cli_error(capsys, "review", *argv, b["path"], "--actions", spec)
+        assert rc == 1 and payload["code"] == "not_found"
+        assert payload["action_indices"] is None
+        assert payload["action_indices_absent"] == "undefined"
+
+
+def test_uncovered_removes_refuse_the_whole_batch(stage5_multi_file, tmp_path):
+    f = stage5_multi_file
+    unc = _uncovered_freq(f)
+    cur = _write(tmp_path, f"remove,,{unc!r},\n")
+    for call in (ftmw.review_apply, ftmw.review_preview):
+        with pytest.raises(ValueError) as exc:
+            call(f, cur)
+        _assert_whole_batch(exc.value)
+
+
+def test_a_single_verb_unknown_window_is_still_not_run(stage5_multi_file):
+    with pytest.raises(NotFoundError) as exc:
+        ftmw.review_accept(stage5_multi_file, 987654)
+    d = exc.value.to_dict()
+    assert d["action_indices_absent"] == "not_run"
