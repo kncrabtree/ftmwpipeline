@@ -72,7 +72,8 @@ The payload is ``{"schema": "ftmw/capabilities@1", "contract_version": int,
 "schemas": [...], "accessors": [...], "codes": [...], "stages": [...],
 "metadata_keys": [...], "tables": {name: [columns]}, "fields": {type: [fields]},
 "vocabularies": {name: [values]}, "file_bound": {accessor: bool},
-"pipeline_names": {accessor: name}}``. Every group of the manifest
+"pipeline_names": {accessor: name}, "summary_keys": {operation: {"required":
+[...], "conditional": [...]}}}``. Every group of the manifest
 (``ftmwpipeline.contract.MANIFEST``) is present, in manifest order, so a client
 can discover the whole surface without importing the package:
 
@@ -96,6 +97,14 @@ can discover the whole surface without importing the package:
   ``decision_provenance`` (the ``DecisionLogEntry`` ``kind`` and
   ``provenance``), ``stage_state``, ``warning_code``, ``restart_reason`` and
   ``attention_kind`` (:ref:`contract-attention`).
+* ``summary_keys`` -- per operation (the CLI verb, such as ``"fit run"``), the
+  keys of its ``StageFinished.summary`` and ``ftmw/run_result@1`` summary:
+  ``required`` keys are always present, ``conditional`` ones only in the case
+  the declaration notes (``tau run`` has
+  ``n_spur_bins`` and ``n_spur_clusters`` except for ``--gaussian``;
+  ``review run`` has its final-products keys when the file has that table;
+  ``review accept`` has ``provenance`` for a bare accept and the before / after
+  keys for an accepted candidate).
 
 .. _contract-rules:
 
@@ -740,6 +749,11 @@ output reports (counts, chosen values, paths written, a dict of counts), never
 an array. A value with no measurement (an undefined ``epsilon``) is ``null``
 with its ``"<field>_absent"`` sibling.
 
+The table below describes each verb's summary in prose; the exact keys, with
+the conditional ones marked, are ``capabilities()["summary_keys"]`` (also the
+keys of the verb's ``StageFinished.summary``,
+:ref:`machine-contract-events`).
+
 .. list-table::
    :header-rows: 1
    :widths: 28 14 58
@@ -775,7 +789,7 @@ with its ``"<field>_absent"`` sibling.
    * - ``peaks run``, ``windows run``, ``fit run``
      - ``peaks``, ``windows``, ``fit``
      - run_result: the counts the human output reports (``fit run`` adds the
-       resume fields of :ref:`contract-partial-fits`)
+       resume fields of :ref:`contract-partial-fits`, always present)
    * - ``review run`` / ``apply`` / ``edit`` / ``create`` / ``accept`` /
        ``undo``
      - ``review``
@@ -1681,7 +1695,12 @@ detection, the report, a scan):
   check.
 * ``StageFinished`` (``ftmw/stage_finished@1``: ``elapsed_s``, ``summary``)
   closes it once its results are written. ``summary`` has the keys of the same
-  verb's ``ftmw/run_result@1`` summary.
+  verb's ``ftmw/run_result@1`` summary, declared per operation in
+  ``capabilities()["summary_keys"]``: every ``required`` key is present and no
+  key outside ``required`` and ``conditional`` is. Under ``run_pipeline`` each
+  stage's ``StageFinished`` carries its own verb's keys; ``scan all`` emits one
+  ``scan run`` summary per knob. The scan verbs and ``review preview`` have no
+  ``run_result``; their summaries are the declared keys alone.
 * ``WindowProgress`` (``ftmw/window_progress@1``: ``phase``, ``round``,
   ``index``, ``total``, ``window_id``, ``n_peaks``, ``chi2r``, ``elapsed_s``,
   ``dropped``) follows each window the Stage 5 walk fits, each window a Stage 6

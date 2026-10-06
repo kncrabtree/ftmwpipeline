@@ -202,6 +202,35 @@ def test_scan_progress_knob_is_a_registry_path():
     assert (wire["index"], wire["total"], wire["value"]) == (1, 2, 40.0)
 
 
+# ---- StageFinished.summary keys -------------------------------------------
+
+
+def test_summary_keys_are_declared_per_operation_in_capabilities():
+    declared = capabilities()["summary_keys"]
+    assert list(declared) == list(MANIFEST.summary_keys)
+    for verb, parts in declared.items():
+        assert set(parts) == {"required", "conditional"}, verb
+        keys = parts["required"] + parts["conditional"]
+        assert len(set(keys)) == len(keys), verb
+    assert {"fit run", "noise run", "review accept", "scan run"} <= set(declared)
+
+
+def test_summary_keys_match_the_builders_key_constants():
+    from ftmwpipeline._internal.stage0_impl import DATA_IMPORT_SUMMARY_KEYS
+    from ftmwpipeline._internal.stage1_impl import FT_RUN_SUMMARY_KEYS
+    from ftmwpipeline._internal.stage2_impl import NOISE_RUN_SUMMARY_KEYS
+    from ftmwpipeline._internal.stage5_impl import FIT_RUN_SUMMARY_KEYS
+
+    for verb, keys in {
+        "data import": DATA_IMPORT_SUMMARY_KEYS,
+        "ft run": FT_RUN_SUMMARY_KEYS,
+        "noise run": NOISE_RUN_SUMMARY_KEYS,
+        "fit run": FIT_RUN_SUMMARY_KEYS,
+    }.items():
+        parts = MANIFEST.summary_keys[verb]
+        assert parts["required"] + parts["conditional"] == tuple(keys), verb
+
+
 # ---- warnings -------------------------------------------------------------
 
 

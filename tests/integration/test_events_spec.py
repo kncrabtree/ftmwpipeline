@@ -221,6 +221,51 @@ def test_stage_finished_summary_has_the_run_result_summary_keys(
     assert events[-1]["schema"] == "ftmw/stage_finished@1"
 
 
+def _assert_summary_declared(operation: str, summary: Dict[str, Any]) -> None:
+    """*summary* has every required key of *operation*'s declaration and no key
+    the declaration does not name."""
+    declared = ftmw.capabilities()["summary_keys"][operation]
+    required, conditional = set(declared["required"]), set(declared["conditional"])
+    assert required <= set(summary), required - set(summary)
+    assert set(summary) <= required | conditional, set(summary) - required - conditional
+
+
+def _finished_summary(rec: Recorder, operation: str) -> Dict[str, Any]:
+    (fin,) = [e for e in rec.of(StageFinished) if e.operation == operation]
+    return dict(to_jsonable(fin)["summary"])
+
+
+@pytest.mark.parametrize("case", sorted(STAGE_CASES))
+def test_stage_finished_summary_keys_are_declared(case, request, tmp_path):
+    """``capabilities()["summary_keys"]`` covers the stage's emitted summary."""
+    fixture, _argv, _extra, call, operation, _stage = STAGE_CASES[case]
+    fp = _copy(request.getfixturevalue(fixture), tmp_path)
+    rec = Recorder()
+    call(str(fp), events=rec)
+    _assert_summary_declared(operation, _finished_summary(rec, operation))
+
+
+def test_ft_and_start_summary_keys_are_declared(baseline_2638_stage1_raw, tmp_path):
+    fp = _copy(baseline_2638_stage1_raw, tmp_path)
+    rec = Recorder()
+    ftmw.compute_ft(str(fp), from_saved_params=True, events=rec)
+    _assert_summary_declared("ft run", _finished_summary(rec, "ft run"))
+    rec = Recorder()
+    ftmw.detect_start_time(str(fp), stamp=False, events=rec)
+    _assert_summary_declared("start run", _finished_summary(rec, "start run"))
+
+
+def test_review_summary_keys_are_declared(baseline_2638_stage5_small, tmp_path):
+    fp = _copy(baseline_2638_stage5_small, tmp_path)
+    rec = Recorder()
+    ftmw.review_run(str(fp), events=rec)
+    _assert_summary_declared("review run", _finished_summary(rec, "review run"))
+    window_id = int(ftmw.load_fit(str(fp)).window_fits[0].window_id)
+    rec = Recorder()
+    ftmw.review_accept(str(fp), window_id, events=rec)
+    _assert_summary_declared("review accept", _finished_summary(rec, "review accept"))
+
+
 # ---- cancel before a stage ---------------------------------------------------------------
 
 

@@ -29,6 +29,15 @@ stored in the fit's replan history and read as a JSON list in the
 set. A file written before it was stored loads the field as ``None`` (the
 column reads ``""``) and the trigger falls back to the dependency closure.
 
+**``capabilities()`` declares the ``StageFinished.summary`` keys per
+operation.** The new ``summary_keys`` group maps each operation (the CLI verb)
+to ``{"required": [...], "conditional": [...]}``: the keys of its
+``StageFinished.summary`` and ``ftmw/run_result@1`` summary, with the keys that
+appear only in one case (``tau run`` without ``--gaussian``, ``review run``
+with a final-products table, ``review accept``'s bare and candidate forms,
+``ft run``'s internal ``trimmed_points``) marked conditional. A client no
+longer has to read the prose to know which keys to expect.
+
 **``incomplete_provenance`` separates a newer file from an old one.**
 ``IncompleteProvenanceError`` gains ``newer``, the inputs whose records a newer
 engine wrote; ``missing`` keeps the inputs the file never persisted. The message

@@ -613,6 +613,12 @@ class ContractManifest:
     vocabularies : Mapping[str, tuple of str]
         Frozen closed vocabularies (e.g. the decision-log ``kind`` values),
         each checked against the code that produces its values. Read-only.
+    summary_keys : Mapping[str, Mapping[str, tuple of str]]
+        Per operation (the CLI verb), the keys of its ``StageFinished.summary``
+        (and ``ftmw/run_result@1`` summary): ``{"required": [...],
+        "conditional": [...]}``. A required key is always present; a
+        conditional key only in the case its entry in :data:`SUMMARY_KEYS`
+        names. Read-only.
     """
 
     contract_version: int
@@ -625,6 +631,9 @@ class ContractManifest:
     pipeline_names: Mapping[str, str] = field(default_factory=dict)
     fields: Mapping[str, Tuple[str, ...]] = field(default_factory=dict)
     vocabularies: Mapping[str, Tuple[str, ...]] = field(default_factory=dict)
+    summary_keys: Mapping[str, Mapping[str, Tuple[str, ...]]] = field(
+        default_factory=dict
+    )
 
     def __post_init__(self) -> None:
         for group in ("accessors", "schemas", "codes", "metadata_keys"):
@@ -642,6 +651,18 @@ class ContractManifest:
         )
         if set(self.pipeline_names) - set(self.accessors):
             raise ValueError("pipeline_names names a non-accessor")
+        object.__setattr__(
+            self,
+            "summary_keys",
+            MappingProxyType(
+                {
+                    verb: MappingProxyType(
+                        {part: tuple(keys) for part, keys in parts.items()}
+                    )
+                    for verb, parts in self.summary_keys.items()
+                }
+            ),
+        )
         object.__setattr__(
             self,
             "pipeline_names",
@@ -1025,6 +1046,240 @@ FIT_RESTART_REASONS: Tuple[str, ...] = (
     "thaw_refit",
 )
 
+#: The keys of ``StageFinished.summary`` per operation (the event's
+#: ``operation``, the verb): ``required`` keys are always present, ``conditional``
+#: ones only in the case noted beside them. The same keys are the verb's
+#: ``ftmw/run_result@1`` summary (one builder makes both); each is checked
+#: against the builders in ``tests/integration/test_events_spec.py``. Under
+#: ``run`` (``run_pipeline``) every stage's ``StageFinished`` carries its own
+#: verb's keys. ``scan all`` emits one ``scan run`` summary per knob.
+SUMMARY_KEYS: Dict[str, Dict[str, Tuple[str, ...]]] = {
+    "data import": {
+        "required": (
+            "pipeline_file",
+            "source_format",
+            "n_points",
+            "duration_us",
+            "probe_freq_mhz",
+            "sideband",
+            "shots",
+            "file_size_mb",
+        ),
+        "conditional": (),
+    },
+    "start run": {
+        "required": (
+            "integration_band",
+            "chirp_detected",
+            "plateau_floor_ratio",
+            "chirp_end_declared_us",
+            "chirp_end_detected_us",
+            "chirp_end_us",
+            "declaration_used",
+            "start_us",
+            "stamped",
+        ),
+        "conditional": (),
+    },
+    "ft run": {
+        "required": ("fid_points", "preprocessed_points", "frequency_points"),
+        # Only an internal validate_only call with a trim reports it.
+        "conditional": ("trimmed_points",),
+    },
+    "noise run": {
+        "required": (
+            "total_points",
+            "noise_points",
+            "noise_fraction",
+            "freq_min_mhz",
+            "freq_max_mhz",
+            "rms_mean",
+            "rms_std",
+            "rms_min",
+            "rms_max",
+            "algorithm",
+            "n_region_windows",
+            "n_line_bins",
+            "region_aware",
+            "smoothing_mhz",
+            "pipeline_file",
+        ),
+        "conditional": (),
+    },
+    "tau run": {
+        "required": (
+            "shape",
+            "tau_maj_us",
+            "sigma_tau_us",
+            "spread",
+            "n_contributors",
+            "bimodal",
+            "delta_aic",
+            "preconditions_passed",
+            "preconditions_notes",
+        ),
+        # Absent for the Gaussian twin (``--gaussian``, stage ``tau_g``).
+        "conditional": ("n_spur_bins", "n_spur_clusters"),
+    },
+    "tau recommend": {
+        "required": (
+            "recommended_shape",
+            "vote_rate_exp",
+            "vote_rate_gauss",
+            "vote_rate_voigt",
+            "n_contributors",
+            "stamped_onto",
+        ),
+        "conditional": (),
+    },
+    "timebase run": {
+        "required": (
+            "epsilon",
+            "sigma_epsilon",
+            "lattice_g_mhz",
+            "n_used",
+            "n_detected",
+            "preconditions_passed",
+            "preconditions_notes",
+        ),
+        "conditional": (),
+    },
+    "peaks run": {
+        "required": (
+            "acquisition_us",
+            "n_peaks",
+            "promotion_min_snr",
+            "n_promoted",
+            "n_primary",
+            "n_gap",
+            "n_strong",
+            "n_medium",
+            "n_weak",
+        ),
+        "conditional": (),
+    },
+    "windows run": {
+        "required": (
+            "n_promoted",
+            "n_windows",
+            "n_free_peaks",
+            "n_fixed_contributors",
+            "n_dependencies",
+            "n_batches",
+            "n_unexplained_coherent_regions",
+        ),
+        "conditional": (),
+    },
+    # The resume keys are always present: ``resumed`` false, ``windows_carried``
+    # 0 and ``restart_reason`` null on a run that did not resume.
+    "fit run": {
+        "required": (
+            "n_windows",
+            "n_fitted_peaks",
+            "n_thaw_accepted",
+            "n_thaw_events",
+            "n_rescue_accepted",
+            "n_rescue_events",
+            "n_rescue_added",
+            "n_rescue_origin_pruned",
+            "n_replan_accepted",
+            "n_replan_events",
+            "final_plan_revision",
+            "resumed",
+            "windows_carried",
+            "restart_reason",
+        ),
+        "conditional": (),
+    },
+    "review run": {
+        "required": ("n_windows", "n_attention", "reason_counts"),
+        # Present when the file has a final-products table.
+        "conditional": (
+            "n_final_peaks",
+            "calibration_state",
+            "epsilon",
+            "sigma_floor_khz",
+        ),
+    },
+    "review edit": {
+        "required": (
+            "window_id",
+            "n_peaks_before",
+            "n_peaks_after",
+            "chi2r_before",
+            "chi2r_after",
+            "converged",
+            "n_added",
+            "n_removed",
+            "created_window_mode",
+        ),
+        "conditional": (),
+    },
+    "review create": {
+        "required": (
+            "window_id",
+            "mode",
+            "anchor_mhz",
+            "freq_lo_mhz",
+            "freq_hi_mhz",
+            "n_points",
+            "n_contributors",
+            "n_peaks",
+        ),
+        "conditional": (),
+    },
+    "review accept": {
+        "required": ("window_id", "candidate_accepted"),
+        # ``provenance`` for a bare accept (``candidate_accepted`` false); the
+        # rest for an accepted candidate.
+        "conditional": (
+            "provenance",
+            "n_peaks_before",
+            "n_peaks_after",
+            "chi2r_before",
+            "chi2r_after",
+            "converged",
+        ),
+    },
+    "review apply": {
+        "required": (
+            "dry_run",
+            "n_actions",
+            "applied",
+            "n_warnings",
+            "n_created_windows",
+            "n_windows_refit",
+            "base_changed",
+        ),
+        "conditional": (),
+    },
+    "review undo": {
+        "required": (
+            "dry_run",
+            "n_removed",
+            "n_replayed",
+            "applied",
+            "n_geometry_changed",
+        ),
+        "conditional": (),
+    },
+    "review preview": {
+        "required": ("n_actions", "n_warnings", "n_created_windows", "n_windows"),
+        "conditional": (),
+    },
+    "report run": {"required": ("scope", "table", "html"), "conditional": ()},
+    "scan run": {
+        "required": (
+            "knob",
+            "n_values",
+            "recommended_value",
+            "csv_path",
+            "plot_path",
+        ),
+        "conditional": (),
+    },
+}
+
 #: Frozen closed vocabularies. ``decision_kind`` / ``decision_provenance`` are
 #: checked against ``core.data_structures.DECISION_KINDS`` /
 #: ``DECISION_PROVENANCES``, which the Stage 6 code records from.
@@ -1050,6 +1305,7 @@ MANIFEST = ContractManifest(
     pipeline_names={s.name: s.pipeline_name for s in _ACCESSORS if s.pipeline_name},
     fields=_FIELDS,
     vocabularies=_VOCABULARIES,
+    summary_keys=SUMMARY_KEYS,
 )
 
 
@@ -1064,7 +1320,8 @@ def capabilities() -> Dict[str, Any]:
         "storage_key", "settings_prefix", "knob_prefix", "depends_on"}],
         "metadata_keys": [...], "tables": {name: [columns]},
         "fields": {type: [fields]}, "vocabularies": {name: [values]},
-        "file_bound": {accessor: bool}, "pipeline_names": {accessor: name}}``,
+        "file_bound": {accessor: bool}, "pipeline_names": {accessor: name},
+        "summary_keys": {operation: {"required": [...], "conditional": [...]}}}``,
         read from :data:`MANIFEST`. Already JSON-able and deterministic
         (manifest order); file-independent. ``pipeline_names`` names every
         accessor's ``Pipeline`` method (its own name unless declared otherwise).
@@ -1092,6 +1349,10 @@ def capabilities() -> Dict[str, Any]:
         "file_bound": dict(MANIFEST.file_bound),
         "pipeline_names": {
             a: MANIFEST.pipeline_names.get(a, a) for a in MANIFEST.accessors
+        },
+        "summary_keys": {
+            verb: {part: list(keys) for part, keys in parts.items()}
+            for verb, parts in MANIFEST.summary_keys.items()
         },
     }
 
@@ -1163,6 +1424,7 @@ __all__ = [
     "ScanProgress",
     "Invalidated",
     "PipelineWarning",
+    "SUMMARY_KEYS",
     "WARNING_FIELDS",
     "WINDOW_PHASES",
     # Typed error family

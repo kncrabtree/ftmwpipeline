@@ -894,6 +894,14 @@ Every event has `schema`, `operation` (the CLI verb, such as `"fit run"`) and
 
 - **`StageFinished.summary`** has exactly the keys of the same verb's
   `ftmw/run_result@1` summary. The two come from one builder.
+  `capabilities()["summary_keys"]` declares them per operation (the verb) as
+  `{"required": [...], "conditional": [...]}`: every required key is present,
+  a conditional key only in the case its declaration notes (`tau run`'s
+  `n_spur_*` except under `--gaussian`; `review run`'s final-products keys;
+  `review accept`'s bare-versus-candidate keys), and no other key appears.
+  Under `run_pipeline` each stage's `StageFinished` carries its own verb's
+  keys; `scan all` emits one `scan run` summary per knob. A test runs the
+  stage verbs and checks the emitted keys against the declaration.
 - **`WindowProgress`:**
   - Events come in **passes**. A pass is identified by its `(phase, round)`
     pair.
@@ -1308,7 +1316,8 @@ refuses to run without `--output`.
 "schemas": [...], "accessors": [...], "codes": [...], "stages": [...],
 "metadata_keys": [...], "tables": {name: [columns]}, "fields": {type: [fields]},
 "vocabularies": {name: [values]}, "file_bound": {accessor: bool},
-"pipeline_names": {accessor: name}}`. Every group of the manifest the contract
+"pipeline_names": {accessor: name}, "summary_keys": {operation: {"required":
+[...], "conditional": [...]}}}`. Every group of the manifest the contract
 tests check appears, so a client can discover the surface without importing the
 package. `read capabilities` prints it, and no file is needed.
 
