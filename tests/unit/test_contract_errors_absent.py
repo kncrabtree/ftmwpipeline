@@ -333,6 +333,30 @@ def test_batch_refusal_carries_its_request_action_indices(err):
     assert isinstance(err.action_indices, list)
 
 
+@pytest.mark.parametrize(
+    "err",
+    [
+        NotFoundValueError("window", [7, 9]),
+        CurationConflictError("line_already_fitted", [3]),
+    ],
+    ids=lambda e: type(e).__name__,
+)
+def test_a_whole_batch_refusal_is_undefined_not_not_run(err):
+    """A refusal of a whole batch names ids, not one action: its
+    ``action_indices`` is absent ``undefined``; ``not_run`` stays for an error
+    raised outside any batch."""
+    from ftmwpipeline.file_manager import _refusing_whole_batch
+
+    assert err.to_dict()["action_indices_absent"] == "not_run"
+    assert _refusing_whole_batch(err) is err
+    d = json.loads(json.dumps(err.to_dict(), allow_nan=False))
+    assert d["action_indices"] is None
+    assert d["action_indices_absent"] == "undefined"
+    assert err.action_indices is None
+    clone = pickle.loads(pickle.dumps(err))
+    assert clone.to_dict()["action_indices_absent"] == "undefined"
+
+
 def test_epoch_mismatch_none_epoch_is_null_with_absent_sibling():
     e = AnalysisEpochMismatchError("f", _Env(None), _Env(3))
     d = json.loads(json.dumps(e.to_dict(), allow_nan=False))

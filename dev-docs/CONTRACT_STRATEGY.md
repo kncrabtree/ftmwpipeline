@@ -817,9 +817,9 @@ ids of a curation batch),
   `curation_conflict` also carry `action_indices`, the 0-based request
   positions (numbered as `actions[<i>]`; a curation file's action rows in
   order) of the curation-batch action that failed, several for a coalesced
-  edit; absent (`not_run`) outside a batch and for a refusal of the whole
-  batch at once (every unknown window or `peak_uid` it names, every uncovered
-  `remove`). A batch refusal's message numbers
+  edit; absent `undefined` for a refusal of the whole batch at once (every
+  unknown window or `peak_uid` it names, every uncovered `remove`), and
+  absent `not_run` outside any batch. A batch refusal's message numbers
   the action from the request, never from the resolved plan.
 - Each typed error remains a subclass of the built-in it replaced (most are
   `ValueError`), so existing `except` clauses keep working.
@@ -1311,8 +1311,10 @@ curation-file row:
   per-window entry of the result's `windows` carries the request positions of
   the actions that targeted that window, never plan positions. The
   advisories are `warnings` (strings) and, entry for entry, `warning_details`
-  (`message`, `action_indices`), in the Python results and in
-  `review preview --json`. A batch refusal carries the same indices (§Errors).
+  (`message`, `action_indices`), in the Python results, in
+  `review preview --json`, and beside the run_result `summary` of
+  `review apply --json` (dry run included). A batch refusal carries the same
+  indices (§Errors).
 
 **Frames are explicit.** Every curation action and every review call that
 takes a frequency declares its frame (`"raw"` or `"calibrated"`) as a typed,
@@ -1352,7 +1354,9 @@ Under
   human output reports (counts, chosen values, paths written), and at most
   flat objects of counts, never arrays. `stage` is `null` for a write that is
   not one stage (`settings`, `clocks`, `start run`, `run`, `report run`), and
-  stage names inside `summary` are canonical;
+  stage names inside `summary` are canonical. `review apply` adds top-level
+  `warnings` and `warning_details` beside `summary` (§Curation as data), since
+  `summary` holds no arrays;
 - any other verb prints its natural payload through `to_jsonable`;
 - an error prints its `ftmw/error@1` dict on stderr, as `--format json` does
   today.

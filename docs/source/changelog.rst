@@ -81,14 +81,17 @@ message now numbers the action from the request ("curation actions 1, 3" for a
 coalesced edit), and both errors gain ``action_indices``: the 0-based request
 positions, numbered as ``actions[<i>]`` (a file's action rows in order, comment
 and blank lines not counted); ``null`` with ``action_indices_absent:
-"not_run"`` outside a batch. ``PlannedAction`` carries the same
+"undefined"`` for a refusal of the whole batch at once (every unknown window or
+``peak_uid``, every uncovered ``remove``), and with ``action_indices_absent:
+"not_run"`` outside any batch. ``PlannedAction`` carries the same
 ``action_indices``. ``CurationApplyResult`` and ``ReviewPreviewResult`` gain
 ``warning_details``, one ``CurationWarningDetail`` (``message``,
 ``action_indices``) per entry of ``warnings``, also in ``review preview
---json``; the ``frame_mismatch`` event's ``actions`` and the per-window
-``action_indices`` of ``AppliedWindowResult`` and ``PreviewWindowResult`` are
-the same request positions (they were plan positions, and 1-based in ``review
-preview --json``'s ``windows``).
+--json`` and, beside the ``ftmw/run_result@1`` summary, in ``review apply
+--json`` (dry run included); the ``frame_mismatch`` event's ``actions`` and the
+per-window ``action_indices`` of ``AppliedWindowResult`` and
+``PreviewWindowResult`` are the same request positions (they were plan
+positions, and 1-based in ``review preview --json``'s ``windows``).
 
 **``window_status`` reports bounds in either frame.** Its window bounds are
 raw, while ``FinalPeak.fit_window_mhz`` is calibrated, and a program may not

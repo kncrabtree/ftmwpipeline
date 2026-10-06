@@ -523,10 +523,12 @@ A ``not_found`` or ``curation_conflict`` raised this way (contract 17) carries
 ``action_indices``: the 0-based request positions of the failed action, several
 for a coalesced edit, ascending. They are numbered as ``actions[<i>]`` is; in a
 curation file, the action rows are numbered in order, without comment, blank
-or header lines, so a file and the same actions given as data agree. Outside a
-batch, and for a refusal of the whole batch at once (every unknown window or
-``peak_uid`` it names, every uncovered ``remove``), ``action_indices`` is
-``None``: on the wire ``null`` with ``action_indices_absent: "not_run"``. Each
+or header lines, so a file and the same actions given as data agree. For a
+refusal of the whole batch at once (every unknown window or ``peak_uid`` it
+names, every uncovered ``remove``), which names ids rather than one action,
+``action_indices`` is ``None``: on the wire ``null`` with
+``action_indices_absent: "undefined"``. Outside any batch it is ``None`` with
+``action_indices_absent: "not_run"``. Each
 ``PlannedAction`` of a result's ``plan`` carries the same ``action_indices``,
 and so does each per-window entry of a result's ``windows``
 (``AppliedWindowResult``, ``PreviewWindowResult``; ``windows[]`` of ``review
@@ -539,7 +541,9 @@ The advisories of ``review_apply`` (including ``dry_run``) and
 ``warning_details``: a ``CurationWarningDetail`` of ``message`` (the string)
 and ``action_indices`` (the request positions the advisory is about; for the
 frame-mismatch advisory, the actions whose candidates matched, a coalesced
-edit's rows together). ``review preview --json`` carries both keys. The
+edit's rows together). ``review preview --json`` carries both keys, and so
+does ``review apply --json`` (with or without ``--dry-run``), beside its
+``ftmw/run_result@1`` envelope's ``summary``, which stays scalars only. The
 ``frame_mismatch`` event's ``actions`` are the same request positions.
 
 * ``bad_setting``, with ``path`` naming what the caller wrote:
@@ -776,7 +780,9 @@ result's own ``invalidated`` (canonical names, in re-run order; ``[]`` when
 none; :ref:`contract-invalidation`). ``summary`` holds the scalars the human
 output reports (counts, chosen values, paths written, a dict of counts), never
 an array. A value with no measurement (an undefined ``epsilon``) is ``null``
-with its ``"<field>_absent"`` sibling.
+with its ``"<field>_absent"`` sibling. ``review apply`` adds two top-level keys
+beside ``summary`` (contract 17), its result's ``warnings`` and
+``warning_details`` (:ref:`contract-curation-refusals`).
 
 The table below describes each verb's summary in prose; the exact keys, with
 the conditional ones marked, are ``capabilities()["summary_keys"]`` (also the

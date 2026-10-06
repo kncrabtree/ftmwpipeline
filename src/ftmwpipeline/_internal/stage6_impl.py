@@ -99,6 +99,7 @@ from ..file_manager import (
     PipelineCorruptionError,
     PipelineFileError,
     StageDependencyError,
+    _refusing_whole_batch,
     requires_pipeline_file,
 )
 from ..fitting.active_ft import active_ft_bin_spacing_mhz, peak_uid_from_offset
@@ -5570,11 +5571,14 @@ def _resolve_curation_window_ids(
             resolved.append(replace(op, window_id=correlation_id, implied_create=True))
             continue
         resolved.append(replace(op, window_id=wid))
+    # Refusals of the whole batch: they name ids, not one action.
     if unknown_uids:
-        raise _unknown_peak_uids_error(unknown_uids)
+        raise _refusing_whole_batch(_unknown_peak_uids_error(unknown_uids))
     if uncovered:
-        raise NotFoundValueError(
-            "window", uncovered, message="; ".join(uncovered_details)
+        raise _refusing_whole_batch(
+            NotFoundValueError(
+                "window", uncovered, message="; ".join(uncovered_details)
+            )
         )
     return resolved
 
@@ -5660,17 +5664,22 @@ def _require_known_plan_windows(
     plan: Sequence[PlannedAction],
     where: str,
     plan_window_ids: Optional[Collection[int]] = None,
+    *,
+    whole_batch: bool = True,
 ) -> None:
     """Refuse a plan naming windows the fit does not have, all of them at once
-    (see :func:`_unknown_plan_window_ids`)."""
+    (see :func:`_unknown_plan_window_ids`): a refusal of the whole batch
+    (:func:`_refusing_whole_batch`) unless *whole_batch* is False, for a
+    one-action verb's plan."""
     unknown = _unknown_plan_window_ids(known, plan, plan_window_ids)
     if unknown:
         listed = ", ".join(str(w) for w in unknown)
-        raise NotFoundValueError(
+        exc = NotFoundValueError(
             "window",
             unknown,
             message=f"window_id={listed} not found in the {where}",
         )
+        raise _refusing_whole_batch(exc) if whole_batch else exc
 
 
 def _batch_known_window_ids(
@@ -10542,7 +10551,7 @@ def _curate_request(
         rows = _request_rows(display, resolved, one_action=one_action)
     else:
         known, where = _known_window_ids(path)
-        _require_known_plan_windows(known, plan, where)
+        _require_known_plan_windows(known, plan, where, whole_batch=not one_action)
         rows = _bare_accept_rows(path, prior, [a.window_id for a in plan])
     curated = _curate(
         path,

@@ -1088,3 +1088,89 @@ def test_dry_run_warnings_name_their_request_actions(split_coalesced, tmp_path):
         assert len(result.warning_details) == 2  # one per missed target
         for detail in result.warning_details:
             assert detail.action_indices == [0, 2]
+
+
+def _cli_doc(capsys, *argv: Any) -> Dict[str, Any]:
+    capsys.readouterr()
+    assert main([str(a) for a in argv] + ["--json"]) == 0
+    return json.loads(capsys.readouterr().out)
+
+
+def test_review_apply_json_carries_the_results_advisories(
+    split_coalesced, tmp_path, capsys
+):
+    """``review apply --json`` (dry run or not) carries ``warnings`` and
+    ``warning_details`` beside the run_result summary, as the Python result
+    does; the summary stays scalar-only."""
+    f, _wa, _misses, actions = split_coalesced
+    spec = tmp_path / "actions.json"
+    spec.write_text(json.dumps([a.to_dict() for a in actions]))
+    result = ftmw.review_apply(f, actions=actions, dry_run=True)
+    doc = _cli_doc(capsys, "review", "apply", f, "--actions", spec, "--dry-run")
+    assert doc["schema"] == "ftmw/run_result@1"
+    assert doc["warnings"] == result.warnings and len(doc["warnings"]) == 2
+    assert doc["warning_details"] == [
+        {"message": d.message, "action_indices": list(d.action_indices)}
+        for d in result.warning_details
+    ]
+    assert not any(isinstance(v, list) for v in doc["summary"].values())
+
+    accept = tmp_path / "accept.json"
+    accept.write_text(json.dumps([actions[1].to_dict()]))
+    doc = _cli_doc(capsys, "review", "apply", f, "--actions", accept)
+    assert doc["warnings"] == [] and doc["warning_details"] == []
+    assert doc["summary"]["dry_run"] is False
+
+
+# ---------------------------------------------------------------------------
+# A refusal of the whole batch names no action: action_indices is undefined
+# ---------------------------------------------------------------------------
+
+
+def _assert_whole_batch(err: Any) -> None:
+    assert err.action_indices is None
+    d = err.to_dict()
+    assert d["action_indices"] is None
+    assert d["action_indices_absent"] == "undefined"
+
+
+def test_unknown_windows_refuse_the_whole_batch(create_batch, tmp_path, capsys):
+    b = create_batch
+    actions = [
+        CurationAction("create", freq_mhz=b["anchor"], frame="raw"),
+        CurationAction("accept", window_id=b["far"]),
+    ]
+    bare = [CurationAction("accept", window_id=b["far"])]
+    for plan in (actions, bare):
+        for call in (
+            ftmw.review_apply,
+            ftmw.review_preview,
+            lambda p, actions: ftmw.review_apply(p, actions=actions, dry_run=True),
+        ):
+            with pytest.raises(ValueError) as exc:
+                call(b["path"], actions=plan)
+            _assert_whole_batch(exc.value)
+    spec = tmp_path / "actions.json"
+    spec.write_text(json.dumps([a.to_dict() for a in actions]))
+    for argv in (("apply",), ("apply", "--dry-run"), ("preview",)):
+        rc, payload = _cli_error(capsys, "review", *argv, b["path"], "--actions", spec)
+        assert rc == 1 and payload["code"] == "not_found"
+        assert payload["action_indices"] is None
+        assert payload["action_indices_absent"] == "undefined"
+
+
+def test_uncovered_removes_refuse_the_whole_batch(stage5_multi_file, tmp_path):
+    f = stage5_multi_file
+    unc = _uncovered_freq(f)
+    cur = _write(tmp_path, f"remove,,{unc!r},\n")
+    for call in (ftmw.review_apply, ftmw.review_preview):
+        with pytest.raises(ValueError) as exc:
+            call(f, cur)
+        _assert_whole_batch(exc.value)
+
+
+def test_a_single_verb_unknown_window_is_still_not_run(stage5_multi_file):
+    with pytest.raises(NotFoundError) as exc:
+        ftmw.review_accept(stage5_multi_file, 987654)
+    d = exc.value.to_dict()
+    assert d["action_indices_absent"] == "not_run"
