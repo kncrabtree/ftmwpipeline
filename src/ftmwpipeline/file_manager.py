@@ -438,31 +438,45 @@ class IncompleteProvenanceError(PipelineFileError, ValueError):
     a complete analysis fingerprint; rather than digest incomplete inputs the
     accessor refuses. ``missing`` names the absent inputs (registry paths such
     as ``"stage2b.shape"``). Re-running the stage that owns an input persists it.
-    Also a :class:`ValueError`.
+    ``newer`` names the inputs whose records a newer engine wrote: re-running
+    cannot help, only a newer ftmwpipeline can read them. Also a
+    :class:`ValueError`.
 
     Attributes
     ----------
     missing : list of str
-        The inputs that are not persisted in the file.
+        The inputs that are not persisted in the file (or predate provenance).
+    newer : list of str
+        The inputs whose records were written by a newer engine than this one.
     """
 
     code: ClassVar[str] = "incomplete_provenance"
-    contract_fields: ClassVar[Tuple[str, ...]] = ("missing",)
+    contract_fields: ClassVar[Tuple[str, ...]] = ("missing", "newer")
 
     def __init__(
         self,
         missing: Sequence[str],
         *,
+        newer: Sequence[str] = (),
         message: Optional[str] = None,
     ) -> None:
-        if isinstance(missing, str):
-            raise TypeError("missing must be a sequence of names, not a string")
+        if isinstance(missing, str) or isinstance(newer, str):
+            raise TypeError("missing and newer must be sequences, not strings")
         self.missing: List[str] = list(missing)
+        self.newer: List[str] = list(newer)
         if message is None:
-            message = (
-                "The file does not persist every input this read needs: "
-                f"{', '.join(self.missing)}. Re-run the stage(s) that own them."
-            )
+            parts = []
+            if self.missing:
+                parts.append(
+                    "The file does not persist every input this read needs: "
+                    f"{', '.join(self.missing)}. Re-run the stage(s) that own them."
+                )
+            if self.newer:
+                parts.append(
+                    "The file holds records written by a newer ftmwpipeline: "
+                    f"{', '.join(self.newer)}. Upgrade ftmwpipeline to read them."
+                )
+            message = " ".join(parts)
         super().__init__(message)
 
 

@@ -54,6 +54,7 @@ from ...core import stage_fit_settings as fit_mod
 from ...core import tau_calibration_settings as tau_mod
 from ...core import window_planning_settings as window_mod
 from ...core.knob_metadata import field_typing_meta
+from ...core.peak_shape import PeakShape
 from ...core.stage_fit_settings import ClockSource, ShapeSpec, SpurSubSettings
 from ...file_manager import requires_pipeline_file
 from ...io.noise_settings_serialization import load_noise_settings_from_h5
@@ -276,6 +277,12 @@ _STAGE_SPECS: Tuple[_StageSpec, ...] = (
 )
 
 
+def _is_shape_spec(annotation: Any) -> bool:
+    """True for ``ShapeSpec`` or ``Optional[ShapeSpec]``."""
+    args = [a for a in get_args(annotation) if a is not type(None)]
+    return annotation is ShapeSpec or (len(args) == 1 and args[0] is ShapeSpec)
+
+
 def _field_typing(
     cls: type, sub: Optional[str], name: str, path: str
 ) -> Tuple[str, Optional[str], Optional[List[Any]], Optional[Dict[str, Any]]]:
@@ -287,6 +294,9 @@ def _field_typing(
     meta = field_typing_meta(f)
     annotation = get_type_hints(owner)[name]
     choices = None if meta.choices is None else list(meta.choices)
+    if choices is None and _is_shape_spec(annotation):
+        # a shape_spec row's choices are the accepted kinds
+        choices = [shape.value for shape in PeakShape]
     bounds = None if meta.bounds is None else dict(meta.bounds)
     return (
         _setting_type(annotation, choices is not None, path),

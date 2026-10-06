@@ -29,6 +29,16 @@ stored in the fit's replan history and read as a JSON list in the
 set. A file written before it was stored loads the field as ``None`` (the
 column reads ``""``) and the trigger falls back to the dependency closure.
 
+**``incomplete_provenance`` separates a newer file from an old one.**
+``IncompleteProvenanceError`` gains ``newer``, the inputs whose records a newer
+engine wrote; ``missing`` keeps the inputs the file never persisted. The message
+for a newer file says to upgrade ftmwpipeline instead of re-running stages,
+which would not help.
+
+**The ``stage5.shape`` settings row reports its ``choices``.** A ``shape_spec``
+row's ``choices`` were ``null``; they are now the accepted shape kinds, derived
+from ``PeakShape``.
+
 **Dry run and preview refuse an unknown window like the apply.** A bare
 ``accept`` naming a window the fit does not have is refused ``not_found`` by the
 apply; ``review apply --dry-run`` and the preview (including a review session's)

@@ -278,7 +278,9 @@ carries a stable ``code`` and typed attributes, and ``to_dict()`` returns::
      - ``kind`` (``"file"``), ``ids`` (the path)
    * - ``incomplete_provenance``
      - ``IncompleteProvenanceError``
-     - ``missing``
+     - ``missing`` (inputs the file does not persist; re-run the stages that
+       own them), ``newer`` (inputs whose records a newer engine wrote;
+       upgrade ftmwpipeline, re-running cannot help)
    * - ``file_incompatible``
      - ``PipelineCompatibilityError``
      - ``file_version``, ``supported_version``
@@ -1376,11 +1378,12 @@ Each ``SettingRow`` (and each item of ``settings show`` / ``settings defaults``
 
 ``units``, ``choices`` and ``bounds`` are reported only where the setting's
 declaration states them; ``None`` means "not stated", never "unrestricted". At
-present ``stage5.conservative.n_eff_kind`` is the one ``choice``, and no setting
-states bounds. ``settings_set`` / ``settings set`` enforces whatever a row
-states, and so does every stage when it resolves its settings from a
+present ``stage5.conservative.n_eff_kind`` is the one ``choice``; the
+``shape_spec`` row ``stage5.shape`` also reports ``choices``, the shape kinds it
+accepts (``["lorentzian", "gaussian"]``). No setting states bounds.
+``settings_set`` / ``settings set`` enforces whatever a row states, and so does every stage when it resolves its settings from a
 ``settings=`` object, a preset or the file (:ref:`contract-bad-settings`), so a
-``choice`` row's ``choices`` are exactly the strings a run accepts.
+row's ``choices`` are exactly the strings a run accepts.
 
 ``value`` and ``hard_default`` are typed JSON: a pair or list is an array, a
 ``ShapeSpec`` is ``{"kind": "gaussian"}``, and clock sources are an array of
@@ -1575,7 +1578,10 @@ cannot be fingerprinted. The call then raises ``IncompleteProvenanceError``
 (code ``incomplete_provenance``) instead of hashing incomplete inputs. Its
 ``missing`` attribute lists every gap, across all stages, as dotted keys such as
 ``ft.analysis_epoch``, ``tau.stft``, ``peaks.consumed`` or
-``timebase.clock_sources``. Re-running the stages named records them.
+``timebase.clock_sources``. Re-running the stages named records them. A record
+written by a newer engine than this one is not a gap: its keys are listed in
+``newer`` instead, and the remedy is to upgrade ftmwpipeline; re-running
+cannot make an older engine read them.
 
 Writing a file
 --------------

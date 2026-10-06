@@ -506,8 +506,11 @@ def test_a_pre_provenance_record_lists_every_key_it_supplies(fit_file):
         ftmw.analysis_fingerprint(fit_file)
     assert exc.value.code == "incomplete_provenance"
     assert set(exc.value.missing) == _noise_missing()
+    assert exc.value.newer == []
     for key in exc.value.missing:
         assert key in str(exc.value)
+    assert "Re-run" in str(exc.value) or "re-run" in str(exc.value)
+    assert "upgrade" not in str(exc.value)
 
 
 def test_a_newer_field_set_version_is_refused(fit_file):
@@ -516,7 +519,12 @@ def test_a_newer_field_set_version_is_refused(fit_file):
     _bump_version(fit_file, STAGE2_NOISE_SETTINGS_PATH, STAGE2_NOISE_FIELD_SET_VERSION)
     with pytest.raises(IncompleteProvenanceError) as exc:
         ftmw.analysis_fingerprint(fit_file)
-    assert set(exc.value.missing) == _noise_missing()
+    # a newer record is named in ``newer`` with an upgrade remedy, not a re-run
+    assert set(exc.value.newer) == _noise_missing()
+    assert exc.value.missing == []
+    assert "upgrade ftmwpipeline" in str(exc.value)
+    assert "re-run" not in str(exc.value)
+    assert exc.value.to_dict()["newer"] == exc.value.newer
 
 
 def test_a_fit_record_from_a_newer_build_names_its_groups_and_consumed_block(
@@ -530,9 +538,10 @@ def test_a_fit_record_from_a_newer_build_names_its_groups_and_consumed_block(
     _bump_version(fit_file, STAGE_FIT_PATH, version)
     with pytest.raises(IncompleteProvenanceError) as exc:
         ftmw.analysis_fingerprint(fit_file)
-    missing = set(exc.value.missing)
-    assert {"fit.shape", "fit.tau", "fit.consumed"} <= missing
-    assert all(k.startswith("fit.") for k in missing)
+    newer = set(exc.value.newer)
+    assert {"fit.shape", "fit.tau", "fit.consumed"} <= newer
+    assert all(k.startswith("fit.") for k in newer)
+    assert exc.value.missing == []
 
 
 def test_a_missing_epoch_stamp_is_refused(fit_file):

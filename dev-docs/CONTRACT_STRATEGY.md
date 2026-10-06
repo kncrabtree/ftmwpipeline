@@ -411,7 +411,9 @@ stage persists them). It never computes a digest over incomplete inputs.
   - it has no analysis-epoch stamp;
   - one of its records is absent, has no field-set version, or is at an older
     version (`is_pre_provenance`);
-  - one of its records is at a **newer** version than this build knows;
+  - one of its records is at a **newer** version than this build knows (its
+    keys go in the error's `newer` list, not `missing`, and the remedy is to
+    upgrade ftmwpipeline rather than re-run);
   - a field its current version requires is missing (e.g. a version-2 timebase
     record without `clock_sources`).
 
@@ -789,7 +791,7 @@ under `--output`.
   `value`), `not_found` (`kind` — `window`, `peak`, `file` or `decision` — and
 `ids`: every id a request named that does not exist, e.g. all unknown window
 ids of a curation batch),
-`incomplete_provenance` (`missing`), `file_exists`, `file_incompatible`
+`incomplete_provenance` (`missing`, `newer`), `file_exists`, `file_incompatible`
   (`file_version`, `supported_version`), `file_corrupt`, `epoch_mismatch` (`file_epoch`, `current_epoch`),
   `cancelled` (`stage`, `completed_stages`, `completed_windows`;
   §Events and cancellation), `callback_failed` (`event_schema`, `completed_windows`),

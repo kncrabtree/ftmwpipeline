@@ -237,7 +237,7 @@ def _errors():
         (
             IncompleteProvenanceError(["stage2b.shape"]),
             "incomplete_provenance",
-            {"missing": ["stage2b.shape"]},
+            {"missing": ["stage2b.shape"], "newer": []},
             (ValueError,),
         ),
         (
@@ -464,6 +464,17 @@ def test_not_found_rejects_bare_string_ids():
 def test_incomplete_provenance_rejects_bare_string():
     with pytest.raises(TypeError):
         IncompleteProvenanceError("stage2b.shape")  # type: ignore[arg-type]
+
+
+def test_incomplete_provenance_names_newer_records_with_their_own_remedy():
+    err = IncompleteProvenanceError([], newer=["fit.shape"])
+    assert err.to_dict()["newer"] == ["fit.shape"]
+    assert err.to_dict()["missing"] == []
+    assert "Upgrade ftmwpipeline" in str(err) and "Re-run" not in str(err)
+    both = IncompleteProvenanceError(["a"], newer=["b"])
+    assert "Re-run" in str(both) and "Upgrade" in str(both)
+    with pytest.raises(TypeError):
+        IncompleteProvenanceError([], newer="b")  # type: ignore[arg-type]
 
 
 def test_valueerror_clauses_keep_working():

@@ -656,10 +656,15 @@ def _dotted(stage: Stage, sub_key: str, rel: str) -> str:
 
 
 def _read_stage(
-    file_path: str, stage: Stage, epoch: Optional[int], missing: List[str]
+    file_path: str,
+    stage: Stage,
+    epoch: Optional[int],
+    missing: List[str],
+    newer: List[str],
 ) -> Dict[str, Any]:
     """The canonical object of one completed stage; appends every input it
-    cannot vouch for to *missing*."""
+    cannot vouch for to *missing*, or to *newer* when a newer engine wrote its
+    record."""
     obj: Dict[str, Any] = {EPOCH_KEY: epoch}
     if epoch is None:
         missing.append(_dotted(stage, "", EPOCH_KEY))
@@ -671,9 +676,10 @@ def _read_stage(
                 missing.extend(unreadable)
                 continue
             read: Optional[_Read] = _Read(dict(record.absent_values))
-        elif provenance is not None and (
-            provenance.is_pre_provenance or provenance.is_newer
-        ):
+        elif provenance is not None and provenance.is_newer:
+            newer.extend(unreadable)
+            continue
+        elif provenance is not None and provenance.is_pre_provenance:
             missing.extend(unreadable)
             continue
         else:
@@ -710,27 +716,38 @@ def canonical_fingerprint_inputs(file_path: Union[str, Path]) -> Dict[str, Any]:
     ------
     IncompleteProvenanceError
         A completed stage cannot account for every input it used. ``missing``
-        lists every such input as a dotted canonical key, across all stages.
+        lists every such input as a dotted canonical key, across all stages;
+        ``newer`` lists those whose records a newer engine wrote.
     """
     path = str(file_path)
     completed, epochs = _completed_and_epochs(path)
     obj: Dict[str, Any] = {}
     missing: List[str] = []
+    newer: List[str] = []
     for stage in CANONICAL_STAGES:
         key = key_for_stage(stage)
         if key not in completed:
             obj[stage.value] = None
             obj[f"{stage.value}_absent"] = NOT_RUN
             continue
-        obj[stage.value] = _read_stage(path, stage, epochs.get(key), missing)
-    if missing:
+        obj[stage.value] = _read_stage(path, stage, epochs.get(key), missing, newer)
+    if missing or newer:
+        problems = []
+        if missing:
+            problems.append(
+                "the file does not record every input its completed stages used "
+                f"({', '.join(missing)}); re-run the stage(s) that own them to "
+                "record them"
+            )
+        if newer:
+            problems.append(
+                "the file holds records written by a newer ftmwpipeline "
+                f"({', '.join(newer)}); upgrade ftmwpipeline to read them"
+            )
         raise IncompleteProvenanceError(
             missing,
-            message=(
-                "Cannot compute the analysis fingerprint: the file does not "
-                f"record every input its completed stages used ({', '.join(missing)}). "
-                "Re-run the stage(s) that own them to record them."
-            ),
+            newer=newer,
+            message=f"Cannot compute the analysis fingerprint: {'; '.join(problems)}.",
         )
     return obj
 
