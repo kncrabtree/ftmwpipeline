@@ -16,6 +16,24 @@ Accumulating toward ``1.0.0``. ``0.1.0b4`` is the last published release;
 everything below is reachable only from a source checkout. No further beta is
 planned — these entries fold into the ``1.0.0`` section when it is dated.
 
+**An accepted Stage 5 thaw keeps the thawed line; ``ANALYSIS_EPOCH`` moves
+5 → 6.** When a thaw was accepted, the dependent window took the thawed line as
+one of its own free peaks and dropped every line it had frozen from the line's
+primary window. The line lies outside the dependent's grid, so the next refit of
+the dependent alone (the leakage-wing baseline, a rescue round, the cleanup)
+pinned it to the window edge, where the cleanup pruned it as dust. The dependent
+then held neither the line nor its skirt, and Stage 6 never re-read that skirt
+when the primary was edited. A copy that survived was listed twice, once in
+each window. Now the co-fit refines the line in its primary, and the dependent
+re-freezes everything it reads from that primary from the refined fit, by the
+rule that froze it. The line is listed once, in its primary.
+
+On the seven reference fixtures one thaw is accepted, on 1019 (window 53, from
+window 58). Window 53 now carries 58's line as a frozen contributor. Its own two
+lines move by under 0.1 Hz. No other window of any fixture changes. A file fitted
+under epoch 5 must be re-fit, or have the mismatch accepted, before Stage 6 will
+splice an edit into it.
+
 **One snap tolerance per file; removes logged at the peak they removed; decision
 serials; ``CONTRACT_VERSION`` moves 15 → 16.**
 

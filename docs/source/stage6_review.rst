@@ -462,8 +462,11 @@ the source peak; ``knockout_p_value`` and ``knockout_aicc_delta`` are
 ``Absent.UNDEFINED`` when the test ran but the value is not finite (its own
 refit did not converge; for ``knockout_p_value`` also a degenerate F-test, one with
 no residual degrees of freedom or a non-positive chi-squared). They are fields on ``FinalPeak``, not columns of the exported
-table. A line held out of a refit by a thaw is re-attached verbatim, so its
-statistics describe its earlier fit while its neighbors' describe the new one.
+table. In a fit made before ``ANALYSIS_EPOCH`` 6 a thawed line could sit among
+a dependent window's peaks; a refit holds it out and re-attaches it verbatim,
+so its statistics describe its earlier fit while its neighbors' describe the new
+one. From epoch 6 a thawed line stays frozen in the dependent and is listed
+once, in its own window.
 
 The frequency uncertainty is composed as three independent terms in quadrature:
 
@@ -674,7 +677,7 @@ an empty cell. With
    # sideband: lower
    # amplitude_unit: uV
    # n_peaks: 512
-   # fit_environment: ftmwpipeline 0.1.0b6 (epoch 5), python 3.11.15, numpy 2.4.6, scipy 1.17.1
+   # fit_environment: ftmwpipeline 0.1.0b6 (epoch 6), python 3.11.15, numpy 2.4.6, scipy 1.17.1
    # fit_blas: openblas 0.3.33 (1 threads)
    frequency_mhz,sigma_f_khz,sigma_stat_khz,sigma_eps_khz,sigma_floor_khz,frequency_raw_mhz,f_baseband_mhz,amplitude,amplitude_err,phase_rad,phase_err_rad,snr,snr_err,origin,window_id,clock_lattice,derivation,peak_uid,decay_time_us,decay_time_error_us,shape,fwhm_mhz,detection_index,fit_window_low_mhz,fit_window_high_mhz
    26613.613007,1.571,1.158,1.063,0,26613.581576,14346.418424,1.905,0.03924,-1.084,0.0306,34.58,0.7123,auto,1,,,18263000,8.50794,0.165,gaussian,0.118106,7,26611.091924,26616.747842

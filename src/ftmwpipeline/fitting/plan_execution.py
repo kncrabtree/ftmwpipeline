@@ -33,8 +33,10 @@ plan execution:
   (or the contributor was not safe to freeze in the first place -- the
   ``freeze_eligible=False`` case the Stage 4 plan flagged). The contributor is
   then *thawed*: unfrozen and co-fit jointly with the dependent window and its
-  primary window. This is the canonical 36350/36389 doublet case. Rounds are
-  bounded for guaranteed termination.
+  primary window. An accepted co-fit refines the line in its primary, and the
+  dependent re-freezes its skirt from the refined primary. This is the
+  canonical 36350/36389 doublet case. Rounds are bounded for guaranteed
+  termination.
 
 The fit frame is the **active-portion FT**
 (:mod:`ftmwpipeline.fitting.active_ft`) -- the rfft of just the active FID
@@ -748,19 +750,52 @@ def evaluate_ancestor_leakage(
     line leaks negligibly and is dropped by the SNR bar regardless.
     """
     inner = primary_outcome.fit.fit
-    if not inner.peaks:
+    return _freeze_fitted_lines(
+        inner.peaks,
+        primary_window_id,
+        tau_us=inner.tau_us,
+        shape=inner.shape,
+        rms_noise=primary_outcome.rms_noise,
+        primary_center_mhz=_window_center_mhz(primary_outcome),
+        dependent_center_mhz=dependent_center_mhz,
+        sideband=sideband,
+        acquisition_us=acquisition_us,
+        min_freeze_snr=min_freeze_snr,
+    )
+
+
+def _freeze_fitted_lines(
+    peaks: Sequence[ModelPeak],
+    primary_window_id: int,
+    *,
+    tau_us: float,
+    shape: "PeakShape | str",
+    rms_noise: np.ndarray,
+    primary_center_mhz: float,
+    dependent_center_mhz: float,
+    sideband: SidebandLike,
+    acquisition_us: float,
+    min_freeze_snr: float,
+) -> list[FrozenPeak]:
+    """The freeze rule of :func:`evaluate_ancestor_leakage` on explicit inputs.
+
+    ``peaks`` are the primary's fitted lines in its own offset frame, and
+    ``tau_us`` / ``shape`` / ``rms_noise`` the primary fit's -- what the SNR bar
+    reads. Split out so an accepted thaw can freeze the co-fit primary's lines
+    before it installs them (:func:`_perform_thaw`).
+    """
+    if not peaks:
         return []
     s = sideband_sign(sideband)
-    primary_center = _window_center_mhz(primary_outcome)
-    rms_mean = float(np.mean(np.asarray(primary_outcome.rms_noise, dtype=float)))
-    tau_us = inner.tau_us
+    primary_center = float(primary_center_mhz)
+    rms_mean = float(np.mean(np.asarray(rms_noise, dtype=float)))
     tau_eff = (
-        effective_tau_shape(inner.shape, tau_us, acquisition_us)
+        effective_tau_shape(shape, tau_us, acquisition_us)
         if tau_us > 0
         else float("nan")
     )
     frozen: list[FrozenPeak] = []
-    for pk in inner.peaks:
+    for pk in peaks:
         if rms_mean > 0 and np.isfinite(tau_eff):
             snr = 0.5 * float(pk.amplitude) * tau_eff / rms_mean
         else:
@@ -1968,6 +2003,40 @@ def select_contributor_to_thaw(
     return min(pool, key=lambda fp: abs(fp.frequency_mhz - edge_freq))
 
 
+def _is_primary_skirt(fp: FrozenPeak, primary_window_id: int) -> bool:
+    """True for a line frozen from ``primary_window_id``'s fit.
+
+    That is the set :func:`evaluate_ancestor_leakage` built for the primary:
+    every entry naming it, except an edge-free read, which comes from the data
+    and not from the primary's fit. ``peak_index`` cannot narrow it further: a
+    line frozen from a fit carries no Stage 3 link (it is ``-1``).
+    """
+    return fp.primary_window_id == primary_window_id and not fp.edge_free
+
+
+def _replace_primary_skirt(
+    fixed_peaks: Sequence[FrozenPeak],
+    primary_window_id: int,
+    refrozen: Sequence[FrozenPeak],
+) -> list[FrozenPeak]:
+    """``fixed_peaks`` with the primary's skirt swapped for ``refrozen``.
+
+    The new lines take the place of the first old one, so the order of the
+    sources (first appearance) is kept.
+    """
+    out: list[FrozenPeak] = []
+    placed = False
+    for fp in fixed_peaks:
+        if not _is_primary_skirt(fp, primary_window_id):
+            out.append(fp)
+        elif not placed:
+            out.extend(refrozen)
+            placed = True
+    if not placed:
+        out.extend(refrozen)
+    return out
+
+
 def local_thaw_cofit(
     dependent: WindowOutcome,
     primary: WindowOutcome,
@@ -2035,7 +2104,10 @@ def local_thaw_cofit(
     # A FrozenPeak's offset is in its *dependent* window's frame; the joint
     # grid carries the dependent's bins in the primary's frame (``+ shift``),
     # so the dependent's other contributors are remapped by the same shift
-    # before they are subtracted or follow the joint tau.
+    # before they are subtracted or follow the joint tau. Every line the
+    # dependent froze from the thawed contributor's primary is left out, not
+    # only the thawed one: the joint model draws all of the primary's free
+    # peaks across the dependent's bins, so a frozen copy would count twice.
     dep_other = [
         replace(
             fp,
@@ -2044,8 +2116,7 @@ def local_thaw_cofit(
             ),
         )
         for fp in dependent.fixed_peaks
-        if fp.peak_index != thawed.peak_index
-        or fp.primary_window_id != thawed.primary_window_id
+        if not _is_primary_skirt(fp, thawed.primary_window_id)
     ]
     _, primary_clean = subtract_frozen_background(
         primary_u,
@@ -3401,6 +3472,7 @@ def _process_one_window(
             residual_edge_m=residual_edge_m,
             shape=conservative_kwargs.get("shape", "lorentzian"),
             spur_set=spur_set,
+            min_freeze_snr=min_freeze_snr,
         )
         if not edge_events:
             break
@@ -5316,6 +5388,7 @@ def attempt_thaw_round(
     residual_edge_m: int = DEFAULT_RESIDUAL_EDGE_M,
     shape: "PeakShape | str" = "lorentzian",
     spur_set: Optional[SpurSet] = None,
+    min_freeze_snr: float = DEFAULT_MIN_FREEZE_SNR,
 ) -> list[ThawEvent]:
     """Run one round of the residual edge-coherence check on a window and thaw.
 
@@ -5342,6 +5415,9 @@ def attempt_thaw_round(
         Pipeline-level parameters propagated to :func:`local_thaw_cofit`.
     residual_edge_threshold, residual_edge_m : ...
         See :func:`execute_plan`.
+    min_freeze_snr : float
+        The bar a line clears to be frozen: an accepted thaw re-freezes the
+        co-fit primary's lines into the dependent with it.
     """
     events: list[ThawEvent] = []
     for edge_side, edge_coh in (
@@ -5381,6 +5457,7 @@ def attempt_thaw_round(
                 residual_edge_m=residual_edge_m,
                 shape=shape,
                 spur_set=spur_set,
+                min_freeze_snr=min_freeze_snr,
             )
         events.append(event)
         outcome.thaw_events.append(event)
@@ -5403,8 +5480,18 @@ def _perform_thaw(
     residual_edge_m: int,
     shape: "PeakShape | str" = "lorentzian",
     spur_set: Optional[SpurSet] = None,
+    min_freeze_snr: float = DEFAULT_MIN_FREEZE_SNR,
 ) -> ThawEvent:
-    """Do the joint co-fit, decide accept/reject, and rebuild the outcomes."""
+    """Do the joint co-fit, decide accept/reject, and rebuild the outcomes.
+
+    An accepted thaw refines the line in its primary, the window that owns it;
+    the dependent keeps it **frozen**, with its skirt from that primary
+    re-frozen from the co-fit primary by the ordinary freeze rule
+    (:func:`evaluate_ancestor_leakage`). The line is never a free peak of the
+    dependent: it lies outside the dependent's grid, so any later single-window
+    refit there would pin it to the grid edge, and the line list would carry it
+    twice.
+    """
     primary_outcome = outcomes[thawed.primary_window_id]
 
     joint, thawed_idx_arr = local_thaw_cofit(
@@ -5452,10 +5539,8 @@ def _perform_thaw(
             reason="joint co-fit peak count mismatch",
         )
 
-    thawed_idx = int(thawed_idx_arr[0])
     primary_peaks = list(joint.peaks[:n_primary_peaks])
     dep_peaks_in_primary = list(joint.peaks[n_primary_peaks:])
-    thawed_peak_primary = primary_peaks[thawed_idx]
 
     # Remap the dependent frame: shift = s*(dep_center - primary_center).
     shift = s * (dep_center - primary_center)
@@ -5463,24 +5548,38 @@ def _perform_thaw(
         ModelPeak(pk.amplitude, pk.offset_mhz - shift, pk.phase, peak_uid=pk.peak_uid)
         for pk in dep_peaks_in_primary
     ]
-    thawed_in_dep = ModelPeak(
-        thawed_peak_primary.amplitude,
-        thawed_peak_primary.offset_mhz - shift,
-        thawed_peak_primary.phase,
-        peak_uid=thawed_peak_primary.peak_uid,
+    # The dependent's skirt from the primary, re-frozen from the co-fit primary
+    # exactly as evaluate_ancestor_leakage will read it once installed (its tau
+    # becomes the joint tau). It replaces every line frozen from that primary,
+    # which the joint model drew as free primary peaks (local_thaw_cofit).
+    refrozen = _freeze_fitted_lines(
+        primary_peaks,
+        thawed.primary_window_id,
+        tau_us=joint.tau_us,
+        shape=primary_outcome.fit.fit.shape,
+        rms_noise=primary_outcome.rms_noise,
+        primary_center_mhz=primary_center,
+        dependent_center_mhz=dep_center,
+        sideband=sideband,
+        acquisition_us=acquisition_us,
+        min_freeze_snr=min_freeze_snr,
+    )
+    dep_fixed_after = _replace_primary_skirt(
+        dep_outcome.fixed_peaks, thawed.primary_window_id, refrozen
     )
 
-    # Provisional dependent residual after a (hypothetical) install: free peaks
-    # become dep_peaks + thawed_in_dep, the thawed contributor drops from the
-    # frozen background, every other frozen contributor stays at the new tau.
-    dep_other_peaks = [
-        fp
-        for fp in dep_outcome.fixed_peaks
-        if not (
-            fp.peak_index == thawed.peak_index
-            and fp.primary_window_id == thawed.primary_window_id
-        )
-    ]
+    # Provisional dependent residual for the acceptance gate. The gate keeps
+    # its pre-epoch-6 model: the dependent's free peaks plus the thawed line,
+    # with every line frozen from the primary left out and every other frozen
+    # contributor at the joint tau. For a primary holding one line this is the
+    # installed model; for a primary holding several it lacks the others.
+    thawed_pk = primary_peaks[int(thawed_idx_arr[0])]
+    thawed_in_dep = ModelPeak(
+        thawed_pk.amplitude,
+        thawed_pk.offset_mhz - shift,
+        thawed_pk.phase,
+        peak_uid=thawed_pk.peak_uid,
+    )
     provisional_dep_full = model_spectrum(
         dep_outcome.offset_grid_mhz,
         dep_peaks + [thawed_in_dep],
@@ -5489,7 +5588,11 @@ def _perform_thaw(
         shape=joint.shape,
     ) + _frozen_subset_model(
         dep_outcome.offset_grid_mhz,
-        dep_other_peaks,
+        [
+            fp
+            for fp in dep_outcome.fixed_peaks
+            if not _is_primary_skirt(fp, thawed.primary_window_id)
+        ],
         joint.tau_us,
         acquisition_us,
         shape=joint.shape,
@@ -5520,8 +5623,7 @@ def _perform_thaw(
 
     # Accept: install the new fits. The primary's peak list already includes
     # the thawed line (the joint fit refined it), so just refresh its peaks;
-    # the dependent gains the thawed line as a free peak and drops it from
-    # the frozen contributors.
+    # the dependent keeps its own peaks and carries the re-frozen skirt.
     _install_cofit_outcome(
         primary_outcome,
         new_peaks=primary_peaks,
@@ -5534,14 +5636,13 @@ def _perform_thaw(
     )
     _install_cofit_outcome(
         dep_outcome,
-        new_peaks=dep_peaks + [thawed_in_dep],
+        new_peaks=dep_peaks,
         tau_us=joint.tau_us,
         acquisition_us=acquisition_us,
         residual_edge_m=residual_edge_m,
         joint=joint,
-        own_peak_indices=list(range(n_primary_peaks, n_primary_peaks + n_dep_peaks))
-        + [thawed_idx],
-        drop_contributor=thawed,
+        own_peak_indices=list(range(n_primary_peaks, n_primary_peaks + n_dep_peaks)),
+        fixed_peaks=dep_fixed_after,
         cofit_was_tau_free=bool(joint.tau_was_fit),
     )
 
@@ -5588,14 +5689,15 @@ def _install_cofit_outcome(
     residual_edge_m: int,
     joint: WindowFitResult,
     own_peak_indices: Sequence[int],
-    drop_contributor: Optional[FrozenPeak] = None,
+    fixed_peaks: Optional[Sequence[FrozenPeak]] = None,
     cofit_was_tau_free: bool = False,
 ) -> None:
     """Update a WindowOutcome in place after an accepted co-fit.
 
     Replaces the free-peak fit's peaks/tau and recomputes the full model,
-    residual, and edge-coherence statistics; optionally drops a thawed
-    contributor from ``fixed_peaks``. The conservative-fit audit trail and
+    residual, and edge-coherence statistics; ``fixed_peaks``, when given,
+    replaces the frozen contributors (a thaw's dependent carries its re-frozen
+    primary skirt). The conservative-fit audit trail and
     knockouts are preserved (they describe the original free-peak fit; the
     accepted-thaw record lives on the :class:`ThawEvent`).
 
@@ -5621,15 +5723,8 @@ def _install_cofit_outcome(
     is installed as-is from the joint fit since ``tau`` is one physically
     shared parameter, not a per-window quantity.
     """
-    if drop_contributor is not None:
-        outcome.fixed_peaks = [
-            fp
-            for fp in outcome.fixed_peaks
-            if not (
-                fp.peak_index == drop_contributor.peak_index
-                and fp.primary_window_id == drop_contributor.primary_window_id
-            )
-        ]
+    if fixed_peaks is not None:
+        outcome.fixed_peaks = list(fixed_peaks)
     # Replace the free-peak fit's peaks/tau and reconstruct the full model.
     new_peak_list = [
         ModelPeak(p.amplitude, p.offset_mhz, p.phase, peak_uid=p.peak_uid)
@@ -5792,9 +5887,8 @@ def _apply_rescue_to_outcome(
     outcome in place. Returns the per-round :class:`RescueEvent` records.
 
     Operates on the *post-thaw* outcome: the rescue's notion of "what the
-    initial fit missed" includes any contributor's line a thaw promoted to
-    a free peak (which appears in the window's free-peak list after a
-    successful thaw via :func:`_install_cofit_outcome`). The frozen
+    initial fit missed" starts from the background a successful thaw
+    re-froze from the co-fit primary (:func:`_perform_thaw`). The frozen
     contributors are not renegotiated -- the rescue addresses missed lines --
     but their skirt follows ``tau`` through every refit of the chain (ROADMAP
     D18): the chain starts from ``complex_spectrum - background`` with the

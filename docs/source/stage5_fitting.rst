@@ -279,8 +279,11 @@ residual leakage, and if so it renegotiates rather than shipping an under-fit wi
   longer explain the boundary, or it was flagged not freeze-eligible), the
   contributor is unfrozen and co-fit jointly with the dependent window. This does not
   fit the line a second time: its single free fit is reopened and re-determined
-  jointly across the coupled windows, replacing the frozen copy rather than adding
-  another. It is the cheaper of the two remedies, but it needs a fixed contributor on
+  jointly across the coupled windows. An accepted co-fit refines the line in its
+  primary window, which owns it, and the dependent re-freezes everything it reads
+  from that primary from the refined fit, by the same rule that froze it. The line
+  stays out of the dependent's free peaks, and so out of its line list. It is the
+  cheaper of the two remedies, but it needs a fixed contributor on
   the flagged side: on the reference experiment no window carries one at the default
   :doc:`materiality gate <stage4_windows>`, so its nine flagged edges record thaw
   attempts with nothing to thaw (``Thaw events: 0 accepted of 9``) and pass to the

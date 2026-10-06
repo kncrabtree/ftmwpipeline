@@ -64,12 +64,14 @@ class TestCaptureEnvironment:
         assert rec.scipy
         assert rec.h5py
 
-    def test_the_epoch_is_five_after_the_structural_replan_fix(self):
-        """Stage 5's structural replan can apply merges (before epoch 5 it never
-        did), so a fit made under epoch 4 is not comparable with one made now.
-        Raising the epoch again is a deliberate act: update this pin with it."""
-        assert ANALYSIS_EPOCH == 5
-        assert capture_environment().analysis_epoch == 5
+    def test_the_epoch_is_six_after_the_thaw_fix(self):
+        """An accepted Stage 5 thaw now keeps the thawed line frozen in the
+        dependent, re-frozen from the co-fit primary (before epoch 6 it became
+        a free peak there and was lost), so a fit made under epoch 5 is not
+        comparable with one made now. Raising the epoch again is a deliberate
+        act: update this pin with it."""
+        assert ANALYSIS_EPOCH == 6
+        assert capture_environment().analysis_epoch == 6
 
     def test_blas_is_identified(self):
         """threadpoolctl is a hard dependency, so the runtime BLAS is knowable."""
