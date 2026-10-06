@@ -257,9 +257,29 @@ SNAPSHOT_FIELDS: dict = {
         "serial",
     },
     "AttentionReason": {"kind", "detail", "severity", "locations", "evidence"},
-    "RefitWindowResult": {"converged"},
-    "PreviewWindowResult": {"converged"},
+    "RefitWindowResult": {
+        "converged",
+        "created_window_freq_range",
+        "created_window_freq_range_calibrated",
+    },
+    "PreviewWindowResult": {
+        "converged",
+        "created_window_freq_range",
+        "created_window_freq_range_calibrated",
+    },
     "AppliedWindowResult": {"converged"},
+    "PlannedWindowResult": {
+        "anchor_mhz",
+        "anchor_calibrated_mhz",
+        "freq_range",
+        "freq_range_calibrated",
+    },
+    "CreateWindowResult": {
+        "anchor_mhz",
+        "anchor_calibrated_mhz",
+        "freq_range",
+        "freq_range_calibrated",
+    },
     "PlannedAction": {"action_indices"},
     "CurationWarningDetail": {"message", "action_indices"},
     "CurationApplyResult": {"warnings", "warning_details"},
@@ -556,7 +576,7 @@ def test_manifest_sequences_are_tuples():
 
 
 def test_manifest_version_matches_package():
-    assert MANIFEST.contract_version == ftmwpipeline.CONTRACT_VERSION == 17
+    assert MANIFEST.contract_version == ftmwpipeline.CONTRACT_VERSION == 18
     assert isinstance(ftmwpipeline.CONTRACT_VERSION, int)
 
 
@@ -642,9 +662,11 @@ def test_declared_conditional_metadata_scalars_are_written_by_their_stage():
 def _type_registry() -> dict:
     from ftmwpipeline._internal.stage6_impl import (
         AppliedWindowResult,
+        CreateWindowResult,
         CurationApplyResult,
         CurationWarningDetail,
         PlannedAction,
+        PlannedWindowResult,
         PreviewWindowResult,
         RefitWindowResult,
         ReviewPreviewResult,
@@ -669,6 +691,8 @@ def _type_registry() -> dict:
         "RefitWindowResult": RefitWindowResult,
         "PreviewWindowResult": PreviewWindowResult,
         "AppliedWindowResult": AppliedWindowResult,
+        "PlannedWindowResult": PlannedWindowResult,
+        "CreateWindowResult": CreateWindowResult,
         "PlannedAction": PlannedAction,
         "CurationWarningDetail": CurationWarningDetail,
         "CurationApplyResult": CurationApplyResult,

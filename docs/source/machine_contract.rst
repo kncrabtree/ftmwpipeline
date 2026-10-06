@@ -39,10 +39,10 @@ The contract version
 ``__version__``::
 
     import ftmwpipeline
-    if ftmwpipeline.CONTRACT_VERSION < 17:
+    if ftmwpipeline.CONTRACT_VERSION < 18:
         raise RuntimeError("needs a newer ftmwpipeline")
 
-The first published contract is version ``1``; this release is version ``17``.
+The first published contract is version ``1``; this release is version ``18``.
 An addition (a new accessor, field or code) raises the version by one and never
 breaks an existing field. Every machine-readable payload also carries a
 **schema name** of the form ``ftmw/<payload>@<n>``; a schema name never changes
@@ -484,7 +484,9 @@ The stage calls that refuse an argument or a resolved setting:
        ``stage3.savgol.sg_window``, ``stage3.primary_pass.primary_window``
        (unknown apodization)
    * - ``detect_start_time``
-     - ``stage0.step_us`` (FID too short for the sweep step)
+     - ``stage0.step_us`` (FID too short for the sweep step). Its
+       ``settings=`` argument is a ``StartDetectionSettings``, exported as
+       ``ftmwpipeline.StartDetectionSettings`` (contract 18)
    * - ``fit_peaks``
      - ``stage5.shape``, ``tau_maj_override_us`` / ``sigma_tau_override_us``
        (only one of the pair, or non-positive), ``stage5.tau.tau0_us``,
@@ -780,9 +782,11 @@ result's own ``invalidated`` (canonical names, in re-run order; ``[]`` when
 none; :ref:`contract-invalidation`). ``summary`` holds the scalars the human
 output reports (counts, chosen values, paths written, a dict of counts), never
 an array. A value with no measurement (an undefined ``epsilon``) is ``null``
-with its ``"<field>_absent"`` sibling. ``review apply`` adds two top-level keys
-beside ``summary`` (contract 17), its result's ``warnings`` and
-``warning_details`` (:ref:`contract-curation-refusals`).
+with its ``"<field>_absent"`` sibling. ``review apply`` adds top-level keys
+beside ``summary``: its result's ``warnings`` and ``warning_details``
+(contract 17, :ref:`contract-curation-refusals`) and ``created_windows``
+(contract 18, :ref:`created structure <contract-created-structure>`), dry
+run included.
 
 The table below describes each verb's summary in prose; the exact keys, with
 the conditional ones marked, are ``capabilities()["summary_keys"]`` (also the
@@ -829,7 +833,10 @@ keys of the verb's ``StageFinished.summary``,
        ``undo``
      - ``review``
      - run_result: window / action counts, peak counts and reduced chi-squared
-       before and after, ``converged``, created-window mode
+       before and after, ``converged``, created-window mode; ``create`` reports
+       its anchor and extent in both frames (``anchor_mhz``, ``freq_lo_mhz``,
+       ``freq_hi_mhz`` raw; ``anchor_calibrated_mhz``,
+       ``freq_lo_calibrated_mhz``, ``freq_hi_calibrated_mhz``)
    * - ``settings set`` / ``unset``
      - ``null``
      - run_result: ``path`` (and the new ``value`` for ``set``)
@@ -1260,9 +1267,35 @@ Each, with its absence cases:
   empty, or every peak removed): no solver ran, so there is no convergence
   outcome (the wire form is ``null`` with ``"converged_absent": "undefined"``,
   and no non-convergence warning is raised); the
-  five ``created_window_*`` fields are all *not run* on a window the batch did
-  not create or widen (an empty ``created_window_depends_on`` list is a
-  present value).
+  five ``created_window_*`` fields, and ``created_window_freq_range_calibrated``
+  (contract 18), are all *not run* on a window the batch did not create or
+  widen (an empty ``created_window_depends_on`` list is a present value).
+
+.. _contract-created-structure:
+
+* **Created structure in both frames** (contract 18). A window a batch installs
+  or grows is a ``PlannedWindowResult`` in the result's ``created_windows``
+  (``review_apply`` -- dry run and live -- and ``review_preview``; under
+  ``--json``, ``review preview``'s ``created_windows`` and ``review apply``'s
+  top-level ``created_windows``): ``window_id``, ``mode``, ``anchor_mhz``,
+  ``freq_range``, ``n_points``, ``n_contributors``, ``depends_on``.
+  ``anchor_mhz`` and ``freq_range`` are in the raw frame; beside them,
+  ``anchor_calibrated_mhz`` and ``freq_range_calibrated`` are the same values
+  in the calibrated frame, converted exactly as
+  ``window_status(frame="calibrated")`` converts a window's bounds, so a
+  created window's ``freq_range_calibrated`` equals its calibrated
+  ``window_status`` bounds (and the ``fit_window_mhz`` of its lines). A UI
+  shows these beside calibrated line frequencies and never converts. The same
+  pair is on ``CreateWindowResult`` (``review_create``), and
+  ``created_window_freq_range_calibrated`` is beside
+  ``created_window_freq_range`` on ``RefitWindowResult`` and
+  ``PreviewWindowResult``. With no calibration to apply (``epsilon == 0``:
+  ``rb_locked``, ``uncalibrated``) the two frames coincide and a companion
+  equals its raw value -- a value, never an absence, as for
+  ``window_status`` -- so a companion is *not run* exactly where its raw
+  sibling is. A dry run, a preview and the live apply of the same plan
+  report equal structure. The ``created_window`` decision evidence is
+  unchanged: a recorded snapshot, raw frame.
 * ``compute_display_ft`` -- ``freq_array`` and ``complex_spectrum`` plus
   ``metadata`` (``amplitude_scale``, ``units_label``, ``pad_factor``). It is
   the active-portion FT Stage 5 fits, zero-filled to ``pad_factor`` times its

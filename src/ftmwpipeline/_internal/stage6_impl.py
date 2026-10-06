@@ -361,6 +361,7 @@ def review_edit_summary(
 def review_create_summary(result: "CreateWindowResult") -> Dict[str, Any]:
     """``review create``'s summary."""
     lo, hi = result.freq_range
+    cal_lo, cal_hi = result.freq_range_calibrated
     return {
         "window_id": result.window_id,
         "mode": result.mode,
@@ -370,6 +371,9 @@ def review_create_summary(result: "CreateWindowResult") -> Dict[str, Any]:
         "n_points": result.n_points,
         "n_contributors": result.n_contributors,
         "n_peaks": result.n_peaks,
+        "anchor_calibrated_mhz": result.anchor_calibrated_mhz,
+        "freq_lo_calibrated_mhz": cal_lo,
+        "freq_hi_calibrated_mhz": cal_hi,
     }
 
 
@@ -1530,6 +1534,10 @@ class RefitWindowResult:
         raw frame -- :attr:`CreateWindowResult.freq_range` from the create
         this edit's window came from. ``Absent.NOT_RUN`` iff
         ``created_window_mode`` is.
+    created_window_freq_range_calibrated : tuple of float or Absent
+        ``created_window_freq_range`` in the calibrated frame (contract 18)
+        -- :attr:`CreateWindowResult.freq_range_calibrated`. Equal to it when
+        ``epsilon == 0``. ``Absent.NOT_RUN`` iff ``created_window_mode`` is.
     created_window_n_points : int or Absent
         Grid points the window covers. ``Absent.NOT_RUN`` iff
         ``created_window_mode`` is.
@@ -1564,6 +1572,9 @@ class RefitWindowResult:
     sigma_epsilon: float = 0.0
     created_window_mode: Union[str, Absent] = Absent.NOT_RUN
     created_window_freq_range: Union[Tuple[float, float], Absent] = Absent.NOT_RUN
+    created_window_freq_range_calibrated: Union[Tuple[float, float], Absent] = (
+        Absent.NOT_RUN
+    )
     created_window_n_points: Union[int, Absent] = Absent.NOT_RUN
     created_window_n_contributors: Union[int, Absent] = Absent.NOT_RUN
     created_window_depends_on: Union[List[int], Absent] = Absent.NOT_RUN
@@ -4146,7 +4157,9 @@ class CreateWindowResult:
     freq_range : tuple of float
         The installed window's ``(min_mhz, max_mhz)`` extent, raw frame.
     freq_range_calibrated : tuple of float
-        ``freq_range`` in the calibrated frame.
+        ``freq_range`` in the calibrated frame: the window's
+        ``window_status(frame="calibrated")`` bounds. Equal to ``freq_range``
+        when ``epsilon == 0`` (the frames coincide; never an absence).
     n_points : int
         Grid points the window covers.
     n_contributors : int
@@ -4617,6 +4630,16 @@ class PlannedWindowResult:
     depends_on : list of int
         Window ids it reads frozen leakage from (``[]`` for a widening, whose
         edges are unchanged).
+    anchor_calibrated_mhz : float
+        ``anchor_mhz`` in the calibrated frame (contract 18), as
+        :attr:`CreateWindowResult.anchor_calibrated_mhz`.
+    freq_range_calibrated : tuple of float
+        ``freq_range`` in the calibrated frame (contract 18): the window's
+        ``window_status(frame="calibrated")`` bounds once installed. Equal to
+        ``freq_range`` when the file has no calibration to apply
+        (``epsilon == 0``) -- the two frames coincide there, as they do for
+        ``window_status`` and the final products, so this is a value, never
+        an absence.
     """
 
     window_id: int
@@ -4626,6 +4649,8 @@ class PlannedWindowResult:
     n_points: int
     n_contributors: int
     depends_on: List[int]
+    anchor_calibrated_mhz: float = 0.0
+    freq_range_calibrated: Tuple[float, float] = (0.0, 0.0)
 
 
 @dataclass
@@ -8813,8 +8838,7 @@ def _create_window_result(
     fit_win = proposal.window
     (lo, hi), n_points = _created_window_extent(fit_win)
     anchor = float(planned.anchor)
-    probe_freq_mhz = shared.fit_ctx.probe_freq_mhz
-    epsilon = shared.epsilon
+    anchor_cal, range_cal = _calibrated_structure(shared, anchor, (lo, hi))
     return CreateWindowResult(
         window_id=int(fit_win.window_id),
         mode=proposal.mode,
@@ -8824,32 +8848,66 @@ def _create_window_result(
         n_contributors=len(fit_win.fixed_contributors),
         depends_on=[int(d) for d in proposal.depends_on],
         n_peaks=int(n_peaks),
-        anchor_calibrated_mhz=_frame_to_calibrated(
-            anchor, probe_freq_mhz=probe_freq_mhz, epsilon=epsilon
-        ),
-        freq_range_calibrated=(
-            _frame_to_calibrated(lo, probe_freq_mhz=probe_freq_mhz, epsilon=epsilon),
-            _frame_to_calibrated(hi, probe_freq_mhz=probe_freq_mhz, epsilon=epsilon),
-        ),
+        anchor_calibrated_mhz=anchor_cal,
+        freq_range_calibrated=range_cal,
         calibration_state=shared.calibration_state,
-        epsilon=epsilon,
+        epsilon=shared.epsilon,
         sigma_epsilon=shared.sigma_epsilon,
     )
 
 
-def _planned_window_result(planned: _PlannedCreate) -> "PlannedWindowResult":
-    """A create's structure as :class:`CurationApplyResult` and
-    :class:`ReviewPreviewResult` report it (:class:`PlannedWindowResult`)."""
-    fit_win = planned.proposal.window
+def _calibrated_structure(
+    shared: _SharedFitCtx, anchor_mhz: float, freq_range: Tuple[float, float]
+) -> Tuple[float, Tuple[float, float]]:
+    """A created window's raw anchor and extent in the calibrated frame.
+
+    The conversion is :func:`_frame_to_calibrated` under the calibration
+    *shared* was built against -- the stamp ``window_status(frame=
+    "calibrated")`` converts with -- so a calibrated extent equals that
+    window's ``window_status`` bounds. The identity when ``epsilon == 0``
+    (``rb_locked`` / ``uncalibrated``, or no stamp at all): the frames
+    coincide there, as they do for ``window_status`` and the final products,
+    so the calibrated value is the raw one, never an absence."""
+    probe, epsilon = shared.fit_ctx.probe_freq_mhz, shared.epsilon
+    lo, hi = sorted(
+        _frame_to_calibrated(v, probe_freq_mhz=probe, epsilon=epsilon)
+        for v in freq_range
+    )
+    anchor = _frame_to_calibrated(anchor_mhz, probe_freq_mhz=probe, epsilon=epsilon)
+    return anchor, (lo, hi)
+
+
+def _planned_window_result(
+    req: "_CuratedRequest", planned: _PlannedCreate
+) -> "PlannedWindowResult":
+    """A create *req* ran, as :class:`CurationApplyResult` and
+    :class:`ReviewPreviewResult` report it (:class:`PlannedWindowResult`). A
+    request that ran a create resolved against a display batch."""
+    assert req.display is not None
+    return _planned_structure(
+        req.display.shared, planned.proposal, float(planned.anchor)
+    )
+
+
+def _planned_structure(
+    shared: _SharedFitCtx, proposal: "Stage6WindowProposal", anchor_mhz: float
+) -> "PlannedWindowResult":
+    """:class:`PlannedWindowResult` for *proposal* resolved at *anchor_mhz*
+    (raw frame), both frames on its anchor and extent -- the one builder a
+    dry run and a live apply share, so the two agree field for field."""
+    fit_win = proposal.window
     (lo, hi), n_points = _created_window_extent(fit_win)
+    anchor_cal, range_cal = _calibrated_structure(shared, anchor_mhz, (lo, hi))
     return PlannedWindowResult(
         window_id=int(fit_win.window_id),
-        anchor_mhz=float(planned.anchor),
-        mode=planned.proposal.mode,
+        anchor_mhz=float(anchor_mhz),
+        mode=proposal.mode,
         freq_range=(lo, hi),
         n_points=n_points,
         n_contributors=len(fit_win.fixed_contributors),
-        depends_on=[int(d) for d in planned.proposal.depends_on],
+        depends_on=[int(d) for d in proposal.depends_on],
+        anchor_calibrated_mhz=anchor_cal,
+        freq_range_calibrated=range_cal,
     )
 
 
@@ -10614,9 +10672,10 @@ def _refit_result(req: _CuratedRequest, ra: _ResolvedAction) -> RefitWindowResul
         # W4: the structural consequence, on the result the caller already
         # holds -- a caller of review_edit learns a window was built (or
         # widened), and where.
-        planned = _planned_window_result(ra.implied)
+        planned = _planned_window_result(req, ra.implied)
         result.created_window_mode = planned.mode
         result.created_window_freq_range = planned.freq_range
+        result.created_window_freq_range_calibrated = planned.freq_range_calibrated
         result.created_window_n_points = planned.n_points
         result.created_window_n_contributors = planned.n_contributors
         result.created_window_depends_on = list(planned.depends_on)
@@ -10776,7 +10835,9 @@ def _applied_curation(
         warning_details=warnings,
         applied=len(plan),
         dry_run=False,
-        created_windows=[_planned_window_result(c) for _, c in sorted(creates.items())],
+        created_windows=[
+            _planned_window_result(req, c) for _, c in sorted(creates.items())
+        ],
         windows=_applied_windows_block(
             before=(
                 None if req.display is None else req.display.changeset.spectrum_fit
@@ -10908,17 +10969,8 @@ def _resolve_created_window_structure(
 
         fit_win = proposal.window
         new_wid = int(fit_win.window_id)
-        (lo, hi), n_points = _created_window_extent(fit_win)
         structures.append(
-            PlannedWindowResult(
-                window_id=new_wid,
-                anchor_mhz=float(action.anchor),
-                mode=proposal.mode,
-                freq_range=(lo, hi),
-                n_points=n_points,
-                n_contributors=len(fit_win.fixed_contributors),
-                depends_on=[int(d) for d in proposal.depends_on],
-            )
+            _planned_structure(ctx.shared, proposal, float(action.anchor))
         )
 
         ctx.changeset.created_windows = [
@@ -11297,6 +11349,10 @@ class PreviewWindowResult:
         The installed (or widened) window's ``(min_mhz, max_mhz)`` extent,
         raw frame -- :attr:`CreateWindowResult.freq_range`, unchanged.
         ``Absent.NOT_RUN`` iff ``created_window_mode`` is.
+    created_window_freq_range_calibrated : tuple of float or Absent
+        ``created_window_freq_range`` in the calibrated frame (contract 18)
+        -- :attr:`CreateWindowResult.freq_range_calibrated`. Equal to it when
+        ``epsilon == 0``. ``Absent.NOT_RUN`` iff ``created_window_mode`` is.
     created_window_n_points : int or Absent
         Grid points the window covers. ``Absent.NOT_RUN`` iff
         ``created_window_mode`` is.
@@ -11332,6 +11388,9 @@ class PreviewWindowResult:
     peaks: List["FinalPeak"] = field(default_factory=list)
     created_window_mode: Union[str, Absent] = Absent.NOT_RUN
     created_window_freq_range: Union[Tuple[float, float], Absent] = Absent.NOT_RUN
+    created_window_freq_range_calibrated: Union[Tuple[float, float], Absent] = (
+        Absent.NOT_RUN
+    )
     created_window_n_points: Union[int, Absent] = Absent.NOT_RUN
     created_window_n_contributors: Union[int, Absent] = Absent.NOT_RUN
     created_window_depends_on: Union[List[int], Absent] = Absent.NOT_RUN
@@ -11495,7 +11554,7 @@ def _run_review_preview(
         # `wid` -- absent (NOT_RUN) for a window it only edited/merged/split/
         # accepted/cascaded into.
         created = creates.get(wid)
-        created_fact = None if created is None else _planned_window_result(created)
+        created_fact = None if created is None else _planned_window_result(req, created)
         windows[wid] = PreviewWindowResult(
             window_id=wid,
             origin="direct" if wid in direct_wids else "cascaded",
@@ -11520,6 +11579,11 @@ def _run_review_preview(
             created_window_freq_range=(
                 Absent.NOT_RUN if created_fact is None else created_fact.freq_range
             ),
+            created_window_freq_range_calibrated=(
+                Absent.NOT_RUN
+                if created_fact is None
+                else created_fact.freq_range_calibrated
+            ),
             created_window_n_points=(
                 Absent.NOT_RUN if created_fact is None else created_fact.n_points
             ),
@@ -11542,7 +11606,9 @@ def _run_review_preview(
         # staging this preview as an apply, and a caller reading it directly,
         # must see the SAME list -- deriving it twice is how two rungs of the
         # ladder come to disagree about what a plan installs.
-        created_windows=[_planned_window_result(c) for _, c in sorted(creates.items())],
+        created_windows=[
+            _planned_window_result(req, c) for _, c in sorted(creates.items())
+        ],
     )
     return _PreviewRun(result=result, curated=req.curated)
 

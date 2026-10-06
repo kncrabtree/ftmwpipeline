@@ -62,9 +62,12 @@ Interactive behavior is unchanged by anything here.
 - **Before 1.0.0** the contract may still change incompatibly, and existing
   result fields are migrated to it (the missing-value rule, typed errors)
   rather than grandfathered. From 1.0.0 the rules above are binding.
-- **Retiring a path a client relies on today** (log templates, the drift-line
-  prefix, direct HDF5 reads) happens only after the client confirms its
-  migration has shipped. Until then the old path keeps working.
+- **Retiring a path a client relies on** happens only after the client
+  confirms its migration has shipped; until then the old path keeps working.
+  The log templates, the drift-line prefix and direct HDF5 reads are retired:
+  BlackQuill confirmed its migration off them has shipped, so they carry no
+  compatibility promise and are "not contract" like the rest of the list
+  above.
 - The contract is enumerated in code (a manifest of accessors, schema names,
   codes, and declared keys/columns), so a test can assert that every declared
   element exists on all three interfaces and that nothing declared silently
@@ -1315,6 +1318,24 @@ curation-file row:
   `review preview --json`, and beside the run_result `summary` of
   `review apply --json` (dry run included). A batch refusal carries the same
   indices (§Errors).
+- **Created structure in both frames** (contract 18). A window a batch installs
+  or grows is reported in `created_windows` (`window_id`, `mode`, `anchor_mhz`,
+  `freq_range`, `n_points`, `n_contributors`, `depends_on`) by the Python
+  results, `review preview --json`, and `review apply --json` (dry run and live,
+  beside the summary). `anchor_mhz` and `freq_range` are raw; beside them,
+  `anchor_calibrated_mhz` and `freq_range_calibrated` are the same values in the
+  calibrated frame, converted exactly as `window_status(frame="calibrated")`
+  converts a window's bounds, so `freq_range_calibrated` equals the installed
+  window's calibrated `window_status` bounds. `review_create`'s result carries
+  the same pair (its run_result summary: `anchor_calibrated_mhz`,
+  `freq_lo_calibrated_mhz`, `freq_hi_calibrated_mhz`), and a per-window entry's
+  `created_window_freq_range` has `created_window_freq_range_calibrated`. With
+  no calibration to apply (`epsilon == 0`) the frames coincide and a companion
+  equals its raw value: it is a value, never an absence, as for `window_status`
+  and `fit_window_mhz`. A companion is `Absent.NOT_RUN` exactly where its raw
+  sibling is (a window the batch did not create or widen). A dry run, a preview
+  and the live apply of the same plan report equal structure. The
+  `created_window` decision evidence is unchanged: a recorded raw snapshot.
 
 **Frames are explicit.** Every curation action and every review call that
 takes a frequency declares its frame (`"raw"` or `"calibrated"`) as a typed,

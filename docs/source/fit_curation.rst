@@ -877,6 +877,12 @@ apply reads them off the create that actually ran. Because the proposal is the
 apply's own, a dry run also refuses what the apply would refuse — an anchor
 outside the analysis band, or a create whose window cannot be placed — so a
 dry run that returns is a pre-flight rather than a plan echo.
+Every entry reports its anchor and extent in both frames: ``anchor_mhz`` and
+``freq_range`` raw, ``anchor_calibrated_mhz`` and ``freq_range_calibrated`` in
+the calibrated frame your line frequencies are in (the per-window
+``created_window_freq_range_calibrated`` likewise), converted exactly as
+``window_status(frame="calibrated")`` converts the window's bounds. On a file
+with ``epsilon == 0`` the two frames coincide.
 
 A preview is not a weaker apply. It runs the apply itself, short of the
 persist: the same resolution, so it raises the same per-action error on the

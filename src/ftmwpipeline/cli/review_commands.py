@@ -26,6 +26,7 @@ from .._internal.stage6_impl import (
     DEFAULT_REVIEW_PARAMS,
     RANK_METRICS,
     CurationApplyResult,
+    PlannedWindowResult,
     RefitWindowResult,
     ReviewPreviewResult,
     _active_acquisition_us_for_snap,
@@ -221,17 +222,35 @@ def _window_outcome_json(w: Any) -> dict:
     if not isinstance(mode, Absent):
         out["created_window_mode"] = mode
         out["created_window_freq_range"] = w.created_window_freq_range
+        out["created_window_freq_range_calibrated"] = (
+            w.created_window_freq_range_calibrated
+        )
     return out
 
 
-def _created_window_json(pw: Any) -> dict:
+def _created_window_json(pw: PlannedWindowResult) -> Dict[str, Any]:
+    """One window a batch installs or grows, both frames on its anchor and
+    extent (the calibrated pair is the frame ``window_status`` reports)."""
     return {
         "window_id": pw.window_id,
         "mode": pw.mode,
+        "anchor_mhz": pw.anchor_mhz,
+        "anchor_calibrated_mhz": pw.anchor_calibrated_mhz,
         "freq_range": pw.freq_range,
+        "freq_range_calibrated": pw.freq_range_calibrated,
         "n_points": pw.n_points,
         "n_contributors": pw.n_contributors,
         "depends_on": list(pw.depends_on),
+    }
+
+
+def _created_windows_json(
+    result: Union[CurationApplyResult, ReviewPreviewResult],
+) -> Dict[str, Any]:
+    """A batch result's installed structure under ``--json``: the same
+    ``created_windows`` list for a dry run, a live apply and a preview."""
+    return {
+        "created_windows": [_created_window_json(pw) for pw in result.created_windows]
     }
 
 
@@ -1249,7 +1268,7 @@ def cmd_review_apply(args: argparse.Namespace) -> int:
             stage="review",
             result=result,
             summary=review_apply_summary(result, dry_run),
-            extra=_warnings_json(result),
+            extra={**_warnings_json(result), **_created_windows_json(result)},
         )
     header = (
         "review apply (dry run): resolved plan" if dry_run else "review apply: plan"
@@ -1333,9 +1352,7 @@ def cmd_review_preview(args: argparse.Namespace) -> int:
             args,
             {
                 **_warnings_json(result),
-                "created_windows": [
-                    _created_window_json(pw) for pw in result.created_windows
-                ],
+                **_created_windows_json(result),
                 "windows": [
                     _window_outcome_json(result.windows[wid])
                     for wid in sorted(result.windows)

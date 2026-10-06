@@ -46,6 +46,10 @@ from ftmwpipeline.core.data_structures import (
     WindowPlan,
 )
 
+# The settings type of ``api.detect_start_time`` / ``Pipeline.detect_start_time``
+# (its ``settings=`` argument), published so a caller can name it.
+from ftmwpipeline.core.start_detection_settings import StartDetectionSettings
+
 # Machine contract: version, missing-value vocabulary, manifest, serializer
 from ftmwpipeline.contract import (
     CONTRACT_VERSION,
@@ -121,6 +125,8 @@ __all__ = [
     # Public frequency-calibration vocabulary
     "CalibrationState",
     "CalibrationStamp",
+    # The settings type of detect_start_time
+    "StartDetectionSettings",
     # Exception family
     "PipelineFileError",
     "PipelineExistsError",
