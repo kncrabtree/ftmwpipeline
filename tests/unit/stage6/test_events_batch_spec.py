@@ -38,7 +38,11 @@ from tests._events_support import (
     content_digest,
 )
 
-pytestmark = [pytest.mark.integration]
+pytestmark = [
+    pytest.mark.integration,
+    # Design G1: every write here persists the reference replay of its log.
+    pytest.mark.usefixtures("every_write_is_reference"),
+]
 
 
 def _remove_one_peak_in_each_of_several_windows(path: Path) -> List[Dict[str, Any]]:

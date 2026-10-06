@@ -1489,12 +1489,16 @@ def fit_window(
     if baseline_active:
         # Baseline coefficients are unbounded. They seed at zero for a first fit;
         # a refit warm-starts them from the originating fit's converged
-        # coefficients (``initial_baseline_coeffs``). Warm-starting is what makes
-        # an identity refit a fixed point: the baseline / line-position valley is
-        # near-degenerate on wide, low-SNR windows, so cold-starting the baseline
-        # at zero (while the peaks seed at their converged values) lands the joint
-        # NLS on a different point of the valley and slides untouched peaks. The
-        # seed is in the same packed (a_0..a_p, b_0..b_p) order as the parameters.
+        # coefficients (``initial_baseline_coeffs``). Warm-starting keeps an
+        # identity refit close to where it started: the baseline / line-position
+        # valley is near-degenerate on wide, low-SNR windows, so cold-starting
+        # the baseline at zero (while the peaks seed at their converged values)
+        # lands the joint NLS on a different point of the valley and slides
+        # untouched peaks. It does not make the refit a fixed point: the NLS
+        # still moves peaks by a little (up to ~4e-4 MHz measured), which is
+        # why Stage 6 decides what to refit by structure, not by content. The
+        # seed is in the same packed (a_0..a_p, b_0..b_p) order as the
+        # parameters.
         lo_arr = np.concatenate([lo_arr, np.full(2 * n_base, -np.inf)])
         hi_arr = np.concatenate([hi_arr, np.full(2 * n_base, np.inf)])
         if initial_baseline_coeffs is not None:

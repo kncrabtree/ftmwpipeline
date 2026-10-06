@@ -297,19 +297,24 @@ def test_window_status_reports_the_merged_window(fits):
 
 def _identity_refit(fp: str, wid: int) -> None:
     """Refit one window with no edit, as the cascade does a window it reaches
-    (a bare ``review edit`` is refused, so this drives the engine directly)."""
+    (a bare ``review edit`` is refused, so this drives the refit directly and
+    writes the fit table itself)."""
+    from ftmwpipeline._internal.atomic import h5open
     from ftmwpipeline._internal.stage6_impl import (
         _batch_apply_edit_core,
-        _run_single_action,
+        _build_batch_ctx,
         refit_snap_tol_mhz_impl,
+    )
+    from ftmwpipeline.io.fitting_serialization import (
+        update_spectrum_fit_windows_in_hdf5,
     )
 
     snap = refit_snap_tol_mhz_impl(fp)
-    with atomic_write(fp):
-        _run_single_action(
-            fp,
-            lambda ctx: _batch_apply_edit_core(ctx, wid, snap_tol_mhz=snap),
-            snap_tol_mhz=snap,
+    ctx = _build_batch_ctx(fp, snap_tol_mhz=snap)
+    _batch_apply_edit_core(ctx, wid, snap_tol_mhz=snap)
+    with atomic_write(fp), h5open(fp, "a") as h5f:
+        update_spectrum_fit_windows_in_hdf5(
+            ctx.changeset.spectrum_fit, h5f["stage5_fitting"], [wid]
         )
 
 

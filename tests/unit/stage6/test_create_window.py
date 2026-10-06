@@ -57,7 +57,11 @@ from ftmwpipeline.io.fitting_serialization import load_spectrum_fit_from_hdf5
 from ftmwpipeline.io.stage6_review_serialization import load_stage6_review_from_file
 from ftmwpipeline.pipeline import Pipeline
 
-pytestmark = [pytest.mark.integration]
+pytestmark = [
+    pytest.mark.integration,
+    # Design G1: every write here persists the reference replay of its log.
+    pytest.mark.usefixtures("every_write_is_reference"),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -1008,7 +1012,9 @@ class TestStructuralLayer:
             raise AssertionError("the structural layer made a fit")
 
         monkeypatch.setattr(s6, "refit_window_core", no_fit)
-        planned = s6._created_windows_from_log(shared, log)
+        planned = s6._walk_log_rows(
+            str(working_file), shared, log, min_new_window_id=0
+        ).overlay
 
         assert [int(w.window_id) for w in planned] == [int(w.window_id) for w in stored]
         assert [s6._window_geometry(w) for w in planned] == [
@@ -1030,8 +1036,11 @@ class TestStructuralLayer:
 
         monkeypatch.setattr(s6, "refit_window_core", no_fit)
         with pytest.raises(s6.CurationConflictError) as exc:
-            s6._created_windows_from_log(
-                shared, [dataclasses.replace(row, window_id=taken)]
+            s6._walk_log_rows(
+                str(working_file),
+                shared,
+                [dataclasses.replace(row, window_id=taken)],
+                min_new_window_id=0,
             )
         assert exc.value.reason == "replay_conflict"
         assert exc.value.ids == [taken]

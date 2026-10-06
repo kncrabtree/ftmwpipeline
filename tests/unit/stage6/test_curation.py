@@ -40,8 +40,12 @@ from ftmwpipeline.cli.review_commands import (
     cmd_review_undo,
 )
 from ftmwpipeline.core.data_structures import DecisionLogEntry
+from ftmwpipeline.file_manager import PipelineCorruptionError
 from ftmwpipeline.io.fitting_serialization import load_spectrum_fit_from_hdf5
 from ftmwpipeline.pipeline import Pipeline
+
+# Design G1: every write here persists the reference replay of its log.
+pytestmark = [pytest.mark.usefixtures("every_write_is_reference")]
 
 # ---------------------------------------------------------------------------
 # Parsing (pure, no fixture)
@@ -586,8 +590,6 @@ def test_replay_reissues_an_implied_create_before_its_add():
 def test_a_peak_row_without_identity_is_corrupt(tmp_path):
     """Only the engine writes the log, so an add/remove/merge/split row
     without targets, seeds and born uids is a corrupt file."""
-    from ftmwpipeline.file_manager import PipelineCorruptionError
-
     row = DecisionLogEntry(
         order_index=0, window_id=5, frequency_mhz=1.0, kind="remove", serial=0
     )
@@ -1004,7 +1006,8 @@ def test_refit_clears_baseline_and_decisions(stage5_small_source, tmp_path):
 
 @pytest.mark.integration
 def test_undo_refused_when_baseline_missing(stage5_small_source, tmp_path):
-    """If the baseline is gone while fit-mutating decisions remain, undo refuses."""
+    """If the baseline is gone while decisions remain, the file is corrupt:
+    undo refuses, as every write does."""
     fp = tmp_path / "ubad.ftmw"
     shutil.copy(stage5_small_source, fp)
     wid, freq = _a_peak(fp)
@@ -1013,7 +1016,7 @@ def test_undo_refused_when_baseline_missing(stage5_small_source, tmp_path):
 
     with atomic_write(fp):
         clear_stage5_baseline(fp)  # simulate the snapshot becoming unavailable
-    with pytest.raises(ValueError, match="baseline is unavailable"):
+    with pytest.raises(PipelineCorruptionError, match="no automatic-fit baseline"):
         review_undo_impl(fp, [log[0].serial])
 
 
@@ -1045,7 +1048,7 @@ def test_undo_cross_interface(stage5_small_source, tmp_path):
 
 # ---------------------------------------------------------------------------
 # Batch curation engine: one context build, canonical cross-window order,
-# one combined cascade (see ``_execute_curation_batch`` in stage6_impl.py).
+# one combined cascade (see ``_curate_request`` in stage6_impl.py).
 #
 # These use window-center anchors rather than existing fitted peaks: the
 # shared 3-window fixture (trimmed to dependency-free windows for speed) does
@@ -1146,9 +1149,13 @@ def test_apply_row_order_independent(stage5_multi_file, tmp_path):
 
 
 @pytest.mark.integration
-def test_apply_batch_builds_fit_context_once(stage5_multi_file, tmp_path, monkeypatch):
+def test_apply_batch_builds_fit_context_once(
+    stage5_multi_file, tmp_path, monkeypatch, every_write_is_reference
+):
     """A batch touching multiple windows builds the Stage 5 fit context exactly
     once, not once per action -- the whole point of the batch engine."""
+    # This counts work, which the G1 check's own replays would add to.
+    every_write_is_reference.enabled = False
     from ftmwpipeline._internal import stage5_impl
 
     wa, wb, _ = _three_window_ids(stage5_multi_file)
@@ -1175,7 +1182,7 @@ def test_apply_batch_builds_fit_context_once(stage5_multi_file, tmp_path, monkey
 
 @pytest.mark.integration
 def test_cascade_downstream_of_two_edits_refit_once(
-    stage5_multi_file, tmp_path, monkeypatch
+    stage5_multi_file, tmp_path, monkeypatch, every_write_is_reference
 ):
     """A window reachable from TWO directly-edited windows in the same batch is
     refit exactly once, via the one combined cascade -- not once per edit.
@@ -1185,6 +1192,8 @@ def test_cascade_downstream_of_two_edits_refit_once(
     wrapping ``_cascade_succs``; the refit machinery downstream of that graph
     (closure, topo order, ``_cascade_refit_dependents``) is entirely real.
     """
+    # This counts work, which the G1 check's own replays would add to.
+    every_write_is_reference.enabled = False
     w0, w1, w2 = _three_window_ids(stage5_multi_file)
 
     fp = tmp_path / "cascade_once.ftmw"
@@ -1221,11 +1230,13 @@ def test_cascade_downstream_of_two_edits_refit_once(
 
 @pytest.mark.integration
 def test_undo_one_of_several_replays_batch_once(
-    stage5_multi_file, tmp_path, monkeypatch
+    stage5_multi_file, tmp_path, monkeypatch, every_write_is_reference
 ):
     """Undoing one decision out of several still reaches the correct state, and
     the surviving decisions replay as ONE batch (one fit-context build), not
     one full rebuild per surviving decision."""
+    # This counts work, which the G1 check's own replays would add to.
+    every_write_is_reference.enabled = False
     from ftmwpipeline._internal import stage5_impl
 
     wa, wb, _ = _three_window_ids(stage5_multi_file)
@@ -1297,8 +1308,8 @@ def test_apply_cross_interface_multiwindow_batch(stage5_multi_file, tmp_path):
 
 @pytest.mark.integration
 def test_apply_merge_via_batch_matches_direct_call(stage5_multi_file, tmp_path):
-    """A ``merge`` action executed through the batch engine
-    (``_execute_curation_batch`` -> ``_apply_refit_step``) reaches the same
+    """A ``merge`` action executed through the curation write path
+    (``_curate_request`` -> ``_apply_refit_step``) reaches the same
     state as calling ``merge_peaks_impl`` directly -- batch-of-one is
     indistinguishable from the interactive path for merge, not just for
     add/remove.
@@ -1326,7 +1337,14 @@ def test_apply_merge_via_batch_matches_direct_call(stage5_multi_file, tmp_path):
     plan = [PlannedAction(kind="merge", window_id=wid, peaks=list(freqs))]
     snap_tol = s6.refit_snap_tol_mhz_impl(str(batched))
     with atomic_write(str(batched)):
-        s6._execute_curation_batch(str(batched), plan, snap_tol_mhz=snap_tol)
+        s6._curate_request(
+            str(batched),
+            plan,
+            snap_tol_mhz=snap_tol,
+            shared=None,
+            persist=True,
+            one_action=False,
+        )
 
     assert _fitted_by_window(direct) == _fitted_by_window(batched)
     assert [e.kind for e in review_log_impl(batched)] == ["merge"]
@@ -1334,8 +1352,8 @@ def test_apply_merge_via_batch_matches_direct_call(stage5_multi_file, tmp_path):
 
 @pytest.mark.integration
 def test_apply_split_via_batch_matches_direct_call(stage5_multi_file, tmp_path):
-    """A ``split`` action executed through the batch engine
-    (``_execute_curation_batch`` -> ``_apply_refit_step``) reaches the same
+    """A ``split`` action executed through the curation write path
+    (``_curate_request`` -> ``_apply_refit_step``) reaches the same
     state as calling ``split_peak_impl`` directly.
 
     ``split`` is not a curation-*file* action any more; see
@@ -1356,7 +1374,14 @@ def test_apply_split_via_batch_matches_direct_call(stage5_multi_file, tmp_path):
     plan = [PlannedAction(kind="split", window_id=wid, peak=freq, into=2)]
     snap_tol = s6.refit_snap_tol_mhz_impl(str(batched))
     with atomic_write(str(batched)):
-        s6._execute_curation_batch(str(batched), plan, snap_tol_mhz=snap_tol)
+        s6._curate_request(
+            str(batched),
+            plan,
+            snap_tol_mhz=snap_tol,
+            shared=None,
+            persist=True,
+            one_action=False,
+        )
 
     assert _fitted_by_window(direct) == _fitted_by_window(batched)
     assert [e.kind for e in review_log_impl(batched)] == ["split"]

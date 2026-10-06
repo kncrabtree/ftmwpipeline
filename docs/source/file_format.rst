@@ -362,9 +362,9 @@ is a typed error with a stable ``code`` a script can route on:
   ``PipelineExistsError`` (``file_exists``) with the options for proceeding.
 * Running a stage whose dependency is missing raises ``StageDependencyError``
   (``stage_not_run``) naming the unmet stage and the command that produces it.
-* A Stage 6 edit across an analysis-epoch change raises
+* A Stage 6 write that refits, across an analysis-epoch change, raises
   ``AnalysisEpochMismatchError`` (``epoch_mismatch``) until the fit is re-run
-  or the mixture acknowledged.
+  or the mixture acknowledged (a write that refits nothing is not gated).
 * A write that finds the file changed by another process raises
   ``WriteConflictError`` (``write_conflict``); a cancelled call raises
   ``OperationCancelledError`` (``cancelled``).

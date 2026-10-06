@@ -5,12 +5,22 @@ The full-replay reference for Stage 6 curation, and its bitwise state digest.
 scratch and in memory: the automatic-fit baseline, the file's static analysis
 inputs and the log, nothing else. It persists nothing, keeps no cache and reads
 no curated state (no ``/stage5_fitting`` curated fit, no ``/stage6_review``).
-It is built from the same functions the write path runs -- the shared fit
-context, the batch appliers, the one combined cascade, the review derivation
-and the final-products build -- in the order an undo replay runs them, so it is
-the oracle a write is checked against: after a write, the persisted state's
-:func:`persisted_state_digest` must equal :func:`state_digest` of
-:func:`replay_full` of the log the write left.
+It is the computation the write path runs whenever a write refits
+(:func:`~.stage6_impl._reference`: the replay of the log in one batch, the one
+combined cascade, the statuses and the final-products build), called with
+nothing persisted, so it is the oracle a write is checked against: after every
+write, the persisted state's :func:`persisted_state_digest` must equal
+:func:`state_digest` of :func:`replay_full` of the log the write left, under
+the review parameters it recorded.
+
+Because a refitting write *is* this computation, the check of such a write
+pins what lies around it -- that the write reads no curated state, that it is
+deterministic, and that the persist round-trips the state bit for bit -- not
+the replay's semantics: a change to the replay or the cascade moves both
+sides alike. The check is independent for a write that refits nothing (the
+persisted fits kept, or the automatic fit restored by copy), and for any
+write path that stops recomputing the whole log. The replay's semantics are
+pinned by the scenario tests.
 
 :func:`state_digest` covers what Stage 6 persists of a curated state: the fit
 tables exactly as :func:`~ftmwpipeline.io.fitting_serialization.save_spectrum_fit_to_hdf5`
@@ -41,17 +51,14 @@ import numpy as np
 from ..core.data_structures import (
     DecisionLogEntry,
     ReviewParams,
-    Sideband,
     SpectrumFit,
     Stage6Review,
 )
-from ..file_manager import CurationConflictError
 from ..io.fitting_serialization import (
     _fit_tables,
     _replan_info_to_json,
     _rescue_round_to_json,
     _thaw_info_to_json,
-    load_spectrum_fit_from_hdf5,
 )
 from ..io.stage6_review_serialization import (
     _entry_to_dict,
@@ -60,25 +67,13 @@ from ..io.stage6_review_serialization import (
     _status_to_dict,
 )
 from .atomic import h5open
-from .empty_window_attention import flagged_lineless_ids
 from .fingerprint_impl import canonical_json
-from .stage0_impl import load_fid_from_pipeline_impl
 from .stage6_impl import (
     _FIT_EDIT_KINDS,
     DEFAULT_REVIEW_PARAMS,
     STAGE5_BASELINE_GROUP,
-    _BatchChangeset,
-    _BatchCtx,
-    _build_shared_fit_ctx,
-    _cascade_batch,
-    _check_created_ids_monotone,
-    _curated_statuses,
-    _derive_batch_review,
-    _final_products_for_fit,
-    _overlay_created_windows,
-    _resolve_replay_rows,
-    _run_resolved_actions,
-    _seed_unresolved_spreads_from_diagnostics,
+    _missing_baseline_error,
+    _reference,
     refit_snap_tol_mhz_impl,
 )
 
@@ -128,86 +123,42 @@ def replay_full(
     log: Sequence[DecisionLogEntry],
     params: Optional[ReviewParams] = None,
 ) -> CuratedState:
-    """The curated state *log* describes, replayed in one batch from the
-    automatic-fit baseline, in memory.
+    """The curated state *log* describes under *params*, from the automatic
+    fit, in memory (:func:`~.stage6_impl._reference`).
 
-    The steps an undo runs after its restore, without the restore: the review
-    ``review run`` would build on the baseline (statuses under *params*, final
-    products), then the log's rows replayed as recorded, by peak identity and
-    in log order, in one batch (:func:`~.stage6_impl._resolve_replay_rows`,
-    every refusal raised before any fit; one action per recorded user
-    action), one combined cascade, and the review derived from the result with the
-    log's rows: every window's status computed from scratch from the final
-    fits, the log and *params* (:func:`~.stage6_impl._curated_statuses`).
-    Reads the baseline and the file's static inputs only. *params* defaults
-    to ``review run``'s defaults (:data:`~.stage6_impl.DEFAULT_REVIEW_PARAMS`).
+    A log with fit-changing rows is replayed in one batch from the
+    automatic-fit baseline: its rows applied as recorded, by peak identity and
+    in log order (:func:`~.stage6_impl._resolve_replay_rows`, every refusal
+    raised before any fit; one action per recorded user action), one combined
+    cascade; a log without one is the automatic fit itself. Every window's
+    status is then computed from scratch from the final fits, the log and
+    *params* (:func:`~.stage6_impl._curated_statuses`), and the final products
+    from the final fits. Reads the baseline and the file's static inputs
+    only. *params* defaults to ``review run``'s defaults
+    (:data:`~.stage6_impl.DEFAULT_REVIEW_PARAMS`); a write's check passes the
+    parameters the file records. Every row is kept verbatim.
 
-    A log with fit-changing rows needs the baseline; a log of bare accepts
-    only replays onto ``/stage5_fitting``, which such a log never changed (it
-    takes no baseline). Refused with ``baseline_unavailable`` otherwise.
+    A log with fit-changing rows needs the baseline; a file no write has
+    curated (no baseline) has only an empty or accept-only log, whose state
+    is ``/stage5_fitting``. Otherwise the file is corrupt
+    (:class:`~ftmwpipeline.file_manager.PipelineCorruptionError`), as it is for
+    every write.
     """
     path = str(file_path)
     log = list(log)
-    params = params or DEFAULT_REVIEW_PARAMS
     with h5open(path, "r") as h5f:
         baseline = STAGE5_BASELINE_GROUP in h5f
     if any(e.kind in _FIT_EDIT_KINDS for e in log) and not baseline:
-        raise CurationConflictError(
-            "baseline_unavailable",
-            message="no automatic-fit baseline to replay the decision log from",
-        )
-    group = STAGE5_BASELINE_GROUP if baseline else "stage5_fitting"
-    with h5open(path, "r") as h5f:
-        spectrum_fit = load_spectrum_fit_from_hdf5(h5f[group])
-
-    # The review a fresh ``review run`` builds on the baseline.
-    fid = load_fid_from_pipeline_impl(path)
-    review = Stage6Review(
-        final_products=_final_products_for_fit(path, spectrum_fit, fid),
-        review_params=params,
-    )
-    review.window_statuses = _curated_statuses(
+        raise _missing_baseline_error(path)
+    curated = _reference(
         path,
-        spectrum_fit,
-        review,
-        params,
-        Sideband.coerce(fid.sideband),
-        fit_group=group,
+        log,
+        params or DEFAULT_REVIEW_PARAMS,
+        recorded=len(log),
+        shared=None,
+        snap_tol_mhz=refit_snap_tol_mhz_impl(path),
     )
-
-    _check_created_ids_monotone(path, log)
-    snap_tol = refit_snap_tol_mhz_impl(path)
-    shared = _build_shared_fit_ctx(path, fit_group=group)
-    # A log of bare accepts never loads the fit for a batch (it records one
-    # accept at a time), so the load-time spread recovery does not run on it.
-    if any(e.kind != "accept" for e in log):
-        _seed_unresolved_spreads_from_diagnostics(spectrum_fit, snap_tol_mhz=snap_tol)
-    fit_ids = {
-        int(wf.window_id) for wf in spectrum_fit.window_fits if wf.window_id is not None
-    }
-    changeset = _BatchChangeset(
-        spectrum_fit=spectrum_fit,
-        created_windows=[],
-        fit_window_map={
-            w.window_id: w
-            for w in _overlay_created_windows(shared.base_plan, []).windows
-        },
-        lineless_reviewable=frozenset(flagged_lineless_ids(review, fit_ids)),
-        replayed=log,
-    )
-    # Never persisted: ``baseline_taken=False`` makes _finish_batch refuse it.
-    ctx = _BatchCtx(shared=shared, changeset=changeset, baseline_taken=False)
-    _run_resolved_actions(
-        ctx,
-        _resolve_replay_rows(ctx, path, log),
-        snap_tol_mhz=snap_tol,
-        action_indices={},
-    )
-    _cascade_batch(ctx, snap_tol_mhz=snap_tol)
-    return CuratedState(
-        spectrum_fit=ctx.changeset.spectrum_fit,
-        review=_derive_batch_review(ctx, path, existing_review=review, fit_group=group),
-    )
+    return CuratedState(spectrum_fit=curated.spectrum_fit, review=curated.review)
 
 
 # ---------------------------------------------------------------------------

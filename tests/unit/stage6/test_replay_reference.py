@@ -9,6 +9,13 @@ rows from the baseline, and the state it writes must have the digest of
 ``replay_full`` of those rows -- computed *before* the undo, on the file as it
 was, which also shows the reference reads only the baseline and the static
 inputs.
+
+These tests first pinned the reference against the sequential undo replay it
+replaced. Now that every refitting write runs the reference itself, a
+refitting undo here checks that the reference reads no curated state, is
+deterministic and round-trips through the persist; the keep (bare accepts
+only) and restore (no fit-changing row left) paths are still independent of
+it.
 """
 
 from __future__ import annotations
@@ -24,6 +31,7 @@ import pytest
 
 import ftmwpipeline.api as ftmw
 from ftmwpipeline._internal import stage6_impl as s6
+from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline._internal.replay_reference import (
     CuratedState,
     differing_parts,
@@ -169,6 +177,65 @@ def test_the_digest_sees_one_changed_float(stage5_multi_file):
     peak.frequency_mhz = math.nextafter(float(peak.frequency_mhz), math.inf)
     assert state_digest(state) != persisted_state_digest(fp)
     assert "fit.peaks.frequency_mhz" in differing_parts(state, fp)
+
+
+# ---------------------------------------------------------------------------
+# One write path: every write persists the reference of its log
+# ---------------------------------------------------------------------------
+
+
+def test_a_preview_is_the_state_its_apply_persists(stage5_multi_file, tmp_path):
+    """A preview computes the very state the apply of the same request
+    persists, bit for bit, on a log that already holds decisions."""
+    fp = stage5_multi_file
+    w1, w2 = _multi_window_ids(fp, 2, 2)
+    ftmw.review_edit(fp, w1, add=[_clear(fp, w1)], frame="raw")
+    ftmw.review_accept(fp, w2)
+    plan = [
+        s6.PlannedAction(kind="edit", window_id=w2, remove=[_freqs(fp, w2)[0]]),
+        s6.PlannedAction(kind="accept", window_id=w1),
+    ]
+    with atomic_write(str(fp)):
+        preview = s6._curate_request(
+            str(fp),
+            plan,
+            snap_tol_mhz=s6.refit_snap_tol_mhz_impl(str(fp)),
+            shared=None,
+            persist=False,
+            one_action=False,
+        ).curated
+    applied = tmp_path / "applied.ftmw"
+    shutil.copy(fp, applied)
+    ftmw.review_apply(
+        applied,
+        actions=[
+            {"action": "remove", "window_id": w2, "freq_mhz": _freqs(fp, w2)[0]},
+            {"action": "accept", "window_id": w1},
+        ],
+        frame="raw",
+    )
+    state = CuratedState(spectrum_fit=preview.spectrum_fit, review=preview.review)
+    assert state_digest(state) == persisted_state_digest(applied), differing_parts(
+        state, applied
+    )
+
+
+def test_an_edit_reports_its_window_before_and_after_the_write(stage5_multi_file):
+    """``RefitWindowResult`` reads "before" off the fit as displayed and
+    "after" off the curated fit the write persisted."""
+    fp = stage5_multi_file
+    (w1,) = _multi_window_ids(fp, 1, 2)
+    ftmw.review_edit(fp, w1, add=[_clear(fp, w1)], frame="raw")
+    shown = _fits(fp)[w1]
+    result = ftmw.review_edit(fp, w1, remove=[_freqs(fp, w1)[0]], frame="raw")
+    persisted = _fits(fp)[w1]
+    assert result.n_peaks_before == len(shown.fitted_peaks)
+    assert result.chi2r_before == float(shown.reduced_chi2)
+    assert result.n_peaks_after == len(persisted.fitted_peaks)
+    assert result.chi2r_after == float(persisted.reduced_chi2)
+    assert [p.frequency_mhz for p in result.fitted_peaks] == [
+        p.frequency_mhz for p in persisted.fitted_peaks
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -752,8 +819,8 @@ def test_create_order_does_not_change_the_created_windows_on_655(
             return orig_core(fit_ctx, fit_win, wf, **kwargs)
 
         # The write that leaves both the second window and the first one's line
-        # refreshes and refits the second: the add's cascade (one refit), or
-        # the create's own fit and then its refresh (two).
+        # replays the whole log: the second window's create fit, then its
+        # refresh by the cascade (two refits), in either order.
         if order == "add_last":
             second = s6.create_window_impl(str(fp), _BESIDE_332, frame="raw")
             monkeypatch.setattr(s6, "refit_window_core", spy_core)
@@ -764,7 +831,7 @@ def test_create_order_does_not_change_the_created_windows_on_655(
             second = s6.create_window_impl(str(fp), _BESIDE_332, frame="raw")
         monkeypatch.setattr(s6, "refit_window_core", orig_core)
         assert first.window_id in second.depends_on
-        assert refit.count(second.window_id) == (1 if order == "add_last" else 2)
+        assert refit.count(second.window_id) == 2
         references[order] = _assert_persisted_is_reference(fp)
         fits[order] = _fits(fp)
 

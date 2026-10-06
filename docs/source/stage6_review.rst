@@ -350,10 +350,42 @@ first entry the same user action recorded (an action that logged one entry, a ba
 accept included, carries its own serial). The entries sharing an ``action_index`` are
 one **action group**. ``review log`` lists the history, by id.
 
+**The curated state is a replay of the log.** The first Stage 6 write (an edit, an
+accept, a create, an apply, or ``review run``) snapshots the automatic fit inside the
+file, the **undo baseline**. From then on every write -- an edit, an accept, a
+create, an apply, an undo, ``review run``, and a session's apply of a staged preview
+-- builds the new log and review parameters and curates them: the log is replayed
+from the baseline in one batch, each entry applied as recorded and in log order, then
+one cascade refreshes every window that reads an edited one, and every window's status
+is computed afresh. The file then holds exactly what that replay produces, fits,
+statuses, final products and log alike, bit for bit, whatever order of calls led to
+it. Three things follow, and are worth knowing:
+
+- An edit applies to the window as the replay reaches it -- its automatic fit and its
+  own earlier decisions -- and the cascade then refreshes it from its neighbours' final
+  fits. What you saw is used only to resolve the request into its entries (which
+  peak a remove names, where an add seeds). The result an edit returns compares the
+  window as you saw it before the call with its curated fit after it, post-cascade.
+- An entry's evidence (its :math:`\chi^2` and peak counts) is a snapshot taken when it
+  was recorded, of the refit that entry ran in that write's replay. It is never
+  updated; the current numbers are in the fits.
+- A write whose fit-changing entries are the ones the log already held -- a bare
+  accept, ``review run``, an undo of bare accepts -- refits nothing and keeps the fits
+  as they are. A write that leaves the log with no fit-changing entry restores the
+  automatic fit.
+
+Two replays are bit-identical within one software environment; across numpy, SciPy or
+BLAS versions they are not promised to be (a change of the fitting model itself is
+marked by the analysis epoch, :ref:`stage6-epoch-gate`). The fits are the replay's in
+the environment they were made in: after an upgrade that changes the analysis epoch, or
+a change to a Stage 5 input such as the tau calibration, a write that refits nothing
+keeps them as they were, and the first write that refits replays the whole log under
+the running code.
+
 ``review undo --id N`` reverts the decisions it names (the ids ``review log`` lists:
-serials), any of them, not only the most recent. The first fit-changing edit snapshots the automatic fit inside the file (the
-**undo baseline**); an undo restores that baseline and replays every surviving
-decision onto it, in log order; the surviving decisions keep their ids. A replay
+serials), any of them, not only the most recent. An undo drops them from the log and
+curates the rest: every surviving decision is replayed from the undo baseline, in log
+order, and the surviving decisions keep their ids. A replay
 applies each entry as recorded: it removes the peaks its ``targets`` name and births
 its peaks at their recorded seeds under their recorded uids, never re-resolving a
 frequency or re-reading an add as a split or merge. So a kept decision acts on the
@@ -363,7 +395,7 @@ one user action at a time: a group's surviving entries replay together as one ac
 (one joint refit), exactly as the edit first applied them, so undoing part of a group
 replays the rest of it jointly. ``--dry-run`` prints what would be undone and the
 replay plan, one edit per action group (its seeds and the ``uid:N`` of its targets),
-without writing. Every refusal of an undo comes before anything is fit or restored.
+without writing. Every refusal of an undo comes before anything is fit.
 An undo that would drop a created window surviving decisions still act on is refused
 (``curation_conflict``, ``orphans_created_window``), as is one that would drop the
 birth of a peak a surviving decision removes, merges or splits (``orphans_peak``; the
@@ -379,7 +411,7 @@ widening returns the widened window to its earlier extent. The undo is not refus
 that. It lists every window whose geometry it changes in
 ``geometry_changed_window_ids`` (``--dry-run`` lists the same; the CLI prints the ids,
 and ``--json`` carries their count as ``n_geometry_changed``). The surviving creates are
-planned before anything is restored, so one that can no longer take its id
+planned before anything is fit, so one that can no longer take its id
 (``curation_conflict``, ``replay_conflict``) leaves the file untouched.
 
 A client that keeps its own position in the log (an editor whose undo steps back
@@ -389,14 +421,14 @@ the first ``N`` are dropped and the kept ones are replayed (one action group at 
 a prefix that cuts through a group replays that group's in-prefix entries jointly)
 together with the new batch as one replay -- the same outcome as an undo of the dropped ids followed by an apply,
 one cascade and one persist instead of two. The batch's frequencies and omitted window
-ids resolve against the state the kept decisions leave, never the file as it stood.
+ids resolve against the state the kept decisions describe (computed in memory first),
+never the file as it stood.
 
-Each of these calls is one unit. ``review apply`` checks for a cancel before each
-action, and a cancel, a failing row, or a failing events callback discards the whole
-batch, leaving the file exactly as it was before the call. An undo or a log-prefix
-apply honours a cancel only before it restores the baseline; once the restore has
-begun it completes. (The guarantee is the call's single atomic write; see
-:doc:`machine_contract`.)
+Each of these calls is one unit. A write checks for a cancel before each action it
+replays, between the windows its cascade refits, and once more before it persists,
+and a cancel, a failing row, or a failing events callback discards the whole call,
+an undo's included, leaving the file exactly as it was before the call. (The
+guarantee is the call's single atomic write; see :doc:`machine_contract`.)
 
 **The log belongs to the fit.** Re-running ``fit`` or any stage before it discards the
 whole of Stage 6 — the attention layer, the final-products table, the decision log
@@ -417,9 +449,9 @@ undo baseline, which needs every decision to carry a serial and every peak a
 ``peak_uid`` to address it by. A file whose Stage 5 fit has a peak without a
 ``peak_uid`` (a fit written before peak identity was persisted), or whose review or
 undo baseline a build without the engine wrote, therefore cannot be curated: every
-Stage 6 write is refused with ``curation_conflict`` and the reason
-``predates_peak_identity`` or ``predates_replay_engine``, and nothing is converted or
-carried over. Reading still works (``review log``, ``review show``, the report), and
+Stage 6 write, and a ``review preview``, is refused with ``curation_conflict`` and the
+reason ``predates_peak_identity`` or ``predates_replay_engine``, and nothing is
+converted or carried over. Reading still works (``review log``, ``review show``, the report), and
 the file is flagged: ``review show`` and ``review log`` print the instruction, the
 report shows a banner and no Undo buttons, and the review ``get_review_status``
 returns has ``refit_required`` set. Re-run ``fit run``: it writes a fit that carries
@@ -458,20 +490,24 @@ per created window, the survivor's row carrying ``merged_from``, the ids it abso
 The analysis-epoch gate
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-An edit refits one window and splices it into a fit whose other windows were fit
-earlier. If the fitting code changed in between — the file's Stage 5 fit was produced
-under a different analysis epoch from the running package — the spliced result would
-mix two fitting models inside one product. Every verb that refits or creates a window
-(``review edit``, ``accept --candidate``, ``create``, ``apply``, ``preview``, ``undo``)
+A write that refits splices the windows it refits into a fit whose other windows were
+fit earlier. If the fitting code changed in between — the file's Stage 5 fit was
+produced under a different analysis epoch from the running package — the spliced
+result would mix two fitting models inside one product. A write that refits
+(``review edit``, ``accept --candidate``, ``create``, an ``apply`` or ``preview``
+that changes a fit, an ``undo`` that leaves fit-changing decisions to replay)
 therefore refuses with ``epoch_mismatch``, whose ``file_epoch`` and ``current_epoch``
-name the two. Reading the file, ``review run``, and a plain ``review accept`` are not
-gated. Two ways forward:
+name the two. A write that refits nothing keeps the fits as it finds them and is not
+gated: ``review run``, a plain ``review accept``, an apply of bare accepts, and an
+undo that drops only bare accepts or every fit-changing decision (which restores the
+automatic fit). Reading the file is never gated. Two ways forward:
 
 - ``fit run`` re-fits the whole spectrum under the current epoch (discarding the old
   Stage 6, as above); or
 - ``review acknowledge-environment`` (``--reason TEXT`` optional) records in the file
   that the curation knowingly crosses the epoch boundary. Edits then proceed with a
-  warning, and the reports state that the curated fit mixes two analysis
+  warning -- the first write that refits replays the whole decision log under the
+  running package -- and the reports state that the curated fit mixes two analysis
   environments.
 
 .. _stage6-refusals:
@@ -482,15 +518,15 @@ Refusals
 Every refusal leaves the file exactly as it was, and comes before anything is fit: a
 request is resolved into its decisions, and a replayed log checked, against window
 structure and peak identity alone. (An apply at a ``--log-prefix`` is the exception:
-its batch resolves against the state the kept decisions leave, so a refusal of the
-batch comes after those are replayed in memory.) Each is a typed error with a stable
+its batch resolves against the state the kept decisions describe, so a refusal of the
+batch comes after that state is computed in memory.) Each is a typed error with a stable
 ``code``:
 ``bad_setting`` for a malformed request (its ``path`` names the
 argument, cell or field, such as ``anchor_mhz`` or ``curation[line 3].freqs``),
 ``not_found`` for a peak, window, or decision id that does not resolve,
 ``curation_conflict`` for a valid request that conflicts with the file's review state
 (its ``reason`` a stable slug, such as ``target_outside_window`` or
-``baseline_unavailable``), ``epoch_mismatch`` for the gate above, and
+``replay_diverged``), ``epoch_mismatch`` for the gate above, and
 ``write_conflict`` when another process wrote the file during the call. On the
 command line, ``--json`` prints the error as an ``ftmw/error@1`` object on stderr. The
 full vocabulary, field by field, is in :doc:`machine_contract`; :doc:`fit_curation`

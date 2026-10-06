@@ -47,6 +47,14 @@ states are likewise what the suite verifies.
   `review edit`, and every write of a file the replay engine cannot curate (a
   fit without `peak_uid`, or curation without the engine's stamps), on the CLI,
   the Pipeline class, the functional API and a `ReviewSession`.
+- Every Stage 6 write test asserts the write invariant: after each write, the
+  persisted curated state equals, bit for bit, the reference replay of the
+  persisted decision log under the persisted review parameters
+  (`tests/_replay_support.py`, the `every_write_is_reference` fixture, which a
+  Stage 6 test module opts into). A test that counts work (fit-context builds,
+  refits) or deliberately persists a state that is not the reference turns the
+  check off, with its reason stated. The check is never part of a production
+  write path.
 - Tests must not write artifacts into the working tree or repository; outputs
   go to a temporary location.
 - Tests run in the project dev environment

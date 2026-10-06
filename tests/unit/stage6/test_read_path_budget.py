@@ -54,7 +54,11 @@ from ftmwpipeline.io.fitting_serialization import (
     read_fit_window_coverage,
 )
 
-pytestmark = [pytest.mark.integration]
+pytestmark = [
+    pytest.mark.integration,
+    # Design G1: every write here persists the reference replay of its log.
+    pytest.mark.usefixtures("every_write_is_reference"),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -281,11 +285,8 @@ def test_uid_readers_tolerate_a_file_without_the_column(stage5_multi_file):
 
 
 def test_an_empty_window_still_reports_no_fitted_peaks(stage5_multi_file, tmp_path):
-    """The other branch of the same check, so the two cannot collapse.
-
-    A window that really has no fitted peaks must keep saying so -- the
-    peak_uid-less wording is more specific, not a replacement.
-    """
+    """A ``uid:N`` aimed at a window that really has no fitted peaks says
+    so, rather than that the uid is unknown."""
     wid, _freq, uid = _a_fitted_peak(stage5_multi_file)
     # Empty the window: keep the rows, drop them from this window's slice.
     with h5py.File(str(stage5_multi_file), "r+") as h5f:

@@ -85,7 +85,11 @@ from ftmwpipeline.io.timebase_serialization import (
 )
 from ftmwpipeline.pipeline import Pipeline
 
-pytestmark = [pytest.mark.integration]
+pytestmark = [
+    pytest.mark.integration,
+    # Design G1: every write here persists the reference replay of its log.
+    pytest.mark.usefixtures("every_write_is_reference"),
+]
 
 EPS_1 = 2.2e-6
 EPS_2 = 8.8e-6

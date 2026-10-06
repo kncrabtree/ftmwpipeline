@@ -51,6 +51,11 @@ from ftmwpipeline.file_manager import BadSettingError, NotFoundError
 from ftmwpipeline.io.fitting_serialization import load_spectrum_fit_from_hdf5
 from ftmwpipeline.pipeline import Pipeline
 
+pytestmark = [
+    # Design G1: every write here persists the reference replay of its log.
+    pytest.mark.usefixtures("every_write_is_reference"),
+]
+
 # ---------------------------------------------------------------------------
 # parse_curation_file: the omitted-window grammar on add/remove rows, pure
 # ---------------------------------------------------------------------------

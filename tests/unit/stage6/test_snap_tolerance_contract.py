@@ -107,7 +107,8 @@ def test_boundary_impls_resolve_and_engines_require():
 
     for name in (
         "refit_window_core",
-        "_execute_curation_batch",
+        "_curate_request",
+        "_curate",
         "_curation_ambiguity_warnings",
     ):
         params = inspect.signature(getattr(stage6_impl, name)).parameters

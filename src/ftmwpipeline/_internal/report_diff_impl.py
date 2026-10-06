@@ -8,8 +8,9 @@ before they are committed, without maintaining and diffing two separate files.
 
 The two states already live on disk: ``/stage5_fitting`` is the current
 (curated) fit and ``/stage5_fitting_baseline`` is the automatic-fit snapshot
-taken before the first edit (see :func:`ftmwpipeline._internal.stage6_impl.
-_snapshot_stage5_baseline`). A window-by-window diff of the two is the report.
+taken before the first Stage 6 write (see :func:`ftmwpipeline._internal.
+stage6_impl._snapshot_stage5_baseline`). A window-by-window diff of the two is
+the report.
 
 The report is rendered with the same per-window painter the Level-3 report uses
 (:func:`render_fit_panels_impl` over a detail bundle whose ``fit`` is swapped for
@@ -32,7 +33,7 @@ from ..file_manager import requires_pipeline_file
 from ..fitting.validation import DEFAULT_CHI2R_NOISE_FLOOR, shape_error_fraction
 from .atomic import h5open
 from .stage5_impl import _resolve_detail_bundle, render_fit_panels_impl
-from .stage6_impl import STAGE5_BASELINE_GROUP
+from .stage6_impl import _FIT_EDIT_KINDS, STAGE5_BASELINE_GROUP
 
 # A matched peak counts as "moved" when it shifts at least this fraction of a
 # resolution element; below it the move is fit jitter, not a curation effect.
@@ -186,12 +187,20 @@ def _diff_window(
 
 
 def _load_baseline_fit(path: str) -> Optional[SpectrumFit]:
-    """Load the automatic-fit baseline snapshot, or ``None`` if not present."""
+    """Load the automatic-fit baseline snapshot, or ``None`` when the current
+    fit is the automatic fit: no snapshot, or a decision log with no
+    fit-changing decision (bare accepts and ``review run`` take the snapshot
+    but change no fit)."""
     from ..io.fitting_serialization import load_spectrum_fit_from_hdf5
+    from ..io.stage6_review_serialization import load_stage6_review_from_file
 
     with h5open(path, "r") as h5f:
         if STAGE5_BASELINE_GROUP not in h5f:
             return None
+    log = load_stage6_review_from_file(path).decision_log
+    if not any(e.kind in _FIT_EDIT_KINDS for e in log):
+        return None
+    with h5open(path, "r") as h5f:
         return load_spectrum_fit_from_hdf5(h5f[STAGE5_BASELINE_GROUP])
 
 
@@ -349,9 +358,9 @@ def report_diff_impl(
     HTML document with a side-by-side ``|X|``-and-model panel for every window
     that differs materially (a peak added/removed, a peak moved at least
     ``shift_res`` resolution elements, or the reduced chi-squared / shape-error
-    fraction changed beyond ``chi2r_rel`` / ``eps_abs``). When no baseline
-    snapshot exists (no curation edits have been made), a valid report stating
-    that is written instead.
+    fraction changed beyond ``chi2r_rel`` / ``eps_abs``). When no curation
+    decision has changed the fit (no baseline snapshot, or a decision log with
+    no fit-changing decision), a valid report stating that is written instead.
 
     Parameters
     ----------

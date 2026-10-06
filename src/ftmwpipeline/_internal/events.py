@@ -460,8 +460,9 @@ class OperationEvents:
 
     @contextmanager
     def committing(self) -> Iterator[None]:
-        """A block that, once begun, completes: a Stage 6 restore-then-replay,
-        which must not stop half way.
+        """A block that, once begun, completes: a write that must not stop
+        half way. (No operation uses one today: every Stage 6 write, an undo
+        included, is one transaction that a cancel discards whole.)
 
         Inside it a cancel is not honoured (check points pass and
         :meth:`cancel_requested` is ``False``), and a callback that raises is

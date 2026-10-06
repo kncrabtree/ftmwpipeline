@@ -7,8 +7,7 @@ per frequency. Every row carries the ``action_index`` evidence key -- the
 ``serial`` of the action's first row -- and ``review undo`` /
 ``review apply --log-prefix`` replay each group as one joint action, exactly
 like the original, instead of one refit per row (a different fit, after
-which a later remove target can drift beyond snap tolerance). Rows recorded
-before the key existed are grouped by inference.
+which a later remove target can drift beyond snap tolerance).
 """
 
 from __future__ import annotations
@@ -42,6 +41,9 @@ from ftmwpipeline.io.stage6_review_serialization import (
 )
 from ftmwpipeline.pipeline import Pipeline
 from tests.unit.stage6.test_curation import _clear_add_freq, _close
+
+# Design G1: every write here persists the reference replay of its log.
+pytestmark = [pytest.mark.usefixtures("every_write_is_reference")]
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -92,17 +94,6 @@ def _log_shape(path: Path) -> List[Tuple[int, int, str, Optional[int]]]:
         )
         for e in review_log_impl(path)
     ]
-
-
-def _strip_action_index(path: Path) -> None:
-    """Rewrite the persisted decision log as a file written before the
-    ``action_index`` key existed would hold it."""
-    with h5py.File(str(path), "a") as h5f:
-        grp = h5f["stage6_review"]["decision_log"]
-        rows = json.loads(str(grp.attrs["data"]))
-        for row in rows:
-            row["evidence"].pop(ACTION_INDEX_EVIDENCE_KEY, None)
-        grp.attrs["data"] = json.dumps(rows)
 
 
 def _entry(
@@ -190,38 +181,7 @@ def test_partial_group_survivors_replay_jointly():
     ]
 
 
-def test_legacy_rows_grouped_by_inference():
-    """No ``action_index``: consecutive add/remove rows on one window with
-    the SAME evidence dict (one refit's snapshot) are one action."""
-    joint = {"chi2r_before": 3.0, "chi2r_after": 1.25, "n_peaks_before": 4}
-    log = [
-        _entry(0, 5, "add", 9.5, dict(joint)),
-        _entry(1, 5, "remove", 10.0, dict(joint)),
-        _entry(2, 5, "remove", 11.0, dict(joint)),
-        # A later, separate refit of the same window: its own evidence.
-        _entry(3, 5, "remove", 12.0, {**joint, "chi2r_after": 1.5}),
-        # Identical evidence but another window: separate.
-        _entry(4, 6, "remove", 20.0, {**joint, "chi2r_after": 1.5}),
-        # Bare accepts never group.
-        _entry(5, 6, "accept", 0.0, {}),
-        _entry(6, 6, "accept", 0.0, {}),
-        # An implied-create add is always its own action.
-        _entry(7, 9, "add", 30.0, {"created_window": {"mode": "created"}}),
-        _entry(8, 9, "add", 30.5, {"created_window": {"mode": "created"}}),
-    ]
-    groups = _decision_action_groups(log)
-    assert [[e.order_index for e in g] for g in groups] == [
-        [0, 1, 2],
-        [3],
-        [4],
-        [5],
-        [6],
-        [7],
-        [8],
-    ]
-
-
-def test_legacy_row_never_joins_a_stamped_one():
+def test_a_row_without_the_key_never_joins_a_stamped_one():
     ev = {"chi2r_after": 1.0}
     log = [
         _entry(0, 5, "remove", 10.0, dict(ev)),
@@ -407,28 +367,6 @@ def test_log_prefix_mid_group_replays_in_prefix_rows_jointly(
 
 
 @pytest.mark.integration
-def test_legacy_log_without_action_index_is_grouped_by_inference(
-    stage5_multi_file, tmp_path
-):
-    """(d) A file written before the key existed: the joint edit's rows are
-    recognised by their shared evidence and still replay as one action."""
-    path = stage5_multi_file
-    wid, peaks, other = _joint_then_unrelated(path, tmp_path)
-    _strip_action_index(path)
-    assert all(ai is None for *_, ai in _log_shape(path))
-
-    dry = review_undo_impl(path, [2], dry_run=True)
-    assert [(a.kind, a.remove) for a in dry.plan] == [
-        ("edit", _uid_tokens(review_log_impl(path)[:2]))
-    ]
-    review_undo_impl(path, [2])
-
-    assert _fitted_by_window(path) == _saved_state(tmp_path)
-    # Rows are immutable: the replay keeps them verbatim, key-less as they were.
-    assert _log_shape(path) == [(0, wid, "remove", None), (1, wid, "remove", None)]
-
-
-@pytest.mark.integration
 def test_group_undo_cross_interface(stage5_multi_source, tmp_path):
     """(f) api / Pipeline / CLI undo of a decision behind a joint edit agree,
     fit and log alike."""
@@ -563,8 +501,8 @@ def test_session_preview_then_apply_stamps_one_index_per_action(
     stage5_multi_file, tmp_path
 ):
     """``ReviewSession`` persists the preview's own decisions: they must be
-    grouped by action exactly as a direct apply groups them (the
-    ``_close_batch_action`` call in ``_run_review_preview``)."""
+    grouped by action exactly as a direct apply groups them (both are rows
+    :func:`_request_rows` stamps, one action per plan action)."""
     path = stage5_multi_file
     wid, peaks, other = _multi_peak_window(path)
     fv = _clear_add_freq(path, other)
@@ -608,25 +546,6 @@ def _prefix_setup(source: Path, tmp_path: Path, name: str) -> Tuple[Path, Path, 
 
 
 @pytest.mark.integration
-def test_log_prefix_on_legacy_log_groups_by_inference(stage5_multi_source, tmp_path):
-    """A log written before the key existed, applied at a prefix that keeps
-    the joint edit, replays it as one action and reproduces the state."""
-    path, cur, wid = _prefix_setup(stage5_multi_source, tmp_path, "legacy")
-    expected_fit, expected_log = _fitted_by_window(path), _log_shape(path)
-    _strip_action_index(path)
-    assert all(ai is None for *_, ai in _log_shape(path))
-
-    apply_curation_impl(path, cur, log_prefix=2)
-
-    assert _fitted_by_window(path) == expected_fit
-    # The kept rows verbatim (key-less as they were); the new row takes the
-    # next serial, above the dropped row's.
-    assert _log_shape(path) == [(o, w, k, None) for o, w, k, _ in expected_log[:2]] + [
-        (2, expected_log[2][1], "add", 3)
-    ]
-
-
-@pytest.mark.integration
 def test_group_log_prefix_apply_cross_interface(stage5_multi_source, tmp_path):
     """api / Pipeline / CLI ``review apply --log-prefix`` agree, fit and log
     alike, for a prefix that keeps a joint edit."""
@@ -665,11 +584,13 @@ def test_group_log_prefix_apply_cross_interface(stage5_multi_source, tmp_path):
 
 @pytest.mark.integration
 def test_replay_refits_once_per_action_not_once_per_row(
-    stage5_multi_file, tmp_path, monkeypatch
+    stage5_multi_file, tmp_path, monkeypatch, every_write_is_reference
 ):
     """The old per-row replay resolved each log row on its own: two refits
     for a two-remove edit, a different (sequential) fit. Count the refits an
     undo performs and pin the plan's shape."""
+    # This counts work, which the G1 check's own replays would add to.
+    every_write_is_reference.enabled = False
     from ftmwpipeline._internal import stage6_impl as s6
 
     path = stage5_multi_file
@@ -775,10 +696,10 @@ def test_a_row_whose_target_is_gone_is_refused(stage5_multi_file, tmp_path):
     def forged(rows: List[Dict[str, Any]]) -> None:
         rows[0]["targets"] = [int(rows[0]["targets"][0]) + 7]
 
-    _rewrite_rows(path, forged)
     cur = tmp_path / "later.csv"
     cur.write_text(f"add,{other},{_clear_add_freq(path, other)},\n")
     apply_curation_impl(path, cur)
+    _rewrite_rows(path, forged)
     before = _raw_rows(path)
     state = _fitted_by_window(path)
 

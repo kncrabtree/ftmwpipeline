@@ -256,13 +256,43 @@ These exist today; the contract freezes their names and the listed fields.
   drop the birth of a peak a kept row acts on is refused (`orphans_peak`),
   and a uid a window holds twice cannot be named (`ambiguous_peak`), all
   before anything is fit (except a log-prefix apply's own batch, which
-  resolves against the kept rows' in-memory replay). The snap tolerance is a property of the file: no
-  call takes one, and only resolution uses it (contract version 16).
+  resolves against the state the kept rows describe, computed in memory).
+  A row's `evidence` snapshot (`chi2r_*`, `n_peaks_*`, `created_window`) is
+  taken from the refit it ran in the write that recorded it and is never
+  updated. The snap tolerance is a property of the file: no call takes one,
+  and only resolution uses it (contract version 16).
+- **Every Stage 6 write is a replay of its log** (contract version 16). After
+  any successful write (`review_edit`, `review_accept`, `review_create`,
+  `review_apply` with or without `log_prefix`, `review_undo`, `review_run`,
+  a `ReviewSession` persist of a staged preview) the window fits, created-window
+  overlay, statuses, final products and decision log equal, bit for bit, one
+  replay of the persisted log from the automatic-fit baseline under the
+  persisted review parameters, in the analysis environment the fits were made
+  in; `review_preview` returns exactly what its apply would persist, and is
+  refused wherever its apply is. The state depends on the log only through its create order,
+  each window's own row order and the rows' action grouping. A write whose
+  fit-changing rows are the persisted log's (a bare accept, `review_run`, an
+  undo of bare accepts) refits nothing, keeps the fits it finds and is not
+  epoch-gated; one that leaves no fit-changing row restores the automatic fit;
+  only a write that refits is gated (`epoch_mismatch`). Every write takes the
+  undo baseline if none exists yet. Every write is one unit for cancellation:
+  a cancel before its persist discards it, an undo's included. A log with no
+  automatic-fit baseline is `file_corrupt` on every write (an engine write
+  snapshots before it records the first row). Not promised:
+  bit identity across numpy/SciPy/BLAS versions, that kept fits are what the
+  running code would replay (after a new `ANALYSIS_EPOCH` or a changed Stage 5
+  input such as the tau calibration, a write that refits nothing keeps them;
+  the first write that refits replays the whole log under the running code),
+  that an edit's fit is "the displayed fit plus the edit" (a row applies to its window's automatic fit
+  and earlier rows, then the cascade refreshes it), and that a created
+  window's geometry survives an undo of an earlier create (reported, not
+  refused).
 - Stage 6 writes refuse a file the replay engine cannot curate (contract
   version 16): `curation_conflict` with `predates_peak_identity` (a fitted
   peak has no `peak_uid`) or `predates_replay_engine` (the review or the undo
   baseline was written without it), `ids` `[]`, before anything is resolved,
-  fitted or written; nothing is converted. `Stage6Review.refit_required`
+  fitted or written, and `review_preview` refuses the same way; nothing is
+  converted. `Stage6Review.refit_required`
   carries the reason on `get_review_status` (and `review show --json` /
   `review log --json` carry it as `refit_required`), and `review_log` and the
   HTML report flag the file without writing. `fit run` is the one remedy and
@@ -283,7 +313,10 @@ These exist today; the contract freezes their names and the listed fields.
   `AppliedWindowResult`, …) and their `converged` flag: a bool, `Absent.NOT_RUN`
   where `chi2r_after` is, and `Absent.UNDEFINED` for a window left with no peak
   (no solver ran; no non-convergence warning, and the report's non-converged
-  count excludes it).
+  count excludes it). "Before" is the window as displayed before the write
+  (the persisted fit), "after" its curated fit, post-cascade (contract version
+  16); a preview or apply window is `cascaded` when no action named it but the
+  write changed its fit.
 - `get_pipeline_info(path)` / `info()`: the environment and epoch fields
   `stage_environments`, `last_written_with`, `environment_drift`,
   `runtime_environment_drift`, `current_environment`,
@@ -790,8 +823,8 @@ ids of a curation batch),
     (`algorithm_failed`);
   - a valid curation request that conflicts with the file's review state
     (`curation_conflict`). Its `reason` is a stable slug, such as
-    `line_already_fitted`, `targets_span_windows`, `orphans_created_window`,
-    `baseline_unavailable` or `replay_conflict`. `ids` names the windows,
+    `line_already_fitted`, `targets_span_windows`, `orphans_created_window`
+    or `replay_conflict`. `ids` names the windows,
     peaks or decisions involved.
 - **`bad_setting.path` names what the caller wrote:**
   - a registry setting is its registry path;
@@ -925,8 +958,9 @@ What is left in the file is the same as after a cancel at that point.
 - Every completed stage stays as written. A stage interrupted mid-run leaves the
   file exactly as it was before that stage began: nothing new, nothing deleted,
   and no invalidation.
-- A curation batch (`review_apply`, and a refit with its cascade) is one unit:
-  a cancel discards the whole batch.
+- Every Stage 6 write (`review_apply`, a refit with its replay and cascade,
+  `review_undo`, an apply with `log_prefix`) is one unit: a cancel before its
+  persist discards the whole write.
 - **Stage 5 in parallel.** A cancel stops the walk without waiting for windows
   that are still fitting:
   - the workers are terminated;

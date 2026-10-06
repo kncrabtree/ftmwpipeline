@@ -182,8 +182,8 @@ surface a ``review undo`` command alongside the ``review apply`` one:
 
    ftmwpipeline review undo exp_2638.ftmw --id 2 3
 
-``review undo`` restores the automatic-fit baseline snapshot and replays every
-surviving decision onto it in log order, one user action at a time (the
+``review undo`` replays every surviving decision onto the automatic-fit
+baseline snapshot in log order, one user action at a time (the
 entries of one multi-line edit replay jointly), so any decisions can be undone,
 not only the latest; the ids shown in the table are the ones to pass, and the
 surviving decisions keep their ids (see :ref:`stage6-decisions`). A replay
@@ -596,19 +596,21 @@ of those dicts, in place of the CSV (``-`` reads standard input):
 Applying a curation file
 ------------------------
 
-``review apply`` executes a curation file's resolved plan as a single batch. It
-loads the Stage 5 fit and builds the active-FT fit context once, applies every
-action to that fit in memory, cascades the dependents of all directly-edited
-windows in one combined pass, and persists the result once. Nothing is written
-until every action has succeeded, so a plan that fails partway through leaves
-the file untouched.
+``review apply`` executes a curation file's resolved plan as a single write. It
+builds the active-FT fit context once, resolves every action into decision-log
+entries against the fit as it stands, before anything is fit, appends them to
+the log, and replays the log from the automatic fit in one batch -- every
+entry applied as recorded, then one combined cascade over the dependents of
+every edited window -- and persists the result once. Nothing is written until
+the whole plan has succeeded, so a plan that fails partway through leaves the
+file untouched. As for every Stage 6 write, the file then holds exactly the
+replay of its decision log (see :ref:`stage6-decisions`).
 
-A curated file therefore holds only two states: the base it started from — the
-automatic fit, or the automatic baseline when ``review undo`` is replaying onto
-it — and the revised state the whole edit set produces. The set is applied in
-one canonical order rather than the order the rows happen to be written in.
-``create`` rows run first, since they install the structure later rows name, and
-the remaining actions run grouped by ascending window id. Within a single window
+The plan is resolved in one canonical order rather than the order the rows
+happen to be written in.
+``create`` rows resolve first, since they install the structure later rows name,
+and the remaining actions resolve grouped by ascending window id; the log records
+the entries in that order. Within a single window
 the specified order is preserved, because an ``accept`` composes on the peak set
 a preceding coalesced add/remove group left behind. Two curation files listing
 the same per-window edits in different row orders reach the same fitted state
@@ -682,9 +684,11 @@ Dropping ``--dry-run`` applies the plan, refitting each affected window in place
 The ``windows:`` block is the live apply's per-window outcome, in the shape
 ``review preview`` prints and on the same fields: which plan actions (by
 their number) targeted the window, whether it was reached directly
-(``direct``) or as a cascaded dependent (``cascaded``, with ``actions=-``;
-``exp_2638`` has no dependency edges, so nothing cascades here), the peak
-count and χ²ᵣ on each side, and a warning line if its fit did not converge (a
+(``direct``) or as a cascaded dependent (``cascaded``, with ``actions=-``: no
+action named it, but the apply changed its fit; ``exp_2638`` has no dependency
+edges, so nothing cascades here), the peak count and χ²ᵣ on each side (before
+as the file held it, after as the apply persisted it, post-cascade), and a
+warning line if its fit did not converge (a
 window left with no peak has no fit to converge, so it gets none). It
 is ``CurationApplyResult.windows`` on the Python interfaces, keyed by window
 id, so a caller can check the count arithmetic (after == before + adds −
@@ -872,11 +876,15 @@ apply's own, a dry run also refuses what the apply would refuse — an anchor
 outside the analysis band, or a create whose window cannot be placed — so a
 dry run that returns is a pre-flight rather than a plan echo.
 
-A preview is not a weaker apply. It shares the appliers, so it raises the same
-per-action error on the same failures, and it is epoch-gated by the same check,
-so it cannot show you numbers whose apply is guaranteed to refuse. The one
-thing it does not do is take the undo baseline snapshot, because it writes
-nothing to snapshot against. A plan of nothing but bare ``accept`` rows touches
+A preview is not a weaker apply. It runs the apply itself, short of the
+persist: the same resolution, so it raises the same per-action error on the
+same failures, and the same replay of the log with the plan's entries, so it
+reports exactly the state the apply would persist. It is refused, first, on a
+file Stage 6 cannot curate (``predates_peak_identity``,
+``predates_replay_engine``), and epoch-gated by the same check, so it cannot
+show you numbers whose apply is guaranteed to refuse.
+The one thing it does not do is take the undo baseline snapshot, because it
+writes nothing. A plan of nothing but bare ``accept`` rows touches
 no fit and previews as ``(no fit-mutating actions; nothing to preview)``.
 
 .. code-block:: python

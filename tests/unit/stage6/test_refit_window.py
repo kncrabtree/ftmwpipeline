@@ -23,24 +23,30 @@ import h5py
 import pytest
 
 import ftmwpipeline.api as ftmw
-from ftmwpipeline._internal.atomic import atomic_write
+from ftmwpipeline._internal.atomic import atomic_write, h5open
 from ftmwpipeline._internal.stage5_impl import (
     Stage5FitContext,
     build_stage5_fit_context,
 )
 from ftmwpipeline._internal.stage6_impl import (
     RefitWindowResult,
+    _build_batch_ctx,
     _parse_complex_amplitude,
     _reconstruct_frozen_peaks,
-    _run_single_action,
     refit_snap_tol_mhz_impl,
     refit_window_impl,
 )
 from ftmwpipeline.core.data_structures import SpectrumFit
-from ftmwpipeline.fitting.peak_model import ModelPeak
-from ftmwpipeline.io.fitting_serialization import load_spectrum_fit_from_hdf5
+from ftmwpipeline.io.fitting_serialization import (
+    load_spectrum_fit_from_hdf5,
+    update_spectrum_fit_windows_in_hdf5,
+)
 
-pytestmark = [pytest.mark.integration]
+pytestmark = [
+    pytest.mark.integration,
+    # Design G1: every write here persists the reference replay of its log.
+    pytest.mark.usefixtures("every_write_is_reference"),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -88,18 +94,20 @@ def _identity_refit(path: Union[str, Path], window_id: int) -> RefitWindowResult
     """Refit one window with no edit and persist it, recording no decision.
 
     This is the identity refit the cascade runs on a window it reaches -- an
-    engine mechanic, not a user verb (a bare ``review edit`` is refused) --
-    driven through the engine's own single-action path so the fidelity of
-    ``refit_window_core`` stays pinned end to end.
+    engine mechanic, not a user verb (a bare ``review edit`` is refused, and
+    every state the engine persists is a replay of its log). It is driven
+    here on the window's displayed fit and written straight to the fit table,
+    so the fidelity of ``refit_window_core`` stays pinned end to end.
     """
     p = str(path)
     snap = refit_snap_tol_mhz_impl(p)
-    with atomic_write(p):
-        return _run_single_action(
-            p,
-            lambda ctx: _identity_refit_action(ctx, window_id, snap),
-            snap_tol_mhz=snap,
+    ctx = _build_batch_ctx(p, snap_tol_mhz=snap)
+    result = _identity_refit_action(ctx, window_id, snap)
+    with atomic_write(p), h5open(p, "a") as h5f:
+        update_spectrum_fit_windows_in_hdf5(
+            ctx.changeset.spectrum_fit, h5f["stage5_fitting"], [window_id]
         )
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -664,47 +672,14 @@ class TestAddPeak:
         user_peaks = [p for p in wf_after.fitted_peaks if p.origin == "user"]
         assert len(user_peaks) >= 1, "user origin not persisted after HDF5 round-trip"
 
-    def test_add_with_explicit_seed(self):
-        """add_seeds provides the starting ModelPeak for the added frequency.
 
-        The key contract: when add_seeds is provided, the engine must accept
-        and use it as the starting point.  Whether the peak survives the NLS
-        and rescue depends on the data; we assert only that the function
-        completes without error and returns a valid result.  The user-origin
-        stamping is tested in test_add_peak_origin_user using the auto-seed
-        path (which derives a realistic amplitude from the data).
-        """
-        if self.wf is None:
-            pytest.skip("No window found")
-        center = self._window_center_mhz(self.wf)
-        if center is None:
-            pytest.skip("Window has no freq_range")
+def test_an_edit_takes_no_seed_the_log_does_not_record():
+    """A Stage 6 add's starting point comes from the replay, never from the
+    caller: an amplitude or phase seed the decision log does not record would
+    make a replay of the log differ from the write (design §3.4)."""
+    import inspect
 
-        # Use offset=0 (window center) as the explicit seed.
-        explicit_seed = ModelPeak(amplitude=1.0, offset_mhz=0.0, phase=0.0)
-        result = refit_window_impl(
-            str(self.path),
-            self.wf.window_id,
-            add=[center],
-            add_seeds=[explicit_seed],
-        )
-        # The function must complete without error and return a valid result.
-        assert isinstance(result, RefitWindowResult)
-        assert result.window_id == self.wf.window_id
-
-    def test_add_seeds_wrong_length_raises(self):
-        if self.wf is None:
-            pytest.skip("No window found")
-        center = self._window_center_mhz(self.wf)
-        if center is None:
-            pytest.skip("Window has no freq_range")
-        with pytest.raises(ValueError, match="len\\(add_seeds\\)"):
-            refit_window_impl(
-                str(self.path),
-                self.wf.window_id,
-                add=[center],
-                add_seeds=[],
-            )
+    assert "add_seeds" not in inspect.signature(refit_window_impl).parameters
 
 
 # ---------------------------------------------------------------------------

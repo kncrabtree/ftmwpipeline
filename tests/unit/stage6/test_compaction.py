@@ -17,7 +17,11 @@ from ftmwpipeline._internal.compaction import compact_file
 from ftmwpipeline._internal.stage6_impl import review_run_impl, review_undo_impl
 from tests.unit._internal.test_compaction import _dump
 
-pytestmark = [pytest.mark.integration]
+pytestmark = [
+    pytest.mark.integration,
+    # Design G1: every write here persists the reference replay of its log.
+    pytest.mark.usefixtures("every_write_is_reference"),
+]
 
 
 def _a_peak(path: Path):

@@ -66,8 +66,13 @@ from ftmwpipeline.io.timebase_serialization import (
     save_timebase_calibration_to_hdf5,
 )
 from ftmwpipeline.pipeline import Pipeline
+from tests._replay_support import WriteChecks
 
-pytestmark = [pytest.mark.integration]
+pytestmark = [
+    pytest.mark.integration,
+    # Design G1: every write here persists the reference replay of its log.
+    pytest.mark.usefixtures("every_write_is_reference"),
+]
 
 EPS_1 = 2.2e-6
 EPS_2 = 8.8e-6
@@ -477,11 +482,17 @@ class TestSessionMatchesSessionless:
         )
 
     def test_second_call_in_a_session_a_genuine_hit_matches_two_independent_misses(
-        self, sc_multi_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        sc_multi_file: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        every_write_is_reference: WriteChecks,
     ) -> None:
         """The second session call reuses the cached shared context (a real
         hit); the sessionless baseline rebuilds it twice, independently (two
         real misses). The outcomes must agree exactly."""
+        # This counts work, which the G1 check's own replays would add to.
+        every_write_is_reference.enabled = False
         rebuild_count = {"n": 0}
         real_build = s6._build_shared_fit_ctx
 
@@ -730,8 +741,14 @@ class TestMutationProbeAlwaysMiss:
     -- a miss is always a full, correct recompute."""
 
     def test_forced_permanent_miss_still_matches_sessionless(
-        self, sc_multi_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        sc_multi_file: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        every_write_is_reference: WriteChecks,
     ) -> None:
+        # This counts work, which the G1 check's own replays would add to.
+        every_write_is_reference.enabled = False
         rebuild_count = {"n": 0}
         real_build = s6._build_shared_fit_ctx
 
@@ -881,8 +898,14 @@ class TestMutationProbeAlwaysHitStale:
         assert persisted.epsilon == pytest.approx(EPS_2)
 
     def test_neutered_check_persists_the_stale_staged_preview(
-        self, sc_multi_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        sc_multi_file: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        every_write_is_reference: WriteChecks,
     ) -> None:
+        # This persists a stale preview on purpose: off the reference by design.
+        every_write_is_reference.enabled = False
         wid = _fitted_window_ids(sc_multi_file)[0]
         freq = _window_center(sc_multi_file, wid)
         cur = tmp_path / "cur.csv"
@@ -1011,35 +1034,34 @@ class TestEngineInvariantsStillHold:
         return found
 
     def test_only_finish_batch_persists_the_fit(self) -> None:
-        writers = set(self._functions_calling({"save_spectrum_fit_to_hdf5"}))
+        writers = set(
+            self._functions_calling(
+                {"save_spectrum_fit_to_hdf5", "update_spectrum_fit_windows_in_hdf5"}
+            )
+        )
         assert writers == {"_finish_batch"}
 
     def test_only_open_batch_takes_the_undo_baseline(self) -> None:
         snappers = set(self._functions_calling({"_snapshot_stage5_baseline"}))
         assert snappers == {"_open_batch"}
 
-    def test_finish_batch_still_refuses_an_unbaselined_context_even_with_staged_args(
-        self, sc_multi_file: Path
+    def test_finish_batch_refuses_a_staged_preview_without_its_baseline(
+        self, sc_multi_file: Path, tmp_path: Path
     ) -> None:
-        """My new ``cascaded``/``precomputed_review`` params on
-        ``_finish_batch`` must not bypass the baseline guard."""
-        with atomic_write(str(sc_multi_file)):
-            ctx = s6._open_batch(
-                str(sc_multi_file),
-                snap_tol_mhz=s6.refit_snap_tol_mhz_impl(str(sc_multi_file)),
-                snapshot=False,
-            )
-        assert ctx.baseline_taken is False
+        """A staged preview's state is persisted only through
+        ``_persist_staged``, which takes the baseline first: handed to
+        ``_finish_batch`` as staged, it is refused."""
+        wid = _fitted_window_ids(sc_multi_file)[0]
+        cur = tmp_path / "cur.csv"
+        cur.write_text(f"add,{wid},{_window_center(sc_multi_file, wid)},\n")
+        with Pipeline.open(sc_multi_file).review_session() as session:
+            session.review_preview(cur, frame="raw")
+            staged = session._staged
+        assert staged is not None and staged.curated.baseline_taken is False
         before = _digest(sc_multi_file)
         with pytest.raises(ValueError, match="undo baseline was.*never taken"):
             with atomic_write(str(sc_multi_file)):
-                s6._finish_batch(
-                    ctx,
-                    str(sc_multi_file),
-                    snap_tol_mhz=s6.refit_snap_tol_mhz_impl(str(sc_multi_file)),
-                    cascaded=[],
-                    precomputed_review=s6.Stage6Review(),
-                )
+                s6._finish_batch(staged.curated, str(sc_multi_file))
         assert _digest(sc_multi_file) == before
 
 
@@ -1051,10 +1073,10 @@ class TestFitCache:
     describes is a correctness bug, not a slow path, and it would produce
     plausible wrong numbers rather than an error.
 
-    Every verb used here is ``review_edit``. A bare ``review_accept`` never
-    opens the engine at all (it adds no ``mutated_wids``, so it takes the
-    cheap path), which would make a load-count assertion pass without
-    exercising anything.
+    Every verb used here is ``review_edit``. A bare ``review_accept`` builds
+    no display batch at all (it refits nothing, so it takes the cheap path),
+    which would make a load-count assertion pass without exercising
+    anything.
     """
 
     @staticmethod
@@ -1121,12 +1143,9 @@ class TestFitCache:
         ), "the foreign edit was overwritten by a stale cached fit"
 
     def test_undo_does_not_replay_against_a_superseded_fit(self, sc_multi_file):
-        """The hazard the cache's self-validation exists for.
-
-        ``review undo`` restores ``/stage5_fitting`` by an HDF5 group copy,
-        outside ``_finish_batch`` entirely, and then replays the surviving
-        decisions through ordinary batches. Those batches must not pick up
-        the fit the edits left behind -- the restore has just superseded it.
+        """An undo inside a session ends where the same undo without one
+        does: the session's cached fit (the one the edits left) never stands
+        in for the state the undo computes.
         """
         wids = _fitted_window_ids(sc_multi_file)
         sessionless = sc_multi_file.parent / "sessionless.ftmw"

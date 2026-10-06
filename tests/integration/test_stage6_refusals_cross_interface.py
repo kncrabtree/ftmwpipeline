@@ -353,24 +353,42 @@ def test_a_review_run_only_pre_engine_file_is_refused(
     assert _sha(path) == before
 
 
-@pytest.mark.parametrize("variant", ["engine_version", "lineage_id"])
-def test_a_staged_preview_cannot_be_persisted_on_a_refused_file(
-    curated, tmp_path, variant
+@pytest.mark.parametrize("variant", sorted(VARIANTS))
+def test_a_preview_is_refused_like_its_apply(
+    curated, tmp_path, capsys, no_fit, variant
 ):
-    """A preview is a read and works; the apply that would persist it is a
-    write and is refused, writing nothing."""
+    """A preview runs the apply short of the persist, so it is refused with
+    the apply's reason before anything is fit: it cannot show numbers whose
+    apply is guaranteed to refuse. Writes nothing."""
     path, reason = _variant(curated, tmp_path, variant)
-    wid, _ = _window_and_clear_add(path)
-    csv = tmp_path / "accept.csv"
-    csv.write_text(f"accept,{wid},,\n")
+    wid, clear = _window_and_clear_add(path)
+    accept = tmp_path / "accept.csv"
+    accept.write_text(f"accept,{wid},,\n")
+    add = tmp_path / "add.csv"
+    add.write_text(f"add,{wid},{clear},\n")
     before = _sha(path)
 
-    with Pipeline.open(path).review_session() as session:
-        session.review_preview(csv)
-        assert _sha(path) == before
+    previews: List[Callable[[], Any]] = []
+    for csv in (accept, add):
+        previews += [
+            lambda csv=csv: ftmw.review_preview(str(path), csv, frame="raw"),
+            lambda csv=csv: Pipeline.open(path).review_preview(csv, frame="raw"),
+        ]
+    for preview in previews:
         with pytest.raises(CurationConflictError) as exc:
-            session.review_apply(csv)
-        assert exc.value.reason == reason
+            preview()
+        assert (exc.value.reason, exc.value.ids) == (reason, [])
+    with Pipeline.open(path).review_session() as session:
+        for csv in (accept, add):
+            with pytest.raises(CurationConflictError) as exc:
+                session.review_preview(csv, frame="raw")
+            assert exc.value.reason == reason
+    for csv in (accept, add):
+        rc, payload = _cli_error(
+            ["review", "preview", str(path), str(csv), "--frame", "raw"], capsys
+        )
+        assert rc == 1
+        assert (payload["code"], payload["reason"]) == ("curation_conflict", reason)
     assert _sha(path) == before
 
 

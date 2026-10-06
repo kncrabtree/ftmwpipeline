@@ -53,7 +53,11 @@ from ftmwpipeline.io.stage6_review_serialization import (
 )
 from ftmwpipeline.pipeline import Pipeline
 
-pytestmark = [pytest.mark.integration]
+pytestmark = [
+    pytest.mark.integration,
+    # Design G1: every write here persists the reference replay of its log.
+    pytest.mark.usefixtures("every_write_is_reference"),
+]
 
 
 # ---------------------------------------------------------------------------

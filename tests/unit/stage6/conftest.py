@@ -24,6 +24,7 @@ import ftmwpipeline.api as ftmw
 from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline._internal.stage4_impl import load_windows_impl, save_window_plan_impl
 from ftmwpipeline._internal.stage6_impl import review_run_impl
+from tests._replay_support import WriteChecks, check_every_write
 
 _DATA = Path("examples/blackchirp_data/2638")
 
@@ -227,3 +228,13 @@ def stage5_multi_file(_stage5_multi_built, tmp_path) -> Path:
     fp = tmp_path / "stage5_multi.ftmw"
     shutil.copy(_stage5_multi_built, fp)
     return fp
+
+
+@pytest.fixture
+def every_write_is_reference(monkeypatch) -> WriteChecks:
+    """Assert, after every Stage 6 write the test makes, that the persisted
+    state is the reference replay of the persisted log under the persisted
+    review parameters, bit for bit (design G1;
+    :func:`tests._replay_support.check_every_write`). A module opts in with
+    ``pytest.mark.usefixtures("every_write_is_reference")``."""
+    return check_every_write(monkeypatch)

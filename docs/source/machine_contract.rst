@@ -582,22 +582,25 @@ one action keeps its type and adds the action to the message (``curation action
          carries its primary's uid): name a frequency the window holds once
          (that uid)
      * - ``baseline_unavailable``
-       - ``review_undo``, or an apply at a ``log_prefix``, needs the
-         automatic-fit baseline the first edit snapshots, and the file's
-         edits were recorded without one (by a version before ``review
-         undo``, or the snapshot was removed) (``[]``)
+       - not raised from contract 16: a file that records decisions but holds
+         no automatic-fit baseline is ``file_corrupt`` on every Stage 6 write
+         (the first write snapshots the baseline before it records anything,
+         and a file curated before that rule is ``predates_replay_engine``).
+         Until contract 15, ``review_undo`` or an apply at a ``log_prefix``
+         raised it when the baseline was missing (``[]``)
      * - ``replay_conflict``
        - replaying a recorded window creation no longer reproduces its
          window: it would widen another window, or its id is taken (the
          recorded id, then the widened window's id); or a create recorded
          now (a curation file's ``create`` row naming an id) pins an id at
          or below a created window the log already holds before it (that
-         id): created ids only increase along the log. An undo
-         plans the surviving creates before it restores anything, so its
-         conflict leaves the file as it was
+         id): created ids only increase along the log. The creates are
+         planned before anything is fit, so the conflict leaves the file as
+         it was
      * - ``replay_diverged``
-       - ``review_undo``, or an apply at a ``log_prefix``, cannot apply a
-         surviving decision as recorded: a peak it removes (one of its
+       - a write cannot replay a decision of the log as recorded (in practice
+         after ``review_undo``, or an apply at a ``log_prefix``, drops
+         decisions): a peak it removes (one of its
          ``targets``) is not in its window at its place in the log, or a peak
          it births (one of its ``born_uids``) already is -- after undoing the
          remove between an add and a re-add at the same frequency, say -- or
@@ -617,14 +620,15 @@ one action keeps its type and adds the action to the message (``curation action
      * - ``predates_peak_identity``
        - any Stage 6 write (``review_edit``, ``review_accept``,
          ``review_create``, ``review_apply``, ``review_undo``, ``review_run``,
-         a ``ReviewSession`` persist) of a file whose Stage 5 fit has a peak
-         without a ``peak_uid`` (a fit written before peak identity was
-         persisted). Re-running ``fit run`` clears it and discards the file's
+         a ``ReviewSession`` persist), and a ``review_preview``, of a file
+         whose Stage 5 fit has a peak without a ``peak_uid`` (a fit written
+         before peak identity was persisted). Re-running ``fit run`` clears it and discards the file's
          curation (``[]``)
      * - ``predates_replay_engine``
-       - any Stage 6 write of a file curated by a build that predates the
-         replay engine (its review carries no ``engine_version``, or an older
-         one, or its undo baseline no lineage id). Re-running ``fit run``
+       - any Stage 6 write, and a ``review_preview``, of a file curated by a
+         build that predates the replay engine (its review carries no
+         ``engine_version``, or an older one, or its undo baseline no lineage
+         id). Re-running ``fit run``
          clears it and discards the file's curation; ``get_review_status``
          reports the reason as ``refit_required`` (``[]``)
 
@@ -633,8 +637,8 @@ one action keeps its type and adds the action to the message (``curation action
   request is resolved into its decisions, and a replayed log checked, against
   structure and peak identity alone. The one exception is an apply at a
   ``log_prefix``: its own actions resolve against the state the kept
-  decisions leave, so their refusals come after those decisions are replayed
-  in memory (the kept decisions' own refusals still come first). The file is
+  decisions describe, so their refusals come after that state is computed in
+  memory (the kept decisions' own refusals still come first). The file is
   untouched either way.
 
 .. _contract-file-errors:
@@ -1099,9 +1103,42 @@ Each, with its absence cases:
   remove the fitted frequency (raw frame) of the peak it resolved to; a
   merge's ``merged_from`` likewise holds its parents' fitted frequencies.
   Rows are immutable: a replay (``review_undo``, an apply at a ``log_prefix``)
-  keeps every surviving row verbatim, and only ``order_index`` changes. The
-  snap tolerance is a property of the file (``refit_snap_tol_mhz``): from
-  contract 16 no call takes one, and only a request's resolution uses it.
+  keeps every surviving row verbatim, and only ``order_index`` changes. A
+  row's ``evidence`` (``chi2r_before`` / ``chi2r_after``, ``n_peaks_before`` /
+  ``n_peaks_after``, ``created_window``) is a snapshot of the refit the row ran
+  in the write that recorded it, taken when it was recorded and never updated:
+  the current numbers are in the fits. The snap tolerance is a property of the
+  file (``refit_snap_tol_mhz``): from contract 16 no call takes one, and only a
+  request's resolution uses it.
+
+  **Every write is a replay of the log** (contract 16). After any successful
+  Stage 6 write -- ``review_edit``, ``review_accept``, ``review_create``,
+  ``review_apply`` (a ``log_prefix`` one included), ``review_undo``,
+  ``review_run``, and a ``ReviewSession`` apply that persists a staged preview
+  -- the file's window fits (``/stage5_fitting``), created-window overlay,
+  window statuses, final-products table and decision log are, bit for bit,
+  what one replay of the persisted log from the automatic-fit baseline
+  produces under the persisted review parameters, in the analysis
+  environment the fits were made in: every row applied as recorded and in
+  log order, one combined cascade, every status computed afresh. A
+  ``review_preview`` returns exactly the state its apply would persist. Two
+  consequences: the state does not depend on the order of the calls that
+  built the log, only on the log (the order of its creates, each window's
+  own rows, and the rows' grouping into actions); and a write whose
+  fit-changing rows are the ones the log already held (a bare accept,
+  ``review_run``, an undo of bare accepts) refits nothing and keeps the fits it
+  finds. Not promised: identical bits across numpy, SciPy or BLAS versions
+  (within one environment two replays are identical; a fitting-model change is
+  marked by ``ANALYSIS_EPOCH``); that kept fits are what the running code
+  would replay -- after a new ``ANALYSIS_EPOCH``, or a change to a Stage 5
+  input such as the tau calibration, a write that refits nothing keeps the
+  fits made before it, and the first write that refits replays the whole log
+  under the running code (epoch-gated: :doc:`stage6_review`); that an edit's
+  fit is "what was displayed, plus the edit" (a row applies to its window's
+  automatic fit and earlier rows, then the cascade refreshes it; the displayed
+  fit only resolves the request); and that a surviving created window keeps
+  its geometry through an undo (``UndoResult.geometry_changed_window_ids``
+  lists the changes).
 * ``get_pipeline_info`` -- the status dict. ``warnings`` is always present (an
   empty list when there are none). The environment fields hold ``Absent``
   rather than ``None`` / ``{}`` / ``[]``:
@@ -1133,7 +1170,12 @@ Each, with its absence cases:
   (:ref:`contract-settings-rows`); ``settings_defaults`` needs no file.
 * The curation results ``RefitWindowResult`` (``review edit`` / ``accept`` /
   merge / split), ``PreviewWindowResult`` (``review preview``) and
-  ``AppliedWindowResult`` (``review apply``) carry ``Absent`` the same way:
+  ``AppliedWindowResult`` (``review apply``) report each window before the
+  write as it was displayed (the persisted fit) and after it as the curated
+  fit, post-cascade (contract 16: ``RefitWindowResult`` used to report the
+  edited window's own refit, before the cascade). A preview or apply window's
+  ``origin`` is ``direct`` when an action named it and ``cascaded`` when none
+  did but the write changed its fit. They carry ``Absent`` the same way:
   ``chi2r_before`` / ``chi2r_after`` are *not run* on a side with no fit (a
   window the batch created has no "before") and *undefined* when the fit's
   value is not finite; ``converged`` is *not run* exactly where
@@ -1657,20 +1699,19 @@ A callback that raises aborts the operation with ``callback_failed``. What is
 left in the file is what a cancel at that point would leave: a callback that
 raises on ``Invalidated`` or ``StageFinished`` -- both delivered after the
 write is durable -- leaves the write in place, and no ``StageFinished``
-follows; one that raises while ``review_undo`` replays (where a cancel is not
-honoured) lets the replay complete and be written, and then fails the call.
+follows.
 
 ``cancel`` is checked before every stage, between the windows of the Stage 5
 walk, of a Stage 6 refit and its cascade and of the report's rendering, and
 between scan values. A cancel raises ``cancelled``. Every stage the operation
 completed stays as written; the interrupted stage leaves the file as it was
 before it began -- except the fit, which keeps its finished windows as a
-partial fit (:ref:`contract-partial-fits`). A curation batch (``review_apply``,
-and every edit with its cascade) is one unit: a cancel discards all of it.
-``review_undo`` (and an apply with ``log_prefix``) honours a cancel only before
-it restores the automatic fit; once the restore has begun, the replay
-completes. A stage that has begun its final write completes, and the cancel is
-honoured at the next check point.
+partial fit (:ref:`contract-partial-fits`). Every Stage 6 write
+(``review_apply``, every edit with its replay and cascade, ``review_undo`` and an
+apply with ``log_prefix`` included) is one unit: a cancel before its persist
+discards all of it (contract 16: an undo used to restore the automatic fit
+first and then complete regardless). A stage that has begun its final write
+completes, and the cancel is honoured at the next check point.
 
 The replay of ``review_undo`` (and of an apply with ``log_prefix``) goes one user
 action at a time, not one decision at a time: the surviving rows of one action

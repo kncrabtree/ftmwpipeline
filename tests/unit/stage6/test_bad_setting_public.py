@@ -20,7 +20,11 @@ from ftmwpipeline.cli import main
 from ftmwpipeline.file_manager import BadSettingError, PipelineFileError
 from ftmwpipeline.io.fitting_serialization import read_fit_window_coverage
 
-pytestmark = [pytest.mark.unit]
+pytestmark = [
+    pytest.mark.unit,
+    # Design G1: every write here persists the reference replay of its log.
+    pytest.mark.usefixtures("every_write_is_reference"),
+]
 
 
 def _first_window(path) -> int:

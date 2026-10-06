@@ -31,7 +31,11 @@ import ftmwpipeline.core.environment as envmod
 from ftmwpipeline.core.environment import ANALYSIS_EPOCH, capture_environment
 from ftmwpipeline.file_manager import AnalysisEpochMismatchError, PipelineFileError
 
-pytestmark = [pytest.mark.integration]
+pytestmark = [
+    pytest.mark.integration,
+    # Design G1: every write here persists the reference replay of its log.
+    pytest.mark.usefixtures("every_write_is_reference"),
+]
 
 
 def _force_fit_epoch(path: Path, epoch) -> None:

@@ -1740,11 +1740,14 @@ class Pipeline:
     ) -> RefitWindowResult:
         """User-directed single-window refit (Stage 6 ``review edit``).
 
-        Re-fits ``window_id`` from the persisted Stage 5 fit using the
-        production NLS primitive, applying ``add``/``remove`` edits.  User-
-        added peaks carry ``origin="user"`` and survive the HDF5 round-trip;
-        removed peaks are excluded from the refit and will not be re-added by
-        the rescue pass.
+        Resolves the ``add``/``remove`` edits against the window as currently
+        fitted into decision-log rows (the removes by ``peak_uid``, each add
+        at its seed position with the uid stamped from it), appends them to
+        the log, and curates the log: replayed from the automatic Stage 5
+        fit with the production NLS primitive, dependents cascaded, and
+        persisted. User-added peaks carry ``origin="user"`` and survive the
+        HDF5 round-trip; removed peaks are excluded from the refit and will
+        not be re-added by the rescue pass.
 
         Parameters
         ----------
@@ -1780,9 +1783,31 @@ class Pipeline:
         -------
         RefitWindowResult
             Old vs new peak count, χ²ᵣ before/after, and the new fitted peaks
-            (both frames).
+            (both frames): "before" is the window as it was displayed before
+            the call, "after" its curated fit, post-cascade.
 
         Requires Stage 5 completed.
+
+        Raises
+        ------
+        CurationConflictError
+            ``predates_peak_identity`` / ``predates_replay_engine`` when the
+            file cannot be curated (its fit has no peak identity, or a build
+            without the replay engine curated it: re-run ``fit run``), and the
+            edit's own refusals (``line_already_fitted``,
+            ``target_outside_window``, ``ambiguous_peak``,
+            ``targets_span_windows``, ``fit_plan_unavailable``); each raised
+            before anything is fit, with the file untouched.
+        PipelineCompatibilityError
+            ``file_incompatible`` when a newer ftmwpipeline curated the file.
+        AnalysisEpochMismatchError
+            When the write refits and the Stage 5 fit was made under another
+            analysis epoch with no acknowledgement
+            (``review_acknowledge_environment``); a write that refits nothing
+            is not gated.
+        BadSettingError
+            ``path`` ``"add"`` for an edit with neither ``add`` nor ``remove``,
+            before anything is read.
 
         ``events`` / ``cancel`` follow the long-operation contract: ``events``
         is called on this thread with each event (``StageStarted``, a
@@ -1871,6 +1896,23 @@ class Pipeline:
 
         Requires Stage 5 completed.
 
+        Raises
+        ------
+        CurationConflictError
+            ``predates_peak_identity`` / ``predates_replay_engine`` when the
+            file cannot be curated (its fit has no peak identity, or a build
+            without the replay engine curated it: re-run ``fit run``), and
+            ``replay_conflict`` / ``fit_plan_unavailable`` for a window that
+            cannot be placed; each raised before anything is fit, with the file
+            untouched.
+        PipelineCompatibilityError
+            ``file_incompatible`` when a newer ftmwpipeline curated the file.
+        AnalysisEpochMismatchError
+            When the write refits and the Stage 5 fit was made under another
+            analysis epoch with no acknowledgement
+            (``review_acknowledge_environment``); a write that refits nothing
+            is not gated.
+
         ``events`` / ``cancel`` follow the long-operation contract: ``events``
         is called on this thread with each event (``StageStarted``, a
         ``WindowProgress`` per re-fit window, warnings, ``StageFinished``); a
@@ -1938,7 +1980,18 @@ class Pipeline:
         ReviewRunResult
             Total window count, attention count, and per-kind breakdown.
 
-        Requires Stage 5 completed.
+        Requires Stage 5 completed. It refits nothing: the fits are kept as
+        they are and it is not epoch-gated.
+
+        Raises
+        ------
+        CurationConflictError
+            ``predates_peak_identity`` / ``predates_replay_engine`` when the
+            file cannot be curated (its fit has no peak identity, or a build
+            without the replay engine curated it: re-run ``fit run``); each
+            raised before anything is fit, with the file untouched.
+        PipelineCompatibilityError
+            ``file_incompatible`` when a newer ftmwpipeline curated the file.
 
         ``events`` / ``cancel`` follow the long-operation contract: ``events``
         is called on this thread with each event; ``cancel`` is checked before
@@ -2161,6 +2214,27 @@ class Pipeline:
         Returns
         -------
         RefitWindowResult or None
+            With a candidate, the window as displayed before the call and its
+            curated fit after it, post-cascade.
+
+        Raises
+        ------
+        CurationConflictError
+            ``predates_peak_identity`` / ``predates_replay_engine`` when the
+            file cannot be curated (its fit has no peak identity, or a build
+            without the replay engine curated it: re-run ``fit run``), and a
+            candidate's own refusals (``line_already_fitted``,
+            ``target_outside_window``); each raised before anything is fit,
+            with the file untouched.
+        PipelineCompatibilityError
+            ``file_incompatible`` when a newer ftmwpipeline curated the file.
+        AnalysisEpochMismatchError
+            When the write refits and the Stage 5 fit was made under another
+            analysis epoch with no acknowledgement
+            (``review_acknowledge_environment``); a write that refits nothing
+            is not gated.
+
+        A bare accept refits nothing and is not epoch-gated.
 
         ``events`` / ``cancel`` follow the long-operation contract: ``events``
         is called on this thread with each event (``StageStarted``, a
@@ -2195,8 +2269,9 @@ class Pipeline:
         Parses a curation CSV (``action,window,freqs,params`` rows), coalescing
         a run of add/remove rows on one window into a single refit (merge /
         split / accept stand alone).  The resolved plan is then applied as one
-        batch: the Stage 5 fit context is built once, every action is applied to
-        an in-memory fit, dependents are cascaded once, and the result is
+        write: every action is resolved into decision-log rows against the
+        current fit before anything is fit, the rows are appended to the log,
+        and the log is replayed from the automatic fit, cascaded once and
         persisted once -- nothing is written unless every action succeeds.
 
         Cross-window execution order is canonical (creates first, then ascending
@@ -2243,8 +2318,8 @@ class Pipeline:
         log_prefix :
             Apply the batch as if the decision log ended after its first
             ``log_prefix`` decisions: those later in the log are dropped, the
-            automatic fit is replayed with the kept decisions plus this batch
-            in one pass, and the log continues from there.  ``None`` (the
+            automatic fit is replayed with the kept decisions plus this
+            batch's rows in one pass, and the log continues from there.  ``None`` (the
             default) and a value equal to the log's length are the ordinary
             apply on top of every recorded decision.  Equivalent in outcome
             to :meth:`review_undo` of the dropped decisions followed by an
@@ -2259,6 +2334,24 @@ class Pipeline:
             The resolved action plan, warnings (including a possible
             frame-mismatch advisory), the number applied, and the windows
             the plan installs or grows.
+
+        Raises
+        ------
+        CurationConflictError
+            ``predates_peak_identity`` / ``predates_replay_engine`` when the
+            file cannot be curated (its fit has no peak identity, or a build
+            without the replay engine curated it: re-run ``fit run``), and an
+            action's own refusals, tagged with the action
+            (``line_already_fitted``, ``target_outside_window``,
+            ``ambiguous_peak``, ``replay_conflict``, ``fit_plan_unavailable``,
+            ...); each raised before anything is fit, with the file untouched.
+        PipelineCompatibilityError
+            ``file_incompatible`` when a newer ftmwpipeline curated the file.
+        AnalysisEpochMismatchError
+            When the write refits and the Stage 5 fit was made under another
+            analysis epoch with no acknowledgement
+            (``review_acknowledge_environment``); a write that refits nothing
+            is not gated.
 
         ``events`` / ``cancel`` follow the long-operation contract: ``events``
         is called on this thread with each event (``StageStarted``, a
@@ -2291,15 +2384,17 @@ class Pipeline:
         """Run a curation file's resolved plan to completion in memory and
         report the fitted outcome, without writing anything.
 
-        Shares every hook :meth:`review_apply` uses -- the same parse/resolve/
-        frame-convert prologue, the same per-action appliers, the same one
-        combined cascade -- except the batch is never persisted: no undo
-        baseline is taken and ``/stage5_fitting`` / ``/stage6_review`` are
-        never written. Epoch-gated exactly like ``review_apply`` (a preview
-        across an unacknowledged epoch boundary would show numbers whose
-        accept is guaranteed to refuse), except for a plan of entirely bare
-        ``accept`` rows, which -- like the live apply -- touches no fit and so
-        is not gated at all.
+        Runs exactly what :meth:`review_apply` runs -- the same parse/resolve/
+        frame-convert prologue, the same resolution into decision rows, the
+        same replay of the log with them and the same one combined cascade --
+        except the result is never persisted: no undo baseline is taken and
+        ``/stage5_fitting`` / ``/stage6_review`` are never written. It
+        returns the state the apply would persist. Refused exactly like
+        ``review_apply`` on a file Stage 6 cannot curate, and epoch-gated
+        exactly like it (a preview across an unacknowledged epoch boundary
+        would show numbers whose apply is guaranteed to refuse), except for a
+        plan of entirely bare ``accept`` rows, which -- like the live apply --
+        touches no fit and so is not gated at all.
 
         The result is keyed by window id, read *after* the cascade -- not
         per-action, since an action's own returned numbers can be superseded
@@ -2320,6 +2415,19 @@ class Pipeline:
         Returns
         -------
         ReviewPreviewResult
+
+        Raises
+        ------
+        CurationConflictError
+            ``predates_peak_identity`` / ``predates_replay_engine`` when the
+            file cannot be curated (re-run ``fit run``), and an action's own
+            refusals, as :meth:`review_apply` raises them; each raised before
+            anything is fit.
+        PipelineCompatibilityError
+            ``file_incompatible`` when a newer ftmwpipeline curated the file.
+        AnalysisEpochMismatchError
+            When the apply would refit and the Stage 5 fit was made under
+            another analysis epoch with no acknowledgement.
 
         ``events`` / ``cancel`` follow the long-operation contract: ``events``
         is called on this thread with each event (``StageStarted``, a
@@ -2404,26 +2512,28 @@ class Pipeline:
     ) -> UndoResult:
         """Undo recorded decisions by id, replaying the rest from baseline.
 
-        Restores the automatic Stage 5 fit (snapshotted before the first edit),
-        rebuilds the review from it, and re-applies every surviving decision
-        as recorded: it removes the peaks the decision names by ``peak_uid``
-        and births its peaks at their recorded seeds under their recorded
-        uids, never resolving a frequency again.  The surviving rows are kept
-        verbatim: their ids (serials) and every ``derivation`` naming them are
-        unchanged, and only their positions (``order_index``) are recomputed.
-        ``dry_run`` previews the removed/surviving split and the replay plan
-        without writing.  The fitted positions afterward are the replay's.
-        Every refusal (``orphans_created_window``, ``orphans_peak``,
-        ``replay_diverged``, ``replay_conflict``, ...) comes before anything
-        is fit or restored.
+        Drops the named decisions from the log and curates what survives:
+        the surviving decisions are replayed from the automatic Stage 5 fit
+        (snapshotted before the first decision), each as recorded -- it
+        removes the peaks the decision names by ``peak_uid`` and births its
+        peaks at their recorded seeds under their recorded uids, never
+        resolving a frequency again -- and every status is recomputed under
+        the recorded review parameters. The surviving rows are kept
+        verbatim: their ids (serials) and every ``derivation`` naming them
+        are unchanged, and only their positions (``order_index``) are
+        recomputed. ``dry_run`` previews the removed/surviving split and the
+        replay plan without writing. The fitted positions afterward are the
+        replay's. Every refusal (``orphans_created_window``,
+        ``orphans_peak``, ``replay_diverged``, ``replay_conflict``, ...)
+        comes before anything is fit.
 
         ``events`` / ``cancel`` follow the long-operation contract: ``events``
         is called on this thread with each event (``StageStarted``, a
         ``WindowProgress`` per re-fit window, warnings, ``StageFinished``); a
         callback that raises aborts with :class:`CallbackFailedError`.
-        ``cancel`` is checked before the restore (raising
-        :class:`OperationCancelledError` with nothing written); once the
-        restore-then-replay has begun it completes.
+        ``cancel`` is checked before the operation and between windows; a
+        cancelled undo raises :class:`OperationCancelledError` and persists
+        nothing.
 
         Parameters
         ----------
@@ -2439,8 +2549,25 @@ class Pipeline:
         Raises
         ------
         ValueError
-            If an id is unknown, there are no decisions, or the automatic-fit
-            baseline is unavailable while fit-mutating decisions exist.
+            If an id is unknown or there are no decisions.
+        PipelineCorruptionError
+            If the file records decisions but holds no automatic-fit baseline to
+            replay them from (the snapshot was removed).
+        CurationConflictError
+            ``predates_peak_identity`` / ``predates_replay_engine`` when the
+            file cannot be curated (its fit has no peak identity, or a build
+            without the replay engine curated it: re-run ``fit run``), and the
+            undo's own refusals (``orphans_created_window``, ``orphans_peak``,
+            ``replay_diverged``, ``replay_conflict``,
+            ``target_outside_window``); each raised before anything is fit,
+            with the file untouched.
+        PipelineCompatibilityError
+            ``file_incompatible`` when a newer ftmwpipeline curated the file.
+        AnalysisEpochMismatchError
+            When the write refits and the Stage 5 fit was made under another
+            analysis epoch with no acknowledgement
+            (``review_acknowledge_environment``); a write that refits nothing
+            is not gated.
         """
         return review_undo_impl(
             self.filepath, ids, dry_run=dry_run, events=events, cancel=cancel

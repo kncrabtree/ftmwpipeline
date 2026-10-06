@@ -36,10 +36,8 @@ import pytest
 import ftmwpipeline.api as ftmw
 from ftmwpipeline import CurationAction
 from ftmwpipeline._internal import stage6_impl as s6
-from ftmwpipeline._internal.atomic import atomic_write
 from ftmwpipeline._internal.stage4_impl import load_windows_impl
 from ftmwpipeline._internal.stage6_impl import (
-    clear_stage5_baseline,
     create_window_impl,
     merge_peaks_impl,
     refit_window_impl,
@@ -57,7 +55,11 @@ from ftmwpipeline.io.fitting_serialization import load_spectrum_fit_from_hdf5
 from ftmwpipeline.pipeline import Pipeline
 from tests._events_support import content_digest
 
-pytestmark = [pytest.mark.integration]
+pytestmark = [
+    pytest.mark.integration,
+    # Design G1: every write here persists the reference replay of its log.
+    pytest.mark.usefixtures("every_write_is_reference"),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -453,15 +455,19 @@ def test_widening_an_unfitted_window_is_an_untyped_guard(
     wid, _lo, hi = _live_ranges(f)[-1]
     anchor = hi + 2 * _bin_width_mhz(f)
 
-    orig = s6._plan_batch_create
+    orig = s6._plan_create
 
-    def forced(ctx, anchor_mhz, *, replay_window_id):
-        proposal = orig(ctx, anchor_mhz, replay_window_id=replay_window_id)
+    def forced(shared, created_windows, anchor_mhz, *, replay_window_id, **kw):
+        # The request plans it and the replay replans it: both see the forced
+        # window, as the replay of the recorded create row would.
+        proposal = orig(
+            shared, created_windows, anchor_mhz, replay_window_id=None, **kw
+        )
         assert proposal.mode == "widened"
         proposal.window.window_id = unfitted[0]
         return proposal
 
-    monkeypatch.setattr(s6, "_plan_batch_create", forced)
+    monkeypatch.setattr(s6, "_plan_create", forced)
     before = content_digest(f)
     with pytest.raises(ValueError) as exc:
         create_window_impl(str(f), anchor)
@@ -581,50 +587,6 @@ def test_undoing_both_is_not_a_conflict(created_then_edited):
     f, _wid = created_then_edited
     ftmw.review_undo(f, [0, 1])
     assert review_log_impl(str(f)) == []
-
-
-@pytest.fixture
-def edited_without_baseline(stage5_multi_file) -> Path:
-    """A file with a fit-mutating decision whose automatic-fit snapshot is gone."""
-    f = stage5_multi_file
-    wid, peak = _first_peak(f)
-    ftmw.review_edit(f, wid, remove=[f"uid:{peak.peak_uid}"])
-    with atomic_write(str(f)):
-        clear_stage5_baseline(str(f))
-    return f
-
-
-@pytest.mark.parametrize("via", ["api", "pipeline"])
-def test_undo_without_a_baseline(edited_without_baseline, via):
-    f = edited_without_baseline
-    before = content_digest(f)
-    with pytest.raises(ValueError) as exc:
-        if via == "api":
-            ftmw.review_undo(f, [0])
-        else:
-            Pipeline.open(f).review_undo([0])
-    err = _assert_conflict(exc, "baseline_unavailable", [])
-    assert "baseline is unavailable" in str(err)
-    assert content_digest(f) == before
-
-
-def test_apply_at_a_log_prefix_without_a_baseline(edited_without_baseline, tmp_path):
-    f = edited_without_baseline
-    cur = _write(tmp_path, "")
-    before = content_digest(f)
-    with pytest.raises(ValueError) as exc:
-        ftmw.review_apply(f, cur, log_prefix=0)
-    err = _assert_conflict(exc, "baseline_unavailable", [])
-    assert "cannot apply at a log prefix" in str(err)
-    assert content_digest(f) == before
-
-
-def test_restoring_a_missing_baseline_is_a_conflict(stage5_multi_file):
-    f = stage5_multi_file
-    with pytest.raises(ValueError) as exc:
-        with atomic_write(str(f)):
-            s6._restore_stage5_baseline(str(f))
-    _assert_conflict(exc, "baseline_unavailable", [])
 
 
 def test_conflict_through_the_cli(created_then_edited, capsys):

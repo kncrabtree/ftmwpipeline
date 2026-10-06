@@ -341,11 +341,14 @@ decision log ended after its first ``N`` decisions: the later ones are
 dropped and the kept ones are replayed (a prefix cutting through one edit's
 entries replays its in-prefix entries jointly) together with the file in one pass --
 the outcome of ``undo`` of the dropped ids followed by ``apply``, at the cost
-of one replay instead of two. See :doc:`stage6_review`.
+of one replay instead of two. Every one of these writes (and ``review run``)
+leaves the file holding exactly the replay of its decision log from the
+automatic fit under the recorded review parameters; a write that changes no
+fit-changing decision refits nothing. See :doc:`stage6_review`.
 
 On a file Stage 6 cannot curate -- a fit with a peak that has no ``peak_uid``, or
 curation written before the replay engine -- every editing verb, ``apply``,
-``undo`` and ``run`` is refused (``curation_conflict``, reason
+``preview``, ``undo`` and ``run`` is refused (``curation_conflict``, reason
 ``predates_peak_identity`` or ``predates_replay_engine``) and writes nothing;
 ``log`` and ``show`` still read it and say on standard error that ``fit run`` is
 the fix (it discards the file's curation). See :doc:`stage6_review`.
@@ -378,8 +381,10 @@ frequency. All three are covered in :doc:`fit_curation`.
 with a separate ``review edit --window N --add F``.
 
 ``review acknowledge-environment`` records, in the file, that you accept a
-fit produced under a different analysis epoch, so the editing verbs (which
-otherwise refuse with ``epoch_mismatch``) can proceed; ``--reason`` stores a
+fit produced under a different analysis epoch, so the writes that refit
+(which otherwise refuse with ``epoch_mismatch``; a bare ``accept``, ``run``
+and an ``undo`` that leaves nothing to refit are never refused) can proceed;
+``--reason`` stores a
 note with it. Re-running ``fit run`` is usually the cleaner fix. See
 :doc:`file_format` (*What a version difference permits*).
 

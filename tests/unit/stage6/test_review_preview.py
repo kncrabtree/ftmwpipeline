@@ -74,7 +74,11 @@ from ftmwpipeline.io.timebase_serialization import (
 )
 from ftmwpipeline.pipeline import Pipeline
 
-pytestmark = [pytest.mark.integration]
+pytestmark = [
+    pytest.mark.integration,
+    # Design G1: every write here persists the reference replay of its log.
+    pytest.mark.usefixtures("every_write_is_reference"),
+]
 
 EPS = 2.2e-6
 SIGMA_EPS = 0.1e-6
@@ -430,67 +434,58 @@ class TestEpochGateAndNoWrites:
 
 
 # ---------------------------------------------------------------------------
-# Structural guard: a context built with snapshot=False (a preview) must be
-# refused by _finish_batch, not merely documented as preview-only. Without
-# this, a future caller could pair snapshot=False with _finish_batch and
-# persist edits with no undo baseline -- 'review undo' would then silently
-# break for that file (a later edit would snapshot an already-edited fit as
-# if it were the automatic one). See _BatchCtx.baseline_taken.
+# Structural guard: a state curated without the undo baseline (a preview)
+# must be refused by _finish_batch, not merely documented as preview-only.
+# Without this, a future caller could persist a preview's state with no undo
+# baseline behind it -- every later write would then replay from a curated
+# fit as if it were the automatic one. See _Curated.baseline_taken.
 # ---------------------------------------------------------------------------
 
 
-class TestUnbaselinedContextCannotBePersisted:
-    def test_finish_batch_refuses_a_snapshot_false_context(
-        self, sc_multi_file: Path
-    ) -> None:
-        with atomic_write(str(sc_multi_file)):
-            ctx = s6._open_batch(
-                str(sc_multi_file),
-                snap_tol_mhz=s6.refit_snap_tol_mhz_impl(str(sc_multi_file)),
-                snapshot=False,
-            )
-        assert ctx.baseline_taken is False
+def _curated_remove(path: Path, *, persist: bool) -> "s6._CuratedRequest":
+    with h5py.File(path, "r") as h5f:
+        sf = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+    wf = next(w for w in sf.window_fits if w.fitted_peaks)
+    wid, freq = int(wf.window_id), float(wf.fitted_peaks[0].frequency_mhz)
+    with atomic_write(str(path)):
+        return s6._curate_request(
+            str(path),
+            [s6.PlannedAction(kind="edit", window_id=wid, remove=[freq])],
+            snap_tol_mhz=s6.refit_snap_tol_mhz_impl(str(path)),
+            shared=None,
+            persist=persist,
+            one_action=False,
+        )
+
+
+class TestUnbaselinedStateCannotBePersisted:
+    def test_finish_batch_refuses_a_preview_state(self, sc_multi_file: Path) -> None:
+        req = _curated_remove(sc_multi_file, persist=False)
+        assert req.curated.baseline_taken is False
 
         before = _digest(sc_multi_file)
         with pytest.raises(ValueError, match="undo baseline was.*never taken"):
             with atomic_write(str(sc_multi_file)):
-                s6._finish_batch(
-                    ctx,
-                    str(sc_multi_file),
-                    snap_tol_mhz=s6.refit_snap_tol_mhz_impl(str(sc_multi_file)),
-                )
+                s6._finish_batch(req.curated, str(sc_multi_file))
         assert _digest(sc_multi_file) == before, (
             "a refused _finish_batch must not have written anything before " "raising"
         )
         with h5py.File(sc_multi_file, "r") as f:
             assert "stage5_fitting_baseline" not in f
 
-    def test_finish_batch_accepts_a_snapshot_true_context(
-        self, sc_multi_file: Path
-    ) -> None:
-        """Sanity check: the guard is specific to snapshot=False, not a
-        blanket refusal -- the normal (snapshot=True) path still persists."""
-        with atomic_write(str(sc_multi_file)):
-            ctx = s6._open_batch(
-                str(sc_multi_file),
-                snap_tol_mhz=s6.refit_snap_tol_mhz_impl(str(sc_multi_file)),
-                snapshot=True,
-            )
-        assert ctx.baseline_taken is True
-        with atomic_write(str(sc_multi_file)):
-            s6._finish_batch(
-                ctx,
-                str(sc_multi_file),
-                snap_tol_mhz=s6.refit_snap_tol_mhz_impl(str(sc_multi_file)),
-            )
+    def test_a_persisted_request_takes_the_baseline(self, sc_multi_file: Path) -> None:
+        """Sanity check: the guard is specific to a preview, not a blanket
+        refusal -- the normal path takes the baseline and persists."""
+        req = _curated_remove(sc_multi_file, persist=True)
+        assert req.curated.baseline_taken is True
         with h5py.File(sc_multi_file, "r") as f:
             assert "stage5_fitting_baseline" in f
+        assert [e.kind for e in s6.review_log_impl(str(sc_multi_file))] == ["remove"]
 
 
 # ---------------------------------------------------------------------------
 # C5: an entirely-bare-accept plan does no fits, writes nothing, returns an
-# empty result -- short-circuited before the live apply's write-bearing
-# bare-accept path (_apply_bare_accepts) is ever reached.
+# empty result -- short-circuited before the write path is ever reached.
 # ---------------------------------------------------------------------------
 
 

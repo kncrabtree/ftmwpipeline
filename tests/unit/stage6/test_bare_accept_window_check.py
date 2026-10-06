@@ -19,6 +19,11 @@ from ftmwpipeline.file_manager import NotFoundError, StageDependencyError
 from ftmwpipeline.io.fitting_serialization import read_fit_window_coverage
 from ftmwpipeline.io.stage6_review_serialization import load_stage6_review_from_file
 
+pytestmark = [
+    # Design G1: every write here persists the reference replay of its log.
+    pytest.mark.usefixtures("every_write_is_reference"),
+]
+
 _UNKNOWN = 987654
 
 

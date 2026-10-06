@@ -35,7 +35,11 @@ from ftmwpipeline._internal.stage6_impl import (
 from ftmwpipeline.core.data_structures import FittedPeak, FittingResult
 from ftmwpipeline.io.fitting_serialization import load_spectrum_fit_from_hdf5
 
-pytestmark = [pytest.mark.integration]
+pytestmark = [
+    pytest.mark.integration,
+    # Design G1: every write here persists the reference replay of its log.
+    pytest.mark.usefixtures("every_write_is_reference"),
+]
 
 
 # ---------------------------------------------------------------------------

@@ -2,18 +2,13 @@
 rewrite would have written.
 
 ``_finish_batch`` used to delete ``/stage5_fitting`` and rewrite every window
-group on every curation write. It now rewrites only the windows the batch
-mutated (:func:`~ftmwpipeline.io.fitting_serialization.update_spectrum_fit_windows_in_hdf5`),
+group on every curation write. It now rewrites the existing flat tables in
+place (:func:`~ftmwpipeline.io.fitting_serialization.update_spectrum_fit_windows_in_hdf5`),
 which is a **pure performance and file-size** change: the bytes that describe
-the fit must be the same either way.
-
-That equality is the whole safety argument, because the incremental writer
-takes the batch's own ``mutated_wids`` on trust for the *contents* of an
-existing window group. If a verb ever mutated a window without recording it,
-the file would keep that window's previous values and nothing else in the
-suite would notice -- so every curation verb is driven here twice, once
-incrementally and once forced through the full writer, and the two files are
-compared attribute by attribute and dataset by dataset.
+the fit must be the same either way -- so every curation verb is driven here
+twice, once through the in-place writer and once forced through the full
+writer, and the two files are compared attribute by attribute and dataset by
+dataset.
 
 ``creation_time`` is excluded from the comparison: ``stamp_stage_header``
 stamps ``now()`` on every write, so it differs between any two writes,
@@ -41,7 +36,11 @@ from ftmwpipeline.io.fitting_serialization import (
     save_spectrum_fit_to_hdf5,
 )
 
-pytestmark = [pytest.mark.integration]
+pytestmark = [
+    pytest.mark.integration,
+    # Design G1: every write here persists the reference replay of its log.
+    pytest.mark.usefixtures("every_write_is_reference"),
+]
 
 
 # ---------------------------------------------------------------------------

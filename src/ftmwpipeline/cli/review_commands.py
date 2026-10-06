@@ -1748,8 +1748,10 @@ def register_review_commands(subparsers: Any) -> None:
             "numbers), and reports final-product numbers: calibrated\n"
             "frequency and the three-term sigma budget, identical to what a\n"
             "subsequent 'apply' of the same plan would persist.\n\n"
-            "Epoch-gated exactly like 'apply', except a plan of entirely bare\n"
-            "accept rows, which touches no fit and so is not gated either."
+            "Refused exactly like 'apply' on a file Stage 6 cannot curate\n"
+            "(predates_peak_identity, predates_replay_engine), and epoch-gated\n"
+            "exactly like it, except a plan of entirely bare accept rows,\n"
+            "which touches no fit and so is not gated either."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1797,8 +1799,8 @@ def register_review_commands(subparsers: Any) -> None:
         help="Undo recorded decisions by id, replaying the rest",
         description=(
             "Undo one or more decisions (by the id from 'review log').\n\n"
-            "Rollback is replay-from-baseline: the automatic Stage 5 fit is\n"
-            "restored and every surviving decision is re-applied. A decision's\n"
+            "Rollback is replay-from-baseline: every surviving decision is\n"
+            "re-applied, as recorded, to the automatic Stage 5 fit. A decision's\n"
             "id is its serial: the surviving decisions keep their ids, and no\n"
             "id is ever reused until 'fit run' starts a new curation lineage.\n"
             "Use --dry-run to preview."

@@ -30,7 +30,11 @@ from ftmwpipeline.io.fitting_serialization import load_spectrum_fit_from_hdf5
 from tests._events_support import content_digest
 from tests.unit.stage6.test_curation import _clear_add_freq
 
-pytestmark = [pytest.mark.integration]
+pytestmark = [
+    pytest.mark.integration,
+    # Design G1: every write here persists the reference replay of its log.
+    pytest.mark.usefixtures("every_write_is_reference"),
+]
 
 
 def _fits(path: Path) -> Dict[int, FittingResult]:

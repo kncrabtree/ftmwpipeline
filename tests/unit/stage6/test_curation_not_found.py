@@ -14,7 +14,11 @@ from ftmwpipeline._internal.stage6_impl import apply_curation_impl, review_previ
 from ftmwpipeline.file_manager import NotFoundError, PipelineFileError
 from ftmwpipeline.io.fitting_serialization import read_fit_window_coverage
 
-pytestmark = [pytest.mark.unit]
+pytestmark = [
+    pytest.mark.unit,
+    # Design G1: every write here persists the reference replay of its log.
+    pytest.mark.usefixtures("every_write_is_reference"),
+]
 
 _BAD_WINDOWS = (987654, 987655)
 _BAD_UIDS = (900001, 900002)
