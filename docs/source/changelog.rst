@@ -67,7 +67,9 @@ from ``PeakShape``.
 **Dry run and preview refuse an unknown window like the apply.** A bare
 ``accept`` naming a window the fit does not have is refused ``not_found`` by the
 apply; ``review apply --dry-run`` and the preview (including a review session's)
-accepted it. They now refuse every unknown window id the same way.
+accepted it. They now refuse every unknown window id the same way, before and
+without adding to the dry run's analysis-epoch gate, which still applies only
+to a plan with a create.
 
 **A batch refusal and a dry-run advisory name the request's actions.** A
 ``not_found`` or ``curation_conflict`` raised for one action of a curation batch

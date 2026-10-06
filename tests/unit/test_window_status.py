@@ -181,7 +181,8 @@ def fitted(tmp_path):
 def test_payload_schema_and_records(plan_only):
     payload = window_status_impl(plan_only)
     assert payload["schema"] == WINDOW_STATUS_SCHEMA == "ftmw/window_status@1"
-    assert set(payload) == {"schema", "windows"}
+    assert set(payload) == {"schema", "frame", "windows"}
+    assert payload["frame"] == "raw"
     assert all(isinstance(w, WindowStatusRow) for w in payload["windows"])
     assert [f.name for f in dataclasses.fields(WindowStatusRow)] == list(ROW_FIELDS)
 

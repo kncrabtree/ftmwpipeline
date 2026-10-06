@@ -5712,9 +5712,9 @@ def _require_known_dry_run_windows(
     fit_ids, lineless = _fit_and_lineless_window_ids(path)
     plan_window_ids: Optional[Set[int]] = None
     if any(a.kind == "create" and a.window_id == _NEW_WINDOW_SENTINEL for a in plan):
-        # Gated as the create's own planning is
-        # (:func:`_resolve_created_window_structure`), and first.
-        require_splice_compatible_environment(path)
+        # Not epoch-gated here: the apply refuses unknown ids before its gate
+        # (:func:`_curate`), and a dry run gates only where it always has, in
+        # the create's structural report (:func:`_resolve_created_window_structure`).
         ctx = _build_batch_ctx(path, snap_tol_mhz=snap_tol_mhz, shared=shared)
         shared = ctx.shared
         plan_window_ids = _batch_plan_window_ids(ctx, plan)
