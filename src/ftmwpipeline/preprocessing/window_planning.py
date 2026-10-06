@@ -1193,15 +1193,21 @@ def retired_window_ids(plan: WindowPlan) -> Set[int]:
     return retired - present
 
 
-def next_window_id(plan: WindowPlan, reserved: Iterable[int] = ()) -> int:
-    """The id a new window takes: one above every id *plan* holds or retired.
+def next_window_id(
+    plan: WindowPlan, reserved: Iterable[int] = (), *, floor: int = 0
+) -> int:
+    """The id a new window takes: one above every id *plan* holds or retired,
+    and at least *floor*.
 
     *reserved* adds ids the caller knows are taken or retired elsewhere.
+    *floor* is the lowest id the new window may take (Stage 6's window-id
+    high-water mark keeps an id an undone create once took from being
+    minted again); unlike *reserved*, it marks no id as taken.
     """
     ids = {int(w.window_id) for w in plan.windows}
     ids |= retired_window_ids(plan)
     ids |= {int(i) for i in reserved}
-    return max(ids, default=-1) + 1
+    return max(max(ids, default=-1) + 1, int(floor))
 
 
 @dataclass(frozen=True)
@@ -1534,7 +1540,9 @@ class Stage6WindowProposal:
     ----------
     window : FitWindow
         The window to install. For ``mode="created"`` this carries a **fresh**
-        ``window_id`` (one past the plan's highest); for ``mode="widened"`` it
+        ``window_id`` (:func:`next_window_id`: one past every id the plan
+        holds or retired, and at least ``min_new_window_id``); for
+        ``mode="widened"`` it
         is the existing window's id with a grown ``freq_range``.
     mode : str
         ``"created"`` when a new window was built in a gap, ``"widened"`` when
@@ -1665,6 +1673,7 @@ def plan_stage6_window(
     stage6_min_half_width_points: int = DEFAULT_STAGE6_MIN_WINDOW_HALF_WIDTH_POINTS,
     live_window_ids: Optional[Sequence[int]] = None,
     reserved_window_ids: Iterable[int] = (),
+    min_new_window_id: int = 0,
 ) -> Stage6WindowProposal:
     """Propose a fit window covering ``anchor_mhz`` without disturbing the plan.
 
@@ -1738,6 +1747,11 @@ def plan_stage6_window(
         Ids a fresh window must not take besides those of ``plan`` and the ids
         its merged windows absorbed (:func:`retired_window_ids`), which are
         always excluded. A created window takes one above all of them.
+    min_new_window_id :
+        The lowest id a created window may take (:func:`next_window_id`'s
+        ``floor``). It reserves nothing: a caller that pins an id on replay
+        checks it against *plan* and *reserved_window_ids*, never against
+        this floor.
 
     Returns
     -------
@@ -1861,7 +1875,7 @@ def plan_stage6_window(
 
     # --- Build the new window ----------------------------------------------
     # Above every window of the plan and every id a structural merge retired.
-    new_wid = next_window_id(plan, reserved_window_ids)
+    new_wid = next_window_id(plan, reserved_window_ids, floor=min_new_window_id)
     promoted = _promoted_ppeaks(peaks, ofreqs, n)
     members = [pk for pk in promoted if lo <= pk.grid_index <= hi]
 

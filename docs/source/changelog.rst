@@ -119,6 +119,35 @@ serials; ``CONTRACT_VERSION`` moves 15 → 16.**
   (as when it reads an earlier created window): its frozen background is now
   summed in contributor order, where it was summed in the ascending-id order
   its creation froze it in.
+* **A created window no longer depends on where its create sits in the log.**
+  A create read the skirts it froze from the curated fits of the windows it
+  reads, as they stood at the create's place in the log, so the same decisions
+  in another order gave the created window other values: a create after an
+  edit of a window it reads, or after an add into an earlier created window it
+  reads, started from the edited fit, one before it from the unedited one (on
+  655, a window created at 30719.9996 MHz moved by 2.8e-5 MHz with the order of
+  an edit of window 429). Now a created window's skirts start from the
+  *automatic* fits of the windows it reads, in contributor order, and whenever
+  one of those windows has been edited, before the create or after it, the
+  created window is rebuilt from that window's current fit and refit, as the
+  cascade does for any dependent. Values change on files with creates.
+* **Window ids are never reused, and an undo reports the geometry it changes.**
+  A new window takes an id above every id a create has taken in the curation
+  lineage, so undoing the newest create no longer frees its id for the next
+  one; the review records the mark as ``window_id_high_water``
+  (``Stage6Review.window_id_high_water``, ``-1`` before the first create; the
+  attribute of ``/stage6_review``). A curation file's ``create`` row may still
+  pin an id, but only above every created window the log holds before it
+  (``curation_conflict``, ``replay_conflict``); the mark bounds only minted
+  ids, so a pin may redo an undone create under its own id. A surviving created window keeps its id through an
+  undo while its geometry is planned again from the surviving creates, which
+  can change it; the undo is not refused, and
+  ``UndoResult.geometry_changed_window_ids`` lists every window whose geometry
+  it changes, a widened window whose widening it drops included (``review
+  undo`` prints them, and ``--json`` carries ``n_geometry_changed``). The
+  surviving creates are planned before the undo restores anything, so a
+  ``replay_conflict`` leaves the file untouched. A replay of a log whose
+  created ids do not increase is refused as ``file_corrupt``.
 * **Every write leaves the statuses a fresh ``review run`` computes, under
   recorded parameters.** A write recomputed the attention reasons only of the
   windows a decision named, so a window a cascade refit kept the reasons of its

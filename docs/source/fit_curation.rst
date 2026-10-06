@@ -363,7 +363,12 @@ apart in the same gap to share one window) still each get their own create.
 ``accept`` and ``create`` still require the window column: there it names the
 window being acted on (or, for ``create``, may take the same blank/``new``/
 ``auto``/``-`` tokens to mean "mint a new one"), not a coordinate derived from
-a frequency.
+a frequency. A ``create`` that names an id *pins* the id the window takes. It
+must be above every created window the log still holds before it, since
+created ids only increase along the log; a lower pin is refused
+(``curation_conflict``, ``replay_conflict``), as is an id a window already has.
+The review's ``window_id_high_water`` bounds only the ids a create *mints*, so a
+pin may name the id an undone create had, redoing it under its own id.
 
 A ``remove`` row may name its target by identifier instead of by frequency,
 writing ``uid:N`` for the line whose
@@ -825,7 +830,8 @@ gated spur; see :doc:`stage6_review`):
      window  297  [  direct]  actions=1,3       peaks 0->1  chi2r -->0.857
      Window 297 created: [30717.4234, 30722.4509] MHz (65 points, 0 frozen contributor(s))
 
-The created window takes the next free id, 297, one past the plan's highest.
+The created window takes the next free id, 297, one past the plan's highest (and
+past every id an earlier create took, undone ones included).
 
 The extra line only appears on a window the batch created or widened —
 ``PreviewWindowResult.created_window_mode`` is ``"created"`` or ``"widened"``

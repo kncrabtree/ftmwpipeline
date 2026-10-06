@@ -336,7 +336,7 @@ edits, or with ``--actions FILE`` the same batch as data: a JSON array of
 rolls decisions back by replay-from-baseline (one user action at a time: the
 entries one edit logged replay jointly), naming them by their ids, the
 serials ``log`` lists (an id is never renumbered or reused; ``--id 3 5``, or repeated, ``--id 3 --id 5``; ``--dry-run`` shows the replay
-plan without writing). ``apply --log-prefix N`` applies the file as if the
+plan without writing; both list the windows whose geometry the undo changes). ``apply --log-prefix N`` applies the file as if the
 decision log ended after its first ``N`` decisions: the later ones are
 dropped and the kept ones are replayed (a prefix cutting through one edit's
 entries replays its in-prefix entries jointly) together with the file in one pass --

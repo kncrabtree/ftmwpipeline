@@ -2429,6 +2429,11 @@ class Stage6Review:
     next_serial : int
         The serial the next recorded decision takes: a high-water mark that an
         undo never lowers, so a serial is never reused within the lineage.
+    window_id_high_water : int
+        The highest window id a Stage 6 create has minted in this lineage
+        (``-1`` before the first). A fresh create takes an id above it, and
+        an undo never lowers it, so an undone create's id is never given to a
+        different window. A replayed create keeps its recorded id.
     engine_version : int or None
         The replay-engine version (:data:`ENGINE_VERSION`) that wrote the
         review; ``None`` when the stored review carries none (a pre-engine
@@ -2452,6 +2457,7 @@ class Stage6Review:
     final_products: Optional["FinalProducts"] = None
     created_windows: List["FitWindow"] = field(default_factory=list)
     next_serial: int = 0
+    window_id_high_water: int = -1
     engine_version: Optional[int] = ENGINE_VERSION
     review_params: Optional[ReviewParams] = None
     refit_required: Optional[str] = None

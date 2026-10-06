@@ -1199,6 +1199,15 @@ def test_a_new_id_goes_above_an_absorbed_top_id():
     assert next_window_id(plan, reserved=[11]) == 12
 
 
+def test_a_floor_raises_the_new_id_without_reserving_anything():
+    """Stage 6's window-id high-water mark: a fresh id goes no lower than the
+    floor, and an id below it is not taken (a replay may still pin one)."""
+    plan = _plan_of(FitWindow(0, (1.0, 2.0)), FitWindow(3, (4.0, 5.0)))
+    assert next_window_id(plan, floor=10) == 10
+    assert next_window_id(plan, floor=2) == 4
+    assert next_window_id(plan, reserved=[11], floor=10) == 12
+
+
 def test_a_merged_from_naming_only_itself_is_not_a_merge():
     plan = _plan_of(FitWindow(4, (1.0, 2.0), diagnostics={"merged_from": [4]}))
     assert merged_window_ids(plan) == {}

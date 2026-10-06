@@ -579,7 +579,12 @@ one action keeps its type and adds the action to the message (``curation action
      * - ``replay_conflict``
        - replaying a recorded window creation no longer reproduces its
          window: it would widen another window, or its id is taken (the
-         recorded id, then the widened window's id)
+         recorded id, then the widened window's id); or a create recorded
+         now (a curation file's ``create`` row naming an id) pins an id at
+         or below a created window the log already holds before it (that
+         id): created ids only increase along the log. An undo
+         plans the surviving creates before it restores anything, so its
+         conflict leaves the file as it was
      * - ``replay_diverged``
        - ``review_undo``, or an apply at a ``log_prefix``, would replay a
          surviving decision as a different action (another ``kind`` or
@@ -633,7 +638,11 @@ the same way, from its first read:
   ``review_apply``, ``review_undo``, ``review_run``) of a file whose
   ``/stage6_review`` a newer Stage 6 replay engine wrote raises the same error
   (``supported_version`` names the engine this build has), before it writes
-  anything. Reads are unaffected.
+  anything. Reads are unaffected;
+* a replay (``review_undo``, an apply at a ``log_prefix``) of a decision log
+  whose created window ids do not increase along it raises the same
+  ``PipelineCorruptionError``, before it writes anything: only the engine
+  writes the log, and it mints increasing ids.
 
 A permission failure, or HDF5's refusal while another process holds the file
 open for writing, is not corruption: it propagates as the original ``OSError``
@@ -1641,6 +1650,19 @@ rows jointly. The dry-run plan lists one edit per group. Replaying each row as i
 let a later undo fail after a multi-line edit, because the separate refits
 drifted the fitted peaks beyond snap tolerance of the line a later remove named.
 
+A created window keeps the id its create recorded through every replay, but its
+geometry (extent, contributors, free peaks) is planned again from the creates
+that survive, in log order, so undoing an earlier create can change it, and
+undoing a widening returns the widened window to its earlier extent.
+``UndoResult.geometry_changed_window_ids`` (contract 16) lists, ascending, every
+window that exists after the undo and whose geometry differs from before (a
+dry run lists the same; an undone create's own window is not listed); ``review
+undo --json`` carries the count as ``n_geometry_changed`` and the text output
+prints the ids. A created window's fit does not depend on where its create sits
+in the log: its frozen skirts start from the automatic fits of the windows it
+reads, and are rebuilt from their current fits whenever one of them has been
+edited, before the create or after it.
+
 A Python client that shows progress, stops on request and routes on
 ``cancelled`` and ``callback_failed``::
 
@@ -1977,8 +1999,11 @@ and the HTML report shows a banner with it and no Undo controls. The one fix is
 curation (``review run`` included), and the next write starts a new lineage
 whose serials restart at 0. The review also carries ``engine_version`` (the
 replay-engine version that wrote it, ``None`` on a review a pre-engine build
-wrote) and ``next_serial`` (the serial the next decision takes: a high-water
-mark an undo never lowers); a client does not set either.
+wrote), ``next_serial`` (the serial the next decision takes: a high-water
+mark an undo never lowers) and ``window_id_high_water`` (contract 16: the
+highest window id a create has taken in the lineage, ``-1`` before the first;
+a new window takes an id above it, and an undo never lowers it, so an undone
+create's id never names another window); a client does not set any of them.
 
 **A window the fit holds no line in.** The kinds ``empty_window_residual``
 and ``empty_window_spur`` cover one case. Stage 5 can finish a window of its plan with no line

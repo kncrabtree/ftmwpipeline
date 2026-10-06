@@ -94,6 +94,7 @@ from ..file_manager import (
     NotFoundError,
     NotFoundValueError,
     PipelineCompatibilityError,
+    PipelineCorruptionError,
     PipelineFileError,
     StageDependencyError,
     requires_pipeline_file,
@@ -382,6 +383,7 @@ def review_undo_summary(result: "UndoResult", dry_run: bool) -> Dict[str, Any]:
         "n_removed": len(result.removed),
         "n_replayed": len(result.plan),
         "applied": result.applied,
+        "n_geometry_changed": len(result.geometry_changed_window_ids),
     }
 
 
@@ -2911,21 +2913,37 @@ def _cascade_sources(
     )
     created_ids = {wid for wid, _ in created}
     for wid, fit_win in created:
-        sources[wid] = tuple(
-            dict.fromkeys(
-                int(c.primary_window_id)
-                for c in fit_win.fixed_contributors
-                if not c.edge_free
-                and (
-                    int(c.primary_window_id) in base_sources
-                    or (
-                        int(c.primary_window_id) in created_ids
-                        and int(c.primary_window_id) < wid
-                    )
+        sources[wid] = _created_window_sources(fit_win, base_sources, created_ids)
+    return sources
+
+
+def _created_window_sources(
+    fit_win: "FitWindow",
+    base_live: Collection[int],
+    created_ids: Collection[int],
+) -> Tuple[int, ...]:
+    """A created window's cascade sources, in refresh order: its FitWindow's
+    non-edge-free ``fixed_contributors`` primaries, deduplicated in that
+    order, among the baseline-live windows *base_live* and the created
+    windows *created_ids* older (lower-id) than it. A function of the window's
+    plan entry alone, so the window's starting skirt
+    (:func:`_created_window_seed`) and every later cascade refresh read the
+    same list."""
+    wid = int(fit_win.window_id)
+    return tuple(
+        dict.fromkeys(
+            int(c.primary_window_id)
+            for c in fit_win.fixed_contributors
+            if not c.edge_free
+            and (
+                int(c.primary_window_id) in base_live
+                or (
+                    int(c.primary_window_id) in created_ids
+                    and int(c.primary_window_id) < wid
                 )
             )
         )
-    return sources
+    )
 
 
 def _cascade_succs(sources: Mapping[int, Sequence[int]]) -> Dict[int, set]:
@@ -2935,6 +2953,19 @@ def _cascade_succs(sources: Mapping[int, Sequence[int]]) -> Dict[int, set]:
         for p in ps:
             succs.setdefault(int(p), set()).add(int(d))
     return succs
+
+
+def _cascade_ancestors(wid: int, sources: Mapping[int, Sequence[int]]) -> Set[int]:
+    """Every strict ancestor of *wid* in the source-list graph *sources*."""
+    out: Set[int] = set()
+    stack = [int(p) for p in sources.get(int(wid), ())]
+    while stack:
+        p = stack.pop()
+        if p in out:
+            continue
+        out.add(p)
+        stack.extend(int(q) for q in sources.get(p, ()))
+    return out
 
 
 def _cascade_closure(edited_wids: Sequence[int], succs: Dict[int, set]) -> set:
@@ -3014,7 +3045,7 @@ def _refresh_frozen_from_sources(
     wf: FittingResult,
     sources: Sequence[int],
     fit_window_map: Dict[int, "FitWindow"],
-    fit_map: Dict[int, FittingResult],
+    fit_map: Mapping[int, FittingResult],
     min_freeze_snr: float,
 ) -> None:
     """Rebuild ``wf``'s non-edge-free frozen contributors from its *sources*'
@@ -3125,11 +3156,17 @@ def _cascade_refit_dependents(
     snap_tol_mhz: float,
     events: Optional[StageScope] = None,
     unavailable_window_ids: Collection[int] = (),
+    reached: Collection[int] = (),
 ) -> List[int]:
     """Refresh + identity-refit every dependent in the transitive closure of
     ``edited_wids`` (window-level), in dependency order; splice the results back
     into ``spectrum_fit``. ``tau_maj_us`` / ``sigma_tau_us`` are the **global**
     anchors -- each dependent is re-anchored per band. Returns the cascaded ids.
+
+    ``reached`` adds windows the caller knows are downstream of an edit outside
+    ``edited_wids`` (a window created this batch whose source an earlier write
+    edited, :func:`_cascade_batch`); they are refreshed and refit in the same
+    dependency order.
 
     ``sources`` is the cascade graph (:func:`_cascade_sources`): each window's
     ordered source list. Both the closure and each dependent's refresh read it,
@@ -3174,6 +3211,7 @@ def _cascade_refit_dependents(
     for w in edited_set:
         if w in _cascade_closure(sorted(edited_set - {w}), succs):
             closure.add(w)
+    closure |= {int(w) for w in reached}
     if not closure:
         return []
     preds: Dict[int, set] = {w: set() for w in succs}
@@ -4106,6 +4144,7 @@ def _record_bare_accepts(
         final_products=final_products,
         created_windows=list(existing_review.created_windows),
         next_serial=next_serial,
+        window_id_high_water=existing_review.window_id_high_water,
         review_params=params,
     )
     new_review.window_statuses = _curated_statuses(
@@ -4184,38 +4223,40 @@ class CreateWindowResult:
     invalidated: Tuple[str, ...] = field(default=(), compare=False)
 
 
-def _frozen_parameters_from_sources(
-    depends_on: Sequence[int],
-    fit_map: Dict[int, FittingResult],
-    min_freeze_snr: float,
+def _created_window_seed(
+    shared: "_SharedFitCtx",
+    fit_win: "FitWindow",
+    created_windows: Sequence["FitWindow"],
 ) -> Dict[str, Dict]:
-    """``fixed_parameters`` for a new window, read off its sources' current fits.
+    """``fixed_parameters`` a ``mode="created"`` window starts from: the
+    cascade refresh (:func:`_refresh_frozen_from_sources`) of its sources
+    (:func:`_created_window_sources`, against the created windows
+    *created_windows* installed before it), read from the **automatic fit**
+    (:attr:`_SharedFitCtx.baseline_fits`). A created source has no automatic
+    fit and contributes nothing.
 
-    Same window-level resolution the cascade uses (``_refresh_frozen_from_sources``):
-    every source-window line clearing ``min_freeze_snr``, at its *fitted*
-    parameters. Reading the fit rather than the Stage 3 detections is what keeps
-    a source whose fit collapsed several detections into one line from being
-    frozen more than once.
+    The automatic fit is constant within a lineage, so the starting skirt does
+    not depend on where the create sits in the log relative to its sources'
+    edits or to the adds into an earlier created source. It is also what the
+    cascade would rebuild from a source no decision has edited, and the
+    cascade refreshes the window from its sources' final fits whenever one of
+    them has been edited (:func:`_cascade_batch`), so every source's skirt in
+    the persisted fit is read from that source's final fit.
     """
-    frozen: List[Dict] = []
-    for primary in sorted(set(int(p) for p in depends_on)):
-        pwf = fit_map.get(primary)
-        if pwf is None:
-            continue
-        for pk in sorted(pwf.fitted_peaks, key=lambda q: float(q.frequency_mhz)):
-            if float(pk.snr or 0.0) < min_freeze_snr:
-                continue
-            frozen.append(
-                {
-                    "peak_index": -1,
-                    "primary_window_id": primary,
-                    "frequency_mhz": float(pk.frequency_mhz),
-                    "amplitude": float(pk.amplitude),
-                    "phase": float(pk.phase) if pk.phase is not None else 0.0,
-                    "freeze_eligible": True,
-                }
-            )
-    return {f"frozen_peak_{i}": e for i, e in enumerate(frozen)}
+    wid = int(fit_win.window_id)
+    base_live = shared.base_cascade_sources
+    created_ids = {
+        int(w.window_id) for w in created_windows if int(w.window_id) not in base_live
+    }
+    seed = FittingResult(window_id=wid, shape=shared.shape_enum.value)
+    _refresh_frozen_from_sources(
+        seed,
+        _created_window_sources(fit_win, base_live, created_ids),
+        {wid: fit_win},
+        shared.baseline_fits,
+        shared.min_freeze_snr,
+    )
+    return seed.fixed_parameters
 
 
 @requires_pipeline_file()
@@ -4254,11 +4295,18 @@ def create_window_impl(
     earlier creates installed -- never of any fit -- so replaying the creates
     in log order reproduces the same windows. Ids are only ever appended: an
     existing window is never renumbered, so a consumer partitioning peaks on
-    ``window_id`` sees exactly the windows the edit touched.
+    ``window_id`` sees exactly the windows the edit touched, and a fresh id is
+    minted above every id a create has ever taken in the lineage
+    (``Stage6Review.window_id_high_water``), so an undone create's id never
+    names a different window later.
 
     **Creating a window refits no other window.** The new window reads the
-    frozen leakage skirts of the windows it is attached to inward, and no
-    neighbor is re-fit or thawed by the create. It is not a leaf, though: no
+    frozen leakage skirts of the windows it is attached to inward, starting
+    from their automatic fits (never a curated fit, so the result does not
+    depend on where the create sits in the log); when one of those windows
+    has been edited, the create refreshes the skirt from its current fit and
+    refits the new window again, as the cascade would. No neighbor is re-fit
+    or thawed by the create. It is not a leaf, though: no
     base window ever reads a created one, but a later create attaches to an
     earlier created window like to any other source, so a line later added to
     this window cascades to the created windows that read it. That argument
@@ -5544,11 +5592,12 @@ def _unknown_plan_window_ids(
     ``create`` rows name no existing window; a negative id is a placeholder
     (:data:`_NEW_WINDOW_SENTINEL`, an implied-create correlation id). A
     pinned ``create`` installs its own id. A ``create`` without a pinned id
-    mints an id it cannot know yet -- one above every window of the plan, so
-    above every *known* id and every pinned create -- and a later row may
+    mints an id it cannot know yet -- one above every window of the plan and
+    the window-id high-water mark, so above every *known* id and every pinned
+    create -- and a later row may
     legitimately name it: such an id is left to the per-action lookup once
     the creates have run. Given *plan_window_ids* (the window plan the
-    creates mint against), the creates are replayed in plan order to find
+    creates mint against, with the high-water mark), the creates are replayed in plan order to find
     exactly the ids they can mint (an unfitted plan window above every fitted
     one is neither known nor mintable). Every other unknown id cannot exist
     and is reported here, all at once, even when the plan holds an unpinned
@@ -6288,6 +6337,67 @@ STAGE5_BASELINE_GROUP = "stage5_fitting_baseline"
 _FIT_EDIT_KINDS = ("add", "remove", "merge", "split", "create_window")
 
 
+def _log_dirty_window_ids(entries: Sequence[DecisionLogEntry]) -> Set[int]:
+    """The windows *entries* edit: every window with an add, remove, merge or
+    split row (an accept with a candidate is recorded as an add), and every
+    window a create widened. A plain create and a bare accept change no fit
+    a dependent reads, so neither makes its window dirty."""
+    out: Set[int] = set()
+    for e in entries:
+        if e.kind in ("add", "remove", "merge", "split") or (
+            e.kind == "create_window" and e.evidence.get("mode") == "widened"
+        ):
+            out.add(int(e.window_id))
+    return out
+
+
+def _installs_window(entry: DecisionLogEntry) -> bool:
+    """Whether *entry* is one of the log's create rows: a ``create_window``
+    row, or an ``add`` carrying ``created_window`` evidence (an implied
+    create's one-row shape, which replays as a create pinned to its id
+    followed by the add, :func:`_decision_to_op`)."""
+    return entry.kind == "create_window" or (
+        entry.kind == "add" and entry.evidence.get("created_window") is not None
+    )
+
+
+def _create_row_mode(entry: DecisionLogEntry) -> Optional[str]:
+    """The ``mode`` a create row recorded (``"created"`` or ``"widened"``);
+    ``None`` for a row that is not a create row or recorded no mode."""
+    if entry.kind == "create_window":
+        mode = entry.evidence.get("mode")
+    elif _installs_window(entry):
+        mode = entry.evidence["created_window"].get("mode")
+    else:
+        return None
+    return None if mode is None else str(mode)
+
+
+def _check_created_ids_monotone(path: str, entries: Sequence[DecisionLogEntry]) -> None:
+    """Refuse a log whose ``mode="created"`` rows do not mint strictly
+    increasing window ids along the log.
+
+    A fresh create always mints above every id the lineage has minted
+    (:attr:`~ftmwpipeline.core.data_structures.Stage6Review.window_id_high_water`),
+    and only the engine writes the log, so a violation means the file is
+    corrupt: a replay would pin a created window under an id an older
+    window's skirt could not have read. Widening rows carry base ids and are
+    not checked.
+    """
+    last: Optional[int] = None
+    for e in entries:
+        if _create_row_mode(e) != "created":
+            continue
+        wid = int(e.window_id)
+        if last is not None and wid <= last:
+            raise PipelineCorruptionError(
+                Path(path),
+                f"the decision log creates window {wid} after window {last}: "
+                "created window ids must increase along the log",
+            )
+        last = wid
+
+
 #: Attr of the baseline group naming the curation lineage it starts. Stamped
 #: when the engine takes the snapshot; a baseline without one was taken by a
 #: pre-engine build.
@@ -6605,6 +6715,11 @@ class _SharedFitCtx:
     one's ordered source list (:func:`_base_cascade_sources`): read from the
     fitted plan and the undo baseline, so it is fixed for the lineage. Its
     keys are the windows the automatic fit holds."""
+    baseline_fits: Mapping[int, FittingResult] = field(default_factory=dict)
+    """The automatic fit's window fits (the undo baseline's), by window id: a
+    created window's starting skirt is read from them
+    (:func:`_created_window_seed`), never from a curated fit, so it does not
+    depend on where the create sits in the log. Never mutated."""
 
 
 @dataclass
@@ -6655,6 +6770,18 @@ class _BatchChangeset:
     """Windows the persisted review flagged ``empty_window_residual`` that the
     fit has no result for: a bare accept may name one (it records a decision
     and changes no fit)."""
+    log_dirty_wids: FrozenSet[int] = frozenset()
+    """Windows the persisted log's rows edit (:func:`_log_dirty_window_ids`)
+    when the batch opened. A window this batch creates downstream of one is
+    refreshed by the batch's cascade, as a replay of the whole log would
+    refresh it (:func:`_cascade_batch`)."""
+    created_wids: set = field(default_factory=set)
+    """Windows a ``mode="created"`` create of this batch installed."""
+    window_id_high_water: int = -1
+    """The highest window id a create has minted in the lineage: the file's
+    :attr:`~ftmwpipeline.core.data_structures.Stage6Review.window_id_high_water`
+    when the batch opened, raised by each create the batch runs. A fresh
+    create mints above it (:func:`_plan_batch_create`)."""
 
     def serial_at(self, position: int) -> int:
         """The serial of the pending decision at *position* of
@@ -6834,9 +6961,15 @@ def _build_shared_fit_ctx(
             STAGE5_BASELINE_GROUP if STAGE5_BASELINE_GROUP in h5f else fit_group
         )
         baseline_frozen = read_fit_frozen_primaries_by_window(h5f[auto_group])
+        baseline_fit = load_spectrum_fit_from_hdf5(h5f[auto_group])
     base_cascade_sources = _base_cascade_sources(
         base_plan, baseline_frozen, fitted.unavailable_window_ids
     )
+    baseline_fits = {
+        int(wf.window_id): wf
+        for wf in baseline_fit.window_fits
+        if wf.window_id is not None
+    }
 
     # The calibration actually in force, read once via the same cheap
     # attrs-only stamp the final-products staleness check uses (A7) -- never a
@@ -6866,6 +6999,7 @@ def _build_shared_fit_ctx(
         unavailable_window_ids=fitted.unavailable_window_ids,
         unavailable_spans_mhz=fitted.unavailable_spans_mhz,
         base_cascade_sources=base_cascade_sources,
+        baseline_fits=baseline_fits,
     )
 
 
@@ -6992,6 +7126,8 @@ def _build_batch_changeset(
         fit_window_map=fit_window_map,
         base_serial=int(review.next_serial),
         lineless_reviewable=frozenset(flagged_lineless_ids(review, fit_ids)),
+        log_dirty_wids=frozenset(_log_dirty_window_ids(review.decision_log)),
+        window_id_high_water=int(review.window_id_high_water),
     )
 
 
@@ -7024,10 +7160,15 @@ def _batch_plan_window_ids(
     ):
         return None
     # The ids a structural merge absorbed count as taken: a create mints above
-    # them, so naming one is never a forward reference to a minted window.
-    return {int(w.window_id) for w in _batch_effective_plan(ctx).windows} | set(
-        ctx.shared.retired_window_ids
-    )
+    # them, so naming one is never a forward reference to a minted window. So
+    # does every id a create has minted in the lineage: a fresh create mints
+    # above the window-id high-water mark, so an undone create's id is never
+    # minted again.
+    taken = {int(w.window_id) for w in _batch_effective_plan(ctx).windows}
+    taken |= set(ctx.shared.retired_window_ids)
+    if ctx.changeset.window_id_high_water >= 0:
+        taken.add(ctx.changeset.window_id_high_water)
+    return taken
 
 
 def _batch_effective_plan(ctx: _BatchCtx) -> "WindowPlan":
@@ -7971,14 +8112,12 @@ def _created_window_extent(
 
 
 def _batch_live_fit_map(ctx: _BatchCtx) -> Dict[int, FittingResult]:
-    """This batch's live windows -- the ones carrying a Stage 5 fit *right
-    now*, including any window the batch itself has already created.
-
-    Both halves of a create read it: the planner is told which ranges are
-    genuinely occupied (Stage 5 drops a window whose peaks all fail their
-    gates, and a dropped window is neither a widening target nor an obstacle
-    -- see ``plan_stage6_window``'s ``live_window_ids``), and the fitting
-    half reads the frozen contributors' own fits out of it.
+    """This batch's window fits as they stand *right now*, including any
+    window the batch itself has already created. A widening refits the
+    widened window from here (it is that window's own action, in its row
+    order); a create reads no fit to decide its geometry
+    (:func:`_structural_live_window_ids`) or its starting skirt
+    (:func:`_created_window_seed`).
     """
     return {
         int(wf.window_id): wf
@@ -7987,43 +8126,60 @@ def _batch_live_fit_map(ctx: _BatchCtx) -> Dict[int, FittingResult]:
     }
 
 
-def _plan_batch_create(
-    ctx: _BatchCtx,
+def _structural_live_window_ids(
+    shared: _SharedFitCtx, created_windows: Sequence["FitWindow"]
+) -> List[int]:
+    """The windows that carry a fit at a point of the log, from structure
+    alone: every window the automatic fit holds (the baseline-live windows,
+    :attr:`_SharedFitCtx.base_cascade_sources`' keys) plus every window the
+    creates so far (*created_windows*) installed. No Stage 6 path removes a
+    window's fit, so this is the set of fitted windows, read without a fit:
+    a Stage-5-dropped window is not in it, and a create planned against it
+    neither widens one nor is blocked by one."""
+    live = {int(w) for w in shared.base_cascade_sources}
+    live.update(int(w.window_id) for w in created_windows)
+    return sorted(live)
+
+
+def _plan_create(
+    shared: _SharedFitCtx,
+    created_windows: Sequence["FitWindow"],
     anchor_mhz: float,
     *,
     replay_window_id: Optional[int],
+    min_new_window_id: int = 0,
 ) -> "Stage6WindowProposal":
-    """Decide WHICH window an anchor gets, without fitting it.
+    """Decide WHICH window an anchor gets, from structure alone.
 
-    The planning half of :func:`_batch_apply_create`: the analysis-band
-    refusal, the
+    The structural half of a create: the analysis-band refusal, the
     :func:`~ftmwpipeline.preprocessing.window_planning.plan_stage6_window`
-    proposal against the batch's effective plan (base + this batch's own
-    creates so far) and its live windows, and the replay-id resolution.
-    Everything :func:`_batch_apply_create` does after this is the *fit* of the
-    window returned here.
+    proposal against the effective plan (the fitted plan overlaid with
+    *created_windows*, the overlay the creates before this one installed) and
+    its live windows (:func:`_structural_live_window_ids`), and the replay-id
+    resolution. A pure function of the fitted plan, the retired and
+    baseline-live ids, the static analysis inputs and the ordered creates
+    before this one -- never of a fit -- so replaying a log's create rows in
+    order reproduces its windows (:func:`_created_windows_from_log`).
 
-    Split out for ``review apply --dry-run``
-    (:func:`_resolve_created_window_structure`), which has to report the
-    structure a plan would install and nothing else: the extent comes from the
-    planner rather than from plan resolution, so before this split the only way
-    to learn it was to run the whole in-memory preview a second time -- the
-    follow-up ``scratch/intent-driven-windowing-plan.md`` left open after W4.
+    *min_new_window_id* is the floor a fresh id is minted at
+    (:attr:`~ftmwpipeline.core.data_structures.Stage6Review.window_id_high_water`
+    plus one). It feeds only the minting; a pinned replay id is checked
+    against the effective plan and the retired ids, as before, so replaying
+    the newest create (whose id is the high-water mark itself) is no
+    conflict.
 
-    Mutates nothing on *ctx*, so a caller that wants only the geometry leaves
-    no state to unwind. Every refusal here is one the apply itself would
-    raise, which is what lets the dry run raise them as its own.
+    Mutates nothing, so a caller that wants only the geometry leaves no state
+    to unwind. Every refusal here is one the apply itself would raise.
     """
     from ..preprocessing.window_planning import plan_stage6_window
 
     anchor = float(anchor_mhz)
-    plan = _batch_effective_plan(ctx)
-    fit_map = _batch_live_fit_map(ctx)
+    plan = _overlay_created_windows(shared.base_plan, created_windows)
 
-    if ctx.shared.fit_ctx.trim_range is not None:
+    if shared.fit_ctx.trim_range is not None:
         t_lo, t_hi = (
-            min(ctx.shared.fit_ctx.trim_range),
-            max(ctx.shared.fit_ctx.trim_range),
+            min(shared.fit_ctx.trim_range),
+            max(shared.fit_ctx.trim_range),
         )
         if not (t_lo <= anchor <= t_hi):
             raise BadSettingError(
@@ -8038,26 +8194,27 @@ def _plan_batch_create(
     params = plan.parameters
     proposal = plan_stage6_window(
         plan,
-        ctx.shared.peaks_loaded,
-        ctx.shared.fit_ctx.active_ft.freq_mhz,
-        ctx.shared.fit_ctx.active_ft.complex_spectrum,
-        ctx.shared.fit_ctx.rms_for_fit,
+        shared.peaks_loaded,
+        shared.fit_ctx.active_ft.freq_mhz,
+        shared.fit_ctx.active_ft.complex_spectrum,
+        shared.fit_ctx.rms_for_fit,
         anchor,
-        acquisition_us=float(ctx.shared.fit_ctx.acquisition_us),
+        acquisition_us=float(shared.fit_ctx.acquisition_us),
         tau_us=params.get("tau_us"),
         min_window_half_width_mhz=float(params.get("min_window_half_width_mhz", 2.0)),
         min_window_half_width_points=int(
             params.get("min_window_half_width_points", 32)
         ),
-        min_freeze_snr=float(params.get("min_freeze_snr", ctx.shared.min_freeze_snr)),
+        min_freeze_snr=float(params.get("min_freeze_snr", shared.min_freeze_snr)),
         magnitude_attachment_threshold=float(
             params.get("magnitude_attachment_threshold", 0.1)
         ),
-        live_window_ids=sorted(fit_map),
-        reserved_window_ids=ctx.shared.retired_window_ids,
+        live_window_ids=_structural_live_window_ids(shared, created_windows),
+        reserved_window_ids=shared.retired_window_ids,
+        min_new_window_id=int(min_new_window_id),
     )
     new_wid = int(proposal.window.window_id)
-    _refuse_create_on_unavailable_fit_plan(ctx, proposal, anchor)
+    _refuse_create_on_unavailable_fit_plan(shared, proposal, anchor)
 
     if replay_window_id is not None and int(replay_window_id) != new_wid:
         want = int(replay_window_id)
@@ -8069,8 +8226,10 @@ def _plan_batch_create(
                 f"widens window {new_wid} instead of creating window {want}; "
                 f"the base plan or the surviving edit set has changed",
             )
+        # The ids the plan holds and the retired ids -- never the high-water
+        # floor, which would make the newest create's own id look taken.
         taken = {int(w.window_id) for w in plan.windows}
-        taken |= set(ctx.shared.retired_window_ids)
+        taken |= set(shared.retired_window_ids)
         if want in taken:
             raise CurationConflictError(
                 "replay_conflict",
@@ -8084,8 +8243,141 @@ def _plan_batch_create(
     return proposal
 
 
+def _plan_batch_create(
+    ctx: _BatchCtx,
+    anchor_mhz: float,
+    *,
+    replay_window_id: Optional[int],
+) -> "Stage6WindowProposal":
+    """:func:`_plan_create` at this point of the batch: against the overlay
+    the batch's creates so far left, minting above the file's window-id
+    high-water mark.
+
+    The planning half of :func:`_batch_apply_create`; everything that does
+    after this is the *fit* of the window returned here. Split out for
+    ``review apply --dry-run`` (:func:`_resolve_created_window_structure`),
+    which reports the structure a plan would install and nothing else.
+
+    A create recorded now (not a replayed log row) that pins its id -- a
+    curation file may name one -- must pin above every created window still
+    in the overlay (the kept log's creates and the batch's so far): created
+    ids increase along the log, which is what keeps every cascade edge
+    between created windows pointing from an older window to a newer one
+    (:func:`_created_window_sources`). Refused (``replay_conflict``)
+    otherwise. The high-water mark is only the floor a fresh id is minted
+    at, so a pin may name the id an undone create had -- redoing that create
+    under its own id -- as long as no live create holds a higher one. A
+    replayed row keeps the id it recorded.
+    """
+    hw = ctx.changeset.window_id_high_water
+    proposal = _plan_create(
+        ctx.shared,
+        ctx.changeset.created_windows,
+        anchor_mhz,
+        replay_window_id=replay_window_id,
+        min_new_window_id=hw + 1,
+    )
+    replaying = len(ctx.changeset.decisions) < len(ctx.changeset.replayed)
+    want = int(proposal.window.window_id)
+    if replay_window_id is not None and not replaying and proposal.mode == "created":
+        # Widened base windows sit in the overlay under their base ids.
+        base_ids = {int(w.window_id) for w in ctx.shared.base_plan.windows}
+        newest = max(
+            (
+                int(w.window_id)
+                for w in ctx.changeset.created_windows
+                if int(w.window_id) not in base_ids
+            ),
+            default=-1,
+        )
+        if want <= newest:
+            raise CurationConflictError(
+                "replay_conflict",
+                [want],
+                message=f"the window created at {float(anchor_mhz):.4f} MHz pins "
+                f"id {want}, but created window {newest} is older in the log: "
+                f"created window ids only increase. Pin an id above {newest}, "
+                f"or let the create mint one.",
+            )
+    return proposal
+
+
+def _created_windows_from_log(
+    shared: _SharedFitCtx,
+    entries: Sequence[DecisionLogEntry],
+    *,
+    min_new_window_id: int = 0,
+) -> List["FitWindow"]:
+    """The created-window overlay *entries* install, from structure alone.
+
+    Replays the log's create rows (:func:`_installs_window`) in log order
+    through :func:`_plan_create`, each pinned to its recorded id and planned
+    against the overlay the ones before it left: the effective plan is a
+    function of the ordered create sub-sequence and nothing else (no fit is
+    read or made). Raises every refusal a replay of those creates would
+    (``replay_conflict``, the analysis-band and "already inside window N"
+    refusals, ``fit_plan_unavailable``), before anything is fit.
+    """
+    overlay: List["FitWindow"] = []
+    for e in entries:
+        if not _installs_window(e):
+            continue
+        proposal = _plan_create(
+            shared,
+            overlay,
+            float(e.frequency_mhz),
+            replay_window_id=int(e.window_id),
+            min_new_window_id=min_new_window_id,
+        )
+        wid = int(proposal.window.window_id)
+        overlay = [w for w in overlay if int(w.window_id) != wid] + [proposal.window]
+    return overlay
+
+
+def _window_geometry(fit_win: "FitWindow") -> Tuple[Any, ...]:
+    """What a window's geometry is, for telling whether it changed: its
+    extent, its contributors (with ``edge_free``), its free peaks, its batch
+    and its grid span. The anchor and the planner's other diagnostics are not
+    geometry."""
+    return (
+        tuple(float(v) for v in fit_win.freq_range),
+        tuple(
+            (
+                int(c.primary_window_id),
+                int(c.peak_index),
+                float(c.frequency_mhz),
+                bool(c.edge_free),
+            )
+            for c in fit_win.fixed_contributors
+        ),
+        tuple(int(i) for i in fit_win.free_peak_indices),
+        int(fit_win.batch),
+        tuple(int(v) for v in fit_win.diagnostics.get("grid_span", ())),
+    )
+
+
+def _geometry_changed_window_ids(
+    base_plan: "WindowPlan",
+    before: Sequence["FitWindow"],
+    after: Sequence["FitWindow"],
+) -> List[int]:
+    """The windows that exist under the overlay *after* and whose geometry
+    differs from what it was under the overlay *before*, ascending. A window
+    only *before* holds (an undone create) no longer exists and is not
+    listed."""
+    old = {
+        int(w.window_id): _window_geometry(w)
+        for w in _overlay_created_windows(base_plan, before).windows
+    }
+    return sorted(
+        int(w.window_id)
+        for w in _overlay_created_windows(base_plan, after).windows
+        if int(w.window_id) in old and old[int(w.window_id)] != _window_geometry(w)
+    )
+
+
 def _refuse_create_on_unavailable_fit_plan(
-    ctx: _BatchCtx, proposal: "Stage6WindowProposal", anchor: float
+    shared: _SharedFitCtx, proposal: "Stage6WindowProposal", anchor: float
 ) -> None:
     """Refuse a create that a fit's unrecorded merge makes unplannable.
 
@@ -8095,7 +8387,7 @@ def _refuse_create_on_unavailable_fit_plan(
     overlap the window the fit has, and one that widens or reads a merged
     window would use geometry the fit was not made on.
     """
-    unavailable = ctx.shared.unavailable_window_ids
+    unavailable = shared.unavailable_window_ids
     if not unavailable:
         return
     window = proposal.window
@@ -8107,7 +8399,7 @@ def _refuse_create_on_unavailable_fit_plan(
     _refuse_unavailable_fit_plan(
         unavailable, touched, f"creating a window at {anchor:.4f} MHz"
     )
-    for s_lo, s_hi in ctx.shared.unavailable_spans_mhz:
+    for s_lo, s_hi in shared.unavailable_spans_mhz:
         if lo <= s_hi and hi >= s_lo:
             from .fitted_plan import FIT_PLAN_UNAVAILABLE
 
@@ -8141,8 +8433,8 @@ def _batch_implied_create_target(ctx: _BatchCtx, anchor_mhz: float) -> Optional[
 
     Builds the identical inputs :func:`_plan_batch_create` hands the planner --
     :func:`_batch_effective_plan` (base plan + this batch's own creates so
-    far) and this batch's live window ids
-    (:func:`_batch_live_fit_map`) -- so the answer this returns is the
+    far) and the live window ids at this point
+    (:func:`_structural_live_window_ids`) -- so the answer this returns is the
     planner's own answer, asked one step earlier:
     :func:`~ftmwpipeline.preprocessing.window_planning.live_window_covering_anchor`
     is the exact predicate :func:`plan_stage6_window` uses for its refusal,
@@ -8155,13 +8447,13 @@ def _batch_implied_create_target(ctx: _BatchCtx, anchor_mhz: float) -> Optional[
     """
     from ..preprocessing.window_planning import live_window_covering_anchor
 
-    plan = _batch_effective_plan(ctx)
-    fit_map = _batch_live_fit_map(ctx)
     return live_window_covering_anchor(
-        plan,
+        _batch_effective_plan(ctx),
         ctx.shared.fit_ctx.active_ft.freq_mhz,
         float(anchor_mhz),
-        live_window_ids=sorted(fit_map),
+        live_window_ids=_structural_live_window_ids(
+            ctx.shared, ctx.changeset.created_windows
+        ),
     )
 
 
@@ -8180,7 +8472,11 @@ def _batch_apply_create(
 
     ``mode="created"`` mints a window whose fit holds no line yet, so it is
     added to ``mutated_wids`` but never ``dirty_wids`` -- no cascade (a later
-    create may read it, but only an add into it changes what it leaks).
+    create may read it, but only an add into it changes what it leaks). Its
+    starting skirt is read from the automatic fit
+    (:func:`_created_window_seed`), and it is recorded in ``created_wids`` so
+    the batch's cascade refreshes it when one of its sources has been edited
+    (:func:`_cascade_batch`).
     ``mode="widened"`` instead grows an existing window and refits its
     existing peak set on the wider grid, so it is added to *both*: its
     dependents may have frozen on a leakage skirt that widening just removed,
@@ -8197,7 +8493,6 @@ def _batch_apply_create(
     from .active_ft_support import default_tau0_us
 
     anchor = float(anchor_mhz)
-    fit_map = _batch_live_fit_map(ctx)
     proposal = _plan_batch_create(ctx, anchor, replay_window_id=replay_window_id)
     fit_win = proposal.window
     new_wid = int(fit_win.window_id)
@@ -8217,12 +8512,12 @@ def _batch_apply_create(
             else default_tau0_us(float(ctx.shared.fit_ctx.acquisition_us))
         )
         seed_wf = FittingResult(window_id=new_wid, shape=ctx.shared.shape_enum.value)
-        seed_wf.fixed_parameters = _frozen_parameters_from_sources(
-            proposal.depends_on, fit_map, ctx.shared.min_freeze_snr
+        seed_wf.fixed_parameters = _created_window_seed(
+            ctx.shared, fit_win, ctx.changeset.created_windows
         )
         seed_wf.shared_parameters = {"tau_us": {"value": tau0, "fitted": False}}
     else:
-        existing_wf = fit_map.get(new_wid)
+        existing_wf = _batch_live_fit_map(ctx).get(new_wid)
         if existing_wf is None:
             # An invariant guard, not a route: the planner widens only a live
             # window (live_window_ids above), so a correct caller cannot
@@ -8262,6 +8557,11 @@ def _batch_apply_create(
         w.window_id: w for w in _batch_effective_plan(ctx).windows
     }
     ctx.changeset.mutated_wids.add(new_wid)
+    if proposal.mode == "created":
+        ctx.changeset.created_wids.add(new_wid)
+        ctx.changeset.window_id_high_water = max(
+            ctx.changeset.window_id_high_water, new_wid
+        )
     if proposal.mode == "widened":
         # An existing window whose fit just moved: its dependents may have
         # frozen on the leakage skirt it no longer has, so it must join the
@@ -8457,12 +8757,13 @@ def _canonicalize_batch_plan(
     not -- has run, and so every correlation id is resolvable to its real
     window, before ANY ``rest`` action executes; and because windows are
     independent, so the exact relative order among DIFFERENT-window edits in
-    ``rest`` affects the decision log's presentation order -- and, while a
-    create seeds its skirt from its sources' in-batch fits and the cascade
-    reads its edges from fits, the order can still reach a created window's
-    numbers; it does not reach two ordinary windows' fits
-    (:func:`test_apply_row_order_independent` pins exactly that). What genuinely could
-    not be known here is the real window an implied create MINTS -- that late
+    ``rest`` affects the decision log's presentation order, never a fit's
+    numerical outcome: a create reads its starting skirt from the automatic
+    fit and the cascade reads its edges from the plan, so not even a created
+    window's numbers depend on where its create sits relative to the edits
+    (:func:`test_apply_row_order_independent` pins it for ordinary windows).
+    What genuinely could not be known here is the real window an implied
+    create MINTS -- that late
     binding is resolved at execution time (:func:`_execute_curation_batch`,
     :func:`_run_review_preview`), not by this function, which only ever
     schedules.
@@ -8620,6 +8921,10 @@ def _derive_batch_review(
         final_products=final_products,
         created_windows=list(ctx.changeset.created_windows),
         next_serial=max(int(existing_review.next_serial), ctx.changeset.next_serial()),
+        window_id_high_water=max(
+            int(existing_review.window_id_high_water),
+            ctx.changeset.window_id_high_water,
+        ),
         review_params=params,
     )
     new_review.window_statuses = _curated_statuses(
@@ -8818,15 +9123,29 @@ def _cascade_batch(ctx: _BatchCtx, *, snap_tol_mhz: float) -> List[int]:
     :func:`_finish_batch` so a preview (a later unit) can run this same
     cascade in memory and stop there, never reaching the persists below.
     Returns the cascaded window ids.
+
+    A window this batch created is also refreshed when an ancestor of it in
+    the cascade graph was edited by an earlier write
+    (``changeset.log_dirty_wids``): its starting skirt was read from the
+    automatic fit (:func:`_created_window_seed`), and a replay of the whole
+    log would refresh it from that ancestor's final fit, so the batch does.
+    In a replay from the automatic fit the persisted log is empty and this
+    adds nothing.
     """
+    sources = _cascade_sources(
+        ctx.shared.base_cascade_sources, ctx.changeset.created_windows
+    )
+    edited = set(ctx.changeset.dirty_wids) | set(ctx.changeset.log_dirty_wids)
+    reached = sorted(
+        w for w in ctx.changeset.created_wids if _cascade_ancestors(w, sources) & edited
+    )
     cascaded: List[int] = []
-    if ctx.changeset.dirty_wids:
+    if ctx.changeset.dirty_wids or reached:
         cascaded = _cascade_refit_dependents(
             spectrum_fit=ctx.changeset.spectrum_fit,
             edited_wids=sorted(ctx.changeset.dirty_wids),
-            sources=_cascade_sources(
-                ctx.shared.base_cascade_sources, ctx.changeset.created_windows
-            ),
+            sources=sources,
+            reached=reached,
             fit_window_map=ctx.changeset.fit_window_map,
             fit_ctx=ctx.shared.fit_ctx,
             resolved=ctx.shared.resolved,
@@ -9196,10 +9515,10 @@ def _apply_batch_segment(
     ``log_order``: a replay of the decision log (undo, a log-prefix apply)
     runs its actions in the order the log recorded them, since the log is a
     history, not a set. The fit is the same either way (each direct edit
-    refits against its own stored skirts and the one cascade walks the
-    dependency DAG, not the plan), but a create the log recorded after an
-    edit runs after it, as it did, and the replay re-records the log in its
-    own order.
+    refits against its own stored skirts, a create starts from the automatic
+    fit's skirts, and the one cascade walks the plan-derived dependency DAG),
+    but a create the log recorded after an edit runs after it, as it did, and
+    the replay re-records the log in its own order.
     """
     applied = 0
     # W3: created.window_id of every implied create this batch has run so
@@ -9636,13 +9955,11 @@ def _resolve_created_window_structure(
     all -- the common case, which never opens the engine and so pays nothing.
 
     Creates are walked in :func:`_canonicalize_batch_plan`'s order (creates
-    first, in plan order), and each proposal is folded into the batch state
-    the next one plans against, exactly as :func:`_batch_apply_create` folds
-    its own: a second create in the same gap must see the first. A created
-    window is spliced in carrying an EMPTY ``FittingResult`` -- the minimum
-    that makes it live (:func:`_batch_live_fit_map`) for the next proposal,
-    since nothing here fits it. That state is local to this call and is
-    discarded on return; no file is touched.
+    first, in plan order), and each proposal is folded into the overlay the
+    next one plans against, exactly as :func:`_batch_apply_create` folds its
+    own: a second create in the same gap must see the first. Planning reads
+    no fit (:func:`_plan_create`), so nothing here is fit. That state is local
+    to this call and is discarded on return; no file is touched.
 
     Refusals are the apply's own, raised here with the apply's own per-action
     attribution: if this returns, every create in the plan resolves. Opened
@@ -9710,10 +10027,8 @@ def _resolve_created_window_structure(
             w for w in ctx.changeset.created_windows if int(w.window_id) != new_wid
         ] + [fit_win]
         if proposal.mode == "created":
-            _splice_new_window_fit(
-                ctx.changeset.spectrum_fit,
-                new_wid,
-                FittingResult(window_id=new_wid, shape=ctx.shared.shape_enum.value),
+            ctx.changeset.window_id_high_water = max(
+                ctx.changeset.window_id_high_water, new_wid
             )
 
     structures.sort(key=lambda pw: pw.window_id)
@@ -9895,15 +10210,18 @@ def _reset_to_baseline(path: str, *, restore_fit: bool) -> None:
 
     The serial high-water mark survives the reset: the replay keeps the
     surviving rows' serials, and a serial is never reused within the lineage,
-    so the next new decision takes one above every serial ever recorded. So
-    do the recorded review parameters, which the rebuild and the replay
-    compute statuses under."""
+    so the next new decision takes one above every serial ever recorded. The
+    window-id high-water mark survives for the same reason (a fresh create
+    never takes an undone create's id), and so do the recorded review
+    parameters, which the rebuild and the replay compute statuses under."""
     review = load_stage6_review_from_file(path)
     if restore_fit:
         _restore_stage5_baseline(path)
     _write_stage6_review_only(
         Stage6Review(
-            next_serial=review.next_serial, review_params=review.review_params
+            next_serial=review.next_serial,
+            window_id_high_water=review.window_id_high_water,
+            review_params=review.review_params,
         ),
         path,
     )
@@ -9964,6 +10282,7 @@ def _apply_curation_at_prefix(
             f"is unavailable ({_BASELINE_MISSING_CAUSE}). Rebuild from the "
             "source and re-edit.",
         )
+    _check_created_ids_monotone(path, kept)
     prefix_plan = _replay_plan(kept)
     # The restore-then-replay is one unit: gate first, so a refusal leaves the
     # file as it was rather than rolled back to the automatic fit.
@@ -10563,6 +10882,14 @@ class UndoResult:
         Number of replay actions executed (``0`` for a dry run).
     dry_run : bool
         Whether the undo was previewed without mutating.
+    geometry_changed_window_ids : list of int
+        The windows whose geometry the undo changes, ascending: a surviving
+        created window keeps its id, but its geometry is re-derived from the
+        creates that survive, so undoing an earlier create can move it (the
+        gap it was planned in, the contributors attached to it); a widened
+        window can likewise change, or return to its base extent. A window
+        the undo removes (an undone create) is not listed. Reported, not
+        refused; a dry run reports the same.
     """
 
     removed: List[DecisionLogEntry]
@@ -10570,6 +10897,7 @@ class UndoResult:
     plan: List["PlannedAction"]
     applied: int
     dry_run: bool
+    geometry_changed_window_ids: List[int] = field(default_factory=list)
     #: The stages the call invalidated (canonical names, ``rerun_order``):
     #: always ``()``, since Stage 6 invalidates no stage.
     invalidated: Tuple[str, ...] = field(default=(), compare=False)
@@ -10798,6 +11126,14 @@ def review_undo_impl(
     ``dry_run`` returns the removed/surviving split and the resolved replay plan
     without mutating.
 
+    A surviving created window keeps its id, but its geometry is re-derived
+    from the creates that survive, in log order, so undoing an earlier create
+    can change it; a widened window can change too. The undo is not refused
+    for that: ``geometry_changed_window_ids`` lists every window whose
+    geometry changes (a dry run lists the same), and the surviving creates are
+    replanned before anything is restored, so one that can no longer be
+    replayed under its id refuses with the file untouched.
+
     ``_shared`` is internal (see :func:`refit_window_impl`) -- safe to reuse
     across an undo's restore-then-replay because none of it (the baseline
     restore, the review rebuild, the surviving-decision replay) touches
@@ -10811,9 +11147,12 @@ def review_undo_impl(
     (``predates_peak_identity`` / ``predates_replay_engine``, dry run
     included: :func:`_require_engine_file`), when undoing would orphan a
     window an undone decision created (``orphans_created_window``, ``ids``
-    the serials of the decisions to undo with it), or when the automatic-fit
-    baseline is unavailable while fit-mutating decisions exist
-    (``baseline_unavailable``; the snapshot was removed from the file).
+    the serials of the decisions to undo with it), when a surviving create
+    can no longer take its recorded id (``replay_conflict``), or when the
+    automatic-fit baseline is unavailable while fit-mutating decisions exist
+    (``baseline_unavailable``; the snapshot was removed from the file). A log
+    whose created window ids do not increase along it is corrupt
+    (``file_corrupt``).
 
     What undo promises for ``peak_uid`` is replay equivalence: the surviving
     decisions are replayed in order, one ACTION at a time, each against the
@@ -10889,11 +11228,6 @@ def review_undo_impl(
     # a later add at Y resolves into W by W2's live-window coverage, then
     # undoing the first drops W out from under the second and the replay
     # fails partway -- precisely the failure this guard exists to refuse.
-    def _installs_window(e: DecisionLogEntry) -> bool:
-        return e.kind == "create_window" or (
-            e.kind == "add" and e.evidence.get("created_window") is not None
-        )
-
     dropped_windows = {int(e.window_id) for e in removed if _installs_window(e)} - {
         int(e.window_id) for e in surviving if _installs_window(e)
     }
@@ -10937,7 +11271,41 @@ def review_undo_impl(
     # remove/remove/add) coalesced into the one action _infer_curation_intent
     # needs to see whole. Grouping only ever joins rows that WERE one action,
     # so the split-then-merge case above stays two actions.
+    _check_created_ids_monotone(path, surviving)
     plan = _replay_plan(surviving)
+
+    # The structure the survivors install. The created-window overlay is a
+    # function of the ordered create rows alone, so the undo can change an
+    # existing window's geometry only when it drops a widening, or drops a
+    # create that a surviving create was planned after. Replanned here from
+    # the surviving rows, before the restore, so its refusals
+    # (``replay_conflict``) leave the file as it was, and a dry run reports
+    # the same changes.
+    geometry_changed: List[int] = []
+    shared = _shared
+    undone_creates = [
+        k
+        for k, e in enumerate(log)
+        if _installs_window(e) and _serial_id(e) in undo_set
+    ]
+    if undone_creates and (
+        any(_create_row_mode(log[k]) == "widened" for k in undone_creates)
+        or any(
+            _installs_window(e) and _serial_id(e) not in undo_set
+            for e in log[undone_creates[0] + 1 :]
+        )
+    ):
+        if shared is None:
+            shared = _build_shared_fit_ctx(path)
+        geometry_changed = _geometry_changed_window_ids(
+            shared.base_plan,
+            review.created_windows,
+            _created_windows_from_log(
+                shared,
+                surviving,
+                min_new_window_id=review.window_id_high_water + 1,
+            ),
+        )
 
     # Undo is restore-then-replay, so the restore happens before any replayed
     # edit could hit the epoch gate. Check first: otherwise a refusal partway
@@ -10948,7 +11316,12 @@ def review_undo_impl(
 
     if dry_run:
         return UndoResult(
-            removed=removed, surviving=surviving, plan=plan, applied=0, dry_run=True
+            removed=removed,
+            surviving=surviving,
+            plan=plan,
+            applied=0,
+            dry_run=True,
+            geometry_changed_window_ids=geometry_changed,
         )
 
     # Restore the automatic fit (when fit-mutating edits existed), rebuild the
@@ -10964,7 +11337,7 @@ def review_undo_impl(
             path,
             plan,
             snap_tol_mhz=refit_snap_tol_mhz_impl(path),
-            shared=_shared,
+            shared=shared,
             preserve=surviving,
         )
 
@@ -10974,6 +11347,7 @@ def review_undo_impl(
         plan=plan,
         applied=outcome.applied,
         dry_run=False,
+        geometry_changed_window_ids=geometry_changed,
     )
 
 
@@ -12114,6 +12488,7 @@ def _review_run(
         final_products=final_products,
         created_windows=list(existing_review.created_windows),
         next_serial=existing_review.next_serial,
+        window_id_high_water=existing_review.window_id_high_water,
         review_params=params,
     )
 

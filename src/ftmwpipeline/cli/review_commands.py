@@ -1433,6 +1433,9 @@ def cmd_review_undo(args: argparse.Namespace) -> int:
         print("  (none -- fully reverted to the automatic fit)")
     for i, action in enumerate(result.plan, start=1):
         print(f"  {i:>3}. {describe_planned_action(action)}")
+    if result.geometry_changed_window_ids:
+        listed = ", ".join(str(w) for w in result.geometry_changed_window_ids)
+        print(f"geometry changed: window(s) {listed}")
     if dry_run:
         print(f"{len(result.removed)} decision(s) would be undone (nothing written).")
     else:
@@ -1673,7 +1676,9 @@ def register_review_commands(subparsers: Any) -> None:
             "window id or 'new' in the window column; 'new' means 'whichever id\n"
             "this produces', while a named id pins the id the created window\n"
             "takes -- which is how a file generated from the decision log keeps\n"
-            "each created window's identity stable across a replay.\n\n"
+            "each created window's identity stable across a replay. A pinned id\n"
+            "must lie above every created window the log still holds before\n"
+            "it, since created ids only increase along the log.\n\n"
             "A run of add/remove rows on one window coalesces into a single\n"
             "refit; accept/create stand alone. With --dry-run the resolved\n"
             "plan and any frequency-resolution warnings print without writing.\n\n"

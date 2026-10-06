@@ -13,6 +13,7 @@ inputs.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import shutil
 from pathlib import Path
@@ -24,6 +25,7 @@ import pytest
 import ftmwpipeline.api as ftmw
 from ftmwpipeline._internal import stage6_impl as s6
 from ftmwpipeline._internal.replay_reference import (
+    CuratedState,
     differing_parts,
     persisted_state_digest,
     replay_full,
@@ -642,3 +644,248 @@ def test_undoing_a_create_restores_the_empty_window_status_on_655(built_655, tmp
     assert stored == _fresh_statuses(fp, tmp_path)
     assert stored[373] == flagged
     assert created.window_id not in stored
+
+
+# ---------------------------------------------------------------------------
+# Created windows: a fixed seed, plan-derived edges (slow: the 655 build)
+# ---------------------------------------------------------------------------
+
+#: 655's window 332 (dropped by Stage 5) holds the strong promoted line at
+#: 35839.957 MHz; a create there and a second one 5 MHz above it, which
+#: attaches to the first.
+_IN_332, _BESIDE_332 = 35839.957, 35844.73
+
+
+def _canonical_digest(state: CuratedState) -> str:
+    """:func:`state_digest` with the log in serial order: the digest a
+    permutation of the same rows must reproduce (positions aside)."""
+    rows = sorted(state.review.decision_log, key=lambda e: int(e.serial))
+    state.review.decision_log = [
+        dataclasses.replace(e, order_index=k) for k, e in enumerate(rows)
+    ]
+    return state_digest(state)
+
+
+def _skirt_from(wf: FittingResult, source: int) -> List[float]:
+    return sorted(
+        float(e["frequency_mhz"])
+        for k, e in wf.fixed_parameters.items()
+        if k.startswith("frozen_peak_") and int(e["primary_window_id"]) == source
+    )
+
+
+def _assert_persisted_is_reference(path: Path) -> CuratedState:
+    reference = replay_full(path, ftmw.review_log(path))
+    assert state_digest(reference) == persisted_state_digest(path), differing_parts(
+        reference, path
+    )
+    return reference
+
+
+@pytest.mark.slow
+def test_create_order_does_not_change_the_created_windows_on_655(
+    built_655, tmp_path, monkeypatch
+):
+    """Two creates and an add into the first, in the two orders the log can
+    hold them (the add before or after the second create): the created
+    windows' fits are identical, and the second window holds the first one's
+    skirt either way. A create read its skirt from the live in-batch fits, so
+    the order the add sat in decided whether the second window saw the
+    first's line (chi2r 2.152 without it, 0.813 with it)."""
+    fits: Dict[str, Dict[int, FittingResult]] = {}
+    references: Dict[str, CuratedState] = {}
+    orig_core = s6.refit_window_core
+    for order in ("add_last", "add_first"):
+        fp = tmp_path / f"{order}.ftmw"
+        shutil.copy(built_655, fp)
+        first = s6.create_window_impl(str(fp), _IN_332, frame="raw")
+        assert first.mode == "created"
+        # 332 was dropped by Stage 5: it carries no fit, so it is no source.
+        assert 332 not in _fits(fp) and 332 not in first.depends_on
+        refit: List[int] = []
+
+        def spy_core(fit_ctx, fit_win, wf, **kwargs):
+            refit.append(int(fit_win.window_id))
+            return orig_core(fit_ctx, fit_win, wf, **kwargs)
+
+        # The write that leaves both the second window and the first one's line
+        # refreshes and refits the second: the add's cascade (one refit), or
+        # the create's own fit and then its refresh (two).
+        if order == "add_last":
+            second = s6.create_window_impl(str(fp), _BESIDE_332, frame="raw")
+            monkeypatch.setattr(s6, "refit_window_core", spy_core)
+            ftmw.review_edit(fp, first.window_id, add=[_IN_332], frame="raw")
+        else:
+            ftmw.review_edit(fp, first.window_id, add=[_IN_332], frame="raw")
+            monkeypatch.setattr(s6, "refit_window_core", spy_core)
+            second = s6.create_window_impl(str(fp), _BESIDE_332, frame="raw")
+        monkeypatch.setattr(s6, "refit_window_core", orig_core)
+        assert first.window_id in second.depends_on
+        assert refit.count(second.window_id) == (1 if order == "add_last" else 2)
+        references[order] = _assert_persisted_is_reference(fp)
+        fits[order] = _fits(fp)
+
+    a, b = fits["add_last"], fits["add_first"]
+    for wid in (first.window_id, second.window_id):
+        assert [
+            (p.frequency_mhz, p.amplitude, p.phase, p.peak_uid)
+            for p in a[wid].fitted_peaks
+        ] == [
+            (p.frequency_mhz, p.amplitude, p.phase, p.peak_uid)
+            for p in b[wid].fitted_peaks
+        ]
+        assert a[wid].reduced_chi2 == b[wid].reduced_chi2
+        assert a[wid].fixed_parameters == b[wid].fixed_parameters
+    shared = s6._build_shared_fit_ctx(str(tmp_path / "add_last.ftmw"))
+    line = [
+        float(p.frequency_mhz)
+        for p in a[first.window_id].fitted_peaks
+        if float(p.snr or 0.0) >= shared.min_freeze_snr
+    ]
+    assert line and _skirt_from(a[second.window_id], first.window_id) == line
+
+    # The same three rows, permuted, replay to the same state (G3).
+    log = ftmw.review_log(tmp_path / "add_last.ftmw")
+    permuted = [log[0], log[2], log[1]]
+    assert [e.kind for e in permuted] == ["create_window", "add", "create_window"]
+    assert _canonical_digest(
+        replay_full(tmp_path / "add_last.ftmw", permuted)
+    ) == _canonical_digest(references["add_last"])
+
+
+@pytest.mark.slow
+def test_a_create_before_or_after_its_sources_edit_is_the_same_on_655(
+    built_655, tmp_path
+):
+    """A create at 30719.9996 (sources include 429) before or after removing
+    429's line at 37904.867: every window fit is the same, the created
+    window's skirt from 429 is 429's edited fit, and each order persists
+    exactly the reference replay. The create used to seed from 429's fit at
+    its log position (2.8e-5 MHz apart)."""
+    anchor, line = 30719.9996, 37904.867
+    fits: Dict[str, Dict[int, FittingResult]] = {}
+    references: Dict[str, CuratedState] = {}
+    for order in ("edit_first", "create_first"):
+        fp = tmp_path / f"{order}.ftmw"
+        shutil.copy(built_655, fp)
+        if order == "edit_first":
+            ftmw.review_edit(fp, 429, remove=[line], frame="raw")
+            created = s6.create_window_impl(str(fp), anchor, frame="raw")
+        else:
+            created = s6.create_window_impl(str(fp), anchor, frame="raw")
+            ftmw.review_edit(fp, 429, remove=[line], frame="raw")
+        assert 429 in created.depends_on
+        references[order] = _assert_persisted_is_reference(fp)
+        fits[order] = _fits(fp)
+
+    a, b = fits["edit_first"], fits["create_first"]
+    assert sorted(a) == sorted(b)
+    for wid in a:
+        assert [
+            (p.frequency_mhz, p.amplitude, p.phase, p.peak_uid)
+            for p in a[wid].fitted_peaks
+        ] == [
+            (p.frequency_mhz, p.amplitude, p.phase, p.peak_uid)
+            for p in b[wid].fitted_peaks
+        ], wid
+        assert a[wid].fixed_parameters == b[wid].fixed_parameters, wid
+    shared = s6._build_shared_fit_ctx(str(tmp_path / "edit_first.ftmw"))
+    assert _skirt_from(a[created.window_id], 429) == sorted(
+        float(p.frequency_mhz)
+        for p in a[429].fitted_peaks
+        if float(p.snr or 0.0) >= shared.min_freeze_snr
+    )
+    log = ftmw.review_log(tmp_path / "edit_first.ftmw")
+    assert _canonical_digest(
+        replay_full(tmp_path / "edit_first.ftmw", [log[1], log[0]])
+    ) == _canonical_digest(references["edit_first"])
+
+
+@pytest.mark.slow
+def test_a_create_in_dropped_373_reads_its_plan_sources_on_655(
+    built_655, tmp_path, monkeypatch
+):
+    """A create at 36888.7228, inside window 373 (dropped by Stage 5): the new
+    window's cascade sources are its 10 plan contributors, all live (373
+    itself is not), so 384 -> it is an edge and an edit of 384 refits it.
+    Undoing the create removes its fit and status and lists no window whose
+    geometry changed."""
+    fp = tmp_path / "655.ftmw"
+    shutil.copy(built_655, fp)
+    created = s6.create_window_impl(str(fp), 36888.7228, frame="raw")
+    review = load_stage6_review_from_file(str(fp))
+    shared = s6._build_shared_fit_ctx(str(fp))
+    sources = s6._cascade_sources(shared.base_cascade_sources, review.created_windows)
+    assert sorted(sources[created.window_id]) == [
+        368,
+        369,
+        371,
+        375,
+        383,
+        384,
+        429,
+        431,
+        435,
+        474,
+    ]
+    assert 373 not in sources[created.window_id]
+
+    orig_core = s6.refit_window_core
+    refit: List[int] = []
+
+    def spy_core(fit_ctx, fit_win, wf, **kwargs):
+        refit.append(int(fit_win.window_id))
+        return orig_core(fit_ctx, fit_win, wf, **kwargs)
+
+    monkeypatch.setattr(s6, "refit_window_core", spy_core)
+    ftmw.review_edit(fp, 384, add=[_clear(fp, 384)], frame="raw")
+    monkeypatch.setattr(s6, "refit_window_core", orig_core)
+    assert created.window_id in refit
+    _assert_persisted_is_reference(fp)
+
+    log = ftmw.review_log(fp)
+    result = ftmw.review_undo(fp, [log[0].serial, log[1].serial])
+    assert result.geometry_changed_window_ids == []
+    assert created.window_id not in _fits(fp)
+    assert (
+        created.window_id not in load_stage6_review_from_file(str(fp)).window_statuses
+    )
+
+
+@pytest.mark.slow
+def test_undo_reports_a_re_derived_created_window_on_655(built_655, tmp_path):
+    """Undoing the create in dropped 332 re-derives the later create beside
+    it: the surviving window keeps its id, but loses the earlier window as a
+    contributor and the gap it was planned in widens. The undo succeeds and
+    lists it (a dry run lists the same); the state is the reference replay of
+    what survives. A fresh create then mints above every id ever taken."""
+    fp = tmp_path / "655.ftmw"
+    shutil.copy(built_655, fp)
+    first = s6.create_window_impl(str(fp), _IN_332, frame="raw")
+    second = s6.create_window_impl(str(fp), _BESIDE_332, frame="raw")
+    before = {
+        int(w.window_id): w
+        for w in load_stage6_review_from_file(str(fp)).created_windows
+    }
+    log = ftmw.review_log(fp)
+    survivors = [e for e in log if e.serial != log[0].serial]
+    reference = replay_full(fp, survivors)
+
+    dry = ftmw.review_undo(fp, [log[0].serial], dry_run=True)
+    assert dry.geometry_changed_window_ids == [second.window_id]
+    result = ftmw.review_undo(fp, [log[0].serial])
+    assert result.geometry_changed_window_ids == [second.window_id]
+    assert state_digest(reference) == persisted_state_digest(fp), differing_parts(
+        reference, fp
+    )
+    review = load_stage6_review_from_file(str(fp))
+    after = {int(w.window_id): w for w in review.created_windows}
+    assert sorted(after) == [second.window_id]
+    old, new = before[second.window_id], after[second.window_id]
+    assert first.window_id in {c.primary_window_id for c in old.fixed_contributors}
+    assert first.window_id not in {c.primary_window_id for c in new.fixed_contributors}
+    assert min(new.freq_range) < min(old.freq_range)
+    assert review.window_id_high_water == second.window_id
+
+    again = s6.create_window_impl(str(fp), _IN_332, frame="raw")
+    assert again.window_id == second.window_id + 1

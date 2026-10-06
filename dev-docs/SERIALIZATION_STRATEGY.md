@@ -101,6 +101,10 @@ design).
   (`PipelineCompatibilityError`). The review also records the
   attention-routing parameters its statuses were computed under
   (`review_params`); one without them reads as `None`, and the defaults apply.
+  It records the highest window id a create has taken in the lineage
+  (`window_id_high_water`, read as `-1` when absent), which a fresh create
+  mints above and an undo never lowers, so a window id is never reused within
+  the lineage.
 
 ## Multi-format input
 

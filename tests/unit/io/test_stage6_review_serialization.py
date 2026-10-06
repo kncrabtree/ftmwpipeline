@@ -1,7 +1,7 @@
 """
 The replay-engine stamps in ``/stage6_review``: a decision's ``serial``, the
-review's ``next_serial`` high-water mark, ``engine_version`` and recorded
-``review_params``, and the
+review's ``next_serial`` and ``window_id_high_water`` high-water marks,
+``engine_version`` and recorded ``review_params``, and the
 ``peak_uid`` check that tells a fit Stage 6 can address from one it cannot.
 
 A review a pre-engine build wrote carries none of the stamps; it must read
@@ -47,10 +47,12 @@ def test_serials_and_the_stamps_round_trip(tmp_path):
             DecisionLogEntry(1, 4, 200.0, "add", serial=5),
         ],
         next_serial=6,
+        window_id_high_water=530,
     )
     loaded = _round_trip(tmp_path, review)
     assert [(e.order_index, e.serial) for e in loaded.decision_log] == [(0, 0), (1, 5)]
     assert loaded.next_serial == 6
+    assert loaded.window_id_high_water == 530
     assert loaded.engine_version == ENGINE_VERSION
     # Never stored: a read computes it.
     assert loaded.refit_required is None
@@ -70,6 +72,7 @@ def test_a_review_without_stamps_reads_as_pre_engine(tmp_path):
         # Make it what a pre-engine build wrote.
         del group.attrs["engine_version"]
         del group.attrs["next_serial"]
+        del group.attrs["window_id_high_water"]
         log = group["decision_log"]
         rows = json.loads(str(log.attrs["data"]))
         for row in rows:
@@ -80,6 +83,7 @@ def test_a_review_without_stamps_reads_as_pre_engine(tmp_path):
         loaded = load_stage6_review_from_hdf5(h5f["stage6_review"])
     assert loaded.engine_version is None
     assert loaded.next_serial == 0
+    assert loaded.window_id_high_water == -1
     assert [e.serial for e in loaded.decision_log] == [Absent.NOT_RUN]
 
 

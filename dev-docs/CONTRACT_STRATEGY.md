@@ -258,6 +258,15 @@ These exist today; the contract freezes their names and the listed fields.
   `PipelineCompatibilityError` on a write, and `refit_required` is then
   `file_incompatible` (the remedy is upgrading). A bare `review_edit` (neither `add` nor
   `remove`) is `bad_setting`, `path` `add`, on every interface.
+- Created windows (contract version 16): a window id is never reused within
+  the lineage (`Stage6Review.window_id_high_water` floors every minted id; a
+  curation file may pin a create's id only above every created window the log
+  still holds before it, `replay_conflict` otherwise), and a created
+  window's fit does not depend on where its create sits in the log (its
+  skirts start from the automatic fits of the windows it reads, rebuilt from
+  their current fits once any is edited). `UndoResult.geometry_changed_window_ids`
+  lists the windows whose geometry an undo changes; the undo is not refused
+  for it.
 - The curation result types (`RefitWindowResult`, `PreviewWindowResult`,
   `AppliedWindowResult`, …) and their `converged` flag: a bool, `Absent.NOT_RUN`
   where `chi2r_after` is, and `Absent.UNDEFINED` for a window left with no peak

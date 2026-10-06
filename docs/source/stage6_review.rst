@@ -279,16 +279,30 @@ Three properties make the operation safe to build on:
   construction, a line below the freeze bar, whose own leakage into its neighbors is
   negligible. A later created window does read an earlier one it neighbors, whether or
   not that window holds a line above the freeze bar, so a line later added to the
-  earlier window cascades into it.
+  earlier window cascades into it. The skirts a new window starts from are read from
+  its neighbors' *automatic* fits, never from their curated ones, and whenever a
+  neighbor it reads has been edited (before the create or after it) its skirt from that
+  neighbor is rebuilt from the neighbor's current fit, as the cascade rebuilds any
+  dependent's. So a created window's fit does not depend on where its create sits in the
+  log relative to the edits of the windows it reads, or to the adds into an earlier
+  created window.
 - **Ids are only appended.** No existing window is ever renumbered, so a consumer that
   partitions peaks on ``window_id`` sees exactly the windows an edit touched rather
-  than the whole spectrum.
-- **Deterministic extent.** The window's bounds are a function of the anchor and the
+  than the whole spectrum. Nor is an id ever reused: a new window takes an id above
+  every id a create has taken since ``fit run`` started the curation lineage (the
+  review's ``window_id_high_water``), so undoing a create never frees its id for a
+  different window. A curation file may pin the id a create takes, but only above
+  every created window the log still holds before it (``curation_conflict``,
+  ``replay_conflict`` otherwise): created ids only increase along the log. The
+  high-water mark bounds only the ids a create mints, so a pin may redo an undone
+  create under its own id.
+- **Deterministic extent.** The window's bounds are a function of the anchor, the
   *base* plan — the Stage 4 plan, or, when a structural merge revised it, the plan the
-  fit was made on (see :doc:`stage5_fitting`) — never of the current curated state, so
-  replaying an edit set in order reproduces the same window. A created window never
-  takes an id a structural merge absorbed. The window takes the plan's own margin each
-  side of the anchor, shifted (not shrunk) when the gap cannot center it.
+  fit was made on (see :doc:`stage5_fitting`) — and the windows the creates before it
+  installed, never of any fit, so replaying an edit set in order reproduces the same
+  window. A created window never takes an id a structural merge absorbed. The window
+  takes the plan's own margin each side of the anchor, shifted (not shrunk) when the
+  gap cannot center it.
 
 Two boundary cases resolve rather than fail. An anchor that already falls inside a
 window is refused (``bad_setting``, ``path`` ``anchor_mhz``) with a message pointing
@@ -340,6 +354,16 @@ group, without writing. An undo
 that would drop a created window surviving decisions still act on is refused
 (``curation_conflict``, ``orphans_created_window``), as is an id the log does not hold
 (``not_found``, kind ``decision``).
+
+A created window that survives an undo keeps its id, but its extent and the windows
+it reads are planned again from the creates that survive, in log order, so undoing an
+earlier create (one that bounded its gap, or that it read) can change them; undoing a
+widening returns the widened window to its earlier extent. The undo is not refused for
+that. It lists every window whose geometry it changes in
+``geometry_changed_window_ids`` (``--dry-run`` lists the same; the CLI prints the ids,
+and ``--json`` carries their count as ``n_geometry_changed``). The surviving creates are
+planned before anything is restored, so one that can no longer take its id
+(``curation_conflict``, ``replay_conflict``) leaves the file untouched.
 
 A client that keeps its own position in the log (an editor whose undo steps back
 through the decisions without re-fitting) aligns the file on its next real edit with

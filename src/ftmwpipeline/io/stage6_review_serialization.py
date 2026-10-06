@@ -12,6 +12,10 @@ HDF5 layout (under the caller-supplied group)::
         next_serial   (int; the serial the next decision takes -- a high-water
                        mark an undo never lowers; absent before serials, read
                        as 0)
+        window_id_high_water (int; the highest window id a Stage 6 create
+                       has minted in the lineage, so a fresh create never
+                       reuses an undone create's id; absent before it was
+                       recorded, read as -1)
         engine_version (int; the replay-engine version that wrote the review,
                        ``core.data_structures.ENGINE_VERSION``; absent on a
                        review a pre-engine build wrote)
@@ -471,6 +475,7 @@ def save_stage6_review_to_hdf5(
     group.attrs["creation_time"] = datetime.now().isoformat()
     group.attrs["n_windows"] = len(review.window_statuses)
     group.attrs["next_serial"] = int(review.next_serial)
+    group.attrs["window_id_high_water"] = int(review.window_id_high_water)
     if review.engine_version is not None:
         group.attrs["engine_version"] = int(review.engine_version)
     elif "engine_version" in group.attrs:
@@ -563,6 +568,7 @@ def load_stage6_review_from_hdf5(group: h5py.Group) -> Stage6Review:
         final_products=final_products,
         created_windows=created_windows,
         next_serial=int(group.attrs.get("next_serial", 0)),
+        window_id_high_water=int(group.attrs.get("window_id_high_water", -1)),
         engine_version=None if engine_version is None else int(engine_version),
         review_params=review_params,
     )

@@ -18,8 +18,8 @@ writes them (window and peak columns and the covariance, byte for byte, plus
 the fit header's JSON records), and the review's window statuses, decision
 log, final products and created-window overlay as their stored JSON. Write
 stamps (``creation_time``) and bookkeeping attrs that are not part of the state
-(the serial high-water mark, the engine version, the baseline's lineage id) are
-left out.
+(the serial and window-id high-water marks, the engine version, the baseline's
+lineage id) are left out.
 :func:`persisted_state_digest` reads the same parts straight from a file, so the
 two compare the bytes a write put on disk with the bytes a fresh write of the
 reference would.
@@ -72,6 +72,7 @@ from .stage6_impl import (
     _BatchCtx,
     _build_shared_fit_ctx,
     _cascade_batch,
+    _check_created_ids_monotone,
     _curated_statuses,
     _derive_batch_review,
     _final_products_for_fit,
@@ -173,6 +174,7 @@ def replay_full(
         fit_group=group,
     )
 
+    _check_created_ids_monotone(path, log)
     plan = _replay_plan(log)
     snap_tol = refit_snap_tol_mhz_impl(path)
     shared = _build_shared_fit_ctx(path, fit_group=group)
