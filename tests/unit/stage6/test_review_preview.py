@@ -791,9 +791,7 @@ class TestPlanField:
         f_lo = _clear_add_freq(sc_multi_file, lo)
         f_hi = _clear_add_freq(sc_multi_file, hi)
         cur = tmp_path / "cur.csv"
-        cur.write_text(
-            f"add,{lo},{f_lo},\nremove,{lo},{f_remove},\nadd,{hi},{f_hi},\n"
-        )
+        cur.write_text(f"add,{lo},{f_lo},\nremove,{lo},{f_remove},\nadd,{hi},{f_hi},\n")
 
         preview = review_preview_impl(sc_multi_file, cur, frame="raw")
 
