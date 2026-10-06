@@ -1721,7 +1721,15 @@ operations are every stage run (``import_data`` / ``Pipeline.create``,
 ``assign_windows``, ``fit_peaks``, ``review_run``), the curation calls
 (``review_apply``, ``review_preview``, ``review_accept``, ``review_edit``,
 ``review_create``, ``review_undo``), ``report_run``, ``scan_run``,
-``scan_all`` and ``run_pipeline`` (``Pipeline.build``).
+``scan_all`` and ``run_pipeline`` (``Pipeline.build``). A ``ReviewSession``'s
+verbs (``review_edit``, ``review_accept``, ``review_create``, ``review_undo``,
+``review_preview``, ``review_apply``) take the same two arguments and are the
+same operations as their ``Pipeline`` methods: the same events, check points
+and summaries, with ``Invalidated`` and ``StageFinished`` after the session's
+write is durable. A cancelled session verb leaves the file and the session as
+they were (a staged preview stays staged), and the session stays usable. An
+apply that persists a staged preview re-fits nothing, so it emits no
+``WindowProgress``.
 
 The callback runs on the calling thread, never in a worker process. Each event
 is a frozen dataclass exported from ``ftmwpipeline`` and serializes through

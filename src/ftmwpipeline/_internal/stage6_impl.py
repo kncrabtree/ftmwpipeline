@@ -43,6 +43,7 @@ from typing import (
     Any,
     Callable,
     Collection,
+    ContextManager,
     Dict,
     FrozenSet,
     Iterable,
@@ -180,12 +181,12 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 #: The ``review`` stage scope of the Stage 6 long operation running now, or
-#: ``None``. Set by :func:`_review_operation` for the duration of one public
-#: call, so the engine (:func:`_open_batch`, the action loops, the cascade, the
-#: epoch gate, the frame advisory) reports into it without every internal
-#: signature carrying it. A call made with no scope set (a ``ReviewSession``
-#: step, a replay helper) reports nothing beyond its log lines and is never
-#: cancelled.
+#: ``None``. Set by :func:`_review_body` for the duration of one public call
+#: (a :func:`_review_operation` entry point or a ``ReviewSession`` verb), so
+#: the engine (:func:`_open_batch`, the action loops, the cascade, the epoch
+#: gate, the frame advisory) reports into it without every internal signature
+#: carrying it. A call made with no scope set (a replay helper) reports nothing
+#: beyond its log lines and is never cancelled.
 _REVIEW_SCOPE: ContextVar[Optional[StageScope]] = ContextVar(
     "ftmw_review_scope", default=None
 )
@@ -229,24 +230,54 @@ def _review_operation(
             if _REVIEW_SCOPE.get() is not None and events is None and cancel is None:
                 with _caller_frame_ids():
                     return fn(*args, **kwargs)
-            ops = operation_events(verb, events, cancel)
             path = str(call["file_path"])
-            with ops.stage(Stage.REVIEW, verb=verb, file_path=path) as scope:
-                token = _REVIEW_SCOPE.set(scope)
-                try:
-                    # The whole call -- resolving, curating and persisting a
-                    # write, an undo's included -- is one atomic write;
-                    # StageFinished follows the replace.
-                    with atomic_write(path), _caller_frame_ids():
-                        result = fn(*args, **kwargs)
-                finally:
-                    _REVIEW_SCOPE.reset(token)
+            with _review_stage(verb, path, events, cancel) as scope:
+                with _review_body(scope, path):
+                    result = fn(*args, **kwargs)
                 scope.finish(summary(result, call), wrote=wrote(result, call))
             return result
 
         return wrapper  # type: ignore[return-value]
 
     return decorate
+
+
+def _review_stage(
+    verb: str,
+    file_path: str,
+    events: Optional[EventCallback],
+    cancel: Optional[CancelToken],
+) -> ContextManager[StageScope]:
+    """The ``review`` stage of one Stage 6 long operation (``verb``): cancel
+    check, ``StageStarted`` and the operation's ``environment_drift`` check on
+    entry. The caller runs its body in :func:`_review_body` and calls
+    ``finish`` after that block -- after the replace."""
+    ops = operation_events(verb, events, cancel)
+    return ops.stage(Stage.REVIEW, verb=verb, file_path=file_path)
+
+
+@contextmanager
+def _review_body(
+    scope: StageScope, file_path: str, *, write: bool = True
+) -> Iterator[None]:
+    """Run a Stage 6 operation's body with *scope* current
+    (:data:`_REVIEW_SCOPE`), its ``not_found`` ids in the caller's frame, and
+    -- with *write* -- inside one atomic write of *file_path*: resolving,
+    curating and persisting a write, an undo's included, is one transaction
+    that a cancel or any other exception discards whole. A ``ReviewSession``
+    verb opens it before its freshness check, so the transaction's
+    ``write_conflict`` stat predates every input the call is built from; the
+    entry point it then calls joins it (no ``events`` / ``cancel`` of its
+    own)."""
+    token = _REVIEW_SCOPE.set(scope)
+    try:
+        with ExitStack() as stack:
+            if write:
+                stack.enter_context(atomic_write(file_path))
+            stack.enter_context(_caller_frame_ids())
+            yield
+    finally:
+        _REVIEW_SCOPE.reset(token)
 
 
 def _review_scope() -> StageScope:
@@ -13809,6 +13840,14 @@ class ReviewSession:
     instant is still caught on the session's next use. Results are identical
     with or without a session; only latency differs.
 
+    Every verb takes the ``events`` / ``cancel`` keyword arguments of its
+    :class:`~ftmwpipeline.pipeline.Pipeline` method and is the same long
+    operation (the same ``operation`` verb, events, check points and
+    ``StageFinished.summary``): ``Invalidated`` and ``StageFinished`` follow
+    the replace, and a cancelled call persists nothing and leaves the session
+    as it was -- the shared context, a staged preview and a pending
+    ``base_changed`` note included -- so it can carry on.
+
     The session retains roughly 26 MB of active-FT arrays for its lifetime,
     and that lifetime is entirely caller-controlled -- the ``with`` block, or
     an explicit :meth:`close`. There is no module-level cache, so a session
@@ -13910,6 +13949,15 @@ class ReviewSession:
         self._fingerprint = _compute_fit_ctx_fingerprint(self._path)
 
     # -- single-window verbs --------------------------------------------------
+    #
+    # Each verb is one long operation, exactly as its Pipeline method is: it
+    # opens the ``review`` stage (_review_stage), runs its freshness check and
+    # the entry point inside one transaction with that stage current
+    # (_review_body; the entry point, called without events or cancel, joins
+    # both), and only after the replace refreshes its own bookkeeping and
+    # finishes the stage. An interrupted call -- a cancel, a refusal, a
+    # callback failure before the replace -- leaves the file and the session
+    # as they were.
 
     def review_edit(
         self,
@@ -13918,30 +13966,30 @@ class ReviewSession:
         add: Sequence[Union[float, str]] = (),
         remove: Sequence[Union[float, str]] = (),
         frame: Optional[Frame] = None,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
     ) -> RefitWindowResult:
         """Re-fit one window with ``add`` / ``remove`` edits.
 
-        Identical in arguments, return value and persisted effect to
+        Identical in arguments, return value, events and persisted effect to
         :meth:`Pipeline.review_edit
         <ftmwpipeline.pipeline.Pipeline.review_edit>`, which documents the
         full contract; the only difference is that this session's shared fit
         context is reused -- validated fresh first -- rather than rebuilt.
         """
-        _refuse_bare_edit(add, remove)
-        # The verb's transaction opens before the freshness check, so its
-        # write_conflict stat predates every input the edit is built from.
-        with atomic_write(self._path):
-            shared = self._sync()
-            self._drop_staged(base_changed=True)
-            result = refit_window_impl(
-                self._path,
-                window_id,
-                add=add,
-                remove=remove,
-                frame=frame,
-                _shared=shared,
-            )
-        self._resync_after_write()
+        with _review_stage("review edit", self._path, events, cancel) as scope:
+            _refuse_bare_edit(add, remove)
+            with _review_body(scope, self._path):
+                result = refit_window_impl(
+                    self._path,
+                    window_id,
+                    add=add,
+                    remove=remove,
+                    frame=frame,
+                    _shared=self._sync(),
+                )
+            self._committed()
+            scope.finish(review_edit_summary(result, add, remove))
         return result
 
     def review_accept(
@@ -13950,25 +13998,27 @@ class ReviewSession:
         *,
         candidate_freq: Optional[float] = None,
         frame: Optional[Frame] = None,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
     ) -> Optional[RefitWindowResult]:
         """Accept a window as reviewed, or revive a named ledger candidate.
 
-        Identical in arguments, return value and persisted effect to
+        Identical in arguments, return value, events and persisted effect to
         :meth:`Pipeline.review_accept
         <ftmwpipeline.pipeline.Pipeline.review_accept>`, reusing this
         session's shared fit context.
         """
-        with atomic_write(self._path):  # before the check: see review_edit
-            shared = self._sync()
-            self._drop_staged(base_changed=True)
-            result = review_accept_impl(
-                self._path,
-                window_id,
-                candidate_freq=candidate_freq,
-                frame=frame,
-                _shared=shared,
-            )
-        self._resync_after_write()
+        with _review_stage("review accept", self._path, events, cancel) as scope:
+            with _review_body(scope, self._path):
+                result = review_accept_impl(
+                    self._path,
+                    window_id,
+                    candidate_freq=candidate_freq,
+                    frame=frame,
+                    _shared=self._sync(),
+                )
+            self._committed()
+            scope.finish(review_accept_summary(result, window_id))
         return result
 
     def review_create(
@@ -13976,24 +14026,26 @@ class ReviewSession:
         anchor_mhz: float,
         *,
         frame: Optional[Frame] = None,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
     ) -> CreateWindowResult:
         """Install a fit window for a line no window covers.
 
-        Identical in arguments, return value and persisted effect to
+        Identical in arguments, return value, events and persisted effect to
         :meth:`Pipeline.review_create
         <ftmwpipeline.pipeline.Pipeline.review_create>`, reusing this
         session's shared fit context.
         """
-        with atomic_write(self._path):  # before the check: see review_edit
-            shared = self._sync()
-            self._drop_staged(base_changed=True)
-            result = create_window_impl(
-                self._path,
-                anchor_mhz,
-                frame=frame,
-                _shared=shared,
-            )
-        self._resync_after_write()
+        with _review_stage("review create", self._path, events, cancel) as scope:
+            with _review_body(scope, self._path):
+                result = create_window_impl(
+                    self._path,
+                    anchor_mhz,
+                    frame=frame,
+                    _shared=self._sync(),
+                )
+            self._committed()
+            scope.finish(review_create_summary(result))
         return result
 
     def review_undo(
@@ -14001,22 +14053,35 @@ class ReviewSession:
         ids: Sequence[int],
         *,
         dry_run: bool = False,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
     ) -> UndoResult:
         """Roll recorded decisions back by id, replaying the survivors.
 
-        Identical in arguments, return value and persisted effect to
+        Identical in arguments, return value, events and persisted effect to
         :meth:`Pipeline.review_undo
         <ftmwpipeline.pipeline.Pipeline.review_undo>`, reusing this
         session's shared fit context.
         """
-        with atomic_write(self._path):  # before the check: see review_edit
-            shared = self._sync()
+        with _review_stage("review undo", self._path, events, cancel) as scope:
+            with _review_body(scope, self._path):
+                result = review_undo_impl(
+                    self._path, ids, dry_run=dry_run, _shared=self._sync()
+                )
             if not dry_run:
-                self._drop_staged(base_changed=True)
-            result = review_undo_impl(self._path, ids, dry_run=dry_run, _shared=shared)
-        if not dry_run:
-            self._resync_after_write()
+                self._committed()
+            scope.finish(review_undo_summary(result, dry_run), wrote=not dry_run)
         return result
+
+    def _committed(self) -> None:
+        """This session's bookkeeping after one of its own writes has been
+        replaced into place: the write moved the base any staged preview was
+        computed against, so the preview is dropped (and the next apply told
+        so), and the fingerprint is re-read (:meth:`_resync_after_write`).
+        Never called for a write that did not land, so an interrupted verb
+        leaves the staged preview usable."""
+        self._drop_staged(base_changed=True)
+        self._resync_after_write()
 
     # -- batch door: preview / apply, with D4's staged reuse -----------------
 
@@ -14026,44 +14091,58 @@ class ReviewSession:
         *,
         actions: Optional[Sequence[Union[CurationAction, Mapping[str, Any]]]] = None,
         frame: Optional[Frame] = None,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
     ) -> ReviewPreviewResult:
         """Run a curation file's plan to completion in memory and report the
         fitted outcome, writing nothing.
 
-        Identical in arguments and return value to
+        Identical in arguments, return value and events to
         :meth:`Pipeline.review_preview
         <ftmwpipeline.pipeline.Pipeline.review_preview>`, with one addition:
         the finished, cascaded, never-persisted outcome is *staged* on this
         session, so an immediately-following :meth:`review_apply` of the
         identical plan against an unchanged base can persist it directly
-        rather than computing it a second time. See that method.
+        rather than computing it a second time. See that method. A cancelled
+        preview stages nothing and keeps the earlier staged preview, if any.
         """
-        source = curation_source(curation_path, actions)
-        # Refused before the session builds anything, as its apply is.
-        _require_engine_file(self._path)
-        shared = self._sync()
-        # A fresh preview supersedes any earlier drift note.
-        self._pending_base_changed = False
-        with _caller_frame_ids():
-            run = _run_review_preview(self._path, source, frame=frame, shared=shared)
-        if run.curated is not None:
-            assert self._fingerprint is not None
-            self._staged = _StagedPreview(
-                fingerprint=self._fingerprint,
-                source_key=_session_source_key(source),
-                frame=frame,
-                resolved_plan=list(run.result.plan),
-                warning_details=list(run.result.warning_details),
-                curated=run.curated,
-                created_windows=list(run.result.created_windows),
-                windows={
-                    wid: _applied_window_from_preview(pw)
-                    for wid, pw in run.result.windows.items()
-                },
-            )
-        else:
-            self._staged = None
+        with _review_stage("review preview", self._path, events, cancel) as scope:
+            # A preview writes nothing: no transaction.
+            with _review_body(scope, self._path, write=False):
+                source = curation_source(curation_path, actions)
+                # Refused before the session builds anything, as its apply is.
+                _require_engine_file(self._path)
+                shared = self._sync()
+                run = _run_review_preview(
+                    self._path, source, frame=frame, shared=shared
+                )
+            # A fresh preview supersedes any earlier drift note.
+            self._pending_base_changed = False
+            self._staged = self._staging(run, source, frame)
+            scope.finish(review_preview_summary(run.result), wrote=False)
         return run.result
+
+    def _staging(
+        self, run: _PreviewRun, source: CurationSource, frame: Optional[Frame]
+    ) -> Optional[_StagedPreview]:
+        """The staged form of a finished preview *run* (``None`` when it has
+        no curated state to persist)."""
+        if run.curated is None:
+            return None
+        assert self._fingerprint is not None
+        return _StagedPreview(
+            fingerprint=self._fingerprint,
+            source_key=_session_source_key(source),
+            frame=frame,
+            resolved_plan=list(run.result.plan),
+            warning_details=list(run.result.warning_details),
+            curated=run.curated,
+            created_windows=list(run.result.created_windows),
+            windows={
+                wid: _applied_window_from_preview(pw)
+                for wid, pw in run.result.windows.items()
+            },
+        )
 
     def _persist_staged(self, staged: _StagedPreview) -> None:
         """The write half of D4's staged-reuse apply: admit the write and
@@ -14076,19 +14155,22 @@ class ReviewSession:
         by the same :func:`_curate` the apply runs, epoch gate included, so
         a refitting preview was gated when it was made, against the same
         base.
+
+        Runs inside :meth:`review_apply`'s transaction and stage: the cancel
+        check points are the stage's entry and :func:`_finish_batch`'s last
+        one (there is no fit, so no window between them), and nothing
+        persisted lands unless the whole apply commits.
         """
-        # Called inside review_apply's transaction.
         _require_engine_file(self._path)
-        with atomic_write(self._path):
-            _finish_batch(
-                replace(
-                    staged.curated,
-                    baseline_taken=_open_batch(
-                        self._path, lineage_id=staged.curated.pending_lineage
-                    ),
+        _finish_batch(
+            replace(
+                staged.curated,
+                baseline_taken=_open_batch(
+                    self._path, lineage_id=staged.curated.pending_lineage
                 ),
-                self._path,
-            )
+            ),
+            self._path,
+        )
 
     def review_apply(
         self,
@@ -14097,21 +14179,25 @@ class ReviewSession:
         actions: Optional[Sequence[Union[CurationAction, Mapping[str, Any]]]] = None,
         frame: Optional[Frame] = None,
         log_prefix: Optional[int] = None,
+        events: Optional[EventCallback] = None,
+        cancel: Optional[CancelToken] = None,
     ) -> CurationApplyResult:
         """Apply a curation file as one batch.
 
-        Identical in arguments, return value and persisted effect to
+        Identical in arguments, return value, events and persisted effect to
         :meth:`Pipeline.review_apply
-        <ftmwpipeline.pipeline.Pipeline.review_apply>`, with one addition:
-        when an immediately-preceding :meth:`review_preview` staged the
-        identical plan -- same curation file, same ``frame``, same resolved
-        actions -- against a base that has not moved since, this persists
-        that already-computed result directly instead of re-running the
-        appliers, the cascade and the review derivation. The bytes persisted
-        are then guaranteed to be exactly the ones the preview showed rather
-        than a second computation trusted to agree with the first. Any
-        mismatch -- a different plan, or a base that moved -- falls back to a
-        full, ordinary apply, identical to the sessionless one.
+        <ftmwpipeline.pipeline.Pipeline.review_apply>` (without its
+        ``dry_run``), with one addition: when an immediately-preceding
+        :meth:`review_preview` staged the identical plan -- same curation
+        file, same ``frame``, same resolved actions -- against a base that has
+        not moved since, this persists that already-computed result directly
+        instead of re-running the appliers, the cascade and the review
+        derivation. The bytes persisted are then guaranteed to be exactly the
+        ones the preview showed rather than a second computation trusted to
+        agree with the first; such an apply re-fits nothing, so it emits no
+        ``WindowProgress``. Any mismatch -- a different plan, or a base that
+        moved -- falls back to a full, ordinary apply, identical to the
+        sessionless one.
 
         ``base_changed`` on the result is ``True`` only when a staged preview
         existed but had to be dropped because the base moved out from under
@@ -14122,14 +14208,24 @@ class ReviewSession:
         <ftmwpipeline.pipeline.Pipeline.review_apply>`'s: a staged preview
         was computed against the log as it stood, so none is reused when a
         prefix is given.
+
+        An interrupted apply (a cancel, a refusal) persists nothing and keeps
+        the staged preview and the drift note, so a retry of the same call
+        behaves as this one would have.
         """
-        source = curation_source(curation_path, actions)
-        # The transaction opens before the freshness check, so its
-        # write_conflict stat predates every input this apply is built from
-        # (the fingerprint, the staged preview, the shared context).
-        with _caller_frame_ids(), atomic_write(self._path):
-            result = self._apply(source, frame=frame, log_prefix=log_prefix)
-        self._resync_after_write()
+        with _review_stage("review apply", self._path, events, cancel) as scope:
+            with _review_body(scope, self._path):
+                result = self._apply(
+                    curation_source(curation_path, actions),
+                    frame=frame,
+                    log_prefix=log_prefix,
+                )
+            # The staged preview was persisted, or did not match this call:
+            # either way it is spent; and the drift note has been reported.
+            self._staged = None
+            self._pending_base_changed = False
+            self._resync_after_write()
+            scope.finish(review_apply_summary(result, False))
         return result
 
     def _apply(
@@ -14139,39 +14235,36 @@ class ReviewSession:
         frame: Optional[Frame],
         log_prefix: Optional[int],
     ) -> CurationApplyResult:
-        """The body of :meth:`review_apply`, inside its transaction."""
+        """The body of :meth:`review_apply`, inside its transaction. Leaves
+        the session's staging bookkeeping to :meth:`review_apply`, after the
+        commit."""
         # Before the staged-reuse path resolves the request: a pre-engine file
         # is refused before anything is resolved, fitted or written.
         _require_engine_file(self._path)
         shared = self._sync()
         base_changed = self._pending_base_changed
-        self._pending_base_changed = False
 
         staged = self._staged
-        if staged is not None:
-            same_request = (
-                log_prefix is None
-                and staged.source_key == _session_source_key(source)
-                and staged.frame == frame
-                and staged.fingerprint == self._fingerprint
-            )
-            if same_request:
-                plan, _, _ = _resolve_curation_call(self._path, source, frame)
-                if plan == staged.resolved_plan:
-                    self._persist_staged(staged)
-                    self._staged = None
-                    return CurationApplyResult(
-                        plan=plan,
-                        warnings=_warning_messages(staged.warning_details),
-                        warning_details=list(staged.warning_details),
-                        applied=len(plan),
-                        dry_run=False,
-                        created_windows=list(staged.created_windows),
-                        windows=dict(staged.windows),
-                        base_changed=base_changed,
-                    )
-            # Staged, but it does not match this call -- irrelevant now.
-            self._staged = None
+        if (
+            staged is not None
+            and log_prefix is None
+            and staged.source_key == _session_source_key(source)
+            and staged.frame == frame
+            and staged.fingerprint == self._fingerprint
+        ):
+            plan, _, _ = _resolve_curation_call(self._path, source, frame)
+            if plan == staged.resolved_plan:
+                self._persist_staged(staged)
+                return CurationApplyResult(
+                    plan=plan,
+                    warnings=_warning_messages(staged.warning_details),
+                    warning_details=list(staged.warning_details),
+                    applied=len(plan),
+                    dry_run=False,
+                    created_windows=list(staged.created_windows),
+                    windows=dict(staged.windows),
+                    base_changed=base_changed,
+                )
 
         result = apply_curation_impl(
             self._path,

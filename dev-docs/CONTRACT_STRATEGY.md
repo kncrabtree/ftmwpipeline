@@ -880,7 +880,8 @@ Until 5.2, cancelling Stage 5 leaves nothing behind, like any other stage.
     `estimate_noise`, `calibrate_tau`, `recommend_shape`, `calibrate_timebase`,
     `detect_peaks`, `assign_windows`, `fit_peaks`, `review_run`;
   - the curation and refit calls: `review_apply`, `review_preview`,
-    `review_accept`, `review_edit`, `review_create`, `review_undo`;
+    `review_accept`, `review_edit`, `review_create`, `review_undo`, on the
+    functional API, on `Pipeline`, and as `ReviewSession` verbs;
   - `report_run`, `scan_run`, `scan_all` and `run_pipeline`.
 
   `scan_run`'s existing `progress` callback keeps working, and passing `events`
@@ -993,6 +994,15 @@ What is left in the file is the same as after a cancel at that point.
 - Every Stage 6 write (`review_apply`, a refit with its replay and cascade,
   `review_undo`, an apply with `log_prefix`) is one unit: a cancel before its
   persist discards the whole write.
+- A `ReviewSession` verb is the same operation as its `Pipeline` method: one
+  `review` stage that owns the session's transaction, with `StageStarted` at
+  entry, the same check points, and `Invalidated` / `StageFinished` only after
+  the replace. The entry point it calls joins that stage and transaction; it
+  never opens its own. A cancelled verb leaves the file unchanged and the
+  session as it was (shared context, staged preview, pending `base_changed`),
+  and the session can continue. An apply that persists a staged preview
+  re-fits nothing: its check points are the stage's entry and the persist's
+  last one, and it emits no `WindowProgress`.
 - **Stage 5 in parallel.** A cancel stops the walk without waiting for windows
   that are still fitting:
   - the workers are terminated;

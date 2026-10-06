@@ -83,6 +83,17 @@ its ``evidence`` are raw.
 ``stage5.shape`` given as ``'{"kind": "gaussian"}'`` is parsed as the mapping
 form instead of being refused as an unknown shape name.
 
+**``ReviewSession`` verbs take ``events`` and ``cancel``.** Each session verb
+(``review_edit``, ``review_accept``, ``review_create``, ``review_undo``,
+``review_preview``, ``review_apply``) takes the arguments of its ``Pipeline``
+method and reports as the same operation. The session's own transaction now
+sits inside the operation, so ``Invalidated`` and ``StageFinished`` arrive
+after the write is durable; before, the entry point the session called
+finished its stage inside the session's still-open transaction. A cancelled
+or refused session verb leaves the file and the session as they were, a staged
+preview and a pending ``base_changed`` note included, so the session carries
+on.
+
 **What an accepted thaw rewrites is re-derived or re-fit.** An accepted thaw
 rewrites its primary window in place, after that window's own pass derived its
 doublet adjudications and its rescue-candidate ledger from the fit the thaw
