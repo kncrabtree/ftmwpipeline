@@ -234,11 +234,12 @@ def test_undo_replays_a_lineless_accept_with_a_fit_edit(flagged_source, tmp_path
     ftmw.review_accept(str(path), wid)
     ftmw.review_create(str(path), first, frame="raw")
     ftmw.review_create(str(path), second, frame="raw")
-    last = ftmw.review_log(str(path))[-1].order_index
+    last = ftmw.review_log(str(path))[-1].serial
     ftmw.review_undo(str(path), [last])
     review = ftmw.get_review_status(str(path))
     assert review.window_statuses[wid].provenance == "reviewed"
-    kinds = sorted(e.kind for e in review.decision_log)
+    # The replay runs, and re-records, the log in its own order.
+    kinds = [e.kind for e in review.decision_log]
     assert kinds == ["accept", "create_window"]
 
 

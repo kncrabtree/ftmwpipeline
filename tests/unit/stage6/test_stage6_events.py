@@ -131,9 +131,13 @@ def test_failing_callback_mid_batch_discards_it(stage5_small_file):
     assert _content_digest(stage5_small_file) == before
 
 
-def test_undo_honours_a_cancel_only_before_its_restore(stage5_small_file, monkeypatch):
+def test_a_cancel_during_an_undo_discards_it(stage5_small_file):
+    """An undo is one write like any other: a cancel before it starts, or
+    while its replay runs, leaves the file exactly as it was."""
     path = str(stage5_small_file)
+    wid, freqs = _a_window_with_two_peaks(stage5_small_file)
     ftmw.review_apply(path, actions=_remove_action(stage5_small_file))
+    ftmw.review_edit(path, wid, remove=[freqs[1]], frame="raw")
     applied = _content_digest(stage5_small_file)
 
     token = _Token()
@@ -142,23 +146,23 @@ def test_undo_honours_a_cancel_only_before_its_restore(stage5_small_file, monkey
         ftmw.review_undo(path, [0], cancel=token)
     assert _content_digest(stage5_small_file) == applied
 
-    # Once the restore has begun, a cancel no longer stops it.
+    # Mid-replay: the survivor's refit reports its window, and the cancel
+    # set then stops the replay before anything is persisted.
     token = _Token()
-    restore = stage6_impl._reset_to_baseline
 
-    def restore_then_cancel(*args: object, **kwargs: object) -> None:
-        restore(*args, **kwargs)  # type: ignore[arg-type]
-        token.set()
+    def cancel_on_window(event: object) -> None:
+        if isinstance(event, WindowProgress):
+            token.set()
 
-    monkeypatch.setattr(stage6_impl, "_reset_to_baseline", restore_then_cancel)
-    result = ftmw.review_undo(path, [0], cancel=token)
-    assert result.removed and ftmw.review_log(path) == []
+    with pytest.raises(OperationCancelledError):
+        ftmw.review_undo(path, [0], events=cancel_on_window, cancel=token)
+    assert _content_digest(stage5_small_file) == applied
+    assert len(ftmw.review_log(path)) == 2
 
 
-def test_a_callback_failing_mid_replay_lets_the_undo_land(stage5_small_file):
-    """Inside the restore-then-replay a callback failure is held like a cancel:
-    the replay completes and is written, then the call fails with
-    ``callback_failed`` (and no ``StageFinished``)."""
+def test_a_callback_failing_mid_replay_discards_the_undo(stage5_small_file):
+    """A callback that raises during an undo's replay fails the call with
+    ``callback_failed`` and leaves the file as it was, as for any write."""
     path = str(stage5_small_file)
     wid, freqs = _a_window_with_two_peaks(stage5_small_file)
     ftmw.review_apply(
@@ -170,6 +174,7 @@ def test_a_callback_failing_mid_replay_lets_the_undo_land(stage5_small_file):
     )
     log = ftmw.review_log(path)
     assert len(log) >= 2
+    before = _content_digest(stage5_small_file)
     seen: list = []
 
     def fail_on_window(event: object) -> None:
@@ -178,12 +183,11 @@ def test_a_callback_failing_mid_replay_lets_the_undo_land(stage5_small_file):
             raise RuntimeError("listener broke")
 
     with pytest.raises(CallbackFailedError) as info:
-        ftmw.review_undo(path, [log[0].order_index], events=fail_on_window)
+        ftmw.review_undo(path, [log[0].serial], events=fail_on_window)
     assert info.value.event_schema == "ftmw/window_progress@1"
     assert WindowProgress in seen and StageFinished not in seen
-    # The undo landed: the first decision is gone, the rest were replayed.
-    remaining = ftmw.review_log(path)
-    assert len(remaining) == len(log) - 1
+    assert _content_digest(stage5_small_file) == before
+    assert len(ftmw.review_log(path)) == len(log)
 
 
 def test_preview_and_dry_run_record_no_completed_stage(stage5_small_file):

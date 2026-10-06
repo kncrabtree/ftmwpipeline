@@ -1,11 +1,13 @@
-"""Structural invariants of the Stage 6 fit-editing engine.
+"""Structural invariants of the Stage 6 write path.
 
-Every Stage 6 operation that changes a fitted number -- the interactive
-single-window verbs, a curation file, an undo replay -- runs through one engine:
-``_open_batch`` (epoch gate, undo baseline, shared fit context), the per-action
-appliers, then ``_finish_batch`` (one cascade, one fit persist, one review
-persist). The point of routing everything through it is that the guards are
-enforced by structure rather than remembered at each call site.
+Every Stage 6 write -- the interactive single-window verbs, a curation file, an
+undo, ``review run``, a session's staged preview -- runs through one path:
+``_open_batch`` (admission and the undo baseline), resolution of the request
+into decision rows, ``_curate`` (the structural pass, the epoch gate when the
+write refits, the full reference replay) and ``_finish_batch`` (one fit
+persist, one review persist). The point of routing everything through it is
+that the guards are enforced by structure rather than remembered at each call
+site.
 
 These tests hold that structure in place. The behavioral ones check that each
 entry point is in fact gated; the static ones check that no *new* entry point
@@ -31,8 +33,8 @@ from ftmwpipeline.core.environment import ANALYSIS_EPOCH, capture_environment
 
 pytestmark = [pytest.mark.integration]
 
-# The module functions that open the engine. Kept as a literal list so that
-# adding an entry point without deciding how it is gated fails
+# The module functions that write through the engine. Kept as a literal list
+# so that adding an entry point without deciding how it is gated fails
 # ``test_no_engine_entry_point_is_unlisted`` rather than passing silently.
 ENGINE_ENTRY_POINTS: Set[str] = {
     "refit_window_impl",
@@ -43,6 +45,8 @@ ENGINE_ENTRY_POINTS: Set[str] = {
     "apply_curation_impl",
     "review_undo_impl",
     "_apply_curation_at_prefix",
+    "_review_run",
+    "_run_review_preview",
 }
 
 
@@ -76,13 +80,26 @@ class TestEngineIsSingleSourced:
     def test_only_finish_batch_persists_the_fit(self):
         """One writer for ``/stage5_fitting``, reachable only through the engine.
 
-        A second place that persisted a fit could skip the cascade, the review
-        refresh, or the gate -- so there is exactly one, and it is the engine's
-        own closing step.
+        A second place that persisted a fit could skip the replay, the review
+        refresh, or the gate -- so there is exactly one, and it is the write
+        path's own closing step.
         """
-        writers = set(_functions_calling({"save_spectrum_fit_to_hdf5"}))
+        writers = set(
+            _functions_calling(
+                {"save_spectrum_fit_to_hdf5", "update_spectrum_fit_windows_in_hdf5"}
+            )
+        )
         assert writers == {"_finish_batch"}, (
             "Stage 6 must persist /stage5_fitting in exactly one place "
+            f"(_finish_batch); found writers: {sorted(writers)}"
+        )
+
+    def test_only_finish_batch_writes_the_engine_keys(self):
+        """The engine's keys describe the persisted fits, so they are written
+        in the same place the fits are, and nowhere else."""
+        writers = set(_functions_calling({"save_stage6_engine_state"}))
+        assert writers == {"_finish_batch"}, (
+            "Stage 6 must write /stage6_engine in exactly one place "
             f"(_finish_batch); found writers: {sorted(writers)}"
         )
 
@@ -94,40 +111,105 @@ class TestEngineIsSingleSourced:
             f"found: {sorted(snappers)}"
         )
 
+    def test_curate_is_the_only_path_to_finish_batch(self):
+        """Every persisted state is one ``_curate`` computed: a function that
+        persists curates first, or persists a session's staged preview (itself
+        a ``_curate`` result, made by ``_curate_request``)."""
+        persisters = set(_functions_calling({"_finish_batch"}))
+        curators = set(_functions_calling({"_curate"}))
+        stray = persisters - curators - {"_persist_staged"}
+        assert (
+            not stray
+        ), f"these functions persist a state they did not curate: {sorted(stray)}"
+
     def test_no_engine_entry_point_is_unlisted(self):
-        """Every function that opens a batch is covered by the gate test below.
+        """Every function that writes through the engine is covered by the gate
+        test below.
 
         A new verb routed through the engine is gated automatically -- but it
         still has to be listed here, so that its gating is asserted rather than
         assumed.
         """
         openers = set(
-            _functions_calling({"_run_single_action", "_execute_curation_batch"})
+            _functions_calling({"_curate_request", "_curate", "_single_action_refit"})
         )
-        openers -= {"_open_batch", "_finish_batch"}
+        # The two shared helpers every verb reaches the engine through.
+        openers -= {"_curate_request", "_single_action_refit"}
         unlisted = openers - ENGINE_ENTRY_POINTS
         assert not unlisted, (
-            f"these functions open the Stage 6 engine but are not listed in "
-            f"ENGINE_ENTRY_POINTS, so nothing asserts they are epoch-gated: "
-            f"{sorted(unlisted)}"
+            f"these functions write through the Stage 6 engine but are not "
+            f"listed in ENGINE_ENTRY_POINTS, so nothing asserts they are "
+            f"epoch-gated: {sorted(unlisted)}"
         )
 
     def test_the_epoch_gate_is_enforced_by_the_engine(self):
-        """The gate lives in ``_open_batch``; only undo may also pre-check.
-
-        Undo restores the baseline *before* it replays, so it has to refuse
-        before that rollback rather than when the replay opens its batch.
-        """
+        """The gate lives in ``_curate``, which applies it to a write that
+        refits; a dry run that would install a window reports its structure
+        through the same gate."""
         gaters = set(_functions_calling({"require_splice_compatible_environment"}))
-        assert gaters == {
-            "_open_batch",
-            "review_undo_impl",
-            "_apply_curation_at_prefix",
-        }, (
-            "the epoch gate belongs to _open_batch (plus review_undo_impl and "
-            "_apply_curation_at_prefix, which restore the baseline before they "
-            f"open a batch and so must refuse before that); found: {sorted(gaters)}"
+        assert gaters == {"_curate", "_resolve_created_window_structure"}, (
+            "the epoch gate belongs to _curate (plus the dry run's structural "
+            f"report of a create); found: {sorted(gaters)}"
         )
+
+
+#: Every Stage 6 write: the engine entry points that are public verbs, plus
+#: ``review run`` and a ReviewSession's persist of a staged preview.
+WRITE_ENTRY_POINTS: Set[str] = (
+    ENGINE_ENTRY_POINTS
+    - {"_apply_curation_at_prefix", "_review_run", "_run_review_preview"}
+) | {
+    "review_run_impl",
+    "_persist_staged",
+    "_apply",
+}
+
+
+class TestEveryWriteRefusesAPreEngineFile:
+    def test_every_write_entry_point_calls_the_engine_gate(self):
+        """Refuse-and-flag is structural: each write checks the file before it
+        resolves, fits or writes anything. (A log-prefix apply is reached
+        only through ``apply_curation_impl``, which checks first.)"""
+        tree = _module_ast()
+        callers: Set[str] = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if any(
+                isinstance(sub, ast.Call)
+                and isinstance(sub.func, ast.Name)
+                and sub.func.id == "_require_engine_file"
+                for sub in ast.walk(node)
+            ):
+                callers.add(node.name)
+        missing = WRITE_ENTRY_POINTS - callers
+        assert not missing, (
+            "these Stage 6 writes do not call _require_engine_file, so a "
+            f"pre-engine file could be written: {sorted(missing)}"
+        )
+
+    def test_a_session_apply_gates_before_it_resolves(self):
+        """``ReviewSession._apply`` resolves the request on its staged-reuse
+        path, so the gate must be its first statement, not only the
+        ``_persist_staged`` it reaches after resolving."""
+        session = next(
+            node
+            for node in _module_ast().body
+            if isinstance(node, ast.ClassDef) and node.name == "ReviewSession"
+        )
+        apply = next(
+            node
+            for node in session.body
+            if isinstance(node, ast.FunctionDef) and node.name == "_apply"
+        )
+        body = apply.body[1:] if ast.get_docstring(apply) else apply.body
+        first = body[0]
+        assert (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Call)
+            and isinstance(first.value.func, ast.Name)
+            and first.value.func.id == "_require_engine_file"
+        ), "ReviewSession._apply must call _require_engine_file first"
 
 
 def _force_fit_epoch(path: Path, epoch: int) -> None:
@@ -160,6 +242,26 @@ class TestEveryEntryPointIsGated:
         wf = next(w for w in sf.window_fits if len(w.fitted_peaks) >= 2)
         return int(wf.window_id), [float(p.frequency_mhz) for p in wf.fitted_peaks]
 
+    @staticmethod
+    def _just_past_a_live_window(path: Path) -> float:
+        """Two active-FT bins above the highest live window's upper edge: a
+        valid create anchor (its structural checks pass, so the write reaches
+        the gate)."""
+        from ftmwpipeline._internal.stage4_impl import load_windows_impl
+        from ftmwpipeline.io.fitting_serialization import load_spectrum_fit_from_hdf5
+
+        with h5py.File(path, "r") as f:
+            sf = load_spectrum_fit_from_hdf5(f["stage5_fitting"])
+        live = {int(w.window_id) for w in sf.window_fits if w.window_id is not None}
+        plan = load_windows_impl(str(path))["plan"]
+        top = max(
+            (w for w in plan.windows if int(w.window_id) in live),
+            key=lambda w: max(w.freq_range),
+        )
+        lo, hi = min(top.freq_range), max(top.freq_range)
+        span = top.diagnostics["grid_span"]
+        return hi + 2 * (hi - lo) / (int(span[1]) - int(span[0]))
+
     def _operations(
         self, path: Path, tmp_path: Path
     ) -> Dict[str, Callable[[], object]]:
@@ -184,17 +286,21 @@ class TestEveryEntryPointIsGated:
             "review_accept_candidate": lambda: ftmw.review_accept(
                 p, wid, candidate_freq=freqs[0]
             ),
-            "review_create": lambda: ftmw.review_create(p, freqs[0] + 0.5),
+            "review_create": lambda: ftmw.review_create(
+                p, self._just_past_a_live_window(path)
+            ),
             "review_apply_edit": lambda: ftmw.review_apply(p, edit_csv),
             "review_apply_candidate_accept": lambda: ftmw.review_apply(p, accept_csv),
+            "review_preview_edit": lambda: ftmw.review_preview(p, edit_csv),
         }
 
     def test_every_operation_is_gated_and_writes_nothing(self, fitted, tmp_path):
         ops = self._operations(fitted, tmp_path)
         # Every listed engine entry point is exercised, except review_undo_impl
         # and _apply_curation_at_prefix, which need recorded decisions and are
-        # covered in test_environment_gate.
-        assert len(ops) >= len(ENGINE_ENTRY_POINTS) - 2
+        # covered in test_environment_gate, and _review_run, which refits
+        # nothing and so is not gated (below).
+        assert len(ops) >= len(ENGINE_ENTRY_POINTS) - 3
 
         _force_fit_epoch(fitted, ANALYSIS_EPOCH + 1)
         for name, op in ops.items():
@@ -213,6 +319,33 @@ class TestEveryEntryPointIsGated:
         _force_fit_epoch(fitted, ANALYSIS_EPOCH + 1)
         assert ftmw.review_accept(str(fitted), wid) is None
         assert [e.kind for e in ftmw.review_log(str(fitted))] == ["accept"]
+
+    def test_writes_that_refit_nothing_are_not_gated(self, fitted):
+        """``review run``, a bare accept and an undo of every fit-changing
+        decision refit nothing, so they stay available on an unacknowledged
+        file; an edit, which refits, is refused. A write that refits nothing
+        keeps the fits it finds."""
+        wid, freqs = self._a_fitted_peak(fitted)
+        p = str(fitted)
+        ftmw.review_edit(p, wid, remove=[freqs[0]], frame="raw")
+        ftmw.review_accept(p, wid)
+        _force_fit_epoch(fitted, ANALYSIS_EPOCH + 1)
+
+        with h5py.File(fitted, "r") as f:
+            fit_before = f["stage5_fitting/peaks/frequency_mhz"][...].tobytes()
+        ftmw.review_run(p, kappa=7.0)
+        ftmw.review_accept(p, wid)
+        with h5py.File(fitted, "r") as f:
+            assert f["stage5_fitting/peaks/frequency_mhz"][...].tobytes() == fit_before
+        with pytest.raises(ValueError, match="analysis epoch"):
+            ftmw.review_edit(p, wid, remove=[freqs[1]], frame="raw")
+        edits = [e.serial for e in ftmw.review_log(p) if e.kind != "accept"]
+        ftmw.review_undo(p, edits)
+        assert [e.kind for e in ftmw.review_log(p)] == ["accept", "accept"]
+        with h5py.File(fitted, "r") as f:
+            restored = f["stage5_fitting/peaks/frequency_mhz"][...].tobytes()
+            baseline = f["stage5_fitting_baseline/peaks/frequency_mhz"][...].tobytes()
+        assert restored == baseline
 
 
 class TestArgumentChecksPrecedeAnyWrite:

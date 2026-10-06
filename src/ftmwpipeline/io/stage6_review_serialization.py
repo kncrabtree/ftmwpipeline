@@ -9,6 +9,21 @@ HDF5 layout (under the caller-supplied group)::
     .attrs:
         creation_time (ISO8601)
         n_windows     (int)
+        next_serial   (int; the serial the next decision takes -- a high-water
+                       mark an undo never lowers; absent before serials, read
+                       as 0)
+        window_id_high_water (int; the highest window id a Stage 6 create
+                       has minted in the lineage, so a fresh create never
+                       reuses an undone create's id; absent before it was
+                       recorded, read as -1)
+        engine_version (int; the replay-engine version that wrote the review,
+                       ``core.data_structures.ENGINE_VERSION``; absent on a
+                       review a pre-engine build wrote)
+        review_params (JSON object: ``bar``, ``attention_candidate_evidence``,
+                       ``kappa``, ``noise_floor`` -- the attention-routing
+                       parameters the statuses were computed under, recorded
+                       by ``review run``; absent until a Stage 6 write records
+                       them, read as ``None``)
     window_statuses/ (JSON, per-window serialization)
         .attrs:
             data  (JSON string)
@@ -35,7 +50,12 @@ Each element of ``attention_reasons`` is a dict with keys
 object; absent in records written before it existed, read as empty).
 
 The decision log is a JSON list (a window carries entries once a `review` edit
-records a decision against it). The final-products subgroup holds the
+records a decision against it). Each row carries its ``serial`` and its peak
+identity -- ``targets`` (the ``peak_uid`` values it removes), ``seeds_mhz``
+(the raw-frame positions of the peaks it births) and ``born_uids`` (their
+recorded uids, index-aligned with ``seeds_mhz``), each a JSON list, empty for
+a kind that removes or births nothing. All four are absent on a row a
+pre-engine build recorded, read as ``Absent.NOT_RUN``. The final-products subgroup holds the
 consolidated, frequency-calibrated line list `review run` builds. Its per-line
 fit fields (``decay_time_us``, ``decay_time_error_us``, ``shape``,
 ``fwhm_mhz``, ``detection_index``, ``fit_window_mhz``) can be
@@ -62,6 +82,7 @@ from __future__ import annotations
 
 import json
 import math
+from dataclasses import asdict
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -82,6 +103,7 @@ from ..core.data_structures import (
     FinalProducts,
     FitWindow,
     FixedContributor,
+    ReviewParams,
     Stage6Review,
     WindowReviewStatus,
 )
@@ -213,7 +235,7 @@ def _status_from_dict(d: Dict[str, Any]) -> WindowReviewStatus:
 
 
 def _entry_to_dict(entry: DecisionLogEntry) -> Dict[str, Any]:
-    return {
+    out: Dict[str, Any] = {
         "order_index": entry.order_index,
         "window_id": entry.window_id,
         "frequency_mhz": entry.frequency_mhz,
@@ -221,6 +243,15 @@ def _entry_to_dict(entry: DecisionLogEntry) -> Dict[str, Any]:
         "provenance": entry.provenance,
         "evidence": entry.evidence,
     }
+    if not isinstance(entry.serial, Absent):
+        out["serial"] = int(entry.serial)
+    if not isinstance(entry.targets, Absent):
+        out["targets"] = [int(u) for u in entry.targets]
+    if not isinstance(entry.seeds_mhz, Absent):
+        out["seeds_mhz"] = [float(f) for f in entry.seeds_mhz]
+    if not isinstance(entry.born_uids, Absent):
+        out["born_uids"] = [int(u) for u in entry.born_uids]
+    return out
 
 
 def _entry_from_dict(d: Dict[str, Any]) -> DecisionLogEntry:
@@ -231,6 +262,22 @@ def _entry_from_dict(d: Dict[str, Any]) -> DecisionLogEntry:
         kind=str(d["kind"]),
         provenance=str(d.get("provenance", "user")),
         evidence=dict(d.get("evidence", {})),
+        serial=int(d["serial"]) if d.get("serial") is not None else Absent.NOT_RUN,
+        targets=(
+            tuple(int(u) for u in d["targets"])
+            if d.get("targets") is not None
+            else Absent.NOT_RUN
+        ),
+        seeds_mhz=(
+            tuple(float(f) for f in d["seeds_mhz"])
+            if d.get("seeds_mhz") is not None
+            else Absent.NOT_RUN
+        ),
+        born_uids=(
+            tuple(int(u) for u in d["born_uids"])
+            if d.get("born_uids") is not None
+            else Absent.NOT_RUN
+        ),
     )
 
 
@@ -452,6 +499,16 @@ def save_stage6_review_to_hdf5(
     """
     group.attrs["creation_time"] = datetime.now().isoformat()
     group.attrs["n_windows"] = len(review.window_statuses)
+    group.attrs["next_serial"] = int(review.next_serial)
+    group.attrs["window_id_high_water"] = int(review.window_id_high_water)
+    if review.engine_version is not None:
+        group.attrs["engine_version"] = int(review.engine_version)
+    elif "engine_version" in group.attrs:
+        del group.attrs["engine_version"]
+    if review.review_params is not None:
+        group.attrs["review_params"] = json.dumps(asdict(review.review_params))
+    elif "review_params" in group.attrs:
+        del group.attrs["review_params"]
 
     statuses_list = [_status_to_dict(s) for s in review.window_statuses.values()]
     ws_grp = group.require_group("window_statuses")
@@ -521,11 +578,24 @@ def load_stage6_review_from_hdf5(group: h5py.Group) -> Stage6Review:
         for d in json.loads(str(raw)):
             created_windows.append(_fit_window_from_dict(d))
 
+    engine_version = group.attrs.get("engine_version")
+    raw_params = group.attrs.get("review_params")
+    review_params = (
+        None
+        if raw_params is None
+        else ReviewParams(
+            **{k: float(v) for k, v in json.loads(str(raw_params)).items()}
+        )
+    )
     return Stage6Review(
         window_statuses=window_statuses,
         decision_log=decision_log,
         final_products=final_products,
         created_windows=created_windows,
+        next_serial=int(group.attrs.get("next_serial", 0)),
+        window_id_high_water=int(group.attrs.get("window_id_high_water", -1)),
+        engine_version=None if engine_version is None else int(engine_version),
+        review_params=review_params,
     )
 
 

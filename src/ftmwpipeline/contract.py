@@ -88,7 +88,7 @@ from .file_manager import (
 #: The machine-contract version. The first published contract is ``1``; each
 #: release that adds (or, before 1.0.0, changes) contract elements raises it by
 #: one, so a client can gate on it as well as on :func:`capabilities`.
-CONTRACT_VERSION: int = 15
+CONTRACT_VERSION: int = 16
 
 #: Schema name of the :func:`capabilities` payload.
 CAPABILITIES_SCHEMA = "ftmw/capabilities@1"
@@ -933,6 +933,13 @@ _FIELDS: Dict[str, Tuple[str, ...]] = {
         "kind",
         "provenance",
         "evidence",
+        # Contract 16: the decision's stable id, and its peak identity: the
+        # uids it removes, the seeds it births and their recorded uids
+        # (Absent.NOT_RUN on a row a pre-engine build recorded).
+        "serial",
+        "targets",
+        "seeds_mhz",
+        "born_uids",
     ),
     # Review attention (contract 14): a WindowReviewStatus's reasons, through
     # get_review_status and ``review show --json``. ``detail`` is a human

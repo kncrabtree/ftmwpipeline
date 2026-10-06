@@ -31,6 +31,7 @@ the windows whose peaks survive their gates, so the helpers below work from the
 
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 from typing import List, Tuple
@@ -56,7 +57,11 @@ from ftmwpipeline.io.fitting_serialization import load_spectrum_fit_from_hdf5
 from ftmwpipeline.io.stage6_review_serialization import load_stage6_review_from_file
 from ftmwpipeline.pipeline import Pipeline
 
-pytestmark = [pytest.mark.integration]
+pytestmark = [
+    pytest.mark.integration,
+    # Design G1: every write here persists the reference replay of its log.
+    pytest.mark.usefixtures("every_write_is_reference"),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -432,8 +437,8 @@ class TestNarrowGapWidens:
 # ---------------------------------------------------------------------------
 # 6a. A widened window cascades; a created one still doesn't (W1)
 #
-# 2638 (the fixture this whole file builds from) has zero ``frozen_peak_``
-# entries, so no window is ever a real freeze source for another and
+# 2638 (the fixture this whole file builds from) has no plan contributor
+# edges, so no window is ever a real cascade source for another and
 # ``_cascade_succs`` returns an empty graph -- a cascade edge cannot occur
 # naturally here. Both tests below fake one, exactly as
 # ``test_curation.py::test_cascade_downstream_of_two_edits_refit_once`` does:
@@ -473,8 +478,8 @@ class TestWidenedWindowCascades:
 
         orig_succs = s6._cascade_succs
 
-        def fake_succs(window_fits, fit_window_map):
-            d = orig_succs(window_fits, fit_window_map)
+        def fake_succs(sources):
+            d = orig_succs(sources)
             d.setdefault(wid, set()).add(dep_wid)
             return d
 
@@ -510,13 +515,12 @@ class TestWidenedWindowCascades:
 
         orig_succs = s6._cascade_succs
 
-        def fake_succs(window_fits, fit_window_map):
-            d = orig_succs(window_fits, fit_window_map)
+        def fake_succs(sources):
+            d = orig_succs(sources)
             # The new window's id isn't known ahead of time, so point EVERY
             # live window (including whatever the create mints) at dep_wid.
-            for wf in window_fits:
-                if wf.window_id is not None:
-                    d.setdefault(int(wf.window_id), set()).add(dep_wid)
+            for w in sources:
+                d.setdefault(int(w), set()).add(dep_wid)
             return d
 
         monkeypatch.setattr(s6, "_cascade_succs", fake_succs)
@@ -640,19 +644,23 @@ class TestReplay:
         fresh = tmp_path / "fresh.ftmw"
         shutil.copy(working_file, fresh)
         review_undo_impl(str(fresh), [0])
+        # The undone create's id is never minted again: the file's create
+        # takes the next one (the window-id high-water mark).
+        minted = expected + 1
 
         cf = tmp_path / "cur.csv"
         cf.write_text(
             "action,window,freqs,params\n"
             f"create,new,{anchor:.6f},\n"
-            f"add,{expected},{anchor:.6f},\n"
+            f"add,{minted},{anchor:.6f},\n"
         )
         result = apply_curation_impl(str(fresh), cf)
 
         assert result.applied == 2
-        assert [e.kind for e in review_log_impl(str(fresh))] == [
-            "create_window",
-            "add",
+        log = review_log_impl(str(fresh))
+        assert [(e.kind, e.window_id) for e in log] == [
+            ("create_window", minted),
+            ("add", minted),
         ]
 
     def test_curation_dry_run_describes_the_create(self, working_file, tmp_path):
@@ -747,6 +755,309 @@ class TestReplay:
 
         with pytest.raises(ValueError, match="Undo them together"):
             review_undo_impl(str(working_file), [0])
+
+
+# ---------------------------------------------------------------------------
+# 7a. Window ids are never reused, and created ids increase along the log
+# ---------------------------------------------------------------------------
+
+
+class TestWindowIdHighWater:
+    def test_an_undone_creates_id_is_never_minted_again(self, working_file):
+        """Undoing the newest create leaves no window above the plan, yet a
+        fresh create does not take its id: the window-id high-water mark the
+        review records survives the undo."""
+        anchor = _free_anchor(working_file)
+        first = create_window_impl(str(working_file), anchor)
+        assert (
+            load_stage6_review_from_file(str(working_file)).window_id_high_water
+            == first.window_id
+        )
+
+        review_undo_impl(str(working_file), [0])
+        review = load_stage6_review_from_file(str(working_file))
+        assert review.created_windows == []
+        assert review.window_id_high_water == first.window_id
+
+        again = create_window_impl(str(working_file), anchor)
+        assert again.window_id == first.window_id + 1
+        assert again.freq_range == first.freq_range
+
+    def test_review_run_keeps_the_high_water_mark(self, working_file):
+        created = create_window_impl(str(working_file), _free_anchor(working_file))
+        review_run_impl(str(working_file))
+        assert (
+            load_stage6_review_from_file(str(working_file)).window_id_high_water
+            == created.window_id
+        )
+
+    def test_replaying_the_newest_create_keeps_its_id(self, working_file):
+        """The trap the mark must not fall into: replaying the newest create
+        pins the id the mark itself holds, and that is no conflict."""
+        anchor = _free_anchor(working_file)
+        created = create_window_impl(str(working_file), anchor)
+        s6.review_accept_impl(str(working_file), _live_ranges(working_file)[0][0])
+
+        review_undo_impl(str(working_file), [1])
+
+        log = review_log_impl(str(working_file))
+        assert [(e.kind, e.window_id) for e in log] == [
+            ("create_window", created.window_id)
+        ]
+
+    @pytest.mark.parametrize("log_prefix", [None, 0])
+    def test_a_file_pin_may_redo_an_undone_create_under_its_id(
+        self, working_file, tmp_path, log_prefix
+    ):
+        """The mark bounds only the ids a create mints: once the create is
+        gone from the log (undone, or cut by a log prefix), a curation file
+        may pin its id again."""
+        a1 = _free_anchor(working_file)
+        created = create_window_impl(str(working_file), a1)
+        if log_prefix is None:
+            review_undo_impl(str(working_file), [0])
+
+        cf = tmp_path / "cur.csv"
+        cf.write_text(f"create,{created.window_id},{a1:.6f},\n")
+        apply_curation_impl(str(working_file), cf, log_prefix=log_prefix)
+        review = load_stage6_review_from_file(str(working_file))
+        assert [int(w.window_id) for w in review.created_windows] == [created.window_id]
+        assert review.window_id_high_water == created.window_id
+
+    def test_a_file_pin_below_a_live_create_is_refused(self, working_file, tmp_path):
+        """A curation file may pin a create's id, but only above every created
+        window the log still holds: created ids increase along the log. A
+        free id below a live create is refused, though nothing holds it."""
+        hi = _live_ranges(working_file)[-1][2]
+        first = create_window_impl(str(working_file), hi + 5.0)
+        cf = tmp_path / "cur.csv"
+        cf.write_text(f"create,{first.window_id + 3},{hi + 15.0:.6f},\n")
+        apply_curation_impl(str(working_file), cf)
+        before = working_file.read_bytes()
+
+        cf.write_text(f"create,{first.window_id + 1},{hi + 25.0:.6f},\n")
+        with pytest.raises(s6.CurationConflictError, match="only increase") as exc:
+            apply_curation_impl(str(working_file), cf)
+        assert exc.value.reason == "replay_conflict"
+        assert exc.value.ids == [first.window_id + 1]
+        assert working_file.read_bytes() == before
+
+        cf.write_text(f"create,{first.window_id + 4},{hi + 25.0:.6f},\n")
+        apply_curation_impl(str(working_file), cf)
+        review = load_stage6_review_from_file(str(working_file))
+        assert review.window_id_high_water == first.window_id + 4
+
+    def test_a_log_whose_created_ids_decrease_is_corrupt(self, working_file):
+        """Only the engine writes the log, and it mints increasing ids, so a
+        log whose created ids decrease is refused as corrupt by a replay."""
+        from ftmwpipeline._internal.replay_reference import replay_full
+        from ftmwpipeline.file_manager import PipelineCorruptionError
+
+        hi = _live_ranges(working_file)[-1][2]
+        r1 = create_window_impl(str(working_file), hi + 5.0)
+        r2 = create_window_impl(str(working_file), hi + 15.0)
+        s6.review_accept_impl(str(working_file), _live_ranges(working_file)[0][0])
+        with h5py.File(str(working_file), "a") as h5f:
+            grp = h5f["stage6_review/decision_log"]
+            rows = json.loads(grp.attrs["data"])
+            assert [r["window_id"] for r in rows[:2]] == [r1.window_id, r2.window_id]
+            rows[0]["window_id"], rows[1]["window_id"] = r2.window_id, r1.window_id
+            grp.attrs["data"] = json.dumps(rows)
+        log = review_log_impl(str(working_file))
+
+        with pytest.raises(PipelineCorruptionError, match="must increase"):
+            review_undo_impl(str(working_file), [log[2].serial])
+        with pytest.raises(PipelineCorruptionError, match="must increase"):
+            replay_full(working_file, log)
+
+
+# ---------------------------------------------------------------------------
+# 7b. An undo reports the windows whose geometry it changes
+# ---------------------------------------------------------------------------
+
+
+class TestUndoGeometryReport:
+    def test_an_undo_that_changes_no_structure_reports_nothing(self, working_file):
+        anchor = _free_anchor(working_file)
+        created = create_window_impl(str(working_file), anchor)
+        refit_window_impl(str(working_file), created.window_id, add=[anchor])
+
+        assert (
+            review_undo_impl(
+                str(working_file), [1], dry_run=True
+            ).geometry_changed_window_ids
+            == []
+        )
+        assert (
+            review_undo_impl(str(working_file), [1]).geometry_changed_window_ids == []
+        )
+
+    def test_replanned_creates_that_did_not_move_report_nothing(
+        self, working_file, monkeypatch
+    ):
+        """Undoing a create that a surviving create was planned after replans
+        the survivor; a survivor whose geometry comes back unchanged is not
+        reported (the persisted overlay round-trips the replan exactly)."""
+        hi = _live_ranges(working_file)[-1][2]
+        create_window_impl(str(working_file), hi + 5.0)
+        second = create_window_impl(str(working_file), hi + 25.0)
+        stored = {
+            int(w.window_id): s6._window_geometry(w)
+            for w in load_stage6_review_from_file(str(working_file)).created_windows
+        }
+        replans: List[int] = []
+        real = s6._walk_log_rows
+
+        def spy(*args, **kwargs):
+            replans.append(1)
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(s6, "_walk_log_rows", spy)
+        dry = review_undo_impl(str(working_file), [0], dry_run=True)
+        assert replans
+        assert dry.geometry_changed_window_ids == []
+        assert (
+            review_undo_impl(str(working_file), [0]).geometry_changed_window_ids == []
+        )
+
+        survivors = load_stage6_review_from_file(str(working_file)).created_windows
+        assert [int(w.window_id) for w in survivors] == [second.window_id]
+        assert s6._window_geometry(survivors[0]) == stored[second.window_id]
+
+    def test_undoing_a_widening_reports_the_widened_window(self, working_file):
+        """A widened window returns to its fitted-plan extent when its
+        widening is undone: it still exists, and its geometry changed."""
+        step = TestNarrowGapWidens()._bin_width_mhz(working_file)
+        wid, _lo, hi = _live_ranges(working_file)[-1]
+        widened = create_window_impl(str(working_file), hi + 2 * step)
+        assert widened.mode == "widened"
+
+        dry = review_undo_impl(str(working_file), [0], dry_run=True)
+        assert dry.geometry_changed_window_ids == [wid]
+        result = review_undo_impl(str(working_file), [0])
+        assert result.geometry_changed_window_ids == [wid]
+        assert load_stage6_review_from_file(str(working_file)).created_windows == []
+
+
+class TestUndoGeometryReportInterfaces:
+    """The geometry report is one implementation: the functional API, the
+    Pipeline class and the CLI all carry it."""
+
+    def _widened_copy(self, source: Path, tmp_path: Path, name: str):
+        fp = tmp_path / name
+        shutil.copy(source, fp)
+        review_run_impl(str(fp))
+        step = TestNarrowGapWidens()._bin_width_mhz(fp)
+        wid, _lo, hi = _live_ranges(fp)[-1]
+        assert create_window_impl(str(fp), hi + 2 * step).mode == "widened"
+        return fp, wid
+
+    def test_api_and_pipeline_report_the_same_ids(self, stage5_small_source, tmp_path):
+        fp_api, wid = self._widened_copy(stage5_small_source, tmp_path, "api.ftmw")
+        fp_pipe, _ = self._widened_copy(stage5_small_source, tmp_path, "pipe.ftmw")
+        serial = review_log_impl(str(fp_api))[0].serial
+
+        assert ftmw.review_undo(fp_api, [serial]).geometry_changed_window_ids == [wid]
+        undone = Pipeline.open(fp_pipe).review_undo([serial])
+        assert undone.geometry_changed_window_ids == [wid]
+
+    def test_cli_prints_the_ids_and_counts_them(
+        self, stage5_small_source, tmp_path, capsys
+    ):
+        from ftmwpipeline.cli.main import main as cli_main
+
+        fp, wid = self._widened_copy(stage5_small_source, tmp_path, "cli.ftmw")
+        serial = str(review_log_impl(str(fp))[0].serial)
+
+        capsys.readouterr()
+        assert cli_main(["review", "undo", str(fp), "--id", serial, "--dry-run"]) == 0
+        assert f"geometry changed: window(s) {wid}" in capsys.readouterr().out
+
+        assert cli_main(["review", "undo", str(fp), "--id", serial, "--json"]) == 0
+        assert '"n_geometry_changed": 1' in capsys.readouterr().out
+
+    def test_cli_prints_nothing_when_no_geometry_changed(self, working_file, capsys):
+        from ftmwpipeline.cli.main import main as cli_main
+
+        anchor = _free_anchor(working_file)
+        created = create_window_impl(str(working_file), anchor)
+        refit_window_impl(str(working_file), created.window_id, add=[anchor])
+        serial = str(review_log_impl(str(working_file))[1].serial)
+
+        capsys.readouterr()
+        assert cli_main(["review", "undo", str(working_file), "--id", serial]) == 0
+        assert "geometry changed" not in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# 7c. The structural layer: windows from the ordered creates, no fit
+# ---------------------------------------------------------------------------
+
+
+class TestStructuralLayer:
+    def test_the_overlay_of_a_log_is_planned_without_a_fit(
+        self, working_file, monkeypatch
+    ):
+        """A log's creates replan to exactly the windows the file stores, and
+        the planning makes no fit."""
+        hi = _live_ranges(working_file)[-1][2]
+        create_window_impl(str(working_file), hi + 5.0)
+        create_window_impl(str(working_file), hi + 25.0)
+        s6.review_accept_impl(str(working_file), _live_ranges(working_file)[0][0])
+        log = review_log_impl(str(working_file))
+        stored = load_stage6_review_from_file(str(working_file)).created_windows
+        shared = s6._build_shared_fit_ctx(str(working_file))
+
+        def no_fit(*args, **kwargs):
+            raise AssertionError("the structural layer made a fit")
+
+        monkeypatch.setattr(s6, "refit_window_core", no_fit)
+        planned = s6._walk_log_rows(
+            str(working_file), shared, log, min_new_window_id=0
+        ).overlay
+
+        assert [int(w.window_id) for w in planned] == [int(w.window_id) for w in stored]
+        assert [s6._window_geometry(w) for w in planned] == [
+            s6._window_geometry(w) for w in stored
+        ]
+
+    def test_a_pinned_id_that_is_taken_is_refused_before_any_fit(
+        self, working_file, monkeypatch
+    ):
+        import dataclasses
+
+        create_window_impl(str(working_file), _free_anchor(working_file))
+        taken = _live_ranges(working_file)[0][0]
+        row = review_log_impl(str(working_file))[0]
+        shared = s6._build_shared_fit_ctx(str(working_file))
+
+        def no_fit(*args, **kwargs):
+            raise AssertionError("a fit ran before the refusal")
+
+        monkeypatch.setattr(s6, "refit_window_core", no_fit)
+        with pytest.raises(s6.CurationConflictError) as exc:
+            s6._walk_log_rows(
+                str(working_file),
+                shared,
+                [dataclasses.replace(row, window_id=taken)],
+                min_new_window_id=0,
+            )
+        assert exc.value.reason == "replay_conflict"
+        assert exc.value.ids == [taken]
+
+    def test_a_widening_row_is_not_held_to_the_created_id_order(self, working_file):
+        """Widen rows carry base ids, below every created id: a log whose
+        widening follows a create is not corrupt."""
+        step = TestNarrowGapWidens()._bin_width_mhz(working_file)
+        wid, _lo, hi = _live_ranges(working_file)[-1]
+        created = create_window_impl(str(working_file), hi + 5.0 + 20 * step)
+        widened = create_window_impl(str(working_file), hi + 2 * step)
+        assert (created.mode, widened.mode) == ("created", "widened")
+        assert widened.window_id == wid < created.window_id
+
+        log = review_log_impl(str(working_file))
+        s6._check_created_ids_monotone(str(working_file), log)
+        assert review_undo_impl(str(working_file), [log[0].serial]).applied == 1
 
 
 # ---------------------------------------------------------------------------

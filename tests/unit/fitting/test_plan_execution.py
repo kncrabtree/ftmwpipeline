@@ -20,6 +20,7 @@ the production code will see.
 from __future__ import annotations
 
 import multiprocessing
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -38,6 +39,7 @@ from ftmwpipeline.fitting import plan_execution
 from ftmwpipeline.fitting.active_ft import ActiveFTResult, PointMap
 from ftmwpipeline.fitting.peak_model import (
     ModelPeak,
+    baseline_basis,
     effective_tau,
     h_T,
     model_spectrum,
@@ -67,6 +69,7 @@ from ftmwpipeline.fitting.plan_execution import (
     subtract_frozen_background,
 )
 from ftmwpipeline.fitting.validation import feature_fwhm
+from ftmwpipeline.fitting.window_fit import FittedTau, evaluate_baseline
 
 if TYPE_CHECKING:
     from ftmwpipeline.fitting.residual_screening import ResidualPeakCandidate
@@ -788,7 +791,7 @@ class TestLocalThaw:
         re-derives the dependent's frozen background and residual, verifies the
         residual edge facing the primary is now coherent, and calls
         :func:`attempt_thaw_round` to confirm the co-fit clears the flagged
-        edge and the contributor is promoted to a free peak in the dependent.
+        edge and the dependent re-freezes the contributor from the co-fit.
         """
         rng = np.random.default_rng(SEED + 10)
         sigma = 1.0
@@ -913,13 +916,102 @@ class TestLocalThaw:
         assert ev.primary_window_id == 0
         assert ev.contributor_peak_index == 0
         assert ev.edge_coherence_after < ev.edge_coherence_before
-        # The dependent dropped the thawed contributor and gained it as a
-        # free peak.
-        contrib_ids = [fp.peak_index for fp in dep.fixed_peaks]
-        assert 0 not in contrib_ids
-        # Free-peak count grew by one (was 1, now 2: the weak line plus the
-        # thawed strong line).
-        assert dep.fit.fit.n_peaks == 2
+        # The dependent keeps only its own line free; the thawed line stays
+        # frozen there, re-frozen from the co-fit primary.
+        assert dep.fit.fit.n_peaks == 1
+        assert [fp.primary_window_id for fp in dep.fixed_peaks] == [0]
+        assert dep.fixed_peaks[0].model_peak.amplitude == pytest.approx(
+            primary.fit.peaks[0].amplitude
+        )
+
+    def test_thaw_holds_the_tau_of_a_window_whose_fit_held_it(self):
+        """A window whose own fit held its decay time keeps that tau through
+        an accepted thaw and is not promoted to ``tau_was_fit``; the primary,
+        which fitted its tau, keeps ``tau_was_fit`` set."""
+        rng = np.random.default_rng(SEED + 31)
+        strong_freq, weak_freq = 36100.0, 36104.0
+        freq_array = np.arange(strong_freq - 5.0, weak_freq + 5.0, DF_MHZ)
+        spectrum = _synth_spectrum(
+            freq_array,
+            [
+                (strong_freq, _amp_for_snr(800.0, 1.0), 0.3),
+                (weak_freq, _amp_for_snr(100.0, 1.0), 1.7),
+            ],
+        ) + _complex_noise(freq_array.size, 1.0, rng)
+        win_a = FitWindow(
+            window_id=0,
+            freq_range=(strong_freq - 0.6, strong_freq + 0.6),
+            free_peak_indices=[0],
+            batch=0,
+        )
+        win_b = FitWindow(
+            window_id=1,
+            freq_range=(weak_freq - 0.6, weak_freq + 0.6),
+            free_peak_indices=[1],
+            fixed_contributors=[
+                FixedContributor(0, 0, strong_freq, freeze_eligible=True)
+            ],
+            batch=1,
+        )
+        plan = WindowPlan(
+            windows=[win_a, win_b],
+            dependency_edges=[(1, 0)],
+            topological_order=[0, 1],
+        )
+        outcome = execute_plan(
+            plan,
+            _make_active_ft(freq_array, spectrum),
+            np.full(freq_array.size, 1.0),
+            [strong_freq, weak_freq],
+            sideband=SIDEBAND,
+            acquisition_us=T_US,
+            tau0_us=TAU_US,
+        )
+        primary = outcome.window_outcomes[0]
+        dep = outcome.window_outcomes[1]
+        primary.fit.peaks[0].amplitude *= 1.25
+        peak = primary.fit.peaks[0]
+        s = sideband_sign(SIDEBAND)
+        centre_a = 0.5 * (win_a.freq_range[0] + win_a.freq_range[1])
+        centre_b = 0.5 * (win_b.freq_range[0] + win_b.freq_range[1])
+        freq = centre_a + s * peak.offset_mhz
+        frozen = FrozenPeak(
+            peak_index=0,
+            primary_window_id=0,
+            model_peak=ModelPeak(
+                amplitude=peak.amplitude,
+                offset_mhz=s * (freq - centre_b),
+                phase=peak.phase,
+            ),
+            frequency_mhz=freq,
+            freeze_eligible=True,
+        )
+        dep.fixed_peaks = [frozen]
+        dep.background = model_spectrum(
+            dep.offset_grid_mhz, [frozen.model_peak], dep.fit.fit.tau_us, T_US
+        )
+        dep.full_fitted_spectrum = dep.fit.fit.fitted_spectrum + dep.background
+        dep.full_residual = dep.complex_spectrum - dep.full_fitted_spectrum
+        dep.edge_coherence_low, dep.edge_coherence_high = residual_edge_coherence(
+            dep.full_residual, dep.rms_noise
+        )
+        # The dependent's own fit held its decay time.
+        dep.fit.fit.tau_was_fit = False
+        held_tau = dep.fit.fit.tau_us
+        primary.fit.fit.tau_was_fit = True
+
+        events = attempt_thaw_round(
+            win_b,
+            dep,
+            outcomes=outcome.window_outcomes,
+            sideband=SIDEBAND,
+            acquisition_us=T_US,
+            tau0_us=TAU_US,
+        )
+        assert any(e.accepted for e in events)
+        assert dep.fit.fit.tau_us == pytest.approx(held_tau)
+        assert dep.fit.fit.tau_was_fit is False
+        assert primary.fit.fit.tau_was_fit is True
 
     def test_accepted_thaw_installs_cofit_statistics(self):
         """An accepted thaw must install the fresh co-fit's own statistics
@@ -1024,6 +1116,7 @@ class TestLocalThaw:
             (e.amplitude, e.offset_mhz, e.phase) for e in dep.fit.fit.peak_errors
         ]
         stale_primary_chi2 = primary.fit.fit.chi_squared
+        stale_primary_n_params = primary.fit.fit.n_params
         stale_primary_errors = [
             (e.amplitude, e.offset_mhz, e.phase) for e in primary.fit.fit.peak_errors
         ]
@@ -1040,22 +1133,25 @@ class TestLocalThaw:
         accepted = [e for e in events if e.accepted]
         assert accepted, "expected the co-fit to clear the flagged edge"
 
-        # -- Dependent window: gained the thawed line as a free peak (K=2).
+        # -- Dependent window: still its own line only (K=1); the thawed line
+        # is in its frozen background, not among its free peaks.
         inner = dep.fit.fit
-        assert inner.n_peaks == 2
+        assert inner.n_peaks == 1
         new_dep_errors = [
             (e.amplitude, e.offset_mhz, e.phase) for e in inner.peak_errors
         ]
-        assert len(new_dep_errors) == 2
+        assert len(new_dep_errors) == 1
         assert all(np.isfinite(v) for e in new_dep_errors for v in e)
         # The weak line's own error must come from the fresh joint fit, not
         # the stale pre-thaw independent one.
         assert new_dep_errors[0] != stale_dep_errors[0]
 
         # n_params/n_data/chi_squared must reflect THIS window's own
-        # two-peak, tau-free co-fit -- not the stale one-peak fit's.
-        assert inner.n_params == 3 * 2 + 1  # 2 peaks * 3 + the shared tau
-        assert inner.n_params != stale_dep_n_params
+        # one-peak, tau-free co-fit share -- not the stale fit's chi2. (The
+        # parameter count is the same 1 peak + tau as before the thaw: the
+        # thawed line is frozen, not a parameter of this window.)
+        assert inner.n_params == 3 * 1 + 1  # 1 peak * 3 + the shared tau
+        assert inner.n_params == stale_dep_n_params
         assert inner.n_data == 2 * dep.offset_grid_mhz.size
         assert inner.chi_squared != pytest.approx(stale_dep_chi2)
         assert inner.cost == pytest.approx(0.5 * inner.chi_squared)
@@ -1070,7 +1166,7 @@ class TestLocalThaw:
         assert inner.tau_error is not None
         assert np.isfinite(inner.tau_error)
         assert inner.covariance is not None
-        assert inner.covariance.shape == (7, 7)
+        assert inner.covariance.shape == (4, 4)
         # Per-line errors must match the covariance diagonal they were
         # derived from: peak-major (amplitude, offset, phase) blocks in
         # peak order, then the shared tau in the tail.
@@ -1078,29 +1174,31 @@ class TestLocalThaw:
         assert inner.peak_errors[0].amplitude == pytest.approx(diag[0])
         assert inner.peak_errors[0].offset_mhz == pytest.approx(diag[1])
         assert inner.peak_errors[0].phase == pytest.approx(diag[2])
-        assert inner.peak_errors[1].amplitude == pytest.approx(diag[3])
-        assert inner.peak_errors[1].offset_mhz == pytest.approx(diag[4])
-        assert inner.peak_errors[1].phase == pytest.approx(diag[5])
 
         # -- Primary window: same peak count (K=1) but a fresh joint refit,
         # so its stats must move too -- not stay pinned at the pre-thaw
         # (corrupted-amplitude) fit's values.
         p_inner = primary.fit.fit
         assert p_inner.n_peaks == 1
-        assert p_inner.n_params == 3 * 1 + 1
+        # One line, the shared tau and the leakage-wing baseline the primary's
+        # own fit carries for this ultra-high-SNR line, which the co-fit keeps.
+        assert p_inner.baseline_order is not None
+        n_base = 2 * (p_inner.baseline_order + 1)
+        assert p_inner.n_params == 3 * 1 + 1 + n_base == stale_primary_n_params
         assert p_inner.tau_error is not None
         assert p_inner.covariance is not None
-        assert p_inner.covariance.shape == (4, 4)
+        assert p_inner.covariance.shape == (4 + n_base, 4 + n_base)
         new_primary_errors = [
             (e.amplitude, e.offset_mhz, e.phase) for e in p_inner.peak_errors
         ]
         assert new_primary_errors != stale_primary_errors
         assert p_inner.chi_squared != pytest.approx(stale_primary_chi2)
 
-        # tau is one physically shared parameter: both windows must report
-        # the identical joint tau and tau error, not independent values.
-        assert dep.fit.fit.tau_us == pytest.approx(primary.fit.fit.tau_us)
-        assert dep.fit.fit.tau_error == pytest.approx(primary.fit.fit.tau_error)
+        # Each window keeps its own tau, fit on its own bins: its tau error is
+        # its own covariance's tau entry, right after its peak blocks.
+        assert inner.tau_error == pytest.approx(np.sqrt(inner.covariance[3, 3]))
+        assert p_inner.tau_error == pytest.approx(np.sqrt(p_inner.covariance[3, 3]))
+        assert inner.tau_us != p_inner.tau_us
 
     def test_no_thaw_for_a_clean_fit(self):
         """When the primary fits correctly, no thaw event is generated."""
@@ -1218,6 +1316,598 @@ class TestLocalThaw:
         # We attempted, but the total events come from at most max_thaw_rounds
         # passes through both edges.
         assert len(w1_events) <= 2 * 2  # 2 rounds * 2 edges max
+
+
+# ---------------------------------------------------------------------------
+# What an accepted thaw leaves behind: the line stays frozen in the dependent
+# ---------------------------------------------------------------------------
+_THAW_UID = 4242
+
+
+def _accepted_thaw(
+    seed: int,
+    *,
+    second_line: bool = False,
+    pedestal: bool = False,
+    before: dict | None = None,
+    expect_accept: bool = True,
+    walk_kwargs: dict | None = None,
+    **round_kwargs,
+):
+    """The coupled pair of :class:`TestLocalThaw` driven to an accepted thaw.
+
+    The primary's line is stamped with a uid (the synthetic walk runs without a
+    point map) and over-amped 25%, the dependent's frozen copy is rebuilt from
+    it, and one thaw round runs on the dependent. ``second_line`` gives the
+    primary a second freezable line, 0.4 MHz below the first. ``pedestal`` adds
+    a smooth complex pedestal under both windows, which each window's fit
+    carries as a leakage-wing baseline. ``before``, when given, receives the
+    primary's fit as the walk left it (before the over-amp).
+    ``expect_accept=False`` drops the check that a thaw was accepted;
+    ``walk_kwargs`` go to :func:`execute_plan` and ``round_kwargs`` to
+    :func:`attempt_thaw_round`. Returns
+    ``(plan_outcome, plan, win_a, win_b, events)``.
+    """
+    rng = np.random.default_rng(seed)
+    sigma = 1.0
+    strong_freq, weak_freq = 36100.0, 36104.0
+    lines = [
+        (strong_freq, _amp_for_snr(800.0, sigma), 0.3),
+        (weak_freq, _amp_for_snr(100.0, sigma), 1.7),
+    ]
+    if second_line:
+        lines.append((strong_freq - 0.4, _amp_for_snr(300.0, sigma), -0.8))
+    freq_array = np.arange(strong_freq - 5.0, weak_freq + 5.0, DF_MHZ)
+    spectrum = _synth_spectrum(freq_array, lines) + _complex_noise(
+        freq_array.size, sigma, rng
+    )
+    if pedestal:
+        ramp = (freq_array - 0.5 * (strong_freq + weak_freq)) / 5.0
+        spectrum = spectrum + (6.0 + 4.0j) * sigma * (1.0 + 0.5 * ramp)
+    rms_noise = np.full(freq_array.size, sigma)
+    win_a = FitWindow(
+        window_id=0,
+        freq_range=(strong_freq - 0.6, strong_freq + 0.6),
+        free_peak_indices=[0, 2] if second_line else [0],
+        batch=0,
+    )
+    win_b = FitWindow(
+        window_id=1,
+        freq_range=(weak_freq - 0.6, weak_freq + 0.6),
+        free_peak_indices=[1],
+        fixed_contributors=[FixedContributor(0, 0, strong_freq, True)],
+        batch=1,
+    )
+    plan = WindowPlan(
+        windows=[win_a, win_b], dependency_edges=[(1, 0)], topological_order=[0, 1]
+    )
+    out = execute_plan(
+        plan,
+        _make_active_ft(freq_array, spectrum),
+        rms_noise,
+        [strong_freq, weak_freq, strong_freq - 0.4],
+        sideband=SIDEBAND,
+        acquisition_us=T_US,
+        tau0_us=TAU_US,
+        **(walk_kwargs or {}),
+    )
+    primary = out.window_outcomes[0]
+    assert primary.fit.n_peaks == (2 if second_line else 1)
+    if before is not None:
+        before["offsets"] = [p.offset_mhz for p in primary.fit.fit.peaks]
+        before["reduced_chi2"] = primary.fit.fit.reduced_chi2
+        before["baseline_order"] = primary.fit.fit.baseline_order
+        before["dep_baseline_order"] = out.window_outcomes[1].fit.fit.baseline_order
+    strongest = max(primary.fit.peaks, key=lambda p: p.amplitude)
+    strongest.amplitude *= 1.25
+    strongest.peak_uid = _THAW_UID
+    dep = out.window_outcomes[1]
+    # As the walk freezes it: the primary's fitted line, no Stage 3 link.
+    dep.fixed_peaks = plan_execution.evaluate_ancestor_leakage(
+        primary,
+        0,
+        dependent_center_mhz=_window_center_mhz(dep),
+        sideband=SIDEBAND,
+        acquisition_us=T_US,
+        min_freeze_snr=plan_execution.DEFAULT_MIN_FREEZE_SNR,
+    )
+    assert [fp.peak_index for fp in dep.fixed_peaks] == [-1] * primary.fit.n_peaks
+    dep.background = model_spectrum(
+        dep.offset_grid_mhz,
+        [fp.model_peak for fp in dep.fixed_peaks],
+        dep.fit.fit.tau_us,
+        T_US,
+    )
+    dep.full_fitted_spectrum = dep.fit.fit.fitted_spectrum + dep.background
+    dep.full_residual = dep.complex_spectrum - dep.full_fitted_spectrum
+    dep.edge_coherence_low, dep.edge_coherence_high = residual_edge_coherence(
+        dep.full_residual, dep.rms_noise
+    )
+    events = attempt_thaw_round(
+        win_b,
+        dep,
+        outcomes=out.window_outcomes,
+        sideband=SIDEBAND,
+        acquisition_us=T_US,
+        tau0_us=TAU_US,
+        **round_kwargs,
+    )
+    if expect_accept:
+        assert any(e.accepted for e in events), [e.reason for e in events]
+    out.thaw_history.extend(events)
+    return out, plan, win_a, win_b, events
+
+
+class TestAcceptedThawRepresentation:
+    """An accepted thaw refines the line in its primary and leaves it frozen in
+    the dependent, re-frozen from the co-fit primary. Before epoch 6 the
+    dependent took the line as a free peak far off its own grid: the next
+    single-window refit pinned it to the grid edge and the cleanup pruned it
+    (1019 window 53), and a surviving copy was a second entry in the line list.
+    """
+
+    def test_the_dependent_skirt_is_the_co_fit_primary_frozen(self):
+        out, _, _, _, _ = _accepted_thaw(SEED + 40)
+        primary, dep = out.window_outcomes[0], out.window_outcomes[1]
+        expected = plan_execution.evaluate_ancestor_leakage(
+            primary,
+            0,
+            dependent_center_mhz=_window_center_mhz(dep),
+            sideband=SIDEBAND,
+            acquisition_us=T_US,
+            min_freeze_snr=plan_execution.DEFAULT_MIN_FREEZE_SNR,
+        )
+        assert dep.fixed_peaks == expected
+        assert [fp.model_peak.peak_uid for fp in dep.fixed_peaks] == [_THAW_UID]
+        # Only the dependent's own line is free, and it lies on its grid.
+        assert [p.peak_uid for p in dep.fit.fit.peaks] != [_THAW_UID]
+        assert dep.fit.fit.n_peaks == 1
+        lo, hi = dep.offset_grid_mhz.min(), dep.offset_grid_mhz.max()
+        assert all(lo <= p.offset_mhz <= hi for p in dep.fit.fit.peaks)
+        # The installed background is that skirt at the dependent's co-fit tau.
+        np.testing.assert_array_equal(
+            dep.background,
+            model_spectrum(
+                dep.offset_grid_mhz,
+                [fp.model_peak for fp in expected],
+                dep.fit.fit.tau_us,
+                T_US,
+                shape=dep.fit.fit.shape,
+            ),
+        )
+
+    def test_a_later_refit_of_the_dependent_keeps_the_line_frozen(self):
+        """The 1019 w53 mechanism: a single-window refit after the thaw (there,
+        the leakage-wing baseline) bounds every free offset to the window's
+        grid. The thawed line is no longer free, so nothing is dragged."""
+        out, _, _, _, _ = _accepted_thaw(SEED + 41)
+        dep = out.window_outcomes[1]
+        own = dep.fit.fit.peaks[0].offset_mhz
+        refit = refit_outcome(dep)
+        assert refit.fit.fit.n_peaks == 1
+        assert refit.fit.fit.peaks[0].offset_mhz == pytest.approx(own, abs=2e-3)
+        assert [fp.model_peak.peak_uid for fp in refit.fixed_peaks] == [_THAW_UID]
+
+    def test_the_line_is_listed_once_and_the_dependent_keeps_its_edge(self):
+        from ftmwpipeline.fitting.result_conversion import (
+            plan_fit_outcome_to_spectrum_fit,
+        )
+
+        out, plan, _, _, _ = _accepted_thaw(SEED + 42)
+        fit = plan_fit_outcome_to_spectrum_fit(
+            out,
+            plan,
+            sideband=SIDEBAND,
+            peak_frequencies_mhz=[36100.0, 36104.0],
+            acquisition_us=T_US,
+        )
+        assert [p.peak_uid for p in fit.fitted_peaks].count(_THAW_UID) == 1
+        assert fit.window_fit(0).fitted_peaks[0].peak_uid == _THAW_UID
+        dep = fit.window_fit(1)
+        lo, hi = dep.window.freq_range
+        assert all(lo <= p.frequency_mhz <= hi for p in dep.fitted_peaks)
+        # The frozen entry names the primary: Stage 6's refresh of the 0->1 skirt
+        # (an edge the plan gives it) still finds the thawed line through it.
+        frozen = [
+            (e["primary_window_id"], e["peak_uid"])
+            for k, e in dep.fixed_parameters.items()
+            if k.startswith("frozen_peak_")
+        ]
+        assert frozen == [(0, _THAW_UID)]
+        assert dep.quality_metrics["n_fixed_contributors"] == 1.0
+
+    def test_the_gate_reads_the_model_it_installs(self):
+        """With two lines frozen from the primary, the gate draws both, as the
+        joint co-fit and the install do. (Before, it drew the thawed line only,
+        and the missing line kept every such thaw above threshold.)"""
+        out, _, _, _, events = _accepted_thaw(SEED + 43, second_line=True)
+        dep = out.window_outcomes[1]
+        assert len(dep.fixed_peaks) == 2
+        assert all(fp.primary_window_id == 0 for fp in dep.fixed_peaks)
+        ev = next(e for e in events if e.accepted)
+        installed = (
+            dep.edge_coherence_low if ev.edge_side == "low" else dep.edge_coherence_high
+        )
+        assert ev.edge_coherence_after == plan_execution.edge_gate_value(installed)
+
+    def test_the_co_fit_keeps_each_window_s_baseline(self):
+        """Each window's fit carries a leakage-wing baseline for the pedestal.
+        The co-fit re-fits it on that window's bins, so the primary is re-fit
+        under the model its own fit used. (Before, the co-fit dropped it: the
+        primary's lines were re-fit to soak the pedestal, and 655 window 39's
+        moved by up to 3.3 kHz, about 150 sigma.)"""
+        before: dict = {}
+        out, _, _, _, events = _accepted_thaw(SEED + 44, pedestal=True, before=before)
+        primary, dep = out.window_outcomes[0], out.window_outcomes[1]
+        assert before["baseline_order"] is not None
+        assert before["dep_baseline_order"] is not None
+        inner = primary.fit.fit
+        assert inner.baseline_order == before["baseline_order"]
+        assert dep.fit.fit.baseline_order == before["dep_baseline_order"]
+        assert primary.baseline_applied
+        np.testing.assert_array_equal(primary.baseline_coeffs, inner.baseline_coeffs)
+        # The installed model is the peaks plus the co-fit baseline.
+        np.testing.assert_allclose(
+            inner.fitted_spectrum,
+            model_spectrum(
+                primary.offset_grid_mhz,
+                inner.peaks,
+                inner.tau_us,
+                T_US,
+                shape=inner.shape,
+            )
+            + evaluate_baseline(inner, primary.offset_grid_mhz),
+        )
+        # The primary's fit is as good as its own and its lines stay put.
+        assert inner.reduced_chi2 < 1.1 * before["reduced_chi2"]
+        for p, f0, err in zip(inner.peaks, before["offsets"], inner.peak_errors):
+            assert abs(p.offset_mhz - f0) < 3.0 * err.offset_mhz
+        # Its covariance carries its own baseline block, labelled as its own
+        # fit's is: peaks, tau, then the 2(p+1) baseline coefficients.
+        n_base = 2 * (int(inner.baseline_order) + 1)
+        assert inner.covariance.shape == (3 * inner.n_peaks + 1 + n_base,) * 2
+        assert inner.n_params == 3 * inner.n_peaks + 1 + n_base
+        # The gate judged the installed dependent, its baseline included.
+        ev = next(e for e in events if e.accepted)
+        installed = (
+            dep.edge_coherence_low if ev.edge_side == "low" else dep.edge_coherence_high
+        )
+        assert ev.edge_coherence_after == plan_execution.edge_gate_value(installed)
+
+
+class TestThawFooting:
+    """The co-fit holds each window's tau as its own fit held it, and installs
+    only the model it refined."""
+
+    def test_each_window_s_tau_is_held_as_its_own_fit_held_it(self, monkeypatch):
+        """The co-fit gets each window's own constraints: the run's decay-factor
+        cap and the window's calibrated band and prior."""
+        seen: dict = {}
+        real = plan_execution.local_thaw_cofit
+
+        def spy(*args, **kwargs):
+            seen.update(kwargs)
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(plan_execution, "local_thaw_cofit", spy)
+        tau_maj, sigma_tau = 1.2 * TAU_US, 0.05 * TAU_US
+        _accepted_thaw(
+            SEED + 40,
+            expect_accept=False,
+            window_tau_overrides={1: (tau_maj, sigma_tau)},
+            conservative_kwargs={"max_decay_factor": 1.1},
+        )
+        assert seen["max_decay_factor"] == 1.1
+        # The primary is uncalibrated: the run's tau0 and the run's cap.
+        primary_c = seen["primary_constraints"]
+        assert primary_c.tau_bounds == pytest.approx((TAU_US / 1.1, TAU_US * 1.1))
+        assert primary_c.effective_tau_penalty_lambda == 0.0
+        # The dependent's calibrated band, cut by the cap, and its prior.
+        dep_c = seen["dependent_constraints"]
+        assert dep_c.tau_bounds == pytest.approx(
+            (max(tau_maj - 5 * sigma_tau, tau_maj / 1.1), tau_maj * 1.1)
+        )
+        assert dep_c.tau_penalty_reference == pytest.approx(tau_maj)
+        assert dep_c.tau_penalty_sigma_us == pytest.approx(sigma_tau)
+        assert dep_c.effective_tau_penalty_lambda > 0.0
+        # Each tau is free exactly when its own fit freed it, whatever the
+        # run's fit_tau: the co-fit leaves that to the window's own record.
+        assert seen["fit_tau"] is True
+
+    def test_the_co_fit_derives_the_constraints_the_own_fit_derived(self, monkeypatch):
+        """The co-fit's tau band and prior for a window are the ones its own
+        conservative fit derived from the same run settings, every
+        tau-shaping setting changed from its default."""
+        from ftmwpipeline.fitting import window_fit
+
+        def tau_terms(c) -> tuple:
+            return (
+                tuple(round(b, 12) for b in c.tau_bounds),
+                c.tau_penalty_reference,
+                c.tau_penalty_sigma_us,
+                c.tau_penalty_sigma_lo_us,
+                c.effective_tau_penalty_lambda,
+            )
+
+        derived: list = []
+        real_derive = window_fit.derive_window_fit_constraints
+
+        def record(*args, **kwargs):
+            c = real_derive(*args, **kwargs)
+            derived.append(tau_terms(c))
+            return c
+
+        seen: dict = {}
+        real_cofit = plan_execution.local_thaw_cofit
+
+        def spy(*args, **kwargs):
+            seen.update(kwargs)
+            return real_cofit(*args, **kwargs)
+
+        monkeypatch.setattr(window_fit, "derive_window_fit_constraints", record)
+        monkeypatch.setattr(plan_execution, "local_thaw_cofit", spy)
+        ck = {
+            "max_decay_factor": 1.15,
+            "tau_penalty_lambda": 3.0,
+            "tau_penalty_n_sigma": 3.0,
+            "tau_penalty_sigma_lo_factor": 1.5,
+        }
+        overrides = {
+            0: (0.95 * TAU_US, 0.04 * TAU_US),
+            1: (1.1 * TAU_US, 0.03 * TAU_US),
+        }
+        _accepted_thaw(
+            SEED + 40,
+            expect_accept=False,
+            walk_kwargs={
+                "conservative_kwargs": ck,
+                "window_tau_overrides": overrides,
+                "jobs": 1,
+            },
+            conservative_kwargs=ck,
+            window_tau_overrides=overrides,
+        )
+        for key in ("primary_constraints", "dependent_constraints"):
+            assert tau_terms(seen[key]) in derived, key
+
+    def test_the_constraint_keys_cover_every_derivation_setting(self):
+        """A setting :func:`derive_window_fit_constraints` gains reaches the
+        refits and the co-fit only through ``_REFIT_CONSTRAINT_KEYS``."""
+        import inspect
+
+        from ftmwpipeline.fitting.window_fit import derive_window_fit_constraints
+
+        params = inspect.signature(derive_window_fit_constraints).parameters
+        keyword_only = {
+            name
+            for name, prm in params.items()
+            if prm.kind is inspect.Parameter.KEYWORD_ONLY
+        }
+        assert set(plan_execution._REFIT_CONSTRAINT_KEYS) == keyword_only - {"fit_tau"}
+
+    def test_the_co_fit_never_clips_a_window_s_installed_tau(self):
+        """A primary's tau from its cleanup refit may lie outside its
+        calibrated band; the co-fit's bounds widen to it, so the co-fit starts
+        from the installed model."""
+        bins = np.ones(4, dtype=bool)
+        stub = SimpleNamespace(
+            fit=SimpleNamespace(
+                fit=SimpleNamespace(tau_us=9.0, tau_was_fit=True, fit_tau=True)
+            )
+        )
+        c = SimpleNamespace(
+            tau_bounds=(2.0, 6.0),
+            effective_tau_penalty_lambda=1.0,
+            tau_penalty_reference=4.0,
+            tau_penalty_sigma_us=0.5,
+            tau_penalty_sigma_lo_us=0.5,
+        )
+        grp = plan_execution._own_tau_group(
+            bins, stub, c, tau0_us=4.0, max_decay_factor=2.0
+        )
+        assert (grp.tau0_us, grp.tau_bounds) == (9.0, (2.0, 9.0))
+        stub.fit.fit.tau_us = 3.0
+        grp = plan_execution._own_tau_group(
+            bins, stub, c, tau0_us=4.0, max_decay_factor=2.0
+        )
+        assert grp.tau_bounds == (2.0, 6.0)
+        stub.fit.fit.tau_us = 1.0
+        grp = plan_execution._own_tau_group(
+            bins, stub, None, tau0_us=4.0, max_decay_factor=2.0
+        )
+        assert grp.tau_bounds == (1.0, 8.0)
+
+    def test_a_changed_frozen_set_is_rejected(self, monkeypatch):
+        """When the freeze rule would freeze other co-fit primary lines into the
+        dependent than the co-fit drew there, the install would not be the model
+        the co-fit refined: rejected."""
+        real = plan_execution._lines_frozen_in_dependent
+        calls = {"n": 0}
+
+        def flip_after_the_co_fit(*args, **kwargs):
+            flags = real(*args, **kwargs)
+            calls["n"] += 1
+            # 1: the co-fit's draw; 2: _perform_thaw's copy of it; 3: the
+            # re-freeze of the co-fit primary.
+            return [not f for f in flags] if calls["n"] == 3 else flags
+
+        monkeypatch.setattr(
+            plan_execution, "_lines_frozen_in_dependent", flip_after_the_co_fit
+        )
+        out, _, _, _, events = _accepted_thaw(SEED + 40, expect_accept=False)
+        assert not any(e.accepted for e in events)
+        assert any("differ from those the co-fit drew" in e.reason for e in events)
+
+
+def _baseline_stub(n: int, order: int | None) -> SimpleNamespace:
+    """A window outcome reduced to what the co-fit's baseline helpers read: an
+    ``n``-bin grid and, with ``order``, a carried baseline of that order."""
+    coeffs = None if order is None else np.arange(order + 1) * (1.0 + 2.0j) + 1.0
+    return SimpleNamespace(
+        offset_grid_mhz=np.linspace(-1.0, 1.0, n),
+        baseline_applied=order is not None,
+        baseline_coeffs=coeffs,
+        fit=SimpleNamespace(
+            fit=SimpleNamespace(
+                baseline_order=order,
+                baseline_coeffs=coeffs,
+                baseline_offset_scale=None if order is None else 1.0,
+            )
+        ),
+    )
+
+
+class TestCofitBaselineDesign:
+    """Each window's carried baseline is a block of the co-fit's design, zero
+    off its own bins; the primary's block comes first."""
+
+    def test_a_dependent_only_baseline_lives_on_the_dependent_s_bins(self):
+        design, seed = plan_execution._cofit_baseline_design(
+            _baseline_stub(5, None), _baseline_stub(4, 1)
+        )
+        assert design.shape == (9, 2)
+        assert not design[:5].any()
+        np.testing.assert_array_equal(
+            design[5:], baseline_basis(np.linspace(-1.0, 1.0, 4), 1, 1.0)
+        )
+        np.testing.assert_array_equal(seed, [1.0, 2.0 + 2.0j])
+
+    def test_both_windows_keep_their_own_block(self):
+        primary, dep = _baseline_stub(5, 0), _baseline_stub(4, 2)
+        design, seed = plan_execution._cofit_baseline_design(primary, dep)
+        assert design.shape == (9, 1 + 3)
+        assert not design[5:, :1].any() and not design[:5, 1:].any()
+        assert plan_execution._carried_baseline_size(primary) == 1
+        assert plan_execution._carried_baseline_size(dep) == 3
+        np.testing.assert_array_equal(
+            seed, np.concatenate([primary.baseline_coeffs, dep.baseline_coeffs])
+        )
+
+    def test_neither_window_carries_one(self):
+        assert plan_execution._cofit_baseline_design(
+            _baseline_stub(5, None), _baseline_stub(4, None)
+        ) == (None, None)
+
+    @pytest.mark.parametrize(
+        ("order", "columns", "match"),
+        [(1, [0], "did not re-fit"), (None, [0], "carries none")],
+    )
+    def test_an_install_with_the_wrong_baseline_columns_writes_nothing(
+        self, order, columns, match
+    ):
+        stub = _baseline_stub(4, order)
+        before = stub.fit.fit.baseline_coeffs
+        joint = SimpleNamespace(
+            tau_groups=[FittedTau(TAU_US, 0.1, True)] * 2,
+            baseline_coeffs=np.zeros(3, dtype=np.complex128),
+        )
+        with pytest.raises(ValueError, match=match):
+            plan_execution._install_cofit_outcome(
+                stub,
+                new_peaks=[ModelPeak(1.0, 0.0, 0.0)],
+                acquisition_us=T_US,
+                residual_edge_m=4,
+                joint=joint,
+                own_tau_group=1,
+                own_peak_indices=[0],
+                own_baseline_columns=columns,
+            )
+        assert not hasattr(stub.fit.fit, "peaks")
+        assert stub.fit.fit.baseline_coeffs is before
+
+
+class TestThawRefitWindows:
+    """After a parallel walk accepts a thaw, only the windows the sequential
+    walk would fit differently are re-fit (``_thaw_refit_windows``)."""
+
+    def test_a_thawing_window_alone_when_nothing_after_reads_its_primary(self):
+        reads = {1: {0}, 2: {0}, 3: {2}}
+        # 1 read the pre-thaw 0 in the sequential walk too; 3 reads only 2.
+        got = plan_execution._thaw_refit_windows([0, 1, 2, 3], reads, {2: {0}})
+        assert got == [2]
+
+    def test_the_readers_after_it_follow_transitively(self):
+        reads = {1: {0}, 2: {0}, 3: {2}, 4: set()}
+        got = plan_execution._thaw_refit_windows([0, 1, 2, 3, 4], reads, {1: {0}})
+        assert got == [1, 2, 3]
+
+    def test_a_refit_reader_stales_every_window_it_reads(self):
+        """Window 2 is re-fit on a changed 0; its new fit may thaw 5, so 3,
+        which reads only 5, follows."""
+        reads = {1: {0}, 2: {0, 5}, 3: {5}}
+        got = plan_execution._thaw_refit_windows([0, 5, 1, 2, 3], reads, {1: {0}})
+        assert got == [1, 2, 3]
+
+    def test_no_accepted_thaw_refits_nothing(self):
+        reads = {1: {0}, 2: {0}}
+        assert plan_execution._thaw_refit_windows([0, 1, 2], reads, {1: set()}) == []
+
+    def test_a_re_fit_that_drops_its_worker_s_thaw_stales_itself(self):
+        """Window 1's re-fit does not repeat its worker's thaw: its own outcome
+        is no longer the one 2 read, so 2 is re-fit."""
+        reads = {1: {0}, 2: {1}, 3: {0}}
+        assert plan_execution._thaw_refit_windows([0, 1, 2, 3], reads, {1: {0}}) == [
+            1,
+            3,
+        ]
+        got = plan_execution._thaw_refit_windows(
+            [0, 1, 2, 3], reads, {1: {0}}, lambda wid: set()
+        )
+        assert got == [1, 2, 3]
+
+    def test_a_re_fit_s_own_thaws_are_followed(self):
+        """Window 1's re-fit also thaws 4, which its worker did not: 5, which
+        reads only 4, is re-fit. Each re-fit's thaws apply before the next
+        window is judged."""
+        reads = {1: {0, 4}, 3: {0}, 5: {4}}
+        order = [0, 4, 1, 3, 5]
+        assert plan_execution._thaw_refit_windows(order, reads, {1: {0}}) == [1, 3]
+        calls: list[int] = []
+
+        def refit_one(wid: int) -> set[int]:
+            calls.append(wid)
+            return {0, 4} if wid == 1 else set()
+
+        got = plan_execution._thaw_refit_windows(order, reads, {1: {0}}, refit_one)
+        assert got == calls == [1, 3, 5]
+
+
+class TestPrimarySkirtReplacement:
+    """The thaw's match is the primary's whole fit-derived skirt: a line frozen
+    from a fit has ``peak_index == -1``, so matching on it alone would take
+    every line of the primary, and the joint co-fit draws all of them anyway.
+    They are replaced by the re-frozen lines, not dropped."""
+
+    @staticmethod
+    def _fp(primary: int, freq: float, *, edge_free: bool = False) -> FrozenPeak:
+        return FrozenPeak(
+            peak_index=7 if edge_free else -1,
+            primary_window_id=primary,
+            model_peak=ModelPeak(1.0, freq, 0.0, peak_uid=int(freq * 100)),
+            frequency_mhz=freq,
+            edge_free=edge_free,
+        )
+
+    def test_is_primary_skirt(self):
+        assert plan_execution._is_primary_skirt(self._fp(3, 1.0), 3)
+        assert not plan_execution._is_primary_skirt(self._fp(4, 1.0), 3)
+        assert not plan_execution._is_primary_skirt(self._fp(3, 1.0, edge_free=True), 3)
+
+    def test_every_line_of_the_primary_is_replaced_in_place(self):
+        other = self._fp(9, 5.0)
+        old = [self._fp(3, 1.0), self._fp(3, 2.0)]
+        edge_free = self._fp(3, 3.0, edge_free=True)
+        new = [self._fp(3, 1.5), self._fp(3, 2.5), self._fp(3, 2.75)]
+        got = plan_execution._replace_primary_skirt(
+            [other, old[0], edge_free, old[1]], 3, new
+        )
+        assert got == [other, *new, edge_free]
+
+    def test_an_emptied_skirt_drops_the_primary(self):
+        got = plan_execution._replace_primary_skirt(
+            [self._fp(3, 1.0), self._fp(9, 5.0)], 3, []
+        )
+        assert got == [self._fp(9, 5.0)]
 
 
 # ---------------------------------------------------------------------------
@@ -2776,6 +3466,130 @@ class TestParallelWalkEquivalence:
                 assert a.peak_uid is not None
                 assert b.peak_uid is not None
                 assert a.peak_uid == b.peak_uid
+
+
+class TestParallelWalkThawRefit:
+    """An accepted thaw in the parallel walk re-fits only the windows the
+    sequential walk would fit differently, and the result is the sequential
+    walk's. Window 2 is made to accept a thaw from 0 (a stand-in that rewrites
+    0's line in place, as an install does: 10% more amplitude); window 3 reads
+    0 after it, so it is re-fit on the rewritten 0; window 1 reads nothing and
+    keeps its parallel fit."""
+
+    def _fit(self, workers: int, monkeypatch):
+        from ftmwpipeline._internal.events import operation_events
+        from ftmwpipeline.contract import Stage
+
+        sigma = 1.0
+        f0, f1, f2, f3 = 36100.0, 36200.0, 36105.0, 36095.0
+        freq_array = np.arange(f3 - 5.0, f1 + 5.0, DF_MHZ)
+        spectrum = _synth_spectrum(
+            freq_array,
+            [
+                (f0, _amp_for_snr(300.0, sigma), 0.3),
+                (f1, _amp_for_snr(280.0, sigma), 1.1),
+                (f2, _amp_for_snr(60.0, sigma), 2.4),
+                (f3, _amp_for_snr(50.0, sigma), -0.6),
+            ],
+        ) + _complex_noise(freq_array.size, sigma, np.random.default_rng(SEED + 78))
+        reads_0 = [FixedContributor(0, 0, f0, True)]
+        windows = [
+            FitWindow(0, (f0 - 0.6, f0 + 0.6), free_peak_indices=[0], batch=0),
+            FitWindow(1, (f1 - 0.6, f1 + 0.6), free_peak_indices=[1], batch=0),
+            FitWindow(
+                2,
+                (f2 - 0.6, f2 + 0.6),
+                free_peak_indices=[2],
+                fixed_contributors=reads_0,
+                batch=1,
+            ),
+            FitWindow(
+                3,
+                (f3 - 0.6, f3 + 0.6),
+                free_peak_indices=[3],
+                fixed_contributors=reads_0,
+                batch=1,
+            ),
+        ]
+        plan = WindowPlan(
+            windows=windows,
+            dependency_edges=[(2, 0), (3, 0)],
+            topological_order=[0, 1, 2, 3],
+        )
+        real = plan_execution.attempt_thaw_round
+
+        def thaw_2_from_0(win, outcome, **kwargs):
+            if win.window_id != 2:
+                return real(win, outcome, **kwargs)
+            if not outcome.thaw_events:  # the first of the window's rounds
+                kwargs["outcomes"][0].fit.fit.peaks[0].amplitude *= 1.1
+            event = ThawEvent(2, 0, -1, f0, "low", 9.0, 1.0, True, "test")
+            outcome.thaw_events.append(event)
+            return [event]
+
+        monkeypatch.setattr(plan_execution, "attempt_thaw_round", thaw_2_from_0)
+        monkeypatch.setattr(_pe, "_FIT_WINDOW_WORKERS", workers)
+        seen: list = []
+        out = execute_plan(
+            plan,
+            _make_active_ft(freq_array, spectrum),
+            np.full(freq_array.size, sigma),
+            [f0, f1, f2, f3],
+            sideband=SIDEBAND,
+            acquisition_us=T_US,
+            tau0_us=TAU_US,
+            events=operation_events("fit run", seen.append).detached_scope(Stage.FIT),
+        )
+        return out, seen
+
+    @needs_fork
+    def test_only_the_windows_the_thaw_reaches_are_refit(self, monkeypatch):
+        from ftmwpipeline import PipelineWarning, WindowProgress
+
+        seq, seq_seen = self._fit(1, monkeypatch)
+        par, par_seen = self._fit(2, monkeypatch)
+
+        def fallbacks(seen: list) -> list:
+            return [
+                e
+                for e in seen
+                if isinstance(e, PipelineWarning) and e.code == "walk_fallback"
+            ]
+
+        assert not fallbacks(seq_seen)
+        (warning,) = fallbacks(par_seen)
+        assert warning.details == {"reason": "accepted thaw", "n_windows": 2}
+        fallback = [
+            e
+            for e in par_seen
+            if isinstance(e, WindowProgress) and e.phase == "fallback"
+        ]
+        assert [(e.window_id, e.index, e.total) for e in fallback] == [
+            (2, 1, 2),
+            (3, 2, 2),
+        ]
+        # The histories and fits are the sequential walk's.
+        key = [(e.dependent_window_id, e.primary_window_id) for e in seq.thaw_history]
+        assert [
+            (e.dependent_window_id, e.primary_window_id) for e in par.thaw_history
+        ] == key
+        assert set(seq.window_outcomes) == set(par.window_outcomes) == {0, 1, 2, 3}
+        for wid in (0, 1, 2, 3):
+            so, po = seq.window_outcomes[wid], par.window_outcomes[wid]
+            assert so.fit.n_peaks == po.fit.n_peaks
+            for a, b in zip(so.fit.peaks, po.fit.peaks):
+                assert a.offset_mhz == pytest.approx(b.offset_mhz, abs=1e-6)
+                assert a.amplitude == pytest.approx(b.amplitude, rel=1e-6)
+        # The thaw's rewrite of 0 reached the parent once, and 3 froze the
+        # rewritten line, as in the sequential walk (2 froze 0 before it).
+        amp_0 = seq.window_outcomes[0].fit.peaks[0].amplitude
+        for out in (seq, par):
+            (frozen_3,) = out.window_outcomes[3].fixed_peaks
+            assert frozen_3.model_peak.amplitude == pytest.approx(amp_0, rel=1e-12)
+            (frozen_2,) = out.window_outcomes[2].fixed_peaks
+            assert frozen_2.model_peak.amplitude == pytest.approx(
+                amp_0 / 1.1, rel=1e-12
+            )
 
 
 # ---------------------------------------------------------------------------

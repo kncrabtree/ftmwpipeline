@@ -845,7 +845,7 @@ class FittedPeak:
     # *identity*. ``None`` means the peak carried through the edit unchanged --
     # the same line remeasured, not a replacement. See the field docstring.
     derivation: Optional[int] = None
-    """``DecisionLogEntry.order_index`` of the Stage 6 decision that created or
+    """``DecisionLogEntry.serial`` of the Stage 6 decision that created or
     altered this peak, or ``None`` when the peak was carried through unchanged.
 
     A consumer that binds external state (line assignments, say) to individual
@@ -854,9 +854,9 @@ class FittedPeak:
     peak whose ``derivation`` is unset survived the refit with its identity
     intact; a peak tagged with a decision id was created or reshaped by that
     decision (added, or a merge / split product) and must not silently inherit
-    the old binding. Ids are ``order_index`` values into the persisted decision
-    log, so the tag is renumbered together with the log whenever ``review undo``
-    replays from the automatic baseline."""
+    the old binding. The id is the decision's serial, minted once when the
+    decision was recorded and never reused or renumbered within the fit's
+    lineage, so an undo of other decisions leaves the tag unchanged."""
 
     # Peak identity: the point-space position the peak was seeded at, stamped
     # once at birth (a Stage 3 detection, a blend escalation, a curated add, a
@@ -880,10 +880,13 @@ class FittedPeak:
     field existed -- it is never backfilled from a legacy file's fitted
     positions.
 
-    ``review undo`` replays the surviving decisions from the automatic
-    baseline, so the identifiers after an undo are the replay's rather than
-    the pre-undo file's -- re-read them, exactly as a ``derivation`` tag has
-    to be re-read once the decision log is renumbered."""
+    A Stage 6 decision names the peaks it removes by this identifier and
+    records the identifier of every peak it births
+    (:class:`DecisionLogEntry` ``targets`` / ``born_uids``), so ``review
+    undo``, which replays the surviving decisions from the automatic
+    baseline, removes the same peaks and births each under its recorded
+    identifier; the identifiers of the peaks the undone decisions birthed are
+    gone with them."""
 
     # Spur-review hint: set when the peak's frequency was a Stage-2b flat-cluster
     # nominee whose coherent decay was ambiguous (the ``flat_decay`` band, where
@@ -2117,7 +2120,7 @@ class FinalPeak:
     origin : str
         Per-peak provenance, ``"auto"`` or ``"user"`` (Stage 6 curation).
     derivation : int or Absent
-        ``DecisionLogEntry.order_index`` of the Stage 6 decision that created or
+        ``DecisionLogEntry.serial`` of the Stage 6 decision that created or
         altered this peak, carried through from the Stage 5
         :class:`FittedPeak`. ``Absent.NOT_RUN`` means no decision touched the
         line: it was carried through the refit unchanged, i.e. the same line
@@ -2326,19 +2329,35 @@ DECISION_KINDS: Tuple[str, ...] = (
 #: The closed vocabulary of ``DecisionLogEntry.provenance``.
 DECISION_PROVENANCES: Tuple[str, ...] = ("user",)
 
+#: The Stage 6 replay-engine version this code writes, stamped on
+#: ``/stage6_review`` by every Stage 6 write. A file whose review carries no
+#: version or an older one was curated under other replay semantics: Stage 6
+#: refuses to write it until ``fit run`` starts a new lineage
+#: (``predates_replay_engine``). Bumped only for a change of replay semantics.
+ENGINE_VERSION: int = 1
+
 
 @dataclass
 class DecisionLogEntry:
     """One anchored user decision in the Stage 6 decision log.
 
+    Rows are immutable once recorded: an undo of other decisions keeps them
+    verbatim and only recomputes ``order_index``.
+
     Attributes
     ----------
     order_index : int
-        Zero-based position within the decision log (execution order).
+        Zero-based position within the decision log (execution order). A
+        position only: it changes when an undo drops earlier rows.
     window_id : int
         The ``FitWindow.window_id`` the decision applies to.
     frequency_mhz : float
-        Molecular frequency anchor for the decision (MHz).
+        Raw-frame frequency the decision is displayed at (MHz): for an add,
+        the frequency sent; for a remove, the fitted frequency of the peak it
+        resolved to in the state the request was made against; for a merge,
+        its seed; for a split, the parent's fitted frequency; for a create,
+        the anchor. Display only: a replay reads ``targets``, ``seeds_mhz``
+        and ``born_uids``, never this.
     kind : str
         Decision type, one of :data:`DECISION_KINDS`: ``"add"``, ``"remove"``,
         ``"merge"``, ``"split"``, ``"accept"``, or ``"create_window"``.
@@ -2346,7 +2365,29 @@ class DecisionLogEntry:
         One of :data:`DECISION_PROVENANCES`; always ``"user"`` for decisions
         recorded here.
     evidence : dict
-        Optional evidence snapshot (χ²ᵣ before/after, peak deltas, etc.).
+        Optional evidence snapshot (χ²ᵣ before/after, peak deltas, etc.),
+        taken when the decision was recorded. Its ``action_index`` is the
+        ``serial`` of the first row the same user action recorded.
+    serial : int or Absent
+        The decision's stable id: minted once when it was recorded, never
+        reused or renumbered within the fit's lineage (``fit run`` starts a
+        new one). ``review undo`` takes serials, and ``FittedPeak.derivation``
+        holds one. ``Absent.NOT_RUN`` on a row a pre-engine build recorded.
+    targets : tuple of int or Absent
+        The ``peak_uid`` values, in ``window_id``, of the peaks the decision
+        removes: a remove's one peak, a merge's parents, a split's parent.
+        Empty for the other kinds. ``(window_id, uid)`` is the address: a
+        thawed copy carries its primary's uid in another window.
+    seeds_mhz : tuple of float or Absent
+        Raw-frame seed positions (MHz) of the peaks the decision births: an
+        add's one, a merge's one, a split's products. Recorded when the
+        decision is, so every replay seeds them at the same positions.
+    born_uids : tuple of int or Absent
+        The ``peak_uid`` each seed was stamped with when the decision was
+        recorded (from the seed position, the birth rule), index-aligned with
+        ``seeds_mhz``; a replay births each peak under its recorded uid.
+        ``targets``, ``seeds_mhz`` and ``born_uids`` are ``Absent.NOT_RUN`` on
+        a row a pre-engine build recorded.
     """
 
     order_index: int
@@ -2355,6 +2396,38 @@ class DecisionLogEntry:
     kind: str
     provenance: str = "user"
     evidence: Dict[str, Any] = field(default_factory=dict)
+    serial: Union[int, Absent] = Absent.NOT_RUN
+    targets: Union[Tuple[int, ...], Absent] = Absent.NOT_RUN
+    seeds_mhz: Union[Tuple[float, ...], Absent] = Absent.NOT_RUN
+    born_uids: Union[Tuple[int, ...], Absent] = Absent.NOT_RUN
+
+
+@dataclass(frozen=True)
+class ReviewParams:
+    """The attention-routing parameters a Stage 6 status computation uses.
+
+    ``review run`` records them (the recorded values overridden by those it is
+    passed) and every other Stage 6 write reuses them, so an edit or an undo
+    routes attention exactly as the last ``review run`` did. They only route
+    attention: no fitted number or final product depends on them.
+
+    Attributes
+    ----------
+    bar : float
+        Display bar of the candidate ledger behind ``candidate_bearing``.
+    attention_candidate_evidence : float
+        Evidence a window's strongest revivable candidate must clear to flag
+        ``candidate_bearing``.
+    kappa : float
+        Shape-error kappa of the SNR-aware chi-squared gate.
+    noise_floor : float
+        Noise-regime chi-squared allowance of the same gate.
+    """
+
+    bar: float
+    attention_candidate_evidence: float
+    kappa: float
+    noise_floor: float
 
 
 @dataclass
@@ -2379,9 +2452,38 @@ class Stage6Review:
         Stage 4's inputs; the effective plan a Stage 6 edit fits against is the
         base plan overlaid with this list, and ``review undo`` drops the overlay
         and replays it from the decision log along with everything else.
+    next_serial : int
+        The serial the next recorded decision takes: a high-water mark that an
+        undo never lowers, so a serial is never reused within the lineage.
+    window_id_high_water : int
+        The highest window id a Stage 6 create has minted in this lineage
+        (``-1`` before the first). A fresh create takes an id above it, and
+        an undo never lowers it, so an undone create's id is never given to a
+        different window. A replayed create keeps its recorded id.
+    engine_version : int or None
+        The replay-engine version (:data:`ENGINE_VERSION`) that wrote the
+        review; ``None`` when the stored review carries none (a pre-engine
+        build wrote it).
+    review_params : ReviewParams or None
+        The attention-routing parameters the statuses were computed under,
+        recorded by ``review run`` and reused by every other Stage 6 write.
+        ``None`` when no Stage 6 write has recorded them; ``review run``'s
+        defaults then apply.
+    refit_required : str or None
+        Set on a read (``get_review_status``) of a file Stage 6 refuses to
+        write: the reason a write would raise. ``"predates_peak_identity"``
+        or ``"predates_replay_engine"`` (``curation_conflict``): the file
+        needs ``fit run``, which discards its curation.
+        ``"file_incompatible"``: a newer engine wrote the review; upgrade
+        ftmwpipeline. ``None`` when writes are accepted. Never stored.
     """
 
     window_statuses: Dict[int, "WindowReviewStatus"] = field(default_factory=dict)
     decision_log: List["DecisionLogEntry"] = field(default_factory=list)
     final_products: Optional["FinalProducts"] = None
     created_windows: List["FitWindow"] = field(default_factory=list)
+    next_serial: int = 0
+    window_id_high_water: int = -1
+    engine_version: Optional[int] = ENGINE_VERSION
+    review_params: Optional[ReviewParams] = None
+    refit_required: Optional[str] = None

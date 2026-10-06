@@ -182,11 +182,13 @@ surface a ``review undo`` command alongside the ``review apply`` one:
 
    ftmwpipeline review undo exp_2638.ftmw --id 2 3
 
-``review undo`` restores the automatic-fit baseline snapshot and replays every
-surviving decision onto it in log order, one user action at a time (the
+``review undo`` replays every surviving decision onto the automatic-fit
+baseline snapshot in log order, one user action at a time (the
 entries of one multi-line edit replay jointly), so any decisions can be undone,
 not only the latest; the ids shown in the table are the ones to pass, and the
-surviving decisions are renumbered afterwards (see :ref:`stage6-decisions`).
+surviving decisions keep their ids (see :ref:`stage6-decisions`). A replay
+applies each decision to the peaks it recorded by ``peak_uid``, never by
+frequency, so it acts on the same lines however the undo moves them.
 
 .. _curation-frames:
 
@@ -314,8 +316,12 @@ peaks *can* both fall inside it; that is resolved nearest-wins, and
 ambiguity is visible before the batch runs. Addressing the line by
 ``uid:N`` instead sidesteps the question entirely.
 
-Every verb's ``snap_tol_mhz`` parameter defaults to the resolved value for the
-file it is called on; passing your own overrides it for that call only, in MHz.
+The tolerance is a property of the file, not of a call: no verb or batch takes
+one of its own. It is used only to resolve a request: each decision records the
+``peak_uid`` of every line it removes and the seed and uid of every line it
+adds, and a replay (``review undo``, a log-prefix apply) applies those, with no
+tolerance at all. To reach a peak farther from the frequency you have, name it
+by ``uid:N`` or by the fitted frequency ``review show`` prints.
 
 Curation files
 --------------
@@ -360,7 +366,12 @@ apart in the same gap to share one window) still each get their own create.
 ``accept`` and ``create`` still require the window column: there it names the
 window being acted on (or, for ``create``, may take the same blank/``new``/
 ``auto``/``-`` tokens to mean "mint a new one"), not a coordinate derived from
-a frequency.
+a frequency. A ``create`` that names an id *pins* the id the window takes. It
+must be above every created window the log still holds before it, since
+created ids only increase along the log; a lower pin is refused
+(``curation_conflict``, ``replay_conflict``), as is an id a window already has.
+The review's ``window_id_high_water`` bounds only the ids a create *mints*, so a
+pin may name the id an undone create had, redoing it under its own id.
 
 A ``remove`` row may name its target by identifier instead of by frequency,
 writing ``uid:N`` for the line whose
@@ -471,8 +482,9 @@ refused, at parse time, before anything is touched. Both are read from what an
 
 The decision log records which reading was used (``kind="split"``/``"merge"``)
 and stamps the frequency that was requested, so the log reports the
-reinterpretation rather than hiding it. See :ref:`stage6-edit` on the Stage 6
-page for the exact rule.
+reinterpretation rather than hiding it, and a replay applies that reading as
+recorded rather than reading the rows again. See :ref:`stage6-edit` on the
+Stage 6 page for the exact rule.
 
 A representative curation file, written against ``exp_2638`` (saved as
 ``exp_2638_curation.csv``):
@@ -510,6 +522,16 @@ add/remove rows. An ``accept`` (or ``create``) on a window flushes that window's
 pending edit first, since it changes the file in its own right; a plain
 add/remove never does, even when curation-intent inference will read the
 coalesced result as a split or a merge once the batch actually runs.
+
+The whole file is resolved before anything is fit, so every refusal comes
+before the first fit and leaves the file untouched. (At a ``--log-prefix`` the
+file resolves against the state the kept decisions leave, so it is resolved
+after those are replayed in memory; a refusal still leaves the file
+untouched.) An edit after another on
+the same window (after a flushing ``accept``, say) resolves against the window
+as the earlier one leaves it: without the lines it removes, and with the lines
+it adds at their seed positions -- not at the positions the batch's own fits
+would move them to.
 
 .. _curation-as-data:
 
@@ -574,19 +596,23 @@ of those dicts, in place of the CSV (``-`` reads standard input):
 Applying a curation file
 ------------------------
 
-``review apply`` executes a curation file's resolved plan as a single batch. It
-loads the Stage 5 fit and builds the active-FT fit context once, applies every
-action to that fit in memory, cascades the dependents of all directly-edited
-windows in one combined pass, and persists the result once. Nothing is written
-until every action has succeeded, so a plan that fails partway through leaves
-the file untouched.
+``review apply`` executes a curation file's resolved plan as a single write. It
+builds the active-FT fit context once, resolves every action into decision-log
+entries against the fit as it stands, before anything is fit, appends them to
+the log, and curates the log as a replay from the automatic fit in one batch
+-- every entry applied as recorded, then one combined cascade over the
+dependents of every edited window -- refitting only the windows the plan's
+entries can reach and keeping every other window's fit (see
+:ref:`stage6-decisions`), and persists the result once. Nothing is written until
+the whole plan has succeeded, so a plan that fails partway through leaves the
+file untouched. As for every Stage 6 write, the file then holds exactly the
+replay of its decision log (see :ref:`stage6-decisions`).
 
-A curated file therefore holds only two states: the base it started from — the
-automatic fit, or the automatic baseline when ``review undo`` is replaying onto
-it — and the revised state the whole edit set produces. The set is applied in
-one canonical order rather than the order the rows happen to be written in.
-``create`` rows run first, since they install the structure later rows name, and
-the remaining actions run grouped by ascending window id. Within a single window
+The plan is resolved in one canonical order rather than the order the rows
+happen to be written in.
+``create`` rows resolve first, since they install the structure later rows name,
+and the remaining actions resolve grouped by ascending window id; the log records
+the entries in that order. Within a single window
 the specified order is preserved, because an ``accept`` composes on the peak set
 a preceding coalesced add/remove group left behind. Two curation files listing
 the same per-window edits in different row orders reach the same fitted state
@@ -660,9 +686,11 @@ Dropping ``--dry-run`` applies the plan, refitting each affected window in place
 The ``windows:`` block is the live apply's per-window outcome, in the shape
 ``review preview`` prints and on the same fields: which plan actions (by
 their number) targeted the window, whether it was reached directly
-(``direct``) or as a cascaded dependent (``cascaded``, with ``actions=-``;
-``exp_2638`` has no dependency edges, so nothing cascades here), the peak
-count and χ²ᵣ on each side, and a warning line if its fit did not converge (a
+(``direct``) or as a cascaded dependent (``cascaded``, with ``actions=-``: no
+action named it, but the apply changed its fit; ``exp_2638`` has no dependency
+edges, so nothing cascades here), the peak count and χ²ᵣ on each side (before
+as the file held it, after as the apply persisted it, post-cascade), and a
+warning line if its fit did not converge (a
 window left with no peak has no fit to converge, so it gets none). It
 is ``CurationApplyResult.windows`` on the Python interfaces, keyed by window
 id, so a caller can check the count arithmetic (after == before + adds −
@@ -822,7 +850,8 @@ gated spur; see :doc:`stage6_review`):
      window  297  [  direct]  actions=1,3       peaks 0->1  chi2r -->0.857
      Window 297 created: [30717.4234, 30722.4509] MHz (65 points, 0 frozen contributor(s))
 
-The created window takes the next free id, 297, one past the plan's highest.
+The created window takes the next free id, 297, one past the plan's highest (and
+past every id an earlier create took, undone ones included).
 
 The extra line only appears on a window the batch created or widened —
 ``PreviewWindowResult.created_window_mode`` is ``"created"`` or ``"widened"``
@@ -849,11 +878,15 @@ apply's own, a dry run also refuses what the apply would refuse — an anchor
 outside the analysis band, or a create whose window cannot be placed — so a
 dry run that returns is a pre-flight rather than a plan echo.
 
-A preview is not a weaker apply. It shares the appliers, so it raises the same
-per-action error on the same failures, and it is epoch-gated by the same check,
-so it cannot show you numbers whose apply is guaranteed to refuse. The one
-thing it does not do is take the undo baseline snapshot, because it writes
-nothing to snapshot against. A plan of nothing but bare ``accept`` rows touches
+A preview is not a weaker apply. It runs the apply itself, short of the
+persist: the same resolution, so it raises the same per-action error on the
+same failures, and the same replay of the log with the plan's entries, so it
+reports exactly the state the apply would persist. It is refused, first, on a
+file Stage 6 cannot curate (``predates_peak_identity``,
+``predates_replay_engine``), and epoch-gated by the same check, so it cannot
+show you numbers whose apply is guaranteed to refuse.
+The one thing it does not do is take the undo baseline snapshot, because it
+writes nothing. A plan of nothing but bare ``accept`` rows touches
 no fit and previews as ``(no fit-mutating actions; nothing to preview)``.
 
 .. code-block:: python

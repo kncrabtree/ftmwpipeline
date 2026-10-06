@@ -137,11 +137,17 @@ def _merge_spans(
     return spans
 
 
-def fitted_plan_from_h5(h5f: h5py.File, stage4_plan: WindowPlan) -> FittedPlan:
-    """The fitted plan of the open file *h5f*, given its Stage 4 plan."""
-    if _FIT_GROUP not in h5f:
+def fitted_plan_from_h5(
+    h5f: h5py.File, stage4_plan: WindowPlan, *, fit_group_name: str = _FIT_GROUP
+) -> FittedPlan:
+    """The fitted plan of the open file *h5f*, given its Stage 4 plan.
+
+    ``fit_group_name`` names the fit group whose plan is read: the curated fit
+    by default, or the undo baseline, which holds the same automatic fit's
+    plan (the full-replay reference reads it from there)."""
+    if fit_group_name not in h5f:
         return FittedPlan(stage4_plan)
-    fit_group = h5f[_FIT_GROUP]
+    fit_group = h5f[fit_group_name]
     stored = load_fitted_plan_from_hdf5(fit_group)
     if stored is not None:
         plan = replace(
@@ -182,13 +188,16 @@ def fitted_plan_from_h5(h5f: h5py.File, stage4_plan: WindowPlan) -> FittedPlan:
     )
 
 
-def load_fitted_plan(file_path: Union[str, Path]) -> FittedPlan:
-    """The fitted plan of the file at *file_path* (raises before Stage 4)."""
+def load_fitted_plan(
+    file_path: Union[str, Path], *, fit_group_name: str = _FIT_GROUP
+) -> FittedPlan:
+    """The fitted plan of the file at *file_path* (raises before Stage 4), read
+    from the fit group ``fit_group_name`` (see :func:`fitted_plan_from_h5`)."""
     from .stage4_impl import load_windows_impl
 
     stage4_plan: WindowPlan = load_windows_impl(str(file_path))["plan"]
     with h5open(str(file_path), "r") as h5f:
-        return fitted_plan_from_h5(h5f, stage4_plan)
+        return fitted_plan_from_h5(h5f, stage4_plan, fit_group_name=fit_group_name)
 
 
 def fitted_window_bounds(

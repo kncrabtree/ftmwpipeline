@@ -20,7 +20,11 @@ from ftmwpipeline.cli import main
 from ftmwpipeline.file_manager import BadSettingError, PipelineFileError
 from ftmwpipeline.io.fitting_serialization import read_fit_window_coverage
 
-pytestmark = [pytest.mark.unit]
+pytestmark = [
+    pytest.mark.unit,
+    # Design G1: every write here persists the reference replay of its log.
+    pytest.mark.usefixtures("every_write_is_reference"),
+]
 
 
 def _first_window(path) -> int:
@@ -52,10 +56,13 @@ def test_read_surface_bad_choices(stage5_small_file):
 
 def test_review_edit_and_apply_bad_arguments(stage5_small_file, tmp_path):
     f = stage5_small_file
-    # bare edit with no window id
+    # bare edit (no add, no remove), with or without a window id
     with pytest.raises(ValueError) as exc:
         api.review_edit(f)
-    _check(exc, "window_id")
+    _check(exc, "add")
+    with pytest.raises(ValueError) as exc:
+        api.review_edit(f, _first_window(f))
+    _check(exc, "add")
     # add takes a frequency, not a uid
     with pytest.raises(ValueError) as exc:
         api.review_edit(f, _first_window(f), add=["uid:7"])

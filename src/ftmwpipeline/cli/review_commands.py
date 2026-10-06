@@ -15,6 +15,7 @@ span, is read as one -- see ``review edit``'s description and
 import argparse
 import json
 import sys
+from dataclasses import asdict
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 from .._internal.atomic import h5open
@@ -22,6 +23,7 @@ from .._internal.empty_window_attention import review_lineless_window_fits
 from .._internal.stage6_impl import (
     DEFAULT_ATTENTION_CANDIDATE_EVIDENCE,
     DEFAULT_DISPLAY_BAR,
+    DEFAULT_REVIEW_PARAMS,
     RANK_METRICS,
     RefitWindowResult,
     _active_acquisition_us_for_snap,
@@ -34,6 +36,8 @@ from .._internal.stage6_impl import (
     get_final_products_impl,
     get_review_status_impl,
     rank_windows_impl,
+    refit_required_impl,
+    refit_required_instruction,
     refit_snap_tol_mhz_impl,
     refit_window_impl,
     review_accept_impl,
@@ -59,6 +63,7 @@ from ..core.data_structures import (
 )
 from ..file_manager import BadSettingError, PipelineFileError, require_pipeline_file
 from ..fitting.active_ft import active_ft_bin_spacing_mhz
+from ..fitting.validation import DEFAULT_CHI2R_NOISE_FLOOR, DEFAULT_SHAPE_ERROR_KAPPA
 from ..io.fitting_serialization import load_spectrum_fit_from_hdf5
 from ._events import add_events_argument, operation_controls
 from ._json_output import json_mode, record_payload, record_run_result
@@ -226,14 +231,30 @@ def _created_window_json(pw: Any) -> dict:
     }
 
 
+def _tuple_json(value: Any) -> Any:
+    """A row's peak-identity tuple as a JSON list; an ``Absent`` passes
+    through (a pre-engine row)."""
+    return value if isinstance(value, Absent) else list(value)
+
+
 def _log_entry_json(e: Any) -> dict:
     return {
+        "serial": e.serial,
         "order_index": e.order_index,
+        "targets": _tuple_json(e.targets),
+        "seeds_mhz": _tuple_json(e.seeds_mhz),
+        "born_uids": _tuple_json(e.born_uids),
         "kind": e.kind,
         "window_id": e.window_id,
         "frequency_mhz": e.frequency_mhz,
         "provenance": e.provenance,
     }
+
+
+def _decision_id(e: Any) -> str:
+    """A decision's id as the listings show it: its serial (``-`` on a row a
+    pre-engine build recorded, which has none)."""
+    return "-" if isinstance(e.serial, Absent) else str(e.serial)
 
 
 def _print_not_converged(indent: str = "  ") -> None:
@@ -304,6 +325,26 @@ def _combined_label(status: Optional["WindowReviewStatus"]) -> str:
     return f"{prov}·—"
 
 
+def _review_params_json(review: Stage6Review) -> Optional[Dict[str, float]]:
+    """The review's recorded routing parameters as a JSON object, or ``None``
+    when it records none (the defaults then apply)."""
+    if review.review_params is None:
+        return None
+    return asdict(review.review_params)
+
+
+def _review_params_line(review: Stage6Review) -> str:
+    """One line naming the routing parameters the statuses were computed
+    under, and whether the review records them."""
+    params = review.review_params or DEFAULT_REVIEW_PARAMS
+    origin = "recorded" if review.review_params is not None else "defaults"
+    return (
+        f"Attention routed under bar={params.bar:g}, "
+        f"attention_candidate_evidence={params.attention_candidate_evidence:g}, "
+        f"kappa={params.kappa:g}, noise_floor={params.noise_floor:g} ({origin})"
+    )
+
+
 def cmd_review_snap_tolerance(args: argparse.Namespace) -> int:
     """Print the resolved Stage 6 snap tolerance for one file (never mutates)."""
     setup_logging(args.verbose)
@@ -368,6 +409,13 @@ def cmd_review_show(args: argparse.Namespace) -> int:
     output_dir: Optional[str] = getattr(args, "output_dir", None)
 
     review: Stage6Review = get_review_status_impl(file_path)
+    if review.refit_required is not None:
+        print(
+            f"Warning: this file's Stage 6 curation cannot be changed "
+            f"({review.refit_required}). "
+            f"{refit_required_instruction(review.refit_required)}",
+            file=sys.stderr,
+        )
     try:
         window_fits, lineless = _load_review_window_fits(file_path, review)
     except PipelineFileError:
@@ -468,6 +516,7 @@ def cmd_review_show(args: argparse.Namespace) -> int:
             attention_rows.append((top_reason.severity, wid, status, top_reason))
 
         attention_rows.sort(key=lambda t: t[0], reverse=True)
+        print(_review_params_line(review))
         if not attention_rows:
             print("No windows flagged for attention.")
             return 0
@@ -522,6 +571,7 @@ def cmd_review_show(args: argparse.Namespace) -> int:
         if status is not None and status.attention_reasons:
             for reason in status.attention_reasons:
                 print(f"    [{reason.kind}] {reason.detail}")
+        print(f"  {_review_params_line(review)}")
 
         # Decision log entries for this window
         log_entries = [e for e in review.decision_log if e.window_id == wid]
@@ -538,7 +588,7 @@ def cmd_review_show(args: argparse.Namespace) -> int:
                     else ""
                 )
                 print(
-                    f"    #{entry.order_index}  kind={entry.kind}  "
+                    f"    #{_decision_id(entry)}  kind={entry.kind}  "
                     f"freq={_fmt_mhz(entry.frequency_mhz)}  {ev_str}"
                 )
 
@@ -625,8 +675,14 @@ def _review_show_json(
 
     ``ledger`` gives a window's (or, for ``None``, every window's) candidate
     ledger; ``lineless`` names the flagged windows the fit holds no line in,
-    whose ``reduced_chi2`` is undefined.
+    whose ``reduced_chi2`` is undefined. Every payload also carries the
+    review's ``refit_required`` (null when Stage 6 writes are accepted) and
+    its recorded ``review_params`` (null when it records none).
     """
+    refit: Dict[str, Any] = {
+        "refit_required": review.refit_required,
+        "review_params": _review_params_json(review),
+    }
 
     def _bounds(wf: FittingResult) -> Tuple[float, float]:
         if wf.window is not None and wf.window.freq_range is not None:
@@ -644,6 +700,7 @@ def _review_show_json(
                 "bar": bar,
                 "window_id": window_filter,
                 "candidates": [_candidate_json(c) for c in cands],
+                **refit,
             },
         )
         return 0
@@ -668,7 +725,7 @@ def _review_show_json(
                 }
             )
         rows.sort(key=lambda r: (-r["severity"], r["window_id"]))
-        record_payload(args, {"attention": rows})
+        record_payload(args, {"attention": rows, **refit})
         return 0
 
     if window_filter is None:
@@ -686,7 +743,7 @@ def _review_show_json(
                     "label": _combined_label(review.window_statuses.get(wid)),
                 }
             )
-        record_payload(args, {"windows": windows})
+        record_payload(args, {"windows": windows, **refit})
         return 0
 
     wf = window_fits[0]
@@ -719,6 +776,7 @@ def _review_show_json(
                 for p in sorted(wf.fitted_peaks, key=lambda pk: pk.frequency_mhz)
             ],
             "candidates": [_candidate_json(c) for c in ledger(wid)],
+            **refit,
         },
     )
     return 0
@@ -842,10 +900,10 @@ def _fmt_edit_token(token: str) -> str:
 def cmd_review_edit(args: argparse.Namespace) -> int:
     """Re-fit one window with user-directed add/remove edits.
 
-    ``--window`` is optional when ``--add``/``--remove`` is given: the window
-    is then derived from the target frequencies (or ``uid:N`` identifiers) by
-    live-window coverage. A bare edit (no ``--add``/``--remove`` -- an
-    identity refit) still requires ``--window`` explicitly.
+    At least one ``--add`` or ``--remove`` is required: an edit with neither
+    is refused (``bad_setting``, path ``add``). ``--window`` is optional: the
+    window is then derived from the target frequencies (or ``uid:N``
+    identifiers) by live-window coverage.
 
     Prints a before/after summary: peak counts, χ²ᵣ, which peaks were added
     or removed, and the origin of each resulting peak.
@@ -856,12 +914,6 @@ def cmd_review_edit(args: argparse.Namespace) -> int:
     add_freqs: List[Union[float, str]] = list(args.add or [])
     remove_freqs: List[Union[float, str]] = list(args.remove or [])
 
-    if not add_freqs and not remove_freqs and window_id is not None:
-        print(
-            "Warning: no --add or --remove frequencies given; "
-            "performing identity refit (no-op edit)."
-        )
-
     frame: Optional[Frame] = getattr(args, "frame", None)
 
     try:
@@ -871,7 +923,6 @@ def cmd_review_edit(args: argparse.Namespace) -> int:
                 window_id,
                 add=add_freqs,
                 remove=remove_freqs,
-                snap_tol_mhz=getattr(args, "snap_tol_mhz", None),
                 frame=frame,
                 events=events,
                 cancel=cancel,
@@ -999,7 +1050,6 @@ def cmd_review_create(args: argparse.Namespace) -> int:
             result = create_window_impl(
                 file_path,
                 anchor,
-                snap_tol_mhz=getattr(args, "snap_tol_mhz", None),
                 frame=frame,
                 events=events,
                 cancel=cancel,
@@ -1063,7 +1113,6 @@ def cmd_review_accept(args: argparse.Namespace) -> int:
                 file_path,
                 window_id,
                 candidate_freq=candidate_freq,
-                snap_tol_mhz=getattr(args, "snap_tol_mhz", None),
                 frame=frame,
                 events=events,
                 cancel=cancel,
@@ -1101,18 +1150,16 @@ def cmd_review_run(args: argparse.Namespace) -> int:
     """Build or refresh the Stage 6 attention-routing curation layer."""
     setup_logging(getattr(args, "verbose", False))
     file_path = _ensure_ftmw(args.file_path)
-    bar: float = getattr(args, "bar", DEFAULT_DISPLAY_BAR)
-    attention_bar: float = getattr(
-        args, "attention_bar", DEFAULT_ATTENTION_CANDIDATE_EVIDENCE
-    )
     sigma_floor_khz: Optional[float] = getattr(args, "sigma_floor_khz", None)
 
     try:
         with operation_controls(args) as (events, cancel):
             result = review_run_impl(
                 file_path,
-                bar=bar,
-                attention_candidate_evidence=attention_bar,
+                bar=getattr(args, "bar", None),
+                attention_candidate_evidence=getattr(args, "attention_bar", None),
+                kappa=getattr(args, "kappa", None),
+                noise_floor=getattr(args, "noise_floor", None),
                 sigma_floor_khz=sigma_floor_khz,
                 events=events,
                 cancel=cancel,
@@ -1127,6 +1174,7 @@ def cmd_review_run(args: argparse.Namespace) -> int:
         f"review run: {result.n_windows} window(s), "
         f"{result.n_attention} needing attention"
     )
+    print(f"  {_review_params_line(get_review_status_impl(file_path))}")
     if result.reason_counts:
         for kind, count in sorted(result.reason_counts.items()):
             print(f"  {kind}: {count}")
@@ -1328,7 +1376,13 @@ def cmd_review_log(args: argparse.Namespace) -> int:
         return 1
 
     if json_mode(args):
-        record_payload(args, {"entries": [_log_entry_json(e) for e in entries]})
+        record_payload(
+            args,
+            {
+                "entries": [_log_entry_json(e) for e in entries],
+                "refit_required": refit_required_impl(file_path),
+            },
+        )
         return 0
     print("review log (user decisions, execution order):")
     if not entries:
@@ -1341,7 +1395,7 @@ def cmd_review_log(args: argparse.Namespace) -> int:
     print("  " + "-" * (kw + 29))
     for e in entries:
         print(
-            f"  {e.order_index:>4}  {e.kind:>{kw}}  {e.window_id:>6}  "
+            f"  {_decision_id(e):>4}  {e.kind:>{kw}}  {e.window_id:>6}  "
             f"{e.frequency_mhz:>12.4f}"
         )
     return 0
@@ -1380,7 +1434,7 @@ def cmd_review_undo(args: argparse.Namespace) -> int:
     print("removing:")
     for e in result.removed:
         print(
-            f"  id {e.order_index}: {e.kind} window {e.window_id} "
+            f"  id {_decision_id(e)}: {e.kind} window {e.window_id} "
             f"@ {e.frequency_mhz:.4f} MHz"
         )
     print("replay of surviving decisions:")
@@ -1388,6 +1442,9 @@ def cmd_review_undo(args: argparse.Namespace) -> int:
         print("  (none -- fully reverted to the automatic fit)")
     for i, action in enumerate(result.plan, start=1):
         print(f"  {i:>3}. {describe_planned_action(action)}")
+    if result.geometry_changed_window_ids:
+        listed = ", ".join(str(w) for w in result.geometry_changed_window_ids)
+        print(f"geometry changed: window(s) {listed}")
     if dry_run:
         print(f"{len(result.removed)} decision(s) would be undone (nothing written).")
     else:
@@ -1485,8 +1542,13 @@ def register_review_commands(subparsers: Any) -> None:
         description=(
             "Compute per-window advisory attention reasons and persist the\n"
             "Stage 6 review state to the .ftmw file.\n\n"
-            "Existing provenance (reviewed/user-edited) and the decision log\n"
-            "are preserved; only attention reasons are refreshed."
+            "The decision log is kept; every window's status is recomputed,\n"
+            "its provenance (reviewed/user-edited) taken from the log.\n\n"
+            "The routing parameters (--bar, --attention-bar, --kappa,\n"
+            "--noise-floor) are recorded in the file, and every later review\n"
+            "write (edit, apply, undo) routes attention under them. One that\n"
+            "is omitted keeps its recorded value (its default on a file that\n"
+            "records none)."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1497,23 +1559,46 @@ def register_review_commands(subparsers: Any) -> None:
         "--bar",
         dest="bar",
         type=float,
-        default=DEFAULT_DISPLAY_BAR,
+        default=None,
         metavar="BAR",
         help=(
-            f"Display bar for candidate-bearing detection "
-            f"(default {DEFAULT_DISPLAY_BAR:.1f})."
+            f"Display bar for candidate-bearing detection (default: the "
+            f"recorded value, else {DEFAULT_DISPLAY_BAR:.1f})."
         ),
     )
     p_run.add_argument(
         "--attention-bar",
         dest="attention_bar",
         type=float,
-        default=DEFAULT_ATTENTION_CANDIDATE_EVIDENCE,
+        default=None,
         metavar="EV",
         help=(
             f"Evidence threshold for flagging a candidate-bearing window "
-            f"(stiffer than --bar; default "
+            f"(stiffer than --bar; default: the recorded value, else "
             f"{DEFAULT_ATTENTION_CANDIDATE_EVIDENCE:.1f})."
+        ),
+    )
+    p_run.add_argument(
+        "--kappa",
+        dest="kappa",
+        type=float,
+        default=None,
+        metavar="KAPPA",
+        help=(
+            f"Shape-error kappa of the SNR-aware chi2r gate behind the "
+            f"worst_eps reason (default: the recorded value, else "
+            f"{DEFAULT_SHAPE_ERROR_KAPPA:g})."
+        ),
+    )
+    p_run.add_argument(
+        "--noise-floor",
+        dest="noise_floor",
+        type=float,
+        default=None,
+        metavar="F",
+        help=(
+            f"Noise-regime chi2r allowance of the same gate (default: the "
+            f"recorded value, else {DEFAULT_CHI2R_NOISE_FLOOR:.1f})."
         ),
     )
     p_run.add_argument(
@@ -1600,7 +1685,9 @@ def register_review_commands(subparsers: Any) -> None:
             "window id or 'new' in the window column; 'new' means 'whichever id\n"
             "this produces', while a named id pins the id the created window\n"
             "takes -- which is how a file generated from the decision log keeps\n"
-            "each created window's identity stable across a replay.\n\n"
+            "each created window's identity stable across a replay. A pinned id\n"
+            "must lie above every created window the log still holds before\n"
+            "it, since created ids only increase along the log.\n\n"
             "A run of add/remove rows on one window coalesces into a single\n"
             "refit; accept/create stand alone. With --dry-run the resolved\n"
             "plan and any frequency-resolution warnings print without writing.\n\n"
@@ -1661,8 +1748,10 @@ def register_review_commands(subparsers: Any) -> None:
             "numbers), and reports final-product numbers: calibrated\n"
             "frequency and the three-term sigma budget, identical to what a\n"
             "subsequent 'apply' of the same plan would persist.\n\n"
-            "Epoch-gated exactly like 'apply', except a plan of entirely bare\n"
-            "accept rows, which touches no fit and so is not gated either."
+            "Refused exactly like 'apply' on a file Stage 6 cannot curate\n"
+            "(predates_peak_identity, predates_replay_engine), and epoch-gated\n"
+            "exactly like it, except a plan of entirely bare accept rows,\n"
+            "which touches no fit and so is not gated either."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1687,7 +1776,8 @@ def register_review_commands(subparsers: Any) -> None:
         help="List the persisted decision log (read-only)",
         description=(
             "List the Stage 6 decision log -- every recorded user edit in\n"
-            "execution order, keyed by id (order_index). Read only."
+            "execution order, keyed by id (the decision's serial, which\n"
+            "'review undo --id' takes and an undo never renumbers). Read only."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1709,12 +1799,11 @@ def register_review_commands(subparsers: Any) -> None:
         help="Undo recorded decisions by id, replaying the rest",
         description=(
             "Undo one or more decisions (by the id from 'review log').\n\n"
-            "Rollback is replay-from-baseline: the automatic Stage 5 fit is\n"
-            "restored and every surviving decision is re-applied, so decision\n"
-            "ids are renumbered afterward. Use --dry-run to preview. Requires\n"
-            "the automatic-fit baseline the first edit snapshots (missing only\n"
-            "from a file edited before 'review undo' existed -- rebuild and\n"
-            "re-edit in that case)."
+            "Rollback is replay-from-baseline: every surviving decision is\n"
+            "re-applied, as recorded, to the automatic Stage 5 fit. A decision's\n"
+            "id is its serial: the surviving decisions keep their ids, and no\n"
+            "id is ever reused until 'fit run' starts a new curation lineage.\n"
+            "Use --dry-run to preview."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1904,19 +1993,6 @@ def register_review_commands(subparsers: Any) -> None:
             "Delegates to 'review edit --add F'."
         ),
     )
-    p_accept.add_argument(
-        "--snap-tol-mhz",
-        dest="snap_tol_mhz",
-        type=float,
-        default=None,
-        metavar="MHZ",
-        help=(
-            "Tolerance for snapping a requested frequency to an existing peak "
-            f"or ledger candidate. Defaults to this file's own resolved "
-            f"tolerance ({REFIT_SNAP_TOL_BINS} active-FT bins; see "
-            f"'ftmwpipeline review snap-tolerance')."
-        ),
-    )
     _add_frame_argument(p_accept)
     p_accept.add_argument(
         "--verbose",
@@ -1957,10 +2033,9 @@ def register_review_commands(subparsers: Any) -> None:
         default=None,
         metavar="N",
         help=(
-            "window_id to refit. Optional when --add/--remove is given: the "
-            "window is then derived from the target frequency (or 'uid:N') "
-            "by live-window coverage. Required for a bare edit (no --add/"
-            "--remove -- an identity refit)."
+            "window_id to refit. Optional: the window is then derived from "
+            "the target frequency (or 'uid:N') by live-window coverage. An "
+            "edit needs at least one --add or --remove."
         ),
     )
     p_edit.add_argument(
@@ -1988,19 +2063,6 @@ def register_review_commands(subparsers: Any) -> None:
             "Molecular MHz frequency of a fitted peak to remove, or a "
             "'uid:N' token naming it by its peak_uid. "
             "Repeat the flag for several: --remove F1 --remove uid:N ..."
-        ),
-    )
-    p_edit.add_argument(
-        "--snap-tol-mhz",
-        dest="snap_tol_mhz",
-        type=float,
-        default=None,
-        metavar="MHZ",
-        help=(
-            "Tolerance for snapping a requested frequency to an existing peak "
-            f"or ledger candidate. Defaults to this file's own resolved "
-            f"tolerance ({REFIT_SNAP_TOL_BINS} active-FT bins; see "
-            f"'ftmwpipeline review snap-tolerance')."
         ),
     )
     _add_frame_argument(p_edit)
@@ -2043,19 +2105,6 @@ def register_review_commands(subparsers: Any) -> None:
         required=True,
         metavar="F",
         help="Molecular MHz frequency the new window must cover.",
-    )
-    p_create.add_argument(
-        "--snap-tol-mhz",
-        dest="snap_tol_mhz",
-        type=float,
-        default=None,
-        metavar="MHZ",
-        help=(
-            "Tolerance for snapping a requested frequency to an existing peak "
-            f"or ledger candidate. Defaults to this file's own resolved "
-            f"tolerance ({REFIT_SNAP_TOL_BINS} active-FT bins; see "
-            f"'ftmwpipeline review snap-tolerance')."
-        ),
     )
     _add_frame_argument(p_create)
     p_create.add_argument(

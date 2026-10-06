@@ -42,6 +42,28 @@ states are likewise what the suite verifies.
   tests; it is the reference for scientific correctness.
 - A stage is not "complete" until it has unit tests *and* a cross-interface
   consistency test.
+- Stage 6 refusals are cross-interface tests that also assert the refused file
+  is byte-identical afterwards and that no window was refit: a bare
+  `review edit`, and every write of a file the replay engine cannot curate (a
+  fit without `peak_uid`, or curation without the engine's stamps), on the CLI,
+  the Pipeline class, the functional API and a `ReviewSession`.
+- Every Stage 6 write test asserts the write invariant: after each write, the
+  persisted curated state equals, bit for bit, the reference replay of the
+  persisted decision log under the persisted review parameters
+  (`tests/_replay_support.py`, the `every_write_is_reference` fixture, which a
+  Stage 6 test module opts into). A test that counts work (fit-context builds,
+  refits) or deliberately persists a state that is not the reference turns the
+  check off, with its reason stated. The check is never part of a production
+  write path.
+- The incremental engine (a write refits only the windows whose keys changed)
+  is checked by property tests over seeded random sequences of writes (edits,
+  merges, splits, accepts, creates, undos, log-prefix applies, `review run`,
+  session previews): after every write the persisted state is the reference
+  replay bit for bit, every refusal leaves the file byte-identical before any
+  fit, and a valid permutation of a log replays to the same state. A fast tier
+  runs on a cascade fixture (655 cut to its densest hub); a slow tier on the
+  full 655 build, with the scenarios a random walk rarely draws pinned
+  (`tests/unit/stage6/test_replay_engine.py`).
 - Tests must not write artifacts into the working tree or repository; outputs
   go to a temporary location.
 - Tests run in the project dev environment

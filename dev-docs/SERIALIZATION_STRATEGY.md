@@ -90,6 +90,31 @@ design).
   across all interfaces (this is asserted by cross-interface tests).
 - Any persisted stage result reconstructs to scientific equivalence with the
   value originally computed.
+- The Stage 6 review (`/stage6_review`) stamps the replay-engine version that
+  wrote it (`engine_version`) and the decision serial high-water mark
+  (`next_serial`); each decision-log row carries its `serial` and its peak
+  identity (`targets`, `seeds_mhz`, `born_uids`: JSON lists), and the undo
+  baseline (`/stage5_fitting_baseline`) a `lineage_id`. A review or baseline
+  without the stamps was written by a pre-engine build, and a fit whose peaks
+  lack `peak_uid` predates peak identity: the file is read as stored, never
+  migrated, and every Stage 6 write of it is refused until `fit run` starts a
+  new lineage. A review from a newer engine is a newer format
+  (`PipelineCompatibilityError`). The review also records the
+  attention-routing parameters its statuses were computed under
+  (`review_params`); one without them reads as `None`, and the defaults apply.
+  It records the highest window id a create has taken in the lineage
+  (`window_id_high_water`, read as `-1` when absent), which a fresh create
+  mints above and an undo never lowers, so a window id is never reused within
+  the lineage.
+- The replay engine's keys live in `/stage6_engine`, a top-level group a write
+  never deletes (its key table is resized in place, as the fit tables are):
+  the context digest `e_key` the keys were computed under, the create chain
+  (`create_chain`, JSON: each create row's chain digest and the window it
+  installed), and one row per window of the curated fit (`window_id`, `kd`,
+  `kf`, `reached`, `dirty`). It is a cache with no meaning of its own: a file
+  without it, or with keys computed under another context, is curated by
+  recomputing every window it changes. `fit run` drops it with the undo
+  baseline, and an upstream invalidation with `/stage6_review`.
 
 ## Multi-format input
 

@@ -191,7 +191,9 @@ __all__ = [
     "read_fit_diagnostics",
     "read_fit_peak_frequencies_by_window",
     "read_fit_peak_uids_by_window",
+    "fit_has_peak_identity",
     "read_fit_peak_freqs_and_uids_by_window",
+    "read_fit_frozen_primaries_by_window",
     "LEGACY_FIT_LAYOUT_MESSAGE",
     "FitWindowCoverage",
     "read_fit_window_coverage",
@@ -1597,6 +1599,16 @@ def _uid_column(h5_group: h5py.Group) -> Optional[np.ndarray]:
     return np.asarray(peaks_group["peak_uid"][:], dtype="i8")
 
 
+def fit_has_peak_identity(h5_group: h5py.Group) -> bool:
+    """Whether every fitted peak in the ``stage5_fitting`` group carries a
+    ``peak_uid``. ``False`` for a fit that predates peak identity (no column,
+    or a row stored as ``-1``) -- one column read, no fit load."""
+    if "peaks" not in h5_group:
+        return False
+    uids = _uid_column(h5_group)
+    return uids is not None and not bool(np.any(uids < 0))
+
+
 def read_fit_peak_uids_by_window(h5_group: h5py.Group) -> Dict[int, Set[int]]:
     """Cheap substitute for grouping the full loader's fitted peaks' uids by
     window.
@@ -1648,6 +1660,36 @@ def read_fit_peak_freqs_and_uids_by_window(
             set() if uids is None else {int(v) for v in uids[start:stop] if int(v) >= 0}
         )
     return freqs_out, uids_out
+
+
+def read_fit_frozen_primaries_by_window(
+    h5_group: h5py.Group,
+) -> Dict[int, Tuple[int, ...]]:
+    """Per window, the primary window ids of its frozen contributors, in order
+    of first appearance among its ``frozen_peak_*`` entries.
+
+    Equivalent to reading each loaded ``FittingResult.fixed_parameters`` in
+    its stored order, but parsing only the ``fixed_parameters`` cell of each
+    row. Every window of the fit has a key; a window that froze nothing maps
+    to ``()``.
+    """
+    windows_group = _windows_group(h5_group)
+    ids = np.asarray(windows_group["window_id"][:], dtype="i8")
+    cells = windows_group["fixed_parameters"][:]
+    out: Dict[int, Tuple[int, ...]] = {}
+    for wid, cell in zip(ids, cells):
+        raw = _decode(cell)
+        try:
+            blob = json.loads(raw) if raw else {}
+        except (json.JSONDecodeError, TypeError):
+            blob = {}
+        primaries: Dict[int, None] = {}
+        if isinstance(blob, dict):
+            for key, entry in blob.items():
+                if key.startswith("frozen_peak_") and isinstance(entry, dict):
+                    primaries.setdefault(int(entry["primary_window_id"]), None)
+        out[int(wid)] = tuple(primaries)
+    return out
 
 
 class FitWindowCoverage(NamedTuple):

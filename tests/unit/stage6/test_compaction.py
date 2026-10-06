@@ -17,7 +17,11 @@ from ftmwpipeline._internal.compaction import compact_file
 from ftmwpipeline._internal.stage6_impl import review_run_impl, review_undo_impl
 from tests.unit._internal.test_compaction import _dump
 
-pytestmark = [pytest.mark.integration]
+pytestmark = [
+    pytest.mark.integration,
+    # Design G1: every write here persists the reference replay of its log.
+    pytest.mark.usefixtures("every_write_is_reference"),
+]
 
 
 def _a_peak(path: Path):
@@ -49,7 +53,7 @@ def test_edit_undo_churn_does_not_grow_the_file(stage5_small_file):
     sizes = []
     for _ in range(5):
         ftmw.review_edit(str(stage5_small_file), wid, remove=[freq])
-        last = ftmw.review_log(str(stage5_small_file))[-1].order_index
+        last = ftmw.review_log(str(stage5_small_file))[-1].serial
         review_undo_impl(stage5_small_file, [last])
         sizes.append(os.path.getsize(stage5_small_file))
     steady = sizes[1:]

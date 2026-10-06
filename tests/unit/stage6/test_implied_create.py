@@ -47,7 +47,11 @@ from ftmwpipeline.io.fitting_serialization import load_spectrum_fit_from_hdf5
 from ftmwpipeline.io.stage6_review_serialization import load_stage6_review_from_file
 from ftmwpipeline.pipeline import Pipeline
 
-pytestmark = [pytest.mark.integration]
+pytestmark = [
+    pytest.mark.integration,
+    # Design G1: every write here persists the reference replay of its log.
+    pytest.mark.usefixtures("every_write_is_reference"),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -244,7 +248,7 @@ def test_undo_removes_the_peak_and_the_window_leaves_no_stray_window(
     wid = result.window_id
     entry = review_log_impl(path)[0]
 
-    undo_result = review_undo_impl(str(path), [entry.order_index])
+    undo_result = review_undo_impl(str(path), [entry.serial])
 
     assert undo_result.applied == 0  # nothing survives to replay
     assert review_log_impl(path) == []
@@ -286,7 +290,7 @@ def test_orphan_guard_refuses_undo_of_implying_add_with_a_dependent(
 
     log = review_log_impl(path)
     assert len(log) == 2
-    entry1_id, entry2_id = log[0].order_index, log[1].order_index
+    entry1_id, entry2_id = log[0].serial, log[1].serial
 
     with pytest.raises(ValueError, match="cannot undo") as excinfo:
         review_undo_impl(str(path), [entry1_id])
@@ -315,7 +319,7 @@ def test_replay_after_unrelated_undo_keeps_the_implied_windows_id(stage5_multi_f
 
     log = review_log_impl(path)
     assert len(log) == 2
-    unrelated_id = log[1].order_index
+    unrelated_id = log[1].serial
 
     review_undo_impl(str(path), [unrelated_id])
 
@@ -397,8 +401,8 @@ def test_implied_create_widened_mode_still_cascades(stage5_multi_file, monkeypat
 
     orig_succs = s6._cascade_succs
 
-    def fake_succs(window_fits, fit_window_map):
-        d = orig_succs(window_fits, fit_window_map)
+    def fake_succs(sources):
+        d = orig_succs(sources)
         d.setdefault(wid, set()).add(dep_wid)
         return d
 
@@ -511,14 +515,12 @@ def test_implied_create_reinterpreted_as_an_edit_is_refused(
 ):
     """An implied create ALWAYS records ``created_window``, or it refuses.
 
-    ``_batch_apply_edit_action`` can reinterpret the implying ``add`` against
+    Curation-intent inference can reinterpret the implying ``add`` against
     the window it landed in (for ``mode="widened"``, a non-empty one) as an
-    inferred merge/split. Those appliers record their own decision, which
-    carries no ``created_window`` -- and without that evidence
-    ``_decision_to_op`` cannot reissue the create before the add, so a replay
-    would add into the window at its BASE PLAN width: a hard error partway
-    through a replay (leaving the file rolled back with its log emptied, the
-    failure ``df3f289`` fixed) or a silently wrong seed.
+    inferred merge/split, whose row carries no ``created_window`` -- and
+    without that evidence a replay cannot reissue the create before the add,
+    so it would add into the window at its BASE PLAN width: a refused replay
+    or a silently wrong seed.
 
     So it is refused rather than recorded wrong. The configuration is not
     reachable on real data -- it needs the anchor within snap tolerance of an
@@ -526,7 +528,7 @@ def test_implied_create_reinterpreted_as_an_edit_is_refused(
     ``min_window_half_width_points`` (32) is ~51x the snap tolerance in points
     (0.625), so a peak sits tens of snap-tolerances inside its own window's
     edge; measured on the real 2638 fit, zero configurations, the nearest 40x
-    the snap tolerance away. It is forced here through the applier seam,
+    the snap tolerance away. It is forced here through the resolution seam,
     because an invariant a replay depends on should hold by construction
     rather than by geometry that a later constant change could quietly move.
     """
@@ -535,23 +537,17 @@ def test_implied_create_reinterpreted_as_an_edit_is_refused(
     before = _fitted_by_window(path)
     n_log_before = len(review_log_impl(path))
 
-    orig = s6._batch_apply_edit_action
+    orig = s6._resolve_edit_steps
 
-    def reinterpreting(ctx, window_id, add, remove, **kwargs):
-        result = orig(ctx, window_id, add, remove, **kwargs)
-        # Stand in for an inferred split/merge applier recording its own
-        # entry, which is what the refusal exists to catch.
-        ctx.changeset.decisions.append(
-            {
-                "window_id": window_id,
-                "frequency_mhz": float(add[0]),
-                "kind": "split",
-                "evidence": {"inferred": True},
-            }
-        )
-        return result
+    def reinterpreting(ctx, state, window_id, add, remove, **kwargs):
+        steps = orig(ctx, state, window_id, add, remove, **kwargs)
+        # Stand in for inference reading the add as a split of a peak in the
+        # window it landed in, which is what the refusal exists to catch.
+        steps[0].kind = "split"
+        steps[0].rows[0].kind = "split"
+        return steps
 
-    monkeypatch.setattr(s6, "_batch_apply_edit_action", reinterpreting)
+    monkeypatch.setattr(s6, "_resolve_edit_steps", reinterpreting)
 
     with pytest.raises(ValueError, match="implies creating a window"):
         refit_window_impl(str(path), None, add=[anchor])

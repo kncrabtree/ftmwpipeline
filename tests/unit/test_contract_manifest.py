@@ -254,6 +254,7 @@ SNAPSHOT_FIELDS: dict = {
         "kind",
         "provenance",
         "evidence",
+        "serial",
     },
     "AttentionReason": {"kind", "detail", "severity", "locations", "evidence"},
     "RefitWindowResult": {"converged"},
@@ -551,7 +552,7 @@ def test_manifest_sequences_are_tuples():
 
 
 def test_manifest_version_matches_package():
-    assert MANIFEST.contract_version == ftmwpipeline.CONTRACT_VERSION == 15
+    assert MANIFEST.contract_version == ftmwpipeline.CONTRACT_VERSION == 16
     assert isinstance(ftmwpipeline.CONTRACT_VERSION, int)
 
 
@@ -720,14 +721,15 @@ def test_decision_vocabularies_match_the_code():
 
 
 def test_decision_kinds_recorded_by_the_code_are_declared():
-    """Every literal ``kind=`` a decision is recorded with is in the vocabulary."""
+    """Every literal ``kind=`` a decision is recorded with is in the vocabulary
+    (a pending row's dict key, or a resolved row's ``kind=`` argument)."""
     import re
 
     from ftmwpipeline._internal import stage6_impl
 
     source = inspect.getsource(stage6_impl)
     declared = set(MANIFEST.vocabularies["decision_kind"])
-    recorded = set(re.findall(r'"kind": "([a-z_]+)"', source))
+    recorded = set(re.findall(r'(?:"kind": |\bkind=)"([a-z_]+)"', source))
     # "kind" keys also tag attention evidence; keep only decision-shaped ones.
     decision_like = recorded & {
         "add",

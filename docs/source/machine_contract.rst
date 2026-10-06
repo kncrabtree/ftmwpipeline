@@ -39,10 +39,10 @@ The contract version
 ``__version__``::
 
     import ftmwpipeline
-    if ftmwpipeline.CONTRACT_VERSION < 15:
+    if ftmwpipeline.CONTRACT_VERSION < 16:
         raise RuntimeError("needs a newer ftmwpipeline")
 
-The first published contract is version ``1``; this release is version ``15``.
+The first published contract is version ``1``; this release is version ``16``.
 An addition (a new accessor, field or code) raises the version by one and never
 breaks an existing field. Every machine-readable payload also carries a
 **schema name** of the form ``ftmw/<payload>@<n>``; a schema name never changes
@@ -529,7 +529,10 @@ one action keeps its type and adds the action to the message (``curation action
     create an uncovered ``add`` implies. ``review_create`` names its argument,
     ``anchor_mhz``, and ``review_edit``'s implied create names ``add``;
   * ``review_edit``'s tokens are ``add`` / ``remove`` (a malformed token, or
-    a ``uid:N`` given to ``add``).
+    a ``uid:N`` given to ``add``). An edit with neither (a bare edit, which
+    would refit the window and record no decision) is ``add`` with ``value``
+    ``[]``, whether or not a window is given; it is refused on every
+    interface before anything is resolved, fitted or written (contract 16).
 
 * ``not_found``. Every frequency in ``ids`` is the one the caller wrote, in the
   frame it was written in (a calibrated request is answered in calibrated
@@ -546,7 +549,9 @@ one action keeps its type and adds the action to the message (``curation action
     (``ids`` the uncovered frequencies);
   * ``kind`` ``"decision"``: ``review_undo`` ids the decision log does not
     hold, every one of them (on a file with no recorded decisions, every
-    requested id).
+    requested id). An id is a decision's ``serial`` (contract 16), so the
+    position of a row, or the serial of one an earlier undo dropped, is not
+    one.
 
 * ``curation_conflict`` (``CurationConflictError``), a valid request that
   conflicts with the file's review state. ``reason`` is one of:
@@ -566,26 +571,75 @@ one action keeps its type and adds the action to the message (``curation action
      * - ``orphans_created_window``
        - ``review_undo`` would drop a window that surviving decisions act on
          (the decisions to undo with it)
+     * - ``orphans_peak``
+       - ``review_undo`` would drop the birth (an add, merge or split) of a
+         peak that a surviving decision removes, merges or splits, or one
+         acting on a peak such a decision births, transitively (the
+         decisions to undo with it)
+     * - ``ambiguous_peak``
+       - a request, or a replayed decision, names by ``peak_uid`` a peak its
+         window holds more than once (possible only for a thawed copy, which
+         carries its primary's uid): name a frequency the window holds once
+         (that uid)
      * - ``baseline_unavailable``
-       - ``review_undo``, or an apply at a ``log_prefix``, needs the
-         automatic-fit baseline the first edit snapshots, and the file's
-         edits were recorded without one (by a version before ``review
-         undo``, or the snapshot was removed) (``[]``)
+       - not raised from contract 16: a file that records decisions but holds
+         no automatic-fit baseline is ``file_corrupt`` on every Stage 6 write
+         (the first write snapshots the baseline before it records anything,
+         and a file curated before that rule is ``predates_replay_engine``).
+         Until contract 15, ``review_undo`` or an apply at a ``log_prefix``
+         raised it when the baseline was missing (``[]``)
      * - ``replay_conflict``
        - replaying a recorded window creation no longer reproduces its
          window: it would widen another window, or its id is taken (the
-         recorded id, then the widened window's id)
+         recorded id, then the widened window's id); or a create recorded
+         now (a curation file's ``create`` row naming an id) pins an id at
+         or below a created window the log already holds before it (that
+         id): created ids only increase along the log. The creates are
+         planned before anything is fit, so the conflict leaves the file as
+         it was
+     * - ``replay_diverged``
+       - a write cannot replay a decision of the log as recorded (in practice
+         after ``review_undo``, or an apply at a ``log_prefix``, drops
+         decisions): a peak it removes (one of its
+         ``targets``) is not in its window at its place in the log, or a peak
+         it births (one of its ``born_uids``) already is -- after undoing the
+         remove between an add and a re-add at the same frequency, say -- or
+         its window has no fit there (that decision)
      * - ``target_outside_window``
-       - an ``add`` whose seed, after snapping to a ledger candidate, falls
-         outside the range of the window it names (that window)
+       - an ``add`` whose seed, after snapping to a ledger candidate (or a
+         merge's seed, or a replayed decision's recorded seed), falls outside
+         the range of the window it names, at the window's geometry in force
+         there (that window)
      * - ``fit_plan_unavailable``
        - the edit would refit a window a Stage 5 structural merge changed, in a
          fit made before the fit stored its plan, or create a window inside or
          against such a merge: the windows the fit was made on are not in the
-         file (the windows the edit would have refit; for a create inside a
-         merged range, every affected window). Re-running ``fit run`` clears it
+         file (the windows the edit would have refit, directly or through the
+         cascade; for a create inside a merged range, every affected window).
+         Re-running ``fit run`` clears it
+     * - ``predates_peak_identity``
+       - any Stage 6 write (``review_edit``, ``review_accept``,
+         ``review_create``, ``review_apply``, ``review_undo``, ``review_run``,
+         a ``ReviewSession`` persist), and a ``review_preview``, of a file
+         whose Stage 5 fit has a peak without a ``peak_uid`` (a fit written
+         before peak identity was persisted). Re-running ``fit run`` clears it and discards the file's
+         curation (``[]``)
+     * - ``predates_replay_engine``
+       - any Stage 6 write, and a ``review_preview``, of a file curated by a
+         build that predates the replay engine (its review carries no
+         ``engine_version``, or an older one, or its undo baseline no lineage
+         id). Re-running ``fit run``
+         clears it and discards the file's curation; ``get_review_status``
+         reports the reason as ``refit_required`` (``[]``)
 
-  Reasons are only ever added.
+  Reasons are only ever added. Every ``curation_conflict`` and ``not_found``
+  a Stage 6 write raises is raised before anything is fit (contract 16): a
+  request is resolved into its decisions, and a replayed log checked, against
+  structure and peak identity alone. The one exception is an apply at a
+  ``log_prefix``: its own actions resolve against the state the kept
+  decisions describe, so their refusals come after that state is computed in
+  memory (the kept decisions' own refusals still come first). The file is
+  untouched either way.
 
 .. _contract-file-errors:
 
@@ -603,7 +657,16 @@ the same way, from its first read:
   (``file_corrupt``; also a ``RuntimeError`` and an ``OSError``, chained from
   the underlying error; exit 2);
 * a file from a newer MAJOR format raises ``PipelineCompatibilityError``
-  (``file_incompatible``; exit 1).
+  (``file_incompatible``; exit 1);
+* a Stage 6 write (``review_edit``, ``review_accept``, ``review_create``,
+  ``review_apply``, ``review_undo``, ``review_run``) of a file whose
+  ``/stage6_review`` a newer Stage 6 replay engine wrote raises the same error
+  (``supported_version`` names the engine this build has), before it writes
+  anything. Reads are unaffected;
+* a replay (``review_undo``, an apply at a ``log_prefix``) of a decision log
+  whose created window ids do not increase along it raises the same
+  ``PipelineCorruptionError``, before it writes anything: only the engine
+  writes the log, and it mints increasing ids.
 
 A permission failure, or HDF5's refusal while another process holds the file
 open for writing, is not corruption: it propagates as the original ``OSError``
@@ -744,13 +807,14 @@ with its ``"<field>_absent"`` sibling.
      - n/a
      - the table of the chosen mode: ``{"windows": [...]}``, ``{"attention":
        [...]}`` (:ref:`contract-attention`), ``{"bar", "window_id",
-       "candidates": [...]}`` or one window's detail
+       "candidates": [...]}`` or one window's detail; each also carries
+       ``refit_required`` and ``review_params``
    * - ``review rank`` / ``log`` / ``preview`` / ``snap-tolerance`` /
        ``acknowledge-environment``
      - n/a
-     - ``{"windows": [...]}`` / ``{"entries": [...]}`` / ``{"warnings",
-       "created_windows", "windows"}`` / the snap tolerance / the
-       acknowledgement
+     - ``{"windows": [...]}`` / ``{"entries": [...], "refit_required"}`` /
+       ``{"warnings", "created_windows", "windows"}`` / the snap tolerance /
+       the acknowledgement
    * - ``settings show`` / ``defaults``
      - n/a
      - ``{"settings": [...]}``, the rows of the table
@@ -1011,12 +1075,74 @@ Each, with its absence cases:
   ``user``. ``evidence`` is a free-form snapshot dict and keeps its floats in
   Python: a non-finite ``chi2r_before`` / ``chi2r_after`` (no degrees of
   freedom, a fit that did not converge) stays ``inf`` there and is written as
-  ``null`` with ``"<key>_absent": "undefined"`` on the wire. Every row also
-  carries ``action_index`` in ``evidence``: the ``order_index`` of the first row
-  of the same user action (a one-row action, a bare accept included, carries its
-  own ``order_index``; a bare accept's evidence is no longer ``{}``). Rows with
-  the same ``action_index`` were applied as one joint refit. Files written before
-  the key existed have none; ``review_undo`` infers their groups (see below).
+  ``null`` with ``"<key>_absent": "undefined"`` on the wire. ``serial`` is the
+  row's id (contract 16): minted when the row is recorded, never reused or
+  renumbered within the fit's lineage (``fit run`` starts a new one); it is
+  what ``review_undo`` takes and what a peak's ``derivation`` holds, and it is
+  *not run* on a row a pre-engine build recorded (``null`` with
+  ``"serial_absent": "not_run"`` in ``review log --json``). ``order_index`` is
+  the row's position only. Every row also carries ``action_index`` in
+  ``evidence``: the ``serial`` of the first row of the same user action (a
+  one-row action, a bare accept included, carries its own; a bare accept's
+  evidence is no longer ``{}``). Rows with the same ``action_index`` were
+  applied as one joint refit. A row a pre-engine build recorded may have none:
+  the file is refused for every write (see ``predates_replay_engine`` above),
+  so no replay reads it. Every row names the peaks it acts on by identity
+  (contract 16): ``targets`` are the ``peak_uid`` values, in ``window_id``, of
+  the peaks it removes (a remove's one, a merge's parents, a split's parent),
+  ``seeds_mhz`` the raw-frame seed positions of the peaks it births (an add's
+  one, a merge's one, a split's products) and ``born_uids`` the uid each was
+  stamped with from its seed, index-aligned; each is an empty list for a kind
+  that removes or births nothing, and all three are *not run* on a row a
+  pre-engine build recorded. A request resolves against the fits as they were
+  when it was made (in one curation file or ``actions`` batch, an action after
+  another on the same window resolves against the other's newborns at their
+  seeds); a replay applies the rows as recorded, by uid, and never resolves a
+  frequency again. ``frequency_mhz`` is display only: the frequency sent for
+  an add, the anchor for a create, a merge's seed, a split's parent, and for a
+  remove the fitted frequency (raw frame) of the peak it resolved to; a
+  merge's ``merged_from`` likewise holds its parents' fitted frequencies.
+  Rows are immutable: a replay (``review_undo``, an apply at a ``log_prefix``)
+  keeps every surviving row verbatim, and only ``order_index`` changes. A
+  row's ``evidence`` (``chi2r_before`` / ``chi2r_after``, ``n_peaks_before`` /
+  ``n_peaks_after``, ``created_window``) is a snapshot of the refit the row ran
+  in the write that recorded it, taken when it was recorded and never updated:
+  the current numbers are in the fits. The snap tolerance is a property of the
+  file (``refit_snap_tol_mhz``): from contract 16 no call takes one, and only a
+  request's resolution uses it.
+
+  **Every write is a replay of the log** (contract 16). After any successful
+  Stage 6 write -- ``review_edit``, ``review_accept``, ``review_create``,
+  ``review_apply`` (a ``log_prefix`` one included), ``review_undo``,
+  ``review_run``, and a ``ReviewSession`` apply that persists a staged preview
+  -- the file's window fits (``/stage5_fitting``), created-window overlay,
+  window statuses, final-products table and decision log are, bit for bit,
+  what one replay of the persisted log from the automatic-fit baseline
+  produces under the persisted review parameters, in the analysis
+  environment the fits were made in: every row applied as recorded and in
+  log order, one combined cascade, every status computed afresh. A
+  ``review_preview`` returns exactly the state its apply would persist. Two
+  consequences: the state does not depend on the order of the calls that
+  built the log, only on the log (the order of its creates, each window's
+  own rows, and the rows' grouping into actions); and a write whose
+  fit-changing rows are the ones the log already held (a bare accept,
+  ``review_run``, an undo of bare accepts) refits nothing and keeps the fits it
+  finds. A write that changes them refits only the windows the change can
+  reach (a window's own decisions, its geometry, or an edited window upstream
+  of it in the cascade) and keeps every other window's fit, which is the
+  replay's already; the epoch gate applies only when it refits one. Not
+  promised: identical bits across numpy, SciPy or BLAS versions
+  (within one environment two replays are identical; a fitting-model change is
+  marked by ``ANALYSIS_EPOCH``); that kept fits are what the running code
+  would replay -- after a new ``ANALYSIS_EPOCH``, or a change to a Stage 5
+  input such as the tau calibration, a write that refits nothing keeps the
+  fits made before it, and the first write that refits replays the whole log
+  under the running code (epoch-gated: :doc:`stage6_review`); that an edit's
+  fit is "what was displayed, plus the edit" (a row applies to its window's
+  automatic fit and earlier rows, then the cascade refreshes it; the displayed
+  fit only resolves the request); and that a surviving created window keeps
+  its geometry through an undo (``UndoResult.geometry_changed_window_ids``
+  lists the changes).
 * ``get_pipeline_info`` -- the status dict. ``warnings`` is always present (an
   empty list when there are none). The environment fields hold ``Absent``
   rather than ``None`` / ``{}`` / ``[]``:
@@ -1048,7 +1174,12 @@ Each, with its absence cases:
   (:ref:`contract-settings-rows`); ``settings_defaults`` needs no file.
 * The curation results ``RefitWindowResult`` (``review edit`` / ``accept`` /
   merge / split), ``PreviewWindowResult`` (``review preview``) and
-  ``AppliedWindowResult`` (``review apply``) carry ``Absent`` the same way:
+  ``AppliedWindowResult`` (``review apply``) report each window before the
+  write as it was displayed (the persisted fit) and after it as the curated
+  fit, post-cascade (contract 16: ``RefitWindowResult`` used to report the
+  edited window's own refit, before the cascade). A preview or apply window's
+  ``origin`` is ``direct`` when an action named it and ``cascaded`` when none
+  did but the write changed its fit. They carry ``Absent`` the same way:
   ``chi2r_before`` / ``chi2r_after`` are *not run* on a side with no fit (a
   window the batch created has no "before") and *undefined* when the fit's
   value is not finite; ``converged`` is *not run* exactly where
@@ -1572,32 +1703,41 @@ A callback that raises aborts the operation with ``callback_failed``. What is
 left in the file is what a cancel at that point would leave: a callback that
 raises on ``Invalidated`` or ``StageFinished`` -- both delivered after the
 write is durable -- leaves the write in place, and no ``StageFinished``
-follows; one that raises while ``review_undo`` replays (where a cancel is not
-honoured) lets the replay complete and be written, and then fails the call.
+follows.
 
 ``cancel`` is checked before every stage, between the windows of the Stage 5
 walk, of a Stage 6 refit and its cascade and of the report's rendering, and
 between scan values. A cancel raises ``cancelled``. Every stage the operation
 completed stays as written; the interrupted stage leaves the file as it was
 before it began -- except the fit, which keeps its finished windows as a
-partial fit (:ref:`contract-partial-fits`). A curation batch (``review_apply``,
-and every edit with its cascade) is one unit: a cancel discards all of it.
-``review_undo`` (and an apply with ``log_prefix``) honours a cancel only before
-it restores the automatic fit; once the restore has begun, the replay
-completes. A stage that has begun its final write completes, and the cancel is
-honoured at the next check point.
+partial fit (:ref:`contract-partial-fits`). Every Stage 6 write
+(``review_apply``, every edit with its replay and cascade, ``review_undo`` and an
+apply with ``log_prefix`` included) is one unit: a cancel before its persist
+discards all of it (contract 16: an undo used to restore the automatic fit
+first and then complete regardless). A stage that has begun its final write
+completes, and the cancel is honoured at the next check point.
 
 The replay of ``review_undo`` (and of an apply with ``log_prefix``) goes one user
 action at a time, not one decision at a time: the surviving rows of one action
 group (the rows sharing an ``action_index`` in the ``review_log`` evidence)
 replay together as one joint refit, so undoing part of a group replays the rest
 jointly, and a ``log_prefix`` that cuts through a group replays the in-prefix
-rows jointly. A row without the key (a file written before it existed) is
-grouped with the row before it when both are ``add``/``remove`` rows on the
-same window with identical non-empty evidence and no ``created_window``. The
-dry-run plan lists one edit per group. Replaying each row as its own refit
+rows jointly. The dry-run plan lists one edit per group. Replaying each row as its own refit
 let a later undo fail after a multi-line edit, because the separate refits
 drifted the fitted peaks beyond snap tolerance of the line a later remove named.
+
+A created window keeps the id its create recorded through every replay, but its
+geometry (extent, contributors, free peaks) is planned again from the creates
+that survive, in log order, so undoing an earlier create can change it, and
+undoing a widening returns the widened window to its earlier extent.
+``UndoResult.geometry_changed_window_ids`` (contract 16) lists, ascending, every
+window that exists after the undo and whose geometry differs from before (a
+dry run lists the same; an undone create's own window is not listed); ``review
+undo --json`` carries the count as ``n_geometry_changed`` and the text output
+prints the ids. A created window's fit does not depend on where its create sits
+in the log: its frozen skirts start from the automatic fits of the windows it
+reads, and are rebuilt from their current fits whenever one of them has been
+edited, before the create or after it.
 
 A Python client that shows progress, stops on request and routes on
 ``cancelled`` and ``callback_failed``::
@@ -1751,7 +1891,9 @@ resume) or one of the ``restart_reason`` vocabulary -- ``restart_requested``,
 ``settings_changed`` (the resolved Stage 5 settings, the values consumed from
 other stages or ``ANALYSIS_EPOCH`` differ from the partial fit's),
 ``incomplete_provenance`` (the partial fit lacks what that comparison needs) or
-``thaw_refit`` (an accepted thaw: every window is refit sequentially). It never
+``thaw_refit`` (a thaw was accepted, which may change a window the partial fit
+carried: an accepted thaw in the partial fit starts the fit over, and one in the
+resumed windows refits every window sequentially). It never
 resumes on a guess. A change in a value the fit consumes from another stage, the
 timebase epsilon among them, is a ``settings_changed``.
 
@@ -1889,12 +2031,57 @@ they stay on the status but do not put the window in the queue
 (``needs_attention``) on their own. Attention is advice: it never changes a
 fitted number, a final product or the analysis fingerprint.
 
+**Statuses are recomputed on every write (contract 16).** Every Stage 6 write
+(``review run``, ``review_edit``, ``review_accept``, ``review_create``,
+``review_apply``, ``review_undo``, a ``ReviewSession`` persist) recomputes every
+window's status: the reasons from the fits the write leaves, and the
+``provenance`` from the decision log (a window's last row: ``accept`` gives
+``reviewed``, any other kind ``user-edited``, no row ``auto``). After any write
+the statuses are exactly those a fresh ``review run`` with the recorded
+parameters computes on the file. The parameters are ``review run``'s ``bar``,
+``attention_candidate_evidence``, ``kappa`` and ``noise_floor``; the review
+records the values the last ``review run`` used as ``review_params`` (a
+``ReviewParams``, ``None`` until a Stage 6 write records them; the defaults
+then apply), and every other write reuses them. ``review_run`` takes each as
+``Optional[float] = None`` on every interface (``--bar``, ``--attention-bar``,
+``--kappa``, ``--noise-floor`` on the command line): ``None`` keeps the
+recorded value, and a value given must be finite and non-negative
+(``bad_setting``, ``path`` the argument's name, before anything is read).
+Every ``review show --json`` payload carries the recorded parameters as
+``review_params`` (``{"bar", "attention_candidate_evidence", "kappa",
+"noise_floor"}``, ``null`` when none are recorded); ``review run`` and the
+text forms of ``review show --attention`` / ``--window N`` print them.
+
 On the command line, ``review show --attention --json`` prints ``{"attention":
 [...]}``, one row per queued window, worst first, with its top reason
 (``window_id``, ``label``, ``kind``, ``severity``, ``detail``) and every reason
 in ``reasons`` (``kind``, ``severity``, ``detail``, ``locations``,
 ``evidence``). ``review show --window N --json`` lists the window's
 ``attention_reasons`` in the same form.
+
+**A file Stage 6 cannot write (contract 16).** A file whose Stage 5 fit has a
+peak without a ``peak_uid``, or whose curation a build without the replay engine
+wrote, is refused by every Stage 6 write (``curation_conflict``,
+``predates_peak_identity`` / ``predates_replay_engine``, ``ids`` ``[]``) and
+flagged on read: the review ``get_review_status`` returns carries
+``refit_required``, the reason slug a write would raise, or ``None`` when writes
+are accepted (never stored); a review a newer engine wrote reads as
+``file_incompatible``, the error a write raises, whose remedy is upgrading
+rather than ``fit run``. ``review show --json`` (every mode) and ``review log
+--json`` carry the same value as ``refit_required`` (``null`` when writes are
+accepted). Reads work and write nothing: ``review_log`` returns
+the stored rows (a pre-engine row's ``serial`` is *not run*) and logs the
+re-run instruction as a warning, ``review show`` prints it on standard error,
+and the HTML report shows a banner with it and no Undo controls. The one fix is
+``fit run``: it writes a fit with peak identities and discards the file's
+curation (``review run`` included), and the next write starts a new lineage
+whose serials restart at 0. The review also carries ``engine_version`` (the
+replay-engine version that wrote it, ``None`` on a review a pre-engine build
+wrote), ``next_serial`` (the serial the next decision takes: a high-water
+mark an undo never lowers) and ``window_id_high_water`` (contract 16: the
+highest window id a create has taken in the lineage, ``-1`` before the first;
+a new window takes an id above it, and an undo never lowers it, so an undone
+create's id never names another window); a client does not set any of them.
 
 **A window the fit holds no line in.** The kinds ``empty_window_residual``
 and ``empty_window_spur`` cover one case. Stage 5 can finish a window of its plan with no line

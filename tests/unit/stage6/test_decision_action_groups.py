@@ -4,11 +4,10 @@ Decision-log action groups: one user action's rows replay as one action.
 A ``review edit`` with several ``--add``/``--remove`` (or a run of add/remove
 rows on one window in a curation file) is ONE joint refit that logs one row
 per frequency. Every row carries the ``action_index`` evidence key -- the
-``order_index`` of the action's first row -- and ``review undo`` /
+``serial`` of the action's first row -- and ``review undo`` /
 ``review apply --log-prefix`` replay each group as one joint action, exactly
 like the original, instead of one refit per row (a different fit, after
-which a later remove target can drift beyond snap tolerance). Rows recorded
-before the key existed are grouped by inference.
+which a later remove target can drift beyond snap tolerance).
 """
 
 from __future__ import annotations
@@ -33,6 +32,7 @@ from ftmwpipeline._internal.stage6_impl import (
     review_undo_impl,
 )
 from ftmwpipeline.cli.review_commands import cmd_review_apply, cmd_review_undo
+from ftmwpipeline.core.curation import PeakUidToken
 from ftmwpipeline.core.data_structures import DecisionLogEntry, Stage6Review
 from ftmwpipeline.io.fitting_serialization import load_spectrum_fit_from_hdf5
 from ftmwpipeline.io.stage6_review_serialization import (
@@ -41,6 +41,9 @@ from ftmwpipeline.io.stage6_review_serialization import (
 )
 from ftmwpipeline.pipeline import Pipeline
 from tests.unit.stage6.test_curation import _clear_add_freq, _close
+
+# Design G1: every write here persists the reference replay of its log.
+pytestmark = [pytest.mark.usefixtures("every_write_is_reference")]
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -93,19 +96,16 @@ def _log_shape(path: Path) -> List[Tuple[int, int, str, Optional[int]]]:
     ]
 
 
-def _strip_action_index(path: Path) -> None:
-    """Rewrite the persisted decision log as a file written before the
-    ``action_index`` key existed would hold it."""
-    with h5py.File(str(path), "a") as h5f:
-        grp = h5f["stage6_review"]["decision_log"]
-        rows = json.loads(str(grp.attrs["data"]))
-        for row in rows:
-            row["evidence"].pop(ACTION_INDEX_EVIDENCE_KEY, None)
-        grp.attrs["data"] = json.dumps(rows)
-
-
 def _entry(
-    order: int, wid: int, kind: str, freq: float, evidence: Dict[str, Any]
+    order: int,
+    wid: int,
+    kind: str,
+    freq: float,
+    evidence: Dict[str, Any],
+    *,
+    targets: Tuple[int, ...] = (),
+    seeds: Tuple[float, ...] = (),
+    born: Tuple[int, ...] = (),
 ) -> DecisionLogEntry:
     return DecisionLogEntry(
         order_index=order,
@@ -114,7 +114,16 @@ def _entry(
         kind=kind,
         provenance="user",
         evidence=evidence,
+        serial=order,
+        targets=targets,
+        seeds_mhz=seeds,
+        born_uids=born,
     )
+
+
+def _uid_tokens(entries: List[DecisionLogEntry]) -> List[PeakUidToken]:
+    """The ``remove`` a replay of *entries* reports: their targets, by uid."""
+    return [PeakUidToken(int(t)) for e in entries for t in e.targets]
 
 
 # ---------------------------------------------------------------------------
@@ -139,62 +148,40 @@ def test_groups_follow_action_index():
 def test_group_replays_as_one_edit_and_actions_stay_separate():
     ev = {"chi2r_after": 1.0}
     log = [
-        _entry(0, 5, "add", 9.5, {**ev, "action_index": 0}),
-        _entry(1, 5, "remove", 10.0, {**ev, "action_index": 0}),
-        _entry(2, 5, "remove", 11.0, {**ev, "action_index": 0}),
-        _entry(3, 5, "remove", 12.0, {"chi2r_after": 2.0, "action_index": 3}),
+        _entry(0, 5, "add", 9.5, {**ev, "action_index": 0}, seeds=(9.5,), born=(95,)),
+        _entry(1, 5, "remove", 10.0, {**ev, "action_index": 0}, targets=(100,)),
+        _entry(2, 5, "remove", 11.0, {**ev, "action_index": 0}, targets=(110,)),
+        _entry(
+            3,
+            5,
+            "remove",
+            12.0,
+            {"chi2r_after": 2.0, "action_index": 3},
+            targets=(120,),
+        ),
     ]
     plan = _replay_plan(log)
     assert [(a.kind, a.window_id, a.add, a.remove) for a in plan] == [
-        ("edit", 5, [9.5], [10.0, 11.0]),
-        ("edit", 5, [], [12.0]),
+        ("edit", 5, [9.5], [PeakUidToken(100), PeakUidToken(110)]),
+        ("edit", 5, [], [PeakUidToken(120)]),
     ]
 
 
 def test_partial_group_survivors_replay_jointly():
     ev = {"chi2r_after": 1.0, "action_index": 0}
     log = [
-        _entry(0, 5, "remove", 10.0, ev),
-        _entry(1, 5, "remove", 11.0, ev),
-        _entry(2, 5, "remove", 12.0, ev),
+        _entry(0, 5, "remove", 10.0, ev, targets=(100,)),
+        _entry(1, 5, "remove", 11.0, ev, targets=(110,)),
+        _entry(2, 5, "remove", 12.0, ev, targets=(120,)),
     ]
     surviving = [log[0], log[2]]  # the middle row undone
     plan = _replay_plan(surviving)
-    assert [(a.kind, a.remove) for a in plan] == [("edit", [10.0, 12.0])]
-
-
-def test_legacy_rows_grouped_by_inference():
-    """No ``action_index``: consecutive add/remove rows on one window with
-    the SAME evidence dict (one refit's snapshot) are one action."""
-    joint = {"chi2r_before": 3.0, "chi2r_after": 1.25, "n_peaks_before": 4}
-    log = [
-        _entry(0, 5, "add", 9.5, dict(joint)),
-        _entry(1, 5, "remove", 10.0, dict(joint)),
-        _entry(2, 5, "remove", 11.0, dict(joint)),
-        # A later, separate refit of the same window: its own evidence.
-        _entry(3, 5, "remove", 12.0, {**joint, "chi2r_after": 1.5}),
-        # Identical evidence but another window: separate.
-        _entry(4, 6, "remove", 20.0, {**joint, "chi2r_after": 1.5}),
-        # Bare accepts never group.
-        _entry(5, 6, "accept", 0.0, {}),
-        _entry(6, 6, "accept", 0.0, {}),
-        # An implied-create add is always its own action.
-        _entry(7, 9, "add", 30.0, {"created_window": {"mode": "created"}}),
-        _entry(8, 9, "add", 30.5, {"created_window": {"mode": "created"}}),
-    ]
-    groups = _decision_action_groups(log)
-    assert [[e.order_index for e in g] for g in groups] == [
-        [0, 1, 2],
-        [3],
-        [4],
-        [5],
-        [6],
-        [7],
-        [8],
+    assert [(a.kind, a.remove) for a in plan] == [
+        ("edit", [PeakUidToken(100), PeakUidToken(120)])
     ]
 
 
-def test_legacy_row_never_joins_a_stamped_one():
+def test_a_row_without_the_key_never_joins_a_stamped_one():
     ev = {"chi2r_after": 1.0}
     log = [
         _entry(0, 5, "remove", 10.0, dict(ev)),
@@ -281,9 +268,10 @@ def test_undo_later_decision_after_joint_edit(stage5_multi_file, tmp_path):
     path = stage5_multi_file
     wid, peaks, other = _joint_then_unrelated(path, tmp_path)
 
+    log = review_log_impl(path)
     dry = review_undo_impl(path, [2], dry_run=True)
     assert [(a.kind, a.window_id, a.remove) for a in dry.plan] == [
-        ("edit", wid, [peaks[0], peaks[1]])
+        ("edit", wid, _uid_tokens(log[:2]))
     ]
 
     review_undo_impl(path, [2])
@@ -293,9 +281,10 @@ def test_undo_later_decision_after_joint_edit(stage5_multi_file, tmp_path):
 
 
 @pytest.mark.integration
-def test_undo_restamps_action_index_after_renumbering(stage5_multi_file, tmp_path):
-    """(5) Replay re-records the log: a group behind an undone row takes the
-    renumbered ``order_index`` of its first row as its ``action_index``."""
+def test_undo_keeps_action_index_when_positions_move(stage5_multi_file, tmp_path):
+    """(5) Rows are immutable: a group behind an undone row moves up in the
+    log (its ``order_index`` changes) but keeps its ``action_index``, the
+    serial of its first row."""
     path = stage5_multi_file
     wid, peaks, other = _multi_peak_window(path)
     fv = _clear_add_freq(path, other)
@@ -310,7 +299,8 @@ def test_undo_restamps_action_index_after_renumbering(stage5_multi_file, tmp_pat
     ]
 
     review_undo_impl(path, [0])
-    assert _log_shape(path) == [(0, wid, "remove", 0), (1, wid, "remove", 0)]
+    assert _log_shape(path) == [(0, wid, "remove", 1), (1, wid, "remove", 1)]
+    assert [e.serial for e in review_log_impl(path)] == [1, 2]
 
 
 @pytest.mark.integration
@@ -334,9 +324,10 @@ def test_undo_one_row_of_group_replays_survivors_jointly(stage5_multi_source, tm
     shutil.copy(stage5_multi_source, ref)
     refit_window_impl(str(ref), wid, remove=[peaks[0], peaks[1]])
 
+    log = review_log_impl(path)
     result = review_undo_impl(path, [0])  # the add
     assert [(a.kind, a.add, a.remove) for a in result.plan] == [
-        ("edit", [], [peaks[0], peaks[1]])
+        ("edit", [], _uid_tokens(log[1:]))
     ]
     assert _fitted_by_window(path) == _fitted_by_window(ref)
     assert _log_shape(path) == _log_shape(ref)
@@ -366,31 +357,13 @@ def test_log_prefix_mid_group_replays_in_prefix_rows_jointly(
     apply_curation_impl(path, cur, log_prefix=2)  # keeps the add + first remove
 
     assert _close(_fitted_by_window(path), _fitted_by_window(ref))
+    # The new row takes the next serial above every one ever recorded (the
+    # dropped remove held 2), never a reused one.
     assert _log_shape(path) == [
         (0, wid, "add", 0),
         (1, wid, "remove", 0),
-        (2, other, "add", 2),
+        (2, other, "add", 3),
     ]
-
-
-@pytest.mark.integration
-def test_legacy_log_without_action_index_is_grouped_by_inference(
-    stage5_multi_file, tmp_path
-):
-    """(d) A file written before the key existed: the joint edit's rows are
-    recognised by their shared evidence and still replay as one action."""
-    path = stage5_multi_file
-    wid, peaks, other = _joint_then_unrelated(path, tmp_path)
-    _strip_action_index(path)
-    assert all(ai is None for *_, ai in _log_shape(path))
-
-    dry = review_undo_impl(path, [2], dry_run=True)
-    assert [(a.kind, a.remove) for a in dry.plan] == [("edit", [peaks[0], peaks[1]])]
-    review_undo_impl(path, [2])
-
-    assert _fitted_by_window(path) == _saved_state(tmp_path)
-    # The replay re-records the log, stamping the key from then on.
-    assert _log_shape(path) == [(0, wid, "remove", 0), (1, wid, "remove", 0)]
 
 
 @pytest.mark.integration
@@ -528,8 +501,8 @@ def test_session_preview_then_apply_stamps_one_index_per_action(
     stage5_multi_file, tmp_path
 ):
     """``ReviewSession`` persists the preview's own decisions: they must be
-    grouped by action exactly as a direct apply groups them (the
-    ``_close_batch_action`` call in ``_run_review_preview``)."""
+    grouped by action exactly as a direct apply groups them (both are rows
+    :func:`_request_rows` stamps, one action per plan action)."""
     path = stage5_multi_file
     wid, peaks, other = _multi_peak_window(path)
     fv = _clear_add_freq(path, other)
@@ -573,21 +546,6 @@ def _prefix_setup(source: Path, tmp_path: Path, name: str) -> Tuple[Path, Path, 
 
 
 @pytest.mark.integration
-def test_log_prefix_on_legacy_log_groups_by_inference(stage5_multi_source, tmp_path):
-    """A log written before the key existed, applied at a prefix that keeps
-    the joint edit, replays it as one action and reproduces the state."""
-    path, cur, wid = _prefix_setup(stage5_multi_source, tmp_path, "legacy")
-    expected_fit, expected_log = _fitted_by_window(path), _log_shape(path)
-    _strip_action_index(path)
-    assert all(ai is None for *_, ai in _log_shape(path))
-
-    apply_curation_impl(path, cur, log_prefix=2)
-
-    assert _fitted_by_window(path) == expected_fit
-    assert _log_shape(path) == expected_log
-
-
-@pytest.mark.integration
 def test_group_log_prefix_apply_cross_interface(stage5_multi_source, tmp_path):
     """api / Pipeline / CLI ``review apply --log-prefix`` agree, fit and log
     alike, for a prefix that keeps a joint edit."""
@@ -612,7 +570,7 @@ def test_group_log_prefix_apply_cross_interface(stage5_multi_source, tmp_path):
     assert [(k, ai) for _, _, k, ai in ref_log] == [
         ("remove", 0),
         ("remove", 0),
-        ("add", 2),
+        ("add", 3),
     ]
     for k in ("pipe", "cli"):
         assert _fitted_by_window(paths[k]) == ref_fit, k
@@ -626,27 +584,161 @@ def test_group_log_prefix_apply_cross_interface(stage5_multi_source, tmp_path):
 
 @pytest.mark.integration
 def test_replay_refits_once_per_action_not_once_per_row(
-    stage5_multi_file, tmp_path, monkeypatch
+    stage5_multi_file, tmp_path, monkeypatch, every_write_is_reference
 ):
     """The old per-row replay resolved each log row on its own: two refits
     for a two-remove edit, a different (sequential) fit. Count the refits an
-    undo performs and pin the plan's shape."""
+    undo performs and pin the plan's shape. The engine's keys are dropped
+    first, so the undo recomputes the joint edit's window from its rows
+    rather than keeping its persisted fit."""
+    # This counts work, which the G1 check's own replays would add to.
+    every_write_is_reference.enabled = False
     from ftmwpipeline._internal import stage6_impl as s6
+    from ftmwpipeline.io.stage6_engine_serialization import (
+        save_stage6_engine_state,
+    )
 
     path = stage5_multi_file
     wid, peaks, other = _joint_then_unrelated(path, tmp_path)
     log = review_log_impl(path)
     assert len(_replay_plan(log[:2])) == 1  # one edit for the two rows
+    with h5py.File(path, "a") as h5f:
+        save_stage6_engine_state(h5f, None)
 
-    calls: List[Tuple[int, Tuple[float, ...]]] = []
-    real = s6._batch_apply_edit_action
+    calls: List[Tuple[int, Tuple[int, ...]]] = []
+    real = s6._apply_refit_step
 
-    def counting(ctx: Any, window_id: int, add: Any, remove: Any, **kw: Any) -> Any:
-        calls.append((window_id, tuple(remove)))
-        return real(ctx, window_id, add, remove, **kw)
+    def counting(ctx: Any, step: Any, **kw: Any) -> Any:
+        calls.append((step.window_id, tuple(t for r in step.rows for t in r.targets)))
+        return real(ctx, step, **kw)
 
-    monkeypatch.setattr(s6, "_batch_apply_edit_action", counting)
+    monkeypatch.setattr(s6, "_apply_refit_step", counting)
     review_undo_impl(path, [2])
 
-    assert calls == [(wid, (peaks[0], peaks[1]))]
+    assert calls == [(wid, tuple(t for e in log[:2] for t in e.targets))]
     assert _fitted_by_window(path) == _saved_state(tmp_path)
+
+
+def _rewrite_rows(path: Path, fn: Any) -> None:
+    """Rewrite the persisted decision log's rows in place (``fn(rows)``), to
+    forge a row an older version recorded."""
+    with h5py.File(str(path), "a") as h5f:
+        grp = h5f["stage6_review"]["decision_log"]
+        rows = json.loads(str(grp.attrs["data"]))
+        fn(rows)
+        grp.attrs["data"] = json.dumps(rows)
+
+
+def _raw_rows(path: Path) -> List[Dict[str, Any]]:
+    return [
+        {"window_id": e.window_id, "kind": e.kind, "frequency_mhz": e.frequency_mhz}
+        for e in review_log_impl(path)
+    ]
+
+
+@pytest.mark.integration
+def test_remove_is_logged_at_the_peak_it_resolved_to(stage5_multi_file):
+    """A remove sent half a snap tolerance off its peak is logged at the
+    peak's fitted frequency, not at the frequency sent."""
+    path = stage5_multi_file
+    wid, peaks, _ = _multi_peak_window(path)
+    with h5py.File(str(path), "r") as h5f:
+        sf = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+    wf = next(w for w in sf.window_fits if w.window_id == wid)
+    target = min(float(p.frequency_mhz) for p in wf.fitted_peaks)
+
+    refit_window_impl(str(path), wid, remove=[target + 0.5 * _snap_tol(path)])
+    assert [(e.kind, e.frequency_mhz) for e in review_log_impl(path)] == [
+        ("remove", target)
+    ]
+
+
+@pytest.mark.integration
+def test_replay_keeps_every_surviving_row_verbatim(stage5_multi_file, tmp_path):
+    """Undo and a log-prefix apply re-record the surviving rows with their own
+    frequencies, byte for byte -- also an older row that holds the frequency
+    sent rather than the peak it resolved to."""
+    path = stage5_multi_file
+    wid, peaks, other = _joint_then_unrelated(path, tmp_path)
+    off = 0.5 * _snap_tol(path)
+
+    def legacy(rows: List[Dict[str, Any]]) -> None:
+        rows[0]["frequency_mhz"] = float(rows[0]["frequency_mhz"]) + off
+
+    _rewrite_rows(path, legacy)
+    before = _raw_rows(path)
+    assert before[0]["frequency_mhz"] != peaks[0]
+
+    review_undo_impl(path, [2])
+    assert _raw_rows(path) == before[:2]
+
+    review_undo_impl(path, [1])  # one member of the joint group
+    assert _raw_rows(path) == before[:1]
+
+
+@pytest.mark.integration
+def test_log_prefix_apply_keeps_the_kept_rows_verbatim(stage5_multi_file, tmp_path):
+    path = stage5_multi_file
+    wid, peaks, other = _joint_then_unrelated(path, tmp_path)
+    before = _raw_rows(path)
+    cur = tmp_path / "next.csv"
+    cur.write_text(f"add,{other},{_clear_add_freq(path, other)},\n")
+    apply_curation_impl(path, cur, log_prefix=2)
+    assert _raw_rows(path)[:2] == before[:2]
+
+
+@pytest.mark.integration
+def test_a_row_whose_target_is_gone_is_refused(stage5_multi_file, tmp_path):
+    """A replay applies each row by peak identity: a row whose target the
+    window does not hold at its place in the log (forged here) refuses the
+    replay rather than act on another peak, before anything is fit, and
+    leaves the file as it was."""
+    from ftmwpipeline.file_manager import CurationConflictError
+
+    path = stage5_multi_file
+    wid, parent, near, far, other = _split_site(path)
+    refit_window_impl(str(path), wid, add=[near])
+    assert [e.kind for e in review_log_impl(path)] == ["split"]
+
+    def forged(rows: List[Dict[str, Any]]) -> None:
+        rows[0]["targets"] = [int(rows[0]["targets"][0]) + 7]
+
+    cur = tmp_path / "later.csv"
+    cur.write_text(f"add,{other},{_clear_add_freq(path, other)},\n")
+    apply_curation_impl(path, cur)
+    _rewrite_rows(path, forged)
+    before = _raw_rows(path)
+    state = _fitted_by_window(path)
+
+    with pytest.raises(CurationConflictError) as exc:
+        review_undo_impl(path, [1])
+    assert exc.value.reason == "replay_diverged"
+    assert exc.value.ids == [0]
+    assert _raw_rows(path) == before
+    assert _fitted_by_window(path) == state
+
+
+@pytest.mark.integration
+def test_replay_keeps_the_log_order_across_windows(stage5_multi_file, tmp_path):
+    """Edits made in separate calls on a higher, then a lower window: an undo
+    of a later decision replays them in log order, not canonical (ascending
+    window) order, and re-records every surviving row as it was."""
+    path = stage5_multi_file
+    by_w = _fitted_by_window(path)
+    wids = sorted(w for w, f in by_w.items() if f)
+    if len(wids) < 3:
+        pytest.skip("Need three fitted windows")
+    lo, hi, third = wids[0], wids[-1], wids[1]
+    refit_window_impl(str(path), hi, add=[_clear_add_freq(path, hi)])
+    refit_window_impl(str(path), lo, add=[_clear_add_freq(path, lo)])
+    before = _raw_rows(path)
+    assert [r["window_id"] for r in before] == [hi, lo]
+    state = _fitted_by_window(path)
+
+    cur = tmp_path / "later.csv"
+    cur.write_text(f"add,{third},{_clear_add_freq(path, third)},\n")
+    apply_curation_impl(path, cur)
+    review_undo_impl(path, [2])
+
+    assert _raw_rows(path) == before
+    assert _fitted_by_window(path) == state

@@ -45,6 +45,9 @@ from ftmwpipeline.core.data_structures import FittedPeak, FittingResult
 from ftmwpipeline.io.fitting_serialization import load_spectrum_fit_from_hdf5
 from ftmwpipeline.pipeline import Pipeline
 
+# Design G1: every write here persists the reference replay of its log.
+pytestmark = [pytest.mark.usefixtures("every_write_is_reference")]
+
 # ---------------------------------------------------------------------------
 # parse_peak_token: pure grammar, no fixture
 # ---------------------------------------------------------------------------

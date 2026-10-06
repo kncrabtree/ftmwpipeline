@@ -2,7 +2,7 @@
 Unit / integration tests for Stage 6 review_run (Pass 2 attention routing).
 
 Tests cover:
-- review_run_impl: basic run, idempotency, provenance preservation
+- review_run_impl: basic run, idempotency, provenance from the log
 - Stage6Review serialization round-trip
 - Cross-interface consistency (api vs Pipeline)
 - Attention-reason firing: edge_boundary
@@ -41,7 +41,11 @@ from ftmwpipeline.io.stage6_review_serialization import (
 )
 from ftmwpipeline.pipeline import Pipeline
 
-pytestmark = [pytest.mark.integration]
+pytestmark = [
+    pytest.mark.integration,
+    # Design G1: every write here persists the reference replay of its log.
+    pytest.mark.usefixtures("every_write_is_reference"),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -111,35 +115,41 @@ def test_review_run_idempotency(stage5_small_source, tmp_path):
         assert status.provenance == "auto"
 
 
-def test_provenance_preservation(stage5_small_source, tmp_path):
-    """Provenance "reviewed" is preserved across a re-run."""
+def _store_provenance(fp: Path, wid: int, provenance: str) -> None:
+    """Write *provenance* straight into the stored status of *wid*."""
+    review = load_stage6_review_from_file(str(fp))
+    review.window_statuses[wid].provenance = provenance
+    with h5py.File(str(fp), "a") as h5f:
+        del h5f["stage6_review"]
+        save_stage6_review_to_hdf5(review, h5f.create_group("stage6_review"))
+
+
+def test_provenance_comes_from_the_log(stage5_small_source, tmp_path):
+    """A re-run takes each window's provenance from its rows in the log, not
+    from the statuses the file stores: a provenance written into the stored
+    statuses does not survive, and a bare accept's "reviewed" does."""
     fp = tmp_path / "copy.ftmw"
     shutil.copy(stage5_small_source, fp)
 
-    # First run to initialize.
     result = review_run_impl(str(fp))
     assert result.n_windows > 0
+    wid = next(iter(load_stage6_review_from_file(str(fp)).window_statuses))
 
-    # Manually set one window's provenance to "reviewed".
-    review = load_stage6_review_from_file(str(fp))
-    first_wid = next(iter(review.window_statuses))
-    review.window_statuses[first_wid].provenance = "reviewed"
-
-    # Write back the modified review.
-    with h5py.File(str(fp), "a") as h5f:
-        if "stage6_review" in h5f:
-            del h5f["stage6_review"]
-        grp = h5f.create_group("stage6_review")
-        save_stage6_review_to_hdf5(review, grp)
-
-    # Re-run and check provenance survived.
+    # No row behind it: back to "auto".
+    _store_provenance(fp, wid, "reviewed")
     review_run_impl(str(fp))
-    review2 = load_stage6_review_from_file(str(fp))
-    assert review2.window_statuses[first_wid].provenance == "reviewed"
+    assert load_stage6_review_from_file(str(fp)).window_statuses[wid].provenance == (
+        "auto"
+    )
 
-    # Other windows should remain "auto".
-    for wid, status in review2.window_statuses.items():
-        if wid != first_wid:
+    # A bare accept's row: "reviewed", whatever the stored status says.
+    ftmw.review_accept(fp, wid)
+    _store_provenance(fp, wid, "auto")
+    review_run_impl(str(fp))
+    review = load_stage6_review_from_file(str(fp))
+    assert review.window_statuses[wid].provenance == "reviewed"
+    for other, status in review.window_statuses.items():
+        if other != wid:
             assert status.provenance == "auto"
 
 

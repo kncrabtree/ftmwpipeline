@@ -295,11 +295,34 @@ def test_window_status_reports_the_merged_window(fits):
     assert all(rows[w].merged_from == () for w in (99, 102, 103))
 
 
-def test_a_no_op_edit_of_the_survivor_keeps_its_lines(fits, tmp_path):
+def _identity_refit(fp: str, wid: int) -> None:
+    """Refit one window with no edit, as the cascade does a window it reaches
+    (a bare ``review edit`` is refused, so this drives the refit directly and
+    writes the fit table itself)."""
+    from ftmwpipeline._internal.atomic import h5open
+    from ftmwpipeline._internal.stage6_impl import (
+        _batch_apply_edit_core,
+        _build_batch_ctx,
+        refit_snap_tol_mhz_impl,
+    )
+    from ftmwpipeline.io.fitting_serialization import (
+        update_spectrum_fit_windows_in_hdf5,
+    )
+
+    snap = refit_snap_tol_mhz_impl(fp)
+    ctx = _build_batch_ctx(fp, snap_tol_mhz=snap)
+    _batch_apply_edit_core(ctx, wid, snap_tol_mhz=snap)
+    with atomic_write(fp), h5open(fp, "a") as h5f:
+        update_spectrum_fit_windows_in_hdf5(
+            ctx.changeset.spectrum_fit, h5f["stage5_fitting"], [wid]
+        )
+
+
+def test_a_no_op_refit_of_the_survivor_keeps_its_lines(fits, tmp_path):
     _par, _seq, forced, _forced_seq = fits
     fp = _copy(forced, tmp_path)
     before = _lines(fp, 100)
-    ftmw.review_edit(fp, 100)
+    _identity_refit(fp, 100)
     after = _lines(fp, 100)
     assert [u for u, _ in after] == [u for u, _ in before]
     assert max(abs(a - b) for (_, a), (_, b) in zip(after, before)) < 1e-4
@@ -337,7 +360,7 @@ def test_undo_restores_the_automatic_fit_and_its_plan(fits, tmp_path):
     uid, _freq = _old_101_line(fp)
     ftmw.review_edit(fp, 100, remove=[f"uid:{uid}"], frame="raw")
     assert _has_fitted_plan(fp, "stage5_fitting_baseline")
-    ftmw.review_undo(fp, [e.order_index for e in ftmw.review_log(fp)])
+    ftmw.review_undo(fp, [e.serial for e in ftmw.review_log(fp)])
     assert _lines(fp, 100) == before
     assert _has_fitted_plan(fp)
 
@@ -345,7 +368,7 @@ def test_undo_restores_the_automatic_fit_and_its_plan(fits, tmp_path):
 @pytest.mark.parametrize(
     "call",
     [
-        lambda fp: ftmw.review_edit(fp, 101),
+        lambda fp: ftmw.review_edit(fp, 101, add=[30725.0], frame="raw"),
         lambda fp: ftmw.window_model(fp, 101),
         lambda fp: ftmw.review_apply(
             fp,
@@ -394,10 +417,16 @@ def test_a_merged_fit_without_its_stored_plan_refuses_to_refit_the_merge(
     assert rows[100].merged_from == (101,)
     before = _lines(fp, 100)
     with pytest.raises(CurationConflictError) as info:
-        ftmw.review_edit(fp, 100)
+        ftmw.review_edit(fp, 100, remove=[f"uid:{before[0][0]}"], frame="raw")
     assert (info.value.reason, info.value.ids) == ("fit_plan_unavailable", [100])
     assert _lines(fp, 100) == before
-    ftmw.review_edit(fp, 102)
+    lo, hi = sorted(_fit_range(fp, 102))
+    peaks = [f for _, f in _lines(fp, 102)]
+    clear = max(
+        (lo + (hi - lo) * t / 40 for t in range(4, 37)),
+        key=lambda x: min((abs(x - q) for q in peaks), default=1e9),
+    )
+    ftmw.review_edit(fp, 102, add=[clear], frame="raw")
 
 
 @pytest.fixture(scope="module")

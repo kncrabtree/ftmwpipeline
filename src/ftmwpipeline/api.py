@@ -45,7 +45,6 @@ from ._internal.read_impl import (
 )
 from ._internal.stage5_impl import _DETAIL_PAD_FACTOR
 from ._internal.stage6_impl import (
-    DEFAULT_ATTENTION_CANDIDATE_EVIDENCE,
     DEFAULT_DISPLAY_BAR,
     CreateWindowResult,
     CurationApplyResult,
@@ -1564,17 +1563,18 @@ def review_edit(
     *,
     add: Sequence[Union[float, str]] = (),
     remove: Sequence[Union[float, str]] = (),
-    snap_tol_mhz: Optional[float] = None,
     frame: Optional[Frame] = None,
     events: Optional[EventCallback] = None,
     cancel: Optional[CancelToken] = None,
 ) -> RefitWindowResult:
     """User-directed single-window refit (Stage 6 ``review edit``).
 
-    Re-fits ``window_id`` from the persisted Stage 5 fit using the production
-    NLS primitive, applying ``add``/``remove`` edits.  User-added peaks carry
-    ``origin="user"`` and survive the HDF5 round-trip; removed peaks are
-    excluded from the refit and will not be re-added by the rescue pass.
+    Resolves the ``add``/``remove`` edits against the window as currently
+    fitted into decision-log rows, appends them to the log, and curates the
+    log -- replayed from the automatic Stage 5 fit with the production NLS
+    primitive, dependents cascaded -- and persists it.  User-added peaks
+    carry ``origin="user"`` and survive the HDF5 round-trip; removed peaks
+    are excluded from the refit and will not be re-added by the rescue pass.
     Equivalent to :meth:`Pipeline.review_edit`.
 
     Parameters
@@ -1582,13 +1582,13 @@ def review_edit(
     file_path :
         Path to the ``.ftmw`` pipeline file (read-write).
     window_id :
-        The window to refit. Optional (``None``, the default) when ``add``
-        or ``remove`` is non-empty: the window is then derived from the
-        target frequencies (or ``"uid:N"`` identifiers) by live-window
-        coverage -- a frequency no live window covers is an error. A bare
-        edit (``add`` and ``remove`` both empty -- an identity refit) still
-        REQUIRES ``window_id`` explicitly; a *named* window is still
-        checked (naming the wrong one is still an error).
+        The window to refit. Optional (``None``, the default): the window is
+        then derived from the target frequencies (or ``"uid:N"``
+        identifiers) by live-window coverage -- a frequency no live window
+        covers is an error. A *named* window is still checked (naming the
+        wrong one is still an error). At least one ``add`` or ``remove``
+        target is required: an edit with neither is refused with
+        ``BadSettingError`` (``path`` ``"add"``).
     add :
         Molecular frequencies (MHz) of peaks to add, as ``float`` or a
         numeric ``str``.
@@ -1601,11 +1601,6 @@ def review_edit(
         :attr:`~ftmwpipeline.core.data_structures.FittedPeak.peak_uid` and
         :func:`~ftmwpipeline.core.curation.parse_peak_token`); ``add`` is
         frequency-only and refuses a ``"uid:N"`` token.
-    snap_tol_mhz :
-        Snap tolerance for ``add``/``remove`` (MHz).  ``None`` (the default)
-        resolves this file's own
-        :data:`~ftmwpipeline.core.curation.REFIT_SNAP_TOL_BINS` active-FT bins
-        -- read the resolved value with :func:`refit_snap_tol_mhz`.
     frame :
         The frame ``add``/``remove`` are expressed in: ``"raw"`` or
         ``"calibrated"``; converted to raw before any snapping. Omitting it
@@ -1617,9 +1612,30 @@ def review_edit(
     -------
     RefitWindowResult
         Old vs new peak count, χ²ᵣ before/after, and the new fitted peaks
-        (both frames).
+        (both frames): "before" as displayed before the call, "after" the
+        curated fit, post-cascade.
 
     Requires Stage 5 completed.
+
+    Raises
+    ------
+    CurationConflictError
+        ``predates_peak_identity`` / ``predates_replay_engine`` when the file
+        cannot be curated (its fit has no peak identity, or a build without the
+        replay engine curated it: re-run ``fit run``), and the edit's own
+        refusals (``line_already_fitted``, ``target_outside_window``,
+        ``ambiguous_peak``, ``targets_span_windows``,
+        ``fit_plan_unavailable``); each raised before anything is fit, with the
+        file untouched.
+    PipelineCompatibilityError
+        ``file_incompatible`` when a newer ftmwpipeline curated the file.
+    AnalysisEpochMismatchError
+        When the write refits and the Stage 5 fit was made under another
+        analysis epoch with no acknowledgement
+        (``review_acknowledge_environment``); a write that refits nothing is
+        not gated.
+    BadSettingError
+        ``path`` ``"add"`` for an edit with neither ``add`` nor ``remove``.
 
     ``events`` / ``cancel``: the event callback and cancel token (see
     :meth:`Pipeline.review_edit`).
@@ -1628,7 +1644,6 @@ def review_edit(
         window_id,
         add=add,
         remove=remove,
-        snap_tol_mhz=snap_tol_mhz,
         frame=frame,
         events=events,
         cancel=cancel,
@@ -1664,7 +1679,6 @@ def review_create(
     file_path: Union[str, Path],
     anchor_mhz: float,
     *,
-    snap_tol_mhz: Optional[float] = None,
     frame: Optional[Frame] = None,
     events: Optional[EventCallback] = None,
     cancel: Optional[CancelToken] = None,
@@ -1683,10 +1697,6 @@ def review_create(
         Path to the ``.ftmw`` pipeline file (read-write).
     anchor_mhz :
         Molecular frequency (MHz) the window must cover.
-    snap_tol_mhz :
-        Snap tolerance forwarded to the fit core (MHz).  ``None`` (the
-        default) resolves this file's own tolerance -- see
-        :func:`refit_snap_tol_mhz`.
     frame :
         The frame ``anchor_mhz`` is expressed in; converted to raw before
         installing the window. Omitting it is an error on a
@@ -1701,12 +1711,27 @@ def review_create(
 
     Requires Stage 5 completed.
 
+    Raises
+    ------
+    CurationConflictError
+        ``predates_peak_identity`` / ``predates_replay_engine`` when the file
+        cannot be curated (its fit has no peak identity, or a build without the
+        replay engine curated it: re-run ``fit run``), and ``replay_conflict``
+        / ``fit_plan_unavailable`` for a window that cannot be placed; each
+        raised before anything is fit, with the file untouched.
+    PipelineCompatibilityError
+        ``file_incompatible`` when a newer ftmwpipeline curated the file.
+    AnalysisEpochMismatchError
+        When the write refits and the Stage 5 fit was made under another
+        analysis epoch with no acknowledgement
+        (``review_acknowledge_environment``); a write that refits nothing is
+        not gated.
+
     ``events`` / ``cancel``: the event callback and cancel token (see
     :meth:`Pipeline.review_create`).
     """
     return Pipeline.open(file_path).review_create(
         anchor_mhz,
-        snap_tol_mhz=snap_tol_mhz,
         frame=frame,
         events=events,
         cancel=cancel,
@@ -1716,15 +1741,21 @@ def review_create(
 def review_run(
     file_path: Union[str, Path],
     *,
-    bar: float = DEFAULT_DISPLAY_BAR,
-    attention_candidate_evidence: float = DEFAULT_ATTENTION_CANDIDATE_EVIDENCE,
+    bar: Optional[float] = None,
+    attention_candidate_evidence: Optional[float] = None,
+    kappa: Optional[float] = None,
+    noise_floor: Optional[float] = None,
     sigma_floor_khz: Optional[float] = None,
     events: Optional[EventCallback] = None,
     cancel: Optional[CancelToken] = None,
 ) -> "ReviewRunResult":
     """Build or refresh the Stage 6 curation layer and final-products table.
 
-    Equivalent to :meth:`Pipeline.review_run`.
+    Equivalent to :meth:`Pipeline.review_run`. The four attention-routing
+    parameters are recorded in the review and reused by every later Stage 6
+    write; one left ``None`` keeps its recorded value (the default when none
+    is recorded), and one given must be finite and non-negative
+    (:class:`~ftmwpipeline.file_manager.BadSettingError` otherwise).
 
     Parameters
     ----------
@@ -1735,6 +1766,10 @@ def review_run(
     attention_candidate_evidence :
         Evidence threshold above which a candidate-bearing window flags
         (stiffer than ``bar``; keeps the attention surface actionable).
+    kappa :
+        Shape-error kappa of the SNR-aware chi-squared gate.
+    noise_floor :
+        Noise-regime chi-squared allowance of the same gate.
     sigma_floor_khz :
         When given, persist this user-declared accuracy floor (kHz) and fold it
         into the budget; ``None`` keeps the persisted floor unchanged.
@@ -1746,12 +1781,24 @@ def review_run(
 
     Requires Stage 5 completed.
 
+    Raises
+    ------
+    CurationConflictError
+        ``predates_peak_identity`` / ``predates_replay_engine`` when the file
+        cannot be curated (its fit has no peak identity, or a build without the
+        replay engine curated it: re-run ``fit run``); each raised before
+        anything is fit, with the file untouched.
+    PipelineCompatibilityError
+        ``file_incompatible`` when a newer ftmwpipeline curated the file.
+
     ``events`` / ``cancel``: the event callback and cancel token (see
     :meth:`Pipeline.review_run`).
     """
     return Pipeline.open(file_path).review_run(
         bar=bar,
         attention_candidate_evidence=attention_candidate_evidence,
+        kappa=kappa,
+        noise_floor=noise_floor,
         sigma_floor_khz=sigma_floor_khz,
         events=events,
         cancel=cancel,
@@ -1913,7 +1960,6 @@ def review_accept(
     window_id: int,
     *,
     candidate_freq: Optional[float] = None,
-    snap_tol_mhz: Optional[float] = None,
     frame: Optional[Frame] = None,
     events: Optional[EventCallback] = None,
     cancel: Optional[CancelToken] = None,
@@ -1931,10 +1977,6 @@ def review_accept(
     candidate_freq :
         When given, accept by adding this molecular frequency (MHz) as a
         new peak.
-    snap_tol_mhz :
-        Snap tolerance for ``candidate_freq`` (MHz).  ``None`` (the default)
-        resolves this file's own tolerance -- see :func:`refit_snap_tol_mhz`.
-        Ignored when accepting a window as-is.
     frame :
         The frame ``candidate_freq`` is expressed in. Irrelevant when
         ``candidate_freq`` is ``None``. Omitting it while ``candidate_freq``
@@ -1949,13 +1991,29 @@ def review_accept(
 
     Requires Stage 5 completed.
 
+    Raises
+    ------
+    CurationConflictError
+        ``predates_peak_identity`` / ``predates_replay_engine`` when the file
+        cannot be curated (its fit has no peak identity, or a build without the
+        replay engine curated it: re-run ``fit run``), and a candidate's own
+        refusals (``line_already_fitted``, ``target_outside_window``); a bare
+        accept refits nothing and is not epoch-gated; each raised before
+        anything is fit, with the file untouched.
+    PipelineCompatibilityError
+        ``file_incompatible`` when a newer ftmwpipeline curated the file.
+    AnalysisEpochMismatchError
+        When the write refits and the Stage 5 fit was made under another
+        analysis epoch with no acknowledgement
+        (``review_acknowledge_environment``); a write that refits nothing is
+        not gated.
+
     ``events`` / ``cancel``: the event callback and cancel token (see
     :meth:`Pipeline.review_accept`).
     """
     return Pipeline.open(file_path).review_accept(
         window_id,
         candidate_freq=candidate_freq,
-        snap_tol_mhz=snap_tol_mhz,
         frame=frame,
         events=events,
         cancel=cancel,
@@ -1977,8 +2035,9 @@ def review_apply(
 
     Equivalent to :meth:`Pipeline.review_apply`.  Coalesces add/remove rows on
     one window into a single refit (merge/split/accept stand alone), then
-    applies the resolved plan as one batch: one shared fit context, one combined
-    cascade, one persist.  Cross-window execution order is canonical, so the
+    applies the resolved plan as one write: its actions resolved into
+    decision rows, the log with them replayed from the automatic fit, one
+    combined cascade, one persist.  Cross-window execution order is canonical, so the
     final state does not depend on the file's row order.  With ``dry_run`` the
     resolved plan and frequency-resolution warnings are returned without
     modifying the file.
@@ -2029,6 +2088,24 @@ def review_apply(
 
     Requires Stage 5 completed.
 
+    Raises
+    ------
+    CurationConflictError
+        ``predates_peak_identity`` / ``predates_replay_engine`` when the file
+        cannot be curated (its fit has no peak identity, or a build without the
+        replay engine curated it: re-run ``fit run``), and an action's own
+        refusals, tagged with the action (``line_already_fitted``,
+        ``target_outside_window``, ``ambiguous_peak``, ``replay_conflict``,
+        ``fit_plan_unavailable``, ...); each raised before anything is fit,
+        with the file untouched.
+    PipelineCompatibilityError
+        ``file_incompatible`` when a newer ftmwpipeline curated the file.
+    AnalysisEpochMismatchError
+        When the write refits and the Stage 5 fit was made under another
+        analysis epoch with no acknowledgement
+        (``review_acknowledge_environment``); a write that refits nothing is
+        not gated.
+
     ``events`` / ``cancel``: the event callback and cancel token (see
     :meth:`Pipeline.review_apply`).
     """
@@ -2055,13 +2132,14 @@ def review_preview(
     """Run a curation file's resolved plan to completion in memory and report
     the fitted outcome, without writing anything.
 
-    Equivalent to :meth:`Pipeline.review_preview`. Shares every hook
-    :func:`review_apply` uses -- the same parse/resolve/frame-convert
-    prologue, the same per-action appliers, the same one combined cascade --
-    except the batch is never persisted: no undo baseline is taken and
-    nothing is written to *file_path*. Epoch-gated exactly like
-    :func:`review_apply`, except a plan of entirely bare ``accept`` rows,
-    which touches no fit and so is not gated (matching the live apply).
+    Equivalent to :meth:`Pipeline.review_preview`. Runs exactly what
+    :func:`review_apply` runs -- the same parse/resolve/frame-convert
+    prologue, the same resolution into decision rows, the same replay and
+    one combined cascade -- except the result is never persisted: no undo
+    baseline is taken and nothing is written to *file_path*. Refused exactly
+    like :func:`review_apply` on a file Stage 6 cannot curate, and
+    epoch-gated exactly like it, except a plan of entirely bare ``accept``
+    rows, which touches no fit and so is not gated (matching the live apply).
 
     The result is keyed by window id, read after the cascade -- not
     per-action -- and reports final-product numbers (calibrated frequency,
@@ -2083,6 +2161,19 @@ def review_preview(
     Returns
     -------
     ReviewPreviewResult
+
+    Raises
+    ------
+    CurationConflictError
+        ``predates_peak_identity`` / ``predates_replay_engine`` when the file
+        cannot be curated (re-run ``fit run``), and an action's own refusals,
+        as :func:`review_apply` raises them; each raised before anything is
+        fit.
+    PipelineCompatibilityError
+        ``file_incompatible`` when a newer ftmwpipeline curated the file.
+    AnalysisEpochMismatchError
+        When the apply would refit and the Stage 5 fit was made under another
+        analysis epoch with no acknowledgement.
 
     Requires Stage 5 completed.
 
@@ -2121,24 +2212,45 @@ def review_undo(
 ) -> UndoResult:
     """Undo recorded decisions by id, replaying the rest from baseline.
 
-    Equivalent to :meth:`Pipeline.review_undo`.  Restores the automatic Stage 5
-    fit and re-applies every surviving decision (ids are renumbered afterward);
-    ``dry_run`` previews without writing.  The ``peak_uid`` values afterward
-    are the replay's, not the pre-undo file's -- re-read them, as you would a
-    decision id.
+    Equivalent to :meth:`Pipeline.review_undo`.  Drops the named decisions
+    and replays every surviving one from the automatic Stage 5 fit as
+    recorded, by peak identity; the decisions keep their ids (serials), and
+    the peaks they birth their uids. ``dry_run`` previews without writing.
 
     Parameters
     ----------
     file_path :
         Path to the ``.ftmw`` pipeline file.
     ids :
-        Decision ids (from :func:`review_log`) to undo.
+        Decision ids (``serial`` values from :func:`review_log`) to undo.
     dry_run :
         Preview without mutating (default ``False``).
 
     Returns
     -------
     UndoResult
+
+    Raises
+    ------
+    CurationConflictError
+        ``predates_peak_identity`` / ``predates_replay_engine`` when the file
+        cannot be curated (its fit has no peak identity, or a build without the
+        replay engine curated it: re-run ``fit run``), and the undo's own
+        refusals (``orphans_created_window``, ``orphans_peak``,
+        ``replay_diverged``, ``replay_conflict``, ``target_outside_window``);
+        each raised before anything is fit, with the file untouched.
+    PipelineCompatibilityError
+        ``file_incompatible`` when a newer ftmwpipeline curated the file.
+    AnalysisEpochMismatchError
+        When the write refits and the Stage 5 fit was made under another
+        analysis epoch with no acknowledgement
+        (``review_acknowledge_environment``); a write that refits nothing is
+        not gated.
+    ValueError
+        If an id is unknown or there are no decisions.
+    PipelineCorruptionError
+        If the file records decisions but holds no automatic-fit baseline to
+        replay them from (the snapshot was removed).
 
     ``events`` / ``cancel``: the event callback and cancel token (see
     :meth:`Pipeline.review_undo`).
@@ -2162,7 +2274,8 @@ def get_review_status(file_path: Union[str, Path]) -> Stage6Review:
     Returns
     -------
     Stage6Review
-        The persisted per-window statuses and decision log.
+        The persisted per-window statuses and decision log, and
+        ``refit_required`` (see :meth:`Pipeline.review_status`).
     """
     return Pipeline.open(file_path).review_status()
 

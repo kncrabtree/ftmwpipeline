@@ -23,6 +23,7 @@ import pytest
 import ftmwpipeline.api as ftmw
 from ftmwpipeline import Absent, Pipeline
 from ftmwpipeline.cli.main import main
+from ftmwpipeline.io.fitting_serialization import load_spectrum_fit_from_hdf5
 
 pytestmark = [pytest.mark.integration]
 
@@ -229,5 +230,14 @@ def test_a_never_fit_window_stays_not_run_through_a_stage6_edit(
         )
 
     assert statuses() == (NR, NR)
-    ftmw.review_edit(str(path), other)
+    with h5py.File(path, "r") as h5f:
+        sf = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+    wf = next(w for w in sf.window_fits if w.window_id == other)
+    lo, hi = sorted(float(v) for v in wf.window.freq_range)
+    peaks = [float(p.frequency_mhz) for p in wf.fitted_peaks]
+    clear = max(
+        (lo + (hi - lo) * t / 40 for t in range(4, 37)),
+        key=lambda x: min((abs(x - q) for q in peaks), default=1e9),
+    )
+    ftmw.review_edit(str(path), other, add=[clear])
     assert statuses() == (NR, NR)

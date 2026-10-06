@@ -33,8 +33,10 @@ plan execution:
   (or the contributor was not safe to freeze in the first place -- the
   ``freeze_eligible=False`` case the Stage 4 plan flagged). The contributor is
   then *thawed*: unfrozen and co-fit jointly with the dependent window and its
-  primary window. This is the canonical 36350/36389 doublet case. Rounds are
-  bounded for guaranteed termination.
+  primary window. An accepted co-fit refines the line in its primary, and the
+  dependent re-freezes its skirt from the refined primary. This is the
+  canonical 36350/36389 doublet case. Rounds are bounded for guaranteed
+  termination.
 
 The fit frame is the **active-portion FT**
 (:mod:`ftmwpipeline.fitting.active_ft`) -- the rfft of just the active FID
@@ -102,6 +104,7 @@ from .doublet_alternative import DoubletAdjudication, adjudicate_close_pairs
 from .peak_model import (
     ModelPeak,
     PeakShape,
+    baseline_basis,
     effective_tau_shape,
     model_spectrum,
     sideband_sign,
@@ -121,6 +124,8 @@ from .window_fit import (
     ConservativeFitResult,
     FrozenSkirt,
     ParameterErrors,
+    TauGroup,
+    WindowFitConstraints,
     WindowFitResult,
     _effective_min_pair_separation,
     _seed_peak,
@@ -748,19 +753,52 @@ def evaluate_ancestor_leakage(
     line leaks negligibly and is dropped by the SNR bar regardless.
     """
     inner = primary_outcome.fit.fit
-    if not inner.peaks:
+    return _freeze_fitted_lines(
+        inner.peaks,
+        primary_window_id,
+        tau_us=inner.tau_us,
+        shape=inner.shape,
+        rms_noise=primary_outcome.rms_noise,
+        primary_center_mhz=_window_center_mhz(primary_outcome),
+        dependent_center_mhz=dependent_center_mhz,
+        sideband=sideband,
+        acquisition_us=acquisition_us,
+        min_freeze_snr=min_freeze_snr,
+    )
+
+
+def _freeze_fitted_lines(
+    peaks: Sequence[ModelPeak],
+    primary_window_id: int,
+    *,
+    tau_us: float,
+    shape: "PeakShape | str",
+    rms_noise: np.ndarray,
+    primary_center_mhz: float,
+    dependent_center_mhz: float,
+    sideband: SidebandLike,
+    acquisition_us: float,
+    min_freeze_snr: float,
+) -> list[FrozenPeak]:
+    """The freeze rule of :func:`evaluate_ancestor_leakage` on explicit inputs.
+
+    ``peaks`` are the primary's fitted lines in its own offset frame, and
+    ``tau_us`` / ``shape`` / ``rms_noise`` the primary fit's -- what the SNR bar
+    reads. Split out so an accepted thaw can freeze the co-fit primary's lines
+    before it installs them (:func:`_perform_thaw`).
+    """
+    if not peaks:
         return []
     s = sideband_sign(sideband)
-    primary_center = _window_center_mhz(primary_outcome)
-    rms_mean = float(np.mean(np.asarray(primary_outcome.rms_noise, dtype=float)))
-    tau_us = inner.tau_us
+    primary_center = float(primary_center_mhz)
+    rms_mean = float(np.mean(np.asarray(rms_noise, dtype=float)))
     tau_eff = (
-        effective_tau_shape(inner.shape, tau_us, acquisition_us)
+        effective_tau_shape(shape, tau_us, acquisition_us)
         if tau_us > 0
         else float("nan")
     )
     frozen: list[FrozenPeak] = []
-    for pk in inner.peaks:
+    for pk in peaks:
         if rms_mean > 0 and np.isfinite(tau_eff):
             snr = 0.5 * float(pk.amplitude) * tau_eff / rms_mean
         else:
@@ -1595,7 +1633,9 @@ def fit_seeds_window_outcome(
 # ``conservative_kwargs`` may carry; the refit reconstructs the exact penalty /
 # tau / bound kwargs the node's own fit used by forwarding whichever of these
 # are present. The single source of truth for "what makes a window's fit
-# conditions" shared by the in-walk refit and the doublet-alternative refit.
+# conditions" shared by the in-walk refit, the doublet-alternative refit and
+# the thaw co-fit's per-window tau constraints (:func:`_own_fit_constraints`).
+# Every keyword of :func:`derive_window_fit_constraints` but ``fit_tau``.
 _REFIT_CONSTRAINT_KEYS: Tuple[str, ...] = (
     "min_separation_factor",
     "max_decay_factor",
@@ -1968,6 +2008,284 @@ def select_contributor_to_thaw(
     return min(pool, key=lambda fp: abs(fp.frequency_mhz - edge_freq))
 
 
+def _is_primary_skirt(fp: FrozenPeak, primary_window_id: int) -> bool:
+    """True for a line frozen from ``primary_window_id``'s fit.
+
+    That is the set :func:`evaluate_ancestor_leakage` built for the primary:
+    every entry naming it, except an edge-free read, which comes from the data
+    and not from the primary's fit. ``peak_index`` cannot narrow it further: a
+    line frozen from a fit carries no Stage 3 link (it is ``-1``).
+    """
+    return fp.primary_window_id == primary_window_id and not fp.edge_free
+
+
+def _replace_primary_skirt(
+    fixed_peaks: Sequence[FrozenPeak],
+    primary_window_id: int,
+    refrozen: Sequence[FrozenPeak],
+) -> list[FrozenPeak]:
+    """``fixed_peaks`` with the primary's skirt swapped for ``refrozen``.
+
+    The new lines take the place of the first old one, so the order of the
+    sources (first appearance) is kept.
+    """
+    out: list[FrozenPeak] = []
+    placed = False
+    for fp in fixed_peaks:
+        if not _is_primary_skirt(fp, primary_window_id):
+            out.append(fp)
+        elif not placed:
+            out.extend(refrozen)
+            placed = True
+    if not placed:
+        out.extend(refrozen)
+    return out
+
+
+def _carried_baseline_basis(outcome: WindowOutcome) -> Optional[np.ndarray]:
+    """The basis of the leakage-wing baseline ``outcome``'s fit carries, on the
+    window's own grid, or ``None`` when it carries none.
+
+    The same polynomial :func:`~ftmwpipeline.fitting.window_fit.evaluate_baseline`
+    draws, so ``basis @ fit.baseline_coeffs`` is the carried term.
+    """
+    inner = outcome.fit.fit
+    if (
+        inner.baseline_order is None
+        or inner.baseline_coeffs is None
+        or not inner.baseline_offset_scale
+    ):
+        return None
+    return baseline_basis(
+        np.asarray(outcome.offset_grid_mhz, dtype=float),
+        int(inner.baseline_order),
+        float(inner.baseline_offset_scale),
+    )
+
+
+def _carried_baseline_size(outcome: WindowOutcome) -> int:
+    """How many complex coefficients ``outcome``'s carried baseline has (0 if
+    none): its share of a thaw co-fit's ``baseline_coeffs``, primary first."""
+    basis = _carried_baseline_basis(outcome)
+    return 0 if basis is None else int(basis.shape[1])
+
+
+def _cofit_baseline_design(
+    primary: WindowOutcome, dependent: WindowOutcome
+) -> tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    """Each window's carried baseline as a block of the co-fit's design.
+
+    The co-fit stacks the primary's bins over the dependent's. Each window that
+    carries a leakage-wing baseline keeps it on its own bins, in its own frame
+    (the basis it was fit with), and zero on the other window's: the pedestal it
+    models is that window's, not a shared one. Returns ``(design, seed)`` -- the
+    real ``(M, n)`` design and the carried coefficients that warm-start it, the
+    primary's first -- or ``(None, None)`` when neither window carries one.
+    """
+    n_p = int(np.asarray(primary.offset_grid_mhz).size)
+    n_d = int(np.asarray(dependent.offset_grid_mhz).size)
+    blocks: list[np.ndarray] = []
+    seeds: list[np.ndarray] = []
+    for outcome, rows in ((primary, slice(0, n_p)), (dependent, slice(n_p, None))):
+        basis = _carried_baseline_basis(outcome)
+        if basis is None:
+            continue
+        block = np.zeros((n_p + n_d, basis.shape[1]), dtype=float)
+        block[rows] = basis
+        blocks.append(block)
+        seeds.append(np.asarray(outcome.fit.fit.baseline_coeffs, dtype=np.complex128))
+    if not blocks:
+        return None, None
+    return np.concatenate(blocks, axis=1), np.concatenate(seeds)
+
+
+def _window_tau0_us(
+    window_id: int,
+    tau0_us: float,
+    window_tau_overrides: Optional[Mapping[int, tuple[float, float]]] = None,
+) -> float:
+    """The ``tau`` a window's fit starts from: its band's calibrated majority
+    when ``window_tau_overrides`` routes it, else the run's ``tau0_us``."""
+    if window_tau_overrides and window_id in window_tau_overrides:
+        return float(window_tau_overrides[window_id][0])
+    return float(tau0_us)
+
+
+def _window_conservative_kwargs(
+    window_id: int,
+    conservative_kwargs: Mapping[str, Any],
+    window_tau_overrides: Optional[Mapping[int, tuple[float, float]]] = None,
+) -> dict[str, Any]:
+    """The conservative-fit kwargs of one window: the run's, with the window's
+    calibrated ``(tau_maj, sigma_tau)`` when ``window_tau_overrides`` routes
+    it."""
+    ck = dict(conservative_kwargs)
+    if window_tau_overrides and window_id in window_tau_overrides:
+        tau_maj, sigma_tau = window_tau_overrides[window_id]
+        ck["tau_maj_us"] = float(tau_maj)
+        ck["sigma_tau_us"] = float(sigma_tau)
+    return ck
+
+
+def _own_fit_constraints(
+    window_id: int,
+    outcome: WindowOutcome,
+    *,
+    tau0_us: float,
+    acquisition_us: float,
+    conservative_kwargs: Optional[Mapping[str, Any]] = None,
+    window_tau_overrides: Optional[Mapping[int, tuple[float, float]]] = None,
+) -> WindowFitConstraints:
+    """The constraints the window's own fit derived
+    (:func:`derive_window_fit_constraints` on the kwargs
+    :func:`_process_one_window` fits it with): its ``tau`` band and prior from
+    its calibration, the run's decay-factor cap and its penalty settings."""
+    ck = _window_conservative_kwargs(
+        window_id, conservative_kwargs or {}, window_tau_overrides
+    )
+    return derive_window_fit_constraints(
+        np.asarray(outcome.complex_spectrum, dtype=np.complex128)
+        - np.asarray(outcome.background, dtype=np.complex128),
+        outcome.rms_noise,
+        _window_tau0_us(window_id, tau0_us, window_tau_overrides),
+        acquisition_us,
+        **{key: ck[key] for key in _REFIT_CONSTRAINT_KEYS if key in ck},
+    )
+
+
+def _own_tau_free(outcome: WindowOutcome) -> bool:
+    """Whether ``outcome``'s own fit determined its ``tau`` from the data (a
+    weak window's fit holds it at its prior)."""
+    inner = outcome.fit.fit
+    return bool(inner.fit_tau if inner.tau_was_fit is None else inner.tau_was_fit)
+
+
+def _own_tau_group(
+    bins: np.ndarray,
+    outcome: WindowOutcome,
+    constraints: Optional[WindowFitConstraints],
+    *,
+    tau0_us: float,
+    max_decay_factor: float,
+) -> TauGroup:
+    """``outcome``'s ``tau`` as a :class:`~ftmwpipeline.fitting.window_fit.TauGroup`
+    on ``bins``: started from its fit's converged value, free only if its own
+    fit freed it, bounded and anchored as its own fit was (``constraints``,
+    :func:`_own_fit_constraints`). Without ``constraints`` it is bounded to
+    ``[tau0 / k, tau0 * k]`` (``k = max_decay_factor``) with no prior.
+
+    The bounds are widened to the converged value when it lies outside them,
+    so the co-fit starts from the window's installed model and never clips
+    it: a primary's ``tau`` may come from its cleanup refit
+    (:func:`refit_outcome`), bounded by the decay-factor cap around its
+    previous value rather than by its calibrated band."""
+    tau_fit = float(outcome.fit.fit.tau_us)
+    if constraints is None:
+        k = float(max_decay_factor)
+        bounds = (tau0_us / k, tau0_us * k)
+    else:
+        bounds = constraints.tau_bounds
+    bounds = (min(float(bounds[0]), tau_fit), max(float(bounds[1]), tau_fit))
+    if constraints is None:
+        return TauGroup(bins, tau_fit, _own_tau_free(outcome), bounds)
+    return TauGroup(
+        bins,
+        tau_fit,
+        _own_tau_free(outcome),
+        bounds,
+        prior_lambda=float(constraints.effective_tau_penalty_lambda),
+        prior_reference_us=constraints.tau_penalty_reference,
+        prior_sigma_us=constraints.tau_penalty_sigma_us,
+        prior_sigma_lo_us=constraints.tau_penalty_sigma_lo_us,
+    )
+
+
+def _lines_frozen_in_dependent(
+    peaks: Sequence[ModelPeak],
+    primary: WindowOutcome,
+    primary_window_id: int,
+    dependent: WindowOutcome,
+    *,
+    tau_us: float,
+    sideband: SidebandLike,
+    acquisition_us: float,
+    min_freeze_snr: float,
+) -> list[bool]:
+    """Which of the primary's lines ``peaks`` the dependent freezes at the
+    primary's ``tau_us`` (:func:`_freeze_fitted_lines`, the rule of
+    :func:`evaluate_ancestor_leakage`), one flag per line."""
+    return [
+        bool(
+            _freeze_fitted_lines(
+                [pk],
+                primary_window_id,
+                tau_us=tau_us,
+                shape=primary.fit.fit.shape,
+                rms_noise=primary.rms_noise,
+                primary_center_mhz=_window_center_mhz(primary),
+                dependent_center_mhz=_window_center_mhz(dependent),
+                sideband=sideband,
+                acquisition_us=acquisition_us,
+                min_freeze_snr=min_freeze_snr,
+            )
+        )
+        for pk in peaks
+    ]
+
+
+def _thaw_frame(
+    primary: WindowOutcome, dependent: WindowOutcome, sideband: SidebandLike
+) -> tuple[float, float, float]:
+    """``(shift, lo, hi)`` of a thaw co-fit: the offset that maps the
+    dependent's frame into the primary's (``u + shift``) and the span of the
+    two grids in the primary's frame."""
+    shift = sideband_sign(sideband) * (
+        _window_center_mhz(dependent) - _window_center_mhz(primary)
+    )
+    grid = np.concatenate(
+        [
+            np.asarray(primary.offset_grid_mhz, dtype=float),
+            np.asarray(dependent.offset_grid_mhz, dtype=float) + shift,
+        ]
+    )
+    return float(shift), float(grid.min()), float(grid.max())
+
+
+def _spur_mask_in_span(
+    spur_set: Optional[SpurSet],
+    sideband: SidebandLike,
+    center_mhz: float,
+    lo: float,
+    hi: float,
+) -> Optional[SpurMaskSpec]:
+    """The mask of every gated spur whose offset ``s*(f - center_mhz)`` lands
+    in ``[lo, hi]``, in that frame (``None`` when none does)."""
+    if spur_set is None or not spur_set:
+        return None
+    s = sideband_sign(sideband)
+    kept: List[Tuple[float, GatedSpur]] = []
+    for sp in spur_set.spurs:
+        off = float(s * (sp.center_mhz - center_mhz))
+        if lo <= off <= hi:
+            kept.append((off, sp))
+    if not kept:
+        return None
+    half_widths: Optional[Tuple[float, ...]] = None
+    if any(sp.mask_half_width_bins is not None for _, sp in kept):
+        half_widths = tuple(spur_set._spur_half_width_mhz(sp) for _, sp in kept)
+    return SpurMaskSpec(
+        offsets_mhz=tuple(off for off, _ in kept),
+        half_width_mhz=spur_set.mask_half_width_mhz,
+        half_widths_mhz=half_widths,
+    )
+
+
+def _as_noise_array(rms_noise: NoiseLike, n: int) -> np.ndarray:
+    """``rms_noise`` as one value per bin of an ``n``-bin grid."""
+    sigma = np.asarray(rms_noise, dtype=float)
+    return np.full(n, float(sigma)) if sigma.ndim == 0 else sigma
+
+
 def local_thaw_cofit(
     dependent: WindowOutcome,
     primary: WindowOutcome,
@@ -1980,6 +2298,9 @@ def local_thaw_cofit(
     max_decay_factor: float = DEFAULT_MAX_DECAY_FACTOR,
     shape: "PeakShape | str" = "lorentzian",
     spur_set: Optional[SpurSet] = None,
+    min_freeze_snr: float = DEFAULT_MIN_FREEZE_SNR,
+    dependent_constraints: Optional[WindowFitConstraints] = None,
+    primary_constraints: Optional[WindowFitConstraints] = None,
 ) -> tuple[WindowFitResult, np.ndarray]:
     """Joint co-fit of two windows with one contributor unfrozen.
 
@@ -1992,10 +2313,60 @@ def local_thaw_cofit(
     fit freely in its primary is also constrained by the dependent's data),
     so it is **not** added as a separate peak -- doing so would double-count
     the line. Other frozen contributors of either window stay frozen on their
-    respective slices: subtracted at ``tau0_us`` and carried as a
+    respective slices: subtracted at that window's ``tau`` and carried as a
     :class:`~ftmwpipeline.fitting.window_fit.FrozenSkirt` restricted to that
-    slice, so with ``tau`` free their skirt follows the joint trial ``tau``
-    (ROADMAP D18).
+    slice, so with ``tau`` free their skirt follows that window's trial ``tau``
+    (ROADMAP D18). A window whose fit carries a leakage-wing baseline keeps it,
+    re-fit on its own slice from its converged coefficients
+    (:func:`_cofit_baseline_design`), so the co-fit refines the model each
+    window's own fit uses; without it a primary's lines would be re-fit to soak
+    the pedestal the baseline carried. ``joint.baseline_coeffs`` holds the
+    primary's coefficients first, then the dependent's
+    (:func:`_carried_baseline_size`).
+
+    Each slice carries its own window's model and no more: a dependent's free
+    line is drawn on the dependent's bins only, and a primary line on the
+    dependent's bins only when the dependent freezes it (``min_freeze_snr``,
+    :func:`evaluate_ancestor_leakage`, at the primary's fit). This is a
+    modelling choice, the union of the two models an accepted thaw installs,
+    not the physical spectrum: a dependent's line leaks onto the primary's bins
+    too, where the primary's baseline takes that wing, so the primary's bins
+    say nothing about the dependent's lines. The two windows are coupled only
+    through the lines they share. Each line is bounded to its own window's
+    grid, as that window's own fit bounds it.
+
+    Each window keeps its own ``tau`` (a
+    :class:`~ftmwpipeline.fitting.window_fit.TauGroup` on its slice), started
+    from its fit's converged value, free only if both ``fit_tau`` and that
+    window's own fit freed it, and bounded and anchored as its own fit was:
+    the band and Gaussian prior of ``dependent_constraints`` /
+    ``primary_constraints`` (:func:`_own_fit_constraints`), the band widened
+    to the converged value if that lies outside it (:func:`_own_tau_group`).
+    Without them a window's ``tau`` is bounded to ``[tau0 / k, tau0 * k]``
+    (``k = max_decay_factor``) and has no prior. One ``tau`` for both windows
+    would let the brighter window's lines set the other window's decay.
+    ``joint.tau_groups`` holds the primary's ``tau`` first, then the
+    dependent's.
+
+    Every line is drawn on a slice at that slice's ``tau``, a shared line
+    included, which is how the dependent carries the line once installed: a
+    window's model draws everything it carries, its frozen skirt too, at its
+    own ``tau`` (D18). A shared line's amplitude, frequency and phase are tied.
+    That is a convention, not a small approximation. On a far skirt the
+    Lorentzian line's shape is
+    ``(1 - e^{-T/tau} e^{-i 2 pi df T}) / (1/tau + i 2 pi df)``, and on a
+    window's grid (the active FT's bins are ``1/T`` apart, no zero-padding)
+    ``e^{-i 2 pi df T}`` is the same phasor in every bin, so the truncation term
+    scales the whole skirt by a factor that depends on ``tau`` but not on the
+    offset. Drawing the line at the dependent's ``tau`` rather than the
+    primary's changes its skirt there by about ``|e^{-T/tau_d} - e^{-T/tau_p}|``,
+    up to several percent, growing with the difference between the two decay
+    times, and that change is degenerate with the line's amplitude and phase.
+    The Gaussian shape's truncation term carries ``e^{-(T/tau)^2}`` in place of
+    ``e^{-T/tau}``. On the dependent's bins its ``tau`` therefore trades against
+    the skirts it carries, which is why each window's ``tau`` keeps the band and
+    prior of its own fit: a decay the window's own fit held near its calibration
+    cannot be released to absorb a neighbour's skirt.
 
     The joint fit's peak list layout is
 
@@ -2013,9 +2384,10 @@ def local_thaw_cofit(
         length-1 array selecting the row of ``joint.peaks`` that is the
         thawed contributor.
     """
+    tau_primary = float(primary.fit.fit.tau_us)
+    tau_dependent = float(dependent.fit.fit.tau_us)
     s = sideband_sign(sideband)
     primary_center = _window_center_mhz(primary)
-    dep_center = _window_center_mhz(dependent)
 
     # Build the combined data / grid in the primary's offset frame.
     primary_u = np.asarray(primary.offset_grid_mhz, dtype=float)
@@ -2025,8 +2397,9 @@ def local_thaw_cofit(
 
     # u_primary = s*(f - f_c_primary); u_dep_in_primary = s*(f - f_c_primary)
     # = u_dep + s*(f_c_dep - f_c_primary). So shift the dependent grid by that
-    # constant offset to remap it into the primary's frame.
-    shift = s * (dep_center - primary_center)
+    # constant offset to remap it into the primary's frame. ``lo``/``hi`` span
+    # both grids (the spur mask's range).
+    shift, lo, hi = _thaw_frame(primary, dependent, sideband)
     dep_u_in_primary = dep_u + shift
 
     # Subtract any *other* frozen contributors from each side as background, so
@@ -2035,7 +2408,10 @@ def local_thaw_cofit(
     # A FrozenPeak's offset is in its *dependent* window's frame; the joint
     # grid carries the dependent's bins in the primary's frame (``+ shift``),
     # so the dependent's other contributors are remapped by the same shift
-    # before they are subtracted or follow the joint tau.
+    # before they are subtracted or follow the dependent's tau. Every line the
+    # dependent froze from the thawed contributor's primary is left out, not
+    # only the thawed one: the joint model draws each of them on the
+    # dependent's bins as a primary peak, so a frozen copy would count twice.
     dep_other = [
         replace(
             fp,
@@ -2044,14 +2420,13 @@ def local_thaw_cofit(
             ),
         )
         for fp in dependent.fixed_peaks
-        if fp.peak_index != thawed.peak_index
-        or fp.primary_window_id != thawed.primary_window_id
+        if not _is_primary_skirt(fp, thawed.primary_window_id)
     ]
     _, primary_clean = subtract_frozen_background(
         primary_u,
         primary_data,
         primary_other,
-        tau0_us,
+        tau_primary,
         acquisition_us,
         shape=shape,
     )
@@ -2059,28 +2434,44 @@ def local_thaw_cofit(
         dep_u_in_primary,
         dep_data,
         dep_other,
-        tau0_us,
+        tau_dependent,
         acquisition_us,
         shape=shape,
     )
 
     grid = np.concatenate([primary_u, dep_u_in_primary])
     data = np.concatenate([primary_clean, dep_clean])
-    # Each side's other contributors follow the joint trial tau on their own
+    # Each side's other contributors follow that side's trial tau on its own
     # slice only, evaluated on exactly the grid they were subtracted on.
     on_primary = np.zeros(grid.size, dtype=bool)
     on_primary[: primary_u.size] = True
+    on_dependent = ~on_primary
     joint_skirts = frozen_skirts_for(
-        primary_other, tau0_us, bins=on_primary
-    ) + frozen_skirts_for(dep_other, tau0_us, bins=~on_primary)
+        primary_other, tau_primary, bins=on_primary
+    ) + frozen_skirts_for(dep_other, tau_dependent, bins=on_dependent)
+    tau_groups = [
+        _own_tau_group(
+            on_primary,
+            primary,
+            primary_constraints,
+            tau0_us=tau0_us,
+            max_decay_factor=max_decay_factor,
+        ),
+        _own_tau_group(
+            on_dependent,
+            dependent,
+            dependent_constraints,
+            tau0_us=tau0_us,
+            max_decay_factor=max_decay_factor,
+        ),
+    ]
 
-    sigma_primary = np.asarray(primary.rms_noise, dtype=float)
-    if sigma_primary.ndim == 0:
-        sigma_primary = np.full(primary_u.size, float(sigma_primary))
-    sigma_dep = np.asarray(dependent.rms_noise, dtype=float)
-    if sigma_dep.ndim == 0:
-        sigma_dep = np.full(dep_u.size, float(sigma_dep))
-    sigma = np.concatenate([sigma_primary, sigma_dep])
+    sigma = np.concatenate(
+        [
+            _as_noise_array(primary.rms_noise, primary_u.size),
+            _as_noise_array(dependent.rms_noise, dep_u.size),
+        ]
+    )
 
     # Initial peak list. The thawed contributor is *already* a free peak in
     # the primary's fit -- "thaw" means promoting that primary free peak so the
@@ -2105,41 +2496,46 @@ def local_thaw_cofit(
         key=lambda i: abs(primary_peaks[i].offset_mhz - contributor_offset_primary),
     )
 
-    # Widen the offset bounds to the combined span.
-    lo = float(grid.min())
-    hi = float(grid.max())
-
-    # Spur mask in the joint (primary) frame: any gated spur whose offset
-    # s*(f - primary_center) lands inside the combined grid span.
-    joint_spur_mask: Optional[SpurMaskSpec] = None
-    if spur_set is not None and spur_set:
-        kept: List[Tuple[float, GatedSpur]] = []
-        for sp in spur_set.spurs:
-            off = float(s * (sp.center_mhz - primary_center))
-            if lo <= off <= hi:
-                kept.append((off, sp))
-        if kept:
-            half_widths: Optional[Tuple[float, ...]] = None
-            if any(sp.mask_half_width_bins is not None for _, sp in kept):
-                half_widths = tuple(spur_set._spur_half_width_mhz(sp) for _, sp in kept)
-            joint_spur_mask = SpurMaskSpec(
-                offsets_mhz=tuple(off for off, _ in kept),
-                half_width_mhz=spur_set.mask_half_width_mhz,
-                half_widths_mhz=half_widths,
-            )
-
+    baseline_design, baseline_seed = _cofit_baseline_design(primary, dependent)
+    # Each line on the bins its window's model draws it on (None: every bin).
+    frozen_in_dependent = _lines_frozen_in_dependent(
+        primary_peaks,
+        primary,
+        thawed.primary_window_id,
+        dependent,
+        tau_us=tau_primary,
+        sideband=sideband,
+        acquisition_us=acquisition_us,
+        min_freeze_snr=min_freeze_snr,
+    )
+    frozen_in_dependent[thawed_index] = True
+    peak_bins: list[Optional[np.ndarray]] = [
+        None if frozen else on_primary for frozen in frozen_in_dependent
+    ] + [on_dependent] * len(dep_peaks_in_primary)
+    # Each line within its own window's grid, as that window's own fit bounds
+    # it: a line drawn on a slice it does not belong to must not wander onto
+    # the other window's grid, where only that slice's model would draw it.
+    primary_span = (float(primary_u.min()), float(primary_u.max()))
+    dep_span = (float(dep_u_in_primary.min()), float(dep_u_in_primary.max()))
+    peak_offset_bounds = [primary_span] * len(primary_peaks) + [dep_span] * len(
+        dep_peaks_in_primary
+    )
     joint = fit_window(
         grid,
         data,
         sigma,
         init,
-        tau0_us,
+        tau_primary,
         acquisition_us,
         fit_tau=fit_tau,
         max_decay_factor=max_decay_factor,
-        offset_bounds=(lo, hi),
         shape=shape,
-        spur_mask=joint_spur_mask,
+        spur_mask=_spur_mask_in_span(spur_set, sideband, primary_center, lo, hi),
+        baseline_design=baseline_design,
+        initial_baseline_coeffs=baseline_seed,
+        peak_bins=peak_bins,
+        peak_offset_bounds=peak_offset_bounds,
+        tau_groups=tau_groups,
         frozen_skirts=joint_skirts,
     )
     return joint, np.array([thawed_index], dtype=int)
@@ -2419,8 +2815,8 @@ def execute_plan(
         window count. The plan-level histories come out in the order an
         uninterrupted walk appends them. An accepted thaw during the resumed
         walk discards the carried windows and refits every window sequentially
-        (a ``walk_fallback`` warning, then a ``"fallback"`` pass), as an
-        uninterrupted walk with an accepted thaw does.
+        (a ``walk_fallback`` warning, then a ``"fallback"`` pass): a carried
+        window may have read a primary the thaw changes.
     tracker : WalkTracker, optional
         Records the finished windows as the walk goes (and freezes the initial
         walk's), so an interrupted fit can persist them. Writes nothing.
@@ -2575,8 +2971,7 @@ def execute_plan(
             )
         except _ResumeThawRefit:
             # The carried windows may have read a primary this thaw would have
-            # changed first: refit every window sequentially from scratch, as an
-            # uninterrupted walk does when a thaw is accepted.
+            # changed first: refit every window sequentially from scratch.
             events.warn(
                 "walk_fallback", reason="accepted thaw", n_windows=len(full_order)
             )
@@ -3332,14 +3727,10 @@ def _process_one_window(
             "center": 0.5 * (win.freq_range[0] + win.freq_range[1]),
             "sign": sideband_sign(sideband),
         }
-    ck_for_window = conservative_kwargs
-    tau0_us_for_window = tau0_us
-    if wid in window_tau_overrides:
-        tau_maj_w, sigma_tau_w = window_tau_overrides[wid]
-        ck_for_window = dict(conservative_kwargs)
-        ck_for_window["tau_maj_us"] = float(tau_maj_w)
-        ck_for_window["sigma_tau_us"] = float(sigma_tau_w)
-        tau0_us_for_window = float(tau_maj_w)
+    ck_for_window = _window_conservative_kwargs(
+        wid, conservative_kwargs, window_tau_overrides
+    )
+    tau0_us_for_window = _window_tau0_us(wid, tau0_us, window_tau_overrides)
     # This window's offset -> point-hundredths map (see PointMap), built the
     # moment its frame (center_mhz, sideband, probe, n_active, dt) is known --
     # the same center_mhz formula ``materialize_window`` uses. Riding on
@@ -3362,8 +3753,6 @@ def _process_one_window(
             active_ft.n_active,
             sample_dt_us,
         )
-        if ck_for_window is conservative_kwargs:
-            ck_for_window = dict(conservative_kwargs)
         ck_for_window["point_map"] = point_map
     outcome = _fit_one_window(
         win,
@@ -3395,12 +3784,14 @@ def _process_one_window(
             outcomes=outcomes,
             sideband=sideband,
             acquisition_us=acquisition_us,
-            tau0_us=tau0_us_for_window,
-            fit_tau=fit_tau,
+            tau0_us=tau0_us,
+            window_tau_overrides=window_tau_overrides,
             residual_edge_threshold=residual_edge_threshold,
             residual_edge_m=residual_edge_m,
             shape=conservative_kwargs.get("shape", "lorentzian"),
             spur_set=spur_set,
+            min_freeze_snr=min_freeze_snr,
+            conservative_kwargs=conservative_kwargs,
         )
         if not edge_events:
             break
@@ -4027,6 +4418,129 @@ def _await_in_order(fut: Any, events: StageScope) -> Any:
             continue
 
 
+def _thaw_refit_windows(
+    order: Sequence[int],
+    reads: Mapping[int, set[int]],
+    thawed_primaries: Mapping[int, set[int]],
+    refit_one: Optional[Callable[[int], set[int]]] = None,
+) -> list[int]:
+    """The windows of a parallel walk to re-fit, in ``order``, after a thaw.
+
+    ``reads[w]`` is every window whose outcome ``w``'s processing reads (the
+    primaries of its edge-bearing contributors), the only outcomes it can
+    change besides its own: an accepted thaw rewrites one of them in place.
+    ``thawed_primaries[w]`` holds the primaries of the thaws ``w`` accepted in
+    the parallel walk, where the rewrite stayed in its worker. ``refit_one(w)``
+    re-fits ``w`` in the parent and returns the primaries of the thaws that
+    re-fit accepted; without it each re-fit is taken to repeat its worker's
+    thaws (the prediction the ``walk_fallback`` warning counts).
+
+    The sequential walk over ``order`` is the reference. Walking ``order``, a
+    window is *stale* once its outcome in the parent may differ from that
+    reference's at the same point. A window none of whose reads is stale has
+    the reference's inputs, so its parallel fit is the reference's (to the
+    rounding by which any fork worker's fit differs from the sequential walk's)
+    and stands, unless it accepted a thaw: it is then re-fit on those same
+    inputs, which reproduces its fit to that rounding and applies its thaws in
+    the parent, staling their primaries, and its worker's, for the windows
+    after it (the ones before it read the pre-thaw primary in the reference
+    too). It is not itself marked stale when the re-fit accepts the thaws its
+    worker did: its readers already read its worker's fit, which equals the
+    re-fit to that same rounding. When the two decide differently (an edge at
+    the threshold, within that rounding), it is stale too. A window that reads
+    a stale outcome is re-fit, and is stale with everything it reads, since its
+    new fit may thaw any of them. Each re-fit's own thaws are applied before
+    the next window is judged, so the windows kept equal the reference, and the
+    re-fit ones are fit as the reference fits them, on its inputs and in its
+    order.
+    """
+    stale: set[int] = set()
+    refit: list[int] = []
+    for wid in order:
+        read = reads.get(wid, set())
+        worker = set(thawed_primaries.get(wid, set()))
+        reads_stale = bool(read & stale)
+        if not (reads_stale or worker):
+            continue
+        refit.append(wid)
+        parent = refit_one(wid) if refit_one is not None else worker
+        stale |= worker | parent
+        if reads_stale:
+            stale |= read | {wid}
+        elif parent != worker:
+            stale.add(wid)
+    return refit
+
+
+def _refit_after_thaw(
+    plan: WindowPlan,
+    order: Sequence[int],
+    preds: Mapping[int, set[int]],
+    results: dict[int, tuple[list[ThawEvent], list[RescueEvent], list[dict[str, Any]]]],
+    *,
+    events: StageScope,
+    walk_round: int,
+    outcomes: dict[int, WindowOutcome],
+    ledger: Optional[dict[int, WalkRecord]],
+    shared_kwargs: dict[str, Any],
+) -> None:
+    """Re-fit, sequentially in ``order``, the windows a parallel walk's accepted
+    thaws leave differing from the sequential walk (:func:`_thaw_refit_windows`).
+
+    Each re-fit replaces the window's outcome and its entry in ``results`` and
+    ``ledger``; an accepted thaw rewrites its primary in ``outcomes`` in place,
+    as in the sequential walk. Reported as the round's ``"fallback"`` pass; the
+    ``walk_fallback`` warning counts the windows predicted from the parallel
+    walk's thaws, and the pass's ``total`` grows if a re-fit decides a thaw
+    differently and so reaches more.
+    """
+    by_id = {w.window_id: w for w in plan.windows}
+    reads: dict[int, set[int]] = {}
+    for wid in order:
+        win = by_id[wid]
+        reads[wid] = set(preds.get(wid, set())) | {
+            c.primary_window_id
+            for c in win.fixed_contributors
+            if not c.edge_free and c.primary_window_id != wid
+        }
+    thawed_primaries = {
+        wid: {e.primary_window_id for e in thaws if e.accepted}
+        for wid, (thaws, _, _) in results.items()
+    }
+    predicted = _thaw_refit_windows(order, reads, thawed_primaries)
+    events.warn("walk_fallback", reason="accepted thaw", n_windows=len(predicted))
+    expected = set(predicted)
+    done: list[int] = []
+
+    def refit_one(wid: int) -> set[int]:
+        events.check_cancel()
+        thaws: list[ThawEvent] = []
+        rescues: list[RescueEvent] = []
+        cleanups: list[dict[str, Any]] = []
+        report = _process_one_window(
+            by_id[wid],
+            outcomes=outcomes,
+            thaw_history=thaws,
+            rescue_history=rescues,
+            cleanup_history=cleanups,
+            **shared_kwargs,
+        )
+        results[wid] = (thaws, rescues, cleanups)
+        _record_window(ledger, wid, thaws, rescues, cleanups)
+        done.append(wid)
+        _report_window(
+            events,
+            report,
+            phase="fallback",
+            walk_round=walk_round,
+            index=len(done),
+            total=len(expected | set(done)),
+        )
+        return {e.primary_window_id for e in thaws if e.accepted}
+
+    _thaw_refit_windows(order, reads, thawed_primaries, refit_one)
+
+
 def _walk_windows_dag(
     plan: WindowPlan,
     order: Sequence[int],
@@ -4062,12 +4576,14 @@ def _walk_windows_dag(
     and rescue histories are merged in topological ``order`` after the walk for a
     deterministic sequence. The accepted-thaw hazard (a thaw mutates its primary
     in place, which a worker did only to its fork-private copy, so any dependent
-    already dispatched read the pre-thaw primary) is handled conservatively: if
-    *any* window reports an accepted thaw, the entire walk is redone via the
-    sequential :func:`_walk_windows_in_order` (authoritative), discarding the
-    parallel outcomes, and a ``walk_fallback`` warning says so; the redo reports
-    as its own ``"fallback"`` pass of the same round. Thaw-accept is 0
-    on every validated fixture, so this path does not fire in practice.
+    already dispatched read the pre-thaw primary) is handled after the walk: the
+    windows whose fit the sequential :func:`_walk_windows_in_order` (the
+    reference) would make differently -- the thawing windows and those reading,
+    transitively, an outcome a thaw changed -- are re-fit sequentially in topological
+    order (:func:`_refit_after_thaw`), and a ``walk_fallback`` warning says how
+    many the parallel walk's thaws predict; the re-fit reports as its own
+    ``"fallback"`` pass of the same round. A
+    residual dependency cycle still redoes the entire walk sequentially.
 
     The parent polls the cancel token every :data:`CANCEL_POLL_S` while workers
     fit. A cancel -- or any exception here, such as a failing events callback --
@@ -4185,15 +4701,31 @@ def _walk_windows_dag(
     finally:
         _WORKER_FIT_CTX = None
 
-    # Two cases force a conservative sequential redo (authoritative, overwrites
-    # the parallel outcomes): an accepted thaw (a worker mutated its fork-private
-    # primary, so any already-dispatched dependent read the stale pre-thaw copy),
-    # or a residual dependency cycle that left windows unschedulable (their indeg
-    # never reached 0). Both are absent on every validated fixture.
+    # A residual dependency cycle that left windows unschedulable (their indeg
+    # never reached 0) forces a full sequential redo (authoritative, overwrites
+    # the parallel outcomes). An accepted thaw (a worker mutated its fork-private
+    # primary, so a dependent of that primary may have read the pre-thaw copy)
+    # re-fits only the windows the sequential walk would fit differently
+    # (:func:`_thaw_refit_windows`); the rest keep their parallel fits.
     unscheduled = n_total - len(results)
-    if accepted_thaw or unscheduled:
-        reason = "accepted thaw" if accepted_thaw else f"{unscheduled} cyclic windows"
-        events.warn("walk_fallback", reason=reason, n_windows=n_total)
+    if accepted_thaw and not unscheduled:
+        _refit_after_thaw(
+            plan,
+            in_order,
+            preds,
+            results,
+            events=events,
+            walk_round=walk_round,
+            outcomes=outcomes,
+            ledger=ledger,
+            shared_kwargs=shared_kwargs,
+        )
+    elif unscheduled:
+        # The cycle forces the redo; it re-fits every window, so it also covers
+        # any accepted thaw.
+        events.warn(
+            "walk_fallback", reason=f"{unscheduled} cyclic windows", n_windows=n_total
+        )
         # The DAG loop accumulates histories into ``results`` (not the caller's
         # lists) and overwrites only in-order ``outcomes`` keys, so the caller's
         # pre-walk history and any out-of-order outcomes are intact; the
@@ -4293,9 +4825,9 @@ def _walk_windows_parallel(
     continuous params drift only at the fork+BLAS=1 ULP scale. The one structural
     hazard -- an accepted thaw mutates its primary window in place, which a worker
     can only do to its fork-private copy -- is guarded in both walks: the level
-    walk re-fits the affected level sequentially, the scheduler re-fits the whole
-    walk sequentially (this never fires on the validated fixtures, where
-    thaw-accept = 0).
+    walk re-fits the affected level sequentially, the scheduler re-fits
+    sequentially the windows the thaw leaves differing from the sequential walk
+    (:func:`_thaw_refit_windows`).
 
     Every walk reports each finished window through ``events`` from the parent,
     as the pass ``(phase, walk_round)`` (``"initial"`` round 0, or ``"replan"``
@@ -5311,11 +5843,13 @@ def attempt_thaw_round(
     sideband: SidebandLike,
     acquisition_us: float,
     tau0_us: float,
-    fit_tau: bool = True,
+    window_tau_overrides: Optional[Mapping[int, tuple[float, float]]] = None,
     residual_edge_threshold: float = DEFAULT_RESIDUAL_EDGE_THRESHOLD,
     residual_edge_m: int = DEFAULT_RESIDUAL_EDGE_M,
     shape: "PeakShape | str" = "lorentzian",
     spur_set: Optional[SpurSet] = None,
+    min_freeze_snr: float = DEFAULT_MIN_FREEZE_SNR,
+    conservative_kwargs: Optional[Mapping[str, Any]] = None,
 ) -> list[ThawEvent]:
     """Run one round of the residual edge-coherence check on a window and thaw.
 
@@ -5338,10 +5872,19 @@ def attempt_thaw_round(
     outcomes : dict of int -> WindowOutcome
         All known outcomes, by id; the contributor's primary outcome must be
         present.
-    sideband, acquisition_us, tau0_us, fit_tau : ...
+    sideband, acquisition_us : ...
         Pipeline-level parameters propagated to :func:`local_thaw_cofit`.
+    tau0_us, window_tau_overrides, conservative_kwargs : ...
+        The run's ``tau0``, the per-window calibrations that replace it and the
+        run's conservative-fit kwargs (``max_decay_factor``, the tau prior's
+        settings): the co-fit holds each window's ``tau`` to the band and prior
+        its own fit derived from them (:func:`_own_fit_constraints`). Without
+        ``conservative_kwargs`` the defaults apply.
     residual_edge_threshold, residual_edge_m : ...
         See :func:`execute_plan`.
+    min_freeze_snr : float
+        The bar a line clears to be frozen: an accepted thaw re-freezes the
+        co-fit primary's lines into the dependent with it.
     """
     events: list[ThawEvent] = []
     for edge_side, edge_coh in (
@@ -5376,11 +5919,13 @@ def attempt_thaw_round(
                 sideband=sideband,
                 acquisition_us=acquisition_us,
                 tau0_us=tau0_us,
-                fit_tau=fit_tau,
+                window_tau_overrides=window_tau_overrides,
                 residual_edge_threshold=residual_edge_threshold,
                 residual_edge_m=residual_edge_m,
                 shape=shape,
                 spur_set=spur_set,
+                min_freeze_snr=min_freeze_snr,
+                conservative_kwargs=conservative_kwargs,
             )
         events.append(event)
         outcome.thaw_events.append(event)
@@ -5398,14 +5943,68 @@ def _perform_thaw(
     sideband: SidebandLike,
     acquisition_us: float,
     tau0_us: float,
-    fit_tau: bool,
+    window_tau_overrides: Optional[Mapping[int, tuple[float, float]]] = None,
     residual_edge_threshold: float,
     residual_edge_m: int,
     shape: "PeakShape | str" = "lorentzian",
     spur_set: Optional[SpurSet] = None,
+    min_freeze_snr: float = DEFAULT_MIN_FREEZE_SNR,
+    conservative_kwargs: Optional[Mapping[str, Any]] = None,
 ) -> ThawEvent:
-    """Do the joint co-fit, decide accept/reject, and rebuild the outcomes."""
+    """Do the joint co-fit, decide accept/reject, and rebuild the outcomes.
+
+    An accepted thaw refines the line in its primary, the window that owns it;
+    the dependent keeps it **frozen**, with its skirt from that primary
+    re-frozen from the co-fit primary by the ordinary freeze rule
+    (:func:`evaluate_ancestor_leakage`). The line is never a free peak of the
+    dependent: it lies outside the dependent's grid, so any later single-window
+    refit there would pin it to the grid edge, and the line list would carry it
+    twice.
+
+    The co-fit holds each window's ``tau`` to the band and prior its own fit
+    used (:func:`_own_fit_constraints` on ``conservative_kwargs`` and
+    ``window_tau_overrides``), so the dependent's edge after the thaw is judged
+    under the same decay-time constraint as the edge before it, and a thaw
+    cannot pass by releasing the dependent's decay time. Each ``tau`` is free
+    exactly when its own fit freed it (``tau_was_fit``), whatever the run's
+    ``fit_tau``: the late-baseline refit frees a window's ``tau`` regardless.
+
+    Known limitation: the co-fit carries no phase or amplitude penalty, which
+    the dependent's own fit did, so the edge it is judged on differs from the
+    own fit's edge by that too, thaw or not. On the reference fixtures dropping
+    the penalties alone, nothing thawed, moves a flagged edge by up to about
+    0.5 but changes no gate decision.
+
+    A thaw is accepted when the dependent's model it would install brings the
+    flagged edge to the threshold or below. It is rejected when the freeze rule
+    freezes a different set of the co-fit primary's lines into the dependent
+    than the co-fit drew there, since the install would then not be the model
+    the co-fit refined.
+    """
     primary_outcome = outcomes[thawed.primary_window_id]
+    ck: Mapping[str, Any] = conservative_kwargs or {}
+    max_decay_factor = float(ck.get("max_decay_factor", DEFAULT_MAX_DECAY_FACTOR))
+    dep_constraints = _own_fit_constraints(
+        dep_window.window_id,
+        dep_outcome,
+        tau0_us=tau0_us,
+        acquisition_us=acquisition_us,
+        conservative_kwargs=ck,
+        window_tau_overrides=window_tau_overrides,
+    )
+
+    def _rejected(reason: str, edge_after: float = float("nan")) -> ThawEvent:
+        return ThawEvent(
+            dependent_window_id=dep_window.window_id,
+            primary_window_id=thawed.primary_window_id,
+            contributor_peak_index=thawed.peak_index,
+            contributor_frequency_mhz=thawed.frequency_mhz,
+            edge_side=edge_side,
+            edge_coherence_before=edge_coherence_before,
+            edge_coherence_after=edge_after,
+            accepted=False,
+            reason=reason,
+        )
 
     joint, thawed_idx_arr = local_thaw_cofit(
         dep_outcome,
@@ -5414,22 +6013,23 @@ def _perform_thaw(
         sideband=sideband,
         tau0_us=tau0_us,
         acquisition_us=acquisition_us,
-        fit_tau=fit_tau,
+        fit_tau=True,
+        max_decay_factor=max_decay_factor,
         shape=shape,
         spur_set=spur_set,
+        min_freeze_snr=min_freeze_snr,
+        dependent_constraints=dep_constraints,
+        primary_constraints=_own_fit_constraints(
+            thawed.primary_window_id,
+            primary_outcome,
+            tau0_us=tau0_us,
+            acquisition_us=acquisition_us,
+            conservative_kwargs=ck,
+            window_tau_overrides=window_tau_overrides,
+        ),
     )
     if not joint.success:
-        return ThawEvent(
-            dependent_window_id=dep_window.window_id,
-            primary_window_id=thawed.primary_window_id,
-            contributor_peak_index=thawed.peak_index,
-            contributor_frequency_mhz=thawed.frequency_mhz,
-            edge_side=edge_side,
-            edge_coherence_before=edge_coherence_before,
-            edge_coherence_after=float("nan"),
-            accepted=False,
-            reason="joint co-fit did not converge",
-        )
+        return _rejected("joint co-fit did not converge")
 
     # Split joint.peaks back into primary and dependent (the thawed peak is
     # *inside* the primary list -- it was already a free peak there before).
@@ -5440,22 +6040,15 @@ def _perform_thaw(
     n_dep_peaks = len(dep_outcome.fit.peaks)
     expected = n_primary_peaks + n_dep_peaks
     if len(joint.peaks) != expected:
-        return ThawEvent(
-            dependent_window_id=dep_window.window_id,
-            primary_window_id=thawed.primary_window_id,
-            contributor_peak_index=thawed.peak_index,
-            contributor_frequency_mhz=thawed.frequency_mhz,
-            edge_side=edge_side,
-            edge_coherence_before=edge_coherence_before,
-            edge_coherence_after=float("nan"),
-            accepted=False,
-            reason="joint co-fit peak count mismatch",
-        )
+        return _rejected("joint co-fit peak count mismatch")
 
-    thawed_idx = int(thawed_idx_arr[0])
     primary_peaks = list(joint.peaks[:n_primary_peaks])
     dep_peaks_in_primary = list(joint.peaks[n_primary_peaks:])
-    thawed_peak_primary = primary_peaks[thawed_idx]
+    # Each window's own tau (local_thaw_cofit): the primary's, then the
+    # dependent's.
+    if joint.tau_groups is None or len(joint.tau_groups) != 2:
+        raise ValueError("the thaw co-fit must fit one tau per window")
+    primary_tau, dep_tau = joint.tau_groups
 
     # Remap the dependent frame: shift = s*(dep_center - primary_center).
     shift = s * (dep_center - primary_center)
@@ -5463,36 +6056,93 @@ def _perform_thaw(
         ModelPeak(pk.amplitude, pk.offset_mhz - shift, pk.phase, peak_uid=pk.peak_uid)
         for pk in dep_peaks_in_primary
     ]
-    thawed_in_dep = ModelPeak(
-        thawed_peak_primary.amplitude,
-        thawed_peak_primary.offset_mhz - shift,
-        thawed_peak_primary.phase,
-        peak_uid=thawed_peak_primary.peak_uid,
+    # The co-fit drew on the dependent's bins the primary lines the freeze rule
+    # froze at the primary's fit (local_thaw_cofit). The install re-freezes them
+    # from the co-fit primary; when the rule picks different lines there, the
+    # installed dependent is not the model the co-fit refined.
+    drawn = _lines_frozen_in_dependent(
+        primary_outcome.fit.peaks,
+        primary_outcome,
+        thawed.primary_window_id,
+        dep_outcome,
+        tau_us=float(primary_outcome.fit.fit.tau_us),
+        sideband=sideband,
+        acquisition_us=acquisition_us,
+        min_freeze_snr=min_freeze_snr,
+    )
+    drawn[int(thawed_idx_arr[0])] = True
+    refreezes = _lines_frozen_in_dependent(
+        primary_peaks,
+        primary_outcome,
+        thawed.primary_window_id,
+        dep_outcome,
+        tau_us=primary_tau.tau_us,
+        sideband=sideband,
+        acquisition_us=acquisition_us,
+        min_freeze_snr=min_freeze_snr,
+    )
+    if refreezes != drawn:
+        return _rejected(
+            "the co-fit primary's lines frozen into the dependent differ from "
+            "those the co-fit drew there"
+        )
+    # The dependent's skirt from the primary, re-frozen from the co-fit primary
+    # exactly as evaluate_ancestor_leakage will read it once installed (at the
+    # primary's co-fit tau). It replaces every line frozen from that primary,
+    # which the joint model drew as primary peaks (local_thaw_cofit).
+    refrozen = _freeze_fitted_lines(
+        primary_peaks,
+        thawed.primary_window_id,
+        tau_us=primary_tau.tau_us,
+        shape=primary_outcome.fit.fit.shape,
+        rms_noise=primary_outcome.rms_noise,
+        primary_center_mhz=primary_center,
+        dependent_center_mhz=dep_center,
+        sideband=sideband,
+        acquisition_us=acquisition_us,
+        min_freeze_snr=min_freeze_snr,
+    )
+    dep_fixed_after = _replace_primary_skirt(
+        dep_outcome.fixed_peaks, thawed.primary_window_id, refrozen
+    )
+    # Each window's carried baseline, re-fit on its own slice (primary first).
+    n_primary_base = _carried_baseline_size(primary_outcome)
+    joint_base = (
+        np.zeros(0, dtype=np.complex128)
+        if joint.baseline_coeffs is None
+        else np.asarray(joint.baseline_coeffs, dtype=np.complex128)
+    )
+    primary_base_cols = list(range(n_primary_base))
+    dep_base_cols = list(range(n_primary_base, joint_base.size))
+    dep_basis = _carried_baseline_basis(dep_outcome)
+    dep_baseline = (
+        np.zeros(dep_outcome.offset_grid_mhz.shape, dtype=np.complex128)
+        if dep_basis is None
+        else dep_basis @ joint_base[dep_base_cols]
     )
 
-    # Provisional dependent residual after a (hypothetical) install: free peaks
-    # become dep_peaks + thawed_in_dep, the thawed contributor drops from the
-    # frozen background, every other frozen contributor stays at the new tau.
-    dep_other_peaks = [
-        fp
-        for fp in dep_outcome.fixed_peaks
-        if not (
-            fp.peak_index == thawed.peak_index
-            and fp.primary_window_id == thawed.primary_window_id
+    # Provisional dependent residual after a (hypothetical) install: the free
+    # peaks become dep_peaks, its carried baseline takes its co-fit
+    # coefficients, every frozen contributor (the re-frozen primary skirt
+    # included) is drawn at the dependent's co-fit tau. This is the model the
+    # install below writes, so the gate judges exactly what an accepted thaw
+    # installs.
+    provisional_dep_full = (
+        model_spectrum(
+            dep_outcome.offset_grid_mhz,
+            dep_peaks,
+            dep_tau.tau_us,
+            acquisition_us,
+            shape=joint.shape,
         )
-    ]
-    provisional_dep_full = model_spectrum(
-        dep_outcome.offset_grid_mhz,
-        dep_peaks + [thawed_in_dep],
-        joint.tau_us,
-        acquisition_us,
-        shape=joint.shape,
-    ) + _frozen_subset_model(
-        dep_outcome.offset_grid_mhz,
-        dep_other_peaks,
-        joint.tau_us,
-        acquisition_us,
-        shape=joint.shape,
+        + dep_baseline
+        + _frozen_subset_model(
+            dep_outcome.offset_grid_mhz,
+            dep_fixed_after,
+            dep_tau.tau_us,
+            acquisition_us,
+            shape=joint.shape,
+        )
     )
     provisional_dep_residual = dep_outcome.complex_spectrum - provisional_dep_full
     dep_low_after, dep_high_after = residual_edge_coherence(
@@ -5503,46 +6153,35 @@ def _perform_thaw(
     edge_after = edge_gate_value(
         dep_low_after if edge_side == "low" else dep_high_after
     )
-    accepted = edge_after <= residual_edge_threshold
-
-    if not accepted:
-        return ThawEvent(
-            dependent_window_id=dep_window.window_id,
-            primary_window_id=thawed.primary_window_id,
-            contributor_peak_index=thawed.peak_index,
-            contributor_frequency_mhz=thawed.frequency_mhz,
-            edge_side=edge_side,
-            edge_coherence_before=edge_coherence_before,
-            edge_coherence_after=float(edge_after),
-            accepted=False,
-            reason="co-fit did not lower the flagged-edge coherence below threshold",
+    if not edge_after <= residual_edge_threshold:
+        return _rejected(
+            "co-fit did not lower the flagged-edge coherence below threshold",
+            float(edge_after),
         )
 
     # Accept: install the new fits. The primary's peak list already includes
     # the thawed line (the joint fit refined it), so just refresh its peaks;
-    # the dependent gains the thawed line as a free peak and drops it from
-    # the frozen contributors.
+    # the dependent keeps its own peaks and carries the re-frozen skirt.
     _install_cofit_outcome(
         primary_outcome,
         new_peaks=primary_peaks,
-        tau_us=joint.tau_us,
         acquisition_us=acquisition_us,
         residual_edge_m=residual_edge_m,
         joint=joint,
+        own_tau_group=0,
         own_peak_indices=list(range(n_primary_peaks)),
-        cofit_was_tau_free=bool(joint.tau_was_fit),
+        own_baseline_columns=primary_base_cols,
     )
     _install_cofit_outcome(
         dep_outcome,
-        new_peaks=dep_peaks + [thawed_in_dep],
-        tau_us=joint.tau_us,
+        new_peaks=dep_peaks,
         acquisition_us=acquisition_us,
         residual_edge_m=residual_edge_m,
         joint=joint,
-        own_peak_indices=list(range(n_primary_peaks, n_primary_peaks + n_dep_peaks))
-        + [thawed_idx],
-        drop_contributor=thawed,
-        cofit_was_tau_free=bool(joint.tau_was_fit),
+        own_tau_group=1,
+        own_peak_indices=list(range(n_primary_peaks, n_primary_peaks + n_dep_peaks)),
+        own_baseline_columns=dep_base_cols,
+        fixed_peaks=dep_fixed_after,
     )
 
     return ThawEvent(
@@ -5583,53 +6222,67 @@ def _install_cofit_outcome(
     outcome: WindowOutcome,
     *,
     new_peaks: Sequence[ModelPeak],
-    tau_us: float,
     acquisition_us: float,
     residual_edge_m: int,
     joint: WindowFitResult,
+    own_tau_group: int,
     own_peak_indices: Sequence[int],
-    drop_contributor: Optional[FrozenPeak] = None,
-    cofit_was_tau_free: bool = False,
+    own_baseline_columns: Sequence[int] = (),
+    fixed_peaks: Optional[Sequence[FrozenPeak]] = None,
 ) -> None:
     """Update a WindowOutcome in place after an accepted co-fit.
 
-    Replaces the free-peak fit's peaks/tau and recomputes the full model,
-    residual, and edge-coherence statistics; optionally drops a thawed
-    contributor from ``fixed_peaks``. The conservative-fit audit trail and
+    Replaces the free-peak fit's peaks and its ``tau`` -- this window's own,
+    ``joint.tau_groups[own_tau_group]`` (:func:`local_thaw_cofit`) -- and
+    recomputes the full model,
+    residual, and edge-coherence statistics; ``fixed_peaks``, when given,
+    replaces the frozen contributors (a thaw's dependent carries its re-frozen
+    primary skirt). A leakage-wing baseline the fit carries stays, with its
+    co-fit coefficients ``joint.baseline_coeffs[own_baseline_columns]``
+    (:func:`local_thaw_cofit` re-fits it on this window's slice); its order,
+    scale and trigger audit are unchanged. The conservative-fit audit trail and
     knockouts are preserved (they describe the original free-peak fit; the
     accepted-thaw record lives on the :class:`ThawEvent`).
 
-    When the co-fit ran with tau free (``cofit_was_tau_free=True``), the
-    persisted tau came from a tau-free LSQ -- promote ``tau_was_fit`` so
-    downstream consumers see this window's tau as data-determined.
+    The co-fit frees a window's ``tau`` only when its own fit did, so
+    ``tau_was_fit`` stands.
 
     ``joint`` is the two-window co-fit result and ``own_peak_indices`` locates
     this window's peaks within ``joint.peaks`` / ``joint.peak_errors``, in the
     same order as ``new_peaks``. Per-line uncertainties and their covariance
     genuinely come from the joint fit (that is the point of co-fitting), so
     ``peak_errors`` / ``covariance`` are sliced from it: each peak's own
-    ``(amplitude, offset, phase)`` block, plus the shared ``tau`` row/column
-    when ``joint.fit_tau``. ``chi_squared`` / ``cost`` / ``n_data`` /
+    ``(amplitude, offset, phase)`` block, plus this window's ``tau`` row/column
+    when it was free. ``chi_squared`` / ``cost`` / ``n_data`` /
     ``n_params`` are instead *recomputed from this window's own data* against
     the freshly rebuilt ``full_residual`` -- the joint chi-squared sums both
     windows' data and would make ``reduced_chi2`` describe the pair rather
     than this window, defeating the per-window chi2r routing (Stage 6
-    attention, ``fit check`` grading) that consumes it. ``n_params`` charges
-    the shared ``tau`` degree of freedom to this window too (mirroring how a
-    standalone single-window fit counts it), so the recomputed ``reduced_chi2``
-    stays on the same footing as an ordinary (non-thaw) window's. ``tau_error``
-    is installed as-is from the joint fit since ``tau`` is one physically
-    shared parameter, not a per-window quantity.
+    attention, ``fit check`` grading) that consumes it. ``n_params`` counts
+    this window's lines, its ``tau`` when free and its baseline, as a
+    standalone single-window fit does, so the recomputed ``reduced_chi2``
+    stays on the same footing as an ordinary (non-thaw) window's.
     """
-    if drop_contributor is not None:
-        outcome.fixed_peaks = [
-            fp
-            for fp in outcome.fixed_peaks
-            if not (
-                fp.peak_index == drop_contributor.peak_index
-                and fp.primary_window_id == drop_contributor.primary_window_id
-            )
+    if joint.tau_groups is None:
+        raise ValueError("the thaw co-fit must fit one tau per window")
+    own_tau = joint.tau_groups[own_tau_group]
+    tau_us = own_tau.tau_us
+    # The co-fit re-fit the carried baseline on this window's slice; its
+    # coefficients are installed so the model and the persisted term agree.
+    # Checked before anything is written.
+    coeffs: Optional[np.ndarray] = None
+    if _carried_baseline_basis(outcome) is not None:
+        if joint.baseline_coeffs is None or len(own_baseline_columns) != (
+            _carried_baseline_size(outcome)
+        ):
+            raise ValueError("the co-fit did not re-fit this window's baseline")
+        coeffs = np.asarray(joint.baseline_coeffs, dtype=np.complex128)[
+            list(own_baseline_columns)
         ]
+    elif own_baseline_columns:
+        raise ValueError("baseline columns given for a window that carries none")
+    if fixed_peaks is not None:
+        outcome.fixed_peaks = list(fixed_peaks)
     # Replace the free-peak fit's peaks/tau and reconstruct the full model.
     new_peak_list = [
         ModelPeak(p.amplitude, p.offset_mhz, p.phase, peak_uid=p.peak_uid)
@@ -5637,17 +6290,11 @@ def _install_cofit_outcome(
     ]
     outcome.fit.fit.peaks = new_peak_list
     outcome.fit.fit.tau_us = tau_us
-    outcome.fit.fit.tau_error = joint.tau_error
-    if cofit_was_tau_free:
-        outcome.fit.fit.tau_was_fit = True
-    # The thaw co-fit carries no baseline term; clear any prior baseline so
-    # the installed fit's model and its persisted coefficients stay
-    # consistent (the post-rescue baseline pass re-derives one if the
-    # residual still warrants it).
-    outcome.fit.fit.baseline_order = None
-    outcome.fit.fit.baseline_coeffs = None
-    outcome.fit.fit.baseline_offset_scale = None
-    outcome.baseline_applied = False
+    outcome.fit.fit.tau_error = own_tau.tau_error
+    if coeffs is not None:
+        outcome.fit.fit.baseline_coeffs = coeffs
+        if outcome.baseline_applied:
+            outcome.baseline_coeffs = coeffs
     shape_resolved = outcome.fit.fit.shape
     free_model = model_spectrum(
         outcome.offset_grid_mhz,
@@ -5655,7 +6302,7 @@ def _install_cofit_outcome(
         tau_us,
         acquisition_us,
         shape=shape_resolved,
-    )
+    ) + evaluate_baseline(outcome.fit.fit, outcome.offset_grid_mhz)
     outcome.fit.fit.fitted_spectrum = free_model
     background = _frozen_subset_model(
         outcome.offset_grid_mhz,
@@ -5676,9 +6323,11 @@ def _install_cofit_outcome(
 
     # Per-line errors and their covariance are sliced straight from the joint
     # fit: peak-major (amplitude, offset, phase) blocks in this window's own
-    # peak order, then the shared tau row/column -- the exact layout
+    # peak order, then this window's tau row/column -- the exact layout
     # ``fitting.result_conversion`` already expects (peak blocks move as a
-    # unit, tau/baseline stay in the tail).
+    # unit, tau/baseline stay in the tail). The joint baseline block packs every
+    # real part and then every imaginary part, so this window's own columns
+    # come out as its a_0..a_p, b_0..b_p, the order its own fit packs them in.
     own_peak_errors: list[ParameterErrors] = [
         joint.peak_errors[i] for i in own_peak_indices
     ]
@@ -5687,8 +6336,16 @@ def _install_cofit_outcome(
         rows: list[int] = []
         for i in own_peak_indices:
             rows.extend((3 * i, 3 * i + 1, 3 * i + 2))
-        if joint.fit_tau:
-            rows.append(3 * len(joint.peaks))
+        # The free taus sit after the peaks, in group order.
+        free = [g for g, ft in enumerate(joint.tau_groups) if ft.fit]
+        base_start = 3 * len(joint.peaks) + len(free)
+        if own_tau.fit:
+            rows.append(3 * len(joint.peaks) + free.index(own_tau_group))
+        n_joint_base = (
+            0 if joint.baseline_coeffs is None else len(joint.baseline_coeffs)
+        )
+        rows.extend(base_start + j for j in own_baseline_columns)
+        rows.extend(base_start + n_joint_base + j for j in own_baseline_columns)
         outcome.fit.fit.covariance = joint.covariance[np.ix_(rows, rows)]
     else:
         outcome.fit.fit.covariance = None
@@ -5716,7 +6373,11 @@ def _install_cofit_outcome(
     weighted_resid = (outcome.full_residual / sig_ri)[keep]
     chi_squared = float(np.sum(weighted_resid.real**2 + weighted_resid.imag**2))
     n_data = int(2 * np.count_nonzero(keep))
-    n_params = 3 * len(new_peak_list) + (1 if joint.fit_tau else 0)
+    n_params = (
+        3 * len(new_peak_list)
+        + (1 if own_tau.fit else 0)
+        + 2 * len(own_baseline_columns)
+    )
     outcome.fit.fit.chi_squared = chi_squared
     outcome.fit.fit.cost = 0.5 * chi_squared
     outcome.fit.fit.n_data = n_data
@@ -5792,9 +6453,8 @@ def _apply_rescue_to_outcome(
     outcome in place. Returns the per-round :class:`RescueEvent` records.
 
     Operates on the *post-thaw* outcome: the rescue's notion of "what the
-    initial fit missed" includes any contributor's line a thaw promoted to
-    a free peak (which appears in the window's free-peak list after a
-    successful thaw via :func:`_install_cofit_outcome`). The frozen
+    initial fit missed" starts from the background a successful thaw
+    re-froze from the co-fit primary (:func:`_perform_thaw`). The frozen
     contributors are not renegotiated -- the rescue addresses missed lines --
     but their skirt follows ``tau`` through every refit of the chain (ROADMAP
     D18): the chain starts from ``complex_spectrum - background`` with the

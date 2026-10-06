@@ -293,13 +293,18 @@ def test_late_baseline_refit_follows_tau_with_the_frozen_skirt():
 # ---------------------------------------------------------------------------
 # Thaw co-fit: the dependent's other contributors live in the dependent frame
 # ---------------------------------------------------------------------------
-def _thaw_pair(*, fit_tau, tau_data):
+def _thaw_pair(*, fit_tau, tau_data, tau_dep_data=None, tau_start=None):
     """A primary / dependent pair with centers 4 MHz apart.
 
     The primary carries a strong free line (the thaw candidate, in the primary
     frame at ``u_p``). The dependent sees that line as a frozen contributor and
     a second strong frozen contributor from another primary window, at offset
     ``other_dep`` in the DEPENDENT frame.
+
+    The primary's data decay with ``tau_data``, the dependent's with
+    ``tau_dep_data`` (default the same). Each window is fit with its tau held
+    at ``tau_start`` (default its data's); ``fit_tau`` marks the two fits as
+    having determined their tau from the data, so a co-fit may free it.
     """
     s = sideband_sign(Sideband.LOWER)
     fc_p, fc_d = 1000.0, 1004.0
@@ -314,23 +319,28 @@ def _thaw_pair(*, fit_tau, tau_data):
     u_prim = np.arange(-40, 41) / T
     u_dep = np.arange(-40, 41) / T
     sig = np.ones(u_prim.size)
-    # Every physical line leaks into both windows (finite-T ringing), so the
-    # primary's data carry the dependent's lines too, in the primary frame.
-    free_in_prim = replace(free_dep, offset_mhz=free_dep.offset_mhz + shift)
+    # Each window's data are exactly its own model. The other contributor leaks
+    # into both windows (finite-T ringing), so the primary carries it frozen
+    # too, in the primary frame. The dependent's free line is not in the
+    # primary's model (a real primary's leakage-wing baseline takes that wing),
+    # and the co-fit draws it on the dependent's bins only, so it is left out of
+    # the primary's data.
     other_in_prim = replace(other_dep, offset_mhz=other_dep.offset_mhz + shift)
+    tau_dep = tau_data if tau_dep_data is None else tau_dep_data
     z_prim = model_spectrum(
-        u_prim, [thaw_peak, free_in_prim, other_in_prim], tau_data, T, shape=SHAPE
+        u_prim, [thaw_peak, other_in_prim], tau_data, T, shape=SHAPE
     )
     z_dep = model_spectrum(
-        u_dep, [free_dep, thaw_dep, other_dep], tau_data, T, shape=SHAPE
+        u_dep, [free_dep, thaw_dep, other_dep], tau_dep, T, shape=SHAPE
     )
     thawed = FrozenPeak(0, 0, thaw_dep, f_thaw)
     f_other = fc_d + s * other_dep.offset_mhz
     other = FrozenPeak(1, 2, other_dep, f_other)
     other_prim = FrozenPeak(1, 2, other_in_prim, f_other)
 
-    def outcome(wid, center, u, z, peaks, fixed):
-        bg, dmb = subtract_frozen_background(u, z, fixed, tau_data, T, shape=SHAPE)
+    def outcome(wid, center, u, z, peaks, fixed, tau):
+        tau = tau if tau_start is None else tau_start
+        bg, dmb = subtract_frozen_background(u, z, fixed, tau, T, shape=SHAPE)
         out = fit_seeds_window_outcome(
             u,
             z,
@@ -340,7 +350,7 @@ def _thaw_pair(*, fit_tau, tau_data):
             dmb,
             fixed,
             peaks,
-            tau_data,
+            tau,
             T,
             {"fit_tau": False, "shape": SHAPE},
             None,
@@ -348,10 +358,11 @@ def _thaw_pair(*, fit_tau, tau_data):
             16,
             wid,
         )
+        out.fit.fit.tau_was_fit = bool(fit_tau)
         return out
 
-    primary = outcome(0, fc_p, u_prim, z_prim, [thaw_peak], [other_prim])
-    dependent = outcome(1, fc_d, u_dep, z_dep, [free_dep], [thawed, other])
+    primary = outcome(0, fc_p, u_prim, z_prim, [thaw_peak], [other_prim], tau_data)
+    dependent = outcome(1, fc_d, u_dep, z_dep, [free_dep], [thawed, other], tau_dep)
     return primary, dependent, thawed, other, shift
 
 
@@ -392,9 +403,9 @@ def test_thaw_cofit_other_skirt_follows_the_joint_tau_in_the_dependent_frame():
     # Catches: the same missing remap on the FrozenSkirt side (dep_other feeds
     # both the subtraction and joint_skirts): with tau free the skirt follows
     # the trial tau at the unremapped offset and the fit cannot reach chi2 ~ 0
-    # at the data's true tau even though the tau0 subtraction is right.
+    # at the data's true tau even though the starting subtraction is right.
     primary, dependent, thawed, other, shift = _thaw_pair(
-        fit_tau=True, tau_data=TAU_TRUE
+        fit_tau=True, tau_data=TAU_TRUE, tau_start=TAU0
     )
     joint, _ = local_thaw_cofit(
         dependent,
@@ -406,6 +417,99 @@ def test_thaw_cofit_other_skirt_follows_the_joint_tau_in_the_dependent_frame():
         fit_tau=True,
         shape=SHAPE,
     )
-    assert joint.tau_us == pytest.approx(TAU_TRUE, abs=1e-4)
+    assert [g.tau_us for g in joint.tau_groups] == pytest.approx(
+        [TAU_TRUE, TAU_TRUE], abs=1e-4
+    )
     # Noise-free data: only the tau penalty / bound policy can leave residue.
     assert joint.chi_squared < 1e-6
+
+
+def test_thaw_cofit_fits_each_window_s_own_tau():
+    """The two windows decay differently. Each keeps its own tau: the shared
+    line is drawn at the primary's on its bins and at the dependent's on the
+    dependent's, as each window's own model draws it, so both are recovered
+    exactly. (One tau for both cannot fit the pair, and the bright primary would
+    set the dependent's.)"""
+    tau_dep = 0.6 * TAU_TRUE
+    primary, dependent, thawed, other, _ = _thaw_pair(
+        fit_tau=True, tau_data=TAU_TRUE, tau_dep_data=tau_dep, tau_start=TAU0
+    )
+    joint, _ = local_thaw_cofit(
+        dependent,
+        primary,
+        thawed=thawed,
+        sideband=Sideband.LOWER,
+        tau0_us=TAU0,
+        acquisition_us=T,
+        fit_tau=True,
+        shape=SHAPE,
+    )
+    assert [g.fit for g in joint.tau_groups] == [True, True]
+    assert [g.tau_us for g in joint.tau_groups] == pytest.approx(
+        [TAU_TRUE, tau_dep], abs=1e-4
+    )
+    assert joint.tau_us == joint.tau_groups[0].tau_us
+    assert joint.chi_squared < 1e-6
+
+
+def test_thaw_cofit_holds_a_tau_its_window_held():
+    """A window whose own fit held its tau keeps it held in the co-fit."""
+    primary, dependent, thawed, other, _ = _thaw_pair(
+        fit_tau=True, tau_data=TAU_TRUE, tau_start=TAU0
+    )
+    dependent.fit.fit.tau_was_fit = False
+    joint, _ = local_thaw_cofit(
+        dependent,
+        primary,
+        thawed=thawed,
+        sideband=Sideband.LOWER,
+        tau0_us=TAU0,
+        acquisition_us=T,
+        fit_tau=True,
+        shape=SHAPE,
+    )
+    held = joint.tau_groups[1]
+    assert (held.fit, held.tau_us, held.tau_error) == (False, TAU0, None)
+    assert joint.tau_groups[0].fit
+    assert joint.tau_groups[0].tau_us == pytest.approx(TAU_TRUE, rel=1e-2)
+    assert joint.n_params == 3 * len(joint.peaks) + 1
+
+
+def test_thaw_cofit_bounds_each_line_to_its_own_window(monkeypatch):
+    """Each line is drawn on its own window's slice only, so it is bounded to
+    that window's grid, as the window's own fit bounds it: a primary line to
+    the primary's grid, a dependent line to the dependent's (in the primary's
+    frame). The joint span would let a line wander onto the other window's grid,
+    where nothing it is drawn on constrains it."""
+    from ftmwpipeline.fitting import plan_execution
+
+    primary, dependent, thawed, other, shift = _thaw_pair(
+        fit_tau=False, tau_data=TAU_TRUE
+    )
+    seen: dict = {}
+    real = plan_execution.fit_window
+
+    def spy(*args, **kwargs):
+        seen.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(plan_execution, "fit_window", spy)
+    joint, _ = local_thaw_cofit(
+        dependent,
+        primary,
+        thawed=thawed,
+        sideband=Sideband.LOWER,
+        tau0_us=TAU_TRUE,
+        acquisition_us=T,
+        fit_tau=False,
+        shape=SHAPE,
+    )
+    u_p = np.asarray(primary.offset_grid_mhz)
+    u_d = np.asarray(dependent.offset_grid_mhz) + shift
+    n_p = len(primary.fit.peaks)
+    assert "offset_bounds" not in seen
+    bounds = seen["peak_offset_bounds"]
+    assert bounds[:n_p] == [(u_p.min(), u_p.max())] * n_p
+    assert bounds[n_p:] == [(u_d.min(), u_d.max())] * len(dependent.fit.peaks)
+    for pk, (lo, hi) in zip(joint.peaks, bounds):
+        assert lo <= pk.offset_mhz <= hi

@@ -16,6 +16,326 @@ Accumulating toward ``1.0.0``. ``0.1.0b4`` is the last published release;
 everything below is reachable only from a source checkout. No further beta is
 planned — these entries fold into the ``1.0.0`` section when it is dated.
 
+**An accepted Stage 5 thaw keeps the thawed line; ``ANALYSIS_EPOCH`` moves
+5 → 6.** When a thaw was accepted, the dependent window took the thawed line as
+one of its own free peaks and dropped every line it had frozen from the line's
+primary window. The line lies outside the dependent's grid, so the next refit of
+the dependent alone (the leakage-wing baseline, a rescue round, the cleanup)
+pinned it to the window edge, where the cleanup pruned it as dust. The dependent
+then held neither the line nor its skirt, and Stage 6 never re-read that skirt
+when the primary was edited. A copy that survived was listed twice, once in
+each window. Now the co-fit refines the line in its primary, and the dependent
+re-freezes everything it reads from that primary from the refined fit, by the
+rule that froze it. The line is listed once, in its primary.
+
+The co-fit now refits the two windows' own models, coupled only through the
+lines they share, and its acceptance test reads the dependent model an accepted
+thaw installs. Before, it fitted one decay time for both windows, bounded only
+by the decay-factor cap around the starting value and with no prior, dropped the
+leakage-wing baseline each window's fit carried, and drew every line on both
+windows' bins. Now each window keeps its baseline, re-fit on its own bins, and
+its own decay time under the constraint of its own fit: started from that
+fit's value, free exactly where that fit freed it, and bounded and anchored by
+the band and Gaussian prior of its Stage 2b calibration within the run's
+``max_decay_factor``, the band widened to the fit's own value when a later
+refit left it outside. A line is drawn only where its window's model draws it --
+a dependent's lines on the dependent, a primary's line on the dependent only
+when the dependent freezes it -- and is bounded to its own window's grid. A
+shared line's amplitude, frequency and phase are tied, and it decays at each
+window's own decay time on that window's bins, as each window draws everything
+it carries. That is a convention, not a negligible approximation: for a
+Lorentzian line the finite-record truncation term scales a far skirt by a
+factor that depends on the decay time and not on the offset (a Gaussian line's
+term is similar), so the line drawn at the dependent's decay time rather than
+its primary's differs there by up to several percent, growing with the
+difference between the two decay times, a difference degenerate with its
+amplitude and phase. Holding each decay time to its own fit's constraint keeps
+the dependent's from absorbing it. A thaw whose
+co-fit primary would freeze a different set of lines into the dependent than
+the co-fit drew there is rejected, since the install would not be the model the
+co-fit refined.
+
+On the seven reference fixtures no thaw is accepted. 1019 accepted one under
+epoch 5, of window 53 from window 58; its co-fit had dropped 58's baseline, and
+58 now keeps its own fit: its line moves 525 Hz (about 300 standard errors) and
+its reduced chi-squared falls from 33747 to 25771. Windows 53 to 61 change, the
+others by under 0.25 Hz. The other six fixtures do not change. The decay-time
+constraint decides: with the dependent's decay time freed from its prior, the
+co-fit would accept a thaw of window 34 from window 39 on 655 and of window 46
+from window 43 on 1019, and the dependent alone, refit with its decay time freed
+the same way and nothing thawed, brings the edge to the same value (7.581 for
+both on 655; 7.863 against the co-fit's 7.862 on 1019).
+
+An accepted thaw in the parallel fit re-fits, in order, only the windows that
+read an outcome the thaw changed, following the thaws each re-fit itself
+accepts, where it used to re-fit every window sequentially. No reference
+fixture now accepts a thaw, so none exercises it. On 1019, where epoch 5
+accepted a thaw and so re-fit every window a second time, Stage 5 now accepts
+none and takes 12 s. A ``walk_fallback`` forced by a dependency cycle gives the
+cycle as its reason even when a thaw was also accepted.
+
+A file fitted under epoch 5 must be re-fit, or have the mismatch accepted,
+before Stage 6 will splice an edit into it. Stage 6 no longer holds a line near
+an accepted thaw's contributor out of a dependent's refit: the thawed line is
+the dependent's frozen contributor, never one of its fitted lines. In an epoch-5
+fit whose mismatch was accepted, a thawed line that sits among a dependent's
+fitted lines is now refit with them, on the dependent's data alone.
+
+**Every Stage 6 write is a replay of its decision log; one snap tolerance per
+file; decisions name peaks by uid; decision serials; ``CONTRACT_VERSION`` moves
+15 → 16.**
+
+* **The curated state is a function of the decision log.** Every Stage 6 write
+  -- ``review_edit``, ``review_accept``, ``review_create``, ``review_apply``
+  (with or without ``log_prefix``), ``review_undo``, ``review_run``, and a
+  ``ReviewSession`` apply that persists a staged preview -- now builds the new
+  decision log and review parameters and persists exactly what one replay of
+  that log from the automatic-fit baseline produces: every decision applied as
+  recorded and in log order, one combined cascade, every status computed
+  afresh, the final products built from the result. The window fits, the
+  created-window overlay, the statuses, the final products and the log are bit
+  for bit that replay's, so the curated state no longer depends on the order of
+  the calls that built the log, only on the log itself (the order of its
+  creates, each window's own decisions, and their grouping into actions).
+  Before, an edit was applied to the curated fit as it stood and an undo
+  replayed in one batch, and the two could disagree: on 655, a sequential
+  history and the one-batch replay of the same log differed in 32 windows, by
+  up to 53.6 sigma. ``review_preview`` returns exactly what the apply would
+  persist. Consequences a client sees:
+
+  - ``RefitWindowResult`` (``review_edit``, an accept with a candidate)
+    compares the window as displayed before the call with its curated fit
+    after it, post-cascade; it reported the edited window's own refit before
+    the cascade. The edit applies to the window's automatic fit and its own
+    earlier decisions, and the cascade then refreshes it: the displayed fit is
+    used only to resolve the request.
+  - In ``review_preview`` and ``review_apply`` results a window is
+    ``cascaded`` when no action named it but the write changed its fit; the
+    "before" side is the persisted fit.
+  - A new decision's evidence (``chi2r_*``, ``n_peaks_*``) is the snapshot of
+    the refit it ran in the write's replay, taken once.
+  - A write whose fit-changing decisions are the ones the log already held (a
+    bare accept, ``review_run``, an undo of bare accepts) refits nothing and
+    keeps the fits as they are; one that leaves no fit-changing decision
+    restores the automatic fit. The analysis-epoch gate (``epoch_mismatch``)
+    applies only to a write that refits, so on a file fitted under another
+    epoch ``review_run``, bare accepts and an undo of every fit-changing
+    decision stay available; the first write that refits is gated, and once
+    the mismatch is acknowledged it replays the whole log under the running
+    package.
+  - Every write, ``review_run`` and a bare accept included, takes the undo
+    baseline if none was taken yet. ``report diff`` reports "no curation" for a
+    log with no fit-changing decision.
+  - An undo (and an apply at a ``log_prefix``) is one unit like any other
+    write: a cancel or a failing events callback before its persist discards
+    it and leaves the file as it was. An undo used to restore the automatic fit
+    first and then complete regardless.
+  - A write refits only what its change can reach: each window's fit is keyed
+    by what it is computed from (its own decisions, its geometry, its seed,
+    and, when an edited window upstream reaches it through the cascade, its
+    sources' fits), and a window whose key is unchanged keeps its persisted
+    fit and its final-product fields, bit for bit what the replay would
+    produce; every status is still recomputed. An edit of a window that no
+    edit reaches and that has no dependents refits that window alone,
+    replaying its own decisions from the automatic fit (one refit per action
+    it holds, so the cost grows with that window's own decisions); an undo
+    that leaves a window with no decision restores its automatic fit by copy
+    and is not epoch-gated if it refits nothing else. Measured on 655 (511
+    windows; window 429 has 32 dependents) after an edit of 429, sessionless
+    (in a ``ReviewSession``): an edit of an isolated window 0.58 s (0.30 s),
+    against 1.96 s (1.69 s) when every refitting write replayed the whole log;
+    an edit of a dependent of 429 0.59 s (0.28 s); an undo of an isolated
+    window's edit 0.47 s (0.22 s); a bare accept 0.24 s (0.26 s). A write that
+    edits 429 itself still refits its 32 dependents: 1.9 s (1.6 s). After a
+    new ``ANALYSIS_EPOCH`` or a change to a soft Stage 5 input (the tau or
+    timebase calibration), the first write that refits recomputes every
+    window.
+
+  - A file that records decisions but holds no automatic-fit baseline (the
+    snapshot was removed from it) is ``file_corrupt`` on every write. An undo
+    and an apply at a ``log_prefix`` raised ``curation_conflict``
+    ``baseline_unavailable`` for it, which is no longer raised: a file
+    curated before every write took the baseline is ``predates_replay_engine``
+    (below).
+
+  The fits are that replay's in the analysis environment they were made in.
+  Not promised: identical bits across numpy, SciPy or BLAS versions (two
+  replays in one environment are identical; a change of the fitting model is
+  marked by ``ANALYSIS_EPOCH``); that kept fits are what the running package
+  would replay (after a new ``ANALYSIS_EPOCH``, or a change to a Stage 5 input
+  such as the tau calibration, a write that refits nothing keeps them, and the
+  first write that refits replays the whole log under the running package);
+  and the geometry of a created window through an undo of an earlier create
+  (reported in ``UndoResult.geometry_changed_window_ids``).
+* **No per-call snap tolerance.** ``review_edit``, ``review_create`` and
+  ``review_accept`` (API, ``Pipeline``, ``ReviewSession``) lose their
+  ``snap_tol_mhz`` parameter and the CLI verbs their ``--snap-tol-mhz`` flag.
+  The tolerance is the file's (``refit_snap_tol_mhz``) everywhere, as it
+  already was for every batch and replay. The decision log records no
+  tolerance, so an edit made with a widened one could read differently on
+  replay: a remove only the wider tolerance reached made every later undo on
+  the file fail, and a split or merge inferred only under it replayed as a
+  plain edit, seeded differently. To reach a farther peak, name it by
+  ``uid:N``.
+* **Decisions name peaks by uid.** A request is resolved, before anything is
+  fit, against the fits the user sees (each window's persisted fit), into rows
+  that name peaks by identity: ``DecisionLogEntry.targets`` (the ``peak_uid``
+  values in ``window_id`` the row removes: a remove's peak, a merge's parents,
+  a split's parent), ``seeds_mhz`` (raw-frame seed positions of the peaks it
+  births: an add's, a merge's, a split's products) and ``born_uids`` (the uid
+  each was stamped with from its seed, index-aligned). A replay (``review
+  undo``, an apply at a ``log_prefix``) applies the rows as recorded: it
+  removes each target by uid and births each seed under its recorded uid, and
+  never re-resolves a frequency or re-infers a merge or split. A replay
+  therefore acts on the peaks the user acted on, however far the cascade has
+  moved the lines in between: on 655, a remove typed against window 428 after
+  an edit of window 429 cascaded into it removed the peak displayed there, and
+  a replay by frequency removed its neighbour, which sat nearest that
+  frequency before the cascade. A birth whose uid the window already holds is
+  refused (``line_already_fitted``), never moved to a free uid. Within one
+  request (a curation file, an ``actions`` batch), an action after another on
+  the same window resolves against the other's newborns at their seed
+  positions, not at positions only the request's own refits produce. A peak a
+  kept decision births keeps its uid through an undo. ``review log --json``
+  gains ``targets``, ``seeds_mhz`` and ``born_uids``; all three are *not run*
+  on a row a pre-engine build recorded.
+* **A remove is displayed at the peak it removed.** A ``remove`` row's
+  ``frequency_mhz``, and a merge's ``merged_from``, are the fitted frequencies
+  (raw frame) of the peaks the request resolved to in the state it was made
+  against, not the frequencies sent. They are display only: a replay reads
+  ``targets``.
+* **Every refusal comes before the first fit.** Resolution and the symbolic
+  pass over a replayed log raise every refusal a write has before anything is
+  fit: an unknown or unmatched target, a seed off the window it names
+  (``target_outside_window``), a birth on a held uid, and a cascade that would
+  reach a window whose fitted geometry the file does not hold
+  (``fit_plan_unavailable``, which was raised after the edited window had been
+  refit). An apply at a ``log_prefix`` is the one exception: its own actions
+  resolve against the state the kept decisions describe, so their refusals
+  come after that state is computed in memory, with the file still untouched. Two new ``curation_conflict`` reasons: ``ambiguous_peak`` (``ids``
+  the uid) when a request or a replayed row names a uid its window holds more
+  than once (possible only for a thawed copy, which carries its primary's
+  uid), and ``orphans_peak`` (``ids`` the serials to undo with it) when an
+  undo would drop the birth of a peak a kept decision removes, merges or
+  splits, transitively.
+* **A replay rewrites no surviving row.** ``review_undo`` and an apply at a
+  ``log_prefix`` keep every surviving row exactly as it was recorded (its
+  ``frequency_mhz``, ``targets``, ``seeds_mhz``, ``born_uids``, ``evidence``
+  and ``action_index``); only ``order_index``, which is now a position and
+  nothing else, is recomputed. A surviving row the replay cannot apply is
+  refused, before anything is fit, with the new
+  ``curation_conflict`` reason ``replay_diverged``: a peak it removes is not in
+  its window at its place in the log (the message names the decision that
+  removed it, if one did), or a peak it births is already there (undoing the
+  remove between an add and a re-add at the same frequency, say).
+* **Decisions have a stable id, the serial.** ``DecisionLogEntry.serial`` is
+  minted when a row is recorded and is never reused or renumbered until
+  ``fit run`` starts a new curation lineage. ``review_undo`` (and ``review
+  undo --id``) takes serials, not positions; the surviving rows of an undo keep
+  theirs, so an id a client holds stays valid. ``FittedPeak.derivation`` /
+  ``FinalPeak.derivation`` and ``evidence["action_index"]`` now hold a serial
+  (they were ``order_index`` values, renumbered by every undo): undoing a
+  decision no longer changes the ``derivation`` tag of a peak another decision
+  made, or any surviving decision's id; and an undo of a bare accept refits
+  nothing, so it leaves every fit as it was.
+  ``review log --json`` gains ``serial`` beside ``order_index``; the text
+  listings, the undo output and the HTML report's Undo buttons show the serial
+  as the id. ``serial`` is *not run* on a row a pre-engine build recorded.
+* **A file Stage 6 cannot curate is refused, and flagged on read.** Every Stage
+  6 write (``review_edit``, ``review_accept``, ``review_create``,
+  ``review_apply``, ``review_undo``, ``review_run``, a ``ReviewSession``
+  persist) of a file whose Stage 5 fit has a peak without a ``peak_uid``, or
+  whose review or undo baseline a build without the replay engine wrote, raises
+  ``curation_conflict`` with the new reason ``predates_peak_identity`` or
+  ``predates_replay_engine`` (``ids`` ``[]``) before it resolves, fits or
+  writes anything; so does a ``review_preview``, which runs the apply short of
+  its persist. Nothing is converted. ``Stage6Review.refit_required``
+  carries the reason on ``get_review_status``, and ``review show --json`` and
+  ``review log --json`` carry it as ``refit_required``; ``review log`` and
+  ``review show`` print the re-run instruction on standard error; the HTML
+  report shows a banner and no Undo buttons. ``fit run`` is the fix: it
+  discards the file's curation, and the next write starts a new lineage with
+  serials from 0. A review a newer engine wrote raises ``file_incompatible``
+  on a write, and ``refit_required`` reads ``file_incompatible`` (upgrade
+  instead). The review gains ``engine_version`` and ``next_serial``
+  attributes.
+* **A bare ``review edit`` is refused.** An edit with neither ``add`` nor
+  ``remove`` (an identity refit, which re-converged a fit and recorded no
+  decision) is ``bad_setting`` with ``path`` ``"add"`` on the CLI, ``Pipeline``,
+  the functional API and ``ReviewSession``, whether or not ``window_id`` is
+  given, and writes nothing. ``window_id`` is no longer described as required
+  for one, and the CLI no longer prints "identity refit (no-op edit)".
+* **The cascade's dependencies come from the fitted plan.** An edit reaches
+  every window that reads the edited one in the fitted plan (a fixed
+  contributor that is not edge-free, among the windows Stage 5 fit; for a
+  created window, the contributors its creation attached), and each one's
+  frozen background is rebuilt from every window it reads. The dependencies
+  were read from the curated fits' frozen lines, so an edit that left a
+  window with no line above ``min_freeze_snr`` removed its skirt from its
+  dependents and the dependency with it: a later edit that restored a strong
+  line reached none of them. On 655, removing window 429's strong lines and
+  re-adding its strongest left 108 of the 140 dependencies in effect; now all
+  140 are. An undo or a ``log_prefix`` apply of a log without creates writes
+  the same values as before on every reference fixture. Values change where
+  an edit follows such a loss, and where an edit reaches a created window
+  through a contributor that had no line above ``min_freeze_snr`` when the
+  window was created. They also change, at rounding level, where a cascade
+  refits a created window whose contributors are not in ascending window id
+  (as when it reads an earlier created window): its frozen background is now
+  summed in contributor order, where it was summed in the ascending-id order
+  its creation froze it in.
+* **A created window no longer depends on where its create sits in the log.**
+  A create read the skirts it froze from the curated fits of the windows it
+  reads, as they stood at the create's place in the log, so the same decisions
+  in another order gave the created window other values: a create after an
+  edit of a window it reads, or after an add into an earlier created window it
+  reads, started from the edited fit, one before it from the unedited one (on
+  655, a window created at 30719.9996 MHz moved by 2.8e-5 MHz with the order of
+  an edit of window 429). Now a created window's skirts start from the
+  *automatic* fits of the windows it reads, in contributor order, and whenever
+  one of those windows has been edited, before the create or after it, the
+  created window is rebuilt from that window's current fit and refit, as the
+  cascade does for any dependent. Values change on files with creates.
+* **Window ids are never reused, and an undo reports the geometry it changes.**
+  A new window takes an id above every id a create has taken in the curation
+  lineage, so undoing the newest create no longer frees its id for the next
+  one; the review records the mark as ``window_id_high_water``
+  (``Stage6Review.window_id_high_water``, ``-1`` before the first create; the
+  attribute of ``/stage6_review``). A curation file's ``create`` row may still
+  pin an id, but only above every created window the log holds before it
+  (``curation_conflict``, ``replay_conflict``); the mark bounds only minted
+  ids, so a pin may redo an undone create under its own id. A surviving created window keeps its id through an
+  undo while its geometry is planned again from the surviving creates, which
+  can change it; the undo is not refused, and
+  ``UndoResult.geometry_changed_window_ids`` lists every window whose geometry
+  it changes, a widened window whose widening it drops included (``review
+  undo`` prints them, and ``--json`` carries ``n_geometry_changed``). The
+  surviving creates are planned before anything is fit, so a
+  ``replay_conflict`` leaves the file untouched. A replay of a log whose
+  created ids do not increase is refused as ``file_corrupt``.
+* **Every write leaves the statuses a fresh ``review run`` computes, under
+  recorded parameters.** A write recomputed the attention reasons only of the
+  windows a decision named, so a window a cascade refit kept the reasons of its
+  old fit (on 655, removing window 429's strongest line left window 428 listing
+  3 candidate locations where its new fit has 4), and a bare accept kept
+  whatever reasons the window had. Now every Stage 6 write recomputes every
+  window's status from the fits it leaves, with the provenance taken from the
+  decision log (a window's last row: ``accept`` gives ``reviewed``, any other
+  row ``user-edited``, none ``auto``); ``review run`` takes provenance from the
+  log too, where it kept the stored one. ``review run``'s ``bar``,
+  ``attention_candidate_evidence``, ``kappa`` and ``noise_floor`` are recorded
+  in the review (``Stage6Review.review_params``, a ``ReviewParams``; the
+  ``review_params`` attribute of ``/stage6_review``) and every later write
+  computes statuses under them, where an undo reset them to the defaults. On
+  the functional API, ``Pipeline`` and the CLI the four become optional
+  (``None``, the default, keeps the recorded value; a review that records none
+  uses the defaults), and ``review_run`` gains ``kappa`` and ``noise_floor``
+  there (``--kappa`` / ``--noise-floor``). A value given must be finite and
+  non-negative (``bad_setting``), since every later write reuses it. Every
+  ``review show --json`` payload carries the recorded parameters as
+  ``review_params`` (``null`` when none are recorded). Undoing a create that
+  took a flagged empty window over restores the window's status.
+
 **Decision-log action groups, empty-window ``converged``, canonical ``run_pipeline`` and
 provenance names; ``CONTRACT_VERSION`` moves 14 → 15.** Four changes from the
 documentation audit. ``action_index`` and ``failed_step`` are additions; the
@@ -30,9 +350,11 @@ on a window with no peak change.
   and ``review apply --log-prefix`` replay a group's surviving rows jointly as
   one action, one joint refit, so undoing part of a group replays the rest
   jointly, and a log prefix that cuts through a group replays the in-prefix rows
-  jointly. A file written before the key existed carries none; its groups are
+  jointly. A file written before the key existed carries none; its groups were
   inferred (consecutive ``add``/``remove`` rows on one window with identical
-  non-empty evidence and no ``created_window``). The undo dry-run plan lists one
+  non-empty evidence and no ``created_window``) until contract 16, which
+  refuses every write on a file a pre-engine build curated (above). The undo
+  dry-run plan lists one
   edit per group. This fixes a later undo failing after a multi-line edit: each
   row used to replay as its own refit, the separate refits drifted the fitted
   peaks, and a later remove no longer snapped to the peak it named. The key is

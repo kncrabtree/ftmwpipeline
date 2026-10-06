@@ -207,8 +207,10 @@ class TestSurvivesRefit:
         wid = _busiest_window(bare)
         freq = _plant_spread(planted, wid, self.SPREAD)
 
-        refit_window_impl(str(bare), wid)
-        refit_window_impl(str(planted), wid)
+        # The same edit on both: an add far from every fitted peak.
+        add = _clear_add_freq(bare, wid)
+        refit_window_impl(str(bare), wid, add=[add])
+        refit_window_impl(str(planted), wid, add=[add])
 
         pk_bare = _peak_nearest(_window_peaks(bare, wid), freq)
         pk_planted = _peak_nearest(_window_peaks(planted, wid), freq)
@@ -231,13 +233,14 @@ class TestSurvivesRefit:
         wid = _busiest_window(planted)
         freq = _plant_spread(planted, wid, self.SPREAD)
 
-        refit_window_impl(str(planted), wid)
+        add = _clear_add_freq(planted, wid)
+        refit_window_impl(str(planted), wid, add=[add])
 
-        others = [
-            p
-            for p in _window_peaks(planted, wid)
-            if abs(float(p.frequency_mhz) - freq) > 1e-6
-        ]
+        peaks = _window_peaks(planted, wid)
+        # The edit moves every line a little: name the planted one and the
+        # added one by proximity, not by exact frequency.
+        skip = {id(_peak_nearest(peaks, freq)), id(_peak_nearest(peaks, add))}
+        others = [p for p in peaks if id(p) not in skip]
         assert others, "this window needs a second peak for the test to mean anything"
         assert all(p.unresolved_spread_mhz is None for p in others)
 
@@ -252,13 +255,15 @@ class TestSurvivesRefit:
         wid = _busiest_window(planted)
         freq = _plant_spread(planted, wid, self.SPREAD)
 
-        refit_window_impl(str(planted), wid)
+        refit_window_impl(str(planted), wid, add=[_clear_add_freq(planted, wid)])
         once = _peak_nearest(_window_peaks(planted, wid), freq).frequency_error
-        refit_window_impl(str(planted), wid)
+        refit_window_impl(str(planted), wid, add=[_clear_add_freq(planted, wid)])
         twice = _peak_nearest(_window_peaks(planted, wid), freq).frequency_error
 
         assert once is not None and twice is not None
-        assert float(twice) == pytest.approx(float(once), rel=1e-6)
+        # The second edit adds a line, so the formal error itself moves a
+        # little; widening twice would add the spread again (x1.41 here).
+        assert float(twice) == pytest.approx(float(once), rel=0.05)
 
     def test_a_cascade_refit_keeps_it(
         self,
@@ -280,8 +285,8 @@ class TestSurvivesRefit:
 
         orig_succs = s6._cascade_succs
 
-        def fake_succs(window_fits, fit_window_map):
-            d = orig_succs(window_fits, fit_window_map)
+        def fake_succs(sources):
+            d = orig_succs(sources)
             d.setdefault(primary, set()).add(dependent)
             return d
 

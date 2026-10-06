@@ -17,26 +17,37 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
+from typing import Union
 
 import h5py
+import numpy as np
 import pytest
 
 import ftmwpipeline.api as ftmw
+from ftmwpipeline._internal.atomic import atomic_write, h5open
 from ftmwpipeline._internal.stage5_impl import (
     Stage5FitContext,
     build_stage5_fit_context,
 )
 from ftmwpipeline._internal.stage6_impl import (
     RefitWindowResult,
+    _build_batch_ctx,
     _parse_complex_amplitude,
     _reconstruct_frozen_peaks,
+    refit_snap_tol_mhz_impl,
     refit_window_impl,
 )
 from ftmwpipeline.core.data_structures import SpectrumFit
-from ftmwpipeline.fitting.peak_model import ModelPeak
-from ftmwpipeline.io.fitting_serialization import load_spectrum_fit_from_hdf5
+from ftmwpipeline.io.fitting_serialization import (
+    load_spectrum_fit_from_hdf5,
+    update_spectrum_fit_windows_in_hdf5,
+)
 
-pytestmark = [pytest.mark.integration]
+pytestmark = [
+    pytest.mark.integration,
+    # Design G1: every write here persists the reference replay of its log.
+    pytest.mark.usefixtures("every_write_is_reference"),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -62,6 +73,44 @@ def _load_spectrum_fit(path: Path) -> SpectrumFit:
         return load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
 
 
+def _identity_refit_action(ctx, window_id, snap):
+    from ftmwpipeline._internal import stage6_impl as s6
+
+    wf = s6._batch_lookup_wf(ctx, window_id)
+    n0, c0 = len(wf.fitted_peaks), float(wf.reduced_chi2)
+    new = s6._batch_apply_edit_core(ctx, window_id, snap_tol_mhz=snap)
+    return s6._make_refit_result(
+        ctx,
+        window_id=window_id,
+        n_peaks_before=n0,
+        n_peaks_after=len(new.fitted_peaks),
+        chi2r_before=c0,
+        chi2r_after=float(new.reduced_chi2),
+        fitted_peaks=list(new.fitted_peaks),
+        converged=s6._converged_or_absent(new),
+    )
+
+
+def _identity_refit(path: Union[str, Path], window_id: int) -> RefitWindowResult:
+    """Refit one window with no edit and persist it, recording no decision.
+
+    This is the identity refit the cascade runs on a window it reaches -- an
+    engine mechanic, not a user verb (a bare ``review edit`` is refused, and
+    every state the engine persists is a replay of its log). It is driven
+    here on the window's displayed fit and written straight to the fit table,
+    so the fidelity of ``refit_window_core`` stays pinned end to end.
+    """
+    p = str(path)
+    snap = refit_snap_tol_mhz_impl(p)
+    ctx = _build_batch_ctx(p, snap_tol_mhz=snap)
+    result = _identity_refit_action(ctx, window_id, snap)
+    with atomic_write(p), h5open(p, "a") as h5f:
+        update_spectrum_fit_windows_in_hdf5(
+            ctx.changeset.spectrum_fit, h5f["stage5_fitting"], [window_id]
+        )
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Convergence visibility on the single-window verb
 # ---------------------------------------------------------------------------
@@ -78,7 +127,7 @@ class TestRefitReportsConvergence:
 
     def test_identity_refit_converges(self, writable_stage5_file):
         wid = _load_spectrum_fit(writable_stage5_file).window_fits[0].window_id
-        result = refit_window_impl(str(writable_stage5_file), wid)
+        result = _identity_refit(str(writable_stage5_file), wid)
         assert result.converged is True
 
     def test_failed_fit_is_reported(self, writable_stage5_file, monkeypatch):
@@ -94,7 +143,7 @@ class TestRefitReportsConvergence:
         monkeypatch.setattr(s6, "refit_window_core", failing_core)
 
         wid = _load_spectrum_fit(writable_stage5_file).window_fits[0].window_id
-        result = refit_window_impl(str(writable_stage5_file), wid)
+        result = _identity_refit(str(writable_stage5_file), wid)
         assert result.converged is False
 
 
@@ -315,7 +364,7 @@ class TestIdentityRefitFidelity:
             path = tmp_path / f"w{wid}.ftmw"
             shutil.copy(stage5_small_file, path)
 
-            result = refit_window_impl(str(path), wid)
+            result = _identity_refit(str(path), wid)
             assert isinstance(result, RefitWindowResult)
             assert result.window_id == wid
 
@@ -367,7 +416,7 @@ class TestIdentityRefitFidelity:
         peaks_before = sorted(wf.fitted_peaks, key=lambda p: p.frequency_mhz)
         chi2r_before = float(wf.reduced_chi2)
 
-        result = refit_window_impl(str(path), wid)
+        result = _identity_refit(str(path), wid)
 
         assert result.n_peaks_before == len(peaks_before)
         assert result.n_peaks_after == len(peaks_before)
@@ -408,7 +457,7 @@ class TestIdentityRefitPerWindow:
             pytest.skip("No windows with peaks")
         wf = self.windows_with_peaks[0]
         n_before = len(wf.fitted_peaks)
-        result = refit_window_impl(str(self.path), wf.window_id)
+        result = _identity_refit(str(self.path), wf.window_id)
         assert result.n_peaks_after == n_before
 
     def test_first_window_frequencies_within_tolerance(self):
@@ -416,7 +465,7 @@ class TestIdentityRefitPerWindow:
             pytest.skip("No windows with peaks")
         wf = self.windows_with_peaks[0]
         peaks_before = sorted(wf.fitted_peaks, key=lambda p: p.frequency_mhz)
-        refit_window_impl(str(self.path), wf.window_id)
+        _identity_refit(str(self.path), wf.window_id)
         sf_after = _load_spectrum_fit(self.path)
         wf_after = next(w for w in sf_after.window_fits if w.window_id == wf.window_id)
         peaks_after = sorted(wf_after.fitted_peaks, key=lambda p: p.frequency_mhz)
@@ -433,7 +482,7 @@ class TestIdentityRefitPerWindow:
             pytest.skip("No windows with peaks")
         wf = self.windows_with_peaks[0]
         peaks_before = sorted(wf.fitted_peaks, key=lambda p: p.frequency_mhz)
-        refit_window_impl(str(self.path), wf.window_id)
+        _identity_refit(str(self.path), wf.window_id)
         sf_after = _load_spectrum_fit(self.path)
         wf_after = next(w for w in sf_after.window_fits if w.window_id == wf.window_id)
         peaks_after = sorted(wf_after.fitted_peaks, key=lambda p: p.frequency_mhz)
@@ -451,7 +500,7 @@ class TestIdentityRefitPerWindow:
         for wf in self.windows_with_peaks:
             n_before = len(wf.fitted_peaks)
             # Each refit mutates the file; reload for the next window.
-            result = refit_window_impl(str(self.path), wf.window_id)
+            result = _identity_refit(str(self.path), wf.window_id)
             assert (
                 result.n_peaks_before == n_before
             ), f"window {wf.window_id}: n_peaks_before mismatch"
@@ -464,7 +513,7 @@ class TestIdentityRefitPerWindow:
         if not self.windows_with_peaks:
             pytest.skip("No windows with peaks")
         wf = self.windows_with_peaks[0]
-        result = refit_window_impl(str(self.path), wf.window_id)
+        result = _identity_refit(str(self.path), wf.window_id)
         assert abs(result.chi2r_before - float(wf.reduced_chi2)) < 1e-6
 
     def test_other_windows_unchanged(self):
@@ -476,7 +525,7 @@ class TestIdentityRefitPerWindow:
         if not other_wfs:
             pytest.skip("Only one window with peaks; cannot test isolation")
 
-        refit_window_impl(str(self.path), wf0.window_id)
+        _identity_refit(str(self.path), wf0.window_id)
         sf_after = _load_spectrum_fit(self.path)
 
         for other_wf in other_wfs:
@@ -624,47 +673,14 @@ class TestAddPeak:
         user_peaks = [p for p in wf_after.fitted_peaks if p.origin == "user"]
         assert len(user_peaks) >= 1, "user origin not persisted after HDF5 round-trip"
 
-    def test_add_with_explicit_seed(self):
-        """add_seeds provides the starting ModelPeak for the added frequency.
 
-        The key contract: when add_seeds is provided, the engine must accept
-        and use it as the starting point.  Whether the peak survives the NLS
-        and rescue depends on the data; we assert only that the function
-        completes without error and returns a valid result.  The user-origin
-        stamping is tested in test_add_peak_origin_user using the auto-seed
-        path (which derives a realistic amplitude from the data).
-        """
-        if self.wf is None:
-            pytest.skip("No window found")
-        center = self._window_center_mhz(self.wf)
-        if center is None:
-            pytest.skip("Window has no freq_range")
+def test_an_edit_takes_no_seed_the_log_does_not_record():
+    """A Stage 6 add's starting point comes from the replay, never from the
+    caller: an amplitude or phase seed the decision log does not record would
+    make a replay of the log differ from the write (design §3.4)."""
+    import inspect
 
-        # Use offset=0 (window center) as the explicit seed.
-        explicit_seed = ModelPeak(amplitude=1.0, offset_mhz=0.0, phase=0.0)
-        result = refit_window_impl(
-            str(self.path),
-            self.wf.window_id,
-            add=[center],
-            add_seeds=[explicit_seed],
-        )
-        # The function must complete without error and return a valid result.
-        assert isinstance(result, RefitWindowResult)
-        assert result.window_id == self.wf.window_id
-
-    def test_add_seeds_wrong_length_raises(self):
-        if self.wf is None:
-            pytest.skip("No window found")
-        center = self._window_center_mhz(self.wf)
-        if center is None:
-            pytest.skip("Window has no freq_range")
-        with pytest.raises(ValueError, match="len\\(add_seeds\\)"):
-            refit_window_impl(
-                str(self.path),
-                self.wf.window_id,
-                add=[center],
-                add_seeds=[],
-            )
+    assert "add_seeds" not in inspect.signature(refit_window_impl).parameters
 
 
 # ---------------------------------------------------------------------------
@@ -864,26 +880,25 @@ class TestRefitWindowErrors:
         fp = tmp_path / "no_stage5.ftmw"
         ftmw.import_data(fp, source=exp_2638_data_path)
         with pytest.raises(ValueError, match="No Stage 5 fit"):
-            refit_window_impl(str(fp), 0)
+            refit_window_impl(str(fp), 0, remove=[30000.0])
 
     def test_invalid_window_raises(self, stage5_small_source, tmp_path):
         dst = tmp_path / "copy.ftmw"
         shutil.copy(stage5_small_source, dst)
         with pytest.raises(KeyError):
-            refit_window_impl(str(dst), 99999)
+            refit_window_impl(str(dst), 99999, remove=[30000.0])
 
 
 # ---------------------------------------------------------------------------
-# Thawed-line freezing: accepted thaw events must be frozen during refit
+# An accepted Stage 5 thaw holds none of the dependent's own peaks out
 # ---------------------------------------------------------------------------
 
 
 def _inject_synthetic_thaw(path: Path, window_id: int, thawed_freq_mhz: float) -> None:
-    """Inject a synthetic accepted ThawInfo into the window's HDF5 attrs.
+    """Inject a synthetic accepted thaw event into the window's row.
 
-    Pretends that ``thawed_freq_mhz`` is a peak that was thawed from a
-    (fictitious) primary window.  The refit engine must freeze this peak
-    and re-insert it verbatim rather than re-fitting it freely.
+    Names ``thawed_freq_mhz`` as the contributor of a thaw from a (fictitious)
+    primary window.
     """
     import json
 
@@ -907,185 +922,17 @@ def _inject_synthetic_thaw(path: Path, window_id: int, thawed_freq_mhz: float) -
         windows["thaw_events"][row] = json.dumps([thaw_record])
 
 
-_CROSS_FIXTURE_2638 = Path("scratch/issue3-cross-fixture/2638/exp_2638.ftmw")
-
-
-@pytest.fixture(scope="module")
-def stage5_multi_peak_file(tmp_path_factory):
-    """Full 2638 Stage-5 fit for tests requiring multi-peak windows.
-
-    Reuses the pre-built cross-fixture file when present (fastest path).
-    Falls back to skipping if the file is absent (CI without the scratch
-    artefacts).
-    """
-    src = _CROSS_FIXTURE_2638
-    if not src.exists():
-        pytest.skip(
-            "Cross-fixture 2638 file not found at scratch/issue3-cross-fixture/2638/."
-            " Build it via 'ftmwpipeline fit run' on that experiment first."
-        )
-    # Copy to a tmp location so the tests can write synthetic thaw events
-    # without dirtying the shared file.
-    tmp = tmp_path_factory.mktemp("stage5_multi_peak")
-    fp = tmp / "2638_multi_peak.ftmw"
-    shutil.copy(src, fp)
-    return fp
-
-
-class TestThawedLineFreeze:
-    """Verify that an accepted thaw event causes the thawed peak to be frozen
-    during the refit (reproduced verbatim) while the window's own peaks
-    still re-converge normally.
-
-    Uses a synthetic ThawInfo injected into the 2638 multi-peak fixture to
-    avoid needing a real fixture with thaw events (which are rare in practice).
+class TestAcceptedThawHoldsNothingOut:
+    """Since epoch 6 an accepted thaw leaves the thawed line frozen in the
+    dependent (a ``fixed_parameters`` entry naming its primary), never one of
+    the dependent's fitted peaks. So a refit of the dependent holds none of its
+    own peaks out on the thaw's account, however close one sits to the thawed
+    contributor's frequency: each is re-fit freely and nothing new is frozen.
     """
 
-    @pytest.fixture(autouse=True)
-    def _setup(self, stage5_multi_peak_file, tmp_path):
-        self.path = tmp_path / "thaw_test.ftmw"
-        shutil.copy(stage5_multi_peak_file, self.path)
-        self.sf_orig = _load_spectrum_fit(self.path)
-        # Pick a window with at least 2 peaks so one can be synthetic-thawed
-        # while at least one remains as a free peak.
-        self.wf = next(
-            (w for w in self.sf_orig.window_fits if len(w.fitted_peaks) >= 2),
-            None,
-        )
-
-    def test_thawed_peak_exact_after_refit(self):
-        """No-edit refit with a synthetic thaw must reproduce the thawed peak
-        EXACTLY (zero frequency and amplitude deviation) while the remaining
-        free peak(s) re-converge to ~1e-5 MHz / ~1e-3 amplitude tolerance."""
-        if self.wf is None:
-            pytest.skip("No window with >=2 peaks in the small fixture")
-
-        wid = self.wf.window_id
-        peaks_sorted = sorted(self.wf.fitted_peaks, key=lambda p: p.frequency_mhz)
-
-        # Designate the first (lowest-frequency) peak as "thawed".
-        thawed_fp = peaks_sorted[0]
-        thawed_freq = float(thawed_fp.frequency_mhz)
-
-        # Inject the synthetic thaw event.
-        _inject_synthetic_thaw(self.path, wid, thawed_freq)
-
-        # No-edit refit.
-        result = refit_window_impl(str(self.path), wid)
-        assert isinstance(result, RefitWindowResult)
-
-        # Load the updated fit.
-        sf_after = _load_spectrum_fit(self.path)
-        wf_after = next(w for w in sf_after.window_fits if w.window_id == wid)
-
-        # Peak count must be preserved.
-        assert len(wf_after.fitted_peaks) == len(self.wf.fitted_peaks), (
-            f"window {wid}: peak count changed "
-            f"{len(self.wf.fitted_peaks)} → {len(wf_after.fitted_peaks)}"
-        )
-        assert result.n_peaks_before == len(self.wf.fitted_peaks)
-        assert result.n_peaks_after == len(self.wf.fitted_peaks)
-
-        peaks_after = sorted(wf_after.fitted_peaks, key=lambda p: p.frequency_mhz)
-
-        # Thawed peak: EXACT match (re-inserted verbatim).
-        thawed_after = next(
-            (
-                p
-                for p in peaks_after
-                if abs(float(p.frequency_mhz) - thawed_freq) < 1e-6
-            ),
-            None,
-        )
-        assert thawed_after is not None, (
-            f"Thawed peak at {thawed_freq:.4f} MHz missing after refit; "
-            f"peaks after: {[float(p.frequency_mhz) for p in peaks_after]}"
-        )
-        assert float(thawed_after.frequency_mhz) == pytest.approx(
-            thawed_freq, abs=0.0
-        ), (
-            f"Thawed peak freq drifted: "
-            f"before={thawed_freq:.6f} MHz, after={float(thawed_after.frequency_mhz):.6f} MHz"
-        )
-        assert float(thawed_after.amplitude) == pytest.approx(
-            float(thawed_fp.amplitude), rel=0.0, abs=0.0
-        ), (
-            f"Thawed peak amplitude changed: "
-            f"before={float(thawed_fp.amplitude):.4g}, after={float(thawed_after.amplitude):.4g}"
-        )
-
-        # Non-thawed peaks: should re-converge within a loose tolerance.
-        # The thawed peak was frozen into the background (whereas in the real
-        # Stage 5 result it was a free peak); this slightly changes the effective
-        # noise in the window and allows the NLS to move non-thawed peaks by
-        # a few hundred kHz.  The important contract is that (a) the thawed peak
-        # is EXACT, and (b) non-thawed peaks stay in the same basin (< 1 MHz).
-        non_thawed_before = [
-            p for p in peaks_sorted if abs(float(p.frequency_mhz) - thawed_freq) > 1e-6
-        ]
-        non_thawed_after = [
-            p for p in peaks_after if abs(float(p.frequency_mhz) - thawed_freq) > 1e-6
-        ]
-        assert len(non_thawed_before) == len(
-            non_thawed_after
-        ), "Non-thawed peak count changed after refit"
-        for pb, pa in zip(non_thawed_before, non_thawed_after):
-            delta_f = abs(float(pb.frequency_mhz) - float(pa.frequency_mhz))
-            assert delta_f < 1.0, (
-                f"Non-thawed peak at {float(pb.frequency_mhz):.4f} MHz jumped "
-                f"{delta_f:.4f} MHz — likely escaped the NLS basin"
-            )
-
-    def test_remove_thawed_peak_drops_it(self):
-        """Removing a synthetic-thawed peak must drop it entirely (not frozen).
-
-        After removal the thawed peak should not appear in the output, and
-        the remaining free peaks should re-converge normally.
-        """
-        if self.wf is None:
-            pytest.skip("No window with >=2 peaks in the small fixture")
-
-        wid = self.wf.window_id
-        peaks_sorted = sorted(self.wf.fitted_peaks, key=lambda p: p.frequency_mhz)
-        thawed_freq = float(peaks_sorted[0].frequency_mhz)
-        n_before = len(peaks_sorted)
-
-        _inject_synthetic_thaw(self.path, wid, thawed_freq)
-
-        # Remove the thawed peak.
-        result = refit_window_impl(str(self.path), wid, remove=[thawed_freq])
-
-        # Should have one fewer peak.
-        assert result.n_peaks_after <= n_before - 1, (
-            f"Expected peak count to drop after removing the thawed peak; "
-            f"before={n_before}, after={result.n_peaks_after}"
-        )
-
-        # The thawed peak must not appear in the output.
-        remaining_freqs = [float(p.frequency_mhz) for p in result.fitted_peaks]
-        assert not any(abs(f - thawed_freq) < 1e-4 for f in remaining_freqs), (
-            f"Removed thawed peak at {thawed_freq:.4f} MHz still present; "
-            f"remaining: {remaining_freqs}"
-        )
-
-
-# ---------------------------------------------------------------------------
-# P4: a thawed peak's identifier survives the fixed_parameters round trip
-# ---------------------------------------------------------------------------
-
-
-class TestThawedPeakUidRoundTrip:
-    """A peak held out of the free NLS by an accepted thaw event becomes a
-    ``FrozenPeak`` for the duration of that refit (``stage6_impl.py``'s
-    ``_is_thawed`` branch) and is persisted as a ``fixed_parameters`` entry.
-    Its ``peak_uid`` must survive that whole trip: seed FittedPeak -> held-out
-    ModelPeak -> persisted ``frozen_peak_*`` JSON entry ->
-    ``_reconstruct_frozen_peaks``. Uses ``stage5_small_source`` rather than
-    the (absent-in-this-checkout) cross-fixture ``TestThawedLineFreeze``
-    relies on, so this does not depend on scratch artifacts.
-    """
-
-    def test_thawed_peak_uid_survives_persistence(self, stage5_small_source, tmp_path):
+    def test_a_peak_at_the_thawed_frequency_is_refit_freely(
+        self, stage5_small_source, tmp_path
+    ):
         sf_orig = _load_spectrum_fit(stage5_small_source)
         wf = next(
             (w for w in sf_orig.window_fits if len(w.fitted_peaks) >= 2),
@@ -1093,62 +940,32 @@ class TestThawedPeakUidRoundTrip:
         )
         if wf is None:
             pytest.skip("No window with >=2 peaks in the small fixture")
+        thawed_freq = float(min(p.frequency_mhz for p in wf.fitted_peaks))
 
-        peaks_sorted = sorted(wf.fitted_peaks, key=lambda p: p.frequency_mhz)
-        thawed_fp = peaks_sorted[0]
-        thawed_freq = float(thawed_fp.frequency_mhz)
-        assert thawed_fp.peak_uid is not None, (
-            "the automatic fit stamps every peak; this test needs a real "
-            "identifier to prove it survives, not an absent one"
-        )
+        plain = tmp_path / "plain.ftmw"
+        thawed = tmp_path / "thawed.ftmw"
+        shutil.copy(stage5_small_source, plain)
+        shutil.copy(stage5_small_source, thawed)
+        _inject_synthetic_thaw(thawed, wf.window_id, thawed_freq)
+        _identity_refit(str(plain), wf.window_id)
+        _identity_refit(str(thawed), wf.window_id)
 
-        path = tmp_path / "thaw_uid.ftmw"
-        shutil.copy(stage5_small_source, path)
-        _inject_synthetic_thaw(path, wf.window_id, thawed_freq)
-        refit_window_impl(str(path), wf.window_id)
+        def after(path: Path):
+            sf = _load_spectrum_fit(path)
+            return next(w for w in sf.window_fits if w.window_id == wf.window_id)
 
-        sf_after = _load_spectrum_fit(path)
-        wf_after = next(w for w in sf_after.window_fits if w.window_id == wf.window_id)
-
-        frozen_entries = {
-            k: v
-            for k, v in wf_after.fixed_parameters.items()
-            if k.startswith("frozen_peak_")
-        }
-        matching = [
-            v
-            for v in frozen_entries.values()
-            if abs(float(v["frequency_mhz"]) - thawed_freq) < 1e-4
+        ref, got = after(plain), after(thawed)
+        # The thaw event changes nothing: the same free fit, the same frozen
+        # entries, a covariance over every fitted peak.
+        assert [p.frequency_mhz for p in got.fitted_peaks] == [
+            p.frequency_mhz for p in ref.fitted_peaks
         ]
-        assert len(matching) == 1, (
-            f"expected exactly one persisted frozen entry for the thawed peak "
-            f"at {thawed_freq:.4f} MHz; got {len(matching)}"
-        )
-        assert matching[0]["peak_uid"] == thawed_fp.peak_uid, (
-            "the thawed peak's identifier did not survive the "
-            "fixed_parameters persistence boundary"
-        )
-
-        # And the reconstruction helper reads it back the same way.
-        from ftmwpipeline.core.data_structures import Sideband as _Sideband
-
-        center_mhz = None
-        if wf_after.window is not None and wf_after.window.freq_range is not None:
-            lo, hi = wf_after.window.freq_range
-            center_mhz = (lo + hi) / 2.0
-        assert center_mhz is not None, "window must have a freq_range to reconstruct"
-        # Sideband only affects the reconstructed offset_mhz, not peak_uid or
-        # frequency_mhz (both stored/matched verbatim from the persisted
-        # entry), so any valid value is fine for what this assertion checks.
-        sideband = _Sideband.LOWER
-        frozen = _reconstruct_frozen_peaks(
-            wf_after.fixed_parameters, center_mhz, sideband
-        )
-        reconstructed = [
-            fp for fp in frozen if abs(fp.frequency_mhz - thawed_freq) < 1e-4
+        assert [p.peak_uid for p in got.fitted_peaks] == [
+            p.peak_uid for p in ref.fitted_peaks
         ]
-        assert len(reconstructed) == 1
-        assert reconstructed[0].model_peak.peak_uid == thawed_fp.peak_uid
+        assert got.fixed_parameters == ref.fixed_parameters
+        assert got.covariance is not None
+        np.testing.assert_array_equal(got.covariance, ref.covariance)
 
 
 # ---------------------------------------------------------------------------
@@ -1185,7 +1002,7 @@ class TestPeakUidSurvivesRefit:
             # Fresh copy per window so one refit cannot bleed into the next.
             path = tmp_path / f"w{wid}.ftmw"
             shutil.copy(stage5_small_source, path)
-            refit_window_impl(str(path), wid)
+            _identity_refit(str(path), wid)
             sf_after = _load_spectrum_fit(path)
             wf_after = next(w for w in sf_after.window_fits if w.window_id == wid)
 

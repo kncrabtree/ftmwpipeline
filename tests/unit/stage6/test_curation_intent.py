@@ -7,7 +7,7 @@ two -- the identity model's blend rule then retires the parent's ``peak_uid``
 (K goes from 1 to 2, so every member is a new entity). Removing the
 components of one blend while adding their replacement reads as a merge.
 
-See ``_infer_curation_intent`` / ``_batch_apply_edit_action`` in
+See ``_infer_curation_intent`` / ``_resolve_edit_steps`` in
 ``stage6_impl.py`` for the design; both ``refit_window_impl`` (the ``review
 edit`` verb) and ``apply_curation_impl`` (a curation file's ``edit`` row)
 reach the same inference through that one function.
@@ -35,7 +35,11 @@ from ftmwpipeline._internal.stage6_impl import (
 from ftmwpipeline.core.data_structures import FittedPeak, FittingResult
 from ftmwpipeline.io.fitting_serialization import load_spectrum_fit_from_hdf5
 
-pytestmark = [pytest.mark.integration]
+pytestmark = [
+    pytest.mark.integration,
+    # Design G1: every write here persists the reference replay of its log.
+    pytest.mark.usefixtures("every_write_is_reference"),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -312,26 +316,39 @@ def test_split_falls_back_to_symmetric_straddle_near_parents_own_seed(
 
 def test_remove_pair_plus_between_add_is_an_inferred_merge(stage5_multi_file):
     path = stage5_multi_file
-    wf = _window_with_n_peaks(path, 2)
-    wid = int(wf.window_id)
-    n_before = len(wf.fitted_peaks)
-
-    fa, fb = sorted(float(p.frequency_mhz) for p in wf.fitted_peaks)[:2]
-    uid_a = next(p.peak_uid for p in wf.fitted_peaks if float(p.frequency_mhz) == fa)
-    uid_b = next(p.peak_uid for p in wf.fitted_peaks if float(p.frequency_mhz) == fb)
-    span = fb - fa
-    assert span > 0
+    tol = refit_snap_tol_mhz_impl(str(path))
 
     # Real Stage 5 peaks in one window are usually far apart relative to the
-    # (tiny) snap tolerance -- widen it for this action only, so the pair
-    # reads as "the components of one feature" without depending on the
-    # fixture happening to contain a genuine unresolved blend.
-    test_tol = span * 1.05 + 1e-9
+    # snap tolerance, and no call can widen it (it is a property of the file),
+    # so build a genuine blend first: an add half a tolerance beside an
+    # isolated peak is an inferred split, whose two products sit within it.
+    sf = _load_spectrum_fit(path)
+    site = None
+    for wf0 in sf.window_fits:
+        freqs = sorted(float(p.frequency_mhz) for p in wf0.fitted_peaks)
+        for f in freqs:
+            if all(abs(f - g) > 3 * tol for g in freqs if g != f):
+                site = (int(wf0.window_id), f)
+                break
+        if site is not None:
+            break
+    if site is None:
+        pytest.skip("Need a peak isolated by three snap tolerances")
+    wid, parent = site
+    refit_window_impl(str(path), wid, add=[parent + 0.5 * tol])
+
+    wf = _fitted_wf(path, wid)
+    blend = sorted(
+        (p for p in wf.fitted_peaks if abs(float(p.frequency_mhz) - parent) < tol),
+        key=lambda p: float(p.frequency_mhz),
+    )
+    assert len(blend) == 2, [float(p.frequency_mhz) for p in blend]
+    fa, fb = float(blend[0].frequency_mhz), float(blend[1].frequency_mhz)
+    uid_a, uid_b = blend[0].peak_uid, blend[1].peak_uid
+    n_before = len(wf.fitted_peaks)
     between = 0.5 * (fa + fb)
 
-    refit_window_impl(
-        str(path), wid, add=[between], remove=[fa, fb], snap_tol_mhz=test_tol
-    )
+    refit_window_impl(str(path), wid, add=[between], remove=[fa, fb])
 
     wf_after = _fitted_wf(path, wid)
     assert len(wf_after.fitted_peaks) == n_before - 1
@@ -346,7 +363,7 @@ def test_remove_pair_plus_between_add_is_an_inferred_merge(stage5_multi_file):
     ev = merge_entries[0].evidence
     assert ev.get("inferred") is True
     assert ev["requested_freq_mhz"] == pytest.approx(between)
-    assert sorted(ev["merged_from"]) == sorted([fa, fb])
+    assert sorted(ev["merged_from"]) == [fa, fb]
 
 
 # ---------------------------------------------------------------------------

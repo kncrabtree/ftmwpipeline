@@ -44,6 +44,7 @@ from ftmwpipeline.core.data_structures import (
     SpectrumFit,
     Stage6Review,
 )
+from ftmwpipeline.file_manager import BadSettingError
 from ftmwpipeline.io.fitting_serialization import load_spectrum_fit_from_hdf5
 from ftmwpipeline.io.stage6_review_serialization import (
     load_stage6_review_from_file,
@@ -52,7 +53,11 @@ from ftmwpipeline.io.stage6_review_serialization import (
 )
 from ftmwpipeline.pipeline import Pipeline
 
-pytestmark = [pytest.mark.integration]
+pytestmark = [
+    pytest.mark.integration,
+    # Design G1: every write here persists the reference replay of its log.
+    pytest.mark.usefixtures("every_write_is_reference"),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -155,18 +160,19 @@ class TestEditRecordsAddDecision:
         assert status is not None
         assert status.provenance == "user-edited"
 
-    def test_edit_no_add_no_remove_no_log_entry(self):
-        """Identity refit (no add, no remove) must not produce a log entry."""
+    def test_edit_no_add_no_remove_is_refused(self):
+        """A bare edit (no add, no remove) would change the fit without a
+        log entry, so it is refused and records nothing."""
         if self.wf is None:
             pytest.skip("No window with peaks")
         wid = self.wf.window_id
 
-        refit_window_impl(self.path, wid)
+        with pytest.raises(BadSettingError):
+            refit_window_impl(self.path, wid)
         review = _load_review(self.path)
-        assert len(review.decision_log) == 0, (
-            f"Identity refit should produce zero log entries; "
-            f"got {review.decision_log}"
-        )
+        assert (
+            len(review.decision_log) == 0
+        ), f"A refused bare edit should record nothing; got {review.decision_log}"
 
 
 # ---------------------------------------------------------------------------

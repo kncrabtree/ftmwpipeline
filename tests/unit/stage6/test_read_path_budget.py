@@ -47,13 +47,18 @@ from ftmwpipeline._internal.stage6_impl import (
 )
 from ftmwpipeline.io.fitting_serialization import (
     load_spectrum_fit_from_hdf5,
+    read_fit_frozen_primaries_by_window,
     read_fit_parameters,
     read_fit_peak_frequencies_by_window,
     read_fit_peak_uids_by_window,
     read_fit_window_coverage,
 )
 
-pytestmark = [pytest.mark.integration]
+pytestmark = [
+    pytest.mark.integration,
+    # Design G1: every write here persists the reference replay of its log.
+    pytest.mark.usefixtures("every_write_is_reference"),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -227,6 +232,17 @@ def test_cheap_readers_match_the_full_load(stage5_multi_file):
         if wf.window_id is not None
     ]
     expected_coverage.sort(key=lambda row: row[0])
+    expected_frozen = {
+        int(wf.window_id): tuple(
+            dict.fromkeys(
+                int(entry["primary_window_id"])
+                for key, entry in wf.fixed_parameters.items()
+                if key.startswith("frozen_peak_")
+            )
+        )
+        for wf in sf.window_fits
+        if wf.window_id is not None
+    }
 
     with h5py.File(str(stage5_multi_file), "r") as h5f:
         group = h5f["stage5_fitting"]
@@ -235,6 +251,7 @@ def test_cheap_readers_match_the_full_load(stage5_multi_file):
         # per-window row order matching the full loader's.
         assert read_fit_peak_frequencies_by_window(group) == expected_freqs
         assert read_fit_peak_uids_by_window(group) == expected_uids
+        assert read_fit_frozen_primaries_by_window(group) == expected_frozen
         coverage = [
             (row.window_id, row.freq_range, row.peak_uids)
             for row in read_fit_window_coverage(group)
@@ -268,11 +285,8 @@ def test_uid_readers_tolerate_a_file_without_the_column(stage5_multi_file):
 
 
 def test_an_empty_window_still_reports_no_fitted_peaks(stage5_multi_file, tmp_path):
-    """The other branch of the same check, so the two cannot collapse.
-
-    A window that really has no fitted peaks must keep saying so -- the
-    peak_uid-less wording is more specific, not a replacement.
-    """
+    """A ``uid:N`` aimed at a window that really has no fitted peaks says
+    so, rather than that the uid is unknown."""
     wid, _freq, uid = _a_fitted_peak(stage5_multi_file)
     # Empty the window: keep the rows, drop them from this window's slice.
     with h5py.File(str(stage5_multi_file), "r+") as h5f:
@@ -288,33 +302,18 @@ def test_an_empty_window_still_reports_no_fitted_peaks(stage5_multi_file, tmp_pa
     assert "has no fitted peaks" in advisory, advisory
 
 
-def test_uid_target_against_a_file_without_the_column_is_unmatched(
-    stage5_multi_file, tmp_path
-):
-    """A ``uid:N`` remove on such a file reports the uid unmatched.
+def test_a_file_without_the_column_is_refused(stage5_multi_file, tmp_path):
+    """A fit without the ``peak_uid`` column predates peak identity: no
+    decision can address its peaks, so Stage 6 refuses to write it -- the
+    dry run and the live apply alike, before anything resolves -- rather
+    than resolving a ``uid:N`` to some other peak or to nothing."""
+    from ftmwpipeline.file_manager import CurationConflictError
 
-    Both rungs are pinned, because the missing column must not change
-    either one: the dry run *advises* that the edit will fail (it advises,
-    it never refuses), and the live apply *raises* naming the uid. What must
-    never happen is the third outcome -- resolving to some other peak
-    because the window's uid set came back empty.
-    """
     wid, _freq, uid = _a_fitted_peak(stage5_multi_file)
     _strip_peak_uid_column(stage5_multi_file)
     curation = _write_curation(tmp_path, f"remove,{wid},uid:{uid},\n")
 
-    preview = apply_curation_impl(stage5_multi_file, curation, dry_run=True)
-
-    assert preview.applied == 0
-    # The advisory must say what is actually wrong: the window is full of
-    # fitted peaks, they just carry no identifiers. An empty uid set alone
-    # cannot distinguish that from an empty window, and reporting "no fitted
-    # peaks" here sends the reader after the wrong problem.
-    (advisory,) = [w for w in preview.warnings if f"uid:{uid}" in w]
-    assert "carry no peak_uid" in advisory, advisory
-    assert "has no fitted peaks" not in advisory, advisory
-
-    with pytest.raises(ValueError) as excinfo:
-        apply_curation_impl(stage5_multi_file, curation)
-
-    assert str(uid) in str(excinfo.value)
+    for dry_run in (True, False):
+        with pytest.raises(CurationConflictError) as excinfo:
+            apply_curation_impl(stage5_multi_file, curation, dry_run=dry_run)
+        assert excinfo.value.reason == "predates_peak_identity"

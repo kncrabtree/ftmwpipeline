@@ -25,7 +25,6 @@ from ftmwpipeline._internal.stage6_impl import (
     STAGE5_BASELINE_GROUP,
     CurationOp,
     PlannedAction,
-    _decision_to_op,
     _resolve_curation_plan,
     apply_curation_impl,
     clear_stage5_baseline,
@@ -41,8 +40,12 @@ from ftmwpipeline.cli.review_commands import (
     cmd_review_undo,
 )
 from ftmwpipeline.core.data_structures import DecisionLogEntry
+from ftmwpipeline.file_manager import PipelineCorruptionError
 from ftmwpipeline.io.fitting_serialization import load_spectrum_fit_from_hdf5
 from ftmwpipeline.pipeline import Pipeline
+
+# Design G1: every write here persists the reference replay of its log.
+pytestmark = [pytest.mark.usefixtures("every_write_is_reference")]
 
 # ---------------------------------------------------------------------------
 # Parsing (pure, no fixture)
@@ -166,9 +169,7 @@ def test_resolve_same_window_barrier_flushes():
     # Built directly as CurationOp, not via parse_curation_file (which now
     # refuses a 'split' row -- see test_parse_split_row_is_refused_with_
     # replacement_spelling): _resolve_curation_plan's barrier behavior for
-    # merge/split still matters, because _decision_to_op can still hand it a
-    # non-inferred merge/split op when replaying a pre-existing,
-    # verb-recorded decision.
+    # merge/split still matters for a plan built from ops directly.
     ops = [
         CurationOp(action="add", window_id=5, freqs=[100.0], params={}, line_no=1),
         CurationOp(
@@ -495,134 +496,105 @@ def test_cli_log_smoke(stage5_small_source, tmp_path, capsys):
 
 
 # ---------------------------------------------------------------------------
-# review undo: decision -> op conversion (pure)
+# review undo: recorded rows -> replay actions (pure)
 # ---------------------------------------------------------------------------
 
 
-def _entry(order, wid, kind, freq, evidence=None):
+def _entry(serial, wid, kind, freq, *, targets=(), seeds=(), born=(), evidence=None):
+    ev = {"action_index": serial}
+    ev.update(evidence or {})
     return DecisionLogEntry(
-        order_index=order,
+        order_index=serial,
         window_id=wid,
         frequency_mhz=freq,
         kind=kind,
-        evidence=evidence or {},
+        evidence=ev,
+        serial=serial,
+        targets=tuple(targets),
+        seeds_mhz=tuple(seeds),
+        born_uids=tuple(born),
     )
 
 
-def test_decision_to_op_add_remove_accept():
-    assert _decision_to_op(_entry(0, 5, "add", 100.0))[0].action == "add"
-    assert _decision_to_op(_entry(1, 5, "remove", 101.0))[0].freqs == [101.0]
-    acc = _decision_to_op(_entry(2, 5, "accept", 0.0))[0]
-    assert acc.action == "accept" and acc.freqs == []
+def test_replay_describes_rows_by_peak_identity():
+    """A replay re-applies each row as recorded: a remove by its target uid,
+    an add, merge or split by its recorded seeds -- never a frequency to
+    re-resolve or an add/remove pair to re-infer."""
+    from ftmwpipeline.core.curation import PeakUidToken
 
-
-def test_decision_to_op_merge_uses_merged_from():
-    ops = _decision_to_op(
-        _entry(0, 7, "merge", 50.2, evidence={"merged_from": [50.1, 50.3]})
-    )
-    assert len(ops) == 1
-    assert ops[0].action == "merge" and ops[0].freqs == [50.1, 50.3]
-
-
-def test_decision_to_op_split_uses_into():
-    ops = _decision_to_op(_entry(0, 7, "split", 50.0, evidence={"split_into": 3}))
-    assert len(ops) == 1
-    op = ops[0]
-    assert op.action == "split" and op.freqs == [50.0] and op.params == {"into": "3"}
-
-
-def test_decision_to_op_merge_without_peaks_raises():
-    with pytest.raises(ValueError, match="missing its 'merged_from'"):
-        _decision_to_op(_entry(0, 7, "merge", 50.2))
-
-
-def test_decision_to_op_inferred_split_replays_as_one_add():
-    """An inferred split (``evidence['inferred']``) replays as the add the
-    user actually typed, not the split verb's symmetric-straddle default --
-    see the curation-intent design in ``_infer_curation_intent``."""
-    ops = _decision_to_op(
+    log = [
+        _entry(0, 5, "add", 100.0, seeds=[100.01], born=[11]),
+        _entry(1, 5, "remove", 101.0, targets=[12]),
         _entry(
-            0,
-            7,
-            "split",
-            50.05,
-            evidence={"split_into": 2, "inferred": True, "requested_freq_mhz": 50.10},
-        )
-    )
-    assert [(o.action, o.window_id, o.freqs) for o in ops] == [("add", 7, [50.10])]
-
-
-def test_decision_to_op_inferred_split_missing_requested_freq_raises():
-    with pytest.raises(ValueError, match="missing its 'requested_freq_mhz'"):
-        _decision_to_op(
-            _entry(0, 7, "split", 50.05, evidence={"split_into": 2, "inferred": True})
-        )
-
-
-def test_decision_to_op_inferred_merge_replays_as_removes_then_add():
-    """An inferred merge replays as one remove per merged frequency plus one
-    add at the requested frequency -- the exact edit the user typed, which
-    ``_resolve_curation_plan`` re-coalesces into the one action inference
-    read the first time."""
-    ops = _decision_to_op(
-        _entry(
-            0,
+            2,
             7,
             "merge",
             50.2,
-            evidence={
-                "merged_from": [50.1, 50.3],
-                "inferred": True,
-                "requested_freq_mhz": 50.2,
-            },
-        )
-    )
-    assert [(o.action, o.window_id, o.freqs) for o in ops] == [
-        ("remove", 7, [50.1]),
-        ("remove", 7, [50.3]),
-        ("add", 7, [50.2]),
+            targets=[21, 22],
+            seeds=[50.2],
+            born=[23],
+            evidence={"merged_from": [50.1, 50.3], "inferred": True},
+        ),
+        _entry(3, 7, "split", 50.0, targets=[23], seeds=[49.9, 50.1], born=[24, 25]),
+        _entry(4, 5, "accept", 0.0),
     ]
+    plan = s6._replay_plan(log)
+    assert [(a.kind, a.window_id) for a in plan] == [
+        ("edit", 5),
+        ("edit", 5),
+        ("edit", 7),
+        ("edit", 7),
+        ("accept", 5),
+    ]
+    assert plan[0].add == [100.01] and plan[0].remove == []
+    assert plan[1].remove == [PeakUidToken(12)] and plan[1].add == []
+    assert plan[2].add == [50.2]
+    assert plan[2].remove == [PeakUidToken(21), PeakUidToken(22)]
+    assert plan[3].add == [49.9, 50.1] and plan[3].remove == [PeakUidToken(23)]
 
 
-def test_decision_to_op_inferred_merge_missing_requested_freq_raises():
-    with pytest.raises(ValueError, match="missing its 'requested_freq_mhz'"):
-        _decision_to_op(
-            _entry(
-                0,
-                7,
-                "merge",
-                50.2,
-                evidence={"merged_from": [50.1, 50.3], "inferred": True},
-            )
-        )
+def test_replay_groups_one_actions_rows_into_one_edit():
+    """The rows one action recorded (one ``action_index``) replay as that one
+    action: a joint add/remove edit stays one edit."""
+    log = [
+        _entry(0, 5, "add", 100.0, seeds=[100.0], born=[11]),
+        _entry(1, 5, "remove", 101.0, targets=[12], evidence={"action_index": 0}),
+    ]
+    plan = s6._replay_plan(log)
+    assert len(plan) == 1 and plan[0].kind == "edit"
 
 
-def test_decision_to_op_merge_ops_still_coalesce_into_one_action():
-    """Coalescing WITHIN one decision's own emitted ops still applies -- an
-    inferred merge's remove/remove/add must resolve to exactly one ``edit``
-    action (what lets ``_infer_curation_intent`` see the whole thing and
-    re-derive the merge on replay), even though ``review_undo_impl``
-    resolves each recorded action on its own (``_replay_plan``) rather than
-    resolving the whole surviving set as one flat op list."""
-    ops = _decision_to_op(
+def test_replay_reissues_an_implied_create_before_its_add():
+    """An implied create's one add row replays as the create pinned to its
+    window followed by the add into it."""
+    created = {"mode": "created", "freq_min_mhz": 99.0, "freq_max_mhz": 101.0}
+    log = [
         _entry(
             0,
-            7,
-            "merge",
-            50.2,
-            evidence={
-                "merged_from": [50.1, 50.3],
-                "inferred": True,
-                "requested_freq_mhz": 50.2,
-            },
+            600,
+            "add",
+            100.0,
+            seeds=[100.0],
+            born=[11],
+            evidence={"created_window": created},
         )
+    ]
+    plan = s6._replay_plan(log)
+    assert [(a.kind, a.window_id, a.implied_create) for a in plan] == [
+        ("create", 600, True),
+        ("edit", 600, True),
+    ]
+    assert plan[0].anchor == 100.0
+
+
+def test_a_peak_row_without_identity_is_corrupt(tmp_path):
+    """Only the engine writes the log, so an add/remove/merge/split row
+    without targets, seeds and born uids is a corrupt file."""
+    row = DecisionLogEntry(
+        order_index=0, window_id=5, frequency_mhz=1.0, kind="remove", serial=0
     )
-    plan = _resolve_curation_plan(ops)
-    assert len(plan) == 1
-    action = plan[0]
-    assert action.kind == "edit" and action.window_id == 7
-    assert action.remove == [50.1, 50.3]
-    assert action.add == [50.2]
+    with pytest.raises(PipelineCorruptionError):
+        s6._row_peak_fields(str(tmp_path / "x.ftmw"), row)
 
 
 # ---------------------------------------------------------------------------
@@ -655,7 +627,7 @@ def test_undo_single_returns_to_baseline(stage5_small_source, tmp_path):
     log = review_log_impl(fp)
     assert len(log) == 1
 
-    result = review_undo_impl(fp, [log[0].order_index])
+    result = review_undo_impl(fp, [log[0].serial])
     assert result.applied == 0 and len(result.removed) == 1
     assert _fitted_by_window(fp) == baseline  # restored exactly
     assert review_log_impl(fp) == []  # decision log cleared
@@ -683,7 +655,7 @@ def test_undo_one_of_two_replays_other(stage5_multi_file, tmp_path):
     cur.write_text(f"add,{wa},{fa},\nadd,{wb},{fb},\n")
     apply_curation_impl(both, cur)
     log = review_log_impl(both)
-    wa_id = next(e.order_index for e in log if e.window_id == wa and e.kind == "add")
+    wa_id = next(e.serial for e in log if e.window_id == wa and e.kind == "add")
     review_undo_impl(both, [wa_id])
 
     assert _fitted_by_window(both) == _fitted_by_window(ref)
@@ -729,7 +701,7 @@ def test_undo_all_restores_baseline_identifiers(stage5_small_source, tmp_path):
     assert _uids_by_window(fp) != baseline  # the add changed the window
 
     log = review_log_impl(fp)
-    review_undo_impl(fp, [e.order_index for e in log])
+    review_undo_impl(fp, [e.serial for e in log])
     assert _uids_by_window(fp) == baseline  # identifiers restored exactly
 
 
@@ -764,7 +736,7 @@ def test_undo_one_of_two_replays_other_identifiers(stage5_multi_file, tmp_path):
     cur.write_text(f"add,{wa},{fa},\nadd,{wb},{fb},\n")
     apply_curation_impl(both, cur)
     log = review_log_impl(both)
-    wa_id = next(e.order_index for e in log if e.window_id == wa and e.kind == "add")
+    wa_id = next(e.serial for e in log if e.window_id == wa and e.kind == "add")
     review_undo_impl(both, [wa_id])
 
     assert _uids_by_window(both) == ref_uids
@@ -775,9 +747,10 @@ def test_undo_replays_inferred_split_identifiers_exactly(stage5_multi_file, tmp_
     """An inferred split seeds at (parent position, requested position), not
     the verb path's symmetric straddle -- so its replay must reconstruct
     THAT action (an add at the requested frequency), not the split verb's
-    default reseed. Probes the gap ``_decision_to_op`` used to have: undoing
+    default reseed. Probes the gap a frequency-based replay had: undoing
     an unrelated decision in ANOTHER window must not silently reseed and
-    renumber a window it never touched.
+    renumber a window it never touched (a replay applies the recorded seeds
+    and born uids).
     """
     wa, freq = _a_peak(stage5_multi_file)
     wb = next(w for w in _three_window_ids(stage5_multi_file) if w != wa)
@@ -803,7 +776,7 @@ def test_undo_replays_inferred_split_identifiers_exactly(stage5_multi_file, tmp_
     apply_curation_impl(both, cur)
     log = review_log_impl(both)
     assert any(e.window_id == wa and e.kind == "split" for e in log)
-    wb_id = next(e.order_index for e in log if e.window_id == wb and e.kind == "add")
+    wb_id = next(e.serial for e in log if e.window_id == wb and e.kind == "add")
     review_undo_impl(both, [wb_id])
 
     assert _uids_by_window(both)[wa] == ref_uids_a
@@ -863,7 +836,7 @@ def test_undo_replays_inferred_merge_identifiers_exactly(stage5_multi_file, tmp_
     _split_then_merge(both)
     apply_curation_impl(both, _write_curation(tmp_path, f"add,{wb},{fb_clear},\n"))
     log = review_log_impl(both)
-    wb_id = next(e.order_index for e in log if e.window_id == wb and e.kind == "add")
+    wb_id = next(e.serial for e in log if e.window_id == wb and e.kind == "add")
     review_undo_impl(both, [wb_id])
 
     assert _uids_by_window(both)[wa] == ref_uids_a
@@ -912,7 +885,7 @@ def test_undo_replays_two_dependent_inferred_decisions_without_coalescing(
     apply_curation_impl(both, _write_curation(tmp_path, f"add,{wb},{fb_clear},\n"))
     log = review_log_impl(both)
     assert [e.kind for e in log if e.window_id == wa] == ["split", "merge"]
-    wb_id = next(e.order_index for e in log if e.window_id == wb and e.kind == "add")
+    wb_id = next(e.serial for e in log if e.window_id == wb and e.kind == "add")
 
     review_undo_impl(both, [wb_id])  # must not raise
 
@@ -943,7 +916,7 @@ def test_undo_replays_verb_split_via_straddle_unchanged(stage5_multi_file, tmp_p
     split_entries = [e for e in log if e.window_id == wa and e.kind == "split"]
     assert len(split_entries) == 1
     assert "inferred" not in split_entries[0].evidence
-    wb_id = next(e.order_index for e in log if e.window_id == wb and e.kind == "add")
+    wb_id = next(e.serial for e in log if e.window_id == wb and e.kind == "add")
     review_undo_impl(both, [wb_id])
 
     assert _uids_by_window(both)[wa] == ref_uids_a
@@ -951,9 +924,8 @@ def test_undo_replays_verb_split_via_straddle_unchanged(stage5_multi_file, tmp_p
 
 @pytest.mark.integration
 def test_undo_replayed_add_reissues_identifier(stage5_multi_file, tmp_path):
-    """A replayed ``add`` restamps from its seed, and that seed is the exact
-    frequency recorded in the decision log (``_decision_to_op`` replays
-    ``add``/``remove`` from ``entry.frequency_mhz``) -- so a peak the replay
+    """A replayed ``add`` births its peak at the recorded seed under the
+    recorded uid (``seeds_mhz`` / ``born_uids``) -- so a peak the replay
     re-creates comes back with the SAME ``peak_uid`` it held before the undo.
 
     This is the design, not an accident: a ``peak_uid`` names a birth
@@ -979,7 +951,7 @@ def test_undo_replayed_add_reissues_identifier(stage5_multi_file, tmp_path):
 
     # Undo the OTHER window's add; wa's add survives and is replayed.
     log = review_log_impl(fp)
-    wb_id = next(e.order_index for e in log if e.window_id == wb and e.kind == "add")
+    wb_id = next(e.serial for e in log if e.window_id == wb and e.kind == "add")
     review_undo_impl(fp, [wb_id])
 
     after = _uids_by_window(fp)
@@ -999,7 +971,7 @@ def test_undo_dry_run_no_mutation(stage5_small_source, tmp_path):
     log = review_log_impl(fp)
 
     before = hashlib.md5(fp.read_bytes()).hexdigest()
-    result = review_undo_impl(fp, [log[0].order_index], dry_run=True)
+    result = review_undo_impl(fp, [log[0].serial], dry_run=True)
     assert hashlib.md5(fp.read_bytes()).hexdigest() == before
     assert result.dry_run and len(result.removed) == 1
 
@@ -1034,7 +1006,8 @@ def test_refit_clears_baseline_and_decisions(stage5_small_source, tmp_path):
 
 @pytest.mark.integration
 def test_undo_refused_when_baseline_missing(stage5_small_source, tmp_path):
-    """If the baseline is gone while fit-mutating decisions remain, undo refuses."""
+    """If the baseline is gone while decisions remain, the file is corrupt:
+    undo refuses, as every write does."""
     fp = tmp_path / "ubad.ftmw"
     shutil.copy(stage5_small_source, fp)
     wid, freq = _a_peak(fp)
@@ -1043,8 +1016,8 @@ def test_undo_refused_when_baseline_missing(stage5_small_source, tmp_path):
 
     with atomic_write(fp):
         clear_stage5_baseline(fp)  # simulate the snapshot becoming unavailable
-    with pytest.raises(ValueError, match="baseline is unavailable"):
-        review_undo_impl(fp, [log[0].order_index])
+    with pytest.raises(PipelineCorruptionError, match="no automatic-fit baseline"):
+        review_undo_impl(fp, [log[0].serial])
 
 
 @pytest.mark.integration
@@ -1059,7 +1032,7 @@ def test_undo_cross_interface(stage5_small_source, tmp_path):
     ids = {}
     for k, p in paths.items():
         apply_curation_impl(p, cur)
-        ids[k] = review_log_impl(p)[0].order_index  # undo the first (the add)
+        ids[k] = review_log_impl(p)[0].serial  # undo the first (the add)
 
     ftmw.review_undo(str(paths["api"]), [ids["api"]])
     Pipeline.open(paths["pipe"]).review_undo([ids["pipe"]])
@@ -1075,7 +1048,7 @@ def test_undo_cross_interface(stage5_small_source, tmp_path):
 
 # ---------------------------------------------------------------------------
 # Batch curation engine: one context build, canonical cross-window order,
-# one combined cascade (see ``_execute_curation_batch`` in stage6_impl.py).
+# one combined cascade (see ``_curate_request`` in stage6_impl.py).
 #
 # These use window-center anchors rather than existing fitted peaks: the
 # shared 3-window fixture (trimmed to dependency-free windows for speed) does
@@ -1176,9 +1149,13 @@ def test_apply_row_order_independent(stage5_multi_file, tmp_path):
 
 
 @pytest.mark.integration
-def test_apply_batch_builds_fit_context_once(stage5_multi_file, tmp_path, monkeypatch):
+def test_apply_batch_builds_fit_context_once(
+    stage5_multi_file, tmp_path, monkeypatch, every_write_is_reference
+):
     """A batch touching multiple windows builds the Stage 5 fit context exactly
     once, not once per action -- the whole point of the batch engine."""
+    # This counts work, which the G1 check's own replays would add to.
+    every_write_is_reference.enabled = False
     from ftmwpipeline._internal import stage5_impl
 
     wa, wb, _ = _three_window_ids(stage5_multi_file)
@@ -1205,7 +1182,7 @@ def test_apply_batch_builds_fit_context_once(stage5_multi_file, tmp_path, monkey
 
 @pytest.mark.integration
 def test_cascade_downstream_of_two_edits_refit_once(
-    stage5_multi_file, tmp_path, monkeypatch
+    stage5_multi_file, tmp_path, monkeypatch, every_write_is_reference
 ):
     """A window reachable from TWO directly-edited windows in the same batch is
     refit exactly once, via the one combined cascade -- not once per edit.
@@ -1215,6 +1192,8 @@ def test_cascade_downstream_of_two_edits_refit_once(
     wrapping ``_cascade_succs``; the refit machinery downstream of that graph
     (closure, topo order, ``_cascade_refit_dependents``) is entirely real.
     """
+    # This counts work, which the G1 check's own replays would add to.
+    every_write_is_reference.enabled = False
     w0, w1, w2 = _three_window_ids(stage5_multi_file)
 
     fp = tmp_path / "cascade_once.ftmw"
@@ -1222,8 +1201,8 @@ def test_cascade_downstream_of_two_edits_refit_once(
 
     orig_succs = s6._cascade_succs
 
-    def fake_succs(window_fits, fit_window_map):
-        d = orig_succs(window_fits, fit_window_map)
+    def fake_succs(sources):
+        d = orig_succs(sources)
         d.setdefault(w0, set()).add(w2)
         d.setdefault(w1, set()).add(w2)
         return d
@@ -1251,11 +1230,13 @@ def test_cascade_downstream_of_two_edits_refit_once(
 
 @pytest.mark.integration
 def test_undo_one_of_several_replays_batch_once(
-    stage5_multi_file, tmp_path, monkeypatch
+    stage5_multi_file, tmp_path, monkeypatch, every_write_is_reference
 ):
     """Undoing one decision out of several still reaches the correct state, and
     the surviving decisions replay as ONE batch (one fit-context build), not
     one full rebuild per surviving decision."""
+    # This counts work, which the G1 check's own replays would add to.
+    every_write_is_reference.enabled = False
     from ftmwpipeline._internal import stage5_impl
 
     wa, wb, _ = _three_window_ids(stage5_multi_file)
@@ -1273,7 +1254,7 @@ def test_undo_one_of_several_replays_batch_once(
     cur.write_text(f"add,{wa},{fa},\nadd,{wb},{fb},\n")
     apply_curation_impl(both, cur)
     log = review_log_impl(both)
-    wa_id = next(e.order_index for e in log if e.window_id == wa and e.kind == "add")
+    wa_id = next(e.serial for e in log if e.window_id == wa and e.kind == "add")
 
     calls: List[int] = []
     orig = stage5_impl.build_stage5_fit_context
@@ -1327,17 +1308,16 @@ def test_apply_cross_interface_multiwindow_batch(stage5_multi_file, tmp_path):
 
 @pytest.mark.integration
 def test_apply_merge_via_batch_matches_direct_call(stage5_multi_file, tmp_path):
-    """A ``merge`` action executed through the batch engine
-    (``_execute_curation_batch`` -> ``_batch_apply_merge``) reaches the same
+    """A ``merge`` action executed through the curation write path
+    (``_curate_request`` -> ``_apply_refit_step``) reaches the same
     state as calling ``merge_peaks_impl`` directly -- batch-of-one is
     indistinguishable from the interactive path for merge, not just for
     add/remove.
 
     ``merge`` is not a curation-*file* action any more (see the refusal tests
     below and ``test_curation_intent.py``'s inference coverage), but the
-    engine itself still executes a ``PlannedAction(kind="merge")`` when a
-    decision-log replay hands it one (``_decision_to_op``, for a
-    pre-existing, verb-recorded decision). This drives that plan directly,
+    engine itself still executes a ``PlannedAction(kind="merge")`` (the
+    form a replay describes a recorded merge row in). This drives that plan directly,
     bypassing the file parser, to keep pinning the engine-level behavior."""
     from ftmwpipeline._internal.stage6_impl import merge_peaks_impl
 
@@ -1355,9 +1335,16 @@ def test_apply_merge_via_batch_matches_direct_call(stage5_multi_file, tmp_path):
     merge_peaks_impl(str(direct), wid, freqs)
 
     plan = [PlannedAction(kind="merge", window_id=wid, peaks=list(freqs))]
-    snap_tol = s6.resolve_snap_tol_mhz(str(batched), None)
+    snap_tol = s6.refit_snap_tol_mhz_impl(str(batched))
     with atomic_write(str(batched)):
-        s6._execute_curation_batch(str(batched), plan, snap_tol_mhz=snap_tol)
+        s6._curate_request(
+            str(batched),
+            plan,
+            snap_tol_mhz=snap_tol,
+            shared=None,
+            persist=True,
+            one_action=False,
+        )
 
     assert _fitted_by_window(direct) == _fitted_by_window(batched)
     assert [e.kind for e in review_log_impl(batched)] == ["merge"]
@@ -1365,8 +1352,8 @@ def test_apply_merge_via_batch_matches_direct_call(stage5_multi_file, tmp_path):
 
 @pytest.mark.integration
 def test_apply_split_via_batch_matches_direct_call(stage5_multi_file, tmp_path):
-    """A ``split`` action executed through the batch engine
-    (``_execute_curation_batch`` -> ``_batch_apply_split``) reaches the same
+    """A ``split`` action executed through the curation write path
+    (``_curate_request`` -> ``_apply_refit_step``) reaches the same
     state as calling ``split_peak_impl`` directly.
 
     ``split`` is not a curation-*file* action any more; see
@@ -1385,9 +1372,16 @@ def test_apply_split_via_batch_matches_direct_call(stage5_multi_file, tmp_path):
     split_peak_impl(str(direct), wid, freq, into=2)
 
     plan = [PlannedAction(kind="split", window_id=wid, peak=freq, into=2)]
-    snap_tol = s6.resolve_snap_tol_mhz(str(batched), None)
+    snap_tol = s6.refit_snap_tol_mhz_impl(str(batched))
     with atomic_write(str(batched)):
-        s6._execute_curation_batch(str(batched), plan, snap_tol_mhz=snap_tol)
+        s6._curate_request(
+            str(batched),
+            plan,
+            snap_tol_mhz=snap_tol,
+            shared=None,
+            persist=True,
+            one_action=False,
+        )
 
     assert _fitted_by_window(direct) == _fitted_by_window(batched)
     assert [e.kind for e in review_log_impl(batched)] == ["split"]
@@ -1412,7 +1406,7 @@ def test_apply_split_via_batch_matches_direct_call(stage5_multi_file, tmp_path):
 
 @pytest.mark.integration
 def test_merge_product_peak_uid_survives_the_nls(stage5_multi_file, monkeypatch):
-    """The merge birth in ``_batch_apply_merge`` stamps a fresh peak_uid on
+    """The merge birth in ``_apply_refit_step`` stamps a fresh peak_uid on
     its seed; that value must still be on the merged line's ModelPeak after
     the joint NLS converges (P2's carry-by-index), not None and not
     silently dropped."""
@@ -1466,7 +1460,7 @@ def test_merge_product_peak_uid_survives_the_nls(stage5_multi_file, monkeypatch)
 
 @pytest.mark.integration
 def test_split_products_peak_uid_survives_the_nls(stage5_multi_file, monkeypatch):
-    """The split birth in ``_batch_apply_split`` stamps a fresh peak_uid on
+    """The split birth in ``_apply_refit_step`` stamps a fresh peak_uid on
     each of the ``into`` product seeds; every one must still carry its own
     stamped value after the joint NLS converges."""
     from ftmwpipeline._internal import stage6_impl as s6mod
