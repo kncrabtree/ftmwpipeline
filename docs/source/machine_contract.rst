@@ -1891,7 +1891,9 @@ resume) or one of the ``restart_reason`` vocabulary -- ``restart_requested``,
 ``settings_changed`` (the resolved Stage 5 settings, the values consumed from
 other stages or ``ANALYSIS_EPOCH`` differ from the partial fit's),
 ``incomplete_provenance`` (the partial fit lacks what that comparison needs) or
-``thaw_refit`` (an accepted thaw: every window is refit sequentially). It never
+``thaw_refit`` (a thaw was accepted, which may change a window the partial fit
+carried: an accepted thaw in the partial fit starts the fit over, and one in the
+resumed windows refits every window sequentially). It never
 resumes on a guess. A change in a value the fit consumes from another stage, the
 timebase epsilon among them, is a ``settings_changed``.
 

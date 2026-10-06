@@ -28,11 +28,58 @@ each window. Now the co-fit refines the line in its primary, and the dependent
 re-freezes everything it reads from that primary from the refined fit, by the
 rule that froze it. The line is listed once, in its primary.
 
-On the seven reference fixtures one thaw is accepted, on 1019 (window 53, from
-window 58). Window 53 now carries 58's line as a frozen contributor. Its own two
-lines move by under 0.1 Hz. No other window of any fixture changes. A file fitted
-under epoch 5 must be re-fit, or have the mismatch accepted, before Stage 6 will
-splice an edit into it.
+The co-fit now refits the two windows' own models, coupled only through the
+lines they share, and its acceptance test reads the dependent model an accepted
+thaw installs. Before, it fitted one decay time for both windows, bounded only
+by the decay-factor cap around the starting value and with no prior, dropped the
+leakage-wing baseline each window's fit carried, and drew every line on both
+windows' bins. Now each window keeps its baseline, re-fit on its own bins, and
+its own decay time under the constraint of its own fit: started from that
+fit's value, free exactly where that fit freed it, and bounded and anchored by
+the band and Gaussian prior of its Stage 2b calibration within the run's
+``max_decay_factor``, the band widened to the fit's own value when a later
+refit left it outside. A line is drawn only where its window's model draws it --
+a dependent's lines on the dependent, a primary's line on the dependent only
+when the dependent freezes it -- and is bounded to its own window's grid. A
+shared line's amplitude, frequency and phase are tied, and it decays at each
+window's own decay time on that window's bins, as each window draws everything
+it carries. That is a convention, not a negligible approximation: for a
+Lorentzian line the finite-record truncation term scales a far skirt by a
+factor that depends on the decay time and not on the offset (a Gaussian line's
+term is similar), so the line drawn at the dependent's decay time rather than
+its primary's differs there by up to several percent, growing with the
+difference between the two decay times, a difference degenerate with its
+amplitude and phase. Holding each decay time to its own fit's constraint keeps
+the dependent's from absorbing it. A thaw whose
+co-fit primary would freeze a different set of lines into the dependent than
+the co-fit drew there is rejected, since the install would not be the model the
+co-fit refined.
+
+On the seven reference fixtures no thaw is accepted. 1019 accepted one under
+epoch 5, of window 53 from window 58; its co-fit had dropped 58's baseline, and
+58 now keeps its own fit: its line moves 525 Hz (about 300 standard errors) and
+its reduced chi-squared falls from 33747 to 25771. Windows 53 to 61 change, the
+others by under 0.25 Hz. The other six fixtures do not change. The decay-time
+constraint decides: with the dependent's decay time freed from its prior, the
+co-fit would accept a thaw of window 34 from window 39 on 655 and of window 46
+from window 43 on 1019, and the dependent alone, refit with its decay time freed
+the same way and nothing thawed, brings the edge to the same value (7.581 for
+both on 655; 7.863 against the co-fit's 7.862 on 1019).
+
+An accepted thaw in the parallel fit re-fits, in order, only the windows that
+read an outcome the thaw changed, following the thaws each re-fit itself
+accepts, where it used to re-fit every window sequentially. No reference
+fixture now accepts a thaw, so none exercises it. On 1019, where epoch 5
+accepted a thaw and so re-fit every window a second time, Stage 5 now accepts
+none and takes 12 s. A ``walk_fallback`` forced by a dependency cycle gives the
+cycle as its reason even when a thaw was also accepted.
+
+A file fitted under epoch 5 must be re-fit, or have the mismatch accepted,
+before Stage 6 will splice an edit into it. Stage 6 no longer holds a line near
+an accepted thaw's contributor out of a dependent's refit: the thawed line is
+the dependent's frozen contributor, never one of its fitted lines. In an epoch-5
+fit whose mismatch was accepted, a thawed line that sits among a dependent's
+fitted lines is now refit with them, on the dependent's data alone.
 
 **Every Stage 6 write is a replay of its decision log; one snap tolerance per
 file; decisions name peaks by uid; decision serials; ``CONTRACT_VERSION`` moves

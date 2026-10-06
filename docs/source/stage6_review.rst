@@ -575,11 +575,12 @@ the source peak; ``knockout_p_value`` and ``knockout_aicc_delta`` are
 ``Absent.UNDEFINED`` when the test ran but the value is not finite (its own
 refit did not converge; for ``knockout_p_value`` also a degenerate F-test, one with
 no residual degrees of freedom or a non-positive chi-squared). They are fields on ``FinalPeak``, not columns of the exported
-table. In a fit made before ``ANALYSIS_EPOCH`` 6 a thawed line could sit among
-a dependent window's peaks; a refit holds it out and re-attaches it verbatim,
-so its statistics describe its earlier fit while its neighbors' describe the new
-one. From epoch 6 a thawed line stays frozen in the dependent and is listed
-once, in its own window.
+table. From ``ANALYSIS_EPOCH`` 6 a thawed line stays frozen in the dependent
+and is listed once, in its own window, so a refit of the dependent draws it as a
+frozen contributor like any other. In a fit made before epoch 6 a thawed line
+could sit among a dependent window's peaks; once the epoch mismatch is accepted,
+a refit treats it as one of the dependent's own peaks and refits it on the
+dependent's data alone.
 
 The frequency uncertainty is composed as three independent terms in quadrature:
 

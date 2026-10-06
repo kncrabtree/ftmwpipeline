@@ -2132,24 +2132,10 @@ def refit_window_core(
         sideband=sideband,
     )
 
-    # --- Identify thawed lines in this window ---------------------------------
-    # A thaw is accepted when a primary-window frozen contributor is co-fit
-    # jointly with the dependent window and the residual edge coherence improves.
-    # The thawed line then appears in this window's fitted_peaks (as a free peak)
-    # but is owned by its primary window.  Its persisted value is the joint-fit
-    # optimum; re-fitting it with only ONE window's data would relax it off that
-    # joint optimum (worst observed: 28 kHz / 28% drift).  Decision: freeze it.
-    #
-    # Collect the molecular frequencies of all *accepted* thaw contributors for
-    # this (dependent) window.  Ignore NaN frequencies (no-op records).
-    thawed_freqs: List[float] = []
-    for te in wf.thaw_events:
-        if te.accepted and not math.isnan(te.contributor_frequency_mhz):
-            thawed_freqs.append(float(te.contributor_frequency_mhz))
-
-    def _is_thawed(freq_mhz: float) -> bool:
-        """True when ``freq_mhz`` matches a thawed contributor within snap_tol."""
-        return any(abs(freq_mhz - tf) <= snap_tol_mhz for tf in thawed_freqs)
+    # An accepted Stage 5 thaw leaves nothing to hold out here: the thawed line
+    # is its primary's free peak and this window's frozen contributor, an entry
+    # of ``fixed_parameters`` like any other, never one of this window's fitted
+    # peaks (epoch 6).
 
     # --- Reconstruct frozen background from persisted fixed_parameters -----
     frozen_peaks = _reconstruct_frozen_peaks(wf.fixed_parameters, center_mhz, sideband)
@@ -2276,21 +2262,10 @@ def refit_window_core(
     # --- Build seed ModelPeak list from persisted fitted_peaks + edits -----
     s = sideband_sign(sideband)
 
-    # Partition fitted_peaks into free seeds (this window's own peaks) and
-    # thawed-line hold-outs.  Thawed lines are owned by their primary window;
-    # re-fitting them with one window's data relaxes them off the joint optimum.
-    # Strategy: add each thawed peak to frozen_peaks (so it stays in the
-    # frozen background the free-peak NLS fits against) and remember the
-    # FittedPeak verbatim for re-insertion after the NLS.
-    #
-    # Note: ``frozen_peaks`` was reconstructed from ``fixed_parameters`` above
-    # (the original Stage 5 frozen contributors).  A thawed line was *removed*
-    # from ``fixed_parameters`` when it was accepted — it is not there.  We
-    # must add it back explicitly.
-    thawed_held_peaks: List[FittedPeak] = []  # verbatim re-append after NLS
-    # The FrozenPeak each held line was parked as, by the held line's id(), so
-    # a remove by uid drops exactly that entry.
-    thawed_frozen: Dict[int, "FrozenPeak"] = {}
+    # Every fitted peak is a free seed. Held peaks -- frozen into the background
+    # and re-appended verbatim after the NLS -- come only from the freeze-
+    # inherited mode below.
+    held_peaks: List[FittedPeak] = []  # verbatim re-append after NLS
 
     # (seed, origin, derivation, unresolved_spread) tuples, kept together so
     # the "remove" pop and the by-position stamping below cannot fall out of
@@ -2301,50 +2276,22 @@ def refit_window_core(
         Tuple[ModelPeak, str, Optional[int], Optional[float]]
     ] = []
     for fp in wf.fitted_peaks:
-        freq_mhz = float(fp.frequency_mhz)
-        offset = float(s * (freq_mhz - center_mhz))
-        if _is_thawed(freq_mhz):
-            # Hold this peak out of the free NLS.  Add it to the frozen
-            # background so the window's own peaks fit against it correctly.
-            # Use a sentinel primary_window_id of -1 (we don't need it here;
-            # the frozen model only needs amplitude/offset/phase and tau).
-            mp = ModelPeak(
-                amplitude=float(fp.amplitude),
-                offset_mhz=offset,
-                phase=float(fp.phase) if fp.phase is not None else 0.0,
-                peak_uid=fp.peak_uid,
-            )
-            held = FrozenPeak(
-                peak_index=(
-                    int(fp.detection_index) if fp.detection_index is not None else -1
-                ),
-                primary_window_id=-1,
-                model_peak=mp,
-                frequency_mhz=freq_mhz,
-                freeze_eligible=False,
-                edge_free=False,
-            )
-            frozen_peaks.append(held)
-            thawed_frozen[id(fp)] = held
-            thawed_held_peaks.append(fp)
-        else:
-            # Inherited-seed path: this window's own peaks warm-start the
-            # refit from their previously fitted position. This is a
-            # propagation, not a birth -- copy the identifier so it survives
-            # the refit even though the fitted frequency moves.
-            mp = ModelPeak(
-                amplitude=float(fp.amplitude),
-                offset_mhz=offset,
-                phase=float(fp.phase) if fp.phase is not None else 0.0,
-                peak_uid=fp.peak_uid,
-            )
-            seed_peaks_with_origin.append(
-                (mp, fp.origin, fp.derivation, fp.unresolved_spread_mhz)
-            )
+        offset = float(s * (float(fp.frequency_mhz) - center_mhz))
+        # Inherited-seed path: this window's own peaks warm-start the refit
+        # from their previously fitted position. This is a propagation, not a
+        # birth -- copy the identifier so it survives the refit even though the
+        # fitted frequency moves.
+        mp = ModelPeak(
+            amplitude=float(fp.amplitude),
+            offset_mhz=offset,
+            phase=float(fp.phase) if fp.phase is not None else 0.0,
+            peak_uid=fp.peak_uid,
+        )
+        seed_peaks_with_origin.append(
+            (mp, fp.origin, fp.derivation, fp.unresolved_spread_mhz)
+        )
 
     # Apply "remove" edits: drop seeds closest to remove frequencies.
-    # A "remove" on a thawed line drops it entirely (not frozen): the user
-    # decided to remove it, so it is neither re-fit nor re-appended.
     forbidden_offsets: List[float] = []
     # Every remove that matches no fitted peak, reported together (not_found
     # names every unknown id of a request at once).
@@ -2352,26 +2299,6 @@ def refit_window_core(
     unmatched_details: List[str] = []
     for rm_freq in remove:
         rm_offset = float(s * (float(rm_freq) - center_mhz))
-
-        # Check if this removal targets a thawed held-out peak.
-        thawed_match_idx: Optional[int] = None
-        for ti, theld in enumerate(thawed_held_peaks):
-            if abs(float(theld.frequency_mhz) - float(rm_freq)) <= snap_tol_mhz:
-                thawed_match_idx = ti
-                break
-        if thawed_match_idx is not None:
-            # Drop the thawed peak from the frozen background and the hold-out
-            # list.  Find the matching FrozenPeak by frequency and remove it.
-            removed_fp = thawed_held_peaks.pop(thawed_match_idx)
-            frozen_peaks = [
-                fp
-                for fp in frozen_peaks
-                if abs(fp.frequency_mhz - float(removed_fp.frequency_mhz))
-                > snap_tol_mhz
-            ]
-            forbidden_offsets.append(rm_offset)
-            continue
-
         if not seed_peaks_with_origin:
             unmatched_removes.append(float(rm_freq))
             unmatched_details.append(
@@ -2406,8 +2333,7 @@ def refit_window_core(
             "peak", unmatched_removes, message="; ".join(unmatched_details)
         )
 
-    # Removes by identity: the window's own peak with that uid, else the held
-    # thawed line with it (dropped from the background too). Exact, so no
+    # Removes by identity: the window's own peak with that uid. Exact, so no
     # tolerance enters.
     unmatched_uids: List[int] = []
     for rm_uid in remove_uids:
@@ -2421,20 +2347,6 @@ def refit_window_core(
         )
         if own is not None:
             forbidden_offsets.append(seed_peaks_with_origin.pop(own)[0].offset_mhz)
-            continue
-        held_idx = next(
-            (
-                i
-                for i, theld in enumerate(thawed_held_peaks)
-                if theld.peak_uid == int(rm_uid)
-            ),
-            None,
-        )
-        if held_idx is not None:
-            removed_fp = thawed_held_peaks.pop(held_idx)
-            parked = thawed_frozen.pop(id(removed_fp))
-            frozen_peaks = [fz for fz in frozen_peaks if fz is not parked]
-            forbidden_offsets.append(float(s * (removed_fp.frequency_mhz - center_mhz)))
             continue
         unmatched_uids.append(int(rm_uid))
     if unmatched_uids:
@@ -2691,7 +2603,7 @@ def refit_window_core(
     # "Freeze inherited" mode for the VIF-collapse sequential merge: fit ONLY
     # the added (merged) seeds, holding every inherited peak frozen at its
     # persisted value -- added to the frozen background AND re-appended verbatim
-    # after the NLS (the same hold-out path thawed lines use). The sequential
+    # after the NLS. The sequential
     # collapse loop calls this once per single pair, so a dominant line stays
     # pinned while each new merged line converges. The all-free relaxation that
     # lets a 1e5 giant drag a weak merged line away (655 w124) is deferred to one
@@ -2733,7 +2645,7 @@ def refit_window_core(
                     edge_free=False,
                 )
             )
-            thawed_held_peaks.append(src_fp)
+            held_peaks.append(src_fp)
         final_seeds = list(added_seeds)
         origin_flags = list(added_origins)
         derivation_flags = list(added_derivations)
@@ -2834,20 +2746,20 @@ def refit_window_core(
                     _restore_unresolved_spread(fp, spread)
                     break
 
-    # --- Re-insert thawed lines verbatim ------------------------------------
-    # Thawed lines were held out of the NLS and frozen into the background so
-    # the window's own peaks converged correctly against them.  Now re-attach
+    # --- Re-insert held peaks verbatim --------------------------------------
+    # Held peaks were kept out of the NLS and frozen into the background so
+    # the window's free peaks converged correctly against them.  Now re-attach
     # them to the output UNCHANGED (same frequency / amplitude / phase / errors
     # / origin as the persisted FittedPeak).  Their model contribution is
     # already accounted for in ``full_fitted`` / ``full_residual`` (they were
     # part of ``background``), so χ²ᵣ in the result is consistent.
-    if thawed_held_peaks:
+    if held_peaks:
         new_wf.fitted_peaks = sorted(
-            new_wf.fitted_peaks + thawed_held_peaks,
+            new_wf.fitted_peaks + held_peaks,
             key=lambda fp2: float(fp2.frequency_mhz),
         )
-        # The NLS ran with only the non-thawed peaks free; the covariance only
-        # covers those K_free params.  After re-inserting the thawed peaks the
+        # The NLS ran with only the non-held peaks free; the covariance only
+        # covers those K_free params.  After re-inserting the held peaks the
         # fitted_peaks list grows, so the covariance labels no longer match the
         # full peak count.  Clear it rather than persist a partial / mislabeled
         # matrix — the per-peak amplitude_error / frequency_error / phase_error
@@ -2855,9 +2767,9 @@ def refit_window_core(
         new_wf.covariance = None
         new_wf.covariance_param_labels = None
         logger.debug(
-            "Stage 6 refit window %d: re-inserted %d thawed peak(s) verbatim",
+            "Stage 6 refit window %d: re-inserted %d held peak(s) verbatim",
             window_id,
-            len(thawed_held_peaks),
+            len(held_peaks),
         )
 
     # Carry the construction provenance forward. A refit replays/edits the

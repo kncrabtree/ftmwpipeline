@@ -1112,8 +1112,8 @@ What is left in the file is the same as after a cancel at that point.
   - the same lines, `peak_uid`s and window structure;
   - parameters equal to floating-point rounding.
 
-  An accepted thaw during a resume refits every window sequentially, as an
-  uninterrupted run with an accepted thaw already does.
+  An accepted thaw during a resume refits every window sequentially: a
+  carried window may have read a primary the thaw changes.
 - **Resume summary.** `fit run`'s `run_result` summary, and therefore its
   `StageFinished.summary`, carries:
   - `resumed` (`bool`);

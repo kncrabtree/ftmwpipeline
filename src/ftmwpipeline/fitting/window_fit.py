@@ -83,6 +83,8 @@ from .validation import (
 
 __all__ = [
     "ParameterErrors",
+    "TauGroup",
+    "FittedTau",
     "WindowFitResult",
     "FrozenSkirt",
     "frozen_skirt_delta",
@@ -538,6 +540,65 @@ class ParameterErrors:
     phase: float
 
 
+@dataclass(frozen=True)
+class TauGroup:
+    """One decay constant of a fit over several stacked windows.
+
+    Every line the fit draws on ``bins`` -- its free lines and its frozen skirt
+    -- decays with this group's ``tau``, as each window's own fit draws every
+    line it carries at that window's ``tau`` (the thaw co-fit,
+    :func:`fit_window`'s ``tau_groups``).
+
+    Attributes
+    ----------
+    bins : np.ndarray
+        Boolean mask of the grid bins in the group. A fit's groups partition
+        its grid.
+    tau0_us : float
+        The group's starting ``tau``, and its held value when not fit.
+    fit : bool
+        Whether the group's ``tau`` is free (when the fit's ``fit_tau`` is).
+    tau_bounds : tuple of float, optional
+        ``(lo, hi)`` bounds of a free group's ``tau``; ``None`` bounds it to
+        ``[tau0 / k, tau0 * k]`` with ``k`` the fit's ``max_decay_factor``.
+    prior_lambda : float, default 0.0
+        Weight of the prior on a free group's ``tau``, the same prior a
+        single-window fit's ``tau_penalty_lambda`` puts on its ``tau``
+        (:func:`derive_window_fit_constraints`); ``0`` for none.
+    prior_reference_us, prior_sigma_us, prior_sigma_lo_us : float, optional
+        The prior's ``tau_penalty_reference``, ``tau_penalty_sigma_us`` and
+        ``tau_penalty_sigma_lo_us``, as a single-window fit takes them.
+    """
+
+    bins: np.ndarray
+    tau0_us: float
+    fit: bool = True
+    tau_bounds: Optional[tuple[float, float]] = None
+    prior_lambda: float = 0.0
+    prior_reference_us: Optional[float] = None
+    prior_sigma_us: Optional[float] = None
+    prior_sigma_lo_us: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class FittedTau:
+    """One :class:`TauGroup`'s fitted ``tau``.
+
+    Attributes
+    ----------
+    tau_us : float
+        The fitted ``tau``, or the held ``tau0_us``.
+    tau_error : float or None
+        Its uncertainty; ``None`` when it was held.
+    fit : bool
+        Whether it was a free parameter.
+    """
+
+    tau_us: float
+    tau_error: Optional[float]
+    fit: bool
+
+
 @dataclass
 class WindowFitResult:
     """Outcome of a fixed-K :func:`fit_window` call.
@@ -624,6 +685,11 @@ class WindowFitResult:
     baseline_order: Optional[int] = field(default=None)
     baseline_coeffs: Optional[np.ndarray] = field(default=None)
     baseline_offset_scale: Optional[float] = field(default=None)
+    # One entry per :class:`TauGroup` when the fit had several (``None``
+    # otherwise). ``tau_us`` / ``tau_error`` are then the first group's,
+    # ``fit_tau`` says whether any group's tau was free, and the covariance
+    # carries the free taus, in group order, between the peaks and the baseline.
+    tau_groups: Optional[list[FittedTau]] = field(default=None)
 
     def __post_init__(self) -> None:
         if self.tau_was_fit is None:
@@ -1185,30 +1251,48 @@ def _penalty_residuals_and_jacobian(
         and tau_penalty_reference > 0.0
     ):
         # Tau is the last packed parameter when fit_tau is True.
-        tau_value = float(params[3 * k])
-        sqrt_lambda = float(np.sqrt(tau_penalty_lambda))
-        if tau_penalty_sigma_us is not None and tau_penalty_sigma_us > 0.0:
-            # (A)symmetric Gaussian prior: stiff above tau_ref (narrowing),
-            # soft below (broadening) when a distinct low-side sigma is given.
-            below = tau_value < tau_penalty_reference
-            sigma_eff = (
-                float(tau_penalty_sigma_lo_us)
-                if below
-                and tau_penalty_sigma_lo_us is not None
-                and tau_penalty_sigma_lo_us > 0.0
-                else float(tau_penalty_sigma_us)
-            )
-            res[row] = sqrt_lambda * (tau_value - tau_penalty_reference) / sigma_eff
-            jac[row, 3 * k] = sqrt_lambda / sigma_eff
-        else:
-            # Legacy one-sided hinge.
-            ratio = (tau_penalty_reference - tau_value) / tau_penalty_reference
-            if ratio > 0.0:
-                res[row] = sqrt_lambda * ratio
-                jac[row, 3 * k] = -sqrt_lambda / tau_penalty_reference
+        res[row], jac[row, 3 * k] = _tau_prior_term(
+            float(params[3 * k]),
+            tau_penalty_lambda,
+            float(tau_penalty_reference),
+            tau_penalty_sigma_us,
+            tau_penalty_sigma_lo_us,
+        )
         row += 1
 
     return res, jac
+
+
+def _tau_prior_term(
+    tau_value: float,
+    tau_penalty_lambda: float,
+    tau_penalty_reference: float,
+    tau_penalty_sigma_us: Optional[float],
+    tau_penalty_sigma_lo_us: Optional[float],
+) -> tuple[float, float]:
+    """The tau prior's residual and its derivative in ``tau``
+    (:func:`_penalty_residuals_and_jacobian`'s tau anchoring penalty)."""
+    sqrt_lambda = float(np.sqrt(tau_penalty_lambda))
+    if tau_penalty_sigma_us is not None and tau_penalty_sigma_us > 0.0:
+        # (A)symmetric Gaussian prior: stiff above tau_ref (narrowing),
+        # soft below (broadening) when a distinct low-side sigma is given.
+        below = tau_value < tau_penalty_reference
+        sigma_eff = (
+            float(tau_penalty_sigma_lo_us)
+            if below
+            and tau_penalty_sigma_lo_us is not None
+            and tau_penalty_sigma_lo_us > 0.0
+            else float(tau_penalty_sigma_us)
+        )
+        return (
+            sqrt_lambda * (tau_value - tau_penalty_reference) / sigma_eff,
+            sqrt_lambda / sigma_eff,
+        )
+    # Legacy one-sided hinge.
+    ratio = (tau_penalty_reference - tau_value) / tau_penalty_reference
+    if ratio > 0.0:
+        return sqrt_lambda * ratio, -sqrt_lambda / tau_penalty_reference
+    return 0.0, 0.0
 
 
 def fit_window(
@@ -1239,6 +1323,10 @@ def fit_window(
     baseline_order: Optional[int] = None,
     baseline_offset_scale: Optional[float] = None,
     initial_baseline_coeffs: Optional[np.ndarray] = None,
+    baseline_design: Optional[np.ndarray] = None,
+    peak_bins: Optional[Sequence[Optional[np.ndarray]]] = None,
+    peak_offset_bounds: Optional[Sequence[tuple[float, float]]] = None,
+    tau_groups: Optional[Sequence[TauGroup]] = None,
     frozen_skirts: Optional[Sequence[FrozenSkirt]] = None,
 ) -> WindowFitResult:
     """Fit a fixed number of lines to one window by complex least squares.
@@ -1330,6 +1418,37 @@ def fit_window(
         Conditioning scale ``u_s`` for the baseline abscissa; defaults to
         ``max|u|`` (or ``1.0`` for an all-zero grid). Only used when
         ``baseline_order`` is set.
+    baseline_design : np.ndarray, optional
+        A real ``(M, n)`` basis used in place of the polynomial one, one column
+        per complex coefficient; exclusive with ``baseline_order``. It lets one
+        fit carry several windows' baselines, each a block of columns that is
+        zero off its own bins (the thaw co-fit). The result carries the ``n``
+        coefficients on ``baseline_coeffs`` in column order and leaves
+        ``baseline_order`` / ``baseline_offset_scale`` unset, since no single
+        polynomial describes them. ``initial_baseline_coeffs``, when given,
+        seeds them in the same order.
+    peak_bins : sequence of (np.ndarray or None), optional
+        One entry per line of ``initial_peaks``: a boolean mask of the bins the
+        line is drawn on, or ``None`` for every bin (the default for all). A
+        fit over several stacked windows draws each line only where that
+        window's own model carries it (the thaw co-fit). Lines given the same
+        mask object are evaluated together.
+    peak_offset_bounds : sequence of (float, float), optional
+        One ``(lo, hi)`` offset bound per line of ``initial_peaks``, in place of
+        ``offset_bounds``: a fit over stacked windows bounds each line to its
+        own window's grid, as that window's own fit does.
+    tau_groups : sequence of TauGroup, optional
+        Several decay constants in place of the one shared ``tau``: every line
+        and frozen skirt is drawn on each group's bins at that group's ``tau``
+        (a fit over stacked windows, each with its own ``tau``: the thaw
+        co-fit). The groups must partition the grid; each starts at its own
+        ``tau0_us`` and has its own bounds (``tau0_us`` is not used, and
+        ``tau_bounds`` must not be given), and is free when both ``fit_tau``
+        and its ``fit`` are set.
+        A free group carries its own ``tau`` prior (``TauGroup.prior_*``) in
+        place of the fit's ``tau_penalty_*``. The result reports each on
+        :attr:`WindowFitResult.tau_groups`. Not combined with the phase,
+        amplitude or fit-level tau penalties.
     frozen_skirts : sequence of FrozenSkirt, optional
         Frozen contributors already subtracted from ``complex_spectrum`` at
         each skirt's ``tau_ref_us``. Their skirt follows the trial ``tau``
@@ -1394,12 +1513,181 @@ def fit_window(
     skirts: FrozenSkirts = tuple(frozen_skirts or ())
     shape_resolved = PeakShape.coerce(shape)
 
-    def _skirt_delta(tau: float) -> Optional[np.ndarray]:
-        return frozen_skirt_delta(skirts, u, tau, acquisition_us, shape_resolved)
+    # --- decay constants: the one shared tau, or one per TauGroup -----------
+    group_bins: list[np.ndarray] = []
+    if tau_groups is not None:
+        if not tau_groups:
+            raise ValueError("tau_groups must hold at least one group")
+        if tau_bounds is not None:
+            raise ValueError("tau_groups and tau_bounds are exclusive")
+        cover = np.zeros(m, dtype=int)
+        for grp in tau_groups:
+            gmask = np.asarray(grp.bins, dtype=bool)
+            if gmask.shape != u.shape:
+                raise ValueError("each tau group's bins must match the window grid")
+            if not grp.tau0_us > 0.0:
+                raise ValueError("each tau group's tau0_us must be positive")
+            if grp.tau_bounds is not None and not (
+                grp.tau_bounds[0] < grp.tau_bounds[1]
+            ):
+                raise ValueError("a tau group's tau_bounds must be increasing")
+            group_bins.append(gmask)
+            cover += gmask
+        if np.any(cover != 1):
+            raise ValueError("tau_groups must partition the window grid")
+        tau_masks: list[Optional[np.ndarray]] = [*group_bins]
+        tau_seeds = [float(grp.tau0_us) for grp in tau_groups]
+        tau_free = [bool(fit_tau and grp.fit) for grp in tau_groups]
+    else:
+        tau_masks, tau_seeds, tau_free = [None], [float(tau0_us)], [bool(fit_tau)]
+    # Each group's column among the free taus, packed after the peaks (None:
+    # held at its seed).
+    tau_slots: list[Optional[int]] = []
+    n_tau = 0
+    for free in tau_free:
+        tau_slots.append(n_tau if free else None)
+        n_tau += int(free)
+    # Each free group's tau prior, by its tau column (one penalty row each).
+    group_priors: list[tuple[int, TauGroup]] = []
+    for grp, slot in zip(tau_groups or (), tau_slots):
+        if slot is None or not grp.prior_lambda > 0.0:
+            continue
+        if grp.prior_reference_us is None or not grp.prior_reference_us > 0.0:
+            raise ValueError("a tau group's prior needs a positive reference")
+        group_priors.append((slot, grp))
+
+    # Each frozen skirt follows the tau of the group its bins lie in.
+    skirt_parts: list[tuple[int, FrozenSkirt]] = []
+    if tau_groups is not None:
+        for sk in skirts:
+            for g, gmask in enumerate(group_bins):
+                sk_bins = (
+                    gmask
+                    if sk.bins is None
+                    else np.asarray(sk.bins, dtype=bool) & gmask
+                )
+                if sk_bins.any():
+                    skirt_parts.append((g, replace(sk, bins=sk_bins)))
+    else:
+        skirt_parts = [(0, sk) for sk in skirts]
+
+    def _skirt_delta(taus: Sequence[float]) -> Optional[np.ndarray]:
+        if tau_groups is None:
+            return frozen_skirt_delta(
+                skirts, u, taus[0], acquisition_us, shape_resolved
+            )
+        total: Optional[np.ndarray] = None
+        for g, sk in skirt_parts:
+            d = sk.delta(u, taus[g], acquisition_us, shape_resolved)
+            if d is not None:
+                total = d if total is None else total + d
+        return total
+
+    # Lines drawn on a subset of the bins, grouped by mask (``None``: all bins).
+    line_groups: list[tuple[Optional[np.ndarray], list[int]]] = [(None, list(range(k)))]
+    if peak_bins is not None:
+        if len(peak_bins) != k:
+            raise ValueError("peak_bins must have one entry per initial peak")
+        groups: dict[int, tuple[Optional[np.ndarray], list[int]]] = {}
+        for i, mask in enumerate(peak_bins):
+            arr = None if mask is None else np.asarray(mask, dtype=bool)
+            if arr is not None and arr.shape != u.shape:
+                raise ValueError("each peak_bins mask must match the window grid")
+            groups.setdefault(-1 if mask is None else id(mask), (arr, []))[1].append(i)
+        line_groups = list(groups.values())
+    # The model is a sum of cells, each the lines of one line group drawn on
+    # its bins within one tau group at that group's tau (``None``: every bin).
+    plain = peak_bins is None and tau_groups is None
+    cells: list[tuple[Optional[np.ndarray], int, list[int]]] = []
+    for g, tmask in enumerate(tau_masks):
+        for pmask, idx in line_groups:
+            if tmask is None or pmask is None:
+                cell = tmask if pmask is None else pmask
+            else:
+                cell = tmask & pmask
+            if cell is None or cell.any():
+                cells.append((cell, g, idx))
+
+    def _peak_model(peaks: Sequence[ModelPeak], taus: Sequence[float]) -> np.ndarray:
+        if plain:
+            return model_spectrum(
+                u, peaks, taus[0], acquisition_us, shape=shape_resolved
+            )
+        total = np.zeros(m, dtype=np.complex128)
+        for cell, g, idx in cells:
+            sel = [peaks[i] for i in idx]
+            if cell is None:
+                total += model_spectrum(
+                    u, sel, taus[g], acquisition_us, shape=shape_resolved
+                )
+            else:
+                total[cell] += model_spectrum(
+                    u[cell], sel, taus[g], acquisition_us, shape=shape_resolved
+                )
+        return total
+
+    def _peak_jacobian(peaks: Sequence[ModelPeak], taus: Sequence[float]) -> np.ndarray:
+        if plain:
+            return model_jacobian(
+                u,
+                peaks,
+                taus[0],
+                acquisition_us,
+                include_tau=fit_tau,
+                shape=shape_resolved,
+            )
+        total = np.zeros((m, 3 * k + n_tau), dtype=np.complex128)
+        for cell, g, idx in cells:
+            slot = tau_slots[g]
+            rows: Any = slice(None) if cell is None else cell
+            part = model_jacobian(
+                u if cell is None else u[cell],
+                [peaks[i] for i in idx],
+                taus[g],
+                acquisition_us,
+                include_tau=slot is not None,
+                shape=shape_resolved,
+            )
+            for j, i in enumerate(idx):
+                total[rows, 3 * i : 3 * i + 3] = part[:, 3 * j : 3 * j + 3]
+            if slot is not None:
+                total[rows, 3 * k + slot] += part[:, 3 * len(idx)]
+        return total
+
+    def _unpack_taus(
+        params: np.ndarray, seed_peaks: Optional[Sequence[ModelPeak]] = None
+    ) -> tuple[list[ModelPeak], list[float]]:
+        if tau_groups is None:
+            peaks, tau = _unpack(params, k, tau0_us, fit_tau, seed_peaks)
+            return peaks, [tau]
+        peaks, _ = _unpack(params, k, tau0_us, False, seed_peaks)
+        taus = [
+            seed if slot is None else float(params[3 * k + slot])
+            for slot, seed in zip(tau_slots, tau_seeds)
+        ]
+        return peaks, taus
+
+    def _fitted_taus(
+        taus: Sequence[float], covariance: Optional[np.ndarray]
+    ) -> Optional[list[FittedTau]]:
+        if tau_groups is None:
+            return None
+        out: list[FittedTau] = []
+        for tau, slot in zip(taus, tau_slots):
+            err: Optional[float] = None
+            if slot is not None:
+                var = (
+                    float(covariance[3 * k + slot, 3 * k + slot])
+                    if covariance is not None
+                    else float("nan")
+                )
+                err = float(np.sqrt(var)) if var > 0.0 else float("nan")
+            out.append(FittedTau(float(tau), err, slot is not None))
+        return out
 
     # --- null model: nothing to fit, but report the data's chi-squared. -----
     if k == 0:
-        null_delta = _skirt_delta(tau0_us)
+        null_delta = _skirt_delta(tau_seeds)
         z_null = z if null_delta is None else z - null_delta
         r0 = (z_null / sig_ri)[keep]
         chi2 = float(np.sum(r0.real**2 + r0.imag**2))
@@ -1407,7 +1695,7 @@ def fit_window(
             success=False,
             peaks=[],
             peak_errors=[],
-            tau_us=tau0_us,
+            tau_us=tau_seeds[0],
             tau_error=None,
             fit_tau=False,
             cost=0.5 * chi2,
@@ -1422,6 +1710,11 @@ def fit_window(
             # *final* fit (seed-knockout enforcement); the persisted
             # per-window shape attribute must still record the run's shape.
             shape=PeakShape.coerce(shape),
+            tau_groups=(
+                None
+                if tau_groups is None
+                else [FittedTau(seed, None, False) for seed in tau_seeds]
+            ),
         )
 
     if tau_bounds is None:
@@ -1432,6 +1725,13 @@ def fit_window(
         raise ValueError("tau_bounds must be an increasing (lo, hi) pair")
     if offset_bounds is None:
         offset_bounds = (float(u.min()), float(u.max()))
+    line_offset_bounds = [offset_bounds] * k
+    if peak_offset_bounds is not None:
+        if len(peak_offset_bounds) != k:
+            raise ValueError("peak_offset_bounds must have one entry per initial peak")
+        line_offset_bounds = [(float(b[0]), float(b[1])) for b in peak_offset_bounds]
+        if any(not b[0] < b[1] for b in line_offset_bounds):
+            raise ValueError("each peak_offset_bounds entry must be increasing")
 
     amp_upper = float(amp_max) if amp_max is not None and amp_max > 0.0 else np.inf
     if amp_penalty_lambda > 0.0 and amp_floor is None:
@@ -1454,10 +1754,17 @@ def fit_window(
     # peak / tau covariance slices stay at their existing offsets. Its design
     # columns are shared by a_k and b_k: ``d(model)/d(a_k) = (u/u_s)^k`` and
     # ``d(model)/d(b_k) = i (u/u_s)^k``.
-    baseline_active = baseline_order is not None and baseline_order >= 0
+    polynomial_baseline = baseline_order is not None and baseline_order >= 0
     order_resolved = baseline_order if baseline_order is not None else 0
-    n_base = (order_resolved + 1) if baseline_active else 0
-    if baseline_active:
+    u_s: Optional[float] = None
+    basis: Optional[np.ndarray] = None
+    if baseline_design is not None:
+        if polynomial_baseline:
+            raise ValueError("baseline_design and baseline_order are exclusive")
+        basis = np.asarray(baseline_design, dtype=float)
+        if basis.ndim != 2 or basis.shape[0] != m:
+            raise ValueError("baseline_design must be a (grid size, n) matrix")
+    elif polynomial_baseline:
         u_s = (
             float(baseline_offset_scale)
             if baseline_offset_scale is not None and baseline_offset_scale > 0.0
@@ -1466,26 +1773,43 @@ def fit_window(
         if not u_s > 0.0:
             u_s = 1.0
         basis = baseline_basis(u, order_resolved, u_s)  # (M, n_base) real
-        # Both real- and imag-coefficient columns of the complex model.
-        base_cols = np.concatenate([basis, 1j * basis], axis=1)  # (M, 2 n_base)
-    else:
-        u_s = None
-        basis = None
-        base_cols = None
-    base_start = 3 * k + (1 if fit_tau else 0)
+    n_base = 0 if basis is None else int(basis.shape[1])
+    baseline_active = n_base > 0
+    # Both real- and imag-coefficient columns of the complex model.
+    base_cols = (
+        np.concatenate([basis, 1j * basis], axis=1)  # (M, 2 n_base)
+        if basis is not None and baseline_active
+        else None
+    )
+    base_start = 3 * k + n_tau
 
     # --- bounds, in the packed parameter order ------------------------------
     lo: list[float] = []
     hi: list[float] = []
-    for _ in range(k):
-        lo += [0.0, offset_bounds[0], -_PHASE_BOUND]
-        hi += [amp_upper, offset_bounds[1], _PHASE_BOUND]
-    if fit_tau:
-        lo.append(tau_bounds[0])
-        hi.append(tau_bounds[1])
+    for off_lo, off_hi in line_offset_bounds:
+        lo += [0.0, off_lo, -_PHASE_BOUND]
+        hi += [amp_upper, off_hi, _PHASE_BOUND]
+    if tau_groups is None:
+        if fit_tau:
+            lo.append(tau_bounds[0])
+            hi.append(tau_bounds[1])
+        packed = _pack(initial_peaks, tau0_us, fit_tau)
+    else:
+        free_groups = [grp for grp, free in zip(tau_groups, tau_free) if free]
+        free_seeds = [float(grp.tau0_us) for grp in free_groups]
+        for grp in free_groups:
+            g_lo, g_hi = grp.tau_bounds or (
+                grp.tau0_us / max_decay_factor,
+                grp.tau0_us * max_decay_factor,
+            )
+            lo.append(float(g_lo))
+            hi.append(float(g_hi))
+        packed = np.concatenate(
+            [_pack(initial_peaks, tau0_us, False), np.asarray(free_seeds, dtype=float)]
+        )
     lo_arr = np.asarray(lo, dtype=float)
     hi_arr = np.asarray(hi, dtype=float)
-    p0 = np.clip(_pack(initial_peaks, tau0_us, fit_tau), lo_arr, hi_arr)
+    p0 = np.clip(packed, lo_arr, hi_arr)
     if baseline_active:
         # Baseline coefficients are unbounded. They seed at zero for a first fit;
         # a refit warm-starts them from the originating fit's converged
@@ -1527,24 +1851,43 @@ def fit_window(
         or amp_penalty_lambda > 0.0
         or (tau_penalty_lambda > 0.0 and fit_tau)
     )
+    if penalties_active and tau_groups is not None:
+        raise ValueError("tau_groups is not combined with the fit penalties")
+    n_params_total = 3 * k + n_tau + 2 * n_base
+
+    def _group_prior_rows(params: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        # Each free tau group's prior: one residual row on its tau column.
+        res = np.zeros(len(group_priors), dtype=float)
+        jac = np.zeros((len(group_priors), n_params_total), dtype=float)
+        for row, (slot, grp) in enumerate(group_priors):
+            res[row], jac[row, 3 * k + slot] = _tau_prior_term(
+                float(params[3 * k + slot]),
+                grp.prior_lambda,
+                float(grp.prior_reference_us or 0.0),
+                grp.prior_sigma_us,
+                grp.prior_sigma_lo_us,
+            )
+        return res, jac
 
     def _model_with_baseline(
-        peaks: Sequence[ModelPeak], tau: float, params: np.ndarray
+        peaks: Sequence[ModelPeak], taus: Sequence[float], params: np.ndarray
     ) -> np.ndarray:
-        model = model_spectrum(u, peaks, tau, acquisition_us, shape=shape_resolved)
+        model = _peak_model(peaks, taus)
         if baseline_active:
             model = model + base_cols @ params[base_start:]
         return model
 
     def residual(params: np.ndarray) -> np.ndarray:
-        peaks, tau = _unpack(params, k, tau0_us, fit_tau)
-        model = _model_with_baseline(peaks, tau, params)
+        peaks, taus = _unpack_taus(params)
+        model = _model_with_baseline(peaks, taus, params)
         # The frozen skirt follows the trial tau (D18); zero at tau_ref.
-        delta = _skirt_delta(tau)
+        delta = _skirt_delta(taus)
         if delta is not None:
             model = model + delta
         r = (z - model) / sig_ri
         data_r = np.concatenate([r.real[keep], r.imag[keep]])
+        if group_priors:
+            return np.concatenate([data_r, _group_prior_rows(params)[0]])
         if not penalties_active:
             return data_r
         pen_r, _ = _penalty_residuals_and_jacobian(
@@ -1552,31 +1895,32 @@ def fit_window(
         )
         return np.concatenate([data_r, pen_r])
 
-    def _weighted_model_jacobian(peaks: Sequence[ModelPeak], tau: float) -> np.ndarray:
+    def _weighted_model_jacobian(
+        peaks: Sequence[ModelPeak], taus: Sequence[float]
+    ) -> np.ndarray:
         # d(residual)/d(p) = -(d(model)/d(p)) / sig_ri, complex, columns =
-        # peaks (+ tau), then the baseline a_k / b_k columns.
-        dmodel = model_jacobian(
-            u,
-            peaks,
-            tau,
-            acquisition_us,
-            include_tau=fit_tau,
-            shape=shape_resolved,
-        )
-        if fit_tau and skirts:
-            # The frozen skirt shares the tau column (no columns of its own).
-            for sk in skirts:
-                dmodel[:, 3 * k] = dmodel[:, 3 * k] + sk.dtau(
-                    u, tau, acquisition_us, shape_resolved
+        # peaks (+ the free taus), then the baseline a_k / b_k columns.
+        dmodel = _peak_jacobian(peaks, taus)
+        if n_tau and skirt_parts:
+            # The frozen skirt shares its group's tau column (no columns of its
+            # own).
+            for g, sk in skirt_parts:
+                slot = tau_slots[g]
+                if slot is None:
+                    continue
+                dmodel[:, 3 * k + slot] = dmodel[:, 3 * k + slot] + sk.dtau(
+                    u, taus[g], acquisition_us, shape_resolved
                 )
         if baseline_active:
             dmodel = np.concatenate([dmodel, base_cols], axis=1)
         return cast(np.ndarray, -dmodel / sig_ri[:, np.newaxis])
 
     def jacobian(params: np.ndarray) -> np.ndarray:
-        peaks, tau = _unpack(params, k, tau0_us, fit_tau)
-        weighted = _weighted_model_jacobian(peaks, tau)
+        peaks, taus = _unpack_taus(params)
+        weighted = _weighted_model_jacobian(peaks, taus)
         data_jac = np.concatenate([weighted.real[keep], weighted.imag[keep]], axis=0)
+        if group_priors:
+            return np.concatenate([data_jac, _group_prior_rows(params)[1]], axis=0)
         if not penalties_active:
             return data_jac
         _, pen_jac = _penalty_residuals_and_jacobian(
@@ -1616,22 +1960,23 @@ def fit_window(
                 ParameterErrors(float("nan"), float("nan"), float("nan"))
                 for _ in range(k)
             ],
-            tau_us=tau0_us,
-            tau_error=float("nan") if fit_tau else None,
-            fit_tau=fit_tau,
+            tau_us=tau_seeds[0],
+            tau_error=float("nan") if tau_free[0] else None,
+            fit_tau=n_tau > 0,
             cost=float("inf"),
             chi_squared=float("inf"),
             n_data=n_data,
-            n_params=3 * k + (1 if fit_tau else 0),
+            n_params=3 * k + n_tau,
             n_function_evals=0,
             fitted_spectrum=np.zeros(m, dtype=np.complex128),
             residual=z.copy(),
             covariance=None,
             shape=shape_resolved,
+            tau_groups=_fitted_taus(tau_seeds, None),
         )
 
     sol_x = np.asarray(sol.x, dtype=float)
-    peaks, tau = _unpack(sol_x, k, tau0_us, fit_tau, seed_peaks=initial_peaks)
+    peaks, taus = _unpack_taus(sol_x, seed_peaks=initial_peaks)
     for pk in peaks:
         pk.phase = _wrap_phase(pk.phase)
     baseline_coeffs: Optional[np.ndarray] = None
@@ -1640,10 +1985,10 @@ def fit_window(
         b = sol_x[base_start + n_base : base_start + 2 * n_base]
         baseline_coeffs = a + 1j * b
 
-    fitted = _model_with_baseline(peaks, tau, sol_x)
+    fitted = _model_with_baseline(peaks, taus, sol_x)
     # The full model adds the frozen skirt at the fitted tau; ``fitted`` stays
     # the free model (peaks + baseline), the residual is against the full one.
-    final_delta = _skirt_delta(tau)
+    final_delta = _skirt_delta(taus)
     full_resid = z - fitted if final_delta is None else z - (fitted + final_delta)
     # Reported statistics are data-only (penalties act like a prior on the
     # parameters; the F-test / AIC across K stays calibrated only if chi^2
@@ -1660,7 +2005,7 @@ def fit_window(
         # likelihood's covariance. When a baseline is fit, its columns are
         # part of the Jacobian, so the inverse is the *joint* covariance and
         # the per-line errors honestly include the baseline's flexibility.
-        weighted_sol = _weighted_model_jacobian(peaks, tau)
+        weighted_sol = _weighted_model_jacobian(peaks, taus)
         data_jac = np.concatenate(
             [weighted_sol.real[keep], weighted_sol.imag[keep]], axis=0
         )
@@ -1678,16 +2023,22 @@ def fit_window(
         covariance = None
     # _parameter_errors slices the peak (front) and tau (3*k) diagonal
     # entries; baseline coefficients sit after them, so the slicing is
-    # unchanged while the covariance already reflects the joint fit.
-    peak_errors, tau_error = _parameter_errors(covariance, k, fit_tau)
+    # unchanged while the covariance already reflects the joint fit. Several
+    # tau groups put their free taus at 3*k onward instead.
+    fitted_taus = _fitted_taus(taus, covariance)
+    if fitted_taus is None:
+        peak_errors, tau_error = _parameter_errors(covariance, k, fit_tau)
+    else:
+        peak_errors, _ = _parameter_errors(covariance, k, False)
+        tau_error = fitted_taus[0].tau_error
 
     return WindowFitResult(
         success=bool(sol.success),
         peaks=peaks,
         peak_errors=peak_errors,
-        tau_us=tau,
+        tau_us=taus[0],
         tau_error=tau_error,
-        fit_tau=fit_tau,
+        fit_tau=n_tau > 0,
         cost=cost_data,
         chi_squared=chi2,
         n_data=n_data,
@@ -1697,9 +2048,10 @@ def fit_window(
         residual=full_resid,
         covariance=covariance,
         shape=shape_resolved,
-        baseline_order=order_resolved if baseline_active else None,
+        baseline_order=order_resolved if polynomial_baseline else None,
         baseline_coeffs=baseline_coeffs,
-        baseline_offset_scale=u_s if baseline_active else None,
+        baseline_offset_scale=u_s if polynomial_baseline else None,
+        tau_groups=fitted_taus,
     )
 
 

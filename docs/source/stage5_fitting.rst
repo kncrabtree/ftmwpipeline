@@ -279,7 +279,26 @@ residual leakage, and if so it renegotiates rather than shipping an under-fit wi
   longer explain the boundary, or it was flagged not freeze-eligible), the
   contributor is unfrozen and co-fit jointly with the dependent window. This does not
   fit the line a second time: its single free fit is reopened and re-determined
-  jointly across the coupled windows. An accepted co-fit refines the line in its
+  jointly across the coupled windows. The co-fit refits each window's own model,
+  its leakage-wing baseline and its own decay time included, with only the shared
+  lines' amplitude, frequency and phase tied; each line is bounded to its own
+  window's grid. Each window's decay time carries the constraint of its own fit:
+  free exactly when that fit freed it, and bounded and anchored as that fit was (by
+  its band's calibrated decay time and spread, within ``max_decay_factor``; the band
+  is widened to the fit's own value when a later cleanup refit, bounded only by
+  ``max_decay_factor``, left it outside), so a thaw cannot pass by releasing the
+  dependent's decay time. A shared line is drawn at each window's own decay time on
+  that window's bins. That is a convention, not a negligible approximation: for a
+  Lorentzian line the finite-record truncation scales the far skirt by a factor
+  that depends on the decay time and not on the offset, so on the dependent's bins
+  the skirt differs from the one at the primary's decay time by up to several
+  percent, growing with the difference between the two decay times, a difference
+  the line's amplitude and phase can trade against. The co-fit carries no phase or
+  amplitude penalty, which the dependent's own fit does; that alone moves a flagged
+  edge a little, thaw or not, though on the reference fixtures it decides no thaw.
+  The co-fit is accepted when the flagged edge of the dependent model it would
+  install, with every line the dependent reads from the primary drawn, no longer
+  carries coherent leakage. An accepted co-fit refines the line in its
   primary window, which owns it, and the dependent re-freezes everything it reads
   from that primary from the refined fit, by the same rule that froze it. The line
   stays out of the dependent's free peaks, and so out of its line list. It is the

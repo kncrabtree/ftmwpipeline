@@ -888,3 +888,340 @@ class TestComplexBaseline:
         assert r.baseline_order is None
         assert r.baseline_coeffs is None
         assert r.baseline_offset_scale is None
+
+
+class TestStackedWindowModel:
+    """``baseline_design`` and ``peak_bins``: one fit over stacked windows, each
+    slice carrying its own model (the thaw co-fit)."""
+
+    def _stack(self):
+        u = _offset_grid(1.0)
+        # The second slice sits 3 MHz up in the shared frame.
+        grid = np.concatenate([u, u + 3.0])
+        first = np.zeros(grid.size, dtype=bool)
+        first[: u.size] = True
+        return u, grid, first
+
+    def test_a_polynomial_design_reproduces_the_baseline_order_fit(self):
+        from ftmwpipeline.fitting.window_fit import baseline_basis
+
+        u = _offset_grid(2.0)
+        u_s = float(np.max(np.abs(u)))
+        z = model_spectrum(u, [ModelPeak(6.0, 0.23, 0.7)], TAU_US, T_US) + (
+            0.4 - 0.25j
+        ) * (1.0 + 0.3 * u / u_s)
+        sigma = np.full(u.size, 0.02)
+        init = [ModelPeak(5.0, 0.10, 0.0)]
+        by_order = fit_window(u, z, sigma, init, TAU_US, T_US, baseline_order=1)
+        by_design = fit_window(
+            u, z, sigma, init, TAU_US, T_US, baseline_design=baseline_basis(u, 1, u_s)
+        )
+        assert by_design.baseline_coeffs == pytest.approx(by_order.baseline_coeffs)
+        assert by_design.chi_squared == pytest.approx(by_order.chi_squared)
+        assert by_design.n_params == by_order.n_params
+        assert by_design.baseline_order is None
+        np.testing.assert_allclose(by_design.covariance, by_order.covariance)
+
+    def test_each_slice_keeps_its_own_lines_and_pedestal(self):
+        """Line A is in both slices, line B in the second only, and each slice
+        has its own constant pedestal: recovered exactly, tau included."""
+        u, grid, first = self._stack()
+        line_a = ModelPeak(8.0, 0.1, 0.4)
+        line_b = ModelPeak(3.0, 3.2, -0.9)
+        tau = 4.2
+        z = model_spectrum(grid, [line_a], tau, T_US) + np.where(
+            first,
+            0.3 + 0.1j,
+            model_spectrum(grid, [line_b], tau, T_US) + (-0.2 + 0.25j),
+        )
+        design = np.stack([first, ~first], axis=1).astype(float)
+        fit = fit_window(
+            grid,
+            z,
+            np.full(grid.size, 0.02),
+            [ModelPeak(7.0, 0.05, 0.0), ModelPeak(2.5, 3.15, 0.0)],
+            TAU_US,
+            T_US,
+            baseline_design=design,
+            peak_bins=[None, ~first],
+        )
+        assert fit.chi_squared < 1e-12
+        assert fit.tau_us == pytest.approx(tau, rel=1e-6)
+        assert fit.peaks[1].offset_mhz == pytest.approx(3.2, abs=1e-6)
+        assert fit.baseline_coeffs == pytest.approx([0.3 + 0.1j, -0.2 + 0.25j])
+        assert fit.n_params == 3 * 2 + 1 + 2 * 2
+
+    def test_the_covariance_reads_the_masked_jacobian(self):
+        """A masked line's Jacobian columns are zero off its bins, and it
+        contributes to the shared tau column only on them."""
+        from ftmwpipeline.fitting import window_fit
+
+        u, grid, first = self._stack()
+        peaks = [ModelPeak(8.0, 0.1, 0.4), ModelPeak(3.0, 3.2, -0.9)]
+        mask = ~first
+        analytic = model_jacobian(grid, peaks[:1], TAU_US, T_US, include_tau=True)
+        part = model_jacobian(grid, peaks[1:], TAU_US, T_US, include_tau=True)
+        part = part * mask[:, np.newaxis]
+        expected = np.concatenate(
+            [analytic[:, :3], part[:, :3], analytic[:, 3:] + part[:, 3:]], axis=1
+        )
+        # At the noise-free solution the fit's covariance is (J^T J)^-1 of
+        # exactly these columns.
+        z = model_spectrum(grid, peaks[:1], TAU_US, T_US) + np.where(
+            mask, model_spectrum(grid, peaks[1:], TAU_US, T_US), 0.0
+        )
+        sigma = np.full(grid.size, 0.02)
+        fit = window_fit.fit_window(
+            grid, z, sigma, peaks, TAU_US, T_US, peak_bins=[None, mask]
+        )
+        w = expected / (sigma / np.sqrt(2.0))[:, np.newaxis]
+        jac = np.concatenate([w.real, w.imag], axis=0)
+        np.testing.assert_allclose(
+            fit.covariance, np.linalg.inv(jac.T @ jac), rtol=1e-6, atol=1e-12
+        )
+
+
+class TestTauGroups:
+    """``tau_groups``: one decay constant per stacked window (the thaw co-fit)."""
+
+    def _stack(self):
+        u = _offset_grid(1.0)
+        grid = np.concatenate([u, u + 3.0])
+        first = np.zeros(grid.size, dtype=bool)
+        first[: u.size] = True
+        return grid, first
+
+    def test_one_group_over_the_grid_is_the_shared_tau_fit(self):
+        from ftmwpipeline.fitting.window_fit import TauGroup
+
+        u = _offset_grid(2.0)
+        z = model_spectrum(u, [ModelPeak(6.0, 0.23, 0.7)], 4.4, T_US)
+        sigma = np.full(u.size, 0.02)
+        init = [ModelPeak(5.0, 0.20, 0.5)]
+        plain = fit_window(u, z, sigma, init, TAU_US, T_US)
+        grouped = fit_window(
+            u,
+            z,
+            sigma,
+            init,
+            1.0,
+            T_US,
+            tau_groups=[TauGroup(np.ones(u.size, dtype=bool), TAU_US)],
+        )
+        assert grouped.tau_us == pytest.approx(plain.tau_us)
+        assert grouped.tau_error == pytest.approx(plain.tau_error)
+        assert grouped.tau_groups[0].tau_error == grouped.tau_error
+        assert grouped.peaks[0].offset_mhz == pytest.approx(plain.peaks[0].offset_mhz)
+        np.testing.assert_allclose(grouped.covariance, plain.covariance, rtol=1e-6)
+        assert plain.tau_groups is None
+
+    def test_each_slice_decays_with_its_own_tau(self):
+        """Line A spans both slices, line B is on the second only, and each
+        slice decays differently: every line on a slice takes that slice's tau,
+        so both taus are recovered exactly."""
+        from ftmwpipeline.fitting.window_fit import TauGroup
+
+        grid, first = self._stack()
+        line_a = ModelPeak(8.0, 1.6, 0.4)
+        line_b = ModelPeak(3.0, 3.2, -0.9)
+        tau_1, tau_2 = 4.2, 2.6
+        z = np.where(
+            first,
+            model_spectrum(grid, [line_a], tau_1, T_US),
+            model_spectrum(grid, [line_a, line_b], tau_2, T_US),
+        )
+        fit = fit_window(
+            grid,
+            z,
+            np.full(grid.size, 0.02),
+            [ModelPeak(7.0, 1.55, 0.0), ModelPeak(2.5, 3.15, 0.0)],
+            TAU_US,
+            T_US,
+            peak_bins=[None, ~first],
+            tau_groups=[TauGroup(first, TAU_US), TauGroup(~first, TAU_US)],
+        )
+        assert fit.chi_squared < 1e-12
+        assert [g.tau_us for g in fit.tau_groups] == pytest.approx(
+            [tau_1, tau_2], rel=1e-6
+        )
+        assert fit.n_params == 3 * 2 + 2
+        # Each tau's error is its own covariance entry, after the peak blocks.
+        for slot, g in enumerate(fit.tau_groups):
+            assert g.tau_error == pytest.approx(
+                np.sqrt(fit.covariance[6 + slot, 6 + slot])
+            )
+
+    def test_a_held_group_keeps_its_tau(self):
+        from ftmwpipeline.fitting.window_fit import TauGroup
+
+        grid, first = self._stack()
+        z = model_spectrum(grid, [ModelPeak(8.0, 2.9, 0.4)], 4.2, T_US)
+        fit = fit_window(
+            grid,
+            z,
+            np.full(grid.size, 0.02),
+            [ModelPeak(7.0, 2.85, 0.0)],
+            TAU_US,
+            T_US,
+            tau_groups=[TauGroup(first, 4.2, fit=False), TauGroup(~first, TAU_US)],
+        )
+        held, free = fit.tau_groups
+        assert (held.tau_us, held.tau_error, held.fit) == (4.2, None, False)
+        assert free.fit and free.tau_us == pytest.approx(4.2, rel=1e-6)
+        assert fit.n_params == 3 + 1
+
+    def test_groups_must_partition_the_grid(self):
+        from ftmwpipeline.fitting.window_fit import TauGroup
+
+        grid, first = self._stack()
+        z = model_spectrum(grid, [ModelPeak(8.0, 1.6, 0.4)], 4.2, T_US)
+        args = (grid, z, np.full(grid.size, 0.02), [ModelPeak(7.0, 1.55, 0.0)])
+        with pytest.raises(ValueError, match="partition"):
+            fit_window(*args, TAU_US, T_US, tau_groups=[TauGroup(first, TAU_US)])
+        with pytest.raises(ValueError, match="penalties"):
+            fit_window(
+                *args,
+                TAU_US,
+                T_US,
+                amp_penalty_lambda=1.0,
+                amp_floor=0.1,
+                tau_groups=[TauGroup(first, TAU_US), TauGroup(~first, TAU_US)],
+            )
+
+    def test_a_group_prior_is_the_single_window_tau_prior(self):
+        """A group's prior is the tau penalty a single-window fit carries: one
+        group over the grid with it reproduces the penalised fit, and the
+        reported chi-squared and covariance stay data-only."""
+        from ftmwpipeline.fitting.window_fit import TauGroup
+
+        u = _offset_grid(2.0)
+        z = model_spectrum(u, [ModelPeak(6.0, 0.23, 0.7)], 4.4, T_US)
+        sigma = np.full(u.size, 0.5)
+        init = [ModelPeak(5.0, 0.20, 0.5)]
+        prior = dict(
+            tau_penalty_reference=3.5,
+            tau_penalty_sigma_us=0.2,
+            tau_penalty_sigma_lo_us=0.4,
+        )
+        bounds = (2.0, 6.0)
+        plain = fit_window(
+            u,
+            z,
+            sigma,
+            init,
+            TAU_US,
+            T_US,
+            tau_bounds=bounds,
+            tau_penalty_lambda=50.0,
+            **prior,
+        )
+        grouped = fit_window(
+            u,
+            z,
+            sigma,
+            init,
+            1.0,
+            T_US,
+            tau_groups=[
+                TauGroup(
+                    np.ones(u.size, dtype=bool),
+                    TAU_US,
+                    tau_bounds=bounds,
+                    prior_lambda=50.0,
+                    prior_reference_us=prior["tau_penalty_reference"],
+                    prior_sigma_us=prior["tau_penalty_sigma_us"],
+                    prior_sigma_lo_us=prior["tau_penalty_sigma_lo_us"],
+                )
+            ],
+        )
+        # The prior pulls tau off the data's 4.4 toward 3.5.
+        assert 3.5 < plain.tau_us < 4.3
+        assert grouped.tau_us == pytest.approx(plain.tau_us, rel=1e-7)
+        assert grouped.chi_squared == pytest.approx(plain.chi_squared, rel=1e-7)
+        np.testing.assert_allclose(grouped.covariance, plain.covariance, rtol=1e-6)
+
+    def test_a_prior_acts_on_its_own_group_only(self):
+        """A stiff prior on one slice's tau holds it at its reference; the other
+        slice's tau, with none, goes to its data."""
+        from ftmwpipeline.fitting.window_fit import TauGroup
+
+        grid, first = self._stack()
+        z = np.where(
+            first,
+            model_spectrum(grid, [ModelPeak(8.0, 0.1, 0.4)], 4.2, T_US),
+            model_spectrum(grid, [ModelPeak(5.0, 3.2, -0.9)], 2.6, T_US),
+        )
+        fit = fit_window(
+            grid,
+            z,
+            np.full(grid.size, 0.02),
+            [ModelPeak(7.0, 0.05, 0.0), ModelPeak(4.0, 3.15, 0.0)],
+            TAU_US,
+            T_US,
+            peak_bins=[first, ~first],
+            tau_groups=[
+                TauGroup(first, TAU_US),
+                TauGroup(
+                    ~first,
+                    TAU_US,
+                    prior_lambda=1e6,
+                    prior_reference_us=3.3,
+                    prior_sigma_us=0.1,
+                ),
+            ],
+        )
+        free, anchored = fit.tau_groups
+        assert anchored.tau_us == pytest.approx(3.3, abs=5e-3)
+        assert free.tau_us == pytest.approx(4.2, rel=1e-6)
+        with pytest.raises(ValueError, match="reference"):
+            fit_window(
+                grid,
+                z,
+                np.full(grid.size, 0.02),
+                [ModelPeak(7.0, 1.55, 0.0)],
+                TAU_US,
+                T_US,
+                tau_groups=[
+                    TauGroup(first, TAU_US, prior_lambda=1.0),
+                    TauGroup(~first, TAU_US),
+                ],
+            )
+
+
+class TestPeakOffsetBounds:
+    """``peak_offset_bounds``: one offset bound per line, in place of the
+    fit-wide ``offset_bounds``."""
+
+    def test_each_line_is_held_in_its_own_bounds(self):
+        u = _offset_grid(2.0)
+        z = model_spectrum(
+            u, [ModelPeak(6.0, -0.5, 0.7), ModelPeak(4.0, 0.6, -0.3)], TAU_US, T_US
+        )
+        sigma = np.full(u.size, 0.02)
+        init = [ModelPeak(5.0, -0.45, 0.0), ModelPeak(3.0, 0.55, 0.0)]
+        free = fit_window(u, z, sigma, init, TAU_US, T_US)
+        assert [p.offset_mhz for p in free.peaks] == pytest.approx(
+            [-0.5, 0.6], abs=1e-6
+        )
+        # The second line's bound stops short of its true offset: it is pinned
+        # at the bound, while the first line keeps the grid span.
+        held = fit_window(
+            u,
+            z,
+            sigma,
+            init,
+            TAU_US,
+            T_US,
+            peak_offset_bounds=[(float(u.min()), float(u.max())), (0.0, 0.5)],
+        )
+        assert held.peaks[1].offset_mhz == pytest.approx(0.5, abs=1e-9)
+        assert held.peaks[1].offset_mhz <= 0.5
+
+    def test_one_increasing_bound_per_line(self):
+        u = _offset_grid(2.0)
+        z = model_spectrum(u, [ModelPeak(6.0, -0.5, 0.7)], TAU_US, T_US)
+        args = (u, z, np.full(u.size, 0.02), [ModelPeak(5.0, -0.45, 0.0)])
+        with pytest.raises(ValueError, match="one entry per initial peak"):
+            fit_window(*args, TAU_US, T_US, peak_offset_bounds=[(-1.0, 1.0)] * 2)
+        with pytest.raises(ValueError, match="increasing"):
+            fit_window(*args, TAU_US, T_US, peak_offset_bounds=[(1.0, -1.0)])
