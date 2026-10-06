@@ -49,6 +49,8 @@ def test_attributes_and_wire_form():
         "message": "m",
         "reason": "targets_span_windows",
         "ids": [3, 7],
+        "action_indices": None,
+        "action_indices_absent": "not_run",
     }
     assert list(d)[:3] == ["schema", "code", "message"]
     json.dumps(d, allow_nan=False)

@@ -355,6 +355,21 @@ class AnalysisEpochMismatchError(PipelineFileError, ValueError):
         return values
 
 
+def _optional_indices(indices: Optional[Sequence[int]]) -> Optional[List[int]]:
+    """A batch refusal's request positions as a list (``None`` kept)."""
+    return None if indices is None else [int(i) for i in indices]
+
+
+def _absent_action_indices(values: Dict[str, Any]) -> Dict[str, Any]:
+    """``action_indices`` in contract form: ``Absent.NOT_RUN`` outside a
+    curation batch."""
+    from .contract import Absent
+
+    if values["action_indices"] is None:
+        values["action_indices"] = Absent.NOT_RUN
+    return values
+
+
 class NotFoundError(PipelineFileError, KeyError):
     """Raised when a request names something the file does not hold.
 
@@ -372,22 +387,28 @@ class NotFoundError(PipelineFileError, KeyError):
         What kind of thing was looked up.
     ids : list of int, float or str
         Every requested id that does not exist, in request order.
+    action_indices : list of int or None
+        Raised inside a curation batch: the 0-based positions, in the request,
+        of the action(s) that failed (several when coalesced rows failed as
+        one edit). ``None`` (wire: ``Absent.NOT_RUN``) outside a batch.
     """
 
     code: ClassVar[str] = "not_found"
-    contract_fields: ClassVar[Tuple[str, ...]] = ("kind", "ids")
+    contract_fields: ClassVar[Tuple[str, ...]] = ("kind", "ids", "action_indices")
 
     def __init__(
         self,
         kind: str,
         ids: Sequence[Union[int, float, str]],
         *,
+        action_indices: Optional[Sequence[int]] = None,
         message: Optional[str] = None,
     ) -> None:
         if isinstance(ids, (str, bytes)):
             raise TypeError("ids must be a sequence of ids, not a single string")
         self.kind = kind
         self.ids: List[Union[int, float, str]] = list(ids)
+        self.action_indices = _optional_indices(action_indices)
         if message is None:
             listed = ", ".join(str(i) for i in self.ids)
             message = f"No {kind} with id: {listed}"
@@ -395,6 +416,9 @@ class NotFoundError(PipelineFileError, KeyError):
 
     def __str__(self) -> str:
         return self.message
+
+    def _contract_values(self) -> Dict[str, Any]:
+        return _absent_action_indices(super()._contract_values())
 
 
 class PipelineFileNotFoundError(NotFoundError, FileNotFoundError):
@@ -548,28 +572,36 @@ class CurationConflictError(PipelineFileError, ValueError):
     ids : list of int
         The windows, peaks or decisions the conflict involves (which kind is
         fixed by ``reason``); empty when the conflict names none.
+    action_indices : list of int or None
+        As for :class:`NotFoundError`: inside a curation batch, the 0-based
+        request positions of the action(s) that failed; else ``None``.
     """
 
     code: ClassVar[str] = "curation_conflict"
-    contract_fields: ClassVar[Tuple[str, ...]] = ("reason", "ids")
+    contract_fields: ClassVar[Tuple[str, ...]] = ("reason", "ids", "action_indices")
 
     def __init__(
         self,
         reason: str,
         ids: Sequence[int] = (),
         *,
+        action_indices: Optional[Sequence[int]] = None,
         message: Optional[str] = None,
     ) -> None:
         if isinstance(ids, (str, bytes)):
             raise TypeError("ids must be a sequence of ids, not a single string")
         self.reason = str(reason)
         self.ids: List[int] = list(ids)
+        self.action_indices = _optional_indices(action_indices)
         if message is None:
             listed = ", ".join(str(i) for i in self.ids)
             message = f"curation conflict ({self.reason})" + (
                 f": {listed}" if listed else ""
             )
         super().__init__(message)
+
+    def _contract_values(self) -> Dict[str, Any]:
+        return _absent_action_indices(super()._contract_values())
 
 
 class AlgorithmFailedError(PipelineFileError, RuntimeError):

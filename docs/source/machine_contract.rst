@@ -281,7 +281,9 @@ carries a stable ``code`` and typed attributes, and ``to_dict()`` returns::
      - ``NotFoundError``
      - ``kind`` (``"window"``, ``"peak"``, ``"file"`` or ``"decision"``),
        ``ids`` (every id the request named that does not exist; a peak or
-       window named by frequency is reported by that frequency in MHz)
+       window named by frequency is reported by that frequency in MHz),
+       ``action_indices`` (the failed curation-batch actions; see
+       :ref:`contract-curation-refusals`)
    * - ``not_found``
      - ``PipelineFileNotFoundError`` (a path that does not exist)
      - ``kind`` (``"file"``), ``ids`` (the path)
@@ -332,7 +334,7 @@ carries a stable ``code`` and typed attributes, and ``to_dict()`` returns::
      - ``CurationConflictError`` (a ``ValueError``)
      - ``reason`` (a stable slug, see :ref:`contract-curation-refusals`),
        ``ids`` (the windows, peaks or decisions involved, per ``reason``;
-       ``[]`` when it names none)
+       ``[]`` when it names none), ``action_indices`` (as for ``not_found``)
    * - ``pipeline_error``
      - ``PipelineFileError`` (the base class)
      - none. The declared fallback: a direct raise of the base class carries
@@ -511,7 +513,28 @@ The review calls (``review_edit``, ``review_apply``, ``review_preview``,
 ``review_create``, ``review_accept``, ``review_undo`` and their ``Pipeline``,
 session and CLI spellings) refuse with typed errors. A batch refusal that names
 one action keeps its type and adds the action to the message (``curation action
-<n> (...) failed: ...``).
+<n> (...) failed: ...``; ``curation actions <n>, <m> (...)`` for an edit that
+coalesced several add/remove rows). ``<n>`` is the action's 1-based position in
+the request, not in the resolved plan, which runs creates first and then the
+edits by ascending window.
+
+A ``not_found`` or ``curation_conflict`` raised this way (contract 17) carries
+``action_indices``: the 0-based request positions of the failed action, several
+for a coalesced edit, ascending. They are numbered as ``actions[<i>]`` is; in a
+curation file, the action rows are numbered in order, without comment, blank
+or header lines, so a file and the same actions given as data agree. Outside a
+batch, and for a refusal of the whole batch at once (every unknown window or
+``peak_uid`` it names, every uncovered ``remove``), ``action_indices`` is
+``None``: on the wire ``null`` with ``action_indices_absent: "not_run"``. Each
+``PlannedAction`` of a result's ``plan`` carries the same ``action_indices``.
+
+The advisories of ``review_apply`` (including ``dry_run``) and
+``review_preview`` are ``warnings``, a list of strings, and, entry for entry,
+``warning_details``: a ``CurationWarningDetail`` of ``message`` (the string)
+and ``action_indices`` (the request positions the advisory is about; for the
+frame-mismatch advisory, the actions whose candidates matched, a coalesced
+edit's rows together). ``review preview --json`` carries both keys. The
+``frame_mismatch`` event's ``actions`` are the same request positions.
 
 * ``bad_setting``, with ``path`` naming what the caller wrote:
 
@@ -829,7 +852,8 @@ keys of the verb's ``StageFinished.summary``,
        ``acknowledge-environment``
      - n/a
      - ``{"windows": [...]}`` / ``{"entries": [...], "refit_required"}`` /
-       ``{"warnings", "created_windows", "windows"}`` / the snap tolerance /
+       ``{"warnings", "warning_details", "created_windows", "windows"}`` /
+       the snap tolerance /
        the acknowledgement
    * - ``settings show`` / ``defaults``
      - n/a

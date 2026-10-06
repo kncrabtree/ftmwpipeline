@@ -260,6 +260,10 @@ SNAPSHOT_FIELDS: dict = {
     "RefitWindowResult": {"converged"},
     "PreviewWindowResult": {"converged"},
     "AppliedWindowResult": {"converged"},
+    "PlannedAction": {"action_indices"},
+    "CurationWarningDetail": {"message", "action_indices"},
+    "CurationApplyResult": {"warnings", "warning_details"},
+    "ReviewPreviewResult": {"warnings", "warning_details"},
     "CurationAction": {"action", "window_id", "peak_uid", "epsilon"},
     "SettingRow": {"path", "value", "type", "nullable", "units", "choices", "bounds"},
     "PipelineInfo": {
@@ -638,8 +642,12 @@ def test_declared_conditional_metadata_scalars_are_written_by_their_stage():
 def _type_registry() -> dict:
     from ftmwpipeline._internal.stage6_impl import (
         AppliedWindowResult,
+        CurationApplyResult,
+        CurationWarningDetail,
+        PlannedAction,
         PreviewWindowResult,
         RefitWindowResult,
+        ReviewPreviewResult,
     )
     from ftmwpipeline._internal.tuning.settings_inspection import SettingRow
     from ftmwpipeline.contract import EVENT_TYPES, WindowStatusRow
@@ -661,6 +669,10 @@ def _type_registry() -> dict:
         "RefitWindowResult": RefitWindowResult,
         "PreviewWindowResult": PreviewWindowResult,
         "AppliedWindowResult": AppliedWindowResult,
+        "PlannedAction": PlannedAction,
+        "CurationWarningDetail": CurationWarningDetail,
+        "CurationApplyResult": CurationApplyResult,
+        "ReviewPreviewResult": ReviewPreviewResult,
         "CurationAction": CurationAction,
         "SettingRow": SettingRow,
     }

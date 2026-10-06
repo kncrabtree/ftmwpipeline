@@ -755,7 +755,12 @@ class TestFrameAdvisoryPerAction:
         assert len(preview.warnings) == 1
         assert "calibrated" in preview.warnings[0].lower()
         (event,) = self._frame_events(events)
-        assert event.details["actions"]  # the plan positions that matched
+        # The request positions whose candidates matched: the three raw
+        # actions, as the event and the result's warning detail both say.
+        (detail,) = preview.warning_details
+        assert detail.message == preview.warnings[0]
+        assert event.details["actions"] == detail.action_indices
+        assert {0, 1, 2} <= set(detail.action_indices)
 
     def test_apply_fires_it_too_and_still_applies(self, sc_multi_file: Path) -> None:
         actions = self._actions(sc_multi_file, n_raw=3, n_cal=1)
@@ -766,6 +771,25 @@ class TestFrameAdvisoryPerAction:
         assert result.applied >= 1  # advisory only: never a refusal
         assert len(result.warnings) == 1
         assert len(self._frame_events(events)) == 1
+
+    def test_the_cli_preview_carries_the_warning_details(
+        self, sc_multi_file: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        actions = self._actions(sc_multi_file, n_raw=3, n_cal=1)
+        expected = ftmw.review_preview(str(sc_multi_file), actions=actions)
+        spec = tmp_path / "actions.json"
+        spec.write_text(json.dumps([a.to_dict() for a in actions]))
+        capsys.readouterr()
+        rc = main(
+            ["review", "preview", str(sc_multi_file), "--actions", str(spec), "--json"]
+        )
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["warnings"] == expected.warnings
+        assert payload["warning_details"] == [
+            {"message": d.message, "action_indices": d.action_indices}
+            for d in expected.warning_details
+        ]
 
     def test_the_same_raw_actions_alone_fire_identically(
         self, sc_multi_file: Path

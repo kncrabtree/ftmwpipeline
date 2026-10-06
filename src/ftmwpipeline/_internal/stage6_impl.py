@@ -4401,6 +4401,14 @@ class CurationOp:
         it (``curation[line <n>].freqs``, or ``actions[<i>].freq_mhz`` for a
         batch of actions), which a refused ``create`` anchor is reported at;
         ``None`` for an op replayed from the decision log.
+    action_index : int or None
+        The 0-based position of the action in the request: its index in an
+        ``actions=`` batch, or for a curation file the row's position among
+        the file's action rows (blank, comment and header lines are not
+        counted, so row *i* of a file and ``actions[i]`` of the same request
+        given as data agree). Both halves of an implied create/add pair carry
+        their one row's index. ``None`` for an op that is not part of a
+        request.
     """
 
     action: str
@@ -4410,6 +4418,7 @@ class CurationOp:
     line_no: int
     implied_create: bool = False
     freq_cell: Optional[str] = field(default=None, compare=False, repr=False)
+    action_index: Optional[int] = field(default=None, compare=False, repr=False)
 
 
 @dataclass
@@ -4519,6 +4528,14 @@ class PlannedAction:
     """``create`` only: the ``bad_setting`` path of the anchor as the caller
     wrote it (:attr:`CurationOp.freq_cell`), where a refused anchor is
     reported inside a batch (:func:`_raise_curation_failure`)."""
+    action_indices: List[int] = field(default_factory=list)
+    """The 0-based request positions (:attr:`CurationOp.action_index`) of the
+    action(s) this one was resolved from, ascending: several for an ``edit``
+    that coalesced several rows, one otherwise. A batch refusal
+    (:func:`_raise_curation_failure`) and a dry-run advisory
+    (:class:`CurationWarningDetail`) name the request by these, not by this
+    action's position in the plan, which coalescing and canonical ordering
+    renumber. Empty for an action not resolved from a request."""
 
 
 @dataclass
@@ -4694,6 +4711,30 @@ def _applied_window_from_preview(pw: "PreviewWindowResult") -> AppliedWindowResu
 
 
 @dataclass
+class CurationWarningDetail:
+    """One curation advisory, with the request actions it is about.
+
+    Attributes
+    ----------
+    message : str
+        The advisory, exactly as it appears in the result's ``warnings``.
+    action_indices : list of int
+        The 0-based request positions of the actions it concerns (the
+        numbering of ``actions[<i>]``; a file's action rows in order),
+        ascending -- several when coalesced rows share one edit, or for the
+        frame-mismatch advisory, every action whose candidate matched.
+    """
+
+    message: str
+    action_indices: List[int] = field(default_factory=list)
+
+
+def _warning_messages(details: Sequence[CurationWarningDetail]) -> List[str]:
+    """The ``warnings`` string list a result carries beside its details."""
+    return [d.message for d in details]
+
+
+@dataclass
 class CurationApplyResult:
     """Outcome of :func:`apply_curation_impl`.
 
@@ -4706,6 +4747,9 @@ class CurationApplyResult:
         advisories (ambiguous or unmatched targets) plus the A5
         frame-mismatch diagnostic (:func:`_frame_mismatch_warnings`) when the
         batch's own signature suggests it.
+    warning_details : list of CurationWarningDetail
+        The same advisories, in the same order, each with the request
+        actions it concerns.
     applied : int
         Number of actions executed (``0`` for a dry run).
     dry_run : bool
@@ -4744,6 +4788,7 @@ class CurationApplyResult:
     created_windows: List[PlannedWindowResult] = field(default_factory=list)
     windows: Dict[int, AppliedWindowResult] = field(default_factory=dict)
     base_changed: bool = False
+    warning_details: List[CurationWarningDetail] = field(default_factory=list)
     #: The stages the call invalidated (canonical names, ``rerun_order``):
     #: always ``()``, since Stage 6 invalidates no stage.
     invalidated: Tuple[str, ...] = field(default=(), compare=False)
@@ -5055,6 +5100,7 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                 params=params,
                 line_no=line_no,
                 freq_cell=_curation_cell(line_no, "freqs"),
+                action_index=len(ops),
             )
         )
 
@@ -5242,6 +5288,7 @@ def _action_to_op(
         params=params,
         line_no=index + 1,
         freq_cell=f"actions[{index}].freq_mhz",
+        action_index=index,
     )
 
 
@@ -5473,6 +5520,7 @@ def _resolve_curation_window_ids(
                     line_no=op.line_no,
                     implied_create=True,
                     freq_cell=op.freq_cell,
+                    action_index=op.action_index,
                 )
             )
             resolved.append(replace(op, window_id=correlation_id, implied_create=True))
@@ -5596,6 +5644,16 @@ def _batch_known_window_ids(
     }
 
 
+def _curation_failure_tag(index: int, action: PlannedAction) -> str:
+    """The message prefix naming the failed action: by its 1-based request
+    position(s) (:attr:`PlannedAction.action_indices`), or by its plan
+    position *index* for an action not resolved from a request."""
+    sources = action.action_indices or [index]
+    which = "action" if len(sources) == 1 else "actions"
+    numbers = ", ".join(str(i + 1) for i in sources)
+    return f"curation {which} {numbers} ({describe_planned_action(action)}) failed"
+
+
 def _raise_curation_failure(
     index: int, action: PlannedAction, exc: Exception
 ) -> NoReturn:
@@ -5603,12 +5661,14 @@ def _raise_curation_failure(
 
     A typed :class:`PipelineFileError` keeps its type (a program routes on
     it); a ``not_found`` or ``curation_conflict`` is re-issued with the tag in
-    its message and the same attributes, and a create's refused anchor
+    its message, the same attributes, and ``action_indices`` -- the request
+    positions the action was resolved from -- and a create's refused anchor
     (``bad_setting`` ``anchor_mhz``) with the tag and the path of the cell or
     action field the anchor came from. Anything else becomes the historical
     tagged :class:`ValueError`.
     """
-    tag = f"curation action {index + 1} ({describe_planned_action(action)}) failed"
+    tag = _curation_failure_tag(index, action)
+    sources = list(action.action_indices) or None
     if (
         isinstance(exc, BadSettingError)
         and exc.path == "anchor_mhz"
@@ -5622,10 +5682,12 @@ def _raise_curation_failure(
         ) from exc
     if isinstance(exc, NotFoundError):
         # The batch refused with ValueError before it was typed.
-        raise NotFoundValueError(exc.kind, exc.ids, message=f"{tag}: {exc}") from exc
+        raise NotFoundValueError(
+            exc.kind, exc.ids, action_indices=sources, message=f"{tag}: {exc}"
+        ) from exc
     if isinstance(exc, CurationConflictError):
         raise CurationConflictError(
-            exc.reason, exc.ids, message=f"{tag}: {exc}"
+            exc.reason, exc.ids, action_indices=sources, message=f"{tag}: {exc}"
         ) from exc
     if isinstance(exc, PipelineFileError):
         raise exc
@@ -5680,6 +5742,7 @@ def _resolve_curation_plan(ops: Sequence[CurationOp]) -> List[PlannedAction]:
 
     for op in ops:
         wid = op.window_id
+        sources = [] if op.action_index is None else [op.action_index]
         if op.action == "create":
             plan.append(
                 PlannedAction(
@@ -5688,6 +5751,7 @@ def _resolve_curation_plan(ops: Sequence[CurationOp]) -> List[PlannedAction]:
                     anchor=_assert_plain_freq(op.freqs[0]),
                     implied_create=op.implied_create,
                     anchor_cell=op.freq_cell,
+                    action_indices=sources,
                 )
             )
             continue
@@ -5699,6 +5763,7 @@ def _resolve_curation_plan(ops: Sequence[CurationOp]) -> List[PlannedAction]:
                 )
                 pending[wid] = pa
                 pending_order.append(wid)
+            pa.action_indices.extend(sources)
             if op.action == "add":
                 pa.add.append(_assert_plain_freq(op.freqs[0]))
             else:
@@ -5715,6 +5780,7 @@ def _resolve_curation_plan(ops: Sequence[CurationOp]) -> List[PlannedAction]:
                     kind="merge",
                     window_id=wid,
                     peaks=[_assert_plain_freq(f) for f in op.freqs],
+                    action_indices=sources,
                 )
             )
         elif op.action == "split":
@@ -5724,6 +5790,7 @@ def _resolve_curation_plan(ops: Sequence[CurationOp]) -> List[PlannedAction]:
                     window_id=wid,
                     peak=_assert_plain_freq(op.freqs[0]),
                     into=int(op.params.get("into", 2)),
+                    action_indices=sources,
                 )
             )
         elif op.action == "accept":
@@ -5733,6 +5800,7 @@ def _resolve_curation_plan(ops: Sequence[CurationOp]) -> List[PlannedAction]:
                     kind="accept",
                     window_id=wid,
                     candidate=float(cand) if cand is not None else None,
+                    action_indices=sources,
                 )
             )
     for wid in list(pending_order):
@@ -5903,7 +5971,28 @@ def _curation_ambiguity_warnings(
     index: Optional[Tuple[Dict[int, List[float]], Dict[int, Set[int]]]] = None,
     planned_ranges: Optional[Dict[int, Tuple[float, float]]] = None,
 ) -> List[str]:
-    """Advisories where a curation action will not resolve against the file.
+    """The messages of :func:`_curation_ambiguity_details`."""
+    return _warning_messages(
+        _curation_ambiguity_details(
+            path,
+            plan,
+            snap_tol_mhz=snap_tol_mhz,
+            index=index,
+            planned_ranges=planned_ranges,
+        )
+    )
+
+
+def _curation_ambiguity_details(
+    path: str,
+    plan: Sequence[PlannedAction],
+    *,
+    snap_tol_mhz: float,
+    index: Optional[Tuple[Dict[int, List[float]], Dict[int, Set[int]]]] = None,
+    planned_ranges: Optional[Dict[int, Tuple[float, float]]] = None,
+) -> List[CurationWarningDetail]:
+    """Advisories where a curation action will not resolve against the file,
+    each naming the request actions of the plan action it came from.
 
     ``remove`` / ``split`` / ``merge`` match an *existing* fitted peak by nearest
     frequency within ``snap_tol_mhz``; if two peaks sit within tolerance the
@@ -6012,7 +6101,9 @@ def _curation_ambiguity_warnings(
                 f"(the edit will fail)"
             )
 
+    details: List[CurationWarningDetail] = []
     for action in plan:
+        first = len(warnings)
         wid = action.window_id
         if action.kind == "edit":
             for f in action.remove:
@@ -6030,7 +6121,11 @@ def _curation_ambiguity_warnings(
                 check(wid, f, f"merge {f:.4f}")
         elif action.kind == "split" and action.peak is not None:
             check(wid, action.peak, f"split {action.peak:.4f}")
-    return warnings
+        details.extend(
+            CurationWarningDetail(m, list(action.action_indices))
+            for m in warnings[first:]
+        )
+    return details
 
 
 # ---------------------------------------------------------------------------
@@ -6102,6 +6197,26 @@ def _frame_mismatch_warnings(
     stamp: Optional[_CalibrationStamp],
     fitted_freqs: Optional[Dict[int, List[float]]] = None,
 ) -> List[str]:
+    """The messages of :func:`_frame_mismatch_details`."""
+    return _warning_messages(
+        _frame_mismatch_details(
+            path,
+            plan,
+            raw_targets=raw_targets,
+            stamp=stamp,
+            fitted_freqs=fitted_freqs,
+        )
+    )
+
+
+def _frame_mismatch_details(
+    path: str,
+    plan: Sequence[PlannedAction],
+    *,
+    raw_targets: Optional[FrozenSet[float]],
+    stamp: Optional[_CalibrationStamp],
+    fitted_freqs: Optional[Dict[int, List[float]]] = None,
+) -> List[CurationWarningDetail]:
     """Advisory-only diagnostic (A5): flag a batch whose candidates all
     resolve with a residual consistent with a calibrated-frame curation file
     that was declared (or defaulted to) raw.
@@ -6169,8 +6284,8 @@ def _frame_mismatch_warnings(
 
     residuals: List[float] = []
     predicted: List[float] = []
-    flagged: List[int] = []
-    for action_index, action in enumerate(plan):
+    flagged: Set[int] = set()
+    for action in plan:
         wid = action.window_id
         targets: List[float] = []
         if action.kind == "edit":
@@ -6192,8 +6307,7 @@ def _frame_mismatch_warnings(
                 continue
             residuals.append(f - match)
             predicted.append((probe_freq_mhz - match) * epsilon / (1.0 + epsilon))
-            if action_index not in flagged:
-                flagged.append(action_index)
+            flagged.update(action.action_indices)
 
     if len(residuals) < _FRAME_MISMATCH_MIN_CANDIDATES:
         return []
@@ -6218,12 +6332,13 @@ def _frame_mismatch_warnings(
         f"raw; double check its frame before trusting this batch."
     )
     # The same advisory as a frame_mismatch event of the running operation
-    # (``actions``: the 0-based plan positions whose candidates matched). It
-    # stays in the result's warnings too; it has no log line.
+    # (``actions``: the 0-based request positions whose candidates matched,
+    # as in its warning detail). It stays in the result's warnings too; it has
+    # no log line.
     scope = _REVIEW_SCOPE.get()
     if scope is not None:
         scope.warn("frame_mismatch", advisory, actions=sorted(flagged))
-    return [advisory]
+    return [CurationWarningDetail(advisory, sorted(flagged))]
 
 
 # --- the automatic-fit baseline (for undo replay) --------------------------
@@ -10518,7 +10633,7 @@ def _resolve_ops_against(
     raw_targets: Optional[FrozenSet[float]],
     ctx: _BatchCtx,
     snap_tol_mhz: float,
-) -> Tuple[List[PlannedAction], List[str]]:
+) -> Tuple[List[PlannedAction], List[CurationWarningDetail]]:
     """A parsed, frame-resolved curation file's plan and advisories, resolved
     against the curated state *ctx* displays -- its in-memory fit and
     effective window plan -- rather than against the file: a log-prefix
@@ -10533,7 +10648,7 @@ def _resolve_ops_against(
         ops, path, frame=frame, stamp=stamp, coverage=_coverage_from_fit(fit)
     )
     index = _peak_index_from_fit(fit, plan)
-    warnings = _curation_ambiguity_warnings(
+    warnings = _curation_ambiguity_details(
         path,
         plan,
         snap_tol_mhz=snap_tol_mhz,
@@ -10544,14 +10659,16 @@ def _resolve_ops_against(
             )
         ),
     )
-    warnings += _frame_mismatch_warnings(
+    warnings += _frame_mismatch_details(
         path, plan, raw_targets=raw_targets, stamp=stamp, fitted_freqs=index[0]
     )
     return plan, warnings
 
 
 def _applied_curation(
-    plan: List[PlannedAction], warnings: List[str], req: _CuratedRequest
+    plan: List[PlannedAction],
+    warnings: List[CurationWarningDetail],
+    req: _CuratedRequest,
 ) -> "CurationApplyResult":
     """A live apply's result, read off the request it curated: the windows
     its actions targeted and the ones the write otherwise changed
@@ -10560,7 +10677,8 @@ def _applied_curation(
     action_indices, direct, cascaded, creates = _request_outcome(req)
     return CurationApplyResult(
         plan=plan,
-        warnings=warnings,
+        warnings=_warning_messages(warnings),
+        warning_details=warnings,
         applied=len(plan),
         dry_run=False,
         created_windows=[_planned_window_result(c) for _, c in sorted(creates.items())],
@@ -10854,10 +10972,10 @@ def apply_curation_impl(
     # ambiguity pass needs it unconditionally, and the frame diagnostic used
     # to rebuild the identical map moments later in the same call.
     peak_index = _fitted_peak_index(path, plan)
-    warnings = _curation_ambiguity_warnings(
+    warnings = _curation_ambiguity_details(
         path, plan, snap_tol_mhz=snap_tol, index=peak_index
     )
-    warnings += _frame_mismatch_warnings(
+    warnings += _frame_mismatch_details(
         path,
         plan,
         raw_targets=raw_targets,
@@ -10874,7 +10992,8 @@ def apply_curation_impl(
         _require_known_plan_windows(known, plan, where)
         return CurationApplyResult(
             plan=plan,
-            warnings=warnings,
+            warnings=_warning_messages(warnings),
+            warning_details=warnings,
             applied=0,
             dry_run=True,
             created_windows=_resolve_created_window_structure(
@@ -10883,7 +11002,11 @@ def apply_curation_impl(
         )
     if not plan:
         return CurationApplyResult(
-            plan=plan, warnings=warnings, applied=0, dry_run=False
+            plan=plan,
+            warnings=_warning_messages(warnings),
+            warning_details=warnings,
+            applied=0,
+            dry_run=False,
         )
 
     req = _curate_request(
@@ -11135,6 +11258,9 @@ class ReviewPreviewResult:
         frame-mismatch diagnostic (:func:`_frame_mismatch_warnings`). Empty
         for a plan that touches no fit, since the diagnostic needs matched
         candidates to compare.
+    warning_details : list of CurationWarningDetail
+        The same advisories, in the same order, each with the request
+        actions it concerns.
     created_windows : list of PlannedWindowResult
         Every window this preview's batch installed or grew, ascending by
         window id -- the same list, in the same shape, that
@@ -11157,6 +11283,7 @@ class ReviewPreviewResult:
     plan: List["PlannedAction"] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
     created_windows: List[PlannedWindowResult] = field(default_factory=list)
+    warning_details: List[CurationWarningDetail] = field(default_factory=list)
 
 
 @dataclass
@@ -11221,9 +11348,7 @@ def _run_review_preview(
     snap_tol = refit_snap_tol_mhz_impl(path)
     plan, raw_targets, stamp = _resolve_curation_call(path, source, frame)
 
-    warnings = _frame_mismatch_warnings(
-        path, plan, raw_targets=raw_targets, stamp=stamp
-    )
+    warnings = _frame_mismatch_details(path, plan, raw_targets=raw_targets, stamp=stamp)
 
     if not _plan_needs_fit(plan):
         # C5: bare-accept-only (or empty) plan -- no fits, no gate, nothing to
@@ -11233,7 +11358,12 @@ def _run_review_preview(
         known, where = _known_window_ids(path)
         _require_known_plan_windows(known, plan, where)
         return _PreviewRun(
-            result=ReviewPreviewResult(windows={}, plan=plan, warnings=warnings)
+            result=ReviewPreviewResult(
+                windows={},
+                plan=plan,
+                warnings=_warning_messages(warnings),
+                warning_details=warnings,
+            )
         )
 
     req = _curate_request(
@@ -11307,7 +11437,8 @@ def _run_review_preview(
     result = ReviewPreviewResult(
         windows=windows,
         plan=plan,
-        warnings=warnings,
+        warnings=_warning_messages(warnings),
+        warning_details=warnings,
         # Published on the result rather than kept internal: a session
         # staging this preview as an apply, and a caller reading it directly,
         # must see the SAME list -- deriving it twice is how two rungs of the
@@ -13624,7 +13755,7 @@ class _StagedPreview:
     the tuple of actions (:func:`_session_source_key`)."""
     frame: Optional[Frame]
     resolved_plan: List["PlannedAction"]
-    warnings: List[str]
+    warning_details: List[CurationWarningDetail]
     curated: _Curated
     created_windows: List[PlannedWindowResult] = field(default_factory=list)
     """The structure this preview's batch installed, carried so that
@@ -13922,7 +14053,7 @@ class ReviewSession:
                 source_key=_session_source_key(source),
                 frame=frame,
                 resolved_plan=list(run.result.plan),
-                warnings=list(run.result.warnings),
+                warning_details=list(run.result.warning_details),
                 curated=run.curated,
                 created_windows=list(run.result.created_windows),
                 windows={
@@ -14031,7 +14162,8 @@ class ReviewSession:
                     self._staged = None
                     return CurationApplyResult(
                         plan=plan,
-                        warnings=staged.warnings,
+                        warnings=_warning_messages(staged.warning_details),
+                        warning_details=list(staged.warning_details),
                         applied=len(plan),
                         dry_run=False,
                         created_windows=list(staged.created_windows),

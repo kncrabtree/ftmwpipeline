@@ -192,6 +192,11 @@ class _Env:
         return f"epoch {self.analysis_epoch}"
 
 
+#: The wire form of ``action_indices`` on a refusal raised outside a curation
+#: batch.
+_NO_BATCH = {"action_indices": None, "action_indices_absent": "not_run"}
+
+
 def _errors():
     p = Path("x.ftmw")
     return [
@@ -225,13 +230,13 @@ def _errors():
         (
             NotFoundError("window", [4, 9]),
             "not_found",
-            {"kind": "window", "ids": [4, 9]},
+            {"kind": "window", "ids": [4, 9], **_NO_BATCH},
             (KeyError,),
         ),
         (
             PipelineFileNotFoundError(p),
             "not_found",
-            {"kind": "file", "ids": ["x.ftmw"]},
+            {"kind": "file", "ids": ["x.ftmw"], **_NO_BATCH},
             (NotFoundError, FileNotFoundError, KeyError),
         ),
         (
@@ -243,7 +248,7 @@ def _errors():
         (
             NotFoundValueError("peak", [7, 8]),
             "not_found",
-            {"kind": "peak", "ids": [7, 8]},
+            {"kind": "peak", "ids": [7, 8], **_NO_BATCH},
             (KeyError, ValueError),
         ),
         (
@@ -289,7 +294,7 @@ def _errors():
         (
             CurationConflictError("orphans_created_window", [4, 7]),
             "curation_conflict",
-            {"reason": "orphans_created_window", "ids": [4, 7]},
+            {"reason": "orphans_created_window", "ids": [4, 7], **_NO_BATCH},
             (ValueError,),
         ),
     ]
@@ -311,6 +316,21 @@ def test_error_contract(err, code, fields, bases):
     json.dumps(d, allow_nan=False)
     for base in bases:
         assert isinstance(err, base)
+
+
+@pytest.mark.parametrize(
+    "err",
+    [
+        NotFoundValueError("peak", [7], action_indices=(0, 2)),
+        CurationConflictError("line_already_fitted", [3], action_indices=[1]),
+    ],
+    ids=lambda e: type(e).__name__,
+)
+def test_batch_refusal_carries_its_request_action_indices(err):
+    d = json.loads(json.dumps(err.to_dict(), allow_nan=False))
+    assert d["action_indices"] == list(err.action_indices)
+    assert "action_indices_absent" not in d
+    assert isinstance(err.action_indices, list)
 
 
 def test_epoch_mismatch_none_epoch_is_null_with_absent_sibling():

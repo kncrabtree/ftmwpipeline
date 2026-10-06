@@ -1312,6 +1312,12 @@ def cmd_review_preview(args: argparse.Namespace) -> int:
             args,
             {
                 "warnings": list(result.warnings),
+                # 0-based request positions, as the Python result and a batch
+                # refusal's action_indices number them.
+                "warning_details": [
+                    {"message": d.message, "action_indices": list(d.action_indices)}
+                    for d in result.warning_details
+                ],
                 "created_windows": [
                     _created_window_json(pw) for pw in result.created_windows
                 ],

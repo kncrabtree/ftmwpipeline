@@ -53,6 +53,23 @@ from ``PeakShape``.
 apply; ``review apply --dry-run`` and the preview (including a review session's)
 accepted it. They now refuse every unknown window id the same way.
 
+**A batch refusal and a dry-run advisory name the request's actions.** A
+``not_found`` or ``curation_conflict`` raised for one action of a curation batch
+(``review_apply`` / ``review_preview`` with a file or ``actions=``) numbered the
+action by its place in the resolved plan, which runs creates first and then
+edits by ascending window, and coalesces a window's add/remove rows into one
+edit; the request's first action could be reported as "curation action 2". The
+message now numbers the action from the request ("curation actions 1, 3" for a
+coalesced edit), and both errors gain ``action_indices``: the 0-based request
+positions, numbered as ``actions[<i>]`` (a file's action rows in order, comment
+and blank lines not counted); ``null`` with ``action_indices_absent:
+"not_run"`` outside a batch. ``PlannedAction`` carries the same
+``action_indices``. ``CurationApplyResult`` and ``ReviewPreviewResult`` gain
+``warning_details``, one ``CurationWarningDetail`` (``message``,
+``action_indices``) per entry of ``warnings``, also in ``review preview
+--json``; the ``frame_mismatch`` event's ``actions`` are the same request
+positions (they were plan positions).
+
 **``settings_set`` accepts the JSON a settings row reports for a shape.**
 ``stage5.shape`` given as ``'{"kind": "gaussian"}'`` is parsed as the mapping
 form instead of being refused as an unknown shape name.

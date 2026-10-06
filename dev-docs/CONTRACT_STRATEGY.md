@@ -796,7 +796,12 @@ ids of a curation batch),
   `cancelled` (`stage`, `completed_stages`, `completed_windows`;
   §Events and cancellation), `callback_failed` (`event_schema`, `completed_windows`),
   `algorithm_failed` (`stage`), `write_conflict` (§Crash safety),
-  `curation_conflict` (`reason`, `ids`).
+  `curation_conflict` (`reason`, `ids`). Contract 17: `not_found` and
+  `curation_conflict` also carry `action_indices`, the 0-based request
+  positions (numbered as `actions[<i>]`; a curation file's action rows in
+  order) of the curation-batch action that failed, several for a coalesced
+  edit; absent (`not_run`) outside a batch. A batch refusal's message numbers
+  the action from the request, never from the resolved plan.
 - Each typed error remains a subclass of the built-in it replaced (most are
   `ValueError`), so existing `except` clauses keep working.
 - A `.ftmw` path that does not exist raises `not_found` (`kind: "file"`),
@@ -939,7 +944,7 @@ Every event has `schema`, `operation` (the CLI verb, such as `"fit run"`) and
   | `slow_window` | `window_id`, `elapsed_s`, `threshold_s` | a window takes longer than the threshold |
   | `epoch_acknowledged` | `file_epoch`, `current_epoch` | a call edits a fit under an epoch acknowledgement |
   | `environment_drift` | `fields` | a long operation opens a file whose recorded environment differs from the running one (once per operation) |
-  | `frame_mismatch` | `actions` (indices) | the existing curation advisory |
+  | `frame_mismatch` | `actions` (0-based request positions) | the existing curation advisory |
   | `walk_fallback` | `reason`, `n_windows` | the fit walk falls back to the sequential walk |
   | `timebase_skipped` | — | `run_pipeline` continues past a failed timebase calibration |
 
@@ -1261,6 +1266,12 @@ curation-file row:
     curation CSV.
 - **Results are identical.** The same actions given as a file and as data give
   equal results, decision logs and files.
+- **Results name the request's actions** (contract 17). Each action of a
+  result's resolved `plan` carries `action_indices`, the 0-based request
+  positions it was resolved from (several for a coalesced edit). The
+  advisories are `warnings` (strings) and, entry for entry, `warning_details`
+  (`message`, `action_indices`), in the Python results and in
+  `review preview --json`. A batch refusal carries the same indices (§Errors).
 
 **Frames are explicit.** Every curation action and every review call that
 takes a frequency declares its frame (`"raw"` or `"calibrated"`) as a typed,

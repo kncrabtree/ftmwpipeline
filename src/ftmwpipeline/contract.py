@@ -969,6 +969,12 @@ _FIELDS: Dict[str, Tuple[str, ...]] = {
     "RefitWindowResult": ("converged",),
     "PreviewWindowResult": ("converged",),
     "AppliedWindowResult": ("converged",),
+    # Contract 17: the request actions behind a batch's plan and advisories
+    # (0-based positions in the request, as ``actions[<i>]`` numbers them).
+    "PlannedAction": ("action_indices",),
+    "CurationWarningDetail": ("message", "action_indices"),
+    "CurationApplyResult": ("warnings", "warning_details"),
+    "ReviewPreviewResult": ("warnings", "warning_details"),
     "PipelineInfo": (
         "stage_environments",
         "last_written_with",
