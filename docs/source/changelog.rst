@@ -29,6 +29,20 @@ stored in the fit's replan history and read as a JSON list in the
 set. A file written before it was stored loads the field as ``None`` (the
 column reads ``""``) and the trigger falls back to the dependency closure.
 
+**The machine contract states what a replay reads and how a host cancels safely.**
+A replay reads a decision row's ``kind``, ``window_id``, ``serial``,
+``targets``, ``seeds_mhz``, ``born_uids``, a create row's ``frequency_mhz`` (the
+planning anchor, so not display only on that row) and the ``action_index``,
+``mode`` and ``created_window`` evidence; every other evidence key is a
+snapshot. The advice for an edit-set identity is to hash those fields rather
+than the whole ``review_log``, and every ``review_log`` frequency is raw-frame.
+The contract also says that the parallel Stage 5 walk and the HTML report fork
+the process, so a host must not block a thread in a ``sys.stdin`` read while a
+long call runs (read cancel messages with ``os.read`` on a duplicated fd 0);
+that the attention queue is ``needs_attention`` whatever the provenance;
+that ``write_conflict`` compares against the file's state recorded when the
+call begins; and that ``preview_source`` is the contract's source probe.
+
 **``capabilities()`` declares the ``StageFinished.summary`` keys per
 operation.** The new ``summary_keys`` group maps each operation (the CLI verb)
 to ``{"required": [...], "conditional": [...]}``: the keys of its

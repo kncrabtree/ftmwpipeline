@@ -227,8 +227,10 @@ These exist today; the contract freezes their names and the listed fields.
 - `review_log(path)` → `DecisionLogEntry` rows with the fields `order_index`,
   `window_id`, `frequency_mhz`, `kind`, `provenance`, `evidence`, `serial`,
   `targets`, `seeds_mhz`, `born_uids`.
-  Names, types and the `kind` / `provenance` vocabularies are frozen, so a
-  client may hash the log as an edit-set identity. `serial` (contract version
+  Names, types and the `kind` / `provenance` vocabularies are frozen. A client
+  that wants an edit-set identity hashes only the fields a replay reads (below),
+  not the floats and snapshots in the rest of a row, which need not agree
+  across platforms. `serial` (contract version
   16) is the decision's stable id: minted when the row is recorded, never
   reused or renumbered within the fit's lineage (`fit run` starts a new one),
   `Absent.NOT_RUN` on a row a pre-engine build recorded. It is what
@@ -247,9 +249,14 @@ These exist today; the contract freezes their names and the listed fields.
   anything is fit (in one batch, a later action on a window resolves against
   an earlier one's newborns at their seeds); a replay applies the rows as
   recorded, by uid, and never resolves a frequency or re-infers a merge or
-  split. `frequency_mhz` is display only (a `remove` row's, like a merge's
-  `merged_from`, is the fitted raw-frame frequency of the peak the request
-  resolved to). Rows are immutable: a replay (undo, log-prefix apply) keeps
+  split. Every frequency in a row, `merged_from` included, is raw-frame.
+  `frequency_mhz` is display only except on a create row, where it is the
+  planning anchor (a `remove` row's, like a merge's `merged_from`, is the fitted
+  frequency of the peak the request resolved to). A replay reads exactly:
+  `kind`, `window_id`, `serial`, `targets`, `seeds_mhz`, `born_uids`, a create
+  row's `frequency_mhz`, and from `evidence` `action_index`, `mode` and the
+  presence and `mode` of `created_window`; every other `evidence` key is a
+  recorded snapshot. Rows are immutable: a replay (undo, log-prefix apply) keeps
   every surviving row verbatim and only `order_index` is recomputed; a
   surviving row the replay cannot apply (a target gone, a birth on a held
   uid) is refused (`curation_conflict`, `replay_diverged`), an undo that would
@@ -605,7 +612,8 @@ Stage 4 plan.
 
 `auto_merged_review`, `flat_decay` and `empty_window_spur` are advisory: they
 stay on the status but do not by themselves put the window in the queue
-(`needs_attention`).
+(`needs_attention`). The attention queue is `needs_attention` regardless of
+`provenance`; "left to review" is `needs_attention` and `provenance == "auto"`.
 Attention is advice. It never changes a fitted number, a final product or the
 analysis fingerprint.
 
@@ -1003,6 +1011,14 @@ What is left in the file is the same as after a cancel at that point.
   and the session can continue. An apply that persists a staged preview
   re-fits nothing: its check points are the stage's entry and the persist's
   last one, and it emits no `WindowProgress`.
+- **A host's own threads.** On POSIX the parallel Stage 5 walk and the HTML
+  report fork the process, and `multiprocessing` closes `sys.stdin` in each
+  child, which waits on the lock a blocked `sys.stdin` read holds. While a long
+  call runs, no host thread may block in a `sys.stdin` read or hold another
+  Python-level lock a forked child touches. A host that reads cancel messages
+  from its standard input reads them with `os.read` on a duplicated fd 0, with
+  fd 0 and `sys.stdin` pointed at `os.devnull`. A walk that does not fork is
+  unaffected.
 - **Stage 5 in parallel.** A cancel stops the walk without waiting for windows
   that are still fitting:
   - the workers are terminated;
@@ -1073,7 +1089,9 @@ What is left in the file is the same as after a cancel at that point.
   holds open.
 - Within `run_pipeline`, each stage is its own atomic write, so a kill keeps
   every stage that finished before it.
-- **Concurrent writers.** A call's copy is taken when its write begins. If the
+- **Concurrent writers.** A call's copy is taken when its write begins, and the
+  file's state `write_conflict` compares against is recorded then, before the
+  call reads its inputs (a review verb records it at entry). If the
   file on disk changed after that, because another process wrote it, the call
   raises `write_conflict` (`WriteConflictError`, exit 1) instead of replacing
   the file, and the other write stands. Writes from one process to one file

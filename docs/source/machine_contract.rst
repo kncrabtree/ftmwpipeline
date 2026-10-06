@@ -150,8 +150,9 @@ Rules every accessor follows
   (``PeakShape.LORENTZIAN`` is ``"lorentzian"``, also as a mapping key); a
   complex number is ``{"real": x, "imag": y}``; a non-finite float with no field
   or list to hold it (the top level) is an error rather than a silent ``null``.
-  Python code produces the same JSON with :func:`ftmwpipeline.to_jsonable`,
-  which applies the ``Absent`` rule (:ref:`contract-absent`), stamps a
+  Python code produces the same JSON with :func:`ftmwpipeline.to_jsonable`
+  (taken from the top-level package, ``from ftmwpipeline import to_jsonable``;
+  ``ftmwpipeline.serialize.to_jsonable`` is the same function), which applies the ``Absent`` rule (:ref:`contract-absent`), stamps a
   ``schema=`` name, and can hand arrays to a sink instead of inlining them.
 
 .. _contract-absent:
@@ -1143,10 +1144,23 @@ Each, with its absence cases:
   when it was made (in one curation file or ``actions`` batch, an action after
   another on the same window resolves against the other's newborns at their
   seeds); a replay applies the rows as recorded, by uid, and never resolves a
-  frequency again. ``frequency_mhz`` is display only: the frequency sent for
-  an add, the anchor for a create, a merge's seed, a split's parent, and for a
-  remove the fitted frequency (raw frame) of the peak it resolved to; a
-  merge's ``merged_from`` likewise holds its parents' fitted frequencies.
+  frequency again. Every frequency in a row is in the raw frame, and
+  ``frequency_mhz`` is the frequency sent for an add, the anchor for a create,
+  a merge's seed, a split's parent, and for a remove the fitted frequency of
+  the peak it resolved to; a merge's ``merged_from`` likewise holds its
+  parents' fitted frequencies, raw. ``frequency_mhz`` is display only on every
+  row but a create row, where it is the planning anchor the replay plans the
+  window from.
+
+  **What a replay reads.** Exactly these fields of a row: ``kind``,
+  ``window_id``, ``serial``, ``targets``, ``seeds_mhz``, ``born_uids``, a
+  create row's ``frequency_mhz`` (a ``create_window`` row, or an ``add`` row
+  carrying ``created_window`` evidence), and from ``evidence`` the
+  ``action_index`` (which rows were one action), ``mode`` (a ``create_window``
+  row's), and ``created_window`` (its presence marks an implied create, and its
+  ``mode``). Every other ``evidence`` key (``chi2r_before``, ``n_peaks_before``,
+  ``merged_from``, ``inferred``, ``requested_freq_mhz``, ``split_into``, ...)
+  is a recorded snapshot that no replay reads.
   Rows are immutable: a replay (``review_undo``, an apply at a ``log_prefix``)
   keeps every surviving row verbatim, and only ``order_index`` changes. A
   row's ``evidence`` (``chi2r_before`` / ``chi2r_after``, ``n_peaks_before`` /
@@ -1391,7 +1405,9 @@ path that does not exist is ``not_found`` with kind ``"file"``; an unknown
 ``path`` ``"format"`` (``value`` the name given, or ``null`` when detection
 found none); a source that does not fit the named or detected format is
 ``bad_setting`` with ``path`` ``"source"``. The accessor reads only the source
-and creates no ``.ftmw`` file. ``validate_source`` describes FID 0 alone.
+and creates no ``.ftmw`` file. ``preview_source`` is the contract-level probe of
+a source, with these typed refusals; the loader-level ``validate_source``
+describes FID 0 alone and is not part of the contract.
 
 .. _contract-settings-rows:
 
@@ -1613,8 +1629,9 @@ Stage 2b shape recommendation is not hashed itself; its verdict is covered
 where it was used (the Stage 3 gap-pass shape and the Stage 5 fit shape).
 
 Not covered: the FID samples themselves (hash ``fid_samples`` if you need a
-spectrum identity), curation decisions (hash ``review_log`` if you need an
-edit-set identity), the attention-routing arguments of ``review run``, write
+spectrum identity), curation decisions (hash the fields a replay reads, listed
+under ``review_log``, if you need an edit-set identity: the other fields
+include floats and evidence snapshots that need not agree across platforms), the attention-routing arguments of ``review run``, write
 timestamps, preset names, and the package version and environment (code
 changes that move results are marked by the analysis epoch, which is covered).
 
@@ -1731,9 +1748,22 @@ they were (a staged preview stays staged), and the session stays usable. An
 apply that persists a staged preview re-fits nothing, so it emits no
 ``WindowProgress``.
 
+**A host that reads cancel messages while a long call runs.** On POSIX the
+parallel Stage 5 walk and the HTML report fork the process. Python's
+``multiprocessing`` closes ``sys.stdin`` in every forked child, and that close
+waits on the lock a blocked ``sys.stdin`` read holds. While a long call runs,
+therefore, no host thread may block in a ``sys.stdin`` read, or hold any other
+Python-level lock that a forked child touches. A host that takes cancel
+messages on its standard input should read them with ``os.read`` on a
+duplicated file descriptor 0, and point descriptor 0 and ``sys.stdin`` at
+``os.devnull`` for the duration, so the child's close has nothing to wait for.
+A walk that does not fork (``jobs=1``, or no ``fork`` on the platform) is
+unaffected. A cancel is checked between windows, and the parallel walk
+polls about every 0.2 s; no check is made inside one window's fit.
+
 The callback runs on the calling thread, never in a worker process. Each event
 is a frozen dataclass exported from ``ftmwpipeline`` and serializes through
-``to_jsonable``; every one carries ``schema``, ``operation`` (the CLI verb,
+``to_jsonable`` (imported from the top-level package, as in the example below); every one carries ``schema``, ``operation`` (the CLI verb,
 such as ``"fit run"``, or ``"run"`` for ``run_pipeline``) and ``stage`` (a
 canonical stage name, or ``null`` for a step that is not a stage: start
 detection, the report, a scan):
@@ -1910,7 +1940,9 @@ with that copy in one ``os.replace`` when it finishes.
   call's write.
 * *Pipelines.* Within ``run_pipeline`` each stage is its own atomic write, so a
   kill keeps every stage that finished before it.
-* *Concurrent writers.* The copy is taken when the call's write begins. If
+* *Concurrent writers.* The copy is taken when the call's write begins, and the
+  file's state that ``write_conflict`` compares against is recorded then too,
+  before the call reads its inputs (a review verb records it at entry). If
   another process wrote the file after that, the call raises ``write_conflict``
   (``WriteConflictError``, attribute ``path``, exit ``1``) instead of replacing
   it; the other write stands and nothing of this call is kept. Re-run the call
@@ -2108,7 +2140,10 @@ map a window id to a ``WindowReviewStatus``; each status's
 
 ``auto_merged_review``, ``flat_decay`` and ``empty_window_spur`` are advisory:
 they stay on the status but do not put the window in the queue
-(``needs_attention``) on their own. Attention is advice: it never changes a
+(``needs_attention``) on their own. The attention queue is every window whose
+status has ``needs_attention``, whatever its ``provenance``; the windows *left
+to review* are the narrower set with ``needs_attention`` and ``provenance ==
+"auto"`` (not yet edited or accepted). Attention is advice: it never changes a
 fitted number, a final product or the analysis fingerprint.
 
 **Statuses are recomputed on every write (contract 16).** Every Stage 6 write
