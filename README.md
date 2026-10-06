@@ -77,6 +77,7 @@ pipe.calibrate_tau()
 pipe.detect_peaks()
 pipe.assign_windows()
 pipe.fit_peaks()
+pipe.review_run()
 ```
 
 At the command line each stage runs with the object-verb grammar
@@ -90,6 +91,7 @@ ftmwpipeline tau run      exp.ftmw
 ftmwpipeline peaks run    exp.ftmw
 ftmwpipeline windows run  exp.ftmw
 ftmwpipeline fit run      exp.ftmw
+ftmwpipeline review run   exp.ftmw
 ftmwpipeline report run   exp.ftmw --output-dir report
 ```
 
@@ -103,11 +105,20 @@ ftmwpipeline read table exp.ftmw fit_peaks \
 ftmwpipeline read meta  exp.ftmw                     # provenance + scalars
 ```
 
+`review run` consolidates the fit into the final line list. A fit can then be
+reviewed and curated window by window — refit, add or remove lines, create
+windows, undo — with every decision logged in the file; see
+[Fit curation](https://ftmwpipeline.readthedocs.io/en/devel/fit_curation.html).
+
 ## Documentation
 
 Full documentation — installation, a worked quickstart on bundled example data,
 a guide to each pipeline stage, and the CLI/API reference — is at
 [ftmwpipeline.readthedocs.io/en/devel](https://ftmwpipeline.readthedocs.io/en/devel/).
+Scripts and front ends that drive `ftmwpipeline` should build against the
+[machine contract](https://ftmwpipeline.readthedocs.io/en/devel/machine_contract.html):
+the versioned set of stable names, records, typed errors and events a program
+can rely on.
 
 ## License
 
