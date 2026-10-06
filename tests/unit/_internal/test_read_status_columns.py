@@ -28,6 +28,7 @@ from ftmwpipeline.core.data_structures import (
     FittingResult,
     FitWindow,
     KnockoutInfo,
+    ReplanInfo,
     SpectrumFit,
     WindowPlan,
 )
@@ -78,7 +79,7 @@ def _step(decision, **over):
     return AuditStep(**kw)
 
 
-def _build(path, peaks, audit=()):
+def _build(path, peaks, audit=(), replans=()):
     result = FittingResult(
         success=True,
         fitted_spectrum=None,
@@ -96,6 +97,7 @@ def _build(path, peaks, audit=()):
         window_fits=[result],
         fitted_peaks=list(peaks),
         parameters={"acquisition_us": 12.73},
+        replan_history=list(replans),
     )
     with h5py.File(path, "w") as h5f:
         h5f.attrs["ftmw_format_version"] = "1.0"
@@ -257,7 +259,14 @@ def test_peaks_promoted_without_a_cutoff_is_not_run(tmp_path):
 def test_listing_declares_status_columns_and_counts_rows(tmp_path):
     f = _build(tmp_path / "l.ftmw", [_peak(0)], [_step("seed")])
     listing = read_tables_impl(f)
-    for table in ("fit_peaks", "fit_windows", "fit_audit", "fit_doublets", "peaks"):
+    for table in (
+        "fit_peaks",
+        "fit_windows",
+        "fit_audit",
+        "fit_doublets",
+        "fit_replans",
+        "peaks",
+    ):
         cols = listing[table]["columns"]
         assert any(c.endswith("__status") for c in cols), table
     assert set(MANIFEST.tables["fit_peaks"]) == set(listing["fit_peaks"]["columns"])
@@ -267,6 +276,31 @@ def test_listing_declares_status_columns_and_counts_rows(tmp_path):
     assert listing["peaks"]["available"] is False
     assert listing["peaks"]["n_rows"] is Absent.NOT_RUN
     assert listing["fit_audit"]["group"] == "stage5_fitting"
+
+
+def test_fit_replans_refit_set_not_stored_is_not_run(tmp_path):
+    def replan(refit):
+        return ReplanInfo(
+            triggering_window_id=1,
+            partner_window_id=0,
+            surviving_window_id=0,
+            edge_side="low",
+            edge_coherence_before=9.0,
+            revision_before=0,
+            revision_after=1,
+            accepted=True,
+            refit_window_ids=refit,
+        )
+
+    f = _build(
+        tmp_path / "r.ftmw", [_peak(0)], replans=[replan((0,)), replan(Absent.NOT_RUN)]
+    )
+    t = read_table_impl(f, "fit_replans")
+    assert list(t["refit_window_ids"]) == ["[0]", ""]
+    assert list(t["refit_window_ids__status"]) == [0, NR]
+    only = read_table_impl(f, "fit_replans", ["refit_window_ids__status"])
+    assert list(only) == ["refit_window_ids__status"]
+    assert list(only["refit_window_ids__status"]) == [0, NR]
 
 
 def test_unknown_status_column_is_refused(tmp_path):

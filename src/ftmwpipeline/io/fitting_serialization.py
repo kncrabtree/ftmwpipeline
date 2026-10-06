@@ -138,6 +138,7 @@ from typing import (
 import h5py
 import numpy as np
 
+from ..core.absent import Absent
 from ..core.data_structures import (
     AuditStep,
     DoubletAlternativeInfo,
@@ -430,7 +431,7 @@ def _replan_info_to_json(event: ReplanInfo) -> Dict[str, Any]:
         "reason": str(event.reason),
     }
     # A record loaded from a file that predates the stored set keeps its absence.
-    if event.refit_window_ids is not None:
+    if not isinstance(event.refit_window_ids, Absent):
         blob["refit_window_ids"] = [int(w) for w in event.refit_window_ids]
     return blob
 
@@ -455,7 +456,7 @@ def _json_to_replan_info(blob: Dict[str, Any], where: str) -> ReplanInfo:
         refit_window_ids=(
             tuple(int(w) for w in blob["refit_window_ids"])
             if "refit_window_ids" in blob
-            else None
+            else Absent.NOT_RUN
         ),
     )
 
@@ -1858,8 +1859,9 @@ FIT_THAW_COLUMN_SPECS: Dict[str, ColumnSpec] = {
 
 #: One row per structural replan: a window boundary redrawn mid-fit because it
 #: cut through a real feature. ``refit_window_ids`` is the round's re-fit set as
-#: a JSON list (``"[]"`` on a row that was not applied), and ``""`` on a file
-#: written before the set was stored.
+#: a JSON list (``"[]"`` on a row that was not applied), and the ``""`` fill on
+#: a file written before the set was stored (a synthesized fill, which the
+#: read layer reports as ``refit_window_ids__status`` ``NOT_RUN``).
 FIT_REPLAN_COLUMN_SPECS: Dict[str, ColumnSpec] = {
     "triggering_window_id": ("i8", REQUIRED),
     "partner_window_id": ("i8", REQUIRED),
@@ -2020,6 +2022,7 @@ def read_fit_thaw_columns(
 def read_fit_replan_columns(
     h5_group: h5py.Group,
     columns: Optional[Sequence[str]] = None,
+    synthesized: Optional[Dict[str, List[bool]]] = None,
 ) -> Dict[str, np.ndarray]:
     """Read the plan-level structural-replan history in chronological order.
 
@@ -2043,6 +2046,7 @@ def read_fit_replan_columns(
             requested,
             rows,
             where=f"replan_history[{i}]",
+            synthesized=synthesized,
         )
     return build_columns(rows, FIT_REPLAN_COLUMN_SPECS, requested)
 

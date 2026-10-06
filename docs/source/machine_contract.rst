@@ -527,7 +527,12 @@ or header lines, so a file and the same actions given as data agree. Outside a
 batch, and for a refusal of the whole batch at once (every unknown window or
 ``peak_uid`` it names, every uncovered ``remove``), ``action_indices`` is
 ``None``: on the wire ``null`` with ``action_indices_absent: "not_run"``. Each
-``PlannedAction`` of a result's ``plan`` carries the same ``action_indices``.
+``PlannedAction`` of a result's ``plan`` carries the same ``action_indices``,
+and so does each per-window entry of a result's ``windows``
+(``AppliedWindowResult``, ``PreviewWindowResult``; ``windows[]`` of ``review
+preview --json``): the request positions of the actions that targeted the
+window, ``[]`` for a window only the cascade re-fit. Before contract 17 the
+per-window field held plan positions (1-based in ``review preview --json``).
 
 The advisories of ``review_apply`` (including ``dry_run``) and
 ``review_preview`` are ``warnings``, a list of strings, and, entry for entry,
@@ -940,7 +945,7 @@ Each, with its absence cases:
   includes every ``<column>__status`` companion.
 
   **Status columns.** The ``fit_peaks``, ``fit_windows``, ``fit_audit``,
-  ``fit_doublets`` and ``peaks`` tables carry a ``uint8``
+  ``fit_doublets``, ``fit_replans`` and ``peaks`` tables carry a ``uint8``
   ``<column>__status`` companion (``0`` present, ``1`` not run, ``2``
   undefined) for each column below, inserted right after it; column selection
   accepts them. The value column keeps its stored fill (``nan``, ``inf``,
@@ -1019,8 +1024,10 @@ Each, with its absence cases:
   produced no usable fit (it did not converge, or returned the wrong number
   of peaks).
 
-  ``fit_replans`` carries no status columns either. A row with ``accepted``
-  false has a ``reason`` that starts with exactly one of ``not merged:``
+  ``fit_replans`` carries one status column, ``refit_window_ids__status``
+  (contract 17), ``1`` on a row written before the re-fit set was stored. A
+  row with ``accepted`` false has a ``reason`` that starts with exactly one of
+  ``not merged:``
   (the flagged window's fit holds no line, or no window touches it),
   ``refused:`` (the merge would break the plan's width or peak cap),
   ``deferred:`` (the pair waited behind another merge that round) or
@@ -1030,8 +1037,9 @@ Each, with its absence cases:
   list of the window ids the row's merge round re-fit, ascending: the survivor,
   the windows that transitively depend on it, and the primary of every accepted
   thaw whose record the round dropped, with that primary's dependents. It is
-  ``"[]"`` on a row that is not accepted, and ``""`` on a file written before
-  the set was stored.
+  ``"[]"`` on a row that is not accepted, and the fill ``""`` with status ``1``
+  on a file written before the set was stored (``ReplanInfo.refit_window_ids``
+  is ``Absent.NOT_RUN`` there).
 
   The ``window_status`` table is described under :ref:`contract-window-status`.
 

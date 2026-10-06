@@ -4068,18 +4068,28 @@ def _known_window_ids(path: str) -> Tuple[Set[int], str]:
     the fit: with no complete fit (never run, or only a partial fit) it is
     refused with ``stage_not_run`` like every other curation call.
     """
+    fit_ids, lineless = _fit_and_lineless_window_ids(path)
+    # A window the review flagged although the fit holds no line in it
+    # (``empty_window_residual``) can be marked reviewed too.
+    return fit_ids | lineless, "Stage 5 fit"
+
+
+def _fit_and_lineless_window_ids(path: str) -> Tuple[Set[int], Set[int]]:
+    """``(fit_ids, lineless)``: the Stage 5 fit's window ids, and the windows
+    the review flagged ``empty_window_residual`` that the fit holds no line
+    in. Refused ``stage_not_run`` without a complete fit, as
+    :func:`_known_window_ids` documents."""
     _require_complete_fit(path, "review accept")
     with h5open(path, "r") as h5f:
-        known = {c.window_id for c in read_fit_window_coverage(h5f["stage5_fitting"])}
+        fit_ids = {
+            c.window_id for c in read_fit_window_coverage(h5f["stage5_fitting"])
+        }
         review = (
             load_stage6_review_from_hdf5(h5f["stage6_review"])
             if "stage6_review" in h5f
             else Stage6Review()
         )
-    # A window the review flagged although the fit holds no line in it
-    # (``empty_window_residual``) can be marked reviewed too.
-    known |= flagged_lineless_ids(review, known)
-    return known, "Stage 5 fit"
+    return fit_ids, flagged_lineless_ids(review, fit_ids)
 
 
 def _require_known_window(path: str, window_id: int) -> None:
@@ -4647,8 +4657,11 @@ class AppliedWindowResult:
         window that is both is ``"direct"``, exactly as in
         :class:`PreviewWindowResult`.
     action_indices : list of int
-        0-based indices into :attr:`CurationApplyResult.plan` of every action
-        that directly targeted this window. Empty for a purely-cascaded one.
+        The 0-based request positions (:attr:`PlannedAction.action_indices`)
+        of every action that directly targeted this window, ascending -- the
+        numbering of a batch refusal and of :class:`CurationWarningDetail`,
+        not positions in :attr:`CurationApplyResult.plan`. Empty for a
+        purely-cascaded one.
     n_peaks_before, n_peaks_after : int
         Peak count in this window before the batch / after the cascade.
     chi2r_before, chi2r_after : float or Absent
@@ -4707,7 +4720,7 @@ def _applied_windows_block(
         windows[wid] = AppliedWindowResult(
             window_id=wid,
             origin="direct" if wid in direct_wids else "cascaded",
-            action_indices=sorted(action_indices.get(wid, [])),
+            action_indices=sorted(set(action_indices.get(wid, []))),
             n_peaks_before=len(b.fitted_peaks) if b is not None else 0,
             n_peaks_after=len(a.fitted_peaks) if a is not None else 0,
             chi2r_before=(
@@ -5667,12 +5680,51 @@ def _batch_known_window_ids(
     lineless window (``ctx.changeset.lineless_reviewable``) a *bare* accept of
     the plan names -- the one action such a window takes, since the fit holds
     nothing there to edit."""
-    lineless = ctx.changeset.lineless_reviewable
+    return _plan_known_window_ids(fit_ids, ctx.changeset.lineless_reviewable, plan)
+
+
+def _plan_known_window_ids(
+    fit_ids: Collection[int], lineless: Collection[int], plan: Sequence[PlannedAction]
+) -> Set[int]:
+    """:func:`_batch_known_window_ids` from the two id sets alone, so a dry
+    run admits exactly what the apply does without building a batch."""
     return set(fit_ids) | {
         int(a.window_id)
         for a in plan
         if a.kind == "accept" and a.candidate is None and int(a.window_id) in lineless
     }
+
+
+def _require_known_dry_run_windows(
+    path: str,
+    plan: Sequence[PlannedAction],
+    *,
+    snap_tol_mhz: float,
+    shared: Optional["_SharedFitCtx"],
+) -> Optional["_SharedFitCtx"]:
+    """Refuse the unknown window ids the apply of *plan* would refuse, the
+    way it refuses them (:func:`_curate_request`): a flagged lineless window
+    only for a bare accept, and a forward reference only to an id an unpinned
+    create can mint (:func:`_batch_plan_window_ids`; that bound needs the
+    batch context, so it is built only for a plan with such a create).
+    Returns *shared*, or the shared context built for that bound, for the
+    caller to reuse."""
+    fit_ids, lineless = _fit_and_lineless_window_ids(path)
+    plan_window_ids: Optional[Set[int]] = None
+    if any(a.kind == "create" and a.window_id == _NEW_WINDOW_SENTINEL for a in plan):
+        # Gated as the create's own planning is
+        # (:func:`_resolve_created_window_structure`), and first.
+        require_splice_compatible_environment(path)
+        ctx = _build_batch_ctx(path, snap_tol_mhz=snap_tol_mhz, shared=shared)
+        shared = ctx.shared
+        plan_window_ids = _batch_plan_window_ids(ctx, plan)
+    _require_known_plan_windows(
+        _plan_known_window_ids(fit_ids, lineless, plan),
+        plan,
+        "Stage 5 fit",
+        plan_window_ids,
+    )
+    return shared
 
 
 def _curation_failure_tag(index: int, action: PlannedAction) -> str:
@@ -10567,8 +10619,9 @@ def _request_outcome(
 ) -> Tuple[Dict[int, List[int]], Set[int], Set[int], Dict[int, _PlannedCreate]]:
     """How a curation request touched the windows: ``(action_indices,
     direct, cascaded, creates)``. ``action_indices`` maps each window an
-    action targeted to the plan positions of those actions (an implied
-    create's two halves both name the window built); ``direct`` is those
+    action targeted to the request positions those actions were resolved from
+    (:attr:`PlannedAction.action_indices`, deduplicated -- an implied create's
+    two halves both name the window built); ``direct`` is those
     windows; ``cascaded`` is every other window whose fit the write changed
     (a dependent the cascade refit, bit for bit different from what was
     displayed); ``creates`` is every create the request ran, by window id
@@ -10579,7 +10632,9 @@ def _request_outcome(
         return action_indices, set(), set(), creates  # bare accepts fit nothing
     for ra in req.resolved:
         if ra.target_wid is not None:
-            action_indices.setdefault(int(ra.target_wid), []).append(ra.original_index)
+            action_indices.setdefault(int(ra.target_wid), []).extend(
+                ra.action.action_indices
+            )
         if ra.create is not None:
             creates[int(ra.create.proposal.window.window_id)] = ra.create
     direct = set(action_indices)
@@ -10999,6 +11054,13 @@ def apply_curation_impl(
     plan, raw_targets, stamp = _resolve_curation_call(path, source, frame)
 
     snap_tol = refit_snap_tol_mhz_impl(path)
+    if dry_run:
+        # The apply refuses an unknown window id (not_found); a dry run that
+        # accepted it would promise an apply that cannot happen. Refused
+        # before the advisories, so a refused dry run emits no event.
+        _shared = _require_known_dry_run_windows(
+            path, plan, snap_tol_mhz=snap_tol, shared=_shared
+        )
     # One read of the fitted peak columns for both advisory passes: the
     # ambiguity pass needs it unconditionally, and the frame diagnostic used
     # to rebuild the identical map moments later in the same call.
@@ -11017,10 +11079,6 @@ def apply_curation_impl(
     # No epoch pre-check here: the write gates itself (_curate), and only
     # when it refits -- a plan of bare accepts refits nothing.
     if dry_run:
-        # The apply refuses an unknown window id (not_found); a dry run that
-        # accepted it would promise an apply that cannot happen.
-        known, where = _known_window_ids(path)
-        _require_known_plan_windows(known, plan, where)
         return CurationApplyResult(
             plan=plan,
             warnings=_warning_messages(warnings),
@@ -11182,9 +11240,11 @@ class PreviewWindowResult:
         ``"direct"``: it has an originating action, even though the cascade
         re-fits it again to pick up the refreshed background.
     action_indices : list of int
-        0-based indices into ``ReviewPreviewResult.plan`` of every action
-        that directly targeted this window. Empty for a purely-cascaded
-        window.
+        The 0-based request positions (:attr:`PlannedAction.action_indices`)
+        of every action that directly targeted this window, ascending -- the
+        numbering of a batch refusal and of :class:`CurationWarningDetail`,
+        not positions in ``ReviewPreviewResult.plan``. Empty for a
+        purely-cascaded window.
     n_peaks_before, n_peaks_after : int
         Peak count in this window as displayed before the batch (the
         persisted fit) / in the curated fit after it, post-cascade.
@@ -11282,8 +11342,7 @@ class ReviewPreviewResult:
         that touches no fit (e.g. entirely bare ``accept`` rows).
     plan : list of PlannedAction
         The resolved, frame-converted, coalesced action sequence -- the same
-        shape ``apply_curation_impl`` would execute. ``action_indices`` on
-        each :class:`PreviewWindowResult` index into this list.
+        shape ``apply_curation_impl`` would execute.
     warnings : list of str
         Advisories that do not block the preview -- currently just the A5
         frame-mismatch diagnostic (:func:`_frame_mismatch_warnings`). Empty
@@ -11431,7 +11490,7 @@ def _run_review_preview(
         windows[wid] = PreviewWindowResult(
             window_id=wid,
             origin="direct" if wid in direct_wids else "cascaded",
-            action_indices=sorted(action_indices.get(wid, [])),
+            action_indices=sorted(set(action_indices.get(wid, []))),
             n_peaks_before=0 if before is None else len(before.fitted_peaks),
             n_peaks_after=0 if after is None else len(after.fitted_peaks),
             chi2r_before=(

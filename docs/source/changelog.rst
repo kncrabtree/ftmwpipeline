@@ -26,8 +26,10 @@ stale flag from a thawed primary's earlier fit. ``ReplanInfo`` now carries
 ``refit_window_ids``, the round's re-fit set (empty on a record not applied),
 stored in the fit's replan history and read as a JSON list in the
 ``fit_replans`` table's new ``refit_window_ids`` column; the trigger reads that
-set. A file written before it was stored loads the field as ``None`` (the
-column reads ``""``) and the trigger falls back to the dependency closure.
+set. A file written before it was stored loads the field as
+``Absent.NOT_RUN`` (the column reads ``""`` with ``refit_window_ids__status``
+``1``; ``fit_replans`` gains that status column) and the trigger falls back to
+the dependency closure.
 
 **The machine contract states what a replay reads and how a host cancels safely.**
 A replay reads a decision row's ``kind``, ``window_id``, ``serial``,
@@ -81,8 +83,10 @@ and blank lines not counted); ``null`` with ``action_indices_absent:
 ``action_indices``. ``CurationApplyResult`` and ``ReviewPreviewResult`` gain
 ``warning_details``, one ``CurationWarningDetail`` (``message``,
 ``action_indices``) per entry of ``warnings``, also in ``review preview
---json``; the ``frame_mismatch`` event's ``actions`` are the same request
-positions (they were plan positions).
+--json``; the ``frame_mismatch`` event's ``actions`` and the per-window
+``action_indices`` of ``AppliedWindowResult`` and ``PreviewWindowResult`` are
+the same request positions (they were plan positions, and 1-based in ``review
+preview --json``'s ``windows``).
 
 **``window_status`` reports bounds in either frame.** Its window bounds are
 raw, while ``FinalPeak.fit_window_mhz`` is calibrated, and a program may not

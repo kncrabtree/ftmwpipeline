@@ -2145,6 +2145,8 @@ class TestStructuralReplan:
         assert ev.surviving_window_id == 0
         assert ev.revision_after == ev.revision_before + 1
         assert outcome.final_plan_revision == 1
+        # The windows the round re-fit: the survivor (nothing depends on it).
+        assert ev.refit_window_ids == (0,)
 
         # The revised plan travels back on the outcome so the caller persists
         # the survivor with the *union* freq_range. Without it the survivor
@@ -2220,6 +2222,7 @@ class TestStructuralReplan:
         assert ev.reason.startswith("not merged: ")
         assert "fit holds no line" in ev.reason
         assert ev.revision_after == ev.revision_before == 0
+        assert ev.refit_window_ids == ()  # a merge not applied re-fit nothing
         assert outcome.final_plan_revision == 0
         assert outcome.final_plan is plan
         assert outcome.window_outcomes[1].fit.n_peaks == 0

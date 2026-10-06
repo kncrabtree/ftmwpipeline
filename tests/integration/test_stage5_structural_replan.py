@@ -46,6 +46,7 @@ from ftmwpipeline._internal.stage4_impl import (
     load_windows_impl,
     save_window_plan_impl,
 )
+from ftmwpipeline.core.data_structures import MergeRequest
 from ftmwpipeline.core.start_detection_settings import StartDetectionSettings
 from ftmwpipeline.file_manager import CurationConflictError, PipelineFileError
 from tests.integration.test_stage5_resume import assert_same_fit
@@ -190,6 +191,20 @@ def test_a_forced_merge_is_recorded_and_bumps_the_revision(fits):
     assert (merge.revision_before, merge.revision_after) == (0, 1)
     assert fit.final_plan_revision == 1
     assert set(_windows(fit)) == {99, 100, 102, 103}
+
+
+def test_a_forced_merge_stores_the_windows_it_re_fit(fits):
+    """The re-fit set travels from the replan to the file: the survivor and
+    every window that depends on it in the revised plan (a thaw-rewritten
+    primary on top, which this subset may or may not have)."""
+    _par, _seq, forced, _forced_seq = fits
+    (merge,) = ftmw.load_fit(forced).replan_history
+    plan = load_fitted_plan(forced).plan
+    closure = plan_execution._affected_after_replan(plan, [MergeRequest(*_PAIR)])
+    assert merge.refit_window_ids is not None
+    assert set(closure) <= set(merge.refit_window_ids)
+    assert set(merge.refit_window_ids) <= {w.window_id for w in plan.windows}
+    assert list(merge.refit_window_ids) == sorted(merge.refit_window_ids)
 
 
 def test_the_merged_window_covers_both_and_keeps_the_lines(fits):

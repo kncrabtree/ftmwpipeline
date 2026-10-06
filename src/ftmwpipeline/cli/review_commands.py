@@ -206,7 +206,9 @@ def _window_outcome_json(w: Any) -> dict:
     out = {
         "window_id": w.window_id,
         "origin": w.origin,
-        "action_indices": [i + 1 for i in w.action_indices],
+        # 0-based request positions, as warning_details and a batch refusal's
+        # action_indices number them.
+        "action_indices": list(w.action_indices),
         "n_peaks_before": w.n_peaks_before,
         "n_peaks_after": w.n_peaks_after,
         "chi2r_before": w.chi2r_before,

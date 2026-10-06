@@ -78,7 +78,7 @@ def _replan(
         revision_after=revision + 1 if accepted else revision,
         accepted=accepted,
         reason="" if accepted else "not merged: the window's fit holds no line",
-        refit_window_ids=None if refit is None else tuple(refit),
+        refit_window_ids=Absent.NOT_RUN if refit is None else tuple(refit),
     )
 
 
@@ -466,7 +466,7 @@ def test_the_stored_refit_set_covers_a_rewritten_thawed_primary():
 def test_a_record_without_the_stored_set_falls_back_to_the_closure():
     stale = _replan(4, "low", 20.0, revision=0)
     merge = _replan(1, "high", 15.0, accepted=True, revision=0)
-    assert merge.refit_window_ids is None
+    assert merge.refit_window_ids is Absent.NOT_RUN
     fit = _fit(replans=[stale, merge])
     assert last_refit_revision(fit, 2, [(2, 1)]) == 1
     # The closure cannot see the thawed primary, so its record still counts.

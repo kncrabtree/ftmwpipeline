@@ -574,6 +574,15 @@ def _fit_doublet_status(
     return {col: _floats(raw[col]) for col in _FIT_DOUBLET_ABSENT_CAPABLE if col in raw}
 
 
+def _fit_replan_status(
+    h5_group: h5py.Group, raw: Dict[str, np.ndarray]
+) -> Dict[str, np.ndarray]:
+    """A stored re-fit set is present; a record that predates it is a
+    synthesized fill, which the reader marks ``NOT_RUN``."""
+    n = len(next(iter(raw.values()))) if raw else 0
+    return {"refit_window_ids": np.full(n, STATUS_PRESENT, dtype=np.uint8)}
+
+
 def _mask_untested_orth_evidence(raw: Dict[str, np.ndarray]) -> None:
     """Read an earlier writer's 0.0 orthogonal evidence from an untested pair as ``nan``."""
     col = "orth_evidence_delta_chi2"
@@ -782,6 +791,14 @@ _STATUS_LAYOUTS: Dict[str, _StatusLayout] = {
             adjust=_mask_untested_orth_evidence,
         ),
         _StatusLayout(
+            "fit_replans",
+            FIT_REPLAN_COLUMN_SPECS,
+            read_fit_replan_columns,
+            ("refit_window_ids",),
+            _fit_replan_status,
+            json_log=True,
+        ),
+        _StatusLayout(
             "peaks",
             PEAK_COLUMN_SPECS,
             read_peak_columns,
@@ -885,8 +902,10 @@ _TABLE_SPECS.update(
         ),
         "fit_replans": _TableSpec(
             group="stage5_fitting",
-            specs=FIT_REPLAN_COLUMN_SPECS,
-            reader=read_fit_replan_columns,
+            specs=_status_specs(
+                FIT_REPLAN_COLUMN_SPECS, _STATUS_LAYOUTS["fit_replans"].absent_capable
+            ),
+            reader=_status_reader(_STATUS_LAYOUTS["fit_replans"]),
             count_path="",
             hint=_FIT_HINT,
         ),
@@ -991,10 +1010,10 @@ def read_table_impl(
         order. Sentinel conventions (NaN for an absent float, ``-1`` for an
         absent id, tri-state flags) are documented on each table's column-spec
         mapping in the ``io`` serializers.
-        The ``fit_peaks``, ``fit_windows``, ``fit_audit``, ``fit_doublets``
-        and ``peaks`` tables also carry a ``uint8`` ``<column>__status`` column
-        for each absent-capable column (``0`` present, ``1`` not run, ``2``
-        undefined); the value column keeps its stored fill, except that a
+        The ``fit_peaks``, ``fit_windows``, ``fit_audit``, ``fit_doublets``,
+        ``fit_replans`` and ``peaks`` tables also carry a ``uint8``
+        ``<column>__status`` column for each absent-capable column (``0``
+        present, ``1`` not run, ``2`` undefined); the value column keeps its stored fill, except that a
         ``fit_audit`` separation reject's placeholder ``f_statistic`` /
         ``p_value`` (no test ran) read as ``nan``, and so does a degenerate
         statistic an earlier release stored as a number (an F-test without

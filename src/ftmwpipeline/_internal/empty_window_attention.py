@@ -112,7 +112,7 @@ def last_refit_revision(
     for r in spectrum_fit.replan_history:
         if not r.accepted:
             continue
-        if r.refit_window_ids is not None:
+        if not isinstance(r.refit_window_ids, Absent):
             if window_id in r.refit_window_ids:
                 last = max(last, int(r.revision_after))
             continue

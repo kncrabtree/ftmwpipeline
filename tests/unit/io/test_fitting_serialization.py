@@ -26,6 +26,7 @@ import h5py
 import numpy as np
 import pytest
 
+from ftmwpipeline.core.absent import Absent
 from ftmwpipeline.core.data_structures import (
     AuditStep,
     DoubletAlternativeInfo,
@@ -380,7 +381,7 @@ class TestRoundTrip:
         assert loaded.n_windows == 1
         assert [w.window_id for w in loaded.window_fits] == [0]
 
-    def test_a_replan_record_without_the_refit_set_reads_as_none(self, tmp_path):
+    def test_a_replan_record_without_the_refit_set_reads_as_not_run(self, tmp_path):
         path = tmp_path / "fit.h5"
         with h5py.File(path, "w") as h5f:
             g = h5f.create_group("stage5_fitting")
@@ -390,10 +391,10 @@ class TestRoundTrip:
             g.attrs["replan_history"] = json.dumps(blobs)
         with h5py.File(path, "r") as h5f:
             loaded = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
-        assert loaded.replan_history[0].refit_window_ids is None
+        assert loaded.replan_history[0].refit_window_ids is Absent.NOT_RUN
         # Saved again, the absence is kept rather than written as an empty set.
         again = _roundtrip(loaded, tmp_path / "again.h5")
-        assert again.replan_history[0].refit_window_ids is None
+        assert again.replan_history[0].refit_window_ids is Absent.NOT_RUN
 
 
 # ---------------------------------------------------------------------------

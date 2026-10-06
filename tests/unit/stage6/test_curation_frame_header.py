@@ -790,6 +790,10 @@ class TestFrameAdvisoryPerAction:
             {"message": d.message, "action_indices": d.action_indices}
             for d in expected.warning_details
         ]
+        # The per-window field uses the same 0-based request numbering.
+        assert {w["window_id"]: w["action_indices"] for w in payload["windows"]} == {
+            wid: w.action_indices for wid, w in expected.windows.items()
+        }
 
     def test_the_same_raw_actions_alone_fire_identically(
         self, sc_multi_file: Path

@@ -662,6 +662,11 @@ class TestSpectrumFitMetadata:
         assert len(fit.replan_history) == len(plan_outcome.replan_history)
         assert all(isinstance(e, ReplanInfo) for e in fit.replan_history)
         assert any(e.accepted for e in fit.replan_history)
+        # The re-fit set is carried, not dropped to "not recorded".
+        assert [e.refit_window_ids for e in fit.replan_history] == [
+            tuple(e.refit_window_ids) for e in plan_outcome.replan_history
+        ]
+        assert all(e.refit_window_ids for e in fit.replan_history if e.accepted)
 
     def test_parameters_and_diagnostics_propagate(self):
         plan_outcome, plan, peak_freqs, *_ = _two_window_plan_outcome()

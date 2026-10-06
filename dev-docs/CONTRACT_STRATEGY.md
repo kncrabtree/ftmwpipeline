@@ -817,7 +817,9 @@ ids of a curation batch),
   `curation_conflict` also carry `action_indices`, the 0-based request
   positions (numbered as `actions[<i>]`; a curation file's action rows in
   order) of the curation-batch action that failed, several for a coalesced
-  edit; absent (`not_run`) outside a batch. A batch refusal's message numbers
+  edit; absent (`not_run`) outside a batch and for a refusal of the whole
+  batch at once (every unknown window or `peak_uid` it names, every uncovered
+  `remove`). A batch refusal's message numbers
   the action from the request, never from the resolved plan.
 - Each typed error remains a subclass of the built-in it replaced (most are
   `ValueError`), so existing `except` clauses keep working.
@@ -1305,7 +1307,9 @@ curation-file row:
   equal results, decision logs and files.
 - **Results name the request's actions** (contract 17). Each action of a
   result's resolved `plan` carries `action_indices`, the 0-based request
-  positions it was resolved from (several for a coalesced edit). The
+  positions it was resolved from (several for a coalesced edit), and each
+  per-window entry of the result's `windows` carries the request positions of
+  the actions that targeted that window, never plan positions. The
   advisories are `warnings` (strings) and, entry for entry, `warning_details`
   (`message`, `action_indices`), in the Python results and in
   `review preview --json`. A batch refusal carries the same indices (§Errors).
