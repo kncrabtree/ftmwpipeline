@@ -155,6 +155,22 @@ def test_round_trip_is_faithful_and_keeps_aliasing():
     assert r2.cleanups == [{"window_id": 7}]
 
 
+def test_a_rescue_round_s_detected_candidates_round_trip():
+    """The candidates a rescue round detected, kept beside its refreshed ledger
+    so a refresh after a thaw re-derives the ledger from them, come back with
+    the event, sharing the candidates the ledger still holds."""
+    out, record = _outcome()
+    (rescue,) = out.rescue_events
+    (kept,) = rescue.candidates
+    dropped = ResidualPeakCandidate(9, 100.4, 1.0, 4.0, 2.0, None, None, None, False)
+    rescue._detected_candidates = [kept, dropped]  # type: ignore[attr-defined]
+    text, names, buffers = encode_graph({"outcome": out, "record": record})
+    back = decode_graph(text, names, buffers)
+    (r2,) = back["outcome"].rescue_events
+    assert repr(r2._detected_candidates) == repr([kept, dropped])
+    assert r2._detected_candidates[0] is r2.candidates[0]
+
+
 @pytest.mark.parametrize(
     "value",
     [

@@ -16,6 +16,27 @@ Accumulating toward ``1.0.0``. ``0.1.0b4`` is the last published release;
 everything below is reachable only from a source checkout. No further beta is
 planned — these entries fold into the ``1.0.0`` section when it is dated.
 
+**What an accepted thaw rewrites is re-derived or re-fit.** An accepted thaw
+rewrites its primary window in place, after that window's own pass derived its
+doublet adjudications and its rescue-candidate ledger from the fit the thaw
+replaces, and the primary kept both. Both are now derived again from the
+installed fit, under the primary's own fit conditions, in the sequential and
+the parallel fit and on a resume; neither pass changes the fit. The installed
+fit is the primary's final one, after the cleanup and the convergence adds its
+own pass derived both records before. The ledger is derived from the
+candidates the rescue detected, so a candidate the earlier pass dropped is
+listed when the installed residual carries a peak there. When
+a structural merge re-fits the dependent of an accepted thaw, it drops the
+thaw's record, but the primary kept the co-fit's rewrite with no record of it;
+that primary is now re-fit from scratch with the merged windows, with every
+window that depends on it. These change numerical output only on files with an
+accepted thaw (none of the reference fixtures has one) and ship under the next
+``ANALYSIS_EPOCH``, which is not moved yet.
+
+A Stage 6 cascade rebuilt a dependent's frozen contributors without their
+``peak_uid``; each now carries its source line's, in the entry Stage 5 writes.
+No number changes.
+
 **An accepted Stage 5 thaw keeps the thawed line; ``ANALYSIS_EPOCH`` moves
 5 → 6.** When a thaw was accepted, the dependent window took the thawed line as
 one of its own free peaks and dropped every line it had frozen from the line's

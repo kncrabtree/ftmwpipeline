@@ -87,7 +87,7 @@ from ..fitting.window_fit import (
 
 #: Layout version of ``/stage5_partial``. A different version is not resumed
 #: from (the resume starts over with ``incomplete_provenance``).
-PARTIAL_FORMAT_VERSION = 1
+PARTIAL_FORMAT_VERSION = 2
 
 _WINDOWS = "windows"
 _PROVENANCE = "provenance"
@@ -126,8 +126,8 @@ _NUMERIC_KINDS = frozenset("biufc")
 
 #: The private attributes the walk stashes on a dataclass beyond its declared
 #: fields (``plan_execution``: the window centre, the spur mask, the per-window
-#: fit conditions, the edge-free verdict), with their types. No other
-#: undeclared attribute is written or read.
+#: fit conditions, the edge-free verdict, a rescue round's detected candidates),
+#: with their types. No other undeclared attribute is written or read.
 _STASHED: Dict[type, Dict[str, Any]] = {
     WindowOutcome: {
         "_center_mhz": float,
@@ -138,6 +138,7 @@ _STASHED: Dict[type, Dict[str, Any]] = {
         "_n_eff_kind": str,
         "_edge_free_accepted": bool,
     },
+    RescueEvent: {"_detected_candidates": List[ResidualPeakCandidate]},
 }
 
 

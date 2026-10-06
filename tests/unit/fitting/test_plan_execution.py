@@ -19,6 +19,7 @@ the production code will see.
 
 from __future__ import annotations
 
+import dataclasses
 import multiprocessing
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
@@ -48,10 +49,12 @@ from ftmwpipeline.fitting.peak_model import (
 from ftmwpipeline.fitting.plan_execution import (
     DEFAULT_RESIDUAL_EDGE_THRESHOLD,
     REPLAN_REASON_PREFIXES,
+    CarriedWindows,
     FrozenPeak,
     ReplanContext,
     RescueEvent,
     ThawEvent,
+    WalkRecord,
     WindowOutcome,
     _apply_structural_merges,
     _pair_of,
@@ -3134,6 +3137,73 @@ class TestStructuralReplanRounds:
         cleanups = [(r["window_id"], r["phase"]) for r in out.cleanup_history]
         assert thaws == rescues == cleanups == expected
 
+    @pytest.mark.parametrize("accepted", [True, False], ids=["accepted", "rejected"])
+    def test_a_dropped_accepted_thaw_re_fits_its_primary(self, monkeypatch, accepted):
+        """Windows 1 and 3 read window 0. Window 1 merges with 2, so its records
+        are dropped, among them a thaw it made into 0. An accepted one rewrote 0
+        in place: 0 is re-fit from scratch with 1 rather than keep a rewrite
+        with no record, and so is 3, which reads 0. A rejected one changed
+        nothing, and 0 and 3 keep their fits."""
+        edges = [(1, 0), (3, 0)]
+        real_walk = plan_execution._walk_windows_parallel
+        real_replan = plan_execution._do_replan
+        walks: list = []
+
+        def walk(plan, order, **kw):
+            real_walk(plan, order, **kw)
+            walks.append((kw["phase"], list(order)))
+            if kw["phase"] == "initial":
+                kw["thaw_history"].append(
+                    ThawEvent(1, 0, -1, 0.0, "low", 9.0, 1.0, accepted, "test")
+                )
+
+        def replan(plan, requests, ctx):
+            return dataclasses.replace(
+                real_replan(plan, requests, ctx), dependency_edges=list(edges)
+            )
+
+        monkeypatch.setattr(plan_execution, "_walk_windows_parallel", walk)
+        monkeypatch.setattr(plan_execution, "_do_replan", replan)
+        monkeypatch.setattr(
+            plan_execution,
+            "_dispatch_structural_round",
+            _scripted_dispatch({0: [_trig(1, 2, "high", 5.0)]}),
+        )
+        plan, *rest = _exec_fixture(_CHAIN_WINDOWS + [(3, 1201, 1600, [1400])])
+        plan = dataclasses.replace(plan, dependency_edges=list(edges))
+        out = _run_exec((plan, *rest))
+        assert out.final_plan_revision == 1
+        refit = [0, 1, 3] if accepted else [1]
+        assert walks == [("initial", [0, 1, 2, 3]), ("replan", refit)]
+        assert out.thaw_history == []
+        assert set(out.window_outcomes) == {0, 1, 3}
+
+    def test_the_re_fit_set_grows_to_a_fixed_point(self):
+        """A primary re-fit for a dropped thaw takes the windows that read it
+        with it, and their dropped accepted thaws take their primaries in turn.
+        Window 0 survives a merge; 3 reads 0 and thawed 2; 4 reads 2 and
+        thawed 5; 6 reads 5. 3's rejected thaw into 7 rewrote nothing, and
+        neither did anything 8 did, which no re-fit window reads."""
+        windows = [FitWindow(w, (float(w), w + 0.5)) for w in (0, 2, 3, 4, 5, 6, 7, 8)]
+        edges = [(3, 0), (3, 2), (4, 2), (4, 5), (6, 5), (3, 7), (8, 7)]
+        new_plan = WindowPlan(windows=windows, dependency_edges=edges)
+        thaws = [
+            ThawEvent(3, 2, -1, 0.0, "high", 9.0, 1.0, True, "3 rewrote 2"),
+            ThawEvent(4, 5, -1, 0.0, "high", 9.0, 1.0, True, "4 rewrote 5"),
+            ThawEvent(3, 7, -1, 0.0, "high", 9.0, 9.0, False, "3 left 7"),
+            ThawEvent(8, 7, -1, 0.0, "high", 9.0, 1.0, True, "8 rewrote 7"),
+        ]
+        merge = [MergeRequest(0, 1, "test")]
+        assert plan_execution._affected_after_replan(new_plan, merge) == {0, 3}
+        assert plan_execution._affected_after_replan(new_plan, merge, thaws) == {
+            0,
+            2,
+            3,
+            4,
+            5,
+            6,
+        }
+
     @needs_fork
     def test_parallel_and_sequential_walks_record_the_same_history(self, monkeypatch):
         # The scripted triggers arrive in opposite orders (the order a parallel
@@ -3592,6 +3662,290 @@ class TestParallelWalkThawRefit:
             )
 
 
+# The real thaw round, for stand-ins that defer to it (a test that patches
+# twice must not defer to its own first stand-in).
+_ATTEMPT_THAW_ROUND = plan_execution.attempt_thaw_round
+
+
+class TestThawedPrimaryRecords:
+    """An accepted thaw rewrites its primary in place after the primary's own
+    tail derived its doublet adjudications and its rescue-candidate ledger (F-1)
+    from the fit the thaw replaced; both are derived again from the installed
+    fit, under the primary's own fit conditions, in every walk. Window 2
+    accepts a thaw from 0 (a stand-in that installs 0's line at 10% more
+    amplitude); 0's rescue round (a stand-in) detected a candidate at its line,
+    which the pre-thaw residual does not carry and the installed one does."""
+
+    F0, F1, F2, F3 = 36100.0, 36200.0, 36105.0, 36095.0
+    DOUBLETS = {"k_res": 1.0, "r_min": 0.1}
+
+    def _inputs(self):
+        sigma = 1.0
+        freq_array = np.arange(self.F3 - 5.0, self.F1 + 5.0, DF_MHZ)
+        spectrum = _synth_spectrum(
+            freq_array,
+            [
+                (self.F0, _amp_for_snr(300.0, sigma), 0.3),
+                (self.F1, _amp_for_snr(280.0, sigma), 1.1),
+                (self.F2, _amp_for_snr(60.0, sigma), 2.4),
+                (self.F3, _amp_for_snr(50.0, sigma), -0.6),
+            ],
+        ) + _complex_noise(freq_array.size, sigma, np.random.default_rng(SEED + 79))
+        reads_0 = [FixedContributor(0, 0, self.F0, True)]
+        windows = [
+            FitWindow(0, (self.F0 - 0.6, self.F0 + 0.6), free_peak_indices=[0]),
+            FitWindow(1, (self.F1 - 0.6, self.F1 + 0.6), free_peak_indices=[1]),
+            FitWindow(
+                2,
+                (self.F2 - 0.6, self.F2 + 0.6),
+                free_peak_indices=[2],
+                fixed_contributors=reads_0,
+                batch=1,
+            ),
+            FitWindow(
+                3,
+                (self.F3 - 0.6, self.F3 + 0.6),
+                free_peak_indices=[3],
+                fixed_contributors=reads_0,
+                batch=1,
+            ),
+        ]
+        plan = WindowPlan(
+            windows=windows,
+            dependency_edges=[(2, 0), (3, 0)],
+            topological_order=[0, 1, 2, 3],
+        )
+        return plan, freq_array, spectrum, np.full(freq_array.size, sigma)
+
+    @staticmethod
+    def _adjudicate(*, fit, acquisition_us, refit_kwargs, **_):
+        """A doublet pass that records what it was given: the fit's lines and
+        tau, and the scalar fit conditions of the merged refit."""
+        conditions = tuple(
+            sorted(
+                (k, v)
+                for k, v in refit_kwargs.items()
+                if isinstance(v, (int, float, str)) and not isinstance(v, bool)
+            )
+        )
+        return [
+            (
+                tuple(float(p.amplitude) for p in fit.peaks),
+                float(fit.tau_us),
+                float(acquisition_us),
+                conditions,
+            )
+        ]
+
+    @staticmethod
+    def _rescue(win, outcome, **_):
+        """Window 0's rescue round detects a candidate at its line."""
+        from ftmwpipeline.fitting.residual_screening import ResidualPeakCandidate
+
+        if win.window_id != 0:
+            return []
+        (line,) = outcome.fit.fit.peaks
+        cand = ResidualPeakCandidate(
+            bin_index=0,
+            frequency_mhz=float(line.offset_mhz),
+            magnitude=40.0 / np.sqrt(2.0),
+            snr=40.0,
+            prominence_sigma_c=40.0,
+            nearest_existing_detection_index=None,
+            nearest_existing_freq_mhz=None,
+            nearest_existing_separation_mhz=None,
+            near_existing=True,
+        )
+        ev = RescueEvent(
+            0, 0, 1, 1, 0, 0, 0, 0, 1.0, 1.0, TAU_US, TAU_US, False, "", [cand]
+        )
+        outcome.rescue_events.append(ev)
+        return [ev]
+
+    def _patch(self, monkeypatch, *, thaw: bool, workers: int = 1):
+        real = _ATTEMPT_THAW_ROUND
+
+        def thaw_2_from_0(win, outcome, **kwargs):
+            if win.window_id != 2 or not thaw:
+                return real(win, outcome, **kwargs)
+            if not outcome.thaw_events:  # the first of the window's rounds
+                primary = kwargs["outcomes"][0]
+                inner = primary.fit.fit
+                inner.peaks[0].amplitude *= 1.1
+                free = model_spectrum(
+                    primary.offset_grid_mhz,
+                    inner.peaks,
+                    inner.tau_us,
+                    T_US,
+                    shape=inner.shape,
+                ) + evaluate_baseline(inner, primary.offset_grid_mhz)
+                plan_execution._install_free_model(
+                    primary,
+                    free,
+                    tau_before_us=inner.tau_us,
+                    acquisition_us=T_US,
+                    residual_edge_m=primary._residual_edge_m,
+                )
+            event = ThawEvent(2, 0, -1, self.F0, "low", 9.0, 1.0, True, "test")
+            outcome.thaw_events.append(event)
+            return [event]
+
+        monkeypatch.setattr(plan_execution, "attempt_thaw_round", thaw_2_from_0)
+        monkeypatch.setattr(plan_execution, "adjudicate_close_pairs", self._adjudicate)
+        monkeypatch.setattr(plan_execution, "_apply_rescue_to_outcome", self._rescue)
+        monkeypatch.setattr(_pe, "_FIT_WINDOW_WORKERS", workers)
+
+    def _run(self, carried=None):
+        plan, freq_array, spectrum, rms = self._inputs()
+        return execute_plan(
+            plan,
+            _make_active_ft(freq_array, spectrum),
+            rms,
+            [self.F0, self.F1, self.F2, self.F3],
+            sideband=SIDEBAND,
+            acquisition_us=T_US,
+            tau0_us=TAU_US,
+            max_residual_rescue_rounds=1,
+            doublet_kwargs=self.DOUBLETS,
+            # The primary's own tau anchor differs from its dependents'.
+            window_tau_overrides={0: (TAU_US * 1.1, 0.4)},
+            carried=carried,
+        )
+
+    def _expected(self, primary):
+        """The records the primary's tail derives from its installed fit."""
+        ck = primary._ck_for_window
+        adjudications = self._adjudicate(
+            fit=primary.fit.fit,
+            acquisition_us=T_US,
+            refit_kwargs=plan_execution._build_doublet_refit_kwargs(ck, primary, T_US),
+        )
+        (ev,) = primary.rescue_events
+        probe = dataclasses.replace(ev, candidates=list(ev._detected_candidates))
+        twin = WindowOutcome(
+            window_id=0,
+            fit=primary.fit,
+            fixed_peaks=primary.fixed_peaks,
+            offset_grid_mhz=primary.offset_grid_mhz,
+            complex_spectrum=primary.complex_spectrum,
+            rms_noise=primary.rms_noise,
+            background=primary.background,
+            full_fitted_spectrum=primary.full_fitted_spectrum,
+            full_residual=primary.full_residual,
+            rescue_events=[probe],
+        )
+        plan_execution._refresh_rescue_candidates(
+            twin, acquisition_us=T_US, conservative_kwargs=ck
+        )
+        return adjudications, probe.candidates
+
+    def _check(self, out):
+        primary = out.window_outcomes[0]
+        assert [e.accepted for e in out.thaw_history if e.dependent_window_id == 2]
+        assert all(e.accepted for e in out.thaw_history if e.dependent_window_id == 2)
+        # The primary's own conditions, not its dependent's, were used.
+        assert primary._ck_for_window["tau_maj_us"] == pytest.approx(TAU_US * 1.1)
+        assert out.window_outcomes[2]._ck_for_window.get("tau_maj_us") != (
+            primary._ck_for_window["tau_maj_us"]
+        )
+        adjudications, candidates = self._expected(primary)
+        assert primary.doublet_adjudications == adjudications
+        assert primary.doublet_adjudications[0][0] == (
+            primary.fit.fit.peaks[0].amplitude,
+        )
+        (ev,) = primary.rescue_events
+        # The installed residual carries the 10% the stand-in added to the line.
+        assert len(candidates) == 1 and candidates[0].snr > 10.0
+        assert repr(ev.candidates) == repr(candidates)
+        # The plan-level ledger is the same record.
+        (hist,) = [e for e in out.rescue_history if e.window_id == 0]
+        assert hist is ev
+        # Window 3 froze the installed line (the passes did not change the fit).
+        (frozen_3,) = out.window_outcomes[3].fixed_peaks
+        assert frozen_3.model_peak.amplitude == pytest.approx(
+            primary.fit.fit.peaks[0].amplitude, rel=1e-12
+        )
+        return primary
+
+    def test_without_a_thaw_the_tail_s_records_stand(self, monkeypatch):
+        self._patch(monkeypatch, thaw=False)
+        out = self._run()
+        primary = out.window_outcomes[0]
+        (ev,) = primary.rescue_events
+        # The pre-thaw residual carries little at the line.
+        assert all(c.snr < 10.0 for c in ev.candidates)
+        assert len(ev._detected_candidates) == 1
+        adjudications, _ = self._expected(primary)
+        assert primary.doublet_adjudications == adjudications
+
+    def test_the_sequential_walk_re_derives_them(self, monkeypatch):
+        self._patch(monkeypatch, thaw=True)
+        self._check(self._run())
+
+    @needs_fork
+    def test_the_parallel_walk_s_re_fit_re_derives_them(self, monkeypatch):
+        self._patch(monkeypatch, thaw=True)
+        seq = self._check(self._run())
+        self._patch(monkeypatch, thaw=True, workers=2)
+        par = self._check(self._run())
+        assert par.doublet_adjudications[0][0] == pytest.approx(
+            seq.doublet_adjudications[0][0], rel=1e-9
+        )
+        (a,), (b,) = seq.rescue_events[0].candidates, par.rescue_events[0].candidates
+        assert a.snr == pytest.approx(b.snr, rel=1e-6)
+
+    @needs_fork
+    def test_a_worker_leaves_them_to_the_parent(self, monkeypatch, tmp_path):
+        """The parent discards a worker's fit of a window that accepted a thaw,
+        with the worker's copy of the primary, so only the parent's re-fit
+        re-derives the primary's records."""
+        import os
+
+        log = tmp_path / "refreshes"
+        real = plan_execution._refresh_thawed_primary
+
+        def logged(outcome, **kwargs):
+            with open(log, "a") as fh:
+                fh.write(f"{os.getpid()}\n")
+            real(outcome, **kwargs)
+
+        self._patch(monkeypatch, thaw=True, workers=2)
+        monkeypatch.setattr(plan_execution, "_refresh_thawed_primary", logged)
+        self._check(self._run())
+        assert log.read_text().split() == [str(os.getpid())]
+
+    def test_a_resume_re_derives_them(self, monkeypatch):
+        from ftmwpipeline.io.stage5_partial_serialization import (
+            decode_graph,
+            encode_graph,
+        )
+
+        self._patch(monkeypatch, thaw=True)
+        seq = self._check(self._run())
+        # A partial fit of 0 and 1 from a walk with no thaw, as persisted: the
+        # resumed walk's thaw refits every window from scratch.
+        self._patch(monkeypatch, thaw=False)
+        first = self._run()
+        records = {
+            0: WalkRecord(rescues=list(first.window_outcomes[0].rescue_events)),
+            1: WalkRecord(),
+        }
+        graph = {
+            "outcomes": {w: first.window_outcomes[w] for w in (0, 1)},
+            "records": records,
+        }
+        back = decode_graph(*encode_graph(graph))
+        carried = CarriedWindows(
+            order=[0, 1], outcomes=back["outcomes"], records=back["records"]
+        )
+        self._patch(monkeypatch, thaw=True)
+        resumed = self._check(self._run(carried=carried))
+        assert resumed.doublet_adjudications == seq.doublet_adjudications
+        assert repr(resumed.rescue_events[0].candidates) == repr(
+            seq.rescue_events[0].candidates
+        )
+
+
 # ---------------------------------------------------------------------------
 # execute_plan's PointMap threading (P3, second landing). The seeding chain
 # (window_fit._seed_peak, reached via conservative_fit) never sees
@@ -3880,6 +4234,16 @@ def test_refresh_rescue_candidates_destale_and_prune():
     # SNR refreshed to the measured final-residual value (the inflated 40 is gone).
     assert kept.snr != pytest.approx(40.0)
     assert kept.snr > 4.0  # a real peak well above the detector bar
+
+    # A later refresh (after a thaw rewrote the window) derives the ledger from
+    # what the rescue detected, not from this refresh's survivors: the
+    # candidate dropped here is kept once the residual carries a peak there.
+    bump = 0.3 * np.exp(-(((u + 0.25) / 0.04) ** 2))
+    outcome.full_residual = full_resid + bump.astype(np.complex128)
+    _refresh_rescue_candidates(outcome, acquisition_us=T_US, conservative_kwargs={})
+    cands = outcome.rescue_events[0].candidates
+    assert [c.frequency_mhz for c in cands] == pytest.approx([-0.25, real_off])
+    assert cands[0].snr != pytest.approx(11.0)
 
 
 # ---------------------------------------------------------------------------

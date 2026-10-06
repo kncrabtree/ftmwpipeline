@@ -3099,7 +3099,9 @@ def _refresh_frozen_from_sources(
     entries are preserved verbatim; every other frozen entry is dropped, and
     rebuilt only if its primary is a source. Add / remove / split / delete are
     handled uniformly: the source simply has more or fewer peaks above
-    threshold.
+    threshold. A rebuilt entry has Stage 5's schema
+    (:func:`~ftmwpipeline.fitting.result_conversion.window_outcome_to_fitting_result`),
+    the source line's ``peak_uid`` included.
 
     An accepted Stage 5 thaw leaves the thawed line a frozen contributor of the
     dependent, addressed through its primary (``ANALYSIS_EPOCH`` 6), so it is
@@ -3139,6 +3141,7 @@ def _refresh_frozen_from_sources(
                     "amplitude": float(pk.amplitude),
                     "phase": float(pk.phase) if pk.phase is not None else 0.0,
                     "freeze_eligible": True,
+                    "peak_uid": None if pk.peak_uid is None else int(pk.peak_uid),
                 }
             )
 
