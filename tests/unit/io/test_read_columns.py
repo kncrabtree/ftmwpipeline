@@ -232,6 +232,7 @@ def _sample_replan() -> ReplanInfo:
         revision_after=1,
         accepted=True,
         reason="boundary cut a real feature",
+        refit_window_ids=(1, 4),
     )
 
 
@@ -851,6 +852,19 @@ class TestReadFitEventLogs:
         np.testing.assert_array_equal(
             cols["revision_after"], [e.revision_after for e in events]
         )
+        assert [json.loads(c) for c in cols["refit_window_ids"]] == [
+            list(e.refit_window_ids) for e in events
+        ]
+
+    def test_a_replan_record_without_the_refit_set_reads_empty(self, fit_file):
+        with h5py.File(fit_file, "a") as h5f:
+            group = h5f["stage5_fitting"]
+            blobs = json.loads(group.attrs["replan_history"])
+            del blobs[0]["refit_window_ids"]
+            group.attrs["replan_history"] = json.dumps(blobs)
+        with h5py.File(fit_file, "r") as h5f:
+            cols = read_fit_replan_columns(h5f["stage5_fitting"])
+        assert list(cols["refit_window_ids"]) == [""]
 
     def test_rescues_match_the_full_loader(self, fit_file):
         with h5py.File(fit_file, "r") as h5f:

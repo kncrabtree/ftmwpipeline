@@ -16,6 +16,19 @@ Accumulating toward ``1.0.0``. ``0.1.0b4`` is the last published release;
 everything below is reachable only from a source checkout. No further beta is
 planned — these entries fold into the ``1.0.0`` section when it is dated.
 
+**Contract 17: each accepted structural merge records the windows its round
+re-fit; ``CONTRACT_VERSION`` moves 16 → 17 and ``ANALYSIS_EPOCH`` 6 → 7.** A
+merge round re-fits, besides its survivor and the windows that depend on it, the
+primary of every accepted thaw whose record it dropped (below). The
+``empty_window_residual`` / ``empty_window_spur`` trigger rebuilt the re-fit set
+from the survivor and the plan's dependency edges alone, so it could keep a
+stale flag from a thawed primary's earlier fit. ``ReplanInfo`` now carries
+``refit_window_ids``, the round's re-fit set (empty on a record not applied),
+stored in the fit's replan history and read as a JSON list in the
+``fit_replans`` table's new ``refit_window_ids`` column; the trigger reads that
+set. A file written before it was stored loads the field as ``None`` (the
+column reads ``""``) and the trigger falls back to the dependency closure.
+
 **What an accepted thaw rewrites is re-derived or re-fit.** An accepted thaw
 rewrites its primary window in place, after that window's own pass derived its
 doublet adjudications and its rescue-candidate ledger from the fit the thaw
@@ -30,8 +43,8 @@ a structural merge re-fits the dependent of an accepted thaw, it drops the
 thaw's record, but the primary kept the co-fit's rewrite with no record of it;
 that primary is now re-fit from scratch with the merged windows, with every
 window that depends on it. These change numerical output only on files with an
-accepted thaw (none of the reference fixtures has one) and ship under the next
-``ANALYSIS_EPOCH``, which is not moved yet.
+accepted thaw (none of the reference fixtures has one) and ship under
+``ANALYSIS_EPOCH`` 7: the epoch moves 6 → 7.
 
 A Stage 6 cascade rebuilt a dependent's frozen contributors without their
 ``peak_uid``; each now carries its source line's, in the entry Stage 5 writes.

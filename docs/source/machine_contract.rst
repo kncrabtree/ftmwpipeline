@@ -39,10 +39,10 @@ The contract version
 ``__version__``::
 
     import ftmwpipeline
-    if ftmwpipeline.CONTRACT_VERSION < 16:
+    if ftmwpipeline.CONTRACT_VERSION < 17:
         raise RuntimeError("needs a newer ftmwpipeline")
 
-The first published contract is version ``1``; this release is version ``16``.
+The first published contract is version ``1``; this release is version ``17``.
 An addition (a new accessor, field or code) raises the version by one and never
 breaks an existing field. Every machine-readable payload also carries a
 **schema name** of the form ``ftmw/<payload>@<n>``; a schema name never changes
@@ -985,7 +985,12 @@ Each, with its absence cases:
   ``deferred:`` (the pair waited behind another merge that round) or
   ``failed:`` (Stage 4 could not apply it); an accepted row's ``reason``
   describes the flagged edge. ``revision_after`` equals ``revision_before`` on
-  every row that is not accepted.
+  every row that is not accepted. ``refit_window_ids`` (contract 17) is a JSON
+  list of the window ids the row's merge round re-fit, ascending: the survivor,
+  the windows that transitively depend on it, and the primary of every accepted
+  thaw whose record the round dropped, with that primary's dependents. It is
+  ``"[]"`` on a row that is not accepted, and ``""`` on a file written before
+  the set was stored.
 
   The ``window_status`` table is described under :ref:`contract-window-status`.
 
@@ -2098,9 +2103,14 @@ window's edge is still coherent. Such a window is flagged when:
   that was not accepted, with ``S_coh`` above the fit's own
   ``residual_edge_threshold``. An edge a later accepted thaw resolved does not
   count, nor does a replan record measured before the window was last re-fit:
-  a structural merge re-fits its survivor and every window that transitively
-  depends on it, so a record whose ``revision_before`` precedes that merge's
-  ``revision_after`` describes a fit that is gone. The current fit's thaws are
+  a structural merge round re-fits its survivor, every window that
+  transitively depends on it, and the primary of every accepted thaw whose
+  record the round dropped, with that primary's dependents; an accepted replan
+  record stores that set as ``refit_window_ids`` (contract 17). A record whose
+  ``revision_before`` precedes the ``revision_after`` of a merge that re-fit
+  the window describes a fit that is gone. On a file written before the set
+  was stored, the re-fit set is read as the survivor and the windows that
+  transitively depend on it in the fitted plan. The current fit's thaws are
   read before the replan rounds that scanned it.
 
 The kind depends on the Stage 3 peaks the plan put in the window. When every

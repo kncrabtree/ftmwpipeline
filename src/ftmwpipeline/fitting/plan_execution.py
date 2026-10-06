@@ -586,6 +586,10 @@ class ReplanEvent:
     reason : str
         For an accepted merge, the trigger's description; otherwise one of
         :data:`REPLAN_REASON_PREFIXES`, ``": "`` and why.
+    refit_window_ids : tuple of int
+        For an accepted merge, every window the round re-fit, ascending
+        (:func:`_affected_after_replan`; the same set on every merge the round
+        applied). Empty when the merge was not applied.
     """
 
     triggering_window_id: int
@@ -597,6 +601,7 @@ class ReplanEvent:
     revision_after: int
     accepted: bool
     reason: str = ""
+    refit_window_ids: tuple[int, ...] = ()
 
 
 @dataclass
@@ -3096,6 +3101,7 @@ def execute_plan(
             )
 
             applied_pairs = {_pair_of(r.window_a_id, r.window_b_id) for r in applied}
+            refit_ids = tuple(sorted(affected))
             for v in verdicts:
                 pair = _pair_of(v.trigger.window_id, v.trigger.partner_id)
                 merged = v.status == "apply" and pair in applied_pairs
@@ -3108,6 +3114,7 @@ def execute_plan(
                     revision_after=(
                         new_plan.plan_revision if merged else plan.plan_revision
                     ),
+                    refit_window_ids=refit_ids,
                 )
             plan = new_plan
     if replan_context is not None and replan_history:
@@ -5489,6 +5496,7 @@ def _record_replan_verdict(
     *,
     accepted: bool,
     revision_after: int,
+    refit_window_ids: tuple[int, ...] = (),
 ) -> None:
     """Append one trigger's :class:`ReplanEvent` for a round run on ``plan``.
 
@@ -5527,6 +5535,7 @@ def _record_replan_verdict(
             revision_after=revision_after,
             accepted=accepted,
             reason=verdict.reason,
+            refit_window_ids=refit_window_ids if accepted else (),
         )
     )
 

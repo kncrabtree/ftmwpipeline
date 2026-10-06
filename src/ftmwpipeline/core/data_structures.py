@@ -1639,6 +1639,12 @@ class ReplanInfo:
         with one of ``not merged``, ``refused``, ``deferred`` or ``failed``
         and ``": "``
         (:data:`ftmwpipeline.fitting.plan_execution.REPLAN_REASON_PREFIXES`).
+    refit_window_ids : tuple of int or None
+        For an accepted merge, every window the round re-fit, ascending: the
+        survivor, the windows that transitively depend on it, and the primary
+        of every accepted thaw whose record the round dropped, with its own
+        dependents. Empty when the merge was not applied. ``None`` when not
+        recorded (a file written before the set was stored).
     """
 
     triggering_window_id: int
@@ -1650,6 +1656,7 @@ class ReplanInfo:
     revision_after: int
     accepted: bool
     reason: str = ""
+    refit_window_ids: Optional[Tuple[int, ...]] = None
 
 
 @dataclass

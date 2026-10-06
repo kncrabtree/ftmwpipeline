@@ -418,7 +418,7 @@ def _json_to_thaw_info(blob: Dict[str, Any], where: str) -> ThawInfo:
 
 
 def _replan_info_to_json(event: ReplanInfo) -> Dict[str, Any]:
-    return {
+    blob: Dict[str, Any] = {
         "triggering_window_id": int(event.triggering_window_id),
         "partner_window_id": int(event.partner_window_id),
         "surviving_window_id": int(event.surviving_window_id),
@@ -429,6 +429,10 @@ def _replan_info_to_json(event: ReplanInfo) -> Dict[str, Any]:
         "accepted": bool(event.accepted),
         "reason": str(event.reason),
     }
+    # A record loaded from a file that predates the stored set keeps its absence.
+    if event.refit_window_ids is not None:
+        blob["refit_window_ids"] = [int(w) for w in event.refit_window_ids]
+    return blob
 
 
 def _json_to_replan_info(blob: Dict[str, Any], where: str) -> ReplanInfo:
@@ -448,6 +452,11 @@ def _json_to_replan_info(blob: Dict[str, Any], where: str) -> ReplanInfo:
         revision_after=int(blob["revision_after"]),
         accepted=bool(blob["accepted"]),
         reason=str(blob.get("reason", "")),
+        refit_window_ids=(
+            tuple(int(w) for w in blob["refit_window_ids"])
+            if "refit_window_ids" in blob
+            else None
+        ),
     )
 
 
@@ -1848,7 +1857,9 @@ FIT_THAW_COLUMN_SPECS: Dict[str, ColumnSpec] = {
 }
 
 #: One row per structural replan: a window boundary redrawn mid-fit because it
-#: cut through a real feature.
+#: cut through a real feature. ``refit_window_ids`` is the round's re-fit set as
+#: a JSON list (``"[]"`` on a row that was not applied), and ``""`` on a file
+#: written before the set was stored.
 FIT_REPLAN_COLUMN_SPECS: Dict[str, ColumnSpec] = {
     "triggering_window_id": ("i8", REQUIRED),
     "partner_window_id": ("i8", REQUIRED),
@@ -1859,6 +1870,7 @@ FIT_REPLAN_COLUMN_SPECS: Dict[str, ColumnSpec] = {
     "revision_after": ("i8", REQUIRED),
     "accepted": ("bool", REQUIRED),
     "reason": ("str", ""),
+    "refit_window_ids": ("str", ""),
 }
 
 #: One row per rescue round: a re-search of a window's residual for peaks the
@@ -2013,13 +2025,26 @@ def read_fit_replan_columns(
 
     See :data:`FIT_REPLAN_COLUMN_SPECS` for the available columns.
     """
-    return _read_plan_log(
-        h5_group,
-        "replan_history",
-        FIT_REPLAN_COLUMN_SPECS,
-        columns,
-        table="fit_replans",
+    requested = resolve_column_selection(
+        columns, list(FIT_REPLAN_COLUMN_SPECS), table="fit_replans"
     )
+    records = load_json_attr(h5_group, "replan_history", [], label="stage5_fitting")
+    rows: Dict[str, List[Any]] = {c: [] for c in requested}
+    for i, record in enumerate(records):
+        # The re-fit set is a list; the flat table carries it JSON-encoded.
+        flat = dict(record)
+        if "refit_window_ids" in flat:
+            flat["refit_window_ids"] = json.dumps(
+                [int(w) for w in flat["refit_window_ids"]]
+            )
+        record_row(
+            flat,
+            FIT_REPLAN_COLUMN_SPECS,
+            requested,
+            rows,
+            where=f"replan_history[{i}]",
+        )
+    return build_columns(rows, FIT_REPLAN_COLUMN_SPECS, requested)
 
 
 def read_fit_rescue_columns(

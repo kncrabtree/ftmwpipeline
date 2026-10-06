@@ -630,10 +630,15 @@ its edge. One of the two flags a window when all of these hold:
   triggered that was not applied, or a thaw record of the window that was not
   accepted, with `S_coh` above the fit's own `residual_edge_threshold`. An edge
   a later accepted thaw resolved does not count. A replan record measured
-  before the window was last re-fit does not count either: a merge re-fits its
-  survivor and every window that transitively depends on it (the fitted plan's
-  dependency edges), so a record whose `revision_before` precedes the last such
-  merge's `revision_after` describes a fit that no longer exists. The records
+  before the window was last re-fit does not count either: a merge round
+  re-fits its survivor, every window that transitively depends on it, and the
+  primary of every accepted thaw whose record the round dropped, with that
+  primary's dependents, so a record whose `revision_before` precedes the
+  `revision_after` of the last merge that re-fit the window describes a fit
+  that no longer exists. Each accepted replan record stores its round's re-fit
+  set (`refit_window_ids`, contract version 17), and that set is what is read;
+  on a file written before it was stored, the set is the survivor and its
+  transitive dependents under the fitted plan's dependency edges. The records
   that remain are read in the order Stage 5 measured them, the current fit's
   thaws before the replan rounds that scanned it.
 

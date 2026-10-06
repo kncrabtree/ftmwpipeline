@@ -66,6 +66,7 @@ def _replan(
     *,
     revision: int = 0,
     survivor: Optional[int] = None,
+    refit: Optional[Sequence[int]] = None,
 ) -> ReplanInfo:
     return ReplanInfo(
         triggering_window_id=wid,
@@ -77,6 +78,7 @@ def _replan(
         revision_after=revision + 1 if accepted else revision,
         accepted=accepted,
         reason="" if accepted else "not merged: the window's fit holds no line",
+        refit_window_ids=None if refit is None else tuple(refit),
     )
 
 
@@ -445,6 +447,33 @@ def test_transitive_dependents_of_the_survivor_count_as_refit():
     fit = _fit(replans=[merge])
     assert last_refit_revision(fit, 3, [(2, 1), (3, 2)]) == 3
     assert last_refit_revision(fit, 3, [(2, 1)]) == 0
+
+
+def test_the_stored_refit_set_covers_a_rewritten_thawed_primary():
+    """Window 4 is the primary of an accepted thaw whose dependent the merge
+    re-fit; the round re-fit window 4 too, though it depends on no survivor.
+    The stored set says so, and its round-0 record is stale."""
+    stale = _replan(4, "low", 20.0, revision=0)
+    merge = _replan(1, "high", 15.0, accepted=True, revision=0, refit=(1, 2, 4))
+    deps = [(2, 1)]
+    fit = _fit(replans=[stale, merge])
+    assert last_refit_revision(fit, 4, deps) == 1
+    assert flagged_empty_edges(fit, 4, THR, dependency_edges=deps) == []
+    # The stored set is read as is: the dependency closure is not added to it.
+    assert last_refit_revision(fit, 3, [(3, 1)]) == 0
+
+
+def test_a_record_without_the_stored_set_falls_back_to_the_closure():
+    stale = _replan(4, "low", 20.0, revision=0)
+    merge = _replan(1, "high", 15.0, accepted=True, revision=0)
+    assert merge.refit_window_ids is None
+    fit = _fit(replans=[stale, merge])
+    assert last_refit_revision(fit, 2, [(2, 1)]) == 1
+    # The closure cannot see the thawed primary, so its record still counts.
+    assert last_refit_revision(fit, 4, [(2, 1)]) == 0
+    assert flagged_empty_edges(fit, 4, THR, dependency_edges=[(2, 1)]) == [
+        ("low", 20.0)
+    ]
 
 
 # ---- a bare accept of a lineless window in a batch -------------------------

@@ -462,9 +462,9 @@ def test_contract_version_is_sixteen():
     # attention (AttentionReason, the attention_kind vocabulary); 15:
     # decision-log action groups, empty-window converged, run_pipeline
     # canonical names, tau_shape; 16: removes logged at the resolved peak.
-    assert ftmwpipeline.CONTRACT_VERSION == 16
-    assert MANIFEST.contract_version == 16
-    assert capabilities()["contract_version"] == 16
+    assert ftmwpipeline.CONTRACT_VERSION == 17
+    assert MANIFEST.contract_version == 17
+    assert capabilities()["contract_version"] == 17
 
 
 def test_event_schemas_are_in_the_manifest_and_capabilities():
