@@ -1,6 +1,7 @@
 """
 The replay-engine stamps in ``/stage6_review``: a decision's ``serial``, the
-review's ``next_serial`` high-water mark and ``engine_version``, and the
+review's ``next_serial`` high-water mark, ``engine_version`` and recorded
+``review_params``, and the
 ``peak_uid`` check that tells a fit Stage 6 can address from one it cannot.
 
 A review a pre-engine build wrote carries none of the stamps; it must read
@@ -20,6 +21,7 @@ from ftmwpipeline.core.absent import Absent
 from ftmwpipeline.core.data_structures import (
     ENGINE_VERSION,
     DecisionLogEntry,
+    ReviewParams,
     Stage6Review,
 )
 from ftmwpipeline.io.fitting_serialization import fit_has_peak_identity
@@ -90,6 +92,30 @@ def test_a_review_with_no_engine_version_is_saved_without_one(tmp_path):
         assert group.attrs["engine_version"] == ENGINE_VERSION
         save_stage6_review_to_hdf5(Stage6Review(engine_version=None), group)
         assert "engine_version" not in group.attrs
+
+
+def test_the_recorded_review_parameters_round_trip(tmp_path):
+    """Recorded parameters read back exactly; a review that records none
+    reads ``None``, and saving ``None`` over a group drops the record."""
+    params = ReviewParams(
+        bar=3.5, attention_candidate_evidence=12.0, kappa=0.07, noise_floor=2.5
+    )
+    assert _round_trip(tmp_path, Stage6Review(review_params=params)).review_params == (
+        params
+    )
+    path = tmp_path / "review.h5"
+    with h5py.File(path, "w") as h5f:
+        group = h5f.create_group("stage6_review")
+        save_stage6_review_to_hdf5(Stage6Review(review_params=params), group)
+        assert json.loads(str(group.attrs["review_params"])) == {
+            "bar": 3.5,
+            "attention_candidate_evidence": 12.0,
+            "kappa": 0.07,
+            "noise_floor": 2.5,
+        }
+        save_stage6_review_to_hdf5(Stage6Review(), group)
+        assert "review_params" not in group.attrs
+        assert load_stage6_review_from_hdf5(group).review_params is None
 
 
 def _fit_group(h5f: h5py.File, uids) -> h5py.Group:

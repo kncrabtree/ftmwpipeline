@@ -304,6 +304,9 @@ The consolidated, calibrated outputs of the review stage.
 .. autoclass:: ftmwpipeline.core.data_structures.Stage6Review
    :members:
 
+.. autoclass:: ftmwpipeline.core.data_structures.ReviewParams
+   :members:
+
 .. autoclass:: ftmwpipeline.core.data_structures.LedgerCandidate
    :members:
 

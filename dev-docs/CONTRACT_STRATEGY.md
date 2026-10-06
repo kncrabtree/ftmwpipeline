@@ -541,6 +541,20 @@ stay on the status but do not by themselves put the window in the queue
 Attention is advice. It never changes a fitted number, a final product or the
 analysis fingerprint.
 
+Statuses are a function of the fits, the decision log and the recorded routing
+parameters (contract version 16). Every Stage 6 write recomputes every window's
+status, the reasons from the fits it leaves and the `provenance` from the log
+(a window's last row: `accept` gives `reviewed`, any other kind `user-edited`,
+no row `auto`), so after any write they equal a fresh `review run` with the
+recorded parameters. `review run`'s `bar`, `attention_candidate_evidence`,
+`kappa` and `noise_floor` are recorded as `Stage6Review.review_params` (`None`
+until a Stage 6 write records them; the defaults apply) and reused by every
+other write, an undo included. `review_run` takes each as
+`Optional[float] = None` on every interface; `None` keeps the recorded value,
+and a value given must be finite and non-negative (`bad_setting` naming the
+argument, before anything is read). Every `review show --json` payload carries
+them as `review_params` (`null` when none are recorded).
+
 The CLI reports the same records: `review show --attention --json` gives one
 row per queued window with its top reason (`window_id`, `label`, `kind`,
 `severity`, `detail`) and every reason in `reasons` (`kind`, `severity`,

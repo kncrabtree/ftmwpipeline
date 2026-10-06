@@ -31,6 +31,10 @@ from ftmwpipeline._internal.replay_reference import (
 )
 from ftmwpipeline.core.data_structures import FittingResult
 from ftmwpipeline.io.fitting_serialization import load_spectrum_fit_from_hdf5
+from ftmwpipeline.io.stage6_review_serialization import (
+    _status_to_dict,
+    load_stage6_review_from_file,
+)
 
 pytestmark = [pytest.mark.integration]
 
@@ -559,3 +563,82 @@ def test_an_accepted_thaws_primary_cascades_into_its_dependent_on_1019(
         for p in _fits(fp)[58].fitted_peaks
         if float(p.snr or 0.0) >= min_snr
     )
+
+
+# ---------------------------------------------------------------------------
+# Statuses are recomputed on every write (slow: the 655 build)
+# ---------------------------------------------------------------------------
+
+
+def _stored_statuses(path: Path) -> Dict[int, dict]:
+    review = load_stage6_review_from_file(str(path))
+    return {w: _status_to_dict(s) for w, s in review.window_statuses.items()}
+
+
+def _fresh_statuses(path: Path, tmp_path: Path) -> Dict[int, dict]:
+    """The statuses a fresh ``review run`` writes on a copy of *path*."""
+    copy = tmp_path / f"fresh_{path.name}"
+    shutil.copy(path, copy)
+    ftmw.review_run(copy)
+    out = _stored_statuses(copy)
+    copy.unlink()
+    return out
+
+
+def _candidate_locations(statuses: Dict[int, dict], wid: int) -> List[float]:
+    return [
+        loc
+        for r in statuses[wid]["attention_reasons"]
+        if r["kind"] == "candidate_bearing"
+        for loc in r["locations"]
+    ]
+
+
+@pytest.mark.slow
+def test_a_cascaded_window_gets_fresh_reasons_on_655(built_655, tmp_path):
+    """Removing 429's strongest line cascades into 428, which no decision
+    names. Its ``candidate_bearing`` reason must be recomputed from its new
+    fit: 4 candidate locations where the automatic fit had 3 (a write that
+    refreshed only the windows a decision names kept the stale 3)."""
+    fp = tmp_path / "655.ftmw"
+    shutil.copy(built_655, fp)
+    hub, dependents = _hub(fp)
+    assert hub == 429 and 428 in dependents
+    ftmw.review_run(fp)
+    before = _candidate_locations(_stored_statuses(fp), 428)
+    strongest = max(_fits(fp)[hub].fitted_peaks, key=lambda p: float(p.snr or 0.0))
+
+    ftmw.review_edit(fp, hub, remove=[float(strongest.frequency_mhz)], frame="raw")
+    stored = _stored_statuses(fp)
+    assert stored == _fresh_statuses(fp, tmp_path)
+    after = _candidate_locations(stored, 428)
+    assert (len(before), len(after)) == (3, 4)
+    assert stored[428]["provenance"] == "auto"
+
+
+@pytest.mark.slow
+def test_undoing_a_create_restores_the_empty_window_status_on_655(built_655, tmp_path):
+    """A create at 36888.7228, inside window 373 (dropped by Stage 5 and
+    flagged ``empty_window_residual``), takes 373's reason over; undoing the
+    create brings 373's status back exactly, and the created window's status
+    goes with it. Every write leaves a fresh ``review run``'s statuses."""
+    fp = tmp_path / "655.ftmw"
+    shutil.copy(built_655, fp)
+    ftmw.review_run(fp)
+    flagged = _stored_statuses(fp)[373]
+    assert [r["kind"] for r in flagged["attention_reasons"]] == [
+        "empty_window_residual"
+    ]
+
+    created = s6.create_window_impl(str(fp), 36888.7228, frame="raw")
+    stored = _stored_statuses(fp)
+    assert stored == _fresh_statuses(fp, tmp_path)
+    assert 373 not in stored and created.window_id in stored
+
+    log = ftmw.review_log(fp)
+    assert [e.kind for e in log] == ["create_window"]
+    ftmw.review_undo(fp, [log[0].serial])
+    stored = _stored_statuses(fp)
+    assert stored == _fresh_statuses(fp, tmp_path)
+    assert stored[373] == flagged
+    assert created.window_id not in stored

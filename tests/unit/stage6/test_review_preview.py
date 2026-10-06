@@ -490,7 +490,7 @@ class TestUnbaselinedContextCannotBePersisted:
 # ---------------------------------------------------------------------------
 # C5: an entirely-bare-accept plan does no fits, writes nothing, returns an
 # empty result -- short-circuited before the live apply's write-bearing
-# per-action path (_execute_planned_action) is ever reached.
+# bare-accept path (_apply_bare_accepts) is ever reached.
 # ---------------------------------------------------------------------------
 
 

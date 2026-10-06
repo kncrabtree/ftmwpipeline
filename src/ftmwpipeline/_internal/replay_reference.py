@@ -40,12 +40,12 @@ import numpy as np
 
 from ..core.data_structures import (
     DecisionLogEntry,
+    ReviewParams,
     Sideband,
     SpectrumFit,
     Stage6Review,
 )
 from ..file_manager import CurationConflictError
-from ..fitting.validation import DEFAULT_CHI2R_NOISE_FLOOR, DEFAULT_SHAPE_ERROR_KAPPA
 from ..io.fitting_serialization import (
     _fit_tables,
     _replan_info_to_json,
@@ -65,20 +65,18 @@ from .fingerprint_impl import canonical_json
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage6_impl import (
     _FIT_EDIT_KINDS,
-    DEFAULT_ATTENTION_CANDIDATE_EVIDENCE,
-    DEFAULT_DISPLAY_BAR,
+    DEFAULT_REVIEW_PARAMS,
     STAGE5_BASELINE_GROUP,
     _apply_batch_segment,
-    _auto_merged_window_freqs,
     _BatchChangeset,
     _BatchCtx,
     _build_shared_fit_ctx,
     _cascade_batch,
+    _curated_statuses,
     _derive_batch_review,
     _final_products_for_fit,
     _overlay_created_windows,
     _replay_plan,
-    _review_run_statuses,
     _seed_unresolved_spreads_from_diagnostics,
     refit_snap_tol_mhz_impl,
 )
@@ -116,18 +114,6 @@ _REVIEW_RECORDS = (
 )
 
 
-@dataclass(frozen=True)
-class ReviewParams:
-    """The ``review run`` attention-routing parameters a status computation
-    uses (``bar``, ``attention_candidate_evidence``, ``kappa``,
-    ``noise_floor``), at ``review run``'s defaults unless given."""
-
-    bar: float = DEFAULT_DISPLAY_BAR
-    attention_candidate_evidence: float = DEFAULT_ATTENTION_CANDIDATE_EVIDENCE
-    kappa: float = DEFAULT_SHAPE_ERROR_KAPPA
-    noise_floor: float = DEFAULT_CHI2R_NOISE_FLOOR
-
-
 @dataclass
 class CuratedState:
     """A curated state held in memory: the window fits and the review."""
@@ -149,7 +135,10 @@ def replay_full(
     products), then the log's actions replayed in log order in one batch
     (:func:`~.stage6_impl._replay_plan`, one action per recorded user action),
     one combined cascade, and the review derived from the result with the
-    log's rows. Reads the baseline and the file's static inputs only.
+    log's rows: every window's status computed from scratch from the final
+    fits, the log and *params* (:func:`~.stage6_impl._curated_statuses`).
+    Reads the baseline and the file's static inputs only. *params* defaults
+    to ``review run``'s defaults (:data:`~.stage6_impl.DEFAULT_REVIEW_PARAMS`).
 
     A log with fit-changing rows needs the baseline; a log of bare accepts
     only replays onto ``/stage5_fitting``, which such a log never changed (it
@@ -157,7 +146,7 @@ def replay_full(
     """
     path = str(file_path)
     log = list(log)
-    params = params or ReviewParams()
+    params = params or DEFAULT_REVIEW_PARAMS
     with h5open(path, "r") as h5f:
         baseline = STAGE5_BASELINE_GROUP in h5f
     if any(e.kind in _FIT_EDIT_KINDS for e in log) and not baseline:
@@ -171,25 +160,17 @@ def replay_full(
 
     # The review a fresh ``review run`` builds on the baseline.
     fid = load_fid_from_pipeline_impl(path)
-    statuses = _review_run_statuses(
+    review = Stage6Review(
+        final_products=_final_products_for_fit(path, spectrum_fit, fid),
+        review_params=params,
+    )
+    review.window_statuses = _curated_statuses(
         path,
         spectrum_fit,
-        Stage6Review(),
+        review,
+        params,
         Sideband.coerce(fid.sideband),
-        spur_centers_mhz=[
-            float(v) for v in spectrum_fit.parameters.get("spur_centers_mhz", [])
-        ],
-        acquisition_us=float(spectrum_fit.parameters.get("acquisition_us", 0.0)),
-        merged_window_freqs=_auto_merged_window_freqs(spectrum_fit),
-        bar=params.bar,
-        attention_candidate_evidence=params.attention_candidate_evidence,
-        kappa=params.kappa,
-        noise_floor=params.noise_floor,
         fit_group=group,
-    )
-    review = Stage6Review(
-        window_statuses=statuses,
-        final_products=_final_products_for_fit(path, spectrum_fit, fid),
     )
 
     plan = _replay_plan(log)
@@ -220,7 +201,7 @@ def replay_full(
     _cascade_batch(ctx, snap_tol_mhz=snap_tol)
     return CuratedState(
         spectrum_fit=ctx.changeset.spectrum_fit,
-        review=_derive_batch_review(ctx, path, existing_review=review),
+        review=_derive_batch_review(ctx, path, existing_review=review, fit_group=group),
     )
 
 

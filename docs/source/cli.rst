@@ -300,8 +300,12 @@ comparison under ``--ground-truth``. See :doc:`stage5_fitting`.
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 ``review run`` builds the attention-routing layer (per-window advisory reasons),
-preserving existing provenance and the decision log; ``--sigma-floor`` declares
-the systematic frequency-accuracy floor folded into the σ\ :sub:`f` budget.
+keeping the decision log and taking each window's provenance from it;
+``--bar``, ``--attention-bar``, ``--kappa`` and ``--noise-floor`` set the
+routing parameters, which the file records and every later review write
+reuses (an option left out keeps its recorded value); ``--sigma-floor``
+declares the systematic frequency-accuracy floor folded into the σ\ :sub:`f`
+budget.
 ``review show`` lists per-window summaries or the candidate ledger
 (``--candidates``); ``review rank --by METRIC`` ranks windows worst-first by a
 persisted statistic. The editing verbs each re-fit the affected window and

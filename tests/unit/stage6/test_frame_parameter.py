@@ -589,10 +589,10 @@ class TestNothingCalibratedIsPersisted:
         """The good test the task spec suggests: perform a curation action
         with frame="calibrated", change eps, and confirm the persisted
         decision still replays to the same raw frequency. Undo forces a
-        replay of every surviving decision (``_execute_planned_action``
-        always replays with ``frame="raw"`` straight off the raw-by-
-        construction decision log), so this exercises the actual replay path
-        rather than just re-reading unchanged bytes."""
+        replay of every surviving decision (the batch engine replays
+        straight off the raw-by-construction decision log), so this
+        exercises the actual replay path rather than just re-reading
+        unchanged bytes."""
         stamp = _current_calibration_stamp(str(sc_file))
         assert stamp is not None
         eps, probe = stamp[1], stamp[4]

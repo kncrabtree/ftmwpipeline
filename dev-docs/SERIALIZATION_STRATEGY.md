@@ -98,7 +98,9 @@ design).
   lack `peak_uid` predates peak identity: the file is read as stored, never
   migrated, and every Stage 6 write of it is refused until `fit run` starts a
   new lineage. A review from a newer engine is a newer format
-  (`PipelineCompatibilityError`).
+  (`PipelineCompatibilityError`). The review also records the
+  attention-routing parameters its statuses were computed under
+  (`review_params`); one without them reads as `None`, and the defaults apply.
 
 ## Multi-format input
 

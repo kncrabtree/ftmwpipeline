@@ -119,6 +119,28 @@ serials; ``CONTRACT_VERSION`` moves 15 → 16.**
   (as when it reads an earlier created window): its frozen background is now
   summed in contributor order, where it was summed in the ascending-id order
   its creation froze it in.
+* **Every write leaves the statuses a fresh ``review run`` computes, under
+  recorded parameters.** A write recomputed the attention reasons only of the
+  windows a decision named, so a window a cascade refit kept the reasons of its
+  old fit (on 655, removing window 429's strongest line left window 428 listing
+  3 candidate locations where its new fit has 4), and a bare accept kept
+  whatever reasons the window had. Now every Stage 6 write recomputes every
+  window's status from the fits it leaves, with the provenance taken from the
+  decision log (a window's last row: ``accept`` gives ``reviewed``, any other
+  row ``user-edited``, none ``auto``); ``review run`` takes provenance from the
+  log too, where it kept the stored one. ``review run``'s ``bar``,
+  ``attention_candidate_evidence``, ``kappa`` and ``noise_floor`` are recorded
+  in the review (``Stage6Review.review_params``, a ``ReviewParams``; the
+  ``review_params`` attribute of ``/stage6_review``) and every later write
+  computes statuses under them, where an undo reset them to the defaults. On
+  the functional API, ``Pipeline`` and the CLI the four become optional
+  (``None``, the default, keeps the recorded value; a review that records none
+  uses the defaults), and ``review_run`` gains ``kappa`` and ``noise_floor``
+  there (``--kappa`` / ``--noise-floor``). A value given must be finite and
+  non-negative (``bad_setting``), since every later write reuses it. Every
+  ``review show --json`` payload carries the recorded parameters as
+  ``review_params`` (``null`` when none are recorded). Undoing a create that
+  took a flagged empty window over restores the window's status.
 
 **Decision-log action groups, empty-window ``converged``, canonical ``run_pipeline`` and
 provenance names; ``CONTRACT_VERSION`` moves 14 → 15.** Four changes from the

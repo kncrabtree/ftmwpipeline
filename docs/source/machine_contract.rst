@@ -775,7 +775,7 @@ with its ``"<field>_absent"`` sibling.
      - the table of the chosen mode: ``{"windows": [...]}``, ``{"attention":
        [...]}`` (:ref:`contract-attention`), ``{"bar", "window_id",
        "candidates": [...]}`` or one window's detail; each also carries
-       ``refit_required``
+       ``refit_required`` and ``review_params``
    * - ``review rank`` / ``log`` / ``preview`` / ``snap-tolerance`` /
        ``acknowledge-environment``
      - n/a
@@ -1930,6 +1930,27 @@ map a window id to a ``WindowReviewStatus``; each status's
 they stay on the status but do not put the window in the queue
 (``needs_attention``) on their own. Attention is advice: it never changes a
 fitted number, a final product or the analysis fingerprint.
+
+**Statuses are recomputed on every write (contract 16).** Every Stage 6 write
+(``review run``, ``review_edit``, ``review_accept``, ``review_create``,
+``review_apply``, ``review_undo``, a ``ReviewSession`` persist) recomputes every
+window's status: the reasons from the fits the write leaves, and the
+``provenance`` from the decision log (a window's last row: ``accept`` gives
+``reviewed``, any other kind ``user-edited``, no row ``auto``). After any write
+the statuses are exactly those a fresh ``review run`` with the recorded
+parameters computes on the file. The parameters are ``review run``'s ``bar``,
+``attention_candidate_evidence``, ``kappa`` and ``noise_floor``; the review
+records the values the last ``review run`` used as ``review_params`` (a
+``ReviewParams``, ``None`` until a Stage 6 write records them; the defaults
+then apply), and every other write reuses them. ``review_run`` takes each as
+``Optional[float] = None`` on every interface (``--bar``, ``--attention-bar``,
+``--kappa``, ``--noise-floor`` on the command line): ``None`` keeps the
+recorded value, and a value given must be finite and non-negative
+(``bad_setting``, ``path`` the argument's name, before anything is read).
+Every ``review show --json`` payload carries the recorded parameters as
+``review_params`` (``{"bar", "attention_candidate_evidence", "kappa",
+"noise_floor"}``, ``null`` when none are recorded); ``review run`` and the
+text forms of ``review show --attention`` / ``--window N`` print them.
 
 On the command line, ``review show --attention --json`` prints ``{"attention":
 [...]}``, one row per queued window, worst first, with its top reason

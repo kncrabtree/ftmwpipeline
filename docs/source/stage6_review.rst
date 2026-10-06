@@ -159,6 +159,19 @@ rubber-stamp. ``review rank --by <metric>`` re-sorts the whole worklist worst-fi
 a chosen diagnostic (``min-snr``, ``max-vif``, ``chi2r``, ``candidate-evidence``,
 ``edge-distance``, ``spur-proximity``, or ``merged-chi2r``).
 
+The worklist is never stale. A window's status is a function of the fits, the
+decision log and the routing parameters, and every Stage 6 write (``review run``,
+an edit, an accept, a create, an apply, an undo) recomputes every window's status
+from what it leaves: the reasons from each window's current fit, a window an edit
+refit only because it reads the edited one included, and the provenance from the
+window's last decision (a plain ``accept`` gives ``reviewed``, any other decision
+``user-edited``, none ``auto``). Undoing the create that took an empty window over
+brings the empty window's flag back. The routing parameters are ``review run``'s
+``--bar``, ``--attention-bar``, ``--kappa`` and ``--noise-floor``: the file records
+the values a ``review run`` used (an option left out keeps its recorded value; a
+file that records none uses the defaults), and every later write, an undo
+included, routes attention under them.
+
 .. _stage6-ledger:
 
 The candidate-bearing flag draws from a **candidate ledger** that Stage 6 derives, on

@@ -15,6 +15,11 @@ HDF5 layout (under the caller-supplied group)::
         engine_version (int; the replay-engine version that wrote the review,
                        ``core.data_structures.ENGINE_VERSION``; absent on a
                        review a pre-engine build wrote)
+        review_params (JSON object: ``bar``, ``attention_candidate_evidence``,
+                       ``kappa``, ``noise_floor`` -- the attention-routing
+                       parameters the statuses were computed under, recorded
+                       by ``review run``; absent until a Stage 6 write records
+                       them, read as ``None``)
     window_statuses/ (JSON, per-window serialization)
         .attrs:
             data  (JSON string)
@@ -69,6 +74,7 @@ from __future__ import annotations
 
 import json
 import math
+from dataclasses import asdict
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -89,6 +95,7 @@ from ..core.data_structures import (
     FinalProducts,
     FitWindow,
     FixedContributor,
+    ReviewParams,
     Stage6Review,
     WindowReviewStatus,
 )
@@ -468,6 +475,10 @@ def save_stage6_review_to_hdf5(
         group.attrs["engine_version"] = int(review.engine_version)
     elif "engine_version" in group.attrs:
         del group.attrs["engine_version"]
+    if review.review_params is not None:
+        group.attrs["review_params"] = json.dumps(asdict(review.review_params))
+    elif "review_params" in group.attrs:
+        del group.attrs["review_params"]
 
     statuses_list = [_status_to_dict(s) for s in review.window_statuses.values()]
     ws_grp = group.require_group("window_statuses")
@@ -538,6 +549,14 @@ def load_stage6_review_from_hdf5(group: h5py.Group) -> Stage6Review:
             created_windows.append(_fit_window_from_dict(d))
 
     engine_version = group.attrs.get("engine_version")
+    raw_params = group.attrs.get("review_params")
+    review_params = (
+        None
+        if raw_params is None
+        else ReviewParams(
+            **{k: float(v) for k, v in json.loads(str(raw_params)).items()}
+        )
+    )
     return Stage6Review(
         window_statuses=window_statuses,
         decision_log=decision_log,
@@ -545,6 +564,7 @@ def load_stage6_review_from_hdf5(group: h5py.Group) -> Stage6Review:
         created_windows=created_windows,
         next_serial=int(group.attrs.get("next_serial", 0)),
         engine_version=None if engine_version is None else int(engine_version),
+        review_params=review_params,
     )
 
 

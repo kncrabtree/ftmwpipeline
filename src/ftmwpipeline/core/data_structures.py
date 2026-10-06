@@ -2376,6 +2376,34 @@ class DecisionLogEntry:
     serial: Union[int, Absent] = Absent.NOT_RUN
 
 
+@dataclass(frozen=True)
+class ReviewParams:
+    """The attention-routing parameters a Stage 6 status computation uses.
+
+    ``review run`` records them (the recorded values overridden by those it is
+    passed) and every other Stage 6 write reuses them, so an edit or an undo
+    routes attention exactly as the last ``review run`` did. They only route
+    attention: no fitted number or final product depends on them.
+
+    Attributes
+    ----------
+    bar : float
+        Display bar of the candidate ledger behind ``candidate_bearing``.
+    attention_candidate_evidence : float
+        Evidence a window's strongest revivable candidate must clear to flag
+        ``candidate_bearing``.
+    kappa : float
+        Shape-error kappa of the SNR-aware chi-squared gate.
+    noise_floor : float
+        Noise-regime chi-squared allowance of the same gate.
+    """
+
+    bar: float
+    attention_candidate_evidence: float
+    kappa: float
+    noise_floor: float
+
+
 @dataclass
 class Stage6Review:
     """Stage 6 curation state for the full spectrum.
@@ -2405,6 +2433,11 @@ class Stage6Review:
         The replay-engine version (:data:`ENGINE_VERSION`) that wrote the
         review; ``None`` when the stored review carries none (a pre-engine
         build wrote it).
+    review_params : ReviewParams or None
+        The attention-routing parameters the statuses were computed under,
+        recorded by ``review run`` and reused by every other Stage 6 write.
+        ``None`` when no Stage 6 write has recorded them; ``review run``'s
+        defaults then apply.
     refit_required : str or None
         Set on a read (``get_review_status``) of a file Stage 6 refuses to
         write: the reason a write would raise. ``"predates_peak_identity"``
@@ -2420,4 +2453,5 @@ class Stage6Review:
     created_windows: List["FitWindow"] = field(default_factory=list)
     next_serial: int = 0
     engine_version: Optional[int] = ENGINE_VERSION
+    review_params: Optional[ReviewParams] = None
     refit_required: Optional[str] = None

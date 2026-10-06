@@ -81,6 +81,7 @@ from ..core.data_structures import (
     FrequencyCalibration,
     LedgerCandidate,
     RescueRoundInfo,
+    ReviewParams,
     Sideband,
     SpectrumFit,
     Stage6Review,
@@ -435,6 +436,15 @@ DEFAULT_DISPLAY_BAR: float = 4.0
 # with only marginal near-misses does not flag). Tunable, orthogonal to the
 # accept gates.
 DEFAULT_ATTENTION_CANDIDATE_EVIDENCE: float = 10.0
+
+# The attention-routing parameters a status computation uses until a
+# ``review run`` records others (``Stage6Review.review_params``).
+DEFAULT_REVIEW_PARAMS = ReviewParams(
+    bar=DEFAULT_DISPLAY_BAR,
+    attention_candidate_evidence=DEFAULT_ATTENTION_CANDIDATE_EVIDENCE,
+    kappa=DEFAULT_SHAPE_ERROR_KAPPA,
+    noise_floor=DEFAULT_CHI2R_NOISE_FLOOR,
+)
 
 # If a candidate's evidence is within this factor of the accept gate it
 # passes the bar even when its raw SNR is below DEFAULT_DISPLAY_BAR.
@@ -3867,7 +3877,7 @@ def review_accept_impl(
 
     With no ``candidate_freq``: records a ``"accept"`` decision log entry and
     sets the window's provenance to ``"reviewed"`` without modifying the fit.
-    Attention reasons are preserved (they remain advisory after the user has
+    Its attention reasons stay (they remain advisory after the user has
     looked at the window).  Returns ``None``.
 
     With ``candidate_freq``: delegates to :func:`refit_window_impl` with
@@ -4000,86 +4010,110 @@ def _plan_window_center(path: str, window_id: int, default: float) -> float:
 def _record_bare_accept(
     path: str, window_id: int, *, replayed: Optional[DecisionLogEntry] = None
 ) -> None:
-    """Mark one window reviewed: a decision entry and a provenance flip, nothing
-    else. Shared by :func:`review_accept_impl` and a bare ``accept`` row in a
-    curation file, which is why it is not folded into the batch engine.
+    """Mark one window reviewed (:func:`_record_bare_accepts`), after checking
+    the file has it. Shared by :func:`review_accept_impl` and a bare
+    ``accept`` row in a curation file, which is why it is not folded into the
+    batch engine.
 
     ``replayed`` is the recorded row a replay re-applies: it is kept verbatim
     (only its ``order_index`` is recomputed) instead of minting a new one."""
     _require_known_window(path, window_id)
-    # A representative anchor frequency for the log entry (best effort: the
-    # entry is a marker, and a window with no fit still accepts).
-    anchor_freq = 0.0
-    try:
-        with h5open(path, "r") as h5f:
-            if "stage5_fitting" in h5f:
-                sf: SpectrumFit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
-                wf_list = [wf for wf in sf.window_fits if wf.window_id == window_id]
-                if wf_list:
-                    c = _window_center(wf_list[0])
-                    if c is not None:
-                        anchor_freq = c
-                    elif wf_list[0].fitted_peaks:
-                        anchor_freq = float(
-                            max(
-                                wf_list[0].fitted_peaks,
-                                key=lambda p: (
-                                    float(p.snr) if p.snr is not None else 0.0
-                                ),
-                            ).frequency_mhz
-                        )
-                else:
-                    anchor_freq = _plan_window_center(path, window_id, anchor_freq)
-    except Exception:
-        pass
+    _record_bare_accepts(path, [(window_id, replayed)])
 
+
+def _record_bare_accepts(
+    path: str, rows: Sequence[Tuple[int, Optional[DecisionLogEntry]]]
+) -> None:
+    """Mark windows reviewed, one decision entry per ``(window_id, replayed)``
+    row in order, then the statuses recomputed once for the new log
+    (:func:`_curated_statuses`, which flips each window's provenance) and one
+    ``/stage6_review`` write; no fit is touched. The caller has checked every
+    window id.
+
+    Recording the rows together is what one-by-one recording would leave (a
+    bare accept changes no fit, so no row's anchor depends on the rows before
+    it, and the statuses depend only on the final log), at the cost of one
+    status computation instead of one per row: a replay of a long
+    bare-accept-only log pays it once.
+
+    A row's ``replayed`` is the recorded row a replay re-applies: it is kept
+    verbatim (only its ``order_index`` is recomputed) instead of minting a new
+    one."""
     with h5open(path, "r") as h5f:
+        spectrum_fit: SpectrumFit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
         existing_review: Stage6Review = (
             load_stage6_review_from_hdf5(h5f["stage6_review"])
             if "stage6_review" in h5f
             else Stage6Review()
         )
+    fits_by_wid = {
+        int(wf.window_id): wf
+        for wf in spectrum_fit.window_fits
+        if wf.window_id is not None
+    }
 
-    existing_status = existing_review.window_statuses.get(window_id)
-    kept_reasons: List[AttentionReason] = (
-        list(existing_status.attention_reasons) if existing_status is not None else []
-    )
+    def _anchor(window_id: int) -> float:
+        # A representative anchor frequency for the log entry (best effort:
+        # the entry is a marker, and a window with no fit still accepts).
+        anchor_freq = 0.0
+        try:
+            wf = fits_by_wid.get(int(window_id))
+            if wf is not None:
+                c = _window_center(wf)
+                if c is not None:
+                    anchor_freq = c
+                elif wf.fitted_peaks:
+                    anchor_freq = float(
+                        max(
+                            wf.fitted_peaks,
+                            key=lambda p: (float(p.snr) if p.snr is not None else 0.0),
+                        ).frequency_mhz
+                    )
+            else:
+                anchor_freq = _plan_window_center(path, window_id, anchor_freq)
+        except Exception:
+            pass
+        return anchor_freq
 
-    new_statuses = dict(existing_review.window_statuses)
-    new_statuses[window_id] = WindowReviewStatus(
-        window_id=window_id,
-        provenance="reviewed",
-        attention_reasons=kept_reasons,
-        invalidated=False,
-    )
     # Accepting as-is does not change the fit, but it can still be the first
     # write since a timebase re-run: the persisted table's calibration stamp
     # may no longer match the file's current calibration, and carrying it
     # forward unchanged would re-persist a stale table (this is exactly the
     # bug -- a bare accept must not launder it back to disk).
     final_products = _current_final_products(existing_review.final_products, path)
-    order_index = len(existing_review.decision_log)
+    log = list(existing_review.decision_log)
     next_serial = int(existing_review.next_serial)
-    if replayed is not None:
-        entry = replace(replayed, order_index=order_index)
-    else:
-        entry = DecisionLogEntry(
-            order_index=order_index,
-            window_id=window_id,
-            frequency_mhz=anchor_freq,
-            kind="accept",
-            provenance="user",
-            # A one-row action (see ACTION_INDEX_EVIDENCE_KEY).
-            evidence={ACTION_INDEX_EVIDENCE_KEY: next_serial},
-            serial=next_serial,
+    for window_id, replayed in rows:
+        if replayed is not None:
+            log.append(replace(replayed, order_index=len(log)))
+            continue
+        log.append(
+            DecisionLogEntry(
+                order_index=len(log),
+                window_id=window_id,
+                frequency_mhz=_anchor(window_id),
+                kind="accept",
+                provenance="user",
+                # A one-row action (see ACTION_INDEX_EVIDENCE_KEY).
+                evidence={ACTION_INDEX_EVIDENCE_KEY: next_serial},
+                serial=next_serial,
+            )
         )
         next_serial += 1
+    params = _recorded_review_params(existing_review)
     new_review = Stage6Review(
-        window_statuses=new_statuses,
-        decision_log=list(existing_review.decision_log) + [entry],
+        decision_log=log,
         final_products=final_products,
         created_windows=list(existing_review.created_windows),
         next_serial=next_serial,
+        review_params=params,
+    )
+    new_review.window_statuses = _curated_statuses(
+        path,
+        spectrum_fit,
+        new_review,
+        params,
+        Sideband.coerce(load_fid_from_pipeline_impl(path).sideband),
     )
 
     _write_stage6_review_only(new_review, path)
@@ -6397,71 +6431,14 @@ def _restore_stage5_baseline(path: str) -> None:
         h5f.copy(STAGE5_BASELINE_GROUP, "stage5_fitting")
 
 
-def _execute_planned_action(path: str, action: PlannedAction) -> None:
-    """Dispatch one resolved action to its edit impl (shared by apply + undo).
-
-    Every frequency on ``action`` is already raw: a curation file's
-    frequencies are converted to raw by :func:`apply_curation_impl` before a
-    :class:`PlannedAction` is built, and a decision-log replay
-    (:func:`_decision_to_op`) reads frequencies straight from the log, which
-    is raw by construction (see ``core.curation.Frame``). ``frame="raw"`` is
-    passed explicitly rather than left to default, so a self_calibrated
-    file's omitted-frame error can never fire on a replay.
-    """
-    if action.kind == "create":
-        if action.anchor is None:
-            raise ValueError("create action requires an anchor frequency")
-        # A named window id is the id the create takes, not merely a value to
-        # check afterwards: every following row -- and every peak's
-        # ``window_id`` -- is keyed on it, so it has to survive the replay
-        # intact even when an earlier create was dropped from the edit set.
-        create_window_impl(
-            path,
-            action.anchor,
-            frame="raw",
-            _replay_window_id=(
-                None if action.window_id == _NEW_WINDOW_SENTINEL else action.window_id
-            ),
-        )
-        return
-    if action.kind == "edit":
-        # action.remove may carry PeakUidToken entries; refit_window_impl's
-        # public signature takes float/str tokens, so a uid is re-spelled as
-        # its "uid:N" string and re-parsed on the way in (this path is only
-        # ever reached for a bare-accept-only plan today -- see
-        # _execute_curation_batch -- so it is exercised defensively).
-        remove_tokens: List[Union[float, str]] = [
-            f"uid:{t.uid}" if isinstance(t, PeakUidToken) else t for t in action.remove
-        ]
-        refit_window_impl(
-            path,
-            action.window_id,
-            add=action.add,
-            remove=remove_tokens,
-            frame="raw",
-        )
-    elif action.kind == "merge":
-        merge_peaks_impl(path, action.window_id, action.peaks, frame="raw")
-    elif action.kind == "split":
-        if action.peak is None:
-            raise ValueError("split action requires a peak frequency")
-        split_peak_impl(
-            path, action.window_id, action.peak, into=action.into, frame="raw"
-        )
-    elif action.kind == "accept":
-        review_accept_impl(
-            path, action.window_id, candidate_freq=action.candidate, frame="raw"
-        )
-
-
 # ---------------------------------------------------------------------------
 # Batch curation engine: import once, apply the whole changeset in memory,
 # cascade once, persist once.
 #
-# ``_execute_planned_action`` above (and the single-window verbs it dispatches
-# to) each independently reload the FID, rebuild the active-FT context, and
-# read-modify-write ``/stage5_fitting`` -- fine for one interactive edit, but
-# for a curation batch of N actions that is N redundant imports/FTs/persists
+# Running each action through its single-window verb would independently
+# reload the FID, rebuild the active-FT context, and read-modify-write
+# ``/stage5_fitting`` per action -- fine for one interactive edit, but for a
+# curation batch of N actions that is N redundant imports/FTs/persists
 # for work that is batch-invariant (see ``_build_batch_ctx``). The engine below
 # builds that shared state ONCE, applies every action against an in-memory
 # ``SpectrumFit``, runs a single combined cascade over every directly-edited
@@ -6655,13 +6632,12 @@ class _BatchChangeset:
     touched this batch -- the seed set for the one combined cascade."""
     mutated_wids: set = field(default_factory=set)
     """Every window whose ``FittingResult`` changed this batch (dirty windows,
-    newly-created windows, and cascaded dependents) -- drives the
-    final-products rebuild. Attention reasons are refreshed only for windows
-    a decision names (:func:`_derive_batch_review`), not for every window
-    here."""
+    newly-created windows, and cascaded dependents) -- drives the fit
+    persist and the final-products rebuild. Statuses are recomputed for every
+    window on every write (:func:`_curated_statuses`), not only for these."""
     decisions: List[Dict[str, Any]] = field(default_factory=list)
     """Pending decision-log entries, in the order they will be recorded
-    (``window_id`` / ``frequency_mhz`` / ``kind`` / ``evidence`` / ``bare``,
+    (``window_id`` / ``frequency_mhz`` / ``kind`` / ``evidence``,
     plus ``action_start`` -- the position in this list of the first entry the
     same action recorded, set by :func:`_close_batch_action` once the action
     succeeds and turned into the ``action_index`` evidence key by
@@ -7884,10 +7860,10 @@ def _batch_apply_accept(
     *,
     snap_tol_mhz: float,
 ) -> Optional[RefitWindowResult]:
-    """Batch equivalent of :func:`review_accept_impl`. A bare accept records a
-    "reviewed" decision with no fit change (and keeps the window's existing
-    attention reasons, matching the single-window impl exactly); an accept with
-    a candidate is an add."""
+    """Batch equivalent of :func:`review_accept_impl`. A bare accept records an
+    ``accept`` decision with no fit change (the window's status then reads
+    "reviewed", :func:`_log_provenance`); an accept with a candidate is an
+    add."""
     if candidate is not None:
         wf = _batch_lookup_wf(ctx, window_id)
         chi2r_before = float(wf.reduced_chi2)
@@ -7946,7 +7922,6 @@ def _batch_apply_accept(
                 "frequency_mhz": anchor_freq,
                 "kind": "accept",
                 "evidence": {},
-                "bare": True,
             }
         )
         return None
@@ -7973,7 +7948,6 @@ def _batch_apply_accept(
             "frequency_mhz": anchor_freq,
             "kind": "accept",
             "evidence": {},
-            "bare": True,
         }
     )
     return None
@@ -8539,7 +8513,11 @@ def _close_batch_action(ctx: _BatchCtx, start: int) -> None:
 
 
 def _derive_batch_review(
-    ctx: _BatchCtx, path: str, *, existing_review: Optional[Stage6Review] = None
+    ctx: _BatchCtx,
+    path: str,
+    *,
+    existing_review: Optional[Stage6Review] = None,
+    fit_group: str = "stage5_fitting",
 ) -> Stage6Review:
     """Derive the new ``/stage6_review`` for the whole batch, without writing
     it: append every pending decision (assigning sequential ``order_index``
@@ -8547,8 +8525,9 @@ def _derive_batch_review(
     high-water mark, and the :data:`ACTION_INDEX_EVIDENCE_KEY` of the action
     that recorded it -- the serial of that action's first row; a decision no
     action closed counts as its own one-row action; a replayed row is kept
-    verbatim, see :attr:`_BatchChangeset.replayed`), refresh each touched
-    window's provenance / attention reasons, rebuild the final-products table
+    verbatim, see :attr:`_BatchChangeset.replayed`), recompute every window's
+    status from the batch's fit and the new log under the review's recorded
+    parameters (:func:`_curated_statuses`), rebuild the final-products table
     once if any fit changed or its persisted stamp has gone stale against the
     file's current calibration (a bare-accept-only batch mutates no fit but
     must still not launder a stale table back to disk), and carry the (now
@@ -8563,6 +8542,8 @@ def _derive_batch_review(
     ``existing_review`` replaces the ``/stage6_review`` read: the full-replay
     reference (:mod:`.replay_reference`) passes the review it built in memory,
     whose final-products table it has just built and so is never stale.
+    ``fit_group`` names the fit group the fitted plan is read from for the
+    empty-window reasons (the reference reads the undo baseline's).
     """
     stale_check = existing_review is None
     if existing_review is None:
@@ -8574,19 +8555,8 @@ def _derive_batch_review(
             )
 
     base_index = len(existing_review.decision_log)
-    statuses = dict(existing_review.window_statuses)
     final_products = existing_review.final_products
-
-    sideband: Optional[Sideband] = None
-    merged_window_freqs: Dict[int, List[float]] = {}
-    reason_cache: Dict[int, List[AttentionReason]] = {}
-    spur_centers_mhz: List[float] = [
-        float(v)
-        for v in ctx.changeset.spectrum_fit.parameters.get("spur_centers_mhz", [])
-    ]
-    acquisition_us: float = float(
-        ctx.changeset.spectrum_fit.parameters.get("acquisition_us", 0.0)
-    )
+    fid = load_fid_from_pipeline_impl(path)
 
     # Rebuild whenever the fit changed *or* the persisted stamp no longer
     # matches the file's current calibration (a timebase re-run since the
@@ -8595,41 +8565,7 @@ def _derive_batch_review(
     if ctx.changeset.mutated_wids or (
         stale_check and _final_products_is_stale(final_products, path)
     ):
-        fid = load_fid_from_pipeline_impl(path)
-        sideband = Sideband.coerce(fid.sideband)
-        merged_window_freqs = _auto_merged_window_freqs(ctx.changeset.spectrum_fit)
         final_products = _final_products_for_fit(path, ctx.changeset.spectrum_fit, fid)
-
-    def _attention_reasons_for(window_id: int) -> List[AttentionReason]:
-        if window_id in reason_cache:
-            return reason_cache[window_id]
-        wf_list = [
-            wf
-            for wf in ctx.changeset.spectrum_fit.window_fits
-            if wf.window_id == window_id
-        ]
-        if wf_list and sideband is not None:
-            reasons = _compute_attention_reasons(
-                wf_list[0],
-                spur_centers_mhz=spur_centers_mhz,
-                acquisition_us=acquisition_us,
-                ledger_bar=DEFAULT_DISPLAY_BAR,
-                attention_candidate_evidence=DEFAULT_ATTENTION_CANDIDATE_EVIDENCE,
-                sideband=sideband,
-                kappa=DEFAULT_SHAPE_ERROR_KAPPA,
-                noise_floor=DEFAULT_CHI2R_NOISE_FLOOR,
-                auto_merged=window_id in merged_window_freqs,
-                merged_freqs=merged_window_freqs.get(window_id, ()),
-            )
-        else:
-            existing_status = statuses.get(window_id)
-            reasons = (
-                list(existing_status.attention_reasons)
-                if existing_status is not None
-                else []
-            )
-        reason_cache[window_id] = reasons
-        return reasons
 
     replayed = ctx.changeset.replayed
     if len(ctx.changeset.decisions) < len(replayed):
@@ -8677,46 +8613,24 @@ def _derive_batch_review(
                     serial=ctx.changeset.serial_at(offset),
                 )
             )
-        if dec.get("bare"):
-            existing_status = statuses.get(wid)
-            kept_reasons = (
-                list(existing_status.attention_reasons)
-                if existing_status is not None
-                else []
-            )
-            statuses[wid] = WindowReviewStatus(
-                window_id=wid,
-                provenance="reviewed",
-                attention_reasons=kept_reasons,
-                invalidated=False,
-            )
-        else:
-            statuses[wid] = WindowReviewStatus(
-                window_id=wid,
-                provenance="user-edited",
-                attention_reasons=_attention_reasons_for(wid),
-                invalidated=False,
-            )
 
-    _settle_empty_window_reasons(
-        statuses,
-        ctx.changeset.spectrum_fit,
-        ctx.changeset.created_windows,
-        base_plan_windows=ctx.shared.base_plan.windows,
-        edited_window_ids={
-            int(d["window_id"])
-            for d in ctx.changeset.decisions
-            if str(d["kind"]) in _FIT_EDIT_KINDS
-        },
-    )
-
-    return Stage6Review(
-        window_statuses=statuses,
+    params = _recorded_review_params(existing_review)
+    new_review = Stage6Review(
         decision_log=list(existing_review.decision_log) + new_entries,
         final_products=final_products,
         created_windows=list(ctx.changeset.created_windows),
         next_serial=max(int(existing_review.next_serial), ctx.changeset.next_serial()),
+        review_params=params,
     )
+    new_review.window_statuses = _curated_statuses(
+        path,
+        ctx.changeset.spectrum_fit,
+        new_review,
+        params,
+        Sideband.coerce(fid.sideband),
+        fit_group=fit_group,
+    )
+    return new_review
 
 
 def _settle_empty_window_reasons(
@@ -9171,7 +9085,7 @@ def _resolve_deferred_curation(
     """Resolve a :class:`_DeferredCuration` into its plan and advisories
     against the state *ctx* holds -- its in-memory fit and effective window
     plan -- or, with no ``ctx`` (the bare-accept path, where every prefix
-    action has already been persisted one by one), against the file.
+    action has already been persisted), against the file.
 
     The same three passes :func:`apply_curation_impl` runs up front on an
     ordinary apply (window derivation + coalescing, the ambiguity advisories,
@@ -9211,18 +9125,19 @@ def _resolve_deferred_curation(
     return plan, warnings
 
 
-def _apply_actions_one_by_one(
+def _apply_bare_accepts(
     path: str,
     plan: Sequence[PlannedAction],
     *,
     replayed: Sequence[DecisionLogEntry] = (),
 ) -> int:
-    """The cheap per-action path for a plan that touches no fit (bare
-    ``accept`` rows only): each action persists itself. Returns the count.
+    """The cheap path for a plan that touches no fit (bare ``accept`` rows
+    only): every row is recorded in one ``/stage6_review`` write
+    (:func:`_record_bare_accepts`). Returns the count.
 
-    Every window id is checked before the first action persists, so an
-    unknown id refuses the whole file rather than leaving the rows above it
-    applied -- the same all-or-nothing outcome the batch engine gives.
+    Every window id is checked before anything persists, so an unknown id
+    refuses the whole file rather than leaving the rows above it applied --
+    the same all-or-nothing outcome the batch engine gives.
 
     ``replayed`` marks *plan* as a replay of these log rows, one bare accept
     each: each is recorded verbatim rather than minted afresh."""
@@ -9234,17 +9149,17 @@ def _apply_actions_one_by_one(
             f"internal: {len(plan)} replay action(s) for {len(replayed)} "
             "replayed bare accept(s)"
         )
-    applied = 0
-    for i, action in enumerate(plan):
-        try:
-            if replayed:
-                _record_bare_accept(path, action.window_id, replayed=replayed[i])
-            else:
-                _execute_planned_action(path, action)
-        except (ValueError, KeyError) as exc:
-            _raise_curation_failure(i, action, exc)
-        applied += 1
-    return applied
+    if any(a.kind != "accept" or a.candidate is not None for a in plan):
+        raise ValueError("internal: a fit-touching action on the bare-accept path")
+    if plan:
+        _record_bare_accepts(
+            path,
+            [
+                (action.window_id, replayed[i] if replayed else None)
+                for i, action in enumerate(plan)
+            ],
+        )
+    return len(plan)
 
 
 def _batch_window_stats(ctx: _BatchCtx) -> Dict[int, Tuple[int, float]]:
@@ -9499,8 +9414,8 @@ def _execute_curation_batch(
 ) -> _BatchOutcome:
     """Execute a resolved curation plan as one batch: shared context, one
     combined cascade, one persist of ``/stage5_fitting`` and one of
-    ``/stage6_review``. Falls back to the cheap per-action path
-    (:func:`_execute_planned_action`) when the whole plan is bare ``accept``
+    ``/stage6_review``. Falls back to the cheap bare-accept path
+    (:func:`_apply_bare_accepts`) when the whole plan is bare ``accept``
     (no Stage 5 fit touched, so there is nothing to batch and -- unlike every
     other action -- a bare accept does not even require a Stage 5 fit to
     exist).
@@ -9536,16 +9451,16 @@ def _execute_curation_batch(
     if deferred is not None and deferred.needs_fit():
         needs_fit = True
     if not needs_fit:
-        applied = _apply_actions_one_by_one(path, plan, replayed=preserve)
+        applied = _apply_bare_accepts(path, plan, replayed=preserve)
         if deferred is None:
             # A bare-accept plan carries no create by construction.
             return _BatchOutcome(applied=applied)
-        # Every prefix action has been persisted one by one, so the file IS
+        # Every prefix action has been persisted, so the file IS
         # the state to resolve against here.
         deferred_plan, deferred_warnings = _resolve_deferred_curation(
             path, deferred, snap_tol_mhz=snap_tol_mhz
         )
-        applied = _apply_actions_one_by_one(path, deferred_plan)
+        applied = _apply_bare_accepts(path, deferred_plan)
         return _BatchOutcome(
             applied=applied, resolved_deferred=(deferred_plan, deferred_warnings)
         )
@@ -9980,11 +9895,18 @@ def _reset_to_baseline(path: str, *, restore_fit: bool) -> None:
 
     The serial high-water mark survives the reset: the replay keeps the
     surviving rows' serials, and a serial is never reused within the lineage,
-    so the next new decision takes one above every serial ever recorded."""
-    next_serial = load_stage6_review_from_file(path).next_serial
+    so the next new decision takes one above every serial ever recorded. So
+    do the recorded review parameters, which the rebuild and the replay
+    compute statuses under."""
+    review = load_stage6_review_from_file(path)
     if restore_fit:
         _restore_stage5_baseline(path)
-    _write_stage6_review_only(Stage6Review(next_serial=next_serial), path)
+    _write_stage6_review_only(
+        Stage6Review(
+            next_serial=review.next_serial, review_params=review.review_params
+        ),
+        path,
+    )
     review_run_impl(path)
 
 
@@ -12016,10 +11938,10 @@ def _build_final_products(
 def review_run_impl(
     file_path: Union[Path, str],
     *,
-    bar: float = DEFAULT_DISPLAY_BAR,
-    attention_candidate_evidence: float = DEFAULT_ATTENTION_CANDIDATE_EVIDENCE,
-    kappa: float = DEFAULT_SHAPE_ERROR_KAPPA,
-    noise_floor: float = DEFAULT_CHI2R_NOISE_FLOOR,
+    bar: Optional[float] = None,
+    attention_candidate_evidence: Optional[float] = None,
+    kappa: Optional[float] = None,
+    noise_floor: Optional[float] = None,
     sigma_floor_khz: Optional[float] = None,
     events: Optional[EventCallback] = None,
     cancel: Optional[CancelToken] = None,
@@ -12040,10 +11962,15 @@ def review_run_impl(
     ``stage6_review`` HDF5 group.  Marks the ``stage6_review`` tracker stage
     complete.
 
-    Idempotent: if a ``stage6_review`` group already exists, the existing
-    per-window ``provenance`` (``"reviewed"``/``"user-edited"``) and the
-    ``decision_log`` are preserved; only ``attention_reasons`` are
-    recomputed.  The ``"auto"`` provenance is never upgraded by this call.
+    Idempotent: the decision log and the created-window overlay are kept,
+    and every status is recomputed from the fit (:func:`_curated_statuses`),
+    with each window's ``provenance`` taken from its rows in the log.
+
+    The four attention-routing parameters are recorded in the review
+    (``Stage6Review.review_params``) and every later Stage 6 write -- an
+    edit, an apply, an undo -- computes statuses under them. A parameter left
+    ``None`` keeps its recorded value (:data:`DEFAULT_REVIEW_PARAMS` on a
+    review that records none).
 
     Parameters
     ----------
@@ -12051,18 +11978,19 @@ def review_run_impl(
         Path to the ``.ftmw`` pipeline file (read-write).
     bar :
         Display bar forwarded to :func:`get_candidate_ledger_impl` for the
-        candidate-bearing attention reason (default :data:`DEFAULT_DISPLAY_BAR`).
+        candidate-bearing attention reason (default: the recorded value, else
+        :data:`DEFAULT_DISPLAY_BAR`).
     attention_candidate_evidence :
         A window flags ``candidate_bearing`` only when its strongest revivable
-        candidate's evidence clears this threshold (default
-        :data:`DEFAULT_ATTENTION_CANDIDATE_EVIDENCE`) -- stiffer than ``bar`` so
-        the attention surface stays actionable while the ledger still lists
-        every candidate above ``bar``.
+        candidate's evidence clears this threshold (default: the recorded
+        value, else :data:`DEFAULT_ATTENTION_CANDIDATE_EVIDENCE`) -- stiffer
+        than ``bar`` so the attention surface stays actionable while the
+        ledger still lists every candidate above ``bar``.
     kappa :
-        Shape-error kappa for the SNR-aware chi-squared gate (default
-        :data:`DEFAULT_SHAPE_ERROR_KAPPA`).
+        Shape-error kappa for the SNR-aware chi-squared gate (default: the
+        recorded value, else :data:`DEFAULT_SHAPE_ERROR_KAPPA`).
     noise_floor :
-        Noise-regime chi-squared allowance (default
+        Noise-regime chi-squared allowance (default: the recorded value, else
         :data:`DEFAULT_CHI2R_NOISE_FLOOR`).
     sigma_floor_khz :
         When given, persist this user-declared systematic accuracy floor (kHz)
@@ -12080,8 +12008,20 @@ def review_run_impl(
     ------
     ValueError
         When Stage 5 has not been run yet.
+    BadSettingError
+        When ``bar``, ``attention_candidate_evidence``, ``kappa`` or
+        ``noise_floor`` is given and is not finite and non-negative; nothing
+        is read or written.
     """
     path = str(file_path)
+    # Checked before anything is read: every later write routes attention
+    # under what this call records, so a bad value must never reach the file.
+    passed = _validated_review_params(
+        bar=bar,
+        attention_candidate_evidence=attention_candidate_evidence,
+        kappa=kappa,
+        noise_floor=noise_floor,
+    )
     ops = operation_events("review run", events, cancel)
     # One atomic write that covers the reads it is built from: the transaction
     # (and its write_conflict stat) begins before the fit is read, and commits
@@ -12103,7 +12043,7 @@ def review_run_impl(
             spectrum_fit: SpectrumFit = load_spectrum_fit_from_hdf5(
                 h5f["stage5_fitting"]
             )
-            # Load existing review to preserve provenance/decision_log.
+            # The existing review's log, overlay and recorded parameters.
             existing_review: Stage6Review
             if "stage6_review" in h5f:
                 existing_review = load_stage6_review_from_hdf5(h5f["stage6_review"])
@@ -12111,14 +12051,7 @@ def review_run_impl(
                 existing_review = Stage6Review()
 
         fid = load_fid_from_pipeline_impl(path)
-
-        spur_centers_mhz: List[float] = [
-            float(v) for v in spectrum_fit.parameters.get("spur_centers_mhz", [])
-        ]
-        acquisition_us: float = float(
-            spectrum_fit.parameters.get("acquisition_us", 0.0)
-        )
-        merged_window_freqs = _auto_merged_window_freqs(spectrum_fit)
+        params = replace(_recorded_review_params(existing_review), **passed)
 
         # The "Stage 6 review: routing attention for N windows" start line and
         # the "Saved Stage 6 review to ..." end line are rendered from the
@@ -12134,13 +12067,7 @@ def review_run_impl(
                 spectrum_fit,
                 existing_review,
                 fid,
-                spur_centers_mhz=spur_centers_mhz,
-                acquisition_us=acquisition_us,
-                merged_window_freqs=merged_window_freqs,
-                bar=bar,
-                attention_candidate_evidence=attention_candidate_evidence,
-                kappa=kappa,
-                noise_floor=noise_floor,
+                params=params,
                 sigma_floor_khz=sigma_floor_khz,
             )
             transaction.close()  # the replace
@@ -12156,29 +12083,14 @@ def _review_run(
     existing_review: Stage6Review,
     fid: Any,
     *,
-    spur_centers_mhz: List[float],
-    acquisition_us: float,
-    merged_window_freqs: Dict[int, Any],
-    bar: float,
-    attention_candidate_evidence: float,
-    kappa: float,
-    noise_floor: float,
+    params: ReviewParams,
     sigma_floor_khz: Optional[float],
 ) -> Tuple[ReviewRunResult, Optional[FinalProducts]]:
     """The writing half of :func:`review_run_impl` (inside its stage scope).
-    Returns the result and the final-products table it wrote."""
-    new_statuses = _review_run_statuses(
-        path,
-        spectrum_fit,
-        existing_review,
-        Sideband.coerce(fid.sideband),
-        spur_centers_mhz=spur_centers_mhz,
-        acquisition_us=acquisition_us,
-        merged_window_freqs=merged_window_freqs,
-        bar=bar,
-        attention_candidate_evidence=attention_candidate_evidence,
-        kappa=kappa,
-        noise_floor=noise_floor,
+    Returns the result and the final-products table it wrote, and records
+    *params* in the review."""
+    new_statuses = _curated_statuses(
+        path, spectrum_fit, existing_review, params, Sideband.coerce(fid.sideband)
     )
 
     # Consolidate the calibrated final-products table. A newly-declared
@@ -12202,6 +12114,7 @@ def _review_run(
         final_products=final_products,
         created_windows=list(existing_review.created_windows),
         next_serial=existing_review.next_serial,
+        review_params=params,
     )
 
     # Persist: write stage6_review group and mark tracker stage complete.
@@ -12228,57 +12141,98 @@ def _review_run(
     )
 
 
-def _review_run_statuses(
+def _validated_review_params(**values: Optional[float]) -> Dict[str, float]:
+    """The attention-routing parameters a ``review run`` was passed, each
+    checked finite and non-negative (``bad_setting`` naming the argument);
+    one left ``None`` keeps its recorded value and is not in the result."""
+    out: Dict[str, float] = {}
+    for name, value in values.items():
+        if value is None:
+            continue
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            v = math.nan
+        if v < 0.0 or not math.isfinite(v):
+            raise BadSettingError(
+                name,
+                "a finite float >= 0",
+                value,
+                message=f"{name} must be finite and non-negative, got {value!r}",
+            )
+        out[name] = v
+    return out
+
+
+def _recorded_review_params(review: Stage6Review) -> ReviewParams:
+    """The attention-routing parameters *review* records, or
+    :data:`DEFAULT_REVIEW_PARAMS` when none were recorded."""
+    return review.review_params or DEFAULT_REVIEW_PARAMS
+
+
+def _log_provenance(log: Sequence[DecisionLogEntry]) -> Dict[int, str]:
+    """Each window's provenance as its rows give it: from its last row, a bare
+    accept gives ``"reviewed"`` and anything else ``"user-edited"`` (an accept
+    with a candidate is recorded as an ``add``). A window with no row is
+    ``"auto"`` and is not in the map."""
+    out: Dict[int, str] = {}
+    for entry in log:
+        out[int(entry.window_id)] = (
+            "reviewed" if entry.kind == "accept" else "user-edited"
+        )
+    return out
+
+
+def _curated_statuses(
     path: str,
     spectrum_fit: SpectrumFit,
-    existing_review: Stage6Review,
+    review: Stage6Review,
+    params: ReviewParams,
     sideband: Sideband,
     *,
-    spur_centers_mhz: List[float],
-    acquisition_us: float,
-    merged_window_freqs: Dict[int, Any],
-    bar: float,
-    attention_candidate_evidence: float,
-    kappa: float,
-    noise_floor: float,
     fit_group: str = "stage5_fitting",
 ) -> Dict[int, WindowReviewStatus]:
-    """Every window's status as ``review run`` computes it: fresh attention
-    reasons for each fitted window plus the empty-window reasons, with the
-    provenance *existing_review* carries. Read-only. ``fit_group`` names the
-    fit group the fitted plan is read from (the full-replay reference reads
-    the undo baseline's)."""
-    new_statuses: Dict[int, WindowReviewStatus] = {}
+    """Every window's status, computed from scratch: a pure function of the
+    window fits, *params*, and the decision log and created-window overlay
+    *review* carries. Read-only.
+
+    Fresh attention reasons for each fitted window under *params*, plus the
+    empty-window reasons (:func:`_empty_window_attention`, which reads the log
+    and the overlay), then :func:`_settle_empty_window_reasons` once over every
+    window, since a created window anywhere can take another window's reason
+    over. Provenance comes from the log (:func:`_log_provenance`); the
+    statuses *review* stores are not read. ``review run``, every curation
+    write and the full-replay reference all compute statuses here, so a write
+    leaves the statuses a fresh ``review run`` with the same parameters would.
+    ``fit_group`` names the fit group the fitted plan is read from (the
+    full-replay reference reads the undo baseline's)."""
+    spur_centers_mhz = [
+        float(v) for v in spectrum_fit.parameters.get("spur_centers_mhz", [])
+    ]
+    acquisition_us = float(spectrum_fit.parameters.get("acquisition_us", 0.0))
+    merged_window_freqs = _auto_merged_window_freqs(spectrum_fit)
+    provenance = _log_provenance(review.decision_log)
+
+    statuses: Dict[int, WindowReviewStatus] = {}
     for wf in spectrum_fit.window_fits:
         wid = int(wf.window_id) if wf.window_id is not None else -1
-
         reasons = _compute_attention_reasons(
             wf,
             spur_centers_mhz=spur_centers_mhz,
             acquisition_us=acquisition_us,
-            ledger_bar=bar,
-            attention_candidate_evidence=attention_candidate_evidence,
+            ledger_bar=params.bar,
+            attention_candidate_evidence=params.attention_candidate_evidence,
             sideband=sideband,
-            kappa=kappa,
-            noise_floor=noise_floor,
+            kappa=params.kappa,
+            noise_floor=params.noise_floor,
             auto_merged=wid in merged_window_freqs,
             merged_freqs=merged_window_freqs.get(wid, ()),
         )
-
-        # Preserve existing provenance (never downgrade reviewed/user-edited to auto).
-        existing_status = existing_review.window_statuses.get(wid)
-        if existing_status is not None and existing_status.provenance != "auto":
-            provenance = existing_status.provenance
-            invalidated = existing_status.invalidated
-        else:
-            provenance = "auto"
-            invalidated = False
-
-        new_statuses[wid] = WindowReviewStatus(
+        statuses[wid] = WindowReviewStatus(
             window_id=wid,
-            provenance=provenance,
+            provenance=provenance.get(wid, "auto"),
             attention_reasons=reasons,
-            invalidated=invalidated,
+            invalidated=False,
         )
 
     # A window of the fitted plan the fit holds no line in, whose edge Stage 5
@@ -12286,25 +12240,41 @@ def _review_run_statuses(
     for wid, empty_reason in _empty_window_attention(
         path,
         spectrum_fit,
-        existing_review,
+        review,
         acquisition_us=acquisition_us,
         fit_group=fit_group,
     ).items():
-        if wid in new_statuses:
-            new_statuses[wid].attention_reasons.append(empty_reason)
+        if wid in statuses:
+            statuses[wid].attention_reasons.append(empty_reason)
             continue
-        prior = existing_review.window_statuses.get(wid)
-        if prior is not None and prior.provenance != "auto":
-            provenance, invalidated = prior.provenance, prior.invalidated
-        else:
-            provenance, invalidated = "auto", False
-        new_statuses[wid] = WindowReviewStatus(
+        statuses[wid] = WindowReviewStatus(
             window_id=wid,
-            provenance=provenance,
+            provenance=provenance.get(wid, "auto"),
             attention_reasons=[empty_reason],
-            invalidated=invalidated,
+            invalidated=False,
         )
-    return new_statuses
+
+    if any(
+        r.kind in EMPTY_WINDOW_KINDS
+        for st in statuses.values()
+        for r in st.attention_reasons
+    ):
+        from .fitted_plan import load_fitted_plan
+
+        _settle_empty_window_reasons(
+            statuses,
+            spectrum_fit,
+            review.created_windows,
+            base_plan_windows=load_fitted_plan(
+                path, fit_group_name=fit_group
+            ).plan.windows,
+            edited_window_ids={
+                int(e.window_id)
+                for e in review.decision_log
+                if e.kind in _FIT_EDIT_KINDS
+            },
+        )
+    return statuses
 
 
 # ---------------------------------------------------------------------------

@@ -73,7 +73,6 @@ from ._internal.stage5_impl import (
 )
 from ._internal.stage5_validation_impl import validate_stage5_shape_error_impl
 from ._internal.stage6_impl import (
-    DEFAULT_ATTENTION_CANDIDATE_EVIDENCE,
     DEFAULT_DISPLAY_BAR,
     CreateWindowResult,
     CurationApplyResult,
@@ -1891,8 +1890,10 @@ class Pipeline:
     def review_run(
         self,
         *,
-        bar: float = DEFAULT_DISPLAY_BAR,
-        attention_candidate_evidence: float = DEFAULT_ATTENTION_CANDIDATE_EVIDENCE,
+        bar: Optional[float] = None,
+        attention_candidate_evidence: Optional[float] = None,
+        kappa: Optional[float] = None,
+        noise_floor: Optional[float] = None,
         sigma_floor_khz: Optional[float] = None,
         events: Optional[EventCallback] = None,
         cancel: Optional[CancelToken] = None,
@@ -1905,8 +1906,16 @@ class Pipeline:
         :class:`~ftmwpipeline.core.data_structures.Stage6Review` to the
         ``stage6_review`` HDF5 group, and marks the stage complete.
 
-        Existing per-window provenance (``"reviewed"``/``"user-edited"``) and
-        the decision log are preserved; only attention reasons are refreshed.
+        The decision log is kept and every window's status is recomputed, its
+        provenance (``"reviewed"``/``"user-edited"``) taken from its rows.
+
+        The four attention-routing parameters are recorded in the review
+        (``Stage6Review.review_params``); every later Stage 6 write (an edit,
+        an apply, an undo) computes statuses under them. A parameter left
+        ``None`` keeps its recorded value, or ``review run``'s default when
+        none is recorded; one given must be finite and non-negative
+        (:class:`~ftmwpipeline.file_manager.BadSettingError` otherwise, before
+        anything is read).
 
         Parameters
         ----------
@@ -1915,6 +1924,10 @@ class Pipeline:
         attention_candidate_evidence :
             Evidence threshold above which a candidate-bearing window flags
             (stiffer than ``bar``; keeps the attention surface actionable).
+        kappa :
+            Shape-error kappa of the SNR-aware chi-squared gate.
+        noise_floor :
+            Noise-regime chi-squared allowance of the same gate.
         sigma_floor_khz :
             When given, persist this user-declared accuracy floor (kHz) into the
             file-level ``/frequency_calibration`` record and fold it into the
@@ -1935,6 +1948,8 @@ class Pipeline:
             self.filepath,
             bar=bar,
             attention_candidate_evidence=attention_candidate_evidence,
+            kappa=kappa,
+            noise_floor=noise_floor,
             sigma_floor_khz=sigma_floor_khz,
             events=events,
             cancel=cancel,

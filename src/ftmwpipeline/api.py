@@ -45,7 +45,6 @@ from ._internal.read_impl import (
 )
 from ._internal.stage5_impl import _DETAIL_PAD_FACTOR
 from ._internal.stage6_impl import (
-    DEFAULT_ATTENTION_CANDIDATE_EVIDENCE,
     DEFAULT_DISPLAY_BAR,
     CreateWindowResult,
     CurationApplyResult,
@@ -1703,15 +1702,21 @@ def review_create(
 def review_run(
     file_path: Union[str, Path],
     *,
-    bar: float = DEFAULT_DISPLAY_BAR,
-    attention_candidate_evidence: float = DEFAULT_ATTENTION_CANDIDATE_EVIDENCE,
+    bar: Optional[float] = None,
+    attention_candidate_evidence: Optional[float] = None,
+    kappa: Optional[float] = None,
+    noise_floor: Optional[float] = None,
     sigma_floor_khz: Optional[float] = None,
     events: Optional[EventCallback] = None,
     cancel: Optional[CancelToken] = None,
 ) -> "ReviewRunResult":
     """Build or refresh the Stage 6 curation layer and final-products table.
 
-    Equivalent to :meth:`Pipeline.review_run`.
+    Equivalent to :meth:`Pipeline.review_run`. The four attention-routing
+    parameters are recorded in the review and reused by every later Stage 6
+    write; one left ``None`` keeps its recorded value (the default when none
+    is recorded), and one given must be finite and non-negative
+    (:class:`~ftmwpipeline.file_manager.BadSettingError` otherwise).
 
     Parameters
     ----------
@@ -1722,6 +1727,10 @@ def review_run(
     attention_candidate_evidence :
         Evidence threshold above which a candidate-bearing window flags
         (stiffer than ``bar``; keeps the attention surface actionable).
+    kappa :
+        Shape-error kappa of the SNR-aware chi-squared gate.
+    noise_floor :
+        Noise-regime chi-squared allowance of the same gate.
     sigma_floor_khz :
         When given, persist this user-declared accuracy floor (kHz) and fold it
         into the budget; ``None`` keeps the persisted floor unchanged.
@@ -1739,6 +1748,8 @@ def review_run(
     return Pipeline.open(file_path).review_run(
         bar=bar,
         attention_candidate_evidence=attention_candidate_evidence,
+        kappa=kappa,
+        noise_floor=noise_floor,
         sigma_floor_khz=sigma_floor_khz,
         events=events,
         cancel=cancel,
