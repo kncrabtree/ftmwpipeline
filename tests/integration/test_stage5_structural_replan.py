@@ -299,7 +299,7 @@ def _identity_refit(fp: str, wid: int) -> None:
     """Refit one window with no edit, as the cascade does a window it reaches
     (a bare ``review edit`` is refused, so this drives the engine directly)."""
     from ftmwpipeline._internal.stage6_impl import (
-        _batch_apply_edit_plain,
+        _batch_apply_edit_core,
         _run_single_action,
         refit_snap_tol_mhz_impl,
     )
@@ -308,7 +308,7 @@ def _identity_refit(fp: str, wid: int) -> None:
     with atomic_write(fp):
         _run_single_action(
             fp,
-            lambda ctx: _batch_apply_edit_plain(ctx, wid, [], [], snap_tol_mhz=snap),
+            lambda ctx: _batch_apply_edit_core(ctx, wid, snap_tol_mhz=snap),
             snap_tol_mhz=snap,
         )
 

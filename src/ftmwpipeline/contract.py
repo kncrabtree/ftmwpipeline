@@ -933,9 +933,13 @@ _FIELDS: Dict[str, Tuple[str, ...]] = {
         "kind",
         "provenance",
         "evidence",
-        # Contract 16: the decision's stable id (Absent.NOT_RUN on a row a
-        # pre-engine build recorded).
+        # Contract 16: the decision's stable id, and its peak identity: the
+        # uids it removes, the seeds it births and their recorded uids
+        # (Absent.NOT_RUN on a row a pre-engine build recorded).
         "serial",
+        "targets",
+        "seeds_mhz",
+        "born_uids",
     ),
     # Review attention (contract 14): a WindowReviewStatus's reasons, through
     # get_review_status and ``review show --json``. ``detail`` is a human

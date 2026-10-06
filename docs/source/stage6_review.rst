@@ -330,9 +330,19 @@ the ``.ftmw`` reproduces the curated analysis with no side channel. Each entry i
 **anchored** to a window identity and a molecular frequency, and records its kind, its
 ``user`` provenance, and an evidence snapshot (the window's reduced :math:`\chi^2` and
 peak count before and after, and for an inferred split or merge the frequency that was
-requested). A remove is logged at the fitted peak it removed, not at the frequency you
-typed. Each entry gets a **serial** when it is recorded: its id, never reused or
-renumbered until ``fit run`` starts a new curation lineage. Entries are immutable: an
+requested). Each entry also names the peaks it acts on by identity: ``targets``, the
+``peak_uid`` of every peak it removes (a remove's peak, a merge's parents, a split's
+parent), and ``seeds_mhz`` / ``born_uids``, the seed position of every peak it births
+and the uid that peak was stamped with from its seed. A request is resolved into its
+entries before anything is fit, against the fit you see: a remove names the displayed
+peak it resolved to (and is listed at that peak's fitted frequency, not at the
+frequency you typed), and an add, merge or split stamps each new peak's uid from its
+seed. An add whose new peak would carry a uid the window already holds (a second line
+born at the same position) is refused (``curation_conflict``,
+``line_already_fitted``), never moved to a free uid. Within one curation file or action
+batch, an action after another on the same window resolves against the peaks the
+other births at their seed positions. Each entry gets a **serial** when it is
+recorded: its id, never reused or renumbered until ``fit run`` starts a new curation lineage. Entries are immutable: an
 undo keeps every surviving entry exactly as it was written, and only its position
 (``order_index``) changes. A coalesced edit logs one entry per add or remove it
 carried; every entry also carries ``action_index`` in its evidence, the serial of the
@@ -343,17 +353,24 @@ one **action group**. ``review log`` lists the history, by id.
 ``review undo --id N`` reverts the decisions it names (the ids ``review log`` lists:
 serials), any of them, not only the most recent. The first fit-changing edit snapshots the automatic fit inside the file (the
 **undo baseline**); an undo restores that baseline and replays every surviving
-decision onto it, in log order; the surviving decisions keep their ids. The
-replay goes one user action at a time: a group's surviving entries replay together as
-one action (one joint refit), exactly as the edit first applied them, so undoing part
-of a group replays the rest of it jointly. (Replaying each entry as its own refit made
-a later undo fail after a multi-line edit: the separate refits drifted the fitted
-peaks, and a later remove no longer snapped to the peak it named.)
-``--dry-run`` prints what would be undone and the replay plan, one edit per action
-group, without writing. An undo
-that would drop a created window surviving decisions still act on is refused
-(``curation_conflict``, ``orphans_created_window``), as is an id the log does not hold
-(``not_found``, kind ``decision``).
+decision onto it, in log order; the surviving decisions keep their ids. A replay
+applies each entry as recorded: it removes the peaks its ``targets`` name and births
+its peaks at their recorded seeds under their recorded uids, never re-resolving a
+frequency or re-reading an add as a split or merge. So a kept decision acts on the
+same peaks however far the undo moves its window's lines (a cascade can move them by
+several snap tolerances), and the peaks it births keep their uids. The replay goes
+one user action at a time: a group's surviving entries replay together as one action
+(one joint refit), exactly as the edit first applied them, so undoing part of a group
+replays the rest of it jointly. ``--dry-run`` prints what would be undone and the
+replay plan, one edit per action group (its seeds and the ``uid:N`` of its targets),
+without writing. Every refusal of an undo comes before anything is fit or restored.
+An undo that would drop a created window surviving decisions still act on is refused
+(``curation_conflict``, ``orphans_created_window``), as is one that would drop the
+birth of a peak a surviving decision removes, merges or splits (``orphans_peak``; the
+ids are the decisions to undo with it), one after which a surviving decision cannot be
+applied as recorded (``replay_diverged``: its target is gone, or a peak it births is
+already there, as after undoing the remove between an add and a re-add at the same
+frequency), and an id the log does not hold (``not_found``, kind ``decision``).
 
 A created window that survives an undo keeps its id, but its extent and the windows
 it reads are planned again from the creates that survive, in log order, so undoing an
@@ -431,9 +448,10 @@ per created window, the survivor's row carrying ``merged_from``, the ids it abso
   it would now widen another window, or its id is taken — is refused
   (``curation_conflict``, ``replay_conflict``).
 - A fit made before fits stored their plan holds merges whose geometry is not in the
-  file. Edits that would refit such a merged window, or create a window inside or
-  against one, are refused (``curation_conflict``, ``fit_plan_unavailable``);
-  re-running ``fit run`` stores the plan and clears the refusal.
+  file. Edits that would refit such a merged window, directly or through the
+  cascade, or create a window inside or against one, are refused before anything is
+  fit (``curation_conflict``, ``fit_plan_unavailable``); re-running ``fit run`` stores
+  the plan and clears the refusal.
 
 .. _stage6-epoch-gate:
 
@@ -461,8 +479,13 @@ gated. Two ways forward:
 Refusals
 ~~~~~~~~
 
-Every refusal leaves the file exactly as it was, and each is a typed error with a
-stable ``code``: ``bad_setting`` for a malformed request (its ``path`` names the
+Every refusal leaves the file exactly as it was, and comes before anything is fit: a
+request is resolved into its decisions, and a replayed log checked, against window
+structure and peak identity alone. (An apply at a ``--log-prefix`` is the exception:
+its batch resolves against the state the kept decisions leave, so a refusal of the
+batch comes after those are replayed in memory.) Each is a typed error with a stable
+``code``:
+``bad_setting`` for a malformed request (its ``path`` names the
 argument, cell or field, such as ``anchor_mhz`` or ``curation[line 3].freqs``),
 ``not_found`` for a peak, window, or decision id that does not resolve,
 ``curation_conflict`` for a valid request that conflicts with the file's review state
@@ -484,7 +507,7 @@ three-term frequency budget, the originating window, the ``origin`` provenance, 
 clock-lattice flag. The exact columns are listed under
 :ref:`the table output <stage6-table>` below.
 
-Each row also carries a **derivation** tag: the decision-log index of the edit that
+Each row also carries a **derivation** tag: the serial of the decision that
 created or altered that line, or empty when the line came through unchanged. Because
 one edit regenerates the whole curated peak set, a consumer that binds external state
 to individual lines (a line assignment, say) has to decide across an edit which lines

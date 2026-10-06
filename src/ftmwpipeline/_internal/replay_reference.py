@@ -67,7 +67,6 @@ from .stage6_impl import (
     _FIT_EDIT_KINDS,
     DEFAULT_REVIEW_PARAMS,
     STAGE5_BASELINE_GROUP,
-    _apply_batch_segment,
     _BatchChangeset,
     _BatchCtx,
     _build_shared_fit_ctx,
@@ -77,7 +76,8 @@ from .stage6_impl import (
     _derive_batch_review,
     _final_products_for_fit,
     _overlay_created_windows,
-    _replay_plan,
+    _resolve_replay_rows,
+    _run_resolved_actions,
     _seed_unresolved_spreads_from_diagnostics,
     refit_snap_tol_mhz_impl,
 )
@@ -133,9 +133,10 @@ def replay_full(
 
     The steps an undo runs after its restore, without the restore: the review
     ``review run`` would build on the baseline (statuses under *params*, final
-    products), then the log's actions replayed in log order in one batch
-    (:func:`~.stage6_impl._replay_plan`, one action per recorded user action),
-    one combined cascade, and the review derived from the result with the
+    products), then the log's rows replayed as recorded, by peak identity and
+    in log order, in one batch (:func:`~.stage6_impl._resolve_replay_rows`,
+    every refusal raised before any fit; one action per recorded user
+    action), one combined cascade, and the review derived from the result with the
     log's rows: every window's status computed from scratch from the final
     fits, the log and *params* (:func:`~.stage6_impl._curated_statuses`).
     Reads the baseline and the file's static inputs only. *params* defaults
@@ -175,12 +176,11 @@ def replay_full(
     )
 
     _check_created_ids_monotone(path, log)
-    plan = _replay_plan(log)
     snap_tol = refit_snap_tol_mhz_impl(path)
     shared = _build_shared_fit_ctx(path, fit_group=group)
-    # A plan of bare accepts never loads the fit for a batch (it records one
+    # A log of bare accepts never loads the fit for a batch (it records one
     # accept at a time), so the load-time spread recovery does not run on it.
-    if any(a.kind != "accept" or a.candidate is not None for a in plan):
+    if any(e.kind != "accept" for e in log):
         _seed_unresolved_spreads_from_diagnostics(spectrum_fit, snap_tol_mhz=snap_tol)
     fit_ids = {
         int(wf.window_id) for wf in spectrum_fit.window_fits if wf.window_id is not None
@@ -197,8 +197,11 @@ def replay_full(
     )
     # Never persisted: ``baseline_taken=False`` makes _finish_batch refuse it.
     ctx = _BatchCtx(shared=shared, changeset=changeset, baseline_taken=False)
-    _apply_batch_segment(
-        ctx, plan, snap_tol_mhz=snap_tol, action_indices={}, log_order=True
+    _run_resolved_actions(
+        ctx,
+        _resolve_replay_rows(ctx, path, log),
+        snap_tol_mhz=snap_tol,
+        action_indices={},
     )
     _cascade_batch(ctx, snap_tol_mhz=snap_tol)
     return CuratedState(

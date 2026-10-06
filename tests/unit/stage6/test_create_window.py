@@ -902,13 +902,13 @@ class TestUndoGeometryReport:
             for w in load_stage6_review_from_file(str(working_file)).created_windows
         }
         replans: List[int] = []
-        real = s6._created_windows_from_log
+        real = s6._walk_log_rows
 
         def spy(*args, **kwargs):
             replans.append(1)
             return real(*args, **kwargs)
 
-        monkeypatch.setattr(s6, "_created_windows_from_log", spy)
+        monkeypatch.setattr(s6, "_walk_log_rows", spy)
         dry = review_undo_impl(str(working_file), [0], dry_run=True)
         assert replans
         assert dry.geometry_changed_window_ids == []

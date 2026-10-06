@@ -30,7 +30,6 @@ from ftmwpipeline._internal.stage5_impl import (
 )
 from ftmwpipeline._internal.stage6_impl import (
     RefitWindowResult,
-    _batch_apply_edit_plain,
     _parse_complex_amplitude,
     _reconstruct_frozen_peaks,
     _run_single_action,
@@ -67,6 +66,24 @@ def _load_spectrum_fit(path: Path) -> SpectrumFit:
         return load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
 
 
+def _identity_refit_action(ctx, window_id, snap):
+    from ftmwpipeline._internal import stage6_impl as s6
+
+    wf = s6._batch_lookup_wf(ctx, window_id)
+    n0, c0 = len(wf.fitted_peaks), float(wf.reduced_chi2)
+    new = s6._batch_apply_edit_core(ctx, window_id, snap_tol_mhz=snap)
+    return s6._make_refit_result(
+        ctx,
+        window_id=window_id,
+        n_peaks_before=n0,
+        n_peaks_after=len(new.fitted_peaks),
+        chi2r_before=c0,
+        chi2r_after=float(new.reduced_chi2),
+        fitted_peaks=list(new.fitted_peaks),
+        converged=s6._converged_or_absent(new),
+    )
+
+
 def _identity_refit(path: Union[str, Path], window_id: int) -> RefitWindowResult:
     """Refit one window with no edit and persist it, recording no decision.
 
@@ -80,9 +97,7 @@ def _identity_refit(path: Union[str, Path], window_id: int) -> RefitWindowResult
     with atomic_write(p):
         return _run_single_action(
             p,
-            lambda ctx: _batch_apply_edit_plain(
-                ctx, window_id, [], [], snap_tol_mhz=snap
-            ),
+            lambda ctx: _identity_refit_action(ctx, window_id, snap),
             snap_tol_mhz=snap,
         )
 

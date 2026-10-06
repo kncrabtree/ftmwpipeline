@@ -357,7 +357,7 @@ def test_curation_file_omitted_window_rows_coalesce(stage5_multi_file, tmp_path)
     rows that resolve to the SAME window must still coalesce into ONE REFIT
     -- exactly as a run of explicitly-named rows does
     (``_resolve_curation_plan``'s docstring: "one refit instead of one per
-    row"). ``_batch_apply_edit_plain`` records one decision-log entry PER
+    row"). ``_apply_refit_step`` records one decision-log entry PER
     frequency (by design -- see its own docstring), all sharing one
     ``evidence`` dict stamped with the single refit's before/after counts, so
     the coalescing signal is not the entry COUNT but that every entry from
@@ -482,8 +482,8 @@ def test_curation_file_named_window_still_checked_when_wrong(
 @pytest.mark.integration
 def test_undo_replay_unaffected_by_derived_window_edit(stage5_multi_file):
     """The decision log records the RESOLVED, concrete window id -- never the
-    sentinel -- so undo replay (which reconstructs ops straight from the log
-    via _decision_to_op, never touching _resolve_curation_window_ids at all)
+    sentinel -- so undo replay (which applies the rows straight from the log,
+    never touching _resolve_curation_window_ids at all)
     is unaffected: it undoes and restores exactly as it would for a
     named-window edit."""
     path = stage5_multi_file

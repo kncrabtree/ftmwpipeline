@@ -50,8 +50,12 @@ Each element of ``attention_reasons`` is a dict with keys
 object; absent in records written before it existed, read as empty).
 
 The decision log is a JSON list (a window carries entries once a `review` edit
-records a decision against it). Each row carries its ``serial`` (absent on a
-row a pre-engine build recorded, read as ``Absent.NOT_RUN``). The final-products subgroup holds the
+records a decision against it). Each row carries its ``serial`` and its peak
+identity -- ``targets`` (the ``peak_uid`` values it removes), ``seeds_mhz``
+(the raw-frame positions of the peaks it births) and ``born_uids`` (their
+recorded uids, index-aligned with ``seeds_mhz``), each a JSON list, empty for
+a kind that removes or births nothing. All four are absent on a row a
+pre-engine build recorded, read as ``Absent.NOT_RUN``. The final-products subgroup holds the
 consolidated, frequency-calibrated line list `review run` builds. Its per-line
 fit fields (``decay_time_us``, ``decay_time_error_us``, ``shape``,
 ``fwhm_mhz``, ``detection_index``, ``fit_window_mhz``) can be
@@ -241,6 +245,12 @@ def _entry_to_dict(entry: DecisionLogEntry) -> Dict[str, Any]:
     }
     if not isinstance(entry.serial, Absent):
         out["serial"] = int(entry.serial)
+    if not isinstance(entry.targets, Absent):
+        out["targets"] = [int(u) for u in entry.targets]
+    if not isinstance(entry.seeds_mhz, Absent):
+        out["seeds_mhz"] = [float(f) for f in entry.seeds_mhz]
+    if not isinstance(entry.born_uids, Absent):
+        out["born_uids"] = [int(u) for u in entry.born_uids]
     return out
 
 
@@ -253,6 +263,21 @@ def _entry_from_dict(d: Dict[str, Any]) -> DecisionLogEntry:
         provenance=str(d.get("provenance", "user")),
         evidence=dict(d.get("evidence", {})),
         serial=int(d["serial"]) if d.get("serial") is not None else Absent.NOT_RUN,
+        targets=(
+            tuple(int(u) for u in d["targets"])
+            if d.get("targets") is not None
+            else Absent.NOT_RUN
+        ),
+        seeds_mhz=(
+            tuple(float(f) for f in d["seeds_mhz"])
+            if d.get("seeds_mhz") is not None
+            else Absent.NOT_RUN
+        ),
+        born_uids=(
+            tuple(int(u) for u in d["born_uids"])
+            if d.get("born_uids") is not None
+            else Absent.NOT_RUN
+        ),
     )
 
 

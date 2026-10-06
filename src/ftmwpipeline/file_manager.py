@@ -528,7 +528,8 @@ class CurationConflictError(PipelineFileError, ValueError):
     reason : str
         A stable snake_case slug naming the conflict (``"line_already_fitted"``,
         ``"targets_span_windows"``, ``"orphans_created_window"``,
-        ``"baseline_unavailable"``, ``"replay_conflict"``, ``"replay_diverged"``,
+        ``"orphans_peak"``, ``"ambiguous_peak"``, ``"baseline_unavailable"``,
+        ``"replay_conflict"``, ``"replay_diverged"``,
         ``"fit_plan_unavailable"``, ...). The full set
         is listed in ``docs/source/machine_contract.rst``.
     ids : list of int

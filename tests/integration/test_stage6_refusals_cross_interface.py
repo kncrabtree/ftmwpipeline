@@ -372,3 +372,222 @@ def test_a_staged_preview_cannot_be_persisted_on_a_refused_file(
             session.review_apply(csv)
         assert exc.value.reason == reason
     assert _sha(path) == before
+
+
+# ---------------------------------------------------------------------------
+# uid-addressed resolution: every refusal before the first fit
+# ---------------------------------------------------------------------------
+
+
+def _fits(path: Path) -> Dict[int, Any]:
+    with h5py.File(str(path), "r") as h5f:
+        sf = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+    return {int(w.window_id): w for w in sf.window_fits if w.window_id is not None}
+
+
+def _clear_in(path: Path, wid: int) -> float:
+    wf = _fits(path)[wid]
+    lo, hi = sorted(float(v) for v in wf.window.freq_range)
+    peaks = [float(p.frequency_mhz) for p in wf.fitted_peaks]
+    return max(
+        (lo + (hi - lo) * t / 40 for t in range(4, 37)),
+        key=lambda x: min((abs(x - q) for q in peaks), default=1e9),
+    )
+
+
+def _edit_on(interface: str, path: Path, capsys: Any, wid: int, **kw: Any) -> Any:
+    """``review edit`` through *interface*; the CurationConflictError (or the
+    CLI's payload) it is refused with."""
+    add = [str(f) for f in kw.get("add", [])]
+    remove = [str(f) for f in kw.get("remove", [])]
+    if interface == "cli":
+        argv = ["review", "edit", str(path), "--window", str(wid), "--frame", "raw"]
+        argv += [a for f in add for a in ("--add", f)]
+        argv += [a for f in remove for a in ("--remove", f)]
+        rc, payload = _cli_error(argv, capsys)
+        assert rc == 1
+        return payload["reason"], payload["ids"]
+    with pytest.raises(CurationConflictError) as exc:
+        if interface == "api":
+            ftmw.review_edit(str(path), wid, add=add, remove=remove, frame="raw")
+        elif interface == "pipeline":
+            Pipeline.open(path).review_edit(wid, add=add, remove=remove, frame="raw")
+        else:
+            with Pipeline.open(path).review_session() as session:
+                session.review_edit(wid, add=add, remove=remove, frame="raw")
+    return exc.value.reason, exc.value.ids
+
+
+def _undo_on(interface: str, path: Path, capsys: Any, ids: List[int]) -> Any:
+    if interface == "cli":
+        argv = ["review", "undo", str(path)] + [
+            a for i in ids for a in ("--id", str(i))
+        ]
+        rc, payload = _cli_error(argv, capsys)
+        assert rc == 1
+        return payload["reason"], payload["ids"]
+    with pytest.raises(CurationConflictError) as exc:
+        if interface == "api":
+            ftmw.review_undo(str(path), ids)
+        elif interface == "pipeline":
+            Pipeline.open(path).review_undo(ids)
+        else:
+            with Pipeline.open(path).review_session() as session:
+                session.review_undo(ids)
+    return exc.value.reason, exc.value.ids
+
+
+INTERFACES = ["api", "pipeline", "session", "cli"]
+
+
+@pytest.mark.parametrize("interface", INTERFACES)
+def test_a_seed_off_the_named_window_is_refused_before_any_fit(
+    baseline_2638_stage5_small, tmp_path, capsys, no_fit, interface
+):
+    path = tmp_path / "outside.ftmw"
+    shutil.copy(baseline_2638_stage5_small, path)
+    wa, wb = sorted(w for w, wf in _fits(path).items() if wf.fitted_peaks)[:2]
+    before = _sha(path)
+    reason, ids = _edit_on(interface, path, capsys, wa, add=[_clear_in(path, wb)])
+    assert (reason, ids) == ("target_outside_window", [wa])
+    assert _sha(path) == before
+
+
+@pytest.mark.parametrize("interface", INTERFACES)
+def test_a_birth_on_a_held_uid_is_refused_before_any_fit(
+    baseline_2638_stage5_small, tmp_path, capsys, no_fit, interface
+):
+    path = tmp_path / "clash.ftmw"
+    shutil.copy(baseline_2638_stage5_small, path)
+    wid, clear = _window_and_clear_add(path)
+    before = _sha(path)
+    reason, _ = _edit_on(interface, path, capsys, wid, add=[clear, clear])
+    assert reason == "line_already_fitted"
+    assert _sha(path) == before
+
+
+@pytest.mark.parametrize("interface", INTERFACES)
+def test_a_cascade_into_an_unavailable_window_is_refused_before_any_fit(
+    baseline_2638_stage5_small, tmp_path, capsys, monkeypatch, interface
+):
+    """The cascade's ``fit_plan_unavailable`` is structural: an edit whose
+    cascade reaches a window whose fitted geometry the file does not hold is
+    refused before the edited window is refit, not after. The small fixture
+    has no cascade edge, so one is given to it, into a window marked
+    unavailable (what a merged fit that predates the stored plan holds)."""
+    import dataclasses
+
+    path = tmp_path / "unavailable.ftmw"
+    shutil.copy(baseline_2638_stage5_small, path)
+    src, dep = sorted(w for w, wf in _fits(path).items() if wf.fitted_peaks)[:2]
+    real = stage6_impl._build_shared_fit_ctx
+
+    def blocked(*args: Any, **kwargs: Any) -> Any:
+        shared = real(*args, **kwargs)
+        sources = dict(shared.base_cascade_sources)
+        sources[dep] = tuple(sources.get(dep, ())) + (src,)
+        return dataclasses.replace(
+            shared,
+            base_cascade_sources=sources,
+            unavailable_window_ids=frozenset({dep}),
+        )
+
+    monkeypatch.setattr(stage6_impl, "_build_shared_fit_ctx", blocked)
+    monkeypatch.setattr(stage6_impl, "refit_window_core", _forbidden_fit)
+    before = _sha(path)
+    reason, ids = _edit_on(interface, path, capsys, src, add=[_clear_in(path, src)])
+    assert (reason, ids) == ("fit_plan_unavailable", [dep])
+    assert _sha(path) == before
+
+
+def _forbidden_fit(*args: Any, **kwargs: Any) -> Any:
+    raise AssertionError("a refused write fitted a window")
+
+
+@pytest.mark.parametrize("interface", INTERFACES)
+def test_an_undo_orphaning_a_birth_is_refused_before_any_fit(
+    baseline_2638_stage5_small, tmp_path, capsys, monkeypatch, interface
+):
+    """``orphans_peak``: undoing an add whose peak a kept remove names."""
+    path = tmp_path / "orphan.ftmw"
+    shutil.copy(baseline_2638_stage5_small, path)
+    wid, clear = _window_and_clear_add(path)
+    ftmw.review_edit(str(path), wid, add=[clear], frame="raw")
+    (add,) = ftmw.review_log(str(path))
+    ftmw.review_edit(str(path), wid, remove=[f"uid:{add.born_uids[0]}"])
+    remove = ftmw.review_log(str(path))[-1]
+    monkeypatch.setattr(stage6_impl, "refit_window_core", _forbidden_fit)
+    before = _sha(path)
+    reason, ids = _undo_on(interface, path, capsys, [add.serial])
+    assert (reason, ids) == ("orphans_peak", [remove.serial])
+    assert _sha(path) == before
+
+
+@pytest.mark.parametrize("interface", INTERFACES)
+def test_an_edit_of_an_unavailable_window_is_refused_before_any_fit(
+    baseline_2638_stage5_small, tmp_path, capsys, monkeypatch, interface
+):
+    import dataclasses
+
+    path = tmp_path / "unavailable_edit.ftmw"
+    shutil.copy(baseline_2638_stage5_small, path)
+    wid = sorted(w for w, wf in _fits(path).items() if wf.fitted_peaks)[0]
+    real = stage6_impl._build_shared_fit_ctx
+
+    def blocked(*args: Any, **kwargs: Any) -> Any:
+        shared = real(*args, **kwargs)
+        return dataclasses.replace(shared, unavailable_window_ids=frozenset({wid}))
+
+    monkeypatch.setattr(stage6_impl, "_build_shared_fit_ctx", blocked)
+    monkeypatch.setattr(stage6_impl, "refit_window_core", _forbidden_fit)
+    before = _sha(path)
+    reason, ids = _edit_on(interface, path, capsys, wid, add=[_clear_in(path, wid)])
+    assert (reason, ids) == ("fit_plan_unavailable", [wid])
+    assert _sha(path) == before
+
+
+@pytest.mark.parametrize("interface", INTERFACES)
+def test_a_target_the_window_holds_twice_is_refused_before_any_fit(
+    baseline_2638_stage5_small, tmp_path, capsys, monkeypatch, interface
+):
+    """``ambiguous_peak``: a window that holds one uid twice (forged here)
+    cannot say which peak a request naming it means."""
+    path = tmp_path / "twice.ftmw"
+    shutil.copy(baseline_2638_stage5_small, path)
+    wid = next(w for w, wf in sorted(_fits(path).items()) if len(wf.fitted_peaks) > 1)
+    p0, p1 = sorted(_fits(path)[wid].fitted_peaks, key=lambda p: p.frequency_mhz)[:2]
+    with h5py.File(str(path), "a") as h5f:
+        col = h5f["stage5_fitting"]["peaks"]["peak_uid"]
+        uids = col[...]
+        uids[uids == int(p1.peak_uid)] = int(p0.peak_uid)
+        col[...] = uids
+    monkeypatch.setattr(stage6_impl, "refit_window_core", _forbidden_fit)
+    before = _sha(path)
+    reason, ids = _edit_on(interface, path, capsys, wid, remove=[f"uid:{p0.peak_uid}"])
+    assert (reason, ids) == ("ambiguous_peak", [int(p0.peak_uid)])
+    assert _sha(path) == before
+
+
+@pytest.mark.parametrize("interface", INTERFACES)
+def test_an_undo_replaying_a_gone_target_is_refused_before_any_fit(
+    baseline_2638_stage5_small, tmp_path, capsys, monkeypatch, interface
+):
+    """``replay_diverged``: a row whose target its window does not hold at
+    its place in the log (forged here) refuses the replay."""
+    path = tmp_path / "gone.ftmw"
+    shutil.copy(baseline_2638_stage5_small, path)
+    wa, wb = sorted(w for w, wf in _fits(path).items() if wf.fitted_peaks)[:2]
+    victim = int(_fits(path)[wa].fitted_peaks[0].peak_uid)
+    ftmw.review_edit(str(path), wa, remove=[f"uid:{victim}"])
+    ftmw.review_accept(str(path), wb)
+    with h5py.File(str(path), "a") as h5f:
+        grp = h5f["stage6_review"]["decision_log"]
+        rows = json.loads(str(grp.attrs["data"]))
+        rows[0]["targets"] = [victim + 7]
+        grp.attrs["data"] = json.dumps(rows)
+    last = ftmw.review_log(str(path))[-1].serial
+    monkeypatch.setattr(stage6_impl, "refit_window_core", _forbidden_fit)
+    before = _sha(path)
+    reason, ids = _undo_on(interface, path, capsys, [last])
+    assert (reason, ids) == ("replay_diverged", [ftmw.review_log(str(path))[0].serial])
+    assert _sha(path) == before

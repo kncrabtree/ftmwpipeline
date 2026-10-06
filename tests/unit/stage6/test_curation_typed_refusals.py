@@ -476,24 +476,20 @@ def test_implied_create_reinterpreted_is_an_untyped_guard(
     """The reinterpretation is not reachable on real data (it needs the anchor
     within snap tolerance of a peak in the very window it just created), so
     the guard stays the built-in ``ValueError``. It is forced through the
-    applier seam, as ``test_implied_create`` does."""
+    resolution seam, as ``test_implied_create`` does."""
     f = stage5_multi_file
     anchor = _free_anchor(f)
-    orig = s6._batch_apply_edit_action
+    orig = s6._resolve_edit_steps
 
-    def reinterpreting(ctx, window_id, add, remove, **kwargs):
-        result = orig(ctx, window_id, add, remove, **kwargs)
-        ctx.changeset.decisions.append(
-            {
-                "window_id": window_id,
-                "frequency_mhz": float(add[0]),
-                "kind": "split",
-                "evidence": {"inferred": True},
-            }
-        )
-        return result
+    def reinterpreting(ctx, state, window_id, add, remove, **kwargs):
+        steps = orig(ctx, state, window_id, add, remove, **kwargs)
+        # Stand in for inference reading the add as a split of a peak in the
+        # window it landed in, which is what the refusal exists to catch.
+        steps[0].kind = "split"
+        steps[0].rows[0].kind = "split"
+        return steps
 
-    monkeypatch.setattr(s6, "_batch_apply_edit_action", reinterpreting)
+    monkeypatch.setattr(s6, "_resolve_edit_steps", reinterpreting)
     before = content_digest(f)
     with pytest.raises(ValueError) as exc:
         refit_window_impl(str(f), None, add=[anchor])

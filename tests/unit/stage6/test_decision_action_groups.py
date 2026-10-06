@@ -33,6 +33,7 @@ from ftmwpipeline._internal.stage6_impl import (
     review_undo_impl,
 )
 from ftmwpipeline.cli.review_commands import cmd_review_apply, cmd_review_undo
+from ftmwpipeline.core.curation import PeakUidToken
 from ftmwpipeline.core.data_structures import DecisionLogEntry, Stage6Review
 from ftmwpipeline.io.fitting_serialization import load_spectrum_fit_from_hdf5
 from ftmwpipeline.io.stage6_review_serialization import (
@@ -57,12 +58,6 @@ def _fitted_by_window(path: Path) -> Dict[int, List[float]]:
         for wf in sf.window_fits
         if wf.window_id is not None
     }
-
-
-def _r6(freqs: Any) -> List[float]:
-    """A replayed remove list at the precision of :func:`_fitted_by_window`:
-    removes are logged at the fitted peak they resolved to, in full precision."""
-    return [round(float(f), 6) for f in freqs]
 
 
 def _multi_peak_window(path: Path) -> Tuple[int, List[float], int]:
@@ -111,7 +106,15 @@ def _strip_action_index(path: Path) -> None:
 
 
 def _entry(
-    order: int, wid: int, kind: str, freq: float, evidence: Dict[str, Any]
+    order: int,
+    wid: int,
+    kind: str,
+    freq: float,
+    evidence: Dict[str, Any],
+    *,
+    targets: Tuple[int, ...] = (),
+    seeds: Tuple[float, ...] = (),
+    born: Tuple[int, ...] = (),
 ) -> DecisionLogEntry:
     return DecisionLogEntry(
         order_index=order,
@@ -120,7 +123,16 @@ def _entry(
         kind=kind,
         provenance="user",
         evidence=evidence,
+        serial=order,
+        targets=targets,
+        seeds_mhz=seeds,
+        born_uids=born,
     )
+
+
+def _uid_tokens(entries: List[DecisionLogEntry]) -> List[PeakUidToken]:
+    """The ``remove`` a replay of *entries* reports: their targets, by uid."""
+    return [PeakUidToken(int(t)) for e in entries for t in e.targets]
 
 
 # ---------------------------------------------------------------------------
@@ -145,28 +157,37 @@ def test_groups_follow_action_index():
 def test_group_replays_as_one_edit_and_actions_stay_separate():
     ev = {"chi2r_after": 1.0}
     log = [
-        _entry(0, 5, "add", 9.5, {**ev, "action_index": 0}),
-        _entry(1, 5, "remove", 10.0, {**ev, "action_index": 0}),
-        _entry(2, 5, "remove", 11.0, {**ev, "action_index": 0}),
-        _entry(3, 5, "remove", 12.0, {"chi2r_after": 2.0, "action_index": 3}),
+        _entry(0, 5, "add", 9.5, {**ev, "action_index": 0}, seeds=(9.5,), born=(95,)),
+        _entry(1, 5, "remove", 10.0, {**ev, "action_index": 0}, targets=(100,)),
+        _entry(2, 5, "remove", 11.0, {**ev, "action_index": 0}, targets=(110,)),
+        _entry(
+            3,
+            5,
+            "remove",
+            12.0,
+            {"chi2r_after": 2.0, "action_index": 3},
+            targets=(120,),
+        ),
     ]
     plan = _replay_plan(log)
     assert [(a.kind, a.window_id, a.add, a.remove) for a in plan] == [
-        ("edit", 5, [9.5], [10.0, 11.0]),
-        ("edit", 5, [], [12.0]),
+        ("edit", 5, [9.5], [PeakUidToken(100), PeakUidToken(110)]),
+        ("edit", 5, [], [PeakUidToken(120)]),
     ]
 
 
 def test_partial_group_survivors_replay_jointly():
     ev = {"chi2r_after": 1.0, "action_index": 0}
     log = [
-        _entry(0, 5, "remove", 10.0, ev),
-        _entry(1, 5, "remove", 11.0, ev),
-        _entry(2, 5, "remove", 12.0, ev),
+        _entry(0, 5, "remove", 10.0, ev, targets=(100,)),
+        _entry(1, 5, "remove", 11.0, ev, targets=(110,)),
+        _entry(2, 5, "remove", 12.0, ev, targets=(120,)),
     ]
     surviving = [log[0], log[2]]  # the middle row undone
     plan = _replay_plan(surviving)
-    assert [(a.kind, a.remove) for a in plan] == [("edit", [10.0, 12.0])]
+    assert [(a.kind, a.remove) for a in plan] == [
+        ("edit", [PeakUidToken(100), PeakUidToken(120)])
+    ]
 
 
 def test_legacy_rows_grouped_by_inference():
@@ -287,9 +308,10 @@ def test_undo_later_decision_after_joint_edit(stage5_multi_file, tmp_path):
     path = stage5_multi_file
     wid, peaks, other = _joint_then_unrelated(path, tmp_path)
 
+    log = review_log_impl(path)
     dry = review_undo_impl(path, [2], dry_run=True)
-    assert [(a.kind, a.window_id, _r6(a.remove)) for a in dry.plan] == [
-        ("edit", wid, [peaks[0], peaks[1]])
+    assert [(a.kind, a.window_id, a.remove) for a in dry.plan] == [
+        ("edit", wid, _uid_tokens(log[:2]))
     ]
 
     review_undo_impl(path, [2])
@@ -342,9 +364,10 @@ def test_undo_one_row_of_group_replays_survivors_jointly(stage5_multi_source, tm
     shutil.copy(stage5_multi_source, ref)
     refit_window_impl(str(ref), wid, remove=[peaks[0], peaks[1]])
 
+    log = review_log_impl(path)
     result = review_undo_impl(path, [0])  # the add
-    assert [(a.kind, a.add, _r6(a.remove)) for a in result.plan] == [
-        ("edit", [], [peaks[0], peaks[1]])
+    assert [(a.kind, a.add, a.remove) for a in result.plan] == [
+        ("edit", [], _uid_tokens(log[1:]))
     ]
     assert _fitted_by_window(path) == _fitted_by_window(ref)
     assert _log_shape(path) == _log_shape(ref)
@@ -395,8 +418,8 @@ def test_legacy_log_without_action_index_is_grouped_by_inference(
     assert all(ai is None for *_, ai in _log_shape(path))
 
     dry = review_undo_impl(path, [2], dry_run=True)
-    assert [(a.kind, _r6(a.remove)) for a in dry.plan] == [
-        ("edit", [peaks[0], peaks[1]])
+    assert [(a.kind, a.remove) for a in dry.plan] == [
+        ("edit", _uid_tokens(review_log_impl(path)[:2]))
     ]
     review_undo_impl(path, [2])
 
@@ -654,17 +677,17 @@ def test_replay_refits_once_per_action_not_once_per_row(
     log = review_log_impl(path)
     assert len(_replay_plan(log[:2])) == 1  # one edit for the two rows
 
-    calls: List[Tuple[int, Tuple[float, ...]]] = []
-    real = s6._batch_apply_edit_action
+    calls: List[Tuple[int, Tuple[int, ...]]] = []
+    real = s6._apply_refit_step
 
-    def counting(ctx: Any, window_id: int, add: Any, remove: Any, **kw: Any) -> Any:
-        calls.append((window_id, tuple(_r6(remove))))
-        return real(ctx, window_id, add, remove, **kw)
+    def counting(ctx: Any, step: Any, **kw: Any) -> Any:
+        calls.append((step.window_id, tuple(t for r in step.rows for t in r.targets)))
+        return real(ctx, step, **kw)
 
-    monkeypatch.setattr(s6, "_batch_apply_edit_action", counting)
+    monkeypatch.setattr(s6, "_apply_refit_step", counting)
     review_undo_impl(path, [2])
 
-    assert calls == [(wid, (peaks[0], peaks[1]))]
+    assert calls == [(wid, tuple(t for e in log[:2] for t in e.targets))]
     assert _fitted_by_window(path) == _saved_state(tmp_path)
 
 
@@ -737,22 +760,22 @@ def test_log_prefix_apply_keeps_the_kept_rows_verbatim(stage5_multi_file, tmp_pa
 
 
 @pytest.mark.integration
-def test_a_row_that_replays_as_another_action_is_refused(stage5_multi_file, tmp_path):
-    """A split recorded under a per-call snap tolerance (before contract 16)
-    can replay at the file's tolerance as a plain add: the replay refuses
-    rather than rewrite the row, and leaves the file as it was."""
+def test_a_row_whose_target_is_gone_is_refused(stage5_multi_file, tmp_path):
+    """A replay applies each row by peak identity: a row whose target the
+    window does not hold at its place in the log (forged here) refuses the
+    replay rather than act on another peak, before anything is fit, and
+    leaves the file as it was."""
     from ftmwpipeline.file_manager import CurationConflictError
 
     path = stage5_multi_file
     wid, parent, near, far, other = _split_site(path)
     refit_window_impl(str(path), wid, add=[near])
     assert [e.kind for e in review_log_impl(path)] == ["split"]
-    beyond = parent + 1.5 * _snap_tol(path)
 
-    def widened(rows: List[Dict[str, Any]]) -> None:
-        rows[0]["evidence"]["requested_freq_mhz"] = beyond
+    def forged(rows: List[Dict[str, Any]]) -> None:
+        rows[0]["targets"] = [int(rows[0]["targets"][0]) + 7]
 
-    _rewrite_rows(path, widened)
+    _rewrite_rows(path, forged)
     cur = tmp_path / "later.csv"
     cur.write_text(f"add,{other},{_clear_add_freq(path, other)},\n")
     apply_curation_impl(path, cur)

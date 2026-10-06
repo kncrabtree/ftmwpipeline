@@ -225,7 +225,8 @@ These exist today; the contract freezes their names and the listed fields.
   `knockout_p_value`, `knockout_supported`, `knockout_aicc_delta`. Fields that
   encode absence with `None` today move to `Absent` (each with a notice).
 - `review_log(path)` → `DecisionLogEntry` rows with the fields `order_index`,
-  `window_id`, `frequency_mhz`, `kind`, `provenance`, `evidence`, `serial`.
+  `window_id`, `frequency_mhz`, `kind`, `provenance`, `evidence`, `serial`,
+  `targets`, `seeds_mhz`, `born_uids`.
   Names, types and the `kind` / `provenance` vocabularies are frozen, so a
   client may hash the log as an edit-set identity. `serial` (contract version
   16) is the decision's stable id: minted when the row is recorded, never
@@ -236,16 +237,27 @@ These exist today; the contract freezes their names and the listed fields.
   `serial` of the first row of the same user action (a one-row action, a bare
   accept included, carries its own); undo and a log-prefix apply replay one
   action group at a time. The key is part of `evidence`, so a hash taken over
-  `evidence` changes with it (contract version 15). A `remove` row's
-  `frequency_mhz` and a merge's `merged_from` are the fitted (raw-frame)
-  frequencies of the peaks the request resolved to, never the frequencies
-  sent (contract version 16; older rows hold the frequencies sent). Rows are
-  immutable: a replay (undo, log-prefix apply) keeps every surviving row
-  verbatim, never what the replayed fit resolves, and only `order_index` is
-  recomputed; a surviving row that would replay as a different action, or
-  that the replay would not record, is refused (`curation_conflict`,
-  `replay_diverged`). The snap tolerance is a
-  property of the file: no call takes one (contract version 16).
+  `evidence` changes with it (contract version 15). Every row names the peaks
+  it acts on by identity (contract version 16): `targets` (the `peak_uid`
+  values, in `window_id`, it removes), `seeds_mhz` (the raw-frame seed
+  positions of the peaks it births) and `born_uids` (the uid each was stamped
+  with from its seed, index-aligned), empty for a kind with none and
+  `Absent.NOT_RUN` on a row a pre-engine build recorded. A request is resolved
+  into its rows against the fits as they were when it was made, before
+  anything is fit (in one batch, a later action on a window resolves against
+  an earlier one's newborns at their seeds); a replay applies the rows as
+  recorded, by uid, and never resolves a frequency or re-infers a merge or
+  split. `frequency_mhz` is display only (a `remove` row's, like a merge's
+  `merged_from`, is the fitted raw-frame frequency of the peak the request
+  resolved to). Rows are immutable: a replay (undo, log-prefix apply) keeps
+  every surviving row verbatim and only `order_index` is recomputed; a
+  surviving row the replay cannot apply (a target gone, a birth on a held
+  uid) is refused (`curation_conflict`, `replay_diverged`), an undo that would
+  drop the birth of a peak a kept row acts on is refused (`orphans_peak`),
+  and a uid a window holds twice cannot be named (`ambiguous_peak`), all
+  before anything is fit (except a log-prefix apply's own batch, which
+  resolves against the kept rows' in-memory replay). The snap tolerance is a property of the file: no
+  call takes one, and only resolution uses it (contract version 16).
 - Stage 6 writes refuse a file the replay engine cannot curate (contract
   version 16): `curation_conflict` with `predates_peak_identity` (a fitted
   peak has no `peak_uid`) or `predates_replay_engine` (the review or the undo

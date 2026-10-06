@@ -34,8 +34,8 @@ lines move by under 0.1 Hz. No other window of any fixture changes. A file fitte
 under epoch 5 must be re-fit, or have the mismatch accepted, before Stage 6 will
 splice an edit into it.
 
-**One snap tolerance per file; removes logged at the peak they removed; decision
-serials; ``CONTRACT_VERSION`` moves 15 → 16.**
+**One snap tolerance per file; decisions name peaks by uid; decision serials;
+``CONTRACT_VERSION`` moves 15 → 16.**
 
 * **No per-call snap tolerance.** ``review_edit``, ``review_create`` and
   ``review_accept`` (API, ``Pipeline``, ``ReviewSession``) lose their
@@ -47,20 +47,57 @@ serials; ``CONTRACT_VERSION`` moves 15 → 16.**
   the file fail, and a split or merge inferred only under it replayed as a
   plain edit, seeded differently. To reach a farther peak, name it by
   ``uid:N``.
-* **A remove is logged at the peak it removed.** A ``remove`` row's
+* **Decisions name peaks by uid.** A request is resolved, before anything is
+  fit, against the fits the user sees (each window's persisted fit), into rows
+  that name peaks by identity: ``DecisionLogEntry.targets`` (the ``peak_uid``
+  values in ``window_id`` the row removes: a remove's peak, a merge's parents,
+  a split's parent), ``seeds_mhz`` (raw-frame seed positions of the peaks it
+  births: an add's, a merge's, a split's products) and ``born_uids`` (the uid
+  each was stamped with from its seed, index-aligned). A replay (``review
+  undo``, an apply at a ``log_prefix``) applies the rows as recorded: it
+  removes each target by uid and births each seed under its recorded uid, and
+  never re-resolves a frequency or re-infers a merge or split. A replay
+  therefore acts on the peaks the user acted on, however far the cascade has
+  moved the lines in between: on 655, a remove typed against window 428 after
+  an edit of window 429 cascaded into it removed the peak displayed there, and
+  a replay by frequency removed its neighbour, which sat nearest that
+  frequency before the cascade. A birth whose uid the window already holds is
+  refused (``line_already_fitted``), never moved to a free uid. Within one
+  request (a curation file, an ``actions`` batch), an action after another on
+  the same window resolves against the other's newborns at their seed
+  positions, not at positions only the request's own refits produce. A peak a
+  kept decision births keeps its uid through an undo. ``review log --json``
+  gains ``targets``, ``seeds_mhz`` and ``born_uids``; all three are *not run*
+  on a row a pre-engine build recorded.
+* **A remove is displayed at the peak it removed.** A ``remove`` row's
   ``frequency_mhz``, and a merge's ``merged_from``, are the fitted frequencies
-  (raw frame) of the peaks the request resolved to, not the frequencies sent.
-  Rows written before hold the frequencies sent. A remove sent in the wrong
-  frame still resolves to the same peak, and its row now names that peak.
+  (raw frame) of the peaks the request resolved to in the state it was made
+  against, not the frequencies sent. They are display only: a replay reads
+  ``targets``.
+* **Every refusal comes before the first fit.** Resolution and the symbolic
+  pass over a replayed log raise every refusal a write has before anything is
+  fit: an unknown or unmatched target, a seed off the window it names
+  (``target_outside_window``), a birth on a held uid, and a cascade that would
+  reach a window whose fitted geometry the file does not hold
+  (``fit_plan_unavailable``, which was raised after the edited window had been
+  refit). An apply at a ``log_prefix`` is the one exception: its own actions
+  resolve against the state the kept decisions leave, so their refusals come
+  after those are replayed in memory, with the file still untouched. Two new ``curation_conflict`` reasons: ``ambiguous_peak`` (``ids``
+  the uid) when a request or a replayed row names a uid its window holds more
+  than once (possible only for a thawed copy, which carries its primary's
+  uid), and ``orphans_peak`` (``ids`` the serials to undo with it) when an
+  undo would drop the birth of a peak a kept decision removes, merges or
+  splits, transitively.
 * **A replay rewrites no surviving row.** ``review_undo`` and an apply at a
   ``log_prefix`` keep every surviving row exactly as it was recorded (its
-  ``frequency_mhz``, ``merged_from``, ``evidence`` and ``action_index``), even
-  where the replayed fit resolves the target a fraction of a bin away; only
-  ``order_index``, which is now a position and nothing else, is recomputed. A
-  surviving row that would replay as a different action, or that a replay
-  would drop, is refused with the new ``curation_conflict`` reason
-  ``replay_diverged``: the replay runs from the automatic fit, where a merge
-  or split inferred against the fit as edited can be inferred differently.
+  ``frequency_mhz``, ``targets``, ``seeds_mhz``, ``born_uids``, ``evidence``
+  and ``action_index``); only ``order_index``, which is now a position and
+  nothing else, is recomputed. A surviving row the replay cannot apply is
+  refused, before anything is fit or restored, with the new
+  ``curation_conflict`` reason ``replay_diverged``: a peak it removes is not in
+  its window at its place in the log (the message names the decision that
+  removed it, if one did), or a peak it births is already there (undoing the
+  remove between an add and a re-add at the same frequency, say).
 * **Decisions have a stable id, the serial.** ``DecisionLogEntry.serial`` is
   minted when a row is recorded and is never reused or renumbered until
   ``fit run`` starts a new curation lineage. ``review_undo`` (and ``review

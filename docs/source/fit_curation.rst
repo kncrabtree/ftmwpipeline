@@ -186,7 +186,9 @@ surface a ``review undo`` command alongside the ``review apply`` one:
 surviving decision onto it in log order, one user action at a time (the
 entries of one multi-line edit replay jointly), so any decisions can be undone,
 not only the latest; the ids shown in the table are the ones to pass, and the
-surviving decisions keep their ids (see :ref:`stage6-decisions`).
+surviving decisions keep their ids (see :ref:`stage6-decisions`). A replay
+applies each decision to the peaks it recorded by ``peak_uid``, never by
+frequency, so it acts on the same lines however the undo moves them.
 
 .. _curation-frames:
 
@@ -314,11 +316,12 @@ peaks *can* both fall inside it; that is resolved nearest-wins, and
 ambiguity is visible before the batch runs. Addressing the line by
 ``uid:N`` instead sidesteps the question entirely.
 
-The tolerance is a property of the file, not of a call: no verb, batch or
-replay takes one of its own. The decision log records no tolerance, so a value
-given to one edit would read that edit differently when ``review undo`` or a
-log-prefix apply replays it. To reach a peak farther from the frequency you
-have, name it by ``uid:N`` or by the fitted frequency ``review show`` prints.
+The tolerance is a property of the file, not of a call: no verb or batch takes
+one of its own. It is used only to resolve a request: each decision records the
+``peak_uid`` of every line it removes and the seed and uid of every line it
+adds, and a replay (``review undo``, a log-prefix apply) applies those, with no
+tolerance at all. To reach a peak farther from the frequency you have, name it
+by ``uid:N`` or by the fitted frequency ``review show`` prints.
 
 Curation files
 --------------
@@ -479,8 +482,9 @@ refused, at parse time, before anything is touched. Both are read from what an
 
 The decision log records which reading was used (``kind="split"``/``"merge"``)
 and stamps the frequency that was requested, so the log reports the
-reinterpretation rather than hiding it. See :ref:`stage6-edit` on the Stage 6
-page for the exact rule.
+reinterpretation rather than hiding it, and a replay applies that reading as
+recorded rather than reading the rows again. See :ref:`stage6-edit` on the
+Stage 6 page for the exact rule.
 
 A representative curation file, written against ``exp_2638`` (saved as
 ``exp_2638_curation.csv``):
@@ -518,6 +522,16 @@ add/remove rows. An ``accept`` (or ``create``) on a window flushes that window's
 pending edit first, since it changes the file in its own right; a plain
 add/remove never does, even when curation-intent inference will read the
 coalesced result as a split or a merge once the batch actually runs.
+
+The whole file is resolved before anything is fit, so every refusal comes
+before the first fit and leaves the file untouched. (At a ``--log-prefix`` the
+file resolves against the state the kept decisions leave, so it is resolved
+after those are replayed in memory; a refusal still leaves the file
+untouched.) An edit after another on
+the same window (after a flushing ``accept``, say) resolves against the window
+as the earlier one leaves it: without the lines it removes, and with the lines
+it adds at their seed positions -- not at the positions the batch's own fits
+would move them to.
 
 .. _curation-as-data:
 

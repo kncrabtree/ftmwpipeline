@@ -254,10 +254,8 @@ def built_655(tmp_path_factory) -> Path:
 @pytest.mark.slow
 def test_reference_equals_the_undo_replay_on_655(built_655, tmp_path):
     """On 655, through the 429 hub (32 dependents): edits on the hub and its
-    dependents, an inferred split, a merge, a batch, a bare accept. Removes on
-    a dependent are made before the hub edits that cascade into it, so the
-    log replays (a remove recorded against a cascaded fit can name a peak the
-    one-batch replay does not hold -- the defect uid addressing removes)."""
+    dependents, an inferred split, a merge, a batch, a bare accept. (A remove
+    recorded against a cascaded fit is the w428 test below.)"""
     fp = tmp_path / "655.ftmw"
     shutil.copy(built_655, fp)
     fits = _fits(fp)
@@ -302,6 +300,51 @@ def test_reference_equals_the_undo_replay_on_655(built_655, tmp_path):
     _assert_undo_matches_reference(fp, tmp_path, [n - 1], "last")
     _assert_undo_matches_reference(fp, tmp_path, [1], "hub")
     _assert_undo_matches_reference(fp, tmp_path, [0, 4], "two")
+
+
+@pytest.mark.slow
+def test_a_remove_against_a_cascaded_window_replays_on_its_uid_on_655(
+    built_655, tmp_path
+):
+    """The w428 wrong peak. Removing 429's strongest line cascades into 428
+    and moves its lines by several snap tolerances; a remove the user then
+    types against 428 as displayed is recorded by the uid it resolved to, and
+    a replay (after an unrelated accept and its undo) removes that same peak
+    -- where a replay by frequency picked the neighbour that sat nearest the
+    typed frequency before the cascade."""
+    fp = tmp_path / "655.ftmw"
+    shutil.copy(built_655, fp)
+    fits = _fits(fp)
+    if 428 not in fits or 429 not in fits:
+        pytest.skip("655 build has no windows 428/429")
+    before = {int(p.peak_uid): float(p.frequency_mhz) for p in fits[428].fitted_peaks}
+    strongest = max(fits[429].fitted_peaks, key=lambda p: float(p.snr or 0.0))
+    ftmw.review_edit(fp, 429, remove=[float(strongest.frequency_mhz)], frame="raw")
+    shown = {
+        int(p.peak_uid): float(p.frequency_mhz) for p in _fits(fp)[428].fitted_peaks
+    }
+    target = min(shown, key=lambda u: abs(shown[u] - 37894.7494))
+    # The trap: before the cascade, another of 428's lines sat nearest where
+    # the target is now displayed.
+    nearest_before = min(before, key=lambda u: abs(before[u] - shown[target]))
+    if nearest_before == target:
+        pytest.skip("the 429 cascade did not move 428's lines past each other")
+
+    ftmw.review_edit(fp, 428, remove=[shown[target]], frame="raw")
+    remove = ftmw.review_log(fp)[-1]
+    assert remove.targets == (target,)
+    assert remove.frequency_mhz == shown[target]
+    assert set(_uids_of(fp, 428)) == set(shown) - {target}
+
+    ftmw.review_accept(fp, 5)
+    ftmw.review_undo(fp, [ftmw.review_log(fp)[-1].serial])
+    assert set(_uids_of(fp, 428)) == set(shown) - {target}
+    log = ftmw.review_log(fp)
+    assert state_digest(replay_full(fp, log)) == persisted_state_digest(fp)
+
+
+def _uids_of(path: Path, wid: int) -> List[int]:
+    return [int(p.peak_uid) for p in _fits(path)[wid].fitted_peaks]
 
 
 # ---------------------------------------------------------------------------

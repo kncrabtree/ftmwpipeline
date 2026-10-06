@@ -92,7 +92,8 @@ design).
   value originally computed.
 - The Stage 6 review (`/stage6_review`) stamps the replay-engine version that
   wrote it (`engine_version`) and the decision serial high-water mark
-  (`next_serial`); each decision-log row carries its `serial`, and the undo
+  (`next_serial`); each decision-log row carries its `serial` and its peak
+  identity (`targets`, `seeds_mhz`, `born_uids`: JSON lists), and the undo
   baseline (`/stage5_fitting_baseline`) a `lineage_id`. A review or baseline
   without the stamps was written by a pre-engine build, and a fit whose peaks
   lack `peak_uid` predates peak identity: the file is read as stored, never

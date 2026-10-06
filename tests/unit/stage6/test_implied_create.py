@@ -511,14 +511,12 @@ def test_implied_create_reinterpreted_as_an_edit_is_refused(
 ):
     """An implied create ALWAYS records ``created_window``, or it refuses.
 
-    ``_batch_apply_edit_action`` can reinterpret the implying ``add`` against
+    Curation-intent inference can reinterpret the implying ``add`` against
     the window it landed in (for ``mode="widened"``, a non-empty one) as an
-    inferred merge/split. Those appliers record their own decision, which
-    carries no ``created_window`` -- and without that evidence
-    ``_decision_to_op`` cannot reissue the create before the add, so a replay
-    would add into the window at its BASE PLAN width: a hard error partway
-    through a replay (leaving the file rolled back with its log emptied, the
-    failure ``df3f289`` fixed) or a silently wrong seed.
+    inferred merge/split, whose row carries no ``created_window`` -- and
+    without that evidence a replay cannot reissue the create before the add,
+    so it would add into the window at its BASE PLAN width: a refused replay
+    or a silently wrong seed.
 
     So it is refused rather than recorded wrong. The configuration is not
     reachable on real data -- it needs the anchor within snap tolerance of an
@@ -526,7 +524,7 @@ def test_implied_create_reinterpreted_as_an_edit_is_refused(
     ``min_window_half_width_points`` (32) is ~51x the snap tolerance in points
     (0.625), so a peak sits tens of snap-tolerances inside its own window's
     edge; measured on the real 2638 fit, zero configurations, the nearest 40x
-    the snap tolerance away. It is forced here through the applier seam,
+    the snap tolerance away. It is forced here through the resolution seam,
     because an invariant a replay depends on should hold by construction
     rather than by geometry that a later constant change could quietly move.
     """
@@ -535,23 +533,17 @@ def test_implied_create_reinterpreted_as_an_edit_is_refused(
     before = _fitted_by_window(path)
     n_log_before = len(review_log_impl(path))
 
-    orig = s6._batch_apply_edit_action
+    orig = s6._resolve_edit_steps
 
-    def reinterpreting(ctx, window_id, add, remove, **kwargs):
-        result = orig(ctx, window_id, add, remove, **kwargs)
-        # Stand in for an inferred split/merge applier recording its own
-        # entry, which is what the refusal exists to catch.
-        ctx.changeset.decisions.append(
-            {
-                "window_id": window_id,
-                "frequency_mhz": float(add[0]),
-                "kind": "split",
-                "evidence": {"inferred": True},
-            }
-        )
-        return result
+    def reinterpreting(ctx, state, window_id, add, remove, **kwargs):
+        steps = orig(ctx, state, window_id, add, remove, **kwargs)
+        # Stand in for inference reading the add as a split of a peak in the
+        # window it landed in, which is what the refusal exists to catch.
+        steps[0].kind = "split"
+        steps[0].rows[0].kind = "split"
+        return steps
 
-    monkeypatch.setattr(s6, "_batch_apply_edit_action", reinterpreting)
+    monkeypatch.setattr(s6, "_resolve_edit_steps", reinterpreting)
 
     with pytest.raises(ValueError, match="implies creating a window"):
         refit_window_impl(str(path), None, add=[anchor])

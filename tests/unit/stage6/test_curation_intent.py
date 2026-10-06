@@ -7,7 +7,7 @@ two -- the identity model's blend rule then retires the parent's ``peak_uid``
 (K goes from 1 to 2, so every member is a new entity). Removing the
 components of one blend while adding their replacement reads as a merge.
 
-See ``_infer_curation_intent`` / ``_batch_apply_edit_action`` in
+See ``_infer_curation_intent`` / ``_resolve_edit_steps`` in
 ``stage6_impl.py`` for the design; both ``refit_window_impl`` (the ``review
 edit`` verb) and ``apply_curation_impl`` (a curation file's ``edit`` row)
 reach the same inference through that one function.

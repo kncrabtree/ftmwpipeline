@@ -571,6 +571,16 @@ one action keeps its type and adds the action to the message (``curation action
      * - ``orphans_created_window``
        - ``review_undo`` would drop a window that surviving decisions act on
          (the decisions to undo with it)
+     * - ``orphans_peak``
+       - ``review_undo`` would drop the birth (an add, merge or split) of a
+         peak that a surviving decision removes, merges or splits, or one
+         acting on a peak such a decision births, transitively (the
+         decisions to undo with it)
+     * - ``ambiguous_peak``
+       - a request, or a replayed decision, names by ``peak_uid`` a peak its
+         window holds more than once (possible only for a thawed copy, which
+         carries its primary's uid): name a frequency the window holds once
+         (that uid)
      * - ``baseline_unavailable``
        - ``review_undo``, or an apply at a ``log_prefix``, needs the
          automatic-fit baseline the first edit snapshots, and the file's
@@ -586,21 +596,24 @@ one action keeps its type and adds the action to the message (``curation action
          plans the surviving creates before it restores anything, so its
          conflict leaves the file as it was
      * - ``replay_diverged``
-       - ``review_undo``, or an apply at a ``log_prefix``, would replay a
-         surviving decision as a different action (another ``kind`` or
-         window) than the one recorded, or would not record it at all. The
-         replay runs from the automatic fit, so a merge or split that was
-         inferred against the fit as it was when the decision was recorded
-         can be inferred differently there (that decision)
+       - ``review_undo``, or an apply at a ``log_prefix``, cannot apply a
+         surviving decision as recorded: a peak it removes (one of its
+         ``targets``) is not in its window at its place in the log, or a peak
+         it births (one of its ``born_uids``) already is -- after undoing the
+         remove between an add and a re-add at the same frequency, say -- or
+         its window has no fit there (that decision)
      * - ``target_outside_window``
-       - an ``add`` whose seed, after snapping to a ledger candidate, falls
-         outside the range of the window it names (that window)
+       - an ``add`` whose seed, after snapping to a ledger candidate (or a
+         merge's seed, or a replayed decision's recorded seed), falls outside
+         the range of the window it names, at the window's geometry in force
+         there (that window)
      * - ``fit_plan_unavailable``
        - the edit would refit a window a Stage 5 structural merge changed, in a
          fit made before the fit stored its plan, or create a window inside or
          against such a merge: the windows the fit was made on are not in the
-         file (the windows the edit would have refit; for a create inside a
-         merged range, every affected window). Re-running ``fit run`` clears it
+         file (the windows the edit would have refit, directly or through the
+         cascade; for a create inside a merged range, every affected window).
+         Re-running ``fit run`` clears it
      * - ``predates_peak_identity``
        - any Stage 6 write (``review_edit``, ``review_accept``,
          ``review_create``, ``review_apply``, ``review_undo``, ``review_run``,
@@ -615,7 +628,14 @@ one action keeps its type and adds the action to the message (``curation action
          clears it and discards the file's curation; ``get_review_status``
          reports the reason as ``refit_required`` (``[]``)
 
-  Reasons are only ever added.
+  Reasons are only ever added. Every ``curation_conflict`` and ``not_found``
+  a Stage 6 write raises is raised before anything is fit (contract 16): a
+  request is resolved into its decisions, and a replayed log checked, against
+  structure and peak identity alone. The one exception is an apply at a
+  ``log_prefix``: its own actions resolve against the state the kept
+  decisions leave, so their refusals come after those decisions are replayed
+  in memory (the kept decisions' own refusals still come first). The file is
+  untouched either way.
 
 .. _contract-file-errors:
 
@@ -1063,14 +1083,25 @@ Each, with its absence cases:
   evidence is no longer ``{}``). Rows with the same ``action_index`` were
   applied as one joint refit. A row a pre-engine build recorded may have none:
   the file is refused for every write (see ``predates_replay_engine`` above),
-  so no replay reads it. A
-  ``remove`` row's ``frequency_mhz``, and a merge's ``merged_from``, are the
-  fitted frequencies (raw frame) of the peaks the request resolved to, not the
-  frequencies sent; rows written before contract 16 hold the frequencies sent.
+  so no replay reads it. Every row names the peaks it acts on by identity
+  (contract 16): ``targets`` are the ``peak_uid`` values, in ``window_id``, of
+  the peaks it removes (a remove's one, a merge's parents, a split's parent),
+  ``seeds_mhz`` the raw-frame seed positions of the peaks it births (an add's
+  one, a merge's one, a split's products) and ``born_uids`` the uid each was
+  stamped with from its seed, index-aligned; each is an empty list for a kind
+  that removes or births nothing, and all three are *not run* on a row a
+  pre-engine build recorded. A request resolves against the fits as they were
+  when it was made (in one curation file or ``actions`` batch, an action after
+  another on the same window resolves against the other's newborns at their
+  seeds); a replay applies the rows as recorded, by uid, and never resolves a
+  frequency again. ``frequency_mhz`` is display only: the frequency sent for
+  an add, the anchor for a create, a merge's seed, a split's parent, and for a
+  remove the fitted frequency (raw frame) of the peak it resolved to; a
+  merge's ``merged_from`` likewise holds its parents' fitted frequencies.
   Rows are immutable: a replay (``review_undo``, an apply at a ``log_prefix``)
   keeps every surviving row verbatim, and only ``order_index`` changes. The
   snap tolerance is a property of the file (``refit_snap_tol_mhz``): from
-  contract 16 no call takes one.
+  contract 16 no call takes one, and only a request's resolution uses it.
 * ``get_pipeline_info`` -- the status dict. ``warnings`` is always present (an
   empty list when there are none). The environment fields hold ``Absent``
   rather than ``None`` / ``{}`` / ``[]``:

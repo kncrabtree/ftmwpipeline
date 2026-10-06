@@ -231,10 +231,19 @@ def _created_window_json(pw: Any) -> dict:
     }
 
 
+def _tuple_json(value: Any) -> Any:
+    """A row's peak-identity tuple as a JSON list; an ``Absent`` passes
+    through (a pre-engine row)."""
+    return value if isinstance(value, Absent) else list(value)
+
+
 def _log_entry_json(e: Any) -> dict:
     return {
         "serial": e.serial,
         "order_index": e.order_index,
+        "targets": _tuple_json(e.targets),
+        "seeds_mhz": _tuple_json(e.seeds_mhz),
+        "born_uids": _tuple_json(e.born_uids),
         "kind": e.kind,
         "window_id": e.window_id,
         "frequency_mhz": e.frequency_mhz,

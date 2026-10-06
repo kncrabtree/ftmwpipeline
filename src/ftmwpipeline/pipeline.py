@@ -2405,13 +2405,17 @@ class Pipeline:
         """Undo recorded decisions by id, replaying the rest from baseline.
 
         Restores the automatic Stage 5 fit (snapshotted before the first edit),
-        rebuilds the review from it, and re-applies every surviving decision.
-        The surviving rows are kept verbatim: their ids (serials) and every
-        ``derivation`` naming them are unchanged, and only their positions
-        (``order_index``) are recomputed.  ``dry_run`` previews the removed/
-        surviving split and the replay plan without writing.  The ``peak_uid``
-        values afterward are the replay's, not the pre-undo file's: replay
-        equivalence, not per-peak stability, is what an undo promises.
+        rebuilds the review from it, and re-applies every surviving decision
+        as recorded: it removes the peaks the decision names by ``peak_uid``
+        and births its peaks at their recorded seeds under their recorded
+        uids, never resolving a frequency again.  The surviving rows are kept
+        verbatim: their ids (serials) and every ``derivation`` naming them are
+        unchanged, and only their positions (``order_index``) are recomputed.
+        ``dry_run`` previews the removed/surviving split and the replay plan
+        without writing.  The fitted positions afterward are the replay's.
+        Every refusal (``orphans_created_window``, ``orphans_peak``,
+        ``replay_diverged``, ``replay_conflict``, ...) comes before anything
+        is fit or restored.
 
         ``events`` / ``cancel`` follow the long-operation contract: ``events``
         is called on this thread with each event (``StageStarted``, a

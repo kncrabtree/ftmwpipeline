@@ -880,10 +880,13 @@ class FittedPeak:
     field existed -- it is never backfilled from a legacy file's fitted
     positions.
 
-    ``review undo`` replays the surviving decisions from the automatic
-    baseline, so the identifiers after an undo are the replay's rather than
-    the pre-undo file's -- re-read them (a ``derivation`` tag, by contrast,
-    names a decision serial and is never renumbered)."""
+    A Stage 6 decision names the peaks it removes by this identifier and
+    records the identifier of every peak it births
+    (:class:`DecisionLogEntry` ``targets`` / ``born_uids``), so ``review
+    undo``, which replays the surviving decisions from the automatic
+    baseline, removes the same peaks and births each under its recorded
+    identifier; the identifiers of the peaks the undone decisions birthed are
+    gone with them."""
 
     # Spur-review hint: set when the peak's frequency was a Stage-2b flat-cluster
     # nominee whose coherent decay was ambiguous (the ``flat_decay`` band, where
@@ -2349,7 +2352,12 @@ class DecisionLogEntry:
     window_id : int
         The ``FitWindow.window_id`` the decision applies to.
     frequency_mhz : float
-        Molecular frequency anchor for the decision (MHz).
+        Raw-frame frequency the decision is displayed at (MHz): for an add,
+        the frequency sent; for a remove, the fitted frequency of the peak it
+        resolved to in the state the request was made against; for a merge,
+        its seed; for a split, the parent's fitted frequency; for a create,
+        the anchor. Display only: a replay reads ``targets``, ``seeds_mhz``
+        and ``born_uids``, never this.
     kind : str
         Decision type, one of :data:`DECISION_KINDS`: ``"add"``, ``"remove"``,
         ``"merge"``, ``"split"``, ``"accept"``, or ``"create_window"``.
@@ -2365,6 +2373,21 @@ class DecisionLogEntry:
         reused or renumbered within the fit's lineage (``fit run`` starts a
         new one). ``review undo`` takes serials, and ``FittedPeak.derivation``
         holds one. ``Absent.NOT_RUN`` on a row a pre-engine build recorded.
+    targets : tuple of int or Absent
+        The ``peak_uid`` values, in ``window_id``, of the peaks the decision
+        removes: a remove's one peak, a merge's parents, a split's parent.
+        Empty for the other kinds. ``(window_id, uid)`` is the address: a
+        thawed copy carries its primary's uid in another window.
+    seeds_mhz : tuple of float or Absent
+        Raw-frame seed positions (MHz) of the peaks the decision births: an
+        add's one, a merge's one, a split's products. Recorded when the
+        decision is, so every replay seeds them at the same positions.
+    born_uids : tuple of int or Absent
+        The ``peak_uid`` each seed was stamped with when the decision was
+        recorded (from the seed position, the birth rule), index-aligned with
+        ``seeds_mhz``; a replay births each peak under its recorded uid.
+        ``targets``, ``seeds_mhz`` and ``born_uids`` are ``Absent.NOT_RUN`` on
+        a row a pre-engine build recorded.
     """
 
     order_index: int
@@ -2374,6 +2397,9 @@ class DecisionLogEntry:
     provenance: str = "user"
     evidence: Dict[str, Any] = field(default_factory=dict)
     serial: Union[int, Absent] = Absent.NOT_RUN
+    targets: Union[Tuple[int, ...], Absent] = Absent.NOT_RUN
+    seeds_mhz: Union[Tuple[float, ...], Absent] = Absent.NOT_RUN
+    born_uids: Union[Tuple[int, ...], Absent] = Absent.NOT_RUN
 
 
 @dataclass(frozen=True)
