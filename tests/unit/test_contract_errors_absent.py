@@ -374,6 +374,19 @@ def test_a_whole_batch_refusal_is_undefined_not_not_run(err):
     assert clone.to_dict()["action_indices_absent"] == "undefined"
 
 
+def test_internal_error_outside_a_batch_is_not_run_and_pickles():
+    e = InternalError(message="boom")
+    d = json.loads(json.dumps(e.to_dict(), allow_nan=False))
+    assert d["code"] == "internal_error"
+    assert d["action_indices"] is None
+    assert d["action_indices_absent"] == "not_run"
+    assert e.action_indices is None
+    clone = pickle.loads(pickle.dumps(InternalError([1, 3], message="boom")))
+    assert isinstance(clone, (InternalError, RuntimeError))
+    assert clone.action_indices == [1, 3] and str(clone) == "boom"
+    assert clone.to_dict() == InternalError([1, 3], message="boom").to_dict()
+
+
 def test_epoch_mismatch_none_epoch_is_null_with_absent_sibling():
     e = AnalysisEpochMismatchError("f", _Env(None), _Env(3))
     d = json.loads(json.dumps(e.to_dict(), allow_nan=False))

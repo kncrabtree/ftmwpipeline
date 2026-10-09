@@ -8,6 +8,27 @@ Changelog
 Notable changes to ``ftmwpipeline``, newest first. Versions follow
 `semantic versioning <https://semver.org/>`_.
 
+Unreleased
+----------
+
+**Contract 19: an unexpected failure in one curation action names it;
+``CONTRACT_VERSION`` moves 18 → 19.** A new code, ``internal_error``
+(``InternalError``, a ``RuntimeError``), carries ``action_indices``, the
+0-based request positions of the curation action that was being processed
+when an exception that is not a typed error escaped ``review_preview`` /
+``review_apply`` (and the ``Pipeline``, session and ``review preview`` /
+``review apply`` spellings), several for a coalesced add/remove edit. The
+original exception is the ``__cause__``. The batch stays all-or-nothing. It
+covers resolving an action and fitting a window for a row the request added;
+a failure replaying rows the log already held, or in the cascade, is not
+attributed and escapes as before. Typed errors pass through untouched.
+``bad_setting`` gains the same ``action_indices`` (``undefined`` for a
+whole-batch refusal, ``not_run`` outside a batch). On the command line
+``internal_error`` exits 2, like ``algorithm_failed``. Not additive: an
+unexpected per-action failure used to be a tagged ``ValueError`` and is now an
+``InternalError``, a ``RuntimeError``, so an ``except ValueError`` around a
+batch no longer catches it. ``ANALYSIS_EPOCH`` is unchanged.
+
 Version 0.1.0b5 (2026-10-06)
 ----------------------------
 

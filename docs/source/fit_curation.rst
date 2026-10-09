@@ -773,7 +773,10 @@ still the ``ValueError`` (or, for a missing import source, the
   ``write_conflict`` (see :doc:`stage6_review`).
 
 Inside a batch the refusal keeps its type and the message names the action
-(``curation action 2 (edit window 4: ...) failed: ...``). The complete
+(``curation action 2 (edit window 4: ...) failed: ...``). An unexpected
+exception while one action is processed is ``internal_error`` (a
+``RuntimeError``) with ``action_indices`` naming the request position, so a
+client can mark that row failed and resubmit the rest. The complete
 vocabulary — every ``path`` form, ``not_found`` kind and ``reason`` slug, with
 what each carries in ``ids`` — is in :doc:`machine_contract`.
 
