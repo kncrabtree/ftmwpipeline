@@ -2584,6 +2584,17 @@ def materialize_window(
     freq_slice = freq_array_mhz[mask]
     z_slice = complex_spectrum[mask]
     sig_slice = rms_noise[mask]
+    # The noise profile is NaN outside the analysis band (Stage 5 estimates only
+    # what a window can read), so a non-finite slice means a window reached past
+    # the band. Refuse here, by name, rather than let a NaN median surface later
+    # as a missing amplitude floor deep inside the fit.
+    if not np.all(np.isfinite(sig_slice)):
+        n_bad = int(np.count_nonzero(~np.isfinite(sig_slice)))
+        raise ValueError(
+            f"window {fit_window_spec.window_id} freq_range ({lo}, {hi}) MHz "
+            f"has {n_bad} of {sig_slice.size} grid points with no finite noise "
+            "estimate; a window must lie inside the analysis band"
+        )
     # Reference frequency: the midpoint of the window's freq_range. This is the
     # natural symmetric choice and keeps free-peak offsets balanced around zero.
     center_mhz = 0.5 * (lo + hi)

@@ -8,8 +8,9 @@ never touched -- and on the Stage 6 replay path nothing reads those bins:
 
 * ``Stage5FitContext.active_rms`` has no reader anywhere;
 * ``rms_for_fit`` is only ever sliced by a window's ``freq_range``
-  (``materialize_window``), and Stage 4 plans windows on the *trimmed* grid,
-  so no window can reach outside the band;
+  (``materialize_window``), Stage 4 plans windows on the *trimmed* grid, and
+  Stage 6 clamps a created or widened window to the band, so no window can
+  reach outside it;
 * the spur detector, which does read out there, runs only on a first fit --
   a replay reinstates the persisted catalog without probing.
 

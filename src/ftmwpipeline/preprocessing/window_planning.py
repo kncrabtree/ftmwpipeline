@@ -1674,6 +1674,7 @@ def plan_stage6_window(
     live_window_ids: Optional[Sequence[int]] = None,
     reserved_window_ids: Iterable[int] = (),
     min_new_window_id: int = 0,
+    band_mhz: Optional[Tuple[float, float]] = None,
 ) -> Stage6WindowProposal:
     """Propose a fit window covering ``anchor_mhz`` without disturbing the plan.
 
@@ -1691,7 +1692,10 @@ def plan_stage6_window(
     anchor. If the gap cannot hold that symmetrically the window is **shifted**,
     not shrunk, so a line near one end of a roomy gap still gets a full-size
     window (off-center). Only when the gap itself is too small does the window
-    shrink, and only down to ``stage6_min_half_width_points`` a side.
+    shrink, and only down to ``stage6_min_half_width_points`` a side. A side the
+    analysis band's edge bounds (``band_mhz``) is exempt from that floor -- there
+    is no data past it to give -- so a line at the band edge gets a full-size
+    window ending at the edge, still at least ``2 * floor`` points wide.
 
     Below that floor the proposal switches to ``mode="widened"``: the nearer
     adjacent window grows to absorb the anchor plus the floor margin, bounded by
@@ -1752,6 +1756,14 @@ def plan_stage6_window(
         ``floor``). It reserves nothing: a caller that pins an id on replay
         checks it against *plan* and *reserved_window_ids*, never against
         this floor.
+    band_mhz :
+        The analysis band ``(lo, hi)`` in MHz (the Stage 1 trim). The active-FT
+        grid is not trimmed, so without this the gap outside the outermost
+        window runs to the end of the grid and a window created near a band
+        edge reaches past it, onto bins that carry no in-band noise estimate.
+        When given, the anchor must lie within the band's grid points and the
+        gap -- hence a created or widened window -- is clamped to them.
+        ``None`` (the default) treats the whole grid as the band.
 
     Returns
     -------
@@ -1779,16 +1791,27 @@ def plan_stage6_window(
     if n == 0:
         raise ValueError("the active-FT spectrum is empty")
 
+    band_lo_idx, band_hi_idx = 0, n - 1
+    if band_mhz is not None:
+        b_lo, b_hi = float(min(band_mhz)), float(max(band_mhz))
+        band_lo_idx = int(np.searchsorted(ofreqs, b_lo, side="left"))
+        band_hi_idx = int(np.searchsorted(ofreqs, b_hi, side="right")) - 1
+        if band_lo_idx > band_hi_idx:
+            raise ValueError(
+                f"the analysis band [{b_lo:.4f}, {b_hi:.4f}] MHz holds no "
+                "active-FT grid point"
+            )
+    f_lo, f_hi = float(ofreqs[band_lo_idx]), float(ofreqs[band_hi_idx])
+
     anchor = float(anchor_mhz)
-    if anchor < float(ofreqs[0]) or anchor > float(ofreqs[-1]):
+    if anchor < f_lo or anchor > f_hi:
         raise BadSettingError(
             "anchor_mhz",
-            f"a frequency inside the analysis band "
-            f"[{float(ofreqs[0]):.4f}, {float(ofreqs[-1]):.4f}] MHz",
+            f"a frequency inside the analysis band [{f_lo:.4f}, {f_hi:.4f}] MHz",
             anchor,
             message=(
                 f"anchor {anchor:.4f} MHz is outside the analysis band "
-                f"[{float(ofreqs[0]):.4f}, {float(ofreqs[-1]):.4f}] MHz"
+                f"[{f_lo:.4f}, {f_hi:.4f}] MHz"
             ),
         )
     gi = _nearest_grid_index(ofreqs, anchor)
@@ -1833,6 +1856,11 @@ def plan_stage6_window(
     above = [(lo, hi, wid) for lo, hi, wid in spans if lo > gi]
     gap_lo = (max(hi for _lo, hi, _w in below) + 1) if below else 0
     gap_hi = (min(lo for lo, _hi, _w in above) - 1) if above else n - 1
+    # A side the band edge bounds (rather than a window) has no data past it at
+    # all, so no margin there is attainable or owed: the floor below applies
+    # only to a side a neighboring window bounds.
+    lo_at_band, hi_at_band = band_lo_idx > gap_lo, band_hi_idx < gap_hi
+    gap_lo, gap_hi = max(gap_lo, band_lo_idx), min(gap_hi, band_hi_idx)
 
     # --- Desired extent: the plan's own margin, shifted to fit the gap ------
     step_mhz = abs(float(np.mean(np.diff(ofreqs)))) if n > 1 else 1.0
@@ -1859,7 +1887,12 @@ def plan_stage6_window(
         "stage6_min_half_width_points": int(floor),
     }
 
-    if (gi - lo) < floor or (hi - gi) < floor:
+    starved = (
+        ((gi - lo) < floor and not lo_at_band)
+        or ((hi - gi) < floor and not hi_at_band)
+        or (hi - lo) < 2 * floor
+    )
+    if starved:
         return _widen_for_stage6_anchor(
             candidates,
             peaks,

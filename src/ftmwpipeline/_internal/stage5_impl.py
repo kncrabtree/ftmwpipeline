@@ -1560,8 +1560,10 @@ def build_stage5_fit_context(
     # persisted catalog without probing (see the spur block below). Nothing
     # else reads out there: `Stage5FitContext.active_rms` has no reader at
     # all, and `rms_for_fit` is only ever sliced by a window's freq_range
-    # (`materialize_window`), while Stage 4 plans windows on the TRIMMED
-    # grid so none of them can reach outside it.
+    # (`materialize_window`, which refuses a non-finite slice), while Stage 4
+    # plans windows on the TRIMMED grid and Stage 6 clamps a created or widened
+    # window to the band (`plan_stage6_window(band_mhz=...)`), so none of them
+    # can reach outside it.
     #
     # Worth being precise about, because the two grids differ: the *user* FT
     # is trimmed to the analysis band, but the *active* FT is not -- on 2638

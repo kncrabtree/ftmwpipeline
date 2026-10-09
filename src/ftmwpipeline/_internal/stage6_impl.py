@@ -8504,6 +8504,7 @@ def _plan_create(
         live_window_ids=_structural_live_window_ids(shared, created_windows),
         reserved_window_ids=shared.retired_window_ids,
         min_new_window_id=int(min_new_window_id),
+        band_mhz=shared.fit_ctx.trim_range,
     )
     new_wid = int(proposal.window.window_id)
     _refuse_create_on_unavailable_fit_plan(shared, proposal, anchor)
