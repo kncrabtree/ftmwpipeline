@@ -354,6 +354,7 @@ def test_batch_refusal_carries_its_request_action_indices(err):
     [
         NotFoundValueError("window", [7, 9]),
         CurationConflictError("line_already_fitted", [3]),
+        BadSettingError("log_prefix", "an integer between 0 and 2", 9),
     ],
     ids=lambda e: type(e).__name__,
 )

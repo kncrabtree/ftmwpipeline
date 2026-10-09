@@ -4516,16 +4516,29 @@ def _curation_cell(line_no: int, column: str) -> str:
 
 
 def _bad_curation_cell(
-    line_no: int, column: str, expected: str, value: Any, detail: str
+    line_no: int,
+    column: str,
+    expected: str,
+    value: Any,
+    detail: str,
+    *,
+    action_index: Optional[int],
 ) -> BadSettingError:
     """A ``bad_setting`` refusal of one curation-file cell, with the
-    historical ``curation line <n>: ...`` message."""
-    return BadSettingError(
+    historical ``curation line <n>: ...`` message.
+
+    *action_index* is the row's 0-based request position (its
+    ``action_indices``, as ``actions[<i>]`` would carry); ``None`` for a
+    header directive, which refuses the whole batch
+    (:func:`_refusing_whole_batch`)."""
+    exc = BadSettingError(
         _curation_cell(line_no, column),
         expected,
         value,
+        action_indices=None if action_index is None else [action_index],
         message=f"curation line {line_no}: {detail}",
     )
+    return _refusing_whole_batch(exc) if action_index is None else exc
 
 
 class ParsedCurationFile(List[CurationOp]):
@@ -4865,7 +4878,7 @@ class CurationApplyResult:
     invalidated: Tuple[str, ...] = field(default=(), compare=False)
 
 
-def _parse_curation_params(raw: str, line_no: int) -> Dict[str, str]:
+def _parse_curation_params(raw: str, line_no: int, action_index: int) -> Dict[str, str]:
     params: Dict[str, str] = {}
     for token in raw.split(";"):
         token = token.strip()
@@ -4878,6 +4891,7 @@ def _parse_curation_params(raw: str, line_no: int) -> Dict[str, str]:
                 "';'-separated key=value parameters",
                 raw,
                 f"malformed parameter {token!r} (expected key=value)",
+                action_index=action_index,
             )
         key, _, value = token.partition("=")
         params[key.strip().lower()] = value.strip()
@@ -4960,6 +4974,7 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                         raw_value,
                         f"'frame' header must be 'raw' or 'calibrated', got "
                         f"{raw_value!r}",
+                        action_index=None,
                     )
                 if header.frame is not None and header.frame != value:
                     raise _bad_curation_cell(
@@ -4969,6 +4984,7 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                         raw_value,
                         f"conflicting 'frame' header (already declared "
                         f"{header.frame!r} earlier in this file)",
+                        action_index=None,
                     )
                 if header.frame is None:
                     header.frame_line = line_no
@@ -4986,6 +5002,7 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                         "a number",
                         raw_eps,
                         f"'epsilon' header {raw_eps!r} is not a number",
+                        action_index=None,
                     ) from None
                 if header.epsilon is not None and header.epsilon != eps_value:
                     raise _bad_curation_cell(
@@ -4996,6 +5013,7 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                         eps_value,
                         f"conflicting 'epsilon' header (already declared "
                         f"{header.epsilon!r} earlier in this file)",
+                        action_index=None,
                     )
                 if header.epsilon is None:
                     header.epsilon_line = line_no
@@ -5018,6 +5036,7 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                 "new component -- an add within snap tolerance of a fitted "
                 "peak that is not itself being removed is read as a split of "
                 "that peak",
+                action_index=len(ops),
             )
         if action == "merge":
             raise _bad_curation_cell(
@@ -5029,6 +5048,7 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                 "action; write 'remove' rows for the mutually-close peaks to "
                 "collapse, plus one 'add' row at a frequency in their span, "
                 "instead -- that combination is read as a merge of them",
+                action_index=len(ops),
             )
         if action not in _CURATION_ACTIONS:
             raise _bad_curation_cell(
@@ -5037,6 +5057,7 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                 expected_action,
                 fields[0],
                 f"unknown action {fields[0]!r}; choose one of {_CURATION_ACTIONS}",
+                action_index=len(ops),
             )
         raw_window = fields[1] if len(fields) > 1 else ""
         window_token = raw_window.strip().lower()
@@ -5057,6 +5078,7 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                 f"a window id (required on {action})",
                 fields[1] if len(fields) > 1 else None,
                 "missing window id",
+                action_index=len(ops),
             )
         else:
             try:
@@ -5069,6 +5091,7 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                     f"an integer window id{omit}",
                     fields[1],
                     f"window id {fields[1]!r} is not an integer",
+                    action_index=len(ops),
                 ) from None
         freqs_raw = fields[2] if len(fields) > 2 else ""
         params_raw = fields[3] if len(fields) > 3 else ""
@@ -5085,6 +5108,7 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                     exc.path,
                     exc.expected,
                     exc.value,
+                    action_indices=[len(ops)],
                     message=f"curation line {line_no}: {exc}",
                 ) from None
         else:
@@ -5097,8 +5121,9 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                     "a frequency in MHz",
                     freqs_raw,
                     f"non-numeric frequency in {freqs_raw!r}",
+                    action_index=len(ops),
                 ) from None
-        params = _parse_curation_params(params_raw, line_no)
+        params = _parse_curation_params(params_raw, line_no, len(ops))
 
         # Per-action arity / parameter validation.
         if action in ("add", "remove"):
@@ -5114,6 +5139,7 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                     one,
                     freqs_raw,
                     f"{action} needs exactly one frequency",
+                    action_index=len(ops),
                 )
             if params:
                 raise _bad_curation_cell(
@@ -5122,6 +5148,7 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                     "no parameters (an empty cell)",
                     params_raw,
                     f"{action} takes no parameters",
+                    action_index=len(ops),
                 )
         elif action == "create":
             if len(freqs) != 1:
@@ -5132,6 +5159,7 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                     freqs_raw,
                     "create needs exactly one frequency "
                     "(the anchor the new window must cover)",
+                    action_index=len(ops),
                 )
             if params:
                 raise _bad_curation_cell(
@@ -5140,6 +5168,7 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                     "no parameters (an empty cell)",
                     params_raw,
                     "create takes no parameters",
+                    action_index=len(ops),
                 )
         elif action == "accept":
             if freqs:
@@ -5150,6 +5179,7 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                     freqs_raw,
                     "accept takes no frequency column; "
                     "use params candidate=F to revive a candidate",
+                    action_index=len(ops),
                 )
             if "candidate" in params:
                 try:
@@ -5161,6 +5191,7 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                         "candidate=<a frequency in MHz>",
                         params_raw,
                         f"candidate={params['candidate']!r} is not a number",
+                        action_index=len(ops),
                     ) from None
 
         ops.append(
@@ -5177,26 +5208,30 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
 
     if header.epsilon is not None and header.frame != "calibrated":
         assert header.epsilon_line is not None
-        raise BadSettingError(
-            _curation_cell(header.epsilon_line, "epsilon"),
-            "no epsilon header unless the file declares '# frame: calibrated'",
-            header.epsilon,
-            message="curation file: an 'epsilon' header requires a 'frame: "
-            "calibrated' header alongside it -- an epsilon stamp is "
-            "meaningless without a calibrated-frame declaration to attach "
-            "it to",
+        raise _refusing_whole_batch(
+            BadSettingError(
+                _curation_cell(header.epsilon_line, "epsilon"),
+                "no epsilon header unless the file declares '# frame: calibrated'",
+                header.epsilon,
+                message="curation file: an 'epsilon' header requires a 'frame: "
+                "calibrated' header alongside it -- an epsilon stamp is "
+                "meaningless without a calibrated-frame declaration to attach "
+                "it to",
+            )
         )
     if header.frame == "calibrated" and header.epsilon is None:
         assert header.frame_line is not None
-        raise BadSettingError(
-            _curation_cell(header.frame_line, "frame"),
-            "raw, or calibrated with an '# epsilon:' header",
-            header.frame,
-            message="curation file: 'frame: calibrated' requires an 'epsilon' "
-            "header stamping the epsilon the file was written under (e.g. "
-            "'# epsilon: 2.2e-6') -- otherwise a later apply/preview cannot "
-            "detect that the calibration has drifted since this file was "
-            "staged",
+        raise _refusing_whole_batch(
+            BadSettingError(
+                _curation_cell(header.frame_line, "frame"),
+                "raw, or calibrated with an '# epsilon:' header",
+                header.frame,
+                message="curation file: 'frame: calibrated' requires an 'epsilon' "
+                "header stamping the epsilon the file was written under (e.g. "
+                "'# epsilon: 2.2e-6') -- otherwise a later apply/preview cannot "
+                "detect that the calibration has drifted since this file was "
+                "staged",
+            )
         )
 
     return ParsedCurationFile(ops, header)
@@ -5249,34 +5284,40 @@ def curation_source(
     """
     if (curation_path is None) == (actions is None):
         given = "both" if actions is not None else "neither"
-        raise BadSettingError(
-            "actions",
-            "exactly one of curation_path or actions",
-            None if actions is None else "<actions>",
-            message=f"pass exactly one of curation_path (a curation file) or "
-            f"actions (a sequence of CurationAction); got {given}",
+        raise _refusing_whole_batch(
+            BadSettingError(
+                "actions",
+                "exactly one of curation_path or actions",
+                None if actions is None else "<actions>",
+                message=f"pass exactly one of curation_path (a curation file) or "
+                f"actions (a sequence of CurationAction); got {given}",
+            )
         )
     if actions is None:
         assert curation_path is not None
         if not isinstance(curation_path, (str, Path)):
             # A natural slip now that curation_path is optional: a list of
             # actions passed positionally.
-            raise BadSettingError(
-                "curation_path",
-                "a path to a curation file (pass in-memory actions as actions=)",
-                curation_path,
-                message=f"curation_path must be a file path, got "
-                f"{type(curation_path).__name__}; pass a sequence of "
-                f"CurationAction as actions=...",
+            raise _refusing_whole_batch(
+                BadSettingError(
+                    "curation_path",
+                    "a path to a curation file (pass in-memory actions as actions=)",
+                    curation_path,
+                    message=f"curation_path must be a file path, got "
+                    f"{type(curation_path).__name__}; pass a sequence of "
+                    f"CurationAction as actions=...",
+                )
             )
         return curation_path
     if isinstance(actions, (str, bytes, Mapping)):
-        raise BadSettingError(
-            "actions",
-            "a sequence of CurationAction (or their dicts)",
-            actions,
-            message="actions must be a sequence of CurationAction (or their "
-            "dicts), not a single string or mapping",
+        raise _refusing_whole_batch(
+            BadSettingError(
+                "actions",
+                "a sequence of CurationAction (or their dicts)",
+                actions,
+                message="actions must be a sequence of CurationAction (or their "
+                "dicts), not a single string or mapping",
+            )
         )
     out: List[CurationAction] = []
     for item in actions:
@@ -11220,23 +11261,29 @@ def apply_curation_impl(
     if log_prefix is not None:
         log = load_stage6_review_from_file(path).decision_log
         if log_prefix < 0 or log_prefix > len(log):
-            raise BadSettingError(
-                "log_prefix",
-                f"an integer between 0 and the decision log's length ({len(log)})",
-                log_prefix,
-                message=f"log_prefix must be between 0 and the decision log's length "
-                f"({len(log)}), got {log_prefix}",
+            raise _refusing_whole_batch(
+                BadSettingError(
+                    "log_prefix",
+                    f"an integer between 0 and the decision log's length "
+                    f"({len(log)})",
+                    log_prefix,
+                    message=f"log_prefix must be between 0 and the decision "
+                    f"log's length ({len(log)}), got {log_prefix}",
+                )
             )
         if log_prefix < len(log):
             if dry_run:
-                raise BadSettingError(
-                    "dry_run",
-                    "False when log_prefix is shorter than the decision log",
-                    dry_run,
-                    message="dry_run cannot be combined with a log_prefix shorter "
-                    "than the decision log: the file never holds the state the "
-                    "prefix describes, so the preview would resolve against "
-                    "the wrong fit. Undo the later decisions first, then dry-run.",
+                raise _refusing_whole_batch(
+                    BadSettingError(
+                        "dry_run",
+                        "False when log_prefix is shorter than the decision log",
+                        dry_run,
+                        message="dry_run cannot be combined with a log_prefix "
+                        "shorter than the decision log: the file never holds the "
+                        "state the prefix describes, so the preview would resolve "
+                        "against the wrong fit. Undo the later decisions first, "
+                        "then dry-run.",
+                    )
                 )
             return _apply_curation_at_prefix(
                 path,
@@ -14028,7 +14075,14 @@ def _parse_curation_call(
     resolved_frame: Frame = "raw"
     file_stamp: Optional[_CalibrationStamp] = None
     if _curation_ops_have_freq(ops):
-        resolved_frame, file_stamp = _resolve_curation_frame(path, ops.header, frame)
+        try:
+            resolved_frame, file_stamp = _resolve_curation_frame(
+                path, ops.header, frame
+            )
+        except BadSettingError as exc:
+            # The file's one frame (its header, frame=, or the default rule)
+            # and its epsilon stamp govern every row: the whole batch.
+            raise _refusing_whole_batch(exc) from None
     file_targets: Optional[FrozenSet[float]] = (
         None if resolved_frame == "raw" else frozenset()
     )

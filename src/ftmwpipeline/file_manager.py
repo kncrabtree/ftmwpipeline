@@ -371,7 +371,9 @@ def _absent_action_indices(values: Dict[str, Any], whole_batch: bool) -> Dict[st
     return values
 
 
-_BatchRefusal = TypeVar("_BatchRefusal", "NotFoundError", "CurationConflictError")
+_BatchRefusal = TypeVar(
+    "_BatchRefusal", "NotFoundError", "CurationConflictError", "BadSettingError"
+)
 
 
 def _refusing_whole_batch(exc: _BatchRefusal) -> _BatchRefusal:
@@ -534,12 +536,18 @@ class BadSettingError(PipelineFileError, ValueError):
         The refused value as given (its ``repr`` when it is not JSON-able).
     action_indices : list of int or None
         As for :class:`NotFoundError`: raised for one action of a curation
-        batch, the 0-based request positions of that action (several when
-        coalesced rows were one edit); ``None`` outside a batch (wire:
+        batch (an ``actions[<i>]`` field, a curation-file row's cell, or a
+        failure while processing the action), the 0-based request positions
+        of that action (several when coalesced rows were one edit). ``None``
+        for a refusal of the whole batch at once -- a curation-file header
+        directive, the batch's frame or epsilon, the ``actions`` /
+        ``curation_path`` / ``log_prefix`` / ``dry_run`` arguments of the
+        batch call (wire: ``Absent.UNDEFINED``) -- and outside a batch (wire:
         ``Absent.NOT_RUN``).
     """
 
     code: ClassVar[str] = "bad_setting"
+    _whole_batch: bool = False
     contract_fields: ClassVar[Tuple[str, ...]] = (
         "path",
         "expected",
@@ -580,7 +588,7 @@ class BadSettingError(PipelineFileError, ValueError):
             "value": value,
             "action_indices": self.action_indices,
         }
-        return _absent_action_indices(values, whole_batch=False)
+        return _absent_action_indices(values, self._whole_batch)
 
 
 class CurationConflictError(PipelineFileError, ValueError):

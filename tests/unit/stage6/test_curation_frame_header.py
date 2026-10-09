@@ -364,6 +364,9 @@ class TestHeaderEpsilonDrift:
         assert isinstance(excinfo.value, BadSettingError)
         assert excinfo.value.path == "curation[line 2].epsilon"
         assert excinfo.value.value == pytest.approx(EPS_1)
+        # The file's one epsilon governs every row: the whole batch is refused.
+        assert excinfo.value.action_indices is None
+        assert excinfo.value.to_dict()["action_indices_absent"] == "undefined"
 
         # Refused calls leave the file untouched.
         review = load_stage6_review_from_file(str(sc_file))
@@ -483,8 +486,10 @@ class TestHeaderFramePrecedence:
         cur = _write_curation(
             tmp_path, f"# frame: raw\nremove,{wf.window_id},{f_raw!r},\n"
         )
-        with pytest.raises(ValueError, match="frame disagreement"):
+        with pytest.raises(ValueError, match="frame disagreement") as excinfo:
             apply_curation_impl(str(sc_file), cur, frame="calibrated")
+        assert isinstance(excinfo.value, BadSettingError)
+        assert excinfo.value.to_dict()["action_indices_absent"] == "undefined"
         # Refused calls leave the file untouched.
         assert not load_stage6_review_from_file(str(sc_file)).decision_log
 
@@ -497,8 +502,10 @@ class TestHeaderFramePrecedence:
         wf = wins[0]
         f_raw = float(wf.fitted_peaks[0].frequency_mhz)
         cur = _write_curation(tmp_path, f"remove,{wf.window_id},{f_raw!r},\n")
-        with pytest.raises(ValueError, match="frame is required"):
+        with pytest.raises(BadSettingError, match="frame is required") as excinfo:
             apply_curation_impl(str(sc_file), cur)
+        # The file's one frame governs every row: the whole batch is refused.
+        assert excinfo.value.to_dict()["action_indices_absent"] == "undefined"
         assert not load_stage6_review_from_file(str(sc_file)).decision_log
 
     def test_neither_present_is_inert_on_rb_locked_file(
