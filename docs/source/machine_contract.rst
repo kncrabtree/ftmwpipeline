@@ -39,10 +39,10 @@ The contract version
 ``__version__``::
 
     import ftmwpipeline
-    if ftmwpipeline.CONTRACT_VERSION < 18:
+    if ftmwpipeline.CONTRACT_VERSION < 19:
         raise RuntimeError("needs a newer ftmwpipeline")
 
-The first published contract is version ``1``; this release is version ``18``.
+The first published contract is version ``1``; this release is version ``19``.
 An addition (a new accessor, field or code) raises the version by one and never
 breaks an existing field. Every machine-readable payload also carries a
 **schema name** of the form ``ftmw/<payload>@<n>``; a schema name never changes
@@ -310,11 +310,19 @@ carries a stable ``code`` and typed attributes, and ``to_dict()`` returns::
      - ``BadSettingError`` (a ``ValueError``)
      - ``path`` (the registry path of the setting, or the argument name),
        ``expected`` (what would have been accepted), ``value`` (what was
-       given); see :ref:`contract-bad-settings`
+       given), ``action_indices`` (the failed curation-batch actions; contract
+       19, see :ref:`contract-curation-refusals`); see
+       :ref:`contract-bad-settings`
    * - ``algorithm_failed``
      - ``AlgorithmFailedError`` (a ``RuntimeError``)
      - ``stage`` (the canonical stage whose algorithm could not produce a
        result from valid inputs). Declared, but no call raises it yet
+   * - ``internal_error``
+     - ``InternalError`` (a ``RuntimeError``)
+     - ``action_indices`` (the 0-based request positions of the curation-batch
+       action that raised an unexpected exception; see
+       :ref:`contract-curation-refusals`). The original exception is the
+       ``__cause__``, and ``message`` is its text after the batch's action tag
    * - ``cancelled``
      - ``OperationCancelledError``
      - ``stage`` (the stage interrupted, or ``null`` between stages and for a
@@ -382,6 +390,10 @@ Exit codes
    * - ``algorithm_failed``
      - ``2``
      - declared; not yet raised
+   * - ``internal_error``
+     - ``2``
+     - an unexpected exception while one curation action of a batch was
+       processed (:ref:`contract-curation-refusals`)
    * - a command-line usage error
      - ``2``
      - an unknown option or a value the option parser refuses (``--trim``
@@ -530,7 +542,33 @@ refusal of the whole batch at once (every unknown window or ``peak_uid`` it
 names, every uncovered ``remove``), which names ids rather than one action,
 ``action_indices`` is ``None``: on the wire ``null`` with
 ``action_indices_absent: "undefined"``. Outside any batch it is ``None`` with
-``action_indices_absent: "not_run"``. Each
+``action_indices_absent: "not_run"``.
+
+From contract 19, ``bad_setting`` carries ``action_indices`` on the same terms:
+the request positions of the action whose field was refused (``actions[3]
+.freq_mhz`` gives ``[3]``; a curation-file row gives its action-row position),
+``undefined`` for a refusal of the whole batch (``curation_source``,
+``log_prefix``, the ``# frame:`` and ``# epsilon:`` directives, a frame or
+epsilon that disagrees with the file), and ``not_run`` outside a batch.
+
+``internal_error`` (contract 19) is raised when an exception that is not a
+typed error escapes while one curation action of ``review_preview`` or
+``review_apply`` (and their ``Pipeline``, session and CLI spellings) is being
+processed, so a client can mark that row failed and resubmit the rest. The
+batch stays all-or-nothing: the file is unchanged. ``action_indices`` names the
+action as above, several for a coalesced edit; the message is ``curation action
+<n> (...) failed:`` followed by the original exception's text, and the original
+is the ``__cause__``. The error is a ``RuntimeError``; before contract 19 the
+same failure surfaced as a tagged ``ValueError`` that carried no payload. It is
+attributed when the exception arises resolving the action against the file, or
+fitting a window for a row the request itself added to the decision log (an
+implied created window is attributed to the action that implied it). It is
+*not* attributed, and escapes as it did before, when the exception arises
+replaying rows the log already held, in the cascade re-fit of dependent
+windows, or outside per-action processing. A typed error
+(``cancelled``, ``callback_failed``, ``write_conflict``, ``epoch_mismatch``, a
+``not_found`` ...) always passes through unchanged, and ``KeyboardInterrupt``
+and other ``BaseException`` are never caught. Each
 ``PlannedAction`` of a result's ``plan`` carries the same ``action_indices``,
 and so does each per-window entry of a result's ``windows``
 (``AppliedWindowResult``, ``PreviewWindowResult``; ``windows[]`` of ``review

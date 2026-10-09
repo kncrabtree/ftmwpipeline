@@ -824,13 +824,19 @@ ids of a curation batch),
   unknown window or `peak_uid` it names, every uncovered `remove`), and
   absent `not_run` outside any batch. A batch refusal's message numbers
   the action from the request, never from the resolved plan.
+  Contract 19: `bad_setting` carries `action_indices` on the same terms, and
+  `internal_error` (`InternalError`, a `RuntimeError`; `action_indices`) is
+  raised when an untyped exception escapes while one action of a curation
+  batch is resolved or, for a row the request added, fitted; the original is
+  `__cause__`. Replaying prior log rows and the cascade are not attributed.
+  Typed errors pass through; `BaseException` is never caught.
 - Each typed error remains a subclass of the built-in it replaced (most are
   `ValueError`), so existing `except` clauses keep working.
 - A `.ftmw` path that does not exist raises `not_found` (`kind: "file"`),
   which is also a `FileNotFoundError`; a path that exists but cannot be opened
   as a pipeline file raises `file_corrupt`.
-- The CLI maps codes to exit codes in one place: `file_corrupt` and
-  `algorithm_failed` exit 2, `cancelled` exits 130, every other code exits 1.
+- The CLI maps codes to exit codes in one place: `file_corrupt`,
+  `algorithm_failed` and `internal_error` exit 2, `cancelled` exits 130, every other code exits 1.
   Under `--format json`, and always for `read` accessors, the error dict is
   written to stderr. The code set is introduced wave by wave. A code whose
   class exists but that no refusal raises yet (`algorithm_failed` until a

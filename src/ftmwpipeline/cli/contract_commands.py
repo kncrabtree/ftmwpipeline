@@ -52,6 +52,7 @@ from .utils import setup_logging
 EXIT_CODES: Dict[str, int] = {
     "file_corrupt": 2,
     "algorithm_failed": 2,
+    "internal_error": 2,
     "cancelled": 130,
 }
 DEFAULT_ERROR_EXIT = 1

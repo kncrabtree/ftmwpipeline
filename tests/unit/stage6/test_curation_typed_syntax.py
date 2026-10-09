@@ -275,3 +275,70 @@ def test_the_both_or_neither_refusal_keeps_the_actions_path():
     with pytest.raises(BadSettingError) as ei:
         curation_source("a.csv", [_GOOD])
     assert ei.value.path == "actions"
+
+
+# ---------------------------------------------------------------------------
+# action_indices: a row refusal names its request position; a header
+# directive or a refusal of the batch call refuses the whole batch
+# ---------------------------------------------------------------------------
+
+
+def _row_position(text: str, line_no: int) -> int:
+    """The 0-based request position of the action row on *line_no*: action
+    rows counted in order, without comment, blank or header lines."""
+    n = 0
+    for i, raw in enumerate(text.splitlines(), start=1):
+        line = raw.strip()
+        if i == line_no:
+            return n
+        if line and not line.startswith("#") and not line.lower().startswith("action,"):
+            n += 1
+    raise AssertionError(f"no line {line_no}")
+
+
+@pytest.mark.parametrize("text, path, value", _ROW_CASES)
+def test_row_refusal_carries_the_rows_request_position(tmp_path, text, path, value):
+    """As the same field given through ``actions=`` carries ``[i]``."""
+    with pytest.raises(BadSettingError) as exc:
+        parse_curation_file(_write(tmp_path, text))
+    line_no = int(path.split("line ")[1].split("]")[0])
+    assert exc.value.action_indices == [_row_position(text, line_no)]
+    d = exc.value.to_dict()
+    assert d["action_indices"] == exc.value.action_indices
+    assert "action_indices_absent" not in d
+
+
+def test_a_later_row_refusal_counts_only_action_rows(tmp_path):
+    text = "# c\naction,window,freqs,params\nadd,5,100.0,\n\nadd,5,101.0,\nadd,5,x,\n"
+    with pytest.raises(BadSettingError) as exc:
+        parse_curation_file(_write(tmp_path, text))
+    assert exc.value.path == "curation[line 6].freqs"
+    assert exc.value.action_indices == [2]
+
+
+@pytest.mark.parametrize("text, path, value", _HEADER_CASES)
+def test_header_refusal_refuses_the_whole_batch(tmp_path, text, path, value):
+    with pytest.raises(BadSettingError) as exc:
+        parse_curation_file(_write(tmp_path, text))
+    assert exc.value.action_indices is None
+    d = exc.value.to_dict()
+    assert d["action_indices"] is None
+    assert d["action_indices_absent"] == "undefined"
+
+
+@pytest.mark.parametrize(
+    "curation_path, actions",
+    [
+        (None, None),
+        ("a.csv", [_GOOD]),
+        ([_GOOD], None),
+        (None, "add"),
+        (None, {"action": "add"}),
+    ],
+)
+def test_a_refused_batch_call_refuses_the_whole_batch(curation_path, actions):
+    with pytest.raises(BadSettingError) as exc:
+        curation_source(curation_path, actions)
+    d = exc.value.to_dict()
+    assert d["action_indices"] is None
+    assert d["action_indices_absent"] == "undefined"

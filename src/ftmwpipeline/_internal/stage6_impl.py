@@ -93,6 +93,7 @@ from ..core.data_structures import (
 from ..file_manager import (
     BadSettingError,
     CurationConflictError,
+    InternalError,
     NotFoundError,
     NotFoundValueError,
     PipelineCompatibilityError,
@@ -4515,16 +4516,29 @@ def _curation_cell(line_no: int, column: str) -> str:
 
 
 def _bad_curation_cell(
-    line_no: int, column: str, expected: str, value: Any, detail: str
+    line_no: int,
+    column: str,
+    expected: str,
+    value: Any,
+    detail: str,
+    *,
+    action_index: Optional[int],
 ) -> BadSettingError:
     """A ``bad_setting`` refusal of one curation-file cell, with the
-    historical ``curation line <n>: ...`` message."""
-    return BadSettingError(
+    historical ``curation line <n>: ...`` message.
+
+    *action_index* is the row's 0-based request position (its
+    ``action_indices``, as ``actions[<i>]`` would carry); ``None`` for a
+    header directive, which refuses the whole batch
+    (:func:`_refusing_whole_batch`)."""
+    exc = BadSettingError(
         _curation_cell(line_no, column),
         expected,
         value,
+        action_indices=None if action_index is None else [action_index],
         message=f"curation line {line_no}: {detail}",
     )
+    return _refusing_whole_batch(exc) if action_index is None else exc
 
 
 class ParsedCurationFile(List[CurationOp]):
@@ -4864,7 +4878,7 @@ class CurationApplyResult:
     invalidated: Tuple[str, ...] = field(default=(), compare=False)
 
 
-def _parse_curation_params(raw: str, line_no: int) -> Dict[str, str]:
+def _parse_curation_params(raw: str, line_no: int, action_index: int) -> Dict[str, str]:
     params: Dict[str, str] = {}
     for token in raw.split(";"):
         token = token.strip()
@@ -4877,6 +4891,7 @@ def _parse_curation_params(raw: str, line_no: int) -> Dict[str, str]:
                 "';'-separated key=value parameters",
                 raw,
                 f"malformed parameter {token!r} (expected key=value)",
+                action_index=action_index,
             )
         key, _, value = token.partition("=")
         params[key.strip().lower()] = value.strip()
@@ -4959,6 +4974,7 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                         raw_value,
                         f"'frame' header must be 'raw' or 'calibrated', got "
                         f"{raw_value!r}",
+                        action_index=None,
                     )
                 if header.frame is not None and header.frame != value:
                     raise _bad_curation_cell(
@@ -4968,6 +4984,7 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                         raw_value,
                         f"conflicting 'frame' header (already declared "
                         f"{header.frame!r} earlier in this file)",
+                        action_index=None,
                     )
                 if header.frame is None:
                     header.frame_line = line_no
@@ -4985,6 +5002,7 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                         "a number",
                         raw_eps,
                         f"'epsilon' header {raw_eps!r} is not a number",
+                        action_index=None,
                     ) from None
                 if header.epsilon is not None and header.epsilon != eps_value:
                     raise _bad_curation_cell(
@@ -4995,6 +5013,7 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                         eps_value,
                         f"conflicting 'epsilon' header (already declared "
                         f"{header.epsilon!r} earlier in this file)",
+                        action_index=None,
                     )
                 if header.epsilon is None:
                     header.epsilon_line = line_no
@@ -5017,6 +5036,7 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                 "new component -- an add within snap tolerance of a fitted "
                 "peak that is not itself being removed is read as a split of "
                 "that peak",
+                action_index=len(ops),
             )
         if action == "merge":
             raise _bad_curation_cell(
@@ -5028,6 +5048,7 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                 "action; write 'remove' rows for the mutually-close peaks to "
                 "collapse, plus one 'add' row at a frequency in their span, "
                 "instead -- that combination is read as a merge of them",
+                action_index=len(ops),
             )
         if action not in _CURATION_ACTIONS:
             raise _bad_curation_cell(
@@ -5036,6 +5057,7 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                 expected_action,
                 fields[0],
                 f"unknown action {fields[0]!r}; choose one of {_CURATION_ACTIONS}",
+                action_index=len(ops),
             )
         raw_window = fields[1] if len(fields) > 1 else ""
         window_token = raw_window.strip().lower()
@@ -5056,6 +5078,7 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                 f"a window id (required on {action})",
                 fields[1] if len(fields) > 1 else None,
                 "missing window id",
+                action_index=len(ops),
             )
         else:
             try:
@@ -5068,6 +5091,7 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                     f"an integer window id{omit}",
                     fields[1],
                     f"window id {fields[1]!r} is not an integer",
+                    action_index=len(ops),
                 ) from None
         freqs_raw = fields[2] if len(fields) > 2 else ""
         params_raw = fields[3] if len(fields) > 3 else ""
@@ -5084,6 +5108,7 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                     exc.path,
                     exc.expected,
                     exc.value,
+                    action_indices=[len(ops)],
                     message=f"curation line {line_no}: {exc}",
                 ) from None
         else:
@@ -5096,8 +5121,9 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                     "a frequency in MHz",
                     freqs_raw,
                     f"non-numeric frequency in {freqs_raw!r}",
+                    action_index=len(ops),
                 ) from None
-        params = _parse_curation_params(params_raw, line_no)
+        params = _parse_curation_params(params_raw, line_no, len(ops))
 
         # Per-action arity / parameter validation.
         if action in ("add", "remove"):
@@ -5113,6 +5139,7 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                     one,
                     freqs_raw,
                     f"{action} needs exactly one frequency",
+                    action_index=len(ops),
                 )
             if params:
                 raise _bad_curation_cell(
@@ -5121,6 +5148,7 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                     "no parameters (an empty cell)",
                     params_raw,
                     f"{action} takes no parameters",
+                    action_index=len(ops),
                 )
         elif action == "create":
             if len(freqs) != 1:
@@ -5131,6 +5159,7 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                     freqs_raw,
                     "create needs exactly one frequency "
                     "(the anchor the new window must cover)",
+                    action_index=len(ops),
                 )
             if params:
                 raise _bad_curation_cell(
@@ -5139,6 +5168,7 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                     "no parameters (an empty cell)",
                     params_raw,
                     "create takes no parameters",
+                    action_index=len(ops),
                 )
         elif action == "accept":
             if freqs:
@@ -5149,6 +5179,7 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                     freqs_raw,
                     "accept takes no frequency column; "
                     "use params candidate=F to revive a candidate",
+                    action_index=len(ops),
                 )
             if "candidate" in params:
                 try:
@@ -5160,6 +5191,7 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
                         "candidate=<a frequency in MHz>",
                         params_raw,
                         f"candidate={params['candidate']!r} is not a number",
+                        action_index=len(ops),
                     ) from None
 
         ops.append(
@@ -5176,26 +5208,30 @@ def parse_curation_file(curation_path: Union[Path, str]) -> ParsedCurationFile:
 
     if header.epsilon is not None and header.frame != "calibrated":
         assert header.epsilon_line is not None
-        raise BadSettingError(
-            _curation_cell(header.epsilon_line, "epsilon"),
-            "no epsilon header unless the file declares '# frame: calibrated'",
-            header.epsilon,
-            message="curation file: an 'epsilon' header requires a 'frame: "
-            "calibrated' header alongside it -- an epsilon stamp is "
-            "meaningless without a calibrated-frame declaration to attach "
-            "it to",
+        raise _refusing_whole_batch(
+            BadSettingError(
+                _curation_cell(header.epsilon_line, "epsilon"),
+                "no epsilon header unless the file declares '# frame: calibrated'",
+                header.epsilon,
+                message="curation file: an 'epsilon' header requires a 'frame: "
+                "calibrated' header alongside it -- an epsilon stamp is "
+                "meaningless without a calibrated-frame declaration to attach "
+                "it to",
+            )
         )
     if header.frame == "calibrated" and header.epsilon is None:
         assert header.frame_line is not None
-        raise BadSettingError(
-            _curation_cell(header.frame_line, "frame"),
-            "raw, or calibrated with an '# epsilon:' header",
-            header.frame,
-            message="curation file: 'frame: calibrated' requires an 'epsilon' "
-            "header stamping the epsilon the file was written under (e.g. "
-            "'# epsilon: 2.2e-6') -- otherwise a later apply/preview cannot "
-            "detect that the calibration has drifted since this file was "
-            "staged",
+        raise _refusing_whole_batch(
+            BadSettingError(
+                _curation_cell(header.frame_line, "frame"),
+                "raw, or calibrated with an '# epsilon:' header",
+                header.frame,
+                message="curation file: 'frame: calibrated' requires an 'epsilon' "
+                "header stamping the epsilon the file was written under (e.g. "
+                "'# epsilon: 2.2e-6') -- otherwise a later apply/preview cannot "
+                "detect that the calibration has drifted since this file was "
+                "staged",
+            )
         )
 
     return ParsedCurationFile(ops, header)
@@ -5248,34 +5284,40 @@ def curation_source(
     """
     if (curation_path is None) == (actions is None):
         given = "both" if actions is not None else "neither"
-        raise BadSettingError(
-            "actions",
-            "exactly one of curation_path or actions",
-            None if actions is None else "<actions>",
-            message=f"pass exactly one of curation_path (a curation file) or "
-            f"actions (a sequence of CurationAction); got {given}",
+        raise _refusing_whole_batch(
+            BadSettingError(
+                "actions",
+                "exactly one of curation_path or actions",
+                None if actions is None else "<actions>",
+                message=f"pass exactly one of curation_path (a curation file) or "
+                f"actions (a sequence of CurationAction); got {given}",
+            )
         )
     if actions is None:
         assert curation_path is not None
         if not isinstance(curation_path, (str, Path)):
             # A natural slip now that curation_path is optional: a list of
             # actions passed positionally.
-            raise BadSettingError(
-                "curation_path",
-                "a path to a curation file (pass in-memory actions as actions=)",
-                curation_path,
-                message=f"curation_path must be a file path, got "
-                f"{type(curation_path).__name__}; pass a sequence of "
-                f"CurationAction as actions=...",
+            raise _refusing_whole_batch(
+                BadSettingError(
+                    "curation_path",
+                    "a path to a curation file (pass in-memory actions as actions=)",
+                    curation_path,
+                    message=f"curation_path must be a file path, got "
+                    f"{type(curation_path).__name__}; pass a sequence of "
+                    f"CurationAction as actions=...",
+                )
             )
         return curation_path
     if isinstance(actions, (str, bytes, Mapping)):
-        raise BadSettingError(
-            "actions",
-            "a sequence of CurationAction (or their dicts)",
-            actions,
-            message="actions must be a sequence of CurationAction (or their "
-            "dicts), not a single string or mapping",
+        raise _refusing_whole_batch(
+            BadSettingError(
+                "actions",
+                "a sequence of CurationAction (or their dicts)",
+                actions,
+                message="actions must be a sequence of CurationAction (or their "
+                "dicts), not a single string or mapping",
+            )
         )
     out: List[CurationAction] = []
     for item in actions:
@@ -5291,6 +5333,7 @@ def curation_source(
                 f"actions[{len(out)}]",
                 "a CurationAction or a curation action dict",
                 item,
+                action_indices=[len(out)],
                 message=f"actions[{len(out)}] is not a CurationAction or a "
                 f"curation action dict: {item!r}",
             )
@@ -5302,12 +5345,14 @@ def _action_field_error(
 ) -> BadSettingError:
     """Re-issue a refusal of one action's field with the batch path
     ``actions[<index>].<field>`` (``field_name`` defaults to the refusal's
-    own path, which names the field) and the action named in the message."""
+    own path, which names the field), the action named in the message and
+    by ``action_indices``."""
     name = exc.path if field_name is None else field_name
     return BadSettingError(
         f"actions[{index}].{name}",
         exc.expected,
         exc.value,
+        action_indices=[index],
         message=f"actions[{index}]: {exc}",
     )
 
@@ -5395,6 +5440,7 @@ def _actions_to_ops(
                     f"actions[{index}].frame",
                     f'"{frame}" (the frame passed as frame=), or null',
                     action.frame,
+                    action_indices=[index],
                     message=f"actions[{index}] ({action.action}) declares "
                     f'frame="{action.frame}", but frame="{frame}" was passed '
                     f"explicitly. Pass a matching frame, or omit one of them.",
@@ -5411,6 +5457,7 @@ def _actions_to_ops(
                     exc.path,
                     exc.expected,
                     exc.value,
+                    action_indices=[index],
                     message=f"actions[{index}] ({action.action}): {exc}",
                 ) from None
             if resolved == "raw":
@@ -5429,6 +5476,7 @@ def _actions_to_ops(
                         f"actions[{index}].epsilon",
                         f"the file's current epsilon ({current_eps:.6e})",
                         action.epsilon,
+                        action_indices=[index],
                         message=f"actions[{index}] ({action.action}) frame "
                         f"drift: it was staged frame=calibrated at epsilon="
                         f"{action.epsilon:.6e}, but the target file's current "
@@ -5777,25 +5825,34 @@ def _raise_curation_failure(
     """Re-raise a failure of plan action *index*, tagged with the action.
 
     A typed :class:`PipelineFileError` keeps its type (a program routes on
-    it); a ``not_found`` or ``curation_conflict`` is re-issued with the tag in
-    its message, the same attributes, and ``action_indices`` -- the request
-    positions the action was resolved from -- and a create's refused anchor
-    (``bad_setting`` ``anchor_mhz``) with the tag and the path of the cell or
-    action field the anchor came from. Anything else becomes the historical
-    tagged :class:`ValueError`.
+    it); a ``not_found``, ``curation_conflict`` or ``bad_setting`` is
+    re-issued with the tag in its message, the same attributes, and
+    ``action_indices`` -- the request positions the action was resolved from
+    -- and a create's refused anchor (``bad_setting`` ``anchor_mhz``) with the
+    path of the cell or action field the anchor came from. Every other typed
+    error (a cancel, a callback failure, ...) passes through untouched. An
+    untyped failure becomes ``internal_error`` (:class:`InternalError`), its
+    message the original text with the tag, the original chained as
+    ``__cause__``.
     """
     tag = _curation_failure_tag(index, action)
     sources = list(action.action_indices) or None
-    if (
-        isinstance(exc, BadSettingError)
-        and exc.path == "anchor_mhz"
-        and action.kind == "create"
-        and action.anchor_cell is not None
-    ):
-        # A create's anchor is the cell (or action field) the caller wrote,
-        # not review_create's argument.
+    if isinstance(exc, BadSettingError):
+        path = exc.path
+        if (
+            exc.path == "anchor_mhz"
+            and action.kind == "create"
+            and action.anchor_cell is not None
+        ):
+            # A create's anchor is the cell (or action field) the caller
+            # wrote, not review_create's argument.
+            path = action.anchor_cell
         raise BadSettingError(
-            action.anchor_cell, exc.expected, exc.value, message=f"{tag}: {exc}"
+            path,
+            exc.expected,
+            exc.value,
+            action_indices=sources,
+            message=f"{tag}: {exc}",
         ) from exc
     if isinstance(exc, NotFoundError):
         # The batch refused with ValueError before it was typed.
@@ -5808,7 +5865,8 @@ def _raise_curation_failure(
         ) from exc
     if isinstance(exc, PipelineFileError):
         raise exc
-    raise ValueError(f"{tag}: {exc}") from exc
+    text = str(exc) or type(exc).__name__
+    raise InternalError(sources, message=f"{tag}: {text}") from exc
 
 
 def _assert_plain_freq(token: Union[float, PeakUidToken]) -> float:
@@ -7488,6 +7546,48 @@ class _ResolvedAction:
     accept: bool = False
     accept_anchor: float = 0.0
     implied: Optional[_PlannedCreate] = None
+    serials: Tuple[int, ...] = ()
+    """On a replay's action, the serials of the recorded rows it re-applies
+    (:func:`_resolve_replay_rows`); empty on a request's action, whose rows
+    are not recorded yet."""
+
+
+_RowAttribution = Mapping[int, Tuple[int, PlannedAction]]
+"""A request's new decision rows, by serial, each to the request action that
+recorded it: its plan index and the :class:`PlannedAction` (whose
+``action_indices`` are the request positions). What lets a failure while a
+write's replay processes a new row name the request action
+(:func:`_raise_attributed_failure`)."""
+
+
+def _attributed_action(
+    attribution: Optional[_RowAttribution], serials: Iterable[int]
+) -> Optional[Tuple[int, PlannedAction]]:
+    """The request action that recorded the first of *serials* that is one of
+    the request's new rows (``None`` for a row the log already held)."""
+    if not attribution:
+        return None
+    for serial in serials:
+        hit = attribution.get(int(serial))
+        if hit is not None:
+            return hit
+    return None
+
+
+def _raise_attributed_failure(
+    attribution: Optional[_RowAttribution], serials: Iterable[int], exc: Exception
+) -> None:
+    """Re-raise an untyped failure *exc* raised while a write's replay
+    processed the rows *serials* as ``internal_error`` naming the request
+    action that recorded them (:func:`_raise_curation_failure`), when they
+    are a request's new rows. Returns -- for the caller to re-raise *exc*
+    unchanged -- when *exc* is a typed error, which passes through untouched,
+    or when the rows are not new (a failure replaying a prior row names no
+    request action)."""
+    hit = _attributed_action(attribution, serials)
+    if hit is None or isinstance(exc, PipelineFileError):
+        return
+    _raise_curation_failure(hit[0], hit[1], exc)
 
 
 @dataclass
@@ -9448,6 +9548,7 @@ def _run_resolved_actions(
     *,
     snap_tol_mhz: float,
     only: Optional[Collection[int]] = None,
+    attribution: Optional[_RowAttribution] = None,
 ) -> None:
     """Fit and record a replay's *resolved* actions in order, reporting a
     ``WindowProgress`` per action that targets a window and honouring a
@@ -9459,7 +9560,13 @@ def _run_resolved_actions(
     (:func:`_skip_resolved_action`). A replay's actions are each one
     window's, and a window's fit before the cascade depends on its own
     actions alone, so the windows it fits come out as a whole replay would
-    leave them."""
+    leave them.
+
+    *attribution* (a curation batch's new rows, :data:`_RowAttribution`)
+    turns an untyped failure while fitting an action that re-applies a new
+    row into ``internal_error`` naming the request action that recorded it
+    (:func:`_raise_attributed_failure`). A failure fitting a row the log
+    already held is raised as it is: no action of the request caused it."""
     if only is not None:
         keep = {int(w) for w in only}
         run = [
@@ -9480,7 +9587,11 @@ def _run_resolved_actions(
         if ctx.events is not None:
             ctx.events.check_cancel()
         t_action = time.monotonic()
-        _run_resolved_action(ctx, ra, snap_tol_mhz=snap_tol_mhz)
+        try:
+            _run_resolved_action(ctx, ra, snap_tol_mhz=snap_tol_mhz)
+        except Exception as exc:
+            _raise_attributed_failure(attribution, ra.serials, exc)
+            raise
         if ra.target_wid is not None:
             fit_index += 1
             _report_window(
@@ -9712,6 +9823,7 @@ def _curate(
     shared: Optional[_SharedFitCtx],
     baseline_taken: bool,
     snap_tol_mhz: float,
+    attribution: Optional[_RowAttribution] = None,
 ) -> _Curated:
     """The curated state a write leaves: *log* (L') under *params* (P'),
     given the file's review *prior* (design §6.1 steps 2-5). Persists
@@ -9731,6 +9843,13 @@ def _curate(
 
     The first *recorded* rows of *log* are the file's (kept verbatim); the
     rest are new rows the replay records the evidence of.
+
+    *attribution* maps a curation batch's new rows to the request actions
+    that recorded them (:data:`_RowAttribution`): an untyped failure while
+    the symbolic pass or the direct phase processes one of them is
+    ``internal_error`` naming that action. A failure while replaying a row
+    the log already held, or in the cascade (which refits windows, not
+    actions), is raised as it is, unattributed.
     """
     log = list(log)
     _check_log_integrity(path, log)
@@ -9746,12 +9865,23 @@ def _curate(
         # baseline its persist takes will carry (:func:`_open_batch`).
         pending = None if group == STAGE5_BASELINE_GROUP else uuid.uuid4().hex
         plan = _engine_plan(
-            path, shared, log, snap_tol_mhz=snap_tol_mhz, pending_lineage=pending
+            path,
+            shared,
+            log,
+            snap_tol_mhz=snap_tol_mhz,
+            pending_lineage=pending,
+            attribution=attribution,
         )
         if plan.refit:
             require_splice_compatible_environment(path)
         curated = _engine_run(
-            path, plan, prior, params, recorded=recorded, snap_tol_mhz=snap_tol_mhz
+            path,
+            plan,
+            prior,
+            params,
+            recorded=recorded,
+            snap_tol_mhz=snap_tol_mhz,
+            attribution=attribution,
         )
         return replace(curated, baseline_taken=baseline_taken, pending_lineage=pending)
 
@@ -10129,6 +10259,7 @@ def _engine_plan(
     *,
     snap_tol_mhz: float,
     pending_lineage: Optional[str] = None,
+    attribution: Optional[_RowAttribution] = None,
 ) -> _EnginePlan:
     """Decide, before any fit, what a refitting write of *log* recomputes
     (design §6.1 steps 2-3).
@@ -10143,12 +10274,20 @@ def _engine_plan(
     recomputed instead, keyed under the new context. With no stored keys,
     every window is recomputed or restored. A window whose ``K_f`` is
     unchanged keeps its persisted fit, unless the persisted fit has no entry
-    for it. *pending_lineage* is :func:`_engine_context_key`'s."""
+    for it. *pending_lineage* is :func:`_engine_context_key`'s; *attribution*
+    is :func:`_curate`'s, for the symbolic pass."""
     with h5open(path, "r") as h5f:
         stored = load_stage6_engine_state(h5f)
     e_now = _engine_context_key(path, shared, snap_tol_mhz, pending_lineage)
     chain = _CreateChain(e_now, [] if stored is None else stored.create_chain)
-    walk = _walk_log_rows(path, shared, log, min_new_window_id=0, creates=chain)
+    walk = _walk_log_rows(
+        path,
+        shared,
+        log,
+        min_new_window_id=0,
+        creates=chain,
+        attribution=attribution,
+    )
     ctx = _BatchCtx(
         shared=shared,
         changeset=_BatchChangeset(
@@ -10237,6 +10376,7 @@ def _engine_run(
     *,
     recorded: int,
     snap_tol_mhz: float,
+    attribution: Optional[_RowAttribution] = None,
 ) -> _Curated:
     """Compute the state *plan* decided (design §6.1 steps 4-5): the direct
     phase of every window whose rows it replays, from the automatic fit (the
@@ -10245,7 +10385,9 @@ def _engine_run(
     refreshed from its sources' final fits (recomputed, or persisted); every
     other changed window restored from the automatic fit; every unchanged
     one kept as persisted. The review is computed from the result as the
-    reference computes it. Touches no file."""
+    reference computes it. Touches no file. *attribution* is
+    :func:`_curate`'s, for the direct phase (the cascade is not
+    attributed)."""
     ctx = plan.ctx
     group = _automatic_fit_group(path)
     fits: Dict[int, FittingResult] = {}
@@ -10272,7 +10414,11 @@ def _engine_run(
     _seed_unresolved_spreads_from_diagnostics(start, snap_tol_mhz=snap_tol_mhz)
     ctx.changeset.spectrum_fit = start
     _run_resolved_actions(
-        ctx, plan.resolved, snap_tol_mhz=snap_tol_mhz, only=plan.direct
+        ctx,
+        plan.resolved,
+        snap_tol_mhz=snap_tol_mhz,
+        only=plan.direct,
+        attribution=attribution,
     )
     computed = _fit_by_window(ctx.changeset.spectrum_fit)
     kept = {} if plan.persisted is None else _fit_by_window(plan.persisted)
@@ -10423,7 +10569,7 @@ def _resolve_request(
                     ctx, state, original_index, action, snap_tol_mhz=snap_tol_mhz
                 )
             )
-        except (ValueError, KeyError) as exc:
+        except Exception as exc:
             if not attribute:
                 raise
             _raise_curation_failure(original_index, action, exc)
@@ -10431,7 +10577,11 @@ def _resolve_request(
 
 
 def _request_rows(
-    ctx: _BatchCtx, resolved: Sequence[_ResolvedAction], *, one_action: bool
+    ctx: _BatchCtx,
+    resolved: Sequence[_ResolvedAction],
+    *,
+    one_action: bool,
+    attribution: Optional[Dict[int, Tuple[int, PlannedAction]]] = None,
 ) -> List[DecisionLogEntry]:
     """The decision rows *resolved* records, in order, with fresh serials
     from the file's high-water mark (``changeset.base_serial``).
@@ -10443,10 +10593,14 @@ def _request_rows(
     Every row of one user action carries the serial of the action's first
     row as :data:`ACTION_INDEX_EVIDENCE_KEY`: each resolved action is one
     user action, or the whole request is (*one_action*, an interactive verb
-    call). Positions (``order_index``) are assigned by the write."""
+    call). Positions (``order_index``) are assigned by the write.
+
+    *attribution*, when given, is filled with each row's serial mapped to
+    the request action that recorded it (:data:`_RowAttribution`)."""
     rows: List[DecisionLogEntry] = []
     serial = int(ctx.changeset.base_serial)
     first: Optional[int] = None
+    current: Optional[_ResolvedAction] = None
 
     def record(
         window_id: int,
@@ -10460,6 +10614,8 @@ def _request_rows(
         nonlocal serial, first
         if first is None:
             first = serial
+        if attribution is not None and current is not None:
+            attribution[serial] = (current.original_index, current.action)
         rows.append(
             DecisionLogEntry(
                 order_index=0,
@@ -10477,6 +10633,7 @@ def _request_rows(
         serial += 1
 
     for ra in resolved:
+        current = ra
         if not one_action:
             first = None
         if ra.create is not None:
@@ -10586,6 +10743,11 @@ def _curate_request(
     prior = load_stage6_review_from_file(path)
     display: Optional[_BatchCtx] = None
     resolved: List[_ResolvedAction] = []
+    # A curation batch's new rows, each to the action that recorded it, so a
+    # failure while the write processes one names the action.
+    attribution: Optional[Dict[int, Tuple[int, PlannedAction]]] = (
+        None if one_action else {}
+    )
     if _plan_needs_fit(plan):
         display = _build_batch_ctx(path, snap_tol_mhz=snap_tol_mhz, shared=shared)
         shared = display.shared
@@ -10607,11 +10769,16 @@ def _curate_request(
         resolved = _resolve_request(
             display, plan, attribute=not one_action, snap_tol_mhz=snap_tol_mhz
         )
-        rows = _request_rows(display, resolved, one_action=one_action)
+        rows = _request_rows(
+            display, resolved, one_action=one_action, attribution=attribution
+        )
     else:
         known, where = _known_window_ids(path)
         _require_known_plan_windows(known, plan, where, whole_batch=not one_action)
         rows = _bare_accept_rows(path, prior, [a.window_id for a in plan])
+        if attribution is not None:
+            for index, (row, action) in enumerate(zip(rows, plan)):
+                attribution[_serial_id(row)] = (index, action)
     curated = _curate(
         path,
         prior,
@@ -10621,6 +10788,7 @@ def _curate_request(
         shared=shared,
         baseline_taken=baseline_taken,
         snap_tol_mhz=snap_tol_mhz,
+        attribution=attribution,
     )
     if persist:
         _finish_batch(curated, path)
@@ -10962,7 +11130,7 @@ def _resolve_created_window_structure(
                         else action.window_id
                     ),
                 )
-        except (ValueError, KeyError) as exc:
+        except Exception as exc:
             _raise_curation_failure(original_index, action, exc)
 
         if proposal is None:
@@ -11052,7 +11220,13 @@ def apply_curation_impl(
     cannot be resolved or replayed (``line_already_fitted``,
     ``target_outside_window``, ``ambiguous_peak``, ``replay_conflict``,
     ``fit_plan_unavailable``, ...); ``file_incompatible`` when a newer engine
-    curated the file. A failure leaves the file untouched (nothing is
+    curated the file; ``internal_error`` (a :class:`RuntimeError`) when an
+    unexpected, untyped failure escapes the processing of one action --
+    resolving it, or fitting one of the rows it recorded -- naming that
+    action's request positions (``action_indices``), the original exception
+    chained as ``__cause__``. A failure while replaying a decision the log
+    already held, or in the cascade, is not attributed to an action and
+    keeps its own type. A failure leaves the file untouched (nothing is
     persisted until the whole request has succeeded).
 
     ``log_prefix`` applies the file as if the decision log ended after its
@@ -11087,23 +11261,29 @@ def apply_curation_impl(
     if log_prefix is not None:
         log = load_stage6_review_from_file(path).decision_log
         if log_prefix < 0 or log_prefix > len(log):
-            raise BadSettingError(
-                "log_prefix",
-                f"an integer between 0 and the decision log's length ({len(log)})",
-                log_prefix,
-                message=f"log_prefix must be between 0 and the decision log's length "
-                f"({len(log)}), got {log_prefix}",
+            raise _refusing_whole_batch(
+                BadSettingError(
+                    "log_prefix",
+                    f"an integer between 0 and the decision log's length "
+                    f"({len(log)})",
+                    log_prefix,
+                    message=f"log_prefix must be between 0 and the decision "
+                    f"log's length ({len(log)}), got {log_prefix}",
+                )
             )
         if log_prefix < len(log):
             if dry_run:
-                raise BadSettingError(
-                    "dry_run",
-                    "False when log_prefix is shorter than the decision log",
-                    dry_run,
-                    message="dry_run cannot be combined with a log_prefix shorter "
-                    "than the decision log: the file never holds the state the "
-                    "prefix describes, so the preview would resolve against "
-                    "the wrong fit. Undo the later decisions first, then dry-run.",
+                raise _refusing_whole_batch(
+                    BadSettingError(
+                        "dry_run",
+                        "False when log_prefix is shorter than the decision log",
+                        dry_run,
+                        message="dry_run cannot be combined with a log_prefix "
+                        "shorter than the decision log: the file never holds the "
+                        "state the prefix describes, so the preview would resolve "
+                        "against the wrong fit. Undo the later decisions first, "
+                        "then dry-run.",
+                    )
                 )
             return _apply_curation_at_prefix(
                 path,
@@ -11250,15 +11430,18 @@ def _apply_curation_at_prefix(
         _batch_plan_window_ids(display, plan),
     )
     resolved = _resolve_request(display, plan, attribute=True, snap_tol_mhz=snap_tol)
+    attribution: Dict[int, Tuple[int, PlannedAction]] = {}
     curated = _curate(
         path,
         prior,
-        kept + _request_rows(display, resolved, one_action=False),
+        kept
+        + _request_rows(display, resolved, one_action=False, attribution=attribution),
         params,
         recorded=len(kept),
         shared=shared,
         baseline_taken=baseline_taken,
         snap_tol_mhz=snap_tol,
+        attribution=attribution,
     )
     _finish_batch(curated, path)
     return _applied_curation(
@@ -11495,9 +11678,10 @@ def _run_review_preview(
     accept in a live apply is not gated either -- see
     :func:`review_accept_impl`), and returns an empty ``windows`` dict.
 
-    Raises the same per-action attributed ``ValueError`` a live apply raises
-    (tagged with the 1-based action index and its description), on the same
-    failures, since it shares the same resolution.
+    Raises the same per-action attributed errors a live apply raises
+    (tagged with the 1-based action index and its description, and carrying
+    ``action_indices``), on the same failures, since it shares the same
+    resolution and the same write path -- ``internal_error`` included.
 
     ``shared`` lets a caller with an already-built :class:`_SharedFitCtx`
     reuse it (``ReviewSession``, D3); a fresh one is built when omitted.
@@ -11814,6 +11998,7 @@ def _walk_log_rows(
     *,
     min_new_window_id: int,
     creates: Optional["_CreateChain"] = None,
+    attribution: Optional[_RowAttribution] = None,
 ) -> _LogWalk:
     """The symbolic pass over a decision log replayed from the automatic
     fit: every refusal the replay has, raised before any fit.
@@ -11831,7 +12016,9 @@ def _walk_log_rows(
     a seed off the geometry in force at the row is ``target_outside_window``;
     a row on, or a cascade reaching, a window whose fitted geometry the file
     does not hold is ``fit_plan_unavailable``. A row without peak identity is
-    a corrupt file.
+    a corrupt file. An untyped failure at one of a curation batch's new rows
+    (*attribution*) is ``internal_error`` naming the request action that
+    recorded it (:func:`_raise_attributed_failure`).
     """
     geom: Dict[int, "FitWindow"] = {
         int(w.window_id): w for w in shared.base_plan.windows
@@ -11850,94 +12037,106 @@ def _walk_log_rows(
     # its targets leave before any of its births is placed.
     unit_at = {u[0]: u for u in _refit_units(rows)}
     for k, e in enumerate(rows):
-        w = int(e.window_id)
-        if _installs_window(e):
-            plan = _plan_create if creates is None else creates.plan
-            proposal = plan(
-                shared,
-                overlay,
-                float(e.frequency_mhz),
-                replay_window_id=w,
-                min_new_window_id=min_new_window_id,
-            )
-            overlay = [x for x in overlay if int(x.window_id) != w] + [proposal.window]
-            geom[w] = proposal.window
-            if proposal.mode == "created":
-                live[w] = []
-            proposals[k] = proposal
-        geometry.append(geom.get(w))
-        unit = unit_at.get(k)
-        if unit is None:
-            continue
-        serial = _serial_id(e)
-        fit_win = geom.get(w)
-        uids = live.get(w)
-        if fit_win is None or uids is None:
-            raise CurationConflictError(
-                "replay_diverged",
-                [serial],
-                message=f"cannot replay decision {serial} ({e.kind} on window "
-                f"{w}): no fitted window {w} exists at its place in the log. "
-                "Undo it together with the decisions after it.",
-            )
-        _refuse_unavailable_fit_plan(
-            shared.unavailable_window_ids, [w], f"replaying decision {serial}"
-        )
-        fields = [(rows[j], _row_peak_fields(path, rows[j])) for j in unit]
-        for r, (targets, _, _) in fields:
-            serial = _serial_id(r)
-            for t in targets:
-                n = uids.count(t)
-                if n == 1:
-                    uids.remove(t)
-                    removed_by[(w, t)] = serial
-                    continue
-                if n > 1:
-                    raise CurationConflictError(
-                        "ambiguous_peak",
-                        [t],
-                        message=f"cannot replay decision {serial} ({r.kind} on "
-                        f"window {w}): the window holds more than one peak with "
-                        f"peak_uid={t} there.",
-                    )
-                gone = removed_by.get((w, t))
-                why = (
-                    f"decision {gone} already removed it"
-                    if gone is not None
-                    else "no decision before it births it and the automatic fit "
-                    "does not hold it"
+        try:
+            w = int(e.window_id)
+            if _installs_window(e):
+                plan = _plan_create if creates is None else creates.plan
+                proposal = plan(
+                    shared,
+                    overlay,
+                    float(e.frequency_mhz),
+                    replay_window_id=w,
+                    min_new_window_id=min_new_window_id,
                 )
+                overlay = [x for x in overlay if int(x.window_id) != w] + [
+                    proposal.window
+                ]
+                geom[w] = proposal.window
+                if proposal.mode == "created":
+                    live[w] = []
+                proposals[k] = proposal
+            geometry.append(geom.get(w))
+            unit = unit_at.get(k)
+            if unit is None:
+                continue
+            serial = _serial_id(e)
+            fit_win = geom.get(w)
+            uids = live.get(w)
+            if fit_win is None or uids is None:
                 raise CurationConflictError(
                     "replay_diverged",
                     [serial],
-                    message=f"cannot replay decision {serial} ({r.kind} on window "
-                    f"{w}): it removes peak_uid={t}, which the window does not "
-                    f"hold there ({why}). Undo it together with the decisions "
-                    "after it.",
+                    message=f"cannot replay decision {serial} ({e.kind} on window "
+                    f"{w}): no fitted window {w} exists at its place in the log. "
+                    "Undo it together with the decisions after it.",
                 )
-        for r, (_, seeds, born) in fields:
-            serial = _serial_id(r)
-            for f in seeds:
-                _refuse_seed_outside_window(shared.fit_ctx, bounds, w, fit_win, f, f)
-            for u in born:
-                if u in uids:
-                    holder = born_by.get((w, u))
-                    held = (
-                        f"decision {holder} births it"
-                        if holder is not None
-                        else "the automatic fit holds it"
+            _refuse_unavailable_fit_plan(
+                shared.unavailable_window_ids, [w], f"replaying decision {serial}"
+            )
+            fields = [(rows[j], _row_peak_fields(path, rows[j])) for j in unit]
+            for r, (targets, _, _) in fields:
+                serial = _serial_id(r)
+                for t in targets:
+                    n = uids.count(t)
+                    if n == 1:
+                        uids.remove(t)
+                        removed_by[(w, t)] = serial
+                        continue
+                    if n > 1:
+                        raise CurationConflictError(
+                            "ambiguous_peak",
+                            [t],
+                            message=f"cannot replay decision {serial} ({r.kind} on "
+                            f"window {w}): the window holds more than one peak with "
+                            f"peak_uid={t} there.",
+                        )
+                    gone = removed_by.get((w, t))
+                    why = (
+                        f"decision {gone} already removed it"
+                        if gone is not None
+                        else "no decision before it births it and the automatic fit "
+                        "does not hold it"
                     )
                     raise CurationConflictError(
                         "replay_diverged",
                         [serial],
-                        message=f"cannot replay decision {serial} ({r.kind} on "
-                        f"window {w}): it births peak_uid={u}, which the window "
-                        f"already holds there ({held}). Undo it together with "
-                        "the decisions after it.",
+                        message=f"cannot replay decision {serial} ({r.kind} on window "
+                        f"{w}): it removes peak_uid={t}, which the window does not "
+                        f"hold there ({why}). Undo it together with the decisions "
+                        "after it.",
                     )
-                uids.append(u)
-                born_by[(w, u)] = serial
-                removed_by.pop((w, u), None)
+            for r, (_, seeds, born) in fields:
+                serial = _serial_id(r)
+                for f in seeds:
+                    _refuse_seed_outside_window(
+                        shared.fit_ctx, bounds, w, fit_win, f, f
+                    )
+                for u in born:
+                    if u in uids:
+                        holder = born_by.get((w, u))
+                        held = (
+                            f"decision {holder} births it"
+                            if holder is not None
+                            else "the automatic fit holds it"
+                        )
+                        raise CurationConflictError(
+                            "replay_diverged",
+                            [serial],
+                            message=f"cannot replay decision {serial} ({r.kind} on "
+                            f"window {w}): it births peak_uid={u}, which the window "
+                            f"already holds there ({held}). Undo it together with "
+                            "the decisions after it.",
+                        )
+                    uids.append(u)
+                    born_by[(w, u)] = serial
+                    removed_by.pop((w, u), None)
+        except Exception as exc:
+            # A new row of a curation batch names the request action that
+            # recorded it (an untyped failure only; a refusal is typed).
+            row_serial = e.serial
+            if not isinstance(row_serial, Absent):
+                _raise_attributed_failure(attribution, [int(row_serial)], exc)
+            raise
 
     unavailable = shared.unavailable_window_ids
     if unavailable:
@@ -12108,7 +12307,10 @@ def _resolve_replay_rows(
     implied: Optional[_PlannedCreate] = None
     for index, (action, group) in enumerate(_replay_action_groups(rows)):
         ra = _ResolvedAction(
-            original_index=index, action=action, target_wid=action.window_id
+            original_index=index,
+            action=action,
+            target_wid=action.window_id,
+            serials=tuple(_serial_id(e) for e in group),
         )
         if action.kind == "create":
             e = group[0]
@@ -13873,7 +14075,14 @@ def _parse_curation_call(
     resolved_frame: Frame = "raw"
     file_stamp: Optional[_CalibrationStamp] = None
     if _curation_ops_have_freq(ops):
-        resolved_frame, file_stamp = _resolve_curation_frame(path, ops.header, frame)
+        try:
+            resolved_frame, file_stamp = _resolve_curation_frame(
+                path, ops.header, frame
+            )
+        except BadSettingError as exc:
+            # The file's one frame (its header, frame=, or the default rule)
+            # and its epsilon stamp govern every row: the whole batch.
+            raise _refusing_whole_batch(exc) from None
     file_targets: Optional[FrozenSet[float]] = (
         None if resolved_frame == "raw" else frozenset()
     )

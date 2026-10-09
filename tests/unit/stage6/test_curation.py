@@ -40,7 +40,11 @@ from ftmwpipeline.cli.review_commands import (
     cmd_review_undo,
 )
 from ftmwpipeline.core.data_structures import DecisionLogEntry
-from ftmwpipeline.file_manager import NotFoundValueError, PipelineCorruptionError
+from ftmwpipeline.file_manager import (
+    BadSettingError,
+    NotFoundValueError,
+    PipelineCorruptionError,
+)
 from ftmwpipeline.io.fitting_serialization import load_spectrum_fit_from_hdf5
 from ftmwpipeline.pipeline import Pipeline
 
@@ -1680,8 +1684,13 @@ def test_apply_log_prefix_argument_checks(stage5_multi_file, tmp_path):
         apply_curation_impl(fp, cur, log_prefix=3)
     with pytest.raises(ValueError, match="between 0 and the decision log's length"):
         apply_curation_impl(fp, cur, log_prefix=-1)
-    with pytest.raises(ValueError, match="dry_run cannot be combined"):
+    with pytest.raises(BadSettingError, match="dry_run cannot be combined") as ei:
         apply_curation_impl(fp, cur, log_prefix=1, dry_run=True)
+    # Both refuse the batch call as a whole, not one action of it.
+    assert ei.value.to_dict()["action_indices_absent"] == "undefined"
+    with pytest.raises(BadSettingError) as ei:
+        apply_curation_impl(fp, cur, log_prefix=3)
+    assert ei.value.to_dict()["action_indices_absent"] == "undefined"
     # A malformed file refuses before anything is restored.
     with pytest.raises(ValueError):
         apply_curation_impl(

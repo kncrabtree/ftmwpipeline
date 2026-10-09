@@ -107,6 +107,7 @@ SNAPSHOT_CODES = frozenset(
         "callback_failed",
         "write_conflict",
         "curation_conflict",
+        "internal_error",
         "pipeline_error",
     }
 )
@@ -509,7 +510,12 @@ def test_cli_exit_codes_are_the_documented_table():
     # Only the non-default codes are listed; every other code exits 1. The
     # table may name codes a later wave introduces, so it is not compared with
     # MANIFEST.codes.
-    assert EXIT_CODES == {"file_corrupt": 2, "algorithm_failed": 2, "cancelled": 130}
+    assert EXIT_CODES == {
+        "file_corrupt": 2,
+        "algorithm_failed": 2,
+        "internal_error": 2,
+        "cancelled": 130,
+    }
     assert DEFAULT_ERROR_EXIT == 1 and INTERRUPTED_EXIT == 130
 
 
@@ -576,7 +582,7 @@ def test_manifest_sequences_are_tuples():
 
 
 def test_manifest_version_matches_package():
-    assert MANIFEST.contract_version == ftmwpipeline.CONTRACT_VERSION == 18
+    assert MANIFEST.contract_version == ftmwpipeline.CONTRACT_VERSION == 19
     assert isinstance(ftmwpipeline.CONTRACT_VERSION, int)
 
 

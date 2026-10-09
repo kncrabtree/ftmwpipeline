@@ -31,6 +31,7 @@ from ftmwpipeline.contract import (
     CallbackFailedError,
     CurationConflictError,
     IncompleteProvenanceError,
+    InternalError,
     NotFoundError,
     NotFoundValueError,
     OperationCancelledError,
@@ -98,8 +99,9 @@ def test_contract_version_is_fourteen():
     # (curation_conflict, ComplexFT.invalidated, degenerate statistics) to 12;
     # windows after a structural merge (merged_from, fit_plan_unavailable) to 13;
     # review attention (AttentionReason, attention_kind with
-    # empty_window_residual) to 14.
-    assert CONTRACT_VERSION == 18
+    # empty_window_residual) to 14; internal_error and bad_setting's
+    # action_indices to 19.
+    assert CONTRACT_VERSION == 19
 
 
 # ---- stage vocabulary -----------------------------------------------------
@@ -254,7 +256,12 @@ def _errors():
         (
             BadSettingError("stage5.tau.tau0_us", "float > 0", -1.0),
             "bad_setting",
-            {"path": "stage5.tau.tau0_us", "expected": "float > 0", "value": -1.0},
+            {
+                "path": "stage5.tau.tau0_us",
+                "expected": "float > 0",
+                "value": -1.0,
+                **_NO_BATCH,
+            },
             (ValueError,),
         ),
         (
@@ -264,6 +271,7 @@ def _errors():
                 "path": "stage9.bogus",
                 "expected": "a registered knob path",
                 "value": "stage9.bogus",
+                **_NO_BATCH,
             },
             (ValueError, KeyError),
         ),
@@ -297,6 +305,12 @@ def _errors():
             {"reason": "orphans_created_window", "ids": [4, 7], **_NO_BATCH},
             (ValueError,),
         ),
+        (
+            InternalError([2, 3], message="curation actions 3, 4 (...) failed: x"),
+            "internal_error",
+            {"action_indices": [2, 3]},
+            (RuntimeError,),
+        ),
     ]
 
 
@@ -323,6 +337,8 @@ def test_error_contract(err, code, fields, bases):
     [
         NotFoundValueError("peak", [7], action_indices=(0, 2)),
         CurationConflictError("line_already_fitted", [3], action_indices=[1]),
+        BadSettingError("actions[2].anchor_mhz", "in band", 1.0, action_indices=[2]),
+        InternalError((0, 4)),
     ],
     ids=lambda e: type(e).__name__,
 )
@@ -338,6 +354,7 @@ def test_batch_refusal_carries_its_request_action_indices(err):
     [
         NotFoundValueError("window", [7, 9]),
         CurationConflictError("line_already_fitted", [3]),
+        BadSettingError("log_prefix", "an integer between 0 and 2", 9),
     ],
     ids=lambda e: type(e).__name__,
 )
@@ -355,6 +372,19 @@ def test_a_whole_batch_refusal_is_undefined_not_not_run(err):
     assert err.action_indices is None
     clone = pickle.loads(pickle.dumps(err))
     assert clone.to_dict()["action_indices_absent"] == "undefined"
+
+
+def test_internal_error_outside_a_batch_is_not_run_and_pickles():
+    e = InternalError(message="boom")
+    d = json.loads(json.dumps(e.to_dict(), allow_nan=False))
+    assert d["code"] == "internal_error"
+    assert d["action_indices"] is None
+    assert d["action_indices_absent"] == "not_run"
+    assert e.action_indices is None
+    clone = pickle.loads(pickle.dumps(InternalError([1, 3], message="boom")))
+    assert isinstance(clone, (InternalError, RuntimeError))
+    assert clone.action_indices == [1, 3] and str(clone) == "boom"
+    assert clone.to_dict() == InternalError([1, 3], message="boom").to_dict()
 
 
 def test_epoch_mismatch_none_epoch_is_null_with_absent_sibling():
