@@ -175,11 +175,15 @@ def test_read_verbs_under_json_report_error_dict_on_stderr(tmp_path, capsys):
 
 def test_exit_code_table():
     # Only non-default codes are listed; everything else exits 1.
-    assert EXIT_CODES == {"file_corrupt": 2, "algorithm_failed": 2, "cancelled": 130}
+    table = {
+        "file_corrupt": 2,
+        "algorithm_failed": 2,
+        "internal_error": 2,
+        "cancelled": 130,
+    }
+    assert EXIT_CODES == table
     for code in MANIFEST.codes:
-        expected = {"file_corrupt": 2, "algorithm_failed": 2, "cancelled": 130}.get(
-                code, 1
-            )
+        expected = table.get(code, 1)
         assert exit_code_for(SimpleNamespace(code=code)) == expected  # type: ignore[arg-type]
 
 

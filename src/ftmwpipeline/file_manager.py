@@ -532,10 +532,20 @@ class BadSettingError(PipelineFileError, ValueError):
         ``"one of: lorentzian, gaussian, voigt"``, ``"a known setting path"``).
     value : Any
         The refused value as given (its ``repr`` when it is not JSON-able).
+    action_indices : list of int or None
+        As for :class:`NotFoundError`: raised for one action of a curation
+        batch, the 0-based request positions of that action (several when
+        coalesced rows were one edit); ``None`` outside a batch (wire:
+        ``Absent.NOT_RUN``).
     """
 
     code: ClassVar[str] = "bad_setting"
-    contract_fields: ClassVar[Tuple[str, ...]] = ("path", "expected", "value")
+    contract_fields: ClassVar[Tuple[str, ...]] = (
+        "path",
+        "expected",
+        "value",
+        "action_indices",
+    )
 
     def __init__(
         self,
@@ -543,11 +553,13 @@ class BadSettingError(PipelineFileError, ValueError):
         expected: str,
         value: Any,
         *,
+        action_indices: Optional[Sequence[int]] = None,
         message: Optional[str] = None,
     ) -> None:
         self.path = str(path)
         self.expected = str(expected)
         self.value = value
+        self.action_indices = _optional_indices(action_indices)
         if message is None:
             message = f"{self.path}: expected {self.expected}, got {value!r}"
         super().__init__(message)
@@ -562,7 +574,13 @@ class BadSettingError(PipelineFileError, ValueError):
             to_jsonable(value)
         except (TypeError, ValueError):
             value = repr(value)
-        return {"path": self.path, "expected": self.expected, "value": value}
+        values = {
+            "path": self.path,
+            "expected": self.expected,
+            "value": value,
+            "action_indices": self.action_indices,
+        }
+        return _absent_action_indices(values, whole_batch=False)
 
 
 class CurationConflictError(PipelineFileError, ValueError):
@@ -637,6 +655,44 @@ class AlgorithmFailedError(PipelineFileError, RuntimeError):
     def __init__(self, stage: str, message: str) -> None:
         self.stage = str(stage)
         super().__init__(message)
+
+
+class InternalError(PipelineFileError, RuntimeError):
+    """Raised when an unexpected failure -- not a typed refusal -- escapes the
+    processing of one action of a curation batch (``review_preview`` /
+    ``review_apply``). Names the action so a client can mark it failed and
+    resubmit the rest; the batch as a whole is refused (nothing is written).
+    The original exception is chained as ``__cause__``, and its text is the
+    message, prefixed with the action it was processing. Also a
+    :class:`RuntimeError`. The CLI exits 2 for it.
+
+    Only an untyped failure attributable to one action is reported this way;
+    one raised outside any single action's processing keeps its own type.
+
+    Attributes
+    ----------
+    action_indices : list of int or None
+        As for :class:`NotFoundError`: the 0-based request positions of the
+        action that failed (several when coalesced rows were one edit);
+        ``None`` outside a batch (wire: ``Absent.NOT_RUN``).
+    """
+
+    code: ClassVar[str] = "internal_error"
+    contract_fields: ClassVar[Tuple[str, ...]] = ("action_indices",)
+
+    def __init__(
+        self,
+        action_indices: Optional[Sequence[int]] = None,
+        *,
+        message: Optional[str] = None,
+    ) -> None:
+        self.action_indices = _optional_indices(action_indices)
+        if message is None:
+            message = "internal error"
+        super().__init__(message)
+
+    def _contract_values(self) -> Dict[str, Any]:
+        return _absent_action_indices(super()._contract_values(), whole_batch=False)
 
 
 class OperationCancelledError(PipelineFileError):

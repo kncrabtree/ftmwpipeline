@@ -31,6 +31,7 @@ from ftmwpipeline.contract import (
     CallbackFailedError,
     CurationConflictError,
     IncompleteProvenanceError,
+    InternalError,
     NotFoundError,
     NotFoundValueError,
     OperationCancelledError,
@@ -98,8 +99,9 @@ def test_contract_version_is_fourteen():
     # (curation_conflict, ComplexFT.invalidated, degenerate statistics) to 12;
     # windows after a structural merge (merged_from, fit_plan_unavailable) to 13;
     # review attention (AttentionReason, attention_kind with
-    # empty_window_residual) to 14.
-    assert CONTRACT_VERSION == 18
+    # empty_window_residual) to 14; internal_error and bad_setting's
+    # action_indices to 19.
+    assert CONTRACT_VERSION == 19
 
 
 # ---- stage vocabulary -----------------------------------------------------
@@ -254,7 +256,12 @@ def _errors():
         (
             BadSettingError("stage5.tau.tau0_us", "float > 0", -1.0),
             "bad_setting",
-            {"path": "stage5.tau.tau0_us", "expected": "float > 0", "value": -1.0},
+            {
+                "path": "stage5.tau.tau0_us",
+                "expected": "float > 0",
+                "value": -1.0,
+                **_NO_BATCH,
+            },
             (ValueError,),
         ),
         (
@@ -264,6 +271,7 @@ def _errors():
                 "path": "stage9.bogus",
                 "expected": "a registered knob path",
                 "value": "stage9.bogus",
+                **_NO_BATCH,
             },
             (ValueError, KeyError),
         ),
@@ -297,6 +305,12 @@ def _errors():
             {"reason": "orphans_created_window", "ids": [4, 7], **_NO_BATCH},
             (ValueError,),
         ),
+        (
+            InternalError([2, 3], message="curation actions 3, 4 (...) failed: x"),
+            "internal_error",
+            {"action_indices": [2, 3]},
+            (RuntimeError,),
+        ),
     ]
 
 
@@ -323,6 +337,8 @@ def test_error_contract(err, code, fields, bases):
     [
         NotFoundValueError("peak", [7], action_indices=(0, 2)),
         CurationConflictError("line_already_fitted", [3], action_indices=[1]),
+        BadSettingError("actions[2].anchor_mhz", "in band", 1.0, action_indices=[2]),
+        InternalError((0, 4)),
     ],
     ids=lambda e: type(e).__name__,
 )
