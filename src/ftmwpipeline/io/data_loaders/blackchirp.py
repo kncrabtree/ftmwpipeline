@@ -15,11 +15,14 @@ import pandas as pd
 
 from ...contract import Absent
 from .base import (
+    CHIRP_PARAMETERS,
+    CHIRP_WINDOW_EXPLICIT_KEY,
     BaseLoader,
     FidPreviewRow,
     LoaderError,
     count_or_absent,
     finite_or_absent,
+    resolve_chirp_window,
     validated_chirp_window,
 )
 
@@ -293,7 +296,11 @@ class BlackChirpLoader(BaseLoader):
         fid_index : int, optional
             Index of FID to load (default: 0)
         **kwargs
-            Additional parameters (ignored for Blackchirp)
+            ``chirp_start_us`` / ``chirp_end_us`` / ``start_margin_us``: an
+            explicit chirp window, merged field by field over the one
+            ``chirps.csv`` declares (an explicit value always wins). An
+            explicit ``start_margin_us`` or ``chirp_start_us`` with no chirp
+            end from either is refused (:class:`LoadParameterError`).
 
         Returns
         -------
@@ -361,6 +368,13 @@ class BlackChirpLoader(BaseLoader):
                 blackchirp_params=params.to_dict(),
             )
             source_metadata.update(validation["metadata"])
+            chirp_window, explicit = resolve_chirp_window(
+                kwargs, validation["metadata"].get("chirp_window")
+            )
+            if chirp_window is not None:
+                source_metadata["chirp_window"] = chirp_window
+            if explicit:
+                source_metadata[CHIRP_WINDOW_EXPLICIT_KEY] = True
 
             return FID(
                 data=voltage_data,
@@ -604,7 +618,11 @@ class BlackChirpLoader(BaseLoader):
 
     def get_optional_parameters(self) -> Dict[str, Any]:
         """Get optional parameters for Blackchirp loading."""
-        return {"fid_index": 0}  # Which FID to load if multiple are available
+        # Which FID to load if multiple are available, and an explicit chirp
+        # window that outranks the one chirps.csv declares.
+        optional: Dict[str, Any] = {"fid_index": 0}
+        optional.update({name: None for name in CHIRP_PARAMETERS})
+        return optional
 
     @staticmethod
     def _resolve_sideband(value: Any) -> "Sideband":
@@ -677,11 +695,22 @@ class BlackChirpLoader(BaseLoader):
             except (TypeError, ValueError):
                 return default
 
+        def _declared(key: str) -> Optional[float]:
+            """A recorded time, or ``None`` when absent, unparsable or not
+            finite and non-negative (nothing declared). ``0`` is kept."""
+            try:
+                value = float(proc[key])
+            except (KeyError, TypeError, ValueError):
+                return None
+            return value if np.isfinite(value) and value >= 0 else None
+
         end_us = _f("FidEndUs", 0.0)
         # DC removal is unconditional in the FT, so the instrument's
-        # FidRemoveDC flag is not carried through.
+        # FidRemoveDC flag is not carried through. A missing or unparsable
+        # FidStartUs declares no start (None), as a missing processing.csv
+        # does, so the chirp-derived start applies.
         return FIDProcessingParameters(
-            start_us=_f("FidStartUs", 0.0),
+            start_us=_declared("FidStartUs"),
             end_us=end_us if end_us > 0 else None,
             units_power=int(_f("FtUnits", 6.0)),
         )

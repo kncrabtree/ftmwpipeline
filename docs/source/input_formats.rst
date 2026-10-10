@@ -256,6 +256,16 @@ chirp. When a chirp window is declared — ``chirp_end_us`` with an optional
 chirp end is the reliable way to fix the start when the detector has trouble, for
 instance on very high signal-to-noise data.
 
+The three chirp fields resolve field by field: a value passed explicitly
+(``--chirp-end-us``, ``--start-margin-us``, ``--chirp-start-us``, or the
+``chirp_*`` keyword arguments) replaces the one the sidecar or the file
+declares, so ``--start-margin-us`` alone combines with a declared chirp end.
+These parameters are accepted by every format, Blackchirp included. A margin or
+chirp start with no chirp end from any layer cannot be honoured and is refused
+as ``bad_setting`` (``path`` the parameter). So is any load parameter the
+format does not take (``ftmwpipeline data formats`` lists each format's), before
+anything is written.
+
 .. _input-clock-declaration:
 
 Declaring instrument clock sources

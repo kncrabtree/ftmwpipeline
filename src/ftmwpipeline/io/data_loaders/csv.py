@@ -174,6 +174,9 @@ class CSVLoader(BaseLoader):
             "probe_freq_mhz": None,
             "sideband": None,
             "shots": None,
+            "chirp_start_us": None,
+            "chirp_end_us": None,
+            "start_margin_us": None,
         }
 
     @staticmethod

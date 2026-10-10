@@ -11,6 +11,29 @@ Notable changes to ``ftmwpipeline``, newest first. Versions follow
 Unreleased
 ----------
 
+**Contract 20: an explicit load parameter outranks the source, and one the
+format does not take is refused; ``CONTRACT_VERSION`` moves 19 → 20.**
+``chirp_start_us``, ``chirp_end_us`` and ``start_margin_us`` (``--chirp-start-us``
+and friends) are accepted by every format, Blackchirp included, and replace,
+field by field, the chirp window the source declares (``chirps.csv``, a
+sidecar, embedded attributes); a margin alone combines with the declared chirp
+end. When any is given, the recommended start ``chirp_end + margin`` also
+outranks a start the source records (Blackchirp ``FidStartUs``), silently;
+without one, the file's start still wins as before. A margin or chirp start
+with no chirp end from any layer is refused (``bad_setting``, ``path`` the
+parameter) instead of being dropped. A load parameter the resolved format does
+not accept (``--n-frames`` on a Blackchirp source, ``--column`` on a native
+HDF5 file, ``fid_index`` on a CSV, ...) is now ``bad_setting`` with ``path``
+the parameter's name and ``expected`` the format's parameters, before anything
+is written, on every interface and with auto-detection; it used to be ignored.
+Each loader's accepted parameters are its ``required_parameters`` and
+``optional_parameters`` (``data formats``), which now list the chirp
+parameters. A Blackchirp ``FidStartUs`` that is missing or unparsable now
+declares no start (it read as ``0``), so the chirp-derived start applies; an
+explicit ``0`` is kept. Not additive: imports that passed an inapplicable
+parameter now fail. Existing ``.ftmw`` files are not reinterpreted, and
+``ANALYSIS_EPOCH`` is unchanged.
+
 **Contract 19: an unexpected failure in one curation action names it;
 ``CONTRACT_VERSION`` moves 18 → 19.** A new code, ``internal_error``
 (``InternalError``, a ``RuntimeError``), carries ``action_indices``, the

@@ -100,8 +100,9 @@ def test_contract_version_is_fourteen():
     # windows after a structural merge (merged_from, fit_plan_unavailable) to 13;
     # review attention (AttentionReason, attention_kind with
     # empty_window_residual) to 14; internal_error and bad_setting's
-    # action_indices to 19.
-    assert CONTRACT_VERSION == 19
+    # action_indices to 19; explicit load parameters outranking the source and
+    # inapplicable ones refused (bad_setting) to 20.
+    assert CONTRACT_VERSION == 20
 
 
 # ---- stage vocabulary -----------------------------------------------------

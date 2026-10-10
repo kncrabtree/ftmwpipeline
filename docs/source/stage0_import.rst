@@ -132,7 +132,12 @@ and floor are less cleanly separated.
 
 The import itself already records a recommended start when the source supplies
 one: an experimenter-recorded start (a Blackchirp ``FidStartUs``), or else the
-declared chirp end plus the guard margin. ``start run`` replaces that
+declared chirp end plus the guard margin. A chirp parameter given explicitly
+at import (``--chirp-end-us``, ``--start-margin-us``, ``--chirp-start-us``)
+replaces the declared value it names, and the start it derives then outranks
+the experimenter's: ``--chirp-end-us 3.6 --start-margin-us 1.0`` records
+4.6 µs whatever ``FidStartUs`` says. A missing ``FidStartUs`` declares no
+start, so the chirp-derived one applies. ``start run`` replaces that
 recommendation with its own. On the example experiment the import records
 2.35 µs (the experimenter's start) and ``start run`` recommends 2.27 µs (the
 declared 1.60 µs chirp end plus the 0.67 µs guard margin).

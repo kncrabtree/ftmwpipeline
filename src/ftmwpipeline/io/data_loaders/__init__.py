@@ -11,7 +11,7 @@ Architecture:
 - Specific loaders: Blackchirp, CSV, HDF5, etc.
 """
 
-from .base import BaseLoader, LoaderError
+from .base import BaseLoader, LoaderError, LoadParameterError
 from .blackchirp import BlackChirpLoader
 from .csv import CSVLoader
 from .ftmw_hdf5 import FtmwHdf5Loader
@@ -44,6 +44,7 @@ register_loader("ftmw-hdf5", FtmwHdf5Loader)
 __all__ = [
     "BaseLoader",
     "LoaderError",
+    "LoadParameterError",
     "FormatRegistry",
     "register_loader",
     "detect_format",

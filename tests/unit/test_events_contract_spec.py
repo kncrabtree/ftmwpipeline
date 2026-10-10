@@ -492,10 +492,11 @@ def test_contract_version_is_sixteen():
     # decision-log action groups, empty-window converged, run_pipeline
     # canonical names, tau_shape; 16: removes logged at the resolved peak;
     # 17: request action indices; 18: calibrated created-window structure;
-    # 19: internal_error, bad_setting action_indices.
-    assert ftmwpipeline.CONTRACT_VERSION == 19
-    assert MANIFEST.contract_version == 19
-    assert capabilities()["contract_version"] == 19
+    # 19: internal_error, bad_setting action_indices; 20: explicit load
+    # parameters outrank the source, inapplicable ones refused.
+    assert ftmwpipeline.CONTRACT_VERSION == 20
+    assert MANIFEST.contract_version == 20
+    assert capabilities()["contract_version"] == 20
 
 
 def test_event_schemas_are_in_the_manifest_and_capabilities():
