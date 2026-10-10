@@ -17,9 +17,10 @@ format does not take is refused; ``CONTRACT_VERSION`` moves 19 → 20.**
 and friends) are accepted by every format, Blackchirp included, and replace,
 field by field, the chirp window the source declares (``chirps.csv``, a
 sidecar, embedded attributes); a margin alone combines with the declared chirp
-end. When any is given, the recommended start ``chirp_end + margin`` also
-outranks a start the source records (Blackchirp ``FidStartUs``), silently;
-without one, the file's start still wins as before. A margin or chirp start
+end. When ``chirp_end_us`` or ``start_margin_us`` is given, the recommended
+start ``chirp_end + margin`` also outranks a start the source records
+(Blackchirp ``FidStartUs``), silently; without either (``chirp_start_us`` alone
+does not feed that start), the file's start still wins as before. A margin or chirp start
 with no chirp end from any layer is refused (``bad_setting``, ``path`` the
 parameter) instead of being dropped. A load parameter the resolved format does
 not accept (``--n-frames`` on a Blackchirp source, ``--column`` on a native

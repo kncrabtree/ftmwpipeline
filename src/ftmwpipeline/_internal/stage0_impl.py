@@ -83,9 +83,10 @@ def persist_chirp_window_metadata(
     ``recommended_processing.start_us = chirp_end + margin`` so a later FT
     inherits a physically grounded start without running the sweep detector.
 
-    Precedence of that start: a window carrying a value the caller passed
-    explicitly (the loader sets ``fid.metadata[CHIRP_WINDOW_EXPLICIT_KEY]``)
-    outranks an experimenter start the file records (e.g. Blackchirp
+    Precedence of that start: a window whose ``chirp_end_us`` or
+    ``start_margin_us`` the caller passed explicitly (the loader sets
+    ``fid.metadata[CHIRP_WINDOW_EXPLICIT_KEY]``; an explicit ``chirp_start_us``
+    alone does not, as it never feeds the derived start) outranks an experimenter start the file records (e.g. Blackchirp
     ``FidStartUs``) -- an explicit value always wins, silently. Otherwise the
     file's experimenter start outranks the derived value and is kept.
 

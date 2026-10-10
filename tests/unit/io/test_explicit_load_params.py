@@ -158,6 +158,29 @@ class TestResolveChirpWindow:
             resolve_chirp_window({name: 0.5}, None)
         assert exc.value.parameter == name and exc.value.value == 0.5
 
+    def test_explicit_chirp_start_alone_does_not_feed_the_start(self) -> None:
+        merged, explicit = resolve_chirp_window(
+            {"chirp_start_us": 0.6}, {"chirp_end_us": 1.6}
+        )
+        assert merged == {"chirp_end_us": 1.6, "chirp_start_us": 0.6}
+        assert explicit is False
+
+    @pytest.mark.parametrize("declared", [3.6, "1.6", ["x"]])
+    def test_a_malformed_declaration_passes_through_unchanged(
+        self, declared: Any
+    ) -> None:
+        assert resolve_chirp_window({}, declared) == (declared, False)
+
+    def test_a_malformed_declared_field_cannot_sink_the_explicit_window(
+        self,
+    ) -> None:
+        merged, explicit = resolve_chirp_window(
+            {"chirp_end_us": 3.6},
+            {"chirp_end_us": 1.6, "chirp_start_us": "early", "start_margin_us": 0.4},
+        )
+        assert merged == {"chirp_end_us": 3.6, "start_margin_us": 0.4}
+        assert explicit is True
+
     def test_non_finite_is_refused(self) -> None:
         with pytest.raises(LoadParameterError) as exc:
             resolve_chirp_window({"chirp_end_us": float("nan")}, None)
@@ -212,6 +235,15 @@ class TestBlackchirp:
         out = tmp_path / "missing.ftmw"
         ftmw.import_data(out, bc)
         assert _recommended_start(out) == pytest.approx(1.6 + _GUARD)
+
+    def test_explicit_chirp_start_alone_keeps_fid_start(
+        self, bc: Path, tmp_path: Path
+    ) -> None:
+        out = tmp_path / "cstart.ftmw"
+        ftmw.import_data(out, bc, chirp_start_us=0.6)
+        assert _recommended_start(out) == pytest.approx(2.35)
+        cw = read_recommended_chirp_window(str(out))
+        assert cw is not None and cw.chirp_start_us == pytest.approx(0.6)
 
     def test_unparsable_fid_start_declares_no_start(self, bc: Path) -> None:
         _set_fid_start(bc, "not-a-number")
@@ -283,6 +315,24 @@ class TestGeneric:
         # explicit field then replaces the field it names.
         assert resolved.chirp_window == {"chirp_end_us": 1.2, "start_margin_us": 0.3}
         assert resolved.chirp_window_explicit is True
+
+    def test_margin_attaches_to_the_file_end_past_an_endless_sidecar(self) -> None:
+        resolved = resolve_input_metadata(
+            explicit={"chirp_window": {"start_margin_us": 1.0}},
+            sidecar={"spacing_us": 0.02, "chirp_window": {"start_margin_us": 0.8}},
+            embedded={"chirp_window": {"chirp_end_us": 3.0}},
+        )
+        assert resolved.chirp_window == {"chirp_end_us": 3.0, "start_margin_us": 1.0}
+
+    @pytest.mark.parametrize("window", [3.6, "1.6"])
+    def test_csv_malformed_sidecar_window_does_not_fail_the_import(
+        self, tmp_path: Path, window: Any
+    ) -> None:
+        src = _csv(tmp_path, {"spacing_us": 0.02, "chirp_window": window})
+        out = tmp_path / "csv.ftmw"
+        ftmw.import_data(out, src)
+        assert out.exists()
+        assert read_recommended_chirp_window(str(out)) is None
 
     def test_keysight_margin_without_end_is_refused(self, tmp_path: Path) -> None:
         out = tmp_path / "mat.ftmw"

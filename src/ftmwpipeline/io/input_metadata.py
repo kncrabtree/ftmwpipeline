@@ -29,6 +29,7 @@ from .data_loaders.base import (
     LoaderError,
     count_or_absent,
     finite_or_absent,
+    has_chirp_end,
     resolve_chirp_window,
     sideband_or_absent,
 )
@@ -63,7 +64,8 @@ class ResolvedInputMetadata:
     shots: int
     chirp_window: Optional[Dict[str, Any]]
     clock_sources: Optional[List[Dict[str, Any]]]
-    #: Whether ``chirp_window`` carries a value from the explicit layer.
+    #: Whether ``chirp_window`` carries an explicit ``chirp_end_us`` or
+    #: ``start_margin_us`` (a value the derived start is computed from).
     chirp_window_explicit: bool = False
 
     @property
@@ -155,8 +157,10 @@ def resolve_input_metadata(
 
     The chirp window is resolved field by field: the explicit layer's
     ``chirp_window`` fields (any subset) replace those of the window the
-    sidecar, else the embedded layer, declares (see
-    :func:`~.data_loaders.base.resolve_chirp_window`); an explicit
+    sidecar, else the embedded layer, declares -- the first of those holding a
+    usable chirp end (see :func:`~.data_loaders.base.resolve_chirp_window`).
+    With no explicit chirp field the declared block is taken whole and
+    unchanged. An explicit
     ``start_margin_us`` / ``chirp_start_us`` with no chirp end from any layer
     raises :class:`~.data_loaders.base.LoadParameterError`.
     """
@@ -171,17 +175,21 @@ def resolve_input_metadata(
 
     resolved: Dict[str, Any] = {key: pick(key) for key in _DEFAULTS}
 
-    declared_window = next(
-        (
-            layer["chirp_window"]
-            for layer in layers[1:]
-            if layer.get("chirp_window") is not None
-        ),
-        None,
-    )
-    chirp_window, chirp_explicit = resolve_chirp_window(
-        layers[0].get("chirp_window") or {}, declared_window
-    )
+    explicit_chirp = layers[0].get("chirp_window") or {}
+    lower_windows = [
+        layer["chirp_window"]
+        for layer in layers[1:]
+        if layer.get("chirp_window") is not None
+    ]
+    declared_window = lower_windows[0] if lower_windows else None
+    if explicit_chirp:
+        # Explicit fields attach to the highest layer that declares a usable
+        # chirp end, so a sidecar block without one does not hide the file's.
+        declared_window = next(
+            (window for window in lower_windows if has_chirp_end(window)),
+            declared_window,
+        )
+    chirp_window, chirp_explicit = resolve_chirp_window(explicit_chirp, declared_window)
 
     if resolved["spacing_us"] is None:
         raise LoaderError(

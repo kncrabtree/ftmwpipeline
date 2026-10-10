@@ -49,23 +49,34 @@ CHIRP_PARAMETERS: Tuple[str, ...] = (
     "start_margin_us",
 )
 
+#: The chirp parameters the derived start (``chirp_end_us + start_margin_us``)
+#: is computed from. ``chirp_start_us`` is provenance only and never feeds it.
+CHIRP_START_PARAMETERS: Tuple[str, ...] = ("chirp_end_us", "start_margin_us")
+
 #: ``fid.metadata`` transport key: ``True`` when the attached ``chirp_window``
-#: carries a value the caller passed explicitly. Underscore-prefixed, so it is
+#: carries an explicitly passed value the derived start is computed from (one of
+#: :data:`CHIRP_START_PARAMETERS`). Underscore-prefixed, so it is
 #: in-memory provenance only and never persisted as metadata (the explicit
 #: values themselves are persisted in the source's ``loader_parameters``).
 CHIRP_WINDOW_EXPLICIT_KEY = "_chirp_window_explicit"
 
 
-def resolve_chirp_window(
-    params: Mapping[str, Any], declared: Optional[Mapping[str, Any]]
-) -> Tuple[Optional[Dict[str, Any]], bool]:
+def resolve_chirp_window(params: Mapping[str, Any], declared: Any) -> Tuple[Any, bool]:
     """Merge the explicit chirp parameters over the window the source declares.
 
-    Field by field, an explicit (non-``None``) ``chirp_start_us`` /
-    ``chirp_end_us`` / ``start_margin_us`` in ``params`` replaces the declared
-    value; the declared fields not given explicitly are kept. Returns the
-    merged window (``None`` when neither declares one) and whether any field
-    came from ``params``.
+    With no explicit (non-``None``) chirp parameter in ``params``, ``declared``
+    is returned unchanged (malformed or not -- persisting it is advisory and
+    reports its own failure). Otherwise, field by field, an explicit
+    ``chirp_start_us`` / ``chirp_end_us`` / ``start_margin_us`` replaces the
+    declared value, and the declared fields not given explicitly are kept when
+    they are finite numbers (a malformed declared field is dropped, so it
+    cannot sink the explicit window).
+
+    Returns the window (``None`` when neither declares one) and whether an
+    explicit value feeds the derived start (``chirp_end_us`` or
+    ``start_margin_us``, :data:`CHIRP_START_PARAMETERS`); an explicit
+    ``chirp_start_us`` alone replaces the window's start field but does not
+    reorder start precedence.
 
     Raises
     ------
@@ -89,13 +100,15 @@ def resolve_chirp_window(
             )
         explicit[key] = value
     if not explicit:
-        return (dict(declared) if declared is not None else None), False
+        return declared, False
 
     # A declared block that is not a mapping cannot contribute a field.
     base: Mapping[str, Any] = declared if isinstance(declared, Mapping) else {}
-    merged: Dict[str, Any] = {
-        key: base[key] for key in CHIRP_PARAMETERS if base.get(key) is not None
-    }
+    merged: Dict[str, Any] = {}
+    for key in CHIRP_PARAMETERS:
+        value = chirp_float(base.get(key))
+        if isinstance(value, float):
+            merged[key] = value
     merged.update(explicit)
     if merged.get("chirp_end_us") is None:
         name = "start_margin_us" if "start_margin_us" in explicit else "chirp_start_us"
@@ -106,7 +119,14 @@ def resolve_chirp_window(
             f"{name} cannot be honoured: no chirp end is declared by the source "
             "and none was given; pass chirp_end_us as well",
         )
-    return merged, True
+    return merged, any(key in explicit for key in CHIRP_START_PARAMETERS)
+
+
+def has_chirp_end(block: Any) -> bool:
+    """Whether a declared ``chirp_window`` block holds a finite ``chirp_end_us``."""
+    return isinstance(block, Mapping) and isinstance(
+        chirp_float(block.get("chirp_end_us")), float
+    )
 
 
 @dataclass(frozen=True)
