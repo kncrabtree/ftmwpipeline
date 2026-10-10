@@ -247,7 +247,11 @@ class Pipeline:
             Checked before the import starts (:class:`OperationCancelledError`,
             nothing written); a started import completes.
         **loader_params
-            Additional parameters for data loader
+            Load parameters for the source's format (see ``data formats``).
+            One the format does not accept is refused. ``chirp_start_us``,
+            ``chirp_end_us`` and ``start_margin_us`` (every format) outrank the
+            chirp window the source declares, field by field, and the start
+            they derive outranks one the source records (``FidStartUs``).
 
         Returns
         -------
@@ -264,7 +268,9 @@ class Pipeline:
         BadSettingError
             ``path`` ``"format"`` if format detection fails or the format is
             unknown; ``path`` ``"source"`` if the source does not validate or
-            its format's loader refuses it (also a ``ValueError``)
+            its format's loader refuses it (also a ``ValueError``); ``path`` a load
+            parameter's name if the format does not accept it or it cannot be
+            honoured (a margin with no chirp end)
         RuntimeError
             If file creation fails
         """

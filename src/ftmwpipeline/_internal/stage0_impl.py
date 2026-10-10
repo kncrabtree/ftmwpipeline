@@ -27,11 +27,14 @@ from ..file_manager import (
 )
 from ..io.data_loaders import (
     LoaderError,
+    LoadParameterError,
     detect_format,
     list_formats,
     load_fid,
     validate_source,
 )
+from ..io.data_loaders.base import CHIRP_WINDOW_EXPLICIT_KEY
+from ..io.data_loaders.registry import get_loader
 from ..io.fid_serialization import load_fid_from_hdf5
 from ..io.stage_fit_settings_serialization import write_recommended_chirp_window
 from .atomic import atomic_write, h5open
@@ -76,14 +79,21 @@ def persist_chirp_window_metadata(
     """Persist a loader-declared chirp window and derive the start hint.
 
     When the loader attached ``fid.metadata["chirp_window"]``, write it to the
-    ``recommended_chirp_window`` attr and -- unless the loader already recorded
-    an experimenter start (e.g. Blackchirp ``FidStartUs``, which outranks the
-    derived value) -- stamp ``recommended_processing.start_us = chirp_end +
-    margin`` so a later FT inherits a physically grounded start without
-    running the sweep detector.  Failures are non-fatal: the declaration is
-    advisory metadata. Returns the storage keys of the stages the start hint
-    invalidated (only ever on a reused file with a pre-provenance Stage 1
-    record; see :func:`~.stage1_impl.write_recommended_ft_params`).
+    ``recommended_chirp_window`` attr and stamp
+    ``recommended_processing.start_us = chirp_end + margin`` so a later FT
+    inherits a physically grounded start without running the sweep detector.
+
+    Precedence of that start: a window whose ``chirp_end_us`` or
+    ``start_margin_us`` the caller passed explicitly (the loader sets
+    ``fid.metadata[CHIRP_WINDOW_EXPLICIT_KEY]``; an explicit ``chirp_start_us``
+    alone does not, as it never feeds the derived start) outranks an experimenter start the file records (e.g. Blackchirp
+    ``FidStartUs``) -- an explicit value always wins, silently. Otherwise the
+    file's experimenter start outranks the derived value and is kept.
+
+    Failures are non-fatal: the declaration is advisory metadata. Returns the
+    storage keys of the stages the start hint invalidated (only ever on a
+    reused file with a pre-provenance Stage 1 record; see
+    :func:`~.stage1_impl.write_recommended_ft_params`).
     """
     raw_chirp = fid.metadata.get("chirp_window")
     if raw_chirp is None:
@@ -101,7 +111,8 @@ def persist_chirp_window_metadata(
                 else "None"
             ),
         )
-        if fid.processing.start_us is None:
+        explicit = bool(fid.metadata.get(CHIRP_WINDOW_EXPLICIT_KEY))
+        if fid.processing.start_us is None or explicit:
             from .stage1_impl import write_recommended_ft_params
 
             margin = chirp_window.start_margin_us
@@ -113,10 +124,11 @@ def persist_chirp_window_metadata(
             )
             logger.info(
                 "Derived recommended start_us = %.3f us "
-                "(chirp_end %.3f + margin %.3f) from chirp window.",
+                "(chirp_end %.3f + margin %.3f) from %s chirp window.",
                 recommended_start,
                 chirp_window.chirp_end_us,
                 margin,
+                "the explicitly given" if explicit else "the declared",
             )
     except Exception as exc:
         logger.warning("Could not persist declared chirp window: %s", exc)
@@ -188,6 +200,44 @@ def loader_refusal(
     )
 
 
+def refuse_inapplicable_parameters(
+    format_name: str, format_params: Mapping[str, Any]
+) -> None:
+    """Refuse a load parameter the ``format_name`` loader does not accept.
+
+    ``format_params`` are the loader parameters the caller passed (a ``None``
+    value is not passed). The accepted names are the loader's one declaration
+    (:meth:`~ftmwpipeline.io.data_loaders.base.BaseLoader.accepted_parameters`).
+    Called before anything is read or written, so a refused import leaves no
+    file.
+
+    Raises
+    ------
+    BadSettingError
+        ``path`` the first refused parameter's name, ``expected`` the
+        parameters the format accepts, ``value`` the value given.
+    """
+    accepted = get_loader(format_name).accepted_parameters()
+    refused = [
+        name
+        for name, value in format_params.items()
+        if value is not None and name not in accepted
+    ]
+    if not refused:
+        return
+    accepts = ", ".join(accepted) if accepted else "none"
+    name = refused[0]
+    raise BadSettingError(
+        name,
+        f"a load parameter the {format_name} format accepts: {accepts}",
+        format_params[name],
+        message=(
+            f"The {format_name} format does not accept the load parameter(s) "
+            f"{', '.join(refused)}; it accepts: {accepts}."
+        ),
+    )
+
+
 def data_import_summary(result: Mapping[str, Any]) -> Dict[str, Any]:
     """The scalar summary of an :func:`import_data_impl` result."""
     fid_meta = result["fid_metadata"]
@@ -242,11 +292,16 @@ def import_data_impl(
         Overwrite an existing file even with a different source or layout.
     fid_index : int, optional
         FID index for a multi-FID Blackchirp source (added to the loader
-        parameters when the resolved format is ``blackchirp``).
+        parameters; refused like any other for a format that does not take it).
     events, cancel
         The long-operation event callback and cancel token.
     **format_params
-        Format-specific loading parameters
+        Format-specific loading parameters. A parameter the resolved format's
+        loader does not accept is refused before anything is written. The
+        ``chirp_start_us`` / ``chirp_end_us`` / ``start_margin_us`` every
+        format accepts outrank, field by field, the chirp window the source
+        declares; when any is given, the derived start (chirp end + margin)
+        also outranks a start the source records (Blackchirp ``FidStartUs``).
 
     Returns
     -------
@@ -263,7 +318,10 @@ def import_data_impl(
         format detection fails or the format is unknown; ``path`` ``"source"``
         if the source does not validate under the resolved format, or that
         format's loader refuses it (an unknown sidecar key, a missing
-        ``spacing_us``, an unknown ``column``; the loader's message is kept).
+        ``spacing_us``, an unknown ``column``; the loader's message is kept);
+        ``path`` a load parameter's name if the resolved format does not
+        accept it, or it cannot be honoured (a ``start_margin_us`` or
+        ``chirp_start_us`` with no chirp end given or declared).
     """
     from .events import operation_events
 
@@ -335,6 +393,10 @@ def _import_data(
             )
         logger.info(f"Using specified format: {format_name}")
 
+    if fid_index is not None:
+        format_params["fid_index"] = fid_index
+    refuse_inapplicable_parameters(format_name, format_params)
+
     # Validate source with detected/specified format
     logger.info(f"Validating source with {format_name} loader...")
     validation = validate_source(source_path, format_name)
@@ -350,9 +412,6 @@ def _import_data(
 
     logger.info("Source validation passed")
 
-    if format_name == "blackchirp" and fid_index is not None:
-        format_params["fid_index"] = fid_index
-
     # Load FID data
     logger.info("Loading FID data...")
     try:
@@ -360,6 +419,8 @@ def _import_data(
         logger.info(
             f"FID data loaded successfully: {fid.n_points:,} points, {fid.duration_us:.1f} μs"
         )
+    except LoadParameterError as e:
+        raise BadSettingError(e.parameter, e.expected, e.value, message=str(e)) from e
     except LoaderError as e:
         raise loader_refusal(source_path, format_name, e) from e
 

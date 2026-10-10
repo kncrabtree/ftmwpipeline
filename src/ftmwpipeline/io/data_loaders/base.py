@@ -11,7 +11,7 @@ import numbers
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Tuple, Union
 
 import numpy as np
 
@@ -25,6 +25,108 @@ class LoaderError(Exception):
     """Exception raised when data loading fails."""
 
     pass
+
+
+class LoadParameterError(LoaderError):
+    """A load parameter the loader cannot honour.
+
+    Raised for one named parameter (``parameter``), with what would be accepted
+    (``expected``) and the value given (``value``). The import path reports it
+    as ``bad_setting`` with ``path`` the parameter name (not ``"source"``).
+    """
+
+    def __init__(self, parameter: str, expected: str, value: Any, message: str) -> None:
+        self.parameter = parameter
+        self.expected = expected
+        self.value = value
+        super().__init__(message)
+
+
+#: The explicit chirp-window load parameters every loader accepts (µs).
+CHIRP_PARAMETERS: Tuple[str, ...] = (
+    "chirp_start_us",
+    "chirp_end_us",
+    "start_margin_us",
+)
+
+#: The chirp parameters the derived start (``chirp_end_us + start_margin_us``)
+#: is computed from. ``chirp_start_us`` is provenance only and never feeds it.
+CHIRP_START_PARAMETERS: Tuple[str, ...] = ("chirp_end_us", "start_margin_us")
+
+#: ``fid.metadata`` transport key: ``True`` when the attached ``chirp_window``
+#: carries an explicitly passed value the derived start is computed from (one of
+#: :data:`CHIRP_START_PARAMETERS`). Underscore-prefixed, so it is
+#: in-memory provenance only and never persisted as metadata (the explicit
+#: values themselves are persisted in the source's ``loader_parameters``).
+CHIRP_WINDOW_EXPLICIT_KEY = "_chirp_window_explicit"
+
+
+def resolve_chirp_window(params: Mapping[str, Any], declared: Any) -> Tuple[Any, bool]:
+    """Merge the explicit chirp parameters over the window the source declares.
+
+    With no explicit (non-``None``) chirp parameter in ``params``, ``declared``
+    is returned unchanged (malformed or not -- persisting it is advisory and
+    reports its own failure). Otherwise, field by field, an explicit
+    ``chirp_start_us`` / ``chirp_end_us`` / ``start_margin_us`` replaces the
+    declared value, and the declared fields not given explicitly are kept when
+    they are finite numbers (a malformed declared field is dropped, so it
+    cannot sink the explicit window).
+
+    Returns the window (``None`` when neither declares one) and whether an
+    explicit value feeds the derived start (``chirp_end_us`` or
+    ``start_margin_us``, :data:`CHIRP_START_PARAMETERS`); an explicit
+    ``chirp_start_us`` alone replaces the window's start field but does not
+    reorder start precedence.
+
+    Raises
+    ------
+    LoadParameterError
+        For an explicit value that is not a finite number, or for an explicit
+        ``chirp_start_us`` / ``start_margin_us`` when no chirp end is known
+        from any layer (there is nothing to attach it to).
+    """
+    explicit: Dict[str, float] = {}
+    for key in CHIRP_PARAMETERS:
+        raw = params.get(key)
+        if raw is None:
+            continue
+        value = chirp_float(raw)
+        if not isinstance(value, float):
+            raise LoadParameterError(
+                key,
+                "a finite number of microseconds",
+                raw,
+                f"{key} must be a finite number of microseconds; got {raw!r}",
+            )
+        explicit[key] = value
+    if not explicit:
+        return declared, False
+
+    # A declared block that is not a mapping cannot contribute a field.
+    base: Mapping[str, Any] = declared if isinstance(declared, Mapping) else {}
+    merged: Dict[str, Any] = {}
+    for key in CHIRP_PARAMETERS:
+        value = chirp_float(base.get(key))
+        if isinstance(value, float):
+            merged[key] = value
+    merged.update(explicit)
+    if merged.get("chirp_end_us") is None:
+        name = "start_margin_us" if "start_margin_us" in explicit else "chirp_start_us"
+        raise LoadParameterError(
+            name,
+            "a chirp_end_us to attach to (from the call, a sidecar or the source)",
+            params.get(name),
+            f"{name} cannot be honoured: no chirp end is declared by the source "
+            "and none was given; pass chirp_end_us as well",
+        )
+    return merged, any(key in explicit for key in CHIRP_START_PARAMETERS)
+
+
+def has_chirp_end(block: Any) -> bool:
+    """Whether a declared ``chirp_window`` block holds a finite ``chirp_end_us``."""
+    return isinstance(block, Mapping) and isinstance(
+        chirp_float(block.get("chirp_end_us")), float
+    )
 
 
 @dataclass(frozen=True)
@@ -222,6 +324,17 @@ class BaseLoader(ABC):
         read. Reads only; never imports.
         """
         return None
+
+    def accepted_parameters(self) -> Tuple[str, ...]:
+        """Every load parameter this loader accepts, in declaration order.
+
+        The one declaration is :meth:`get_required_parameters` plus the keys of
+        :meth:`get_optional_parameters`; the import path refuses any other
+        parameter passed for this format.
+        """
+        names = list(self.get_required_parameters())
+        names += [n for n in self.get_optional_parameters() if n not in names]
+        return tuple(names)
 
     def get_required_parameters(self) -> List[str]:
         """

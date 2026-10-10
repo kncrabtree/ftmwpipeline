@@ -23,10 +23,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from .data_loaders.base import (
+    CHIRP_PARAMETERS,
+    CHIRP_WINDOW_EXPLICIT_KEY,
     FidPreviewRow,
     LoaderError,
     count_or_absent,
     finite_or_absent,
+    has_chirp_end,
+    resolve_chirp_window,
     sideband_or_absent,
 )
 
@@ -60,6 +64,9 @@ class ResolvedInputMetadata:
     shots: int
     chirp_window: Optional[Dict[str, Any]]
     clock_sources: Optional[List[Dict[str, Any]]]
+    #: Whether ``chirp_window`` carries an explicit ``chirp_end_us`` or
+    #: ``start_margin_us`` (a value the derived start is computed from).
+    chirp_window_explicit: bool = False
 
     @property
     def spacing_s(self) -> float:
@@ -147,6 +154,15 @@ def resolve_input_metadata(
     wins; otherwise the built-in default applies.  ``spacing_us`` is required and
     raises :class:`LoaderError` when no layer supplies it; ``probe_freq_mhz``
     defaults to ``0`` MHz (a direct-sampling instrument) when unset.
+
+    The chirp window is resolved field by field: the explicit layer's
+    ``chirp_window`` fields (any subset) replace those of the window the
+    sidecar, else the embedded layer, declares -- the first of those holding a
+    usable chirp end (see :func:`~.data_loaders.base.resolve_chirp_window`).
+    With no explicit chirp field the declared block is taken whole and
+    unchanged. An explicit
+    ``start_margin_us`` / ``chirp_start_us`` with no chirp end from any layer
+    raises :class:`~.data_loaders.base.LoadParameterError`.
     """
     layers = [layer or {} for layer in (explicit, sidecar, embedded)]
 
@@ -158,6 +174,22 @@ def resolve_input_metadata(
         return _DEFAULTS.get(key)
 
     resolved: Dict[str, Any] = {key: pick(key) for key in _DEFAULTS}
+
+    explicit_chirp = layers[0].get("chirp_window") or {}
+    lower_windows = [
+        layer["chirp_window"]
+        for layer in layers[1:]
+        if layer.get("chirp_window") is not None
+    ]
+    declared_window = lower_windows[0] if lower_windows else None
+    if explicit_chirp:
+        # Explicit fields attach to the highest layer that declares a usable
+        # chirp end, so a sidecar block without one does not hide the file's.
+        declared_window = next(
+            (window for window in lower_windows if has_chirp_end(window)),
+            declared_window,
+        )
+    chirp_window, chirp_explicit = resolve_chirp_window(explicit_chirp, declared_window)
 
     if resolved["spacing_us"] is None:
         raise LoaderError(
@@ -187,29 +219,29 @@ def resolve_input_metadata(
         probe_freq_mhz=probe_freq_mhz,
         sideband=sideband,
         shots=shots,
-        chirp_window=pick("chirp_window"),
+        chirp_window=chirp_window,
         clock_sources=pick("clock_sources"),
+        chirp_window_explicit=chirp_explicit,
     )
 
 
 def explicit_layer_from_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
     """Assemble the explicit precedence layer from generic-loader kwargs.
 
-    The acquisition fields pass through unchanged; the ``chirp_*`` kwargs are
-    folded into a single ``chirp_window`` block so the resolver sees one shape.
-    Only keys with non-``None`` values are emitted.
+    The acquisition fields pass through unchanged; the ``chirp_*`` kwargs given
+    (any subset -- a margin alone is kept, to combine with a declared chirp
+    end) are folded into a single ``chirp_window`` block so the resolver sees
+    one shape. Only keys with non-``None`` values are emitted.
     """
     explicit: Dict[str, Any] = {
         key: kwargs[key]
         for key in ("spacing_us", "probe_freq_mhz", "sideband", "shots")
         if kwargs.get(key) is not None
     }
-    if kwargs.get("chirp_end_us") is not None:
-        chirp: Dict[str, Any] = {"chirp_end_us": float(kwargs["chirp_end_us"])}
-        if kwargs.get("chirp_start_us") is not None:
-            chirp["chirp_start_us"] = float(kwargs["chirp_start_us"])
-        if kwargs.get("start_margin_us") is not None:
-            chirp["start_margin_us"] = float(kwargs["start_margin_us"])
+    chirp = {
+        key: kwargs[key] for key in CHIRP_PARAMETERS if kwargs.get(key) is not None
+    }
+    if chirp:
         explicit["chirp_window"] = chirp
     return explicit
 
@@ -225,6 +257,8 @@ def build_fid_metadata(resolved: ResolvedInputMetadata) -> Dict[str, Any]:
         metadata["clock_sources"] = resolved.clock_sources
     if resolved.chirp_window is not None:
         metadata["chirp_window"] = resolved.chirp_window
+    if resolved.chirp_window_explicit:
+        metadata[CHIRP_WINDOW_EXPLICIT_KEY] = True
     return metadata
 
 

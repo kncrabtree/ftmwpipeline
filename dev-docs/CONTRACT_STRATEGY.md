@@ -830,6 +830,13 @@ ids of a curation batch),
   batch is resolved or, for a row the request added, fitted; the original is
   `__cause__`. Replaying prior log rows and the cascade are not attributed.
   Typed errors pass through; `BaseException` is never caught.
+  Contract 20: an import refuses, before writing anything, a load parameter
+  the resolved format does not accept, and an explicit `start_margin_us` /
+  `chirp_start_us` with no chirp end given or declared — `bad_setting` with
+  `path` the parameter name and `expected` the format's accepted parameters.
+  An explicit load parameter always outranks the same value read from the
+  source, and a start derived from explicit chirp parameters outranks a start
+  the source records.
 - Each typed error remains a subclass of the built-in it replaced (most are
   `ValueError`), so existing `except` clauses keep working.
 - A `.ftmw` path that does not exist raises `not_found` (`kind: "file"`),

@@ -50,26 +50,23 @@ def cmd_data_load(args: argparse.Namespace) -> int:
         print(f"Importing data into pipeline file '{file_path}'")
         print(f"Source: {args.source}")
 
-        # Prepare loading parameters
+        # Prepare loading parameters: every flag the user set is passed, and
+        # the import refuses one the resolved format does not accept (an
+        # unset flag is not passed).
         format_params = {}
-
-        # Handle format-specific parameters
-        if args.format == "blackchirp" and args.fid_index is not None:
-            format_params["fid_index"] = args.fid_index
 
         # Generic-loader acquisition metadata (CSV and native ftmw-hdf5). These
         # may also arrive via a --metadata sidecar or, for ftmw-hdf5, embedded
         # in the file, so missing required values are reported by the loader's
         # resolver (with the precedence rule) rather than pre-checked here.
-        if args.format in (None, "csv", "ftmw-hdf5"):
-            for attr in ("spacing_us", "probe_freq_mhz", "sideband", "shots"):
-                value = getattr(args, attr, None)
-                if value is not None:
-                    format_params[attr] = value
-            if getattr(args, "metadata", None) is not None:
-                format_params["metadata"] = args.metadata
-            if getattr(args, "column", None) is not None:
-                format_params["column"] = args.column
+        for attr in ("spacing_us", "probe_freq_mhz", "sideband", "shots"):
+            value = getattr(args, attr, None)
+            if value is not None:
+                format_params[attr] = value
+        if getattr(args, "metadata", None) is not None:
+            format_params["metadata"] = args.metadata
+        if getattr(args, "column", None) is not None:
+            format_params["column"] = args.column
 
         # Keysight-MAT / segmented scope-record parameters
         if args.pre_record_us is not None:
@@ -100,6 +97,7 @@ def cmd_data_load(args: argparse.Namespace) -> int:
                 source=args.source,
                 format_name=args.format,
                 force=getattr(args, "force", False),
+                fid_index=args.fid_index,
                 events=events,
                 cancel=cancel,
                 **format_params,
@@ -496,15 +494,18 @@ Examples:
         "slicing/averaging.",
     )
 
-    # Declared chirp-window timing (keysight-mat and any format without
-    # embedded chirp metadata).
+    # Explicit chirp-window timing (every format). Each value given replaces
+    # the one the source declares (Blackchirp chirps.csv, a sidecar, embedded
+    # attributes); when any is given, the derived start chirp_end_us +
+    # start_margin_us also outranks a start the source records (Blackchirp
+    # FidStartUs).
     load_parser.add_argument(
         "--chirp-start-us",
         dest="chirp_start_us",
         type=float,
         default=None,
         help="Pre-chirp hardware delay within the frame (µs from frame t=0). "
-        "Optional; used together with --chirp-end-us for provenance only.",
+        "Provenance only; needs a chirp end (given or declared by the source).",
     )
     load_parser.add_argument(
         "--chirp-end-us",
@@ -512,17 +513,18 @@ Examples:
         type=float,
         default=None,
         help="End of the chirp sweep within the frame (µs from frame t=0). "
-        "When given, a recommended start_us is derived at import time as "
-        "chirp_end_us + start_margin_us (or the default guard margin).",
+        "Replaces the chirp end the source declares; the recommended start_us "
+        "is derived at import as chirp_end_us + start_margin_us (or the "
+        "default guard margin) and outranks a start the source records.",
     )
     load_parser.add_argument(
         "--start-margin-us",
         dest="start_margin_us",
         type=float,
         default=None,
-        help="Instrument-specific ringdown guard margin (µs) added past the "
-        "declared chirp end. Overrides the start-detector default (0.67 µs) "
-        "when --chirp-end-us is set.",
+        help="Ringdown guard margin (µs) added past the chirp end (given or "
+        "declared by the source). Overrides the start-detector default "
+        "(0.67 µs). Refused when no chirp end is known.",
     )
 
     add_events_argument(load_parser)

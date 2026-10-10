@@ -41,6 +41,37 @@ Whichever path is used, the result is identical: one FID, with its sample
 spacing, probe frequency, sideband, and shot count, written into a new ``.ftmw``
 file.
 
+.. _input-accepted-parameters:
+
+Load parameters each format accepts
+-----------------------------------
+
+Each loader declares the load parameters it takes; ``ftmwpipeline data formats``
+lists them. A parameter the resolved format does not take is refused as
+``bad_setting`` before anything is written (``path`` the parameter's name,
+``expected`` the ones the format accepts), also when the format is detected
+automatically. It is never dropped silently.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 22 78
+
+   * - Format
+     - Accepted load parameters
+   * - ``blackchirp``
+     - ``fid_index``, ``chirp_start_us``, ``chirp_end_us``, ``start_margin_us``
+   * - ``csv``
+     - ``column``, ``metadata``, ``spacing_us``, ``probe_freq_mhz``,
+       ``sideband``, ``shots``, ``chirp_start_us``, ``chirp_end_us``,
+       ``start_margin_us``
+   * - ``ftmw-hdf5``
+     - ``metadata``, ``spacing_us``, ``probe_freq_mhz``, ``sideband``,
+       ``shots``, ``chirp_start_us``, ``chirp_end_us``, ``start_margin_us``
+   * - ``keysight-mat``
+     - ``n_frames`` (required), ``pre_record_us``, ``frame_period_us``,
+       ``channel``, ``frame``, ``keep_frames``, ``interleave_factors``,
+       ``chirp_start_us``, ``chirp_end_us``, ``start_margin_us``
+
 Acquisition metadata
 --------------------
 
@@ -255,6 +286,16 @@ chirp. When a chirp window is declared — ``chirp_end_us`` with an optional
 (described on :doc:`stage0_import`) runs only as a cross-check. Declaring the
 chirp end is the reliable way to fix the start when the detector has trouble, for
 instance on very high signal-to-noise data.
+
+The three chirp fields resolve field by field: a value passed explicitly
+(``--chirp-end-us``, ``--start-margin-us``, ``--chirp-start-us``, or the
+``chirp_*`` keyword arguments) replaces the one the sidecar or the file
+declares, so ``--start-margin-us`` alone combines with a declared chirp end.
+These parameters are accepted by every format, Blackchirp included. A margin or
+chirp start with no chirp end from any layer cannot be honoured and is refused
+as ``bad_setting`` (``path`` the parameter). So is any load parameter the
+format does not take (``ftmwpipeline data formats`` lists each format's), before
+anything is written.
 
 .. _input-clock-declaration:
 

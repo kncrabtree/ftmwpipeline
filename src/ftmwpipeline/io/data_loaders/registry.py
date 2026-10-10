@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Type, Union
 
 from ...file_manager import BadSettingError, PipelineFileNotFoundError
-from .base import BaseLoader, LoaderError, SourcePreview
+from .base import BaseLoader, LoaderError, LoadParameterError, SourcePreview
 
 if TYPE_CHECKING:
     from ...core.data_structures import FID
@@ -297,6 +297,9 @@ class FormatRegistry:
         loader = self.get_loader(format_name)
         try:
             return loader.load_fid(source_path, **kwargs)
+        except LoadParameterError:
+            # Names the refused parameter; the import reports it as such.
+            raise
         except ValueError as e:
             raise LoaderError(str(e)) from e
         except Exception as e:

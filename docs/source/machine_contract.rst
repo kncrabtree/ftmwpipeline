@@ -39,10 +39,10 @@ The contract version
 ``__version__``::
 
     import ftmwpipeline
-    if ftmwpipeline.CONTRACT_VERSION < 19:
+    if ftmwpipeline.CONTRACT_VERSION < 20:
         raise RuntimeError("needs a newer ftmwpipeline")
 
-The first published contract is version ``1``; this release is version ``19``.
+The first published contract is version ``1``; this release is version ``20``.
 An addition (a new accessor, field or code) raises the version by one and never
 breaks an existing field. Every machine-readable payload also carries a
 **schema name** of the form ``ftmw/<payload>@<n>``; a schema name never changes
@@ -471,7 +471,11 @@ The stage calls that refuse an argument or a resolved setting:
      - ``format`` (an unknown ``format_name``, or auto-detection found no
        format; ``value`` the name given, or ``null``); ``source`` (a source
        the resolved format's loader does not accept, including one that does
-       not fit a format named explicitly)
+       not fit a format named explicitly); a load parameter's name (contract
+       20, ``import_data`` only): one the resolved format does not accept
+       (``expected`` lists the ones it does; nothing is written), or a
+       ``start_margin_us`` / ``chirp_start_us`` with no chirp end given or
+       declared by the source
    * - ``compute_ft``
      - ``stage1.start_us`` (negative), ``stage1.end_us`` (not after
        ``start_us``, or past the end of the recording), ``stage1.trim`` (no

@@ -38,7 +38,14 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 import numpy as np
 
 from ...contract import Absent
-from .base import BaseLoader, FidPreviewRow, LoaderError, finite_or_absent
+from .base import (
+    CHIRP_WINDOW_EXPLICIT_KEY,
+    BaseLoader,
+    FidPreviewRow,
+    LoaderError,
+    finite_or_absent,
+    resolve_chirp_window,
+)
 
 if TYPE_CHECKING:
     from ...core.data_structures import FID
@@ -87,15 +94,16 @@ class KeysightMatLoader(BaseLoader):
         ``None`` (no cleanup).
     chirp_start_us : float, optional
         Start of the chirp within each frame (µs from frame t=0).  When
-        given, ``chirp_end_us`` must also be given.  Default ``None``.
+        given, ``chirp_end_us`` must also be given (refused otherwise).
+        Default ``None``.
     chirp_end_us : float, optional
         End of the chirp within each frame (µs from frame t=0).  When given,
         the recommended FID start is derived as
         ``chirp_end_us + start_margin_us``.  Default ``None``.
     start_margin_us : float, optional
         Instrument-specific ringdown guard margin added past the chirp end.
-        Overrides the start-detector default when ``chirp_end_us`` is set.
-        Default ``None``.
+        Overrides the start-detector default; requires ``chirp_end_us``
+        (refused otherwise).  Default ``None``.
     """
 
     format_name = "keysight-mat"
@@ -387,15 +395,15 @@ class KeysightMatLoader(BaseLoader):
             ]
             source_meta["clock_sources"] = clock_sources
 
-        # Declared chirp-window timing, when provided by the operator.
-        # Frames are sliced to t=0, so frame-relative = record-relative here.
-        if chirp_end_us is not None:
-            chirp_window: Dict[str, Any] = {"chirp_end_us": chirp_end_us}
-            if chirp_start_us is not None:
-                chirp_window["chirp_start_us"] = chirp_start_us
-            if start_margin_us is not None:
-                chirp_window["start_margin_us"] = start_margin_us
+        # Declared chirp-window timing, when provided by the operator (the
+        # record declares none, so a margin or start without a chirp end is
+        # refused). Frames are sliced to t=0, so frame-relative =
+        # record-relative here.
+        chirp_window, explicit = resolve_chirp_window(params, None)
+        if chirp_window is not None:
             source_meta["chirp_window"] = chirp_window
+        if explicit:
+            source_meta[CHIRP_WINDOW_EXPLICIT_KEY] = True
 
         # Direct sampling: probe = 0, upper sideband → f_mol = 0 + f_bb = f_bb
         return FID(
