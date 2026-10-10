@@ -41,6 +41,37 @@ Whichever path is used, the result is identical: one FID, with its sample
 spacing, probe frequency, sideband, and shot count, written into a new ``.ftmw``
 file.
 
+.. _input-accepted-parameters:
+
+Load parameters each format accepts
+-----------------------------------
+
+Each loader declares the load parameters it takes; ``ftmwpipeline data formats``
+lists them. A parameter the resolved format does not take is refused as
+``bad_setting`` before anything is written (``path`` the parameter's name,
+``expected`` the ones the format accepts), also when the format is detected
+automatically. It is never dropped silently.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 22 78
+
+   * - Format
+     - Accepted load parameters
+   * - ``blackchirp``
+     - ``fid_index``, ``chirp_start_us``, ``chirp_end_us``, ``start_margin_us``
+   * - ``csv``
+     - ``column``, ``metadata``, ``spacing_us``, ``probe_freq_mhz``,
+       ``sideband``, ``shots``, ``chirp_start_us``, ``chirp_end_us``,
+       ``start_margin_us``
+   * - ``ftmw-hdf5``
+     - ``metadata``, ``spacing_us``, ``probe_freq_mhz``, ``sideband``,
+       ``shots``, ``chirp_start_us``, ``chirp_end_us``, ``start_margin_us``
+   * - ``keysight-mat``
+     - ``n_frames`` (required), ``pre_record_us``, ``frame_period_us``,
+       ``channel``, ``frame``, ``keep_frames``, ``interleave_factors``,
+       ``chirp_start_us``, ``chirp_end_us``, ``start_margin_us``
+
 Acquisition metadata
 --------------------
 
