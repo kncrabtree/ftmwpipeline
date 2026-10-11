@@ -875,7 +875,10 @@ ids of a curation batch),
     (`curation_conflict`). Its `reason` is a stable slug, such as
     `line_already_fitted`, `targets_span_windows`, `orphans_created_window`
     or `replay_conflict`. `ids` names the windows,
-    peaks or decisions involved.
+    peaks or decisions involved. From contract 21 the full set of reasons is
+    the closed, append-only vocabulary `curation_conflict_reason`
+    (`ftmwpipeline.contract.CURATION_CONFLICT_REASONS`); a retired reason
+    stays declared.
 - **`bad_setting.path` names what the caller wrote:**
   - a registry setting is its registry path;
   - an argument is its name (`add`, `remove`, `format`, `source`);

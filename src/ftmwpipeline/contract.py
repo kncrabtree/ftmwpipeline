@@ -89,7 +89,7 @@ from .file_manager import (
 #: The machine-contract version. The first published contract is ``1``; each
 #: release that adds (or, before 1.0.0, changes) contract elements raises it by
 #: one, so a client can gate on it as well as on :func:`capabilities`.
-CONTRACT_VERSION: int = 20
+CONTRACT_VERSION: int = 21
 
 #: Schema name of the :func:`capabilities` payload.
 CAPABILITIES_SCHEMA = "ftmw/capabilities@1"
@@ -1076,6 +1076,25 @@ FIT_RESTART_REASONS: Tuple[str, ...] = (
     "thaw_refit",
 )
 
+#: The ``reason`` values of a ``curation_conflict`` refusal
+#: (:class:`CurationConflictError`), in the order the reference lists them. Only
+#: ever appended. ``baseline_unavailable`` is retired (not raised from contract 16)
+#: but stays declared, since a client may still key on it.
+CURATION_CONFLICT_REASONS: Tuple[str, ...] = (
+    "line_already_fitted",
+    "targets_span_windows",
+    "orphans_created_window",
+    "orphans_peak",
+    "ambiguous_peak",
+    "baseline_unavailable",
+    "replay_conflict",
+    "replay_diverged",
+    "target_outside_window",
+    "fit_plan_unavailable",
+    "predates_peak_identity",
+    "predates_replay_engine",
+)
+
 #: The keys of ``StageFinished.summary`` per operation (the event's
 #: ``operation``, the verb): ``required`` keys are always present, ``conditional``
 #: ones only in the case noted beside them. The same keys are the verb's
@@ -1326,6 +1345,7 @@ _VOCABULARIES: Dict[str, Tuple[str, ...]] = {
     # Checked against ``core.data_structures.ATTENTION_KINDS``, which
     # ``review run`` records from.
     "attention_kind": ATTENTION_KINDS,
+    "curation_conflict_reason": CURATION_CONFLICT_REASONS,
 }
 
 MANIFEST = ContractManifest(
@@ -1394,6 +1414,7 @@ def capabilities() -> Dict[str, Any]:
 __all__ = [
     "CONTRACT_VERSION",
     "FIT_RESTART_REASONS",
+    "CURATION_CONFLICT_REASONS",
     "CAPABILITIES_SCHEMA",
     "FID_SAMPLES_SCHEMA",
     "DISPLAY_UNITS_SCHEMA",

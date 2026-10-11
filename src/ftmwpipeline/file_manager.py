@@ -607,8 +607,9 @@ class CurationConflictError(PipelineFileError, ValueError):
         ``"targets_span_windows"``, ``"orphans_created_window"``,
         ``"orphans_peak"``, ``"ambiguous_peak"``,
         ``"replay_conflict"``, ``"replay_diverged"``,
-        ``"fit_plan_unavailable"``, ...). The full set
-        is listed in ``docs/source/machine_contract.rst``.
+        ``"fit_plan_unavailable"``, ...). The full set is
+        ``ftmwpipeline.contract.CURATION_CONFLICT_REASONS``, described in
+        ``docs/source/machine_contract.rst``.
     ids : list of int
         The windows, peaks or decisions the conflict involves (which kind is
         fixed by ``reason``); empty when the conflict names none.

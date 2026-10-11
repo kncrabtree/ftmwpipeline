@@ -11,6 +11,13 @@ Notable changes to ``ftmwpipeline``, newest first. Versions follow
 Unreleased
 ----------
 
+**Contract 21: the ``curation_conflict`` reasons are declared;
+``CONTRACT_VERSION`` moves 20 → 21.** ``ftmwpipeline.contract`` exports
+``CURATION_CONFLICT_REASONS``, the ``reason`` slugs a ``curation_conflict``
+refusal can carry (the retired ``baseline_unavailable`` included), and
+``capabilities()`` lists them as the ``curation_conflict_reason`` vocabulary.
+Additive: no refusal changes, and ``ANALYSIS_EPOCH`` is unchanged.
+
 **Contract 20: an explicit load parameter outranks the source, and one the
 format does not take is refused; ``CONTRACT_VERSION`` moves 19 → 20.**
 ``chirp_start_us``, ``chirp_end_us`` and ``start_margin_us`` (``--chirp-start-us``
