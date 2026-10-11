@@ -352,6 +352,20 @@ SNAPSHOT_VOCABULARIES = {
         "empty_window_residual",
         "empty_window_spur",
     },
+    "curation_conflict_reason": {
+        "line_already_fitted",
+        "targets_span_windows",
+        "orphans_created_window",
+        "orphans_peak",
+        "ambiguous_peak",
+        "baseline_unavailable",
+        "replay_conflict",
+        "replay_diverged",
+        "target_outside_window",
+        "fit_plan_unavailable",
+        "predates_peak_identity",
+        "predates_replay_engine",
+    },
 }
 
 
@@ -582,7 +596,7 @@ def test_manifest_sequences_are_tuples():
 
 
 def test_manifest_version_matches_package():
-    assert MANIFEST.contract_version == ftmwpipeline.CONTRACT_VERSION == 20
+    assert MANIFEST.contract_version == ftmwpipeline.CONTRACT_VERSION == 21
     assert isinstance(ftmwpipeline.CONTRACT_VERSION, int)
 
 

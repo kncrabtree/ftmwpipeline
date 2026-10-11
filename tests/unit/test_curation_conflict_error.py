@@ -118,3 +118,37 @@ def test_not_found_accepts_the_decision_kind_and_frequency_ids():
     json.dumps(d, allow_nan=False)
     clone = pickle.loads(pickle.dumps(by_freq))
     assert clone.ids == by_freq.ids and clone.kind == "peak"
+
+
+def test_every_raised_reason_is_declared():
+    import re
+    from pathlib import Path
+
+    src = Path(ftmwpipeline.__file__).parent
+    texts = [p.read_text(encoding="utf-8") for p in src.rglob("*.py")]
+    # A raise site that names its reason as a literal must name a declared one.
+    raised = set()
+    for text in texts:
+        raised.update(re.findall(r'CurationConflictError\(\s*"([a-z_]+)"', text))
+    # A scan that found none would mean the pattern rotted, not that nothing
+    # is raised.
+    assert len(raised) >= 8
+    assert raised <= set(contract.CURATION_CONFLICT_REASONS)
+    # Some sites pass the reason through a constant or a helper's return
+    # value, so check the other direction: every live declared reason is
+    # spelled somewhere in the source (a typo in the tuple would not be).
+    literals = set()
+    for text in texts:
+        literals.update(re.findall(r'"([a-z_]+)"', text))
+    live = set(contract.CURATION_CONFLICT_REASONS) - {"baseline_unavailable"}
+    assert live <= literals
+
+
+def test_the_reason_vocabulary_is_declared_and_exported():
+    reasons = contract.CURATION_CONFLICT_REASONS
+    assert isinstance(reasons, tuple) and len(set(reasons)) == len(reasons)
+    assert "CURATION_CONFLICT_REASONS" in contract.__all__
+    assert contract.MANIFEST.vocabularies["curation_conflict_reason"] == reasons
+    assert contract.capabilities()["vocabularies"]["curation_conflict_reason"] == list(
+        reasons
+    )

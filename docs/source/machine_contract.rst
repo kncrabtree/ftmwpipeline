@@ -39,10 +39,10 @@ The contract version
 ``__version__``::
 
     import ftmwpipeline
-    if ftmwpipeline.CONTRACT_VERSION < 20:
+    if ftmwpipeline.CONTRACT_VERSION < 21:
         raise RuntimeError("needs a newer ftmwpipeline")
 
-The first published contract is version ``1``; this release is version ``20``.
+The first published contract is version ``1``; this release is version ``21``.
 An addition (a new accessor, field or code) raises the version by one and never
 breaks an existing field. Every machine-readable payload also carries a
 **schema name** of the form ``ftmw/<payload>@<n>``; a schema name never changes
@@ -95,8 +95,10 @@ can discover the whole surface without importing the package:
   ``PipelineWarning.slow_window``.
 * ``vocabularies`` -- the closed value sets: ``decision_kind`` and
   ``decision_provenance`` (the ``DecisionLogEntry`` ``kind`` and
-  ``provenance``), ``stage_state``, ``warning_code``, ``restart_reason`` and
-  ``attention_kind`` (:ref:`contract-attention`).
+  ``provenance``), ``stage_state``, ``warning_code``, ``restart_reason``,
+  ``attention_kind`` (:ref:`contract-attention`) and
+  ``curation_conflict_reason`` (the ``reason`` of a ``curation_conflict``;
+  contract 21).
 * ``summary_keys`` -- per operation (the CLI verb, such as ``"fit run"``), the
   keys of its ``StageFinished.summary`` and ``ftmw/run_result@1`` summary:
   ``required`` keys are always present, ``conditional`` ones only in the case
@@ -642,7 +644,9 @@ does ``review apply --json`` (with or without ``--dry-run``), beside its
     one.
 
 * ``curation_conflict`` (``CurationConflictError``), a valid request that
-  conflicts with the file's review state. ``reason`` is one of:
+  conflicts with the file's review state. ``reason`` is one of the
+  ``curation_conflict_reason`` vocabulary, also importable as
+  ``ftmwpipeline.contract.CURATION_CONFLICT_REASONS`` (contract 21):
 
   .. list-table::
      :header-rows: 1
