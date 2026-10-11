@@ -735,14 +735,9 @@ def estimate_active_ft_noise(
     info["complex_sigma_median"] = cpx_med
     info["complex_magnitude_ratio"] = ratio
     info["complex_divergence"] = divergence
+    # Flagged, not logged: every later stage re-estimates on the same grid, so
+    # Stage 2 alone reports it (the ``noise_divergence`` warning).
     info["complex_divergence_warn"] = warn
-    if warn:
-        logger.warning(
-            "Stage 2 noise: magnitude σ and complex-domain σ cross-check disagree "
-            "by %.1f%% (magnitude/complex = %.3f); the per-bin σ may be biased.",
-            100.0 * divergence,
-            ratio,
-        )
 
     unsort = np.argsort(sort_idx)
     return NoiseResult(

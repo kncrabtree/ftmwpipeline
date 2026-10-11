@@ -352,6 +352,15 @@ def _enrich(path: str) -> Tuple[str, str]:
     return spec.tier, spec.help
 
 
+def _field_help(cls: type, sub: Optional[str], name: str) -> str:
+    """The help a settings field declares on itself (``knob_field``), or ``""``."""
+    owner: Any = cls
+    if sub is not None:
+        owner = type(getattr(cls(), sub))
+    f = next(f for f in fields(owner) if f.name == name)
+    return str((f.metadata.get("knob") or {}).get("help") or "")
+
+
 @requires_pipeline_file()
 def resolve_settings_view(
     file_path: Optional[Union[str, Path]] = None,
@@ -425,6 +434,8 @@ def resolve_settings_view(
             if not _matches(path, selector):
                 continue
             tier, help_text = _enrich(path)
+            # A field no scan registers still carries its own declared help.
+            help_text = help_text or _field_help(spec.cls, sub, name)
             if tier == "advanced" and not include_advanced:
                 continue
 

@@ -234,7 +234,7 @@ def test_summary_keys_match_the_builders_key_constants():
 # ---- warnings -------------------------------------------------------------
 
 
-def test_warning_vocabulary_is_the_specs_six_codes():
+def test_warning_vocabulary_is_the_specs_codes():
     assert set(MANIFEST.vocabularies["warning_code"]) == {
         "slow_window",
         "epoch_acknowledged",
@@ -242,6 +242,7 @@ def test_warning_vocabulary_is_the_specs_six_codes():
         "frame_mismatch",
         "walk_fallback",
         "timebase_skipped",
+        "noise_divergence",
     }
     assert capabilities()["vocabularies"]["warning_code"] == list(
         MANIFEST.vocabularies["warning_code"]
@@ -255,6 +256,7 @@ _WARNING_FIELDS_SPEC = {
     "frame_mismatch": ("actions",),
     "walk_fallback": ("reason", "n_windows"),
     "timebase_skipped": (),
+    "noise_divergence": ("magnitude_complex_ratio", "divergence"),
 }
 _WARNING_VALUES = {
     "window_id": 4,
@@ -266,6 +268,8 @@ _WARNING_VALUES = {
     "actions": [0, 2],
     "reason": "accepted thaw",
     "n_windows": 12,
+    "magnitude_complex_ratio": 0.8,
+    "divergence": 0.2,
 }
 
 
@@ -494,10 +498,11 @@ def test_contract_version_is_sixteen():
     # 17: request action indices; 18: calibrated created-window structure;
     # 19: internal_error, bad_setting action_indices; 20: explicit load
     # parameters outrank the source, inapplicable ones refused; 21:
-    # curation_conflict_reason vocabulary.
-    assert ftmwpipeline.CONTRACT_VERSION == 21
-    assert MANIFEST.contract_version == 21
-    assert capabilities()["contract_version"] == 21
+    # curation_conflict_reason vocabulary; 22: RunStep, noise_divergence,
+    # settings help everywhere.
+    assert ftmwpipeline.CONTRACT_VERSION == 22
+    assert MANIFEST.contract_version == 22
+    assert capabilities()["contract_version"] == 22
 
 
 def test_event_schemas_are_in_the_manifest_and_capabilities():
@@ -600,4 +605,5 @@ def test_run_pipeline_callback_failure_is_raised_not_folded_into_the_result(tmp_
     with pytest.raises(CallbackFailedError) as info:
         _run(tmp_path, events=bad)
     assert isinstance(info.value.__cause__, RuntimeError)
-    assert info.value.event_schema == "ftmw/stage_started@1"
+    # The first event a run delivers is its first RunStep (contract 22).
+    assert info.value.event_schema == "ftmw/run_step@1"

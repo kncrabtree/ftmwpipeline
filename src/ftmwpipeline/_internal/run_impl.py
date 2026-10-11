@@ -15,9 +15,19 @@ from __future__ import annotations
 import inspect
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, TextIO, Tuple, Union
+from typing import (
+    Any,
+    Callable,
+    ContextManager,
+    Dict,
+    List,
+    Optional,
+    TextIO,
+    Tuple,
+    Union,
+)
 
-from ..contract import CancelToken, EventCallback, Stage
+from ..contract import CancelToken, EventCallback, RunStep, Stage
 from ..file_manager import (
     BadSettingError,
     CallbackFailedError,
@@ -209,6 +219,24 @@ def run_pipeline_impl(
 
     tau_shape = (tau_params or {}).get("shape")
 
+    step_index = 0
+
+    def _step(label: str) -> ContextManager[None]:
+        # Announce the step (index of the planned total), then open its banner.
+        nonlocal step_index
+        step_index += 1
+        name = canonical_run_step(label, tau_shape)
+        ops.emit(
+            RunStep(
+                ops.operation,
+                None if name is None else Stage(name),
+                label,
+                step_index,
+                len(stages),
+            )
+        )
+        return reporter.stage(label)
+
     def _done(label: str) -> None:
         # A stage that reports through the shared events has already recorded
         # itself (and a tau twin it built); this only backstops the stage the
@@ -237,7 +265,7 @@ def run_pipeline_impl(
     with reporter.capture_logs():
         try:
             ops.check_cancel()
-            with reporter.stage("import"):
+            with _step("import"):
                 pipe = _call(
                     Pipeline.create,
                     dict(
@@ -254,12 +282,12 @@ def run_pipeline_impl(
 
             if detect_start:
                 ops.check_cancel()
-                with reporter.stage("start detection"):
+                with _step("start detection"):
                     _call(pipe.detect_start_time, start_detection_params, None, ops)
                 _done("start detection")
 
             ops.check_cancel()
-            with reporter.stage("FT"):
+            with _step("FT"):
                 ftp = dict(ft_params or {})
                 ftp.setdefault("trim", trim)
                 _call(pipe.compute_ft, ftp, None, ops)
@@ -267,7 +295,7 @@ def run_pipeline_impl(
 
             if calibrate:
                 ops.check_cancel()
-                with reporter.stage("timebase"):
+                with _step("timebase"):
                     try:
                         _call(
                             pipe.calibrate_timebase,
@@ -290,32 +318,32 @@ def run_pipeline_impl(
                         ops.warn("timebase_skipped", note, stage=Stage.TIMEBASE)
 
             ops.check_cancel()
-            with reporter.stage("noise"):
+            with _step("noise"):
                 _call(pipe.estimate_noise, noise_params, preset, ops)
             _done("noise")
 
             ops.check_cancel()
-            with reporter.stage("calibrate tau"):
+            with _step("calibrate tau"):
                 _call(pipe.calibrate_tau, tau_params, preset, ops)
             _done("calibrate tau")
 
             ops.check_cancel()
-            with reporter.stage("peaks"):
+            with _step("peaks"):
                 _call(pipe.detect_peaks, peak_params, preset, ops)
             _done("peaks")
 
             ops.check_cancel()
-            with reporter.stage("windows"):
+            with _step("windows"):
                 _call(pipe.assign_windows, window_params, preset, ops)
             _done("windows")
 
             ops.check_cancel()
-            with reporter.stage("fit"):
+            with _step("fit"):
                 _call(pipe.fit_peaks, fit_params, preset, ops)
             _done("fit")
 
             ops.check_cancel()
-            with reporter.stage("review"):
+            with _step("review"):
                 rp = dict(review_params or {})
                 if sigma_floor_khz is not None:
                     rp.setdefault("sigma_floor_khz", sigma_floor_khz)
@@ -324,7 +352,7 @@ def run_pipeline_impl(
 
             if report:
                 ops.check_cancel()
-                with reporter.stage("report"):
+                with _step("report"):
                     rdir = (
                         report_output_dir
                         if report_output_dir is not None

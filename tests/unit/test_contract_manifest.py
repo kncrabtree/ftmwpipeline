@@ -90,6 +90,7 @@ SNAPSHOT_SCHEMAS = frozenset(
         "ftmw/scan_progress@1",
         "ftmw/invalidated@1",
         "ftmw/warning@1",
+        "ftmw/run_step@1",
     }
 )
 SNAPSHOT_CODES = frozenset(
@@ -317,12 +318,14 @@ SNAPSHOT_FIELDS: dict = {
     "ScanProgress": {"schema", "operation", "stage", "knob", "value", "index", "total"},
     "Invalidated": {"schema", "operation", "stage", "stages"},
     "PipelineWarning": {"schema", "operation", "stage", "code", "message"},
+    "RunStep": {"schema", "operation", "stage", "step", "index", "total"},
     "PipelineWarning.slow_window": {"window_id", "elapsed_s", "threshold_s"},
     "PipelineWarning.epoch_acknowledged": {"file_epoch", "current_epoch"},
     "PipelineWarning.environment_drift": {"fields"},
     "PipelineWarning.frame_mismatch": {"actions"},
     "PipelineWarning.walk_fallback": {"reason", "n_windows"},
     "PipelineWarning.timebase_skipped": set(),
+    "PipelineWarning.noise_divergence": {"magnitude_complex_ratio", "divergence"},
 }
 SNAPSHOT_VOCABULARIES = {
     "decision_kind": {"add", "remove", "merge", "split", "accept", "create_window"},
@@ -335,6 +338,7 @@ SNAPSHOT_VOCABULARIES = {
         "frame_mismatch",
         "walk_fallback",
         "timebase_skipped",
+        "noise_divergence",
     },
     "restart_reason": {
         "restart_requested",
@@ -365,6 +369,19 @@ SNAPSHOT_VOCABULARIES = {
         "fit_plan_unavailable",
         "predates_peak_identity",
         "predates_replay_engine",
+    },
+    "run_step": {
+        "import",
+        "start detection",
+        "FT",
+        "timebase",
+        "noise",
+        "calibrate tau",
+        "peaks",
+        "windows",
+        "fit",
+        "review",
+        "report",
     },
 }
 
@@ -596,7 +613,7 @@ def test_manifest_sequences_are_tuples():
 
 
 def test_manifest_version_matches_package():
-    assert MANIFEST.contract_version == ftmwpipeline.CONTRACT_VERSION == 21
+    assert MANIFEST.contract_version == ftmwpipeline.CONTRACT_VERSION == 22
     assert isinstance(ftmwpipeline.CONTRACT_VERSION, int)
 
 

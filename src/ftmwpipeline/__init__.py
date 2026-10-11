@@ -61,6 +61,7 @@ from ftmwpipeline.contract import (
     FidPreviewRow,
     Invalidated,
     PipelineWarning,
+    RunStep,
     ScanProgress,
     Stage,
     StageFinished,
@@ -163,6 +164,7 @@ __all__ = [
     "StageFinished",
     "WindowProgress",
     "ScanProgress",
+    "RunStep",
     "Invalidated",
     "PipelineWarning",
     # Main pipeline interface

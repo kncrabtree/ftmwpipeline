@@ -933,6 +933,7 @@ Every event has `schema`, `operation` (the CLI verb, such as `"fit run"`) and
 | `StageFinished` | `ftmw/stage_finished@1` | `elapsed_s`; `summary` |
 | `WindowProgress` | `ftmw/window_progress@1` | `phase`; `round`; `index`; `total`; `window_id`; `n_peaks`; `chi2r`; `elapsed_s`; `dropped` |
 | `ScanProgress` | `ftmw/scan_progress@1` | `knob`; `value`; `index`; `total` |
+| `RunStep` | `ftmw/run_step@1` | `step`; `index`; `total` |
 | `Invalidated` | `ftmw/invalidated@1` | `stages` |
 | `PipelineWarning` | `ftmw/warning@1` | `code`; `message`; code-specific fields |
 
@@ -975,6 +976,12 @@ Every event has `schema`, `operation` (the CLI verb, such as `"fit run"`) and
   result's `invalidated` field.
 - **`ScanProgress`** is emitted once per scanned value; `knob` is a registry
   path.
+- **`RunStep`** (contract 22) is emitted by `run_pipeline` alone, once per
+  step as it begins, before that step's own events. `index` counts from 1;
+  `total` is the run's planned step count, fixed at the start (optional steps
+  count only when requested). `step` comes from the vocabulary `run_step`,
+  the same labels as the run result's `failed_step`; `stage` is the step's
+  stage, or `null` for a step that is not a stage.
 - **`PipelineWarning.code`** comes from the vocabulary `warning_code`.
   Additions are additive.
 
@@ -986,6 +993,7 @@ Every event has `schema`, `operation` (the CLI verb, such as `"fit run"`) and
   | `frame_mismatch` | `actions` (0-based request positions) | the existing curation advisory |
   | `walk_fallback` | `reason`, `n_windows` | the fit walk falls back to the sequential walk |
   | `timebase_skipped` | — | `run_pipeline` continues past a failed timebase calibration |
+  | `noise_divergence` | `magnitude_complex_ratio`, `divergence` | the noise stage's magnitude σ and complex-domain cross-check disagree beyond the threshold (once, from the noise stage only) |
 
 ### Ordering
 
@@ -1266,6 +1274,9 @@ What is left in the file is the same as after a cancel at that point.
   - `units` (a string such as `"MHz"` or `"us"`, or `None`);
   - `choices` (a list, or `None`);
   - `bounds` (`{"min", "max", "min_inclusive", "max_inclusive"}`, or `None`).
+
+  Every row's `help` is a non-empty one-line description (contract 22): a
+  registered knob's help, else the help the field declares.
 
   Every value round-trips as typed JSON, including `ShapeSpec` with its
   parameters, and clock sources. Bounds and choices come from the knob

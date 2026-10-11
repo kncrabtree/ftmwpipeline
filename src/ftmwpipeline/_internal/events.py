@@ -263,6 +263,16 @@ WARNING_LINES: Dict[str, LogLine] = {
         "file. The curated fit mixes two analysis environments.",
         lambda e, d: (e.details["file_epoch"], e.details["current_epoch"]),
     ),
+    "noise_divergence": LogLine(
+        _STAGE2_LOGGER,
+        logging.WARNING,
+        "Stage 2 noise: magnitude σ and complex-domain σ cross-check disagree "
+        "by %.1f%% (magnitude/complex = %.3f); the per-bin σ may be biased.",
+        lambda e, d: (
+            100.0 * e.details["divergence"],
+            e.details["magnitude_complex_ratio"],
+        ),
+    ),
 }
 
 _WINDOW_DETAIL_LINE = LogLine(
@@ -352,7 +362,7 @@ def render(
         line = WARNING_LINES.get(event.code)
         if line is not None:
             line.emit(event, d)
-    # ScanProgress: no line.
+    # ScanProgress, RunStep: no line (run prints its own [i/N] banner).
 
 
 def warning_text(
