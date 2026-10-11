@@ -39,10 +39,10 @@ The contract version
 ``__version__``::
 
     import ftmwpipeline
-    if ftmwpipeline.CONTRACT_VERSION < 21:
+    if ftmwpipeline.CONTRACT_VERSION < 22:
         raise RuntimeError("needs a newer ftmwpipeline")
 
-The first published contract is version ``1``; this release is version ``21``.
+The first published contract is version ``1``; this release is version ``22``.
 An addition (a new accessor, field or code) raises the version by one and never
 breaks an existing field. Every machine-readable payload also carries a
 **schema name** of the form ``ftmw/<payload>@<n>``; a schema name never changes
@@ -96,9 +96,9 @@ can discover the whole surface without importing the package:
 * ``vocabularies`` -- the closed value sets: ``decision_kind`` and
   ``decision_provenance`` (the ``DecisionLogEntry`` ``kind`` and
   ``provenance``), ``stage_state``, ``warning_code``, ``restart_reason``,
-  ``attention_kind`` (:ref:`contract-attention`) and
+  ``attention_kind`` (:ref:`contract-attention`),
   ``curation_conflict_reason`` (the ``reason`` of a ``curation_conflict``;
-  contract 21).
+  contract 21) and ``run_step`` (the ``step`` of a ``RunStep``; contract 22).
 * ``summary_keys`` -- per operation (the CLI verb, such as ``"fit run"``), the
   keys of its ``StageFinished.summary`` and ``ftmw/run_result@1`` summary:
   ``required`` keys are always present, ``conditional`` ones only in the case
@@ -1509,7 +1509,8 @@ Typed settings rows: ``settings_show`` and ``settings_defaults``
 
 Each ``SettingRow`` (and each item of ``settings show`` / ``settings defaults``
 ``--json``) carries, besides ``path``, ``value``, ``source``,
-``hard_default``, ``tier`` and ``help``, five fields that say how to edit it:
+``hard_default``, ``tier`` and ``help``, five fields that say how to edit it.
+``help`` is a one-line description and is never empty (contract 22):
 
 * ``type`` -- ``"float"``, ``"int"``, ``"bool"``, ``"str"``, ``"choice"``,
   ``"float_pair"``, ``"float_list"``, ``"str_list"``, ``"shape_spec"`` or
@@ -1887,6 +1888,17 @@ detection, the report, a scan):
   a replan round and its fallback.
 * ``ScanProgress`` (``ftmw/scan_progress@1``: ``knob``, ``value``, ``index``,
   ``total``) follows each scanned value.
+* ``RunStep`` (``ftmw/run_step@1``: ``step``, ``index``, ``total``; contract
+  22) is emitted by ``run_pipeline`` alone, as each step begins and before
+  that step's own events. ``index`` counts steps from 1, and ``total`` is the
+  number of steps this run will take, fixed when it starts: the optional
+  start detection, timebase and report steps count only when requested.
+  ``step`` is one of the ``run_step`` vocabulary (``"import"``,
+  ``"start detection"``, ``"FT"``, ``"timebase"``, ``"noise"``,
+  ``"calibrate tau"``, ``"peaks"``, ``"windows"``, ``"fit"``, ``"review"``,
+  ``"report"``), the same labels as the run result's ``failed_step``;
+  ``stage`` is the stage the step runs, or ``null`` for start detection and
+  the report.
 * ``Invalidated`` (``ftmw/invalidated@1``: ``stages``) is emitted once per
   call that drops downstream stages, after the call's write is durable and
   just before ``StageFinished``, and equals the result's ``invalidated``.
@@ -1896,8 +1908,13 @@ detection, the report, a scan):
   ``walk_fallback``, ``epoch_acknowledged``, ``frame_mismatch`` (the curation
   advisory, which stays in the result's ``warnings`` too),
   ``environment_drift`` (once per operation, when the file's recorded
-  environment differs from the running one) and ``timebase_skipped``
-  (``run_pipeline`` could not calibrate the timebase and went on without it).
+  environment differs from the running one), ``timebase_skipped``
+  (``run_pipeline`` could not calibrate the timebase and went on without it)
+  and ``noise_divergence`` (contract 22: Stage 2's magnitude σ and its
+  complex-domain cross-check disagree by more than 12%, so the per-bin σ may
+  be biased; ``magnitude_complex_ratio`` is the ratio of their medians and
+  ``divergence`` its distance from 1). ``noise_divergence`` is emitted by the
+  noise stage alone, once per run of it; later stages do not repeat it.
 
 A callback that raises aborts the operation with ``callback_failed``. What is
 left in the file is what a cancel at that point would leave: a callback that

@@ -102,8 +102,9 @@ def test_contract_version_is_fourteen():
     # empty_window_residual) to 14; internal_error and bad_setting's
     # action_indices to 19; explicit load parameters outranking the source and
     # inapplicable ones refused (bad_setting) to 20; the curation_conflict
-    # reason vocabulary to 21.
-    assert CONTRACT_VERSION == 21
+    # reason vocabulary to 21; RunStep, noise_divergence and every settings
+    # row's help to 22.
+    assert CONTRACT_VERSION == 22
 
 
 # ---- stage vocabulary -----------------------------------------------------

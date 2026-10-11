@@ -172,9 +172,10 @@ def test_registry_enrichment(bare_ftmw: Path) -> None:
     # A registered knob carries its tier + one-line help.
     assert rows["stage2.window_mhz"].tier == "primary"
     assert rows["stage2.window_mhz"].help
-    # An unswept field absent from the registry is advanced with empty help.
+    # An unswept field absent from the registry is advanced and carries the
+    # help it declares (contract 22).
     assert rows["stage1.units_power"].tier == "advanced"
-    assert rows["stage1.units_power"].help == ""
+    assert rows["stage1.units_power"].help.startswith("Spectrum scaling")
 
 
 # --- the file-less view (the settings registry) -----------------------------

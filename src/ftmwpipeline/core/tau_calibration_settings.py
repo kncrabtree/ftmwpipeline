@@ -54,7 +54,7 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Tuple, Union
 
 from . import settings_framework as sf
-from .knob_metadata import field_typing, knob_field
+from .knob_metadata import knob_field
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +108,10 @@ class StftSubSettings:
         inst_sensitivity="maybe",
         grid=(0.02, 0.05, 0.10, 0.20),
     )
-    sigma_x_full: Optional[float] = None
+    sigma_x_full: Optional[float] = knob_field(
+        help="Per-bin spectral noise floor override for the STFT gate; unset -> "
+        "sigma_t*dt*sqrt(N/2).",
+    )
     sigma_time: Optional[float] = knob_field(
         help="Time-domain sigma_t override; default measures from the FID "
         "active-region tail.",
@@ -121,7 +124,10 @@ class StftSubSettings:
 class PolishSubSettings:
     """Pure-exp polish step (consumed by ``calibrate_tau`` only)."""
 
-    polish: Optional[bool] = None
+    polish: Optional[bool] = knob_field(
+        help="Gauss-Newton polish of each contributor's log-linear (C, tau) seed "
+        "(exp shape only).",
+    )
     polish_n_iter: Optional[int] = knob_field(
         help="Gauss-Newton polish iterations per eligible contributor.",
         inst_sensitivity="N",
@@ -190,8 +196,15 @@ class BandSubSettings:
         inst_sensitivity="Y",
         grid=(False, True),
     )
-    band_edges_mhz: Optional[Tuple[float, ...]] = field_typing(units="MHz")
-    band_labels: Optional[Tuple[str, ...]] = None
+    band_edges_mhz: Optional[Tuple[float, ...]] = knob_field(
+        help="Interior band boundaries (MHz) for per-band tau majorities; unset ->"
+        " equal split of the trim range.",
+        units="MHz",
+    )
+    band_labels: Optional[Tuple[str, ...]] = knob_field(
+        help="Band names, one per band; unset -> (low, mid, high); without edges "
+        "it sets the band count.",
+    )
     min_contributors_per_band: Optional[int] = knob_field(
         help="Min contributors for a band to use its own tau majority (else "
         "band-wide).",
@@ -239,7 +252,10 @@ class GaussianSubSettings:
         argtype=float,
         flag="--tau-g-bound-hi",
     )
-    tau_G_seeds: Optional[Tuple[float, ...]] = None
+    tau_G_seeds: Optional[Tuple[float, ...]] = knob_field(
+        help="Multi-start tau_G seed grid (us) for the per-bin pure-Gaussian fit; "
+        "the best-RSS basin is kept.",
+    )
     delta_chi2r_min: Optional[float] = knob_field(
         help="Min chi2r improvement of the Gaussian over the exp fit to count "
         "a bin.",
@@ -300,14 +316,20 @@ class RecommendationSubSettings:
         inst_sensitivity="maybe",
         grid=(50.0, 100.0, 200.0),
     )
-    tau_G_seeds: Optional[Tuple[float, ...]] = None
+    tau_G_seeds: Optional[Tuple[float, ...]] = knob_field(
+        help="Shape vote: multi-start tau_G seed grid (us) for the per-bin "
+        "Gaussian and Voigt fits.",
+    )
     pure_margin_threshold: Optional[float] = knob_field(
         help="Min SNR-weighted vote margin for a pure shape to win (else " "'none').",
         tier="primary",
         inst_sensitivity="maybe",
         grid=(0.05, 0.10, 0.15, 0.20),
     )
-    auto_recommend: Optional[bool] = None
+    auto_recommend: Optional[bool] = knob_field(
+        help="Run the L/G/V shape vote after tau calibration (and build the voted "
+        "shape's tau twin).",
+    )
 
 
 @dataclass

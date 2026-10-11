@@ -406,6 +406,28 @@ def test_pooled_fit_delivers_every_event_on_the_calling_thread_and_process(
     assert set(rec.pids) == {os.getpid()}
 
 
+def test_noise_divergence_is_one_stage2_warning(
+    baseline_2638_stage1_raw, tmp_path, monkeypatch
+):
+    # Force the cross-check to fire on real data: Stage 2 reports it once, as a
+    # PipelineWarning (the estimator itself stays silent; see
+    # tests/unit/preprocessing/test_noise_complex_check.py).
+    import ftmwpipeline.preprocessing.noise_estimation as ne
+    from ftmwpipeline import PipelineWarning
+
+    monkeypatch.setattr(ne, "SCATTER_COMPLEX_DIVERGENCE_WARN", 0.0)
+    fp = _copy(baseline_2638_stage1_raw, tmp_path)
+    rec = Recorder()
+    ftmw.estimate_noise(fp, events=rec)
+    (warning,) = rec.of(PipelineWarning)
+    assert (warning.code, warning.stage) == ("noise_divergence", Stage.NOISE)
+    assert set(warning.details) == {"magnitude_complex_ratio", "divergence"}
+    assert warning.details["divergence"] == pytest.approx(
+        abs(warning.details["magnitude_complex_ratio"] - 1.0)
+    )
+    assert "cross-check disagree" in warning.message
+
+
 def test_events_arrive_on_the_thread_that_made_the_call(
     baseline_2638_stage1_raw, tmp_path
 ):
@@ -473,6 +495,59 @@ def test_run_pipeline_cancel_between_stages_keeps_the_completed_stages(
     done = [Stage.DATA, Stage.FT, Stage.NOISE]
     assert [e.stage for e in rec.of(StageStarted)] == done
     assert [e.stage for e in rec.of(StageFinished)] == done
+
+
+def test_run_pipeline_numbers_its_steps(exp_2638_data_path, tmp_path):
+    """Each step of a run is announced as ``RunStep`` (index of the planned
+    total) before its own events; a step that is not a stage has no stage."""
+    from ftmwpipeline import RunStep
+    from ftmwpipeline._internal.run_impl import RUN_STAGES
+    from ftmwpipeline.contract import RUN_STEPS
+
+    assert tuple(RUN_STAGES) == RUN_STEPS
+    tok = Token()
+
+    def act(event):
+        if event.stage is Stage.NOISE and isinstance(event, StageFinished):
+            tok.set()
+
+    rec = Recorder(act)
+    with pytest.raises(OperationCancelledError):
+        ftmw.run_pipeline(
+            exp_2638_data_path,
+            tmp_path / "run.ftmw",
+            trim=(26500.0, 40000.0),
+            detect_start=True,
+            calibrate=False,
+            progress=False,
+            events=rec,
+            cancel=tok,
+        )
+    steps = rec.of(RunStep)
+    # import, start detection, FT, noise, calibrate tau, peaks, windows, fit,
+    # review: no timebase, no report.
+    assert [(e.step, e.index, e.total, e.stage) for e in steps] == [
+        ("import", 1, 9, Stage.DATA),
+        ("start detection", 2, 9, None),
+        ("FT", 3, 9, Stage.FT),
+        ("noise", 4, 9, Stage.NOISE),
+    ]
+    assert all(e.operation == "run" for e in steps)
+    # A step's RunStep comes before the StageStarted of the stage it runs.
+    order = [type(e).__name__ + ":" + str(e.stage) for e in rec.events]
+    for e in steps:
+        if e.stage is not None:
+            assert order.index(f"RunStep:{e.stage}") < order.index(
+                f"StageStarted:{e.stage}"
+            )
+    assert to_jsonable(steps[1]) == {
+        "schema": "ftmw/run_step@1",
+        "operation": "run",
+        "stage": None,
+        "step": "start detection",
+        "index": 2,
+        "total": 9,
+    }
 
 
 # ---- scans -------------------------------------------------------------------------------------------------

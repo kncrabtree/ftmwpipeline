@@ -39,6 +39,14 @@ def test_every_row_has_a_contract_type(rows):
     assert rows["stage5.spur.clocks"].type == "clock_sources"
 
 
+def test_every_row_has_help(rows):
+    # Contract 22: a registered knob's help, else the field's own.
+    assert [path for path, r in rows.items() if not r.help.strip()] == []
+    # A field no scan registers carries the help it declares.
+    assert rows["stage1.units_power"].help.startswith("Spectrum scaling")
+    assert rows["stage1.trim"].help.startswith("Frequency analysis range")
+
+
 def test_choices_units_bounds_only_where_stated(rows):
     n_eff = rows["stage5.conservative.n_eff_kind"]
     assert n_eff.type == "choice" and "kish_mag" in (n_eff.choices or [])

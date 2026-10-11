@@ -324,6 +324,18 @@ def _compute_noise_scatter(
             convolve_mhz=convolve_mhz_v,
         )
         logger.info("Noise estimation completed successfully")
+        info = noise_result.bin_info
+        if info.get("complex_divergence_warn"):
+            fields: Dict[str, Any] = {
+                "magnitude_complex_ratio": float(info["complex_magnitude_ratio"]),
+                "divergence": float(info["complex_divergence"]),
+            }
+            if events is not None:
+                events.warn("noise_divergence", None, **fields)
+            else:
+                from .events import warning_text
+
+                logger.warning(warning_text("noise_divergence", fields, {}))
         logger.info(
             f"  Noise fraction: {noise_result.bin_info.get('noise_fraction', 0):.3f}"
         )

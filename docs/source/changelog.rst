@@ -11,6 +11,21 @@ Notable changes to ``ftmwpipeline``, newest first. Versions follow
 Unreleased
 ----------
 
+**Contract 22: run steps are numbered, the noise cross-check warns once, and
+every setting has help; ``CONTRACT_VERSION`` moves 21 → 22.** ``run_pipeline``
+emits a new event, ``RunStep`` (``ftmw/run_step@1``: ``step``, ``index``,
+``total``), as each step begins, so a client can show "step 3 of 9" the way the
+CLI's ``[i/N]`` banner does; ``step`` is one of the new ``run_step``
+vocabulary (the labels ``failed_step`` already uses). The Stage 2
+magnitude/complex σ cross-check is now the ``noise_divergence``
+``PipelineWarning`` (``magnitude_complex_ratio``, ``divergence``), emitted once
+by the noise stage; it used to be a plain log warning that every later stage
+repeated when it re-estimated noise on the same grid. Every ``SettingRow`` now
+carries a non-empty ``help``: a field no scan registers reports the help it
+declares (``stage1.units_power``, ``stage1.trim``, ...), and the settings that
+declared none now do. Additive, except that a run's first event is now a
+``RunStep`` rather than ``StageStarted``. ``ANALYSIS_EPOCH`` is unchanged.
+
 **Contract 21: the ``curation_conflict`` reasons are declared;
 ``CONTRACT_VERSION`` moves 20 → 21.** ``ftmwpipeline.contract`` exports
 ``CURATION_CONFLICT_REASONS``, the ``reason`` slugs a ``curation_conflict``

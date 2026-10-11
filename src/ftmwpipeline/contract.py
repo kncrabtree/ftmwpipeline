@@ -26,8 +26,8 @@ program may rely on (normative spec: ``dev-docs/CONTRACT_STRATEGY.md``):
 - The typed error family (re-exported from :mod:`ftmwpipeline.file_manager`).
 - The event types a long operation delivers to its ``events`` callback
   (:class:`StageStarted`, :class:`StageFinished`, :class:`WindowProgress`,
-  :class:`ScanProgress`, :class:`Invalidated`, :class:`PipelineWarning`; their
-  union :data:`Event`) and the :class:`CancelToken` protocol its ``cancel``
+  :class:`ScanProgress`, :class:`Invalidated`, :class:`PipelineWarning`,
+  :class:`RunStep`; their union :data:`Event`) and the :class:`CancelToken` protocol its ``cancel``
   argument satisfies.
 
 Adding to the contract
@@ -89,7 +89,7 @@ from .file_manager import (
 #: The machine-contract version. The first published contract is ``1``; each
 #: release that adds (or, before 1.0.0, changes) contract elements raises it by
 #: one, so a client can gate on it as well as on :func:`capabilities`.
-CONTRACT_VERSION: int = 21
+CONTRACT_VERSION: int = 22
 
 #: Schema name of the :func:`capabilities` payload.
 CAPABILITIES_SCHEMA = "ftmw/capabilities@1"
@@ -131,6 +131,7 @@ STAGE_STARTED_SCHEMA = "ftmw/stage_started@1"
 STAGE_FINISHED_SCHEMA = "ftmw/stage_finished@1"
 WINDOW_PROGRESS_SCHEMA = "ftmw/window_progress@1"
 SCAN_PROGRESS_SCHEMA = "ftmw/scan_progress@1"
+RUN_STEP_SCHEMA = "ftmw/run_step@1"
 INVALIDATED_SCHEMA = "ftmw/invalidated@1"
 WARNING_SCHEMA = "ftmw/warning@1"
 # CURATION_ACTION_SCHEMA (imported above) names a CurationAction's wire form:
@@ -386,6 +387,7 @@ WARNING_FIELDS: Mapping[str, Tuple[str, ...]] = MappingProxyType(
         "frame_mismatch": ("actions",),
         "walk_fallback": ("reason", "n_windows"),
         "timebase_skipped": (),
+        "noise_divergence": ("magnitude_complex_ratio", "divergence"),
     }
 )
 
@@ -496,6 +498,42 @@ class ScanProgress(_EventBase):
     total: int
 
 
+#: The steps of a ``run`` (``run_pipeline``), in run order: the ``step`` of a
+#: :class:`RunStep` and the run result's ``failed_step``. ``"start detection"``
+#: and ``"report"`` are steps, not stages.
+RUN_STEPS: Tuple[str, ...] = (
+    "import",
+    "start detection",
+    "FT",
+    "timebase",
+    "noise",
+    "calibrate tau",
+    "peaks",
+    "windows",
+    "fit",
+    "review",
+    "report",
+)
+
+
+@dataclass(frozen=True)
+class RunStep(_EventBase):
+    """A step of a ``run`` began: step ``index`` (from 1) of ``total``.
+
+    Emitted by ``run`` alone, before the step's own events. ``total`` is the
+    number of steps this run will take, fixed when it starts (it counts the
+    optional start detection, timebase and report steps only when requested).
+    ``step`` is one of :data:`RUN_STEPS`; ``stage`` is the stage the step runs,
+    or ``None`` for a step that is not a stage.
+    """
+
+    __ftmw_schema__: ClassVar[str] = RUN_STEP_SCHEMA
+
+    step: str
+    index: int
+    total: int
+
+
 @dataclass(frozen=True)
 class Invalidated(_EventBase):
     """The call invalidated ``stages`` (canonical, in ``rerun_order``).
@@ -558,6 +596,7 @@ Event = Union[
     ScanProgress,
     Invalidated,
     PipelineWarning,
+    RunStep,
 ]
 
 #: The ``events`` argument of a long operation.
@@ -571,6 +610,7 @@ EVENT_TYPES: Tuple[type, ...] = (
     ScanProgress,
     Invalidated,
     PipelineWarning,
+    RunStep,
 )
 
 
@@ -765,6 +805,7 @@ _SCHEMAS: Tuple[str, ...] = (
     SCAN_PROGRESS_SCHEMA,
     INVALIDATED_SCHEMA,
     WARNING_SCHEMA,
+    RUN_STEP_SCHEMA,
 )
 
 _CODES: Tuple[str, ...] = (
@@ -1054,6 +1095,7 @@ _FIELDS: Dict[str, Tuple[str, ...]] = {
         "dropped",
     ),
     "ScanProgress": ("schema", "operation", "stage", "knob", "value", "index", "total"),
+    "RunStep": ("schema", "operation", "stage", "step", "index", "total"),
     "Invalidated": ("schema", "operation", "stage", "stages"),
     "PipelineWarning": ("schema", "operation", "stage", "code", "message"),
 }
@@ -1346,6 +1388,7 @@ _VOCABULARIES: Dict[str, Tuple[str, ...]] = {
     # ``review run`` records from.
     "attention_kind": ATTENTION_KINDS,
     "curation_conflict_reason": CURATION_CONFLICT_REASONS,
+    "run_step": RUN_STEPS,
 }
 
 MANIFEST = ContractManifest(
@@ -1442,6 +1485,7 @@ __all__ = [
     "STAGE_FINISHED_SCHEMA",
     "WINDOW_PROGRESS_SCHEMA",
     "SCAN_PROGRESS_SCHEMA",
+    "RUN_STEP_SCHEMA",
     "INVALIDATED_SCHEMA",
     "WARNING_SCHEMA",
     "CurationAction",
@@ -1477,6 +1521,8 @@ __all__ = [
     "StageFinished",
     "WindowProgress",
     "ScanProgress",
+    "RunStep",
+    "RUN_STEPS",
     "Invalidated",
     "PipelineWarning",
     "SUMMARY_KEYS",

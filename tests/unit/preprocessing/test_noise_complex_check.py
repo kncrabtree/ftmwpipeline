@@ -94,3 +94,15 @@ def test_active_ft_noise_carries_complex_diagnostic():
     assert 0.85 < info["complex_magnitude_ratio"] <= 1.05
     assert info["complex_divergence"] < SCATTER_COMPLEX_DIVERGENCE_WARN
     assert info["complex_divergence_warn"] is False
+
+
+def test_a_divergence_is_flagged_not_logged(monkeypatch, caplog):
+    # Every later stage re-estimates on the same grid; only Stage 2 reports
+    # the divergence (the noise_divergence warning), so the estimator is silent.
+    import ftmwpipeline.preprocessing.noise_estimation as ne
+
+    monkeypatch.setattr(ne, "SCATTER_COMPLEX_DIVERGENCE_WARN", 0.0)
+    with caplog.at_level("WARNING"):
+        info = estimate_active_ft_noise(_freqs(), _complex_noise(3)).bin_info
+    assert info["complex_divergence_warn"] is True
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
